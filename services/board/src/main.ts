@@ -1,0 +1,81 @@
+import pino from "pino";
+import { createAccounts, readGate } from "./accounts.js";
+import { createApp } from "./app.js";
+import { webhookWake, type Manifest } from "./app-access.js";
+import { appsApi } from "./fleet.js";
+import { createSigninServer } from "./signin.js";
+import { startDetector } from "./fleet-ops.js";
+import { loadConfig } from "./config.js";
+import { pullUsage } from "./costs.js";
+import { McpAuth } from "./mcpauth.js";
+import { GoogleAuth } from "./google.js";
+import { Paperclip } from "./paperclip.js";
+import { weekdayOf } from "./recurrence.js";
+import { Store, localDate } from "./store.js";
+
+const cfg = loadConfig();
+const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
+const store = new Store(cfg.dbPath);
+const paperclip = new Paperclip(cfg.paperclipUrl, cfg.companyId, cfg.boardKey);
+
+/** Every minute: Tomorrow → Today at the start of a workday, then any scheduled moves that are due, on top. */
+function rollover() {
+  try {
+    const today = localDate(cfg.timezone);
+    const moved = store.rollover(today, cfg.workdays.includes(weekdayOf(today)));
+    if (moved) log.info({ moved }, "rollover: Tomorrow → Today");
+    const scheduled = store.applySchedules(today);
+    if (scheduled.length) log.info({ moved: scheduled.length }, "scheduled moves applied");
+  } catch (err) {
+    log.error({ err: String(err) }, "rollover failed");
+  }
+}
+rollover();
+setInterval(rollover, 60_000).unref();
+// Fleet Ops' detector: only when the fleet-ops module is enabled (it sets FLEET_OPS_INTERVAL_MINUTES).
+startDetector(paperclip, store, log);
+// The Costs tab: agent computers' model calls with what OpenRouter billed for each, from the launcher's gateway.
+pullUsage(cfg.sessions?.launcher, store, log);
+
+const google = cfg.google && new GoogleAuth(cfg.google.url, cfg.google.token, log);
+// Glean; Grafana and ClickHouse for the runner's Engineer jobs; Jira through Atlassian's remote MCP server.
+const glean = cfg.glean && new McpAuth("Glean", cfg.glean.url, cfg.glean.token, log);
+const grafana = cfg.grafana && new McpAuth("Grafana", cfg.grafana.url, cfg.grafana.token, log);
+const clickhouse = cfg.clickhouse && new McpAuth("ClickHouse", cfg.clickhouse.url, cfg.clickhouse.token, log);
+const jira = cfg.jira && new McpAuth("Jira", cfg.jira.url, cfg.jira.token, log);
+// Board accounts: Better Auth in data/board/auth.db; every board route needs a signed-in admin.
+const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...cfg.allowedHosts, ...cfg.lan.hosts, ...cfg.accounts.signin.hosts], boardUrl: cfg.accounts.boardUrl, gate: () => readGate(cfg.accounts.gateFile), gateAccountsFile: cfg.accounts.gateAccountsFile, gateSecret: cfg.accounts.gateSecret, ownerEmail: cfg.accounts.ownerEmail,
+  // Each shared app's manifest at its running commit (apps-mcp), and the app-request routine's webhook (setup writes its files).
+  manifest: (app) => appsApi<Manifest>(`/internal/apps/${encodeURIComponent(app)}/manifest`, undefined, { auth: true }),
+  wake: webhookWake(process.env.APP_REQUEST_WEBHOOK_URL_FILE ?? "/run/secrets/app_request_webhook_url", process.env.APP_REQUEST_WEBHOOK_SECRET_FILE ?? "/run/secrets/app_request_webhook_secret", log),
+  log });
+const common = { paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity: {}, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts };
+const server = createApp({ ...common, allowedHosts: cfg.allowedHosts, mode: "local", operatorKey: cfg.operatorKey });
+server.listen(cfg.port, "0.0.0.0", () => log.info({ port: cfg.port, hosts: cfg.allowedHosts }, "board listening"));
+// The board's https address (`tailscale serve`) and phones on the home network: a separate port, signed in as on 3120.
+const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
+lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));
+
+// The tasks bridge and the runner: bearer token, /internal/ only. Not published beyond loopback.
+const internal = cfg.internal && createApp({ ...common, allowedHosts: cfg.internal.hosts, mode: "internal", internalToken: cfg.internal.token, decideKey: cfg.decideKey, reviewerKey: cfg.reviewerKey, watcherKey: cfg.watcherKey, operatorKey: cfg.operatorKey });
+// The gate's sign-in listener (3129): Better Auth's sign-in endpoints and pages only, never a board route.
+const signin = createSigninServer({ accounts, hosts: cfg.accounts.signin.hosts, gate: () => readGate(cfg.accounts.gateFile), log });
+void accounts.syncGate();
+// Apps come and go with applies (config/gate.json): a removed app's rows leave the gate's map within a minute; manifests
+// refresh, undelivered request wakes and a failed write retry on the same beat.
+setInterval(() => void accounts.syncGate(), 60_000).unref();
+signin.listen(cfg.accounts.signin.port, "0.0.0.0", () => log.info({ port: cfg.accounts.signin.port, hosts: cfg.accounts.signin.hosts }, "sign-in listener up"));
+if (!cfg.decideKey) log.warn("no owner_decide_key: approvals from Telegram are off (tap them on the board)");
+if (internal && cfg.internal) internal.listen(cfg.internal.port, "0.0.0.0", () => log.info({ port: cfg.internal!.port }, "internal API listening"));
+
+for (const sig of ["SIGTERM", "SIGINT"] as const) {
+  process.on(sig, () => {
+    server.close();
+    lan.close();
+    internal?.close();
+    signin.close();
+    accounts.close();
+    store.close();
+    process.exit(0);
+  });
+}

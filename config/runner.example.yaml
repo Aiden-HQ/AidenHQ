@@ -1,0 +1,107 @@
+# AidenHQ runner (host service): coding jobs for Paperclip tasks labelled "engineer".
+# Copy to config/runner.yaml. Runs as you; see docs/configuration.md and docs/architecture.md for the guardrails.
+
+label: engineer
+poll_seconds: 20
+# Comments written up to this long before the runner first sees a task still count.
+first_seen_lookback_minutes: 30
+
+# Orgs the runner may change: implement, push and pr. Public repositories anywhere else are
+# read-only: investigate and answer only.
+allowed_orgs: [your-org]
+# Repositories cloned from a path on this host instead of GitHub: slug -> path (a person's local instance repo,
+# ops/setup.sh). The slug's org must be in allowed_orgs for the runner to change it.
+# repo_sources:
+#   local/aidenhq-instance: /home/you/aidenhq-instance.git
+
+# Runner-owned clones (repos/) and per-task worktrees (tasks/). Never your own checkouts.
+work_dir: ~/aidenhq-work
+state_dir: ~/.local/state/aidenhq-runner
+
+max_concurrent: 2
+timeout_minutes: 60
+
+engines:
+  default: openrouter                # a job with no engine named runs here; needs an Engineer agent for it (codex if unset)
+  codex:
+    model: ""                         # empty = your Codex default
+  openrouter:                         # Engineer · OpenRouter; models it offers are listed in config/paperclip.yaml
+    model: ~deepseek/deepseek-flash-latest
+    key_file: ~/.config/aidenhq/openrouter_key
+  claude:                             # "engine: claude" / "use Claude": Claude Code, headless, inside codex sandbox
+    model: ""                         # empty = Claude Code's default; or opus, sonnet, haiku, fable, claude-…
+    token_file: ~/.config/aidenhq/claude_oauth_token   # from `claude setup-token` (0600)
+    # Runner-owned Claude Code home: none of your plugins, hooks, MCP servers or claude.ai connectors.
+    config_dir: ~/.local/state/aidenhq-runner/claude
+
+# Primer for every engine, read-only. Token: $AIDENHQ_SECRETS_DIR/primer_mcp_token.
+# The runner itself publishes a task's Primer document on /mcp/publish with its own token; never given to jobs.
+primer:
+  url: http://127.0.0.1:3123/mcp/read
+
+# Grafana and Google Cloud, read-only, for Claude Code and Codex jobs only; never OpenRouter.
+# Grafana: grafana-mcp on loopback (token: $AIDENHQ_SECRETS_DIR/grafana_mcp_token).
+# Google Cloud: scripts/gcloud-auth.sh signs in (again after the 16-hour session); each job gets a
+# one-hour token with the user's access and the prompt's read-only rule, never the sign-in itself.
+grafana:
+  url: http://127.0.0.1:3124/mcp
+# ClickHouse Cloud, SELECT queries only, for Claude Code and Codex jobs only; never OpenRouter.
+# clickhouse-mcp on loopback (token: $AIDENHQ_SECRETS_DIR/clickhouse_mcp_token).
+clickhouse:
+  url: http://127.0.0.1:3127/mcp
+gcp:
+  credentials: ~/.config/aidenhq/gcloud/application_default_credentials.json
+  # Projects jobs are told to start with; the first is gcloud's default.
+  projects: []
+
+# Reads plain-language requests (target repo, reference repos, mode, model) with a short Codex call.
+intake:
+  model: ""                           # empty = your Codex default
+  reasoning_effort: low
+  timeout_seconds: 180
+  # Extra `codex exec` args for the intake and the write check (authorize), e.g. OpenRouter instead of a
+  # ChatGPT login: ["-c", 'model_provider="or"', "-c", 'model_providers.or.name="OpenRouter"', ...]
+  # codex_args: []
+
+sandbox:
+  network: true                       # gh, gcloud, Grafana and package registries need it
+  # Writable besides the task worktree (build caches); everything else is read-only to the agent.
+  extra_writable_roots:
+    - ~/.cache
+    - ~/go/pkg/mod
+    - ~/.npm
+    - ~/.local/share/pnpm
+    - ~/.cargo/registry
+    - ~/.cargo/git
+    - ~/.gradle
+
+# Review-request tasks close themselves once GitHub shows you reviewed the PR (after the ask), or the
+# PR was merged or closed. Read-only GraphQL queries with your gh login.
+reviews:
+  enabled: true
+  interval_minutes: 5
+
+# Merging the PRs an Engineer task lists, one at a time, in code.
+merges:
+  gap_minutes: 15        # between merges, unless the request says otherwise
+  timeout_minutes: 90    # stop the queue when a check or CI stays pending this long
+
+# Platform Engineer's `aidenhq apply`: on your word, land the shown commit on main of your instance repo
+# (instance.yaml, apps.yaml, agents/<key>.md only), then run ops/apply-config.sh here. Needs a write deploy key for it.
+apply:
+  repo: your-org/aidenhq-instance
+
+# Your comments on your own open tasks → the Research Assistant ("Process task replies" routine).
+replies:
+  enabled: true
+  routine: Process task replies
+  debounce_seconds: 90            # wait for follow-up comments / closing the task
+  exclude_labels: [needs-review, engineer, chat]   # handled by ops-mcp / this runner / the chief of staff (chat)
+  first_run_lookback_hours: 24
+
+# Recurring tasks: the board keeps the schedules; the runner claims due runs every minute,
+# adds the period's GitHub activity (read-only GraphQL with your gh login) and starts the Research Assistant.
+recurring:
+  enabled: true
+  routine: Run recurring task
+  board_url: http://127.0.0.1:3122      # the board's internal API (token: board_internal_token)

@@ -1,0 +1,89 @@
+# ops-mcp configuration. Copy to config/system.yaml (scripts/bootstrap.sh does this).
+# Paths are as seen inside the ops-mcp container.
+
+timezone: Europe/Madrid
+# The board rolls Tomorrow into Today only on these days (Friday's Tomorrow lands on Monday).
+workdays: [monday, tuesday, wednesday, thursday, friday]
+# The board opens Slack links in the Slack app (no browser tab). The ID per Slack host is the
+# team= in the app's own slack:// links: the organization's E… ID on Enterprise Grid, else T….
+slack:
+  teams: {}            # e.g. { acme.enterprise.slack.com: E0123456789 }
+
+# Your names/emails as they appear in calendar invites and transcripts. Used to
+# exclude you from attendee evidence and to decide which action items are yours.
+self:
+  names: []          # e.g. ["Alex", "Alex Doe"]
+  emails: []         # e.g. ["alex@example.com"]
+
+transcripts:
+  roots:
+    - /sources/transcripts
+  extensions: [.md, .txt, .vtt, .srt]
+  stability_seconds: 10
+  recursive: true
+  # Files last modified before this time are registered but never processed.
+  # Set to the install date to avoid backfilling old transcripts; remove to backfill.
+  ignore_before: "2026-10-05T00:00:00+02:00"
+  max_match_attempts: 3
+  # Regexes over the filename stem. Named groups: title, date (YYYY-MM-DD), time.
+  # Defaults handle "Title-2026-10-04_14-01-00.txt", "Title-2026-10-04.txt", "2026-10-04_1401.md".
+  # filename_patterns: [...]
+  # Audio next to a transcript (same name). Its length tells the matcher when the recording
+  # ended; it is deleted once the meeting is published (organize.delete_audio).
+  audio_extensions: [.wav]
+  # After publishing, recorder-named files ("2026-10-08_11-01-59.txt") are renamed after the
+  # meeting ("Dana-2026-10-08.txt"); 1:1s move into one_on_one_dir. Names you chose are kept.
+  organize:
+    rename: true
+    one_on_one_dir: 1-1s
+    delete_audio: true
+
+vault:
+  root: /vault
+  # Vault-relative folders ops-mcp can see. Only these are mounted into the container
+  # (compiled from the meetings module's vault_mounts in the instance's instance.yaml).
+  read_roots: [Meetings]
+  write_roots: [Meetings]
+  meetings_root: Meetings
+  target_heading: Meeting Log
+  # Your writing voice guide (inside a write root): the Research Assistant reads it before drafting in
+  # your voice and adds lessons under "## Lessons" when you ask it to learn. Leave out to disable.
+  voice_note: Meetings/Writing Voice.md
+  # Frontmatter tags on every meeting note. In Obsidian, search tag:#type/meeting.
+  meeting_tags: [type/meeting]
+
+meeting_matching:
+  candidate_window_before_minutes: 90
+  candidate_window_after_minutes: 90
+  auto_match_threshold: 75
+  review_threshold: 55
+  ambiguity_margin: 10
+  # A recording (start from its filename, end from its audio) inside one event matches it.
+  recording_overlap_min: 0.6
+  recording_overlap_rival: 0.3
+  review_min_temporal: 40
+
+routing:
+  config_path: /config/routing.yaml
+  auto_write_confidence: 0.8
+  multi_target_confidence: 0.9
+
+paperclip:
+  base_url: http://paperclip:3100
+  company_id: ""                         # filled in by scripts/paperclip-setup.mjs
+  api_key_file: /run/secrets/paperclip_ops_key
+  # Which meeting actions become tasks: mine (default) | mine_and_unclear | all
+  meeting_action_tasks: mine
+  labels:
+    meeting_action: meeting-action
+    needs_review: needs-review
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+data:
+  db_path: /data/ops-mcp/state.sqlite
+
+logging:
+  level: info

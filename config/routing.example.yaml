@@ -1,0 +1,18 @@
+# Meeting → note routing. Copy to config/routing.yaml.
+# Priority: explicit routes > remembered mappings > topic keywords > the Meeting
+# Librarian's best guess of an existing note (or none). Nobody is asked; add a route to
+# correct a wrong guess. Targets must be existing notes inside vault.write_roots.
+
+routes: []
+#  - calendar_title_regex: "(?i)open merchant stack|\\boms\\b"
+#    target: "Projects/Open Merchant Stack.md"
+#  - attendee_email_regex: "@partner\\.example$"
+#    target: "Partners/Partner.md"
+
+topics: []
+#  - keywords: [example-project]
+#    target: "Projects/Example Project.md"
+
+# Meetings matching these title regexes only get a canonical note (no project note, no guess).
+skip_title_regex: []
+#  - "(?i)^(lunch|focus|ooo)"

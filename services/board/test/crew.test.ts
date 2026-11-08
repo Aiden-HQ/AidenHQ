@@ -1,0 +1,108 @@
+import { describe, expect, it } from "vitest";
+import { assignees, buildBoard } from "../src/board.js";
+import { crewOf, foldedChildren, handOverText, issueState, partsToClose, type CrewInput } from "../src/crew.js";
+import type { Agent, Issue } from "../src/paperclip.js";
+
+const ME = "user-1";
+const agents: Agent[] = [
+  { id: "a-alfred", name: "Assistant", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant" } },
+  { id: "a-grace", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:engineer" } },
+  { id: "a-ada", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", metadata: { setupKey: "aidenhq:engineer-claude" } },
+];
+const list = assignees(agents);
+let n = 0;
+const issue = (o: Partial<Issue>): Issue => ({
+  id: `i-${++n}`, identifier: `PEN-${n}`, title: "t", description: "", status: "todo", priority: "medium",
+  assigneeUserId: null, assigneeAgentId: null, assigneeAdapterOverrides: null,
+  createdAt: `2026-10-26T10:00:${String(n).padStart(2, "0")}Z`, updatedAt: "2026-10-26T10:00:00Z", lastActivityAt: "2026-10-26T10:00:00Z", ...o,
+});
+const SEEN = "2026-10-26T11:00:00Z";
+const input = (o: Partial<CrewInput> = {}): CrewInput => ({ assignees: list, seen: () => SEEN, working: new Map(), jobs: new Map(), ...o });
+
+describe("folding sub-tasks into their card", () => {
+  const parent = issue({ assigneeUserId: ME });
+  const grace = issue({ parentId: parent.id, assigneeAgentId: "a-grace" });
+  const deeper = issue({ parentId: grace.id, assigneeAgentId: "a-ada" });
+  const mine = issue({ parentId: parent.id, assigneeUserId: ME });
+  const orphan = issue({ parentId: "i-gone", assigneeAgentId: "a-grace" });
+
+  it("folds agents' sub-tasks into the top-most task the board shows, and nothing else", () => {
+    const f = foldedChildren([parent, grace, deeper, mine, orphan], list);
+    expect([...f]).toEqual([[grace.id, parent.id], [deeper.id, parent.id]]);
+  });
+
+  it("shows one card with its crew, the sub-tasks gone from the columns", () => {
+    const board = buildBoard({ open: [parent, grace, deeper, mine, orphan], closed: [], placements: new Map(), seen: new Map(), installedAt: SEEN, assignees: list, crew: { working: new Map([[grace.identifier, { since: "2026-10-26T11:30:00Z", queued: false }]]), jobs: new Map() } });
+    expect(board.buckets.triage.map((c) => c.identifier)).toEqual(expect.arrayContaining([parent.identifier, mine.identifier, orphan.identifier]));
+    expect(board.buckets.triage.map((c) => c.identifier)).not.toContain(grace.identifier);
+    const card = board.buckets.triage.find((c) => c.id === parent.id)!;
+    expect(card.crew!.map((m) => [m.agent, m.state])).toEqual([["a-grace", "working"], ["a-ada", "queued"]]);
+    expect(card.crew![0]!.since).toBe("2026-10-26T11:30:00Z");
+  });
+
+});
+
+describe("parts of a task closed elsewhere", () => {
+  const closed = (o: Partial<Issue>) => issue({ assigneeUserId: ME, status: "done", completedAt: "2026-10-28T17:15:50Z", ...o });
+  const owned = (at: Record<string, string> = {}) => async (part: Issue) => at[part.id];
+
+  it("close with the task when they went quiet before it closed", async () => {
+    const parent = closed({});
+    const part = issue({ parentId: parent.id, assigneeAgentId: "a-alfred", lastActivityAt: "2026-10-28T16:51:10Z" });
+    const dropped = closed({ status: "cancelled", completedAt: null, cancelledAt: "2026-10-28T18:00:00Z" });
+    const other = issue({ parentId: dropped.id, assigneeAgentId: "a-grace", lastActivityAt: "2026-10-28T17:00:00Z" });
+    const res = await partsToClose([part, other], new Map([parent, dropped].map((p) => [p.id, p])), list, owned());
+    expect(res.map((r) => [r.part.id, r.status])).toEqual([[part.id, "done"], [other.id, "cancelled"]]);
+  });
+
+  it("close when only the agent spoke after the task closed (a run that finished after the PR merged)", async () => {
+    const parent = closed({});
+    const part = issue({ parentId: parent.id, assigneeAgentId: "a-ada", status: "in_review", lastActivityAt: "2026-10-28T17:17:07Z" });
+    const res = await partsToClose([part], new Map([[parent.id, parent]]), list, owned({ [part.id]: "2026-10-28T17:00:00Z" }));
+    expect(res.map((r) => [r.part.id, r.status])).toEqual([[part.id, "done"]]);
+    expect(await partsToClose([part], new Map([[parent.id, parent]]), list, owned())).toHaveLength(1);
+  });
+
+  it("stay open when the task is open, the user took the part up again, or it's the user's own", async () => {
+    const open = issue({ assigneeUserId: ME });
+    const parent = closed({});
+    const takenUp = issue({ parentId: parent.id, assigneeAgentId: "a-alfred", lastActivityAt: "2026-10-28T18:00:00Z" });
+    const parts = [
+      issue({ parentId: open.id, assigneeAgentId: "a-alfred" }),
+      takenUp,
+      issue({ parentId: parent.id, assigneeUserId: ME, lastActivityAt: "2026-10-28T16:00:00Z" }),
+      issue({ parentId: "i-unknown", assigneeAgentId: "a-alfred" }),
+    ];
+    expect(await partsToClose(parts, new Map([open, parent].map((p) => [p.id, p])), list, owned({ [takenUp.id]: "2026-10-28T17:59:00Z" }))).toEqual([]);
+  });
+});
+
+describe("an agent's state", () => {
+  const ada = list.find((a) => a.key === "a-ada")!;
+  it("working or queued from the activity, first", () => {
+    const i = issue({ assigneeAgentId: "a-ada", lastActivityAt: "2026-10-26T12:00:00Z" });
+    expect(issueState(i, ada, input({ working: new Map([[i.identifier, { since: null, queued: true }]]) }))).toBe("queued");
+  });
+});
+
+describe("the crew of a card", () => {
+  it("groups a fan-out under one agent, Assistant first, with how many finished", () => {
+    const parent = issue({ assigneeUserId: ME });
+    const kids = [
+      issue({ parentId: parent.id, assigneeAgentId: "a-grace", status: "in_review" }),
+      issue({ parentId: parent.id, assigneeAgentId: "a-grace", status: "in_review", lastActivityAt: "2026-10-26T12:00:00Z" }),
+      issue({ parentId: parent.id, assigneeAgentId: "a-grace", status: "in_progress" }),
+      issue({ parentId: parent.id, assigneeAgentId: "a-alfred", status: "in_review" }),
+    ];
+    const working = new Map([[kids[2]!.identifier, { since: "2026-10-26T11:50:00Z", queued: false }]]);
+    const crew = crewOf(parent, kids, input({ working }));
+    expect(crew.map((m) => [m.agent, m.state, m.finished])).toEqual([["a-alfred", "done", undefined], ["a-grace", "needs", 2]]);
+    expect(crew[1]!.issues.map((i) => i.state)).toEqual(["done", "needs", "working"]);
+  });
+});
+
+describe("words between the crew and the board", () => {
+  it("hands over the user's instructions with a note, never the stuck agent's text", () => {
+    expect(handOverText("Fix the flaky e2e test.\n", "Linus")).toBe("Fix the flaky e2e test.\n\nLinus worked on this first and got stuck; their notes are on the task.");
+  });
+});

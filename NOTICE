@@ -1,0 +1,47 @@
+AidenHQ
+Copyright (C) 2026 Mudit Gupta and the AidenHQ contributors
+https://github.com/Aiden-HQ/AidenHQ
+
+AidenHQ is licensed under the GNU Affero General Public License, version 3 only
+(see LICENSE). Other licensing arrangements are available from the copyright
+holder.
+
+Exception: the app starter (modules/core/templates/app/, and its copy in
+services/computer/images/agent-base/app-starter/) and the design system
+(modules/core/design-system/, and its copy in
+services/computer/images/agent-base/design-system/) are licensed under the MIT
+License (see the LICENSE file in each). Apps built from them carry no AGPL
+obligations.
+
+"AidenHQ" is the name this project uses; the licences above cover the code, not
+the name.
+
+Third-party software
+--------------------
+
+This product includes code from Pennyworth (https://github.com/taylanpince/pennyworth),
+Copyright (c) 2026 Taylan Pince, used under the MIT License (see LICENSES/pennyworth-MIT.txt).
+AidenHQ began as a fork of Pennyworth. Files derived from it, wholly or in part, include:
+- services/runner/ (the runner, its bin/ commands, evals and tests)
+- services/board/ (the board server and web UI, including web/public/icon.png and the
+  crew portraits ada.svg, alfred.svg, grace.svg and linus.svg, which are Pennyworth's own)
+- services/paperclip-tasks-mcp/
+- modules/meetings/connections/ops-mcp/, modules/google/connections/google-workspace-mcp/,
+  modules/clickhouse/connections/clickhouse-mcp/, modules/grafana/connections/grafana-mcp/,
+  modules/glean/connections/glean-mcp/, modules/primer/connections/primer-mcp/,
+  modules/slack/connections/slack-mcp/, modules/github/connections/github-mcp/, and parts of
+  modules/jira/connections/jira-mcp/
+- scripts/ (paperclip-setup.mjs, healthcheck.sh, bootstrap.sh, verify-security.sh, the
+  *-auth.sh scripts, trigger-meeting-scan.sh, dev/mcp-call.mjs)
+- config/*.example.yaml, compose.yaml, .env.example
+- the handbooks of the assistant, meeting-librarian, slack-scout and inbox-agent agents
+- fixtures/
+Modifications to these files are Copyright (C) 2026 Mudit Gupta and the AidenHQ
+contributors, under the AGPL as above.
+
+This product runs Paperclip (https://github.com/paperclipai/paperclip) as a separate component,
+Copyright (c) 2025 Paperclip AI, used under the MIT License (see LICENSES/paperclip-MIT.txt).
+
+The app starter (modules/core/templates/app/) includes code and designs from shadcn/ui, Origin UI,
+Radix Colors, cmdk, react-day-picker (MIT), Tremor and tweakcn (Apache-2.0); its THIRD_PARTY.md
+lists each file and its licence. npm, container and other dependencies keep their own licences.

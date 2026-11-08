@@ -1,0 +1,7 @@
+[Unit]
+Description=AidenHQ run-history pruning
+
+[Service]
+Type=oneshot
+ExecStart=%h/aidenhq/ops/prune-runs.sh
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

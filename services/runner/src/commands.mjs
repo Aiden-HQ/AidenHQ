@@ -1,0 +1,227 @@
+// The exact push/pr commands, repository names and engines.
+// Pure functions (unit-tested): no I/O here.
+
+export const RUNNER_MARKER = "<!-- aidenhq-runner -->";
+
+/** Whether a comment carries one of our markers. */
+export const hasMarker = (body, marker) => String(body ?? "").includes(marker);
+
+/** A message relayed from chat by the Chief of Staff. */
+export const RELAY_MARKER = "<!-- aidenhq-relay -->";
+
+/** The board's marks: a message on the user's task for other agents only, and where a delivered one came from. */
+export const FOR_OTHERS = "<!-- aidenhq-for-others -->";
+
+/** The chat a message delivered from another one came from: the task's identifier. */
+export function deliveredFrom(body) {
+  return /<!-- aidenhq-from:([A-Z][A-Z0-9]*-\d+)(?::[0-9a-f-]{36})? -->/.exec(String(body ?? ""))?.[1];
+}
+
+// Publishing to GitHub is the one irreversible action, so it takes the exact word. Everything
+// else in a comment, including stop/status/reset/cleanup, is read by the intake (intake.mjs).
+const COMMANDS = new Map([
+  ["push", "push"],
+  ["pr", "pr"],
+  ["draft pr", "pr"],
+  ["open pr", "pr"],
+]);
+
+/** Remove HTML comments: hidden text never counts as the user's words. */
+export const stripHidden = (s) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
+
+/** "push" or "pr" when the whole comment is exactly that word; otherwise undefined. */
+export function parseCommand(body) {
+  // Only a message the Chief of Staff relayed from chat (relay marker and its "Written in chat" line) may be a command.
+  // Other delivered messages carry a note line, so they never match.
+  const raw = String(body ?? "");
+  const text = hasMarker(raw, RELAY_MARKER) ? stripHidden(raw).replace(/\n\n_Written in chat on [A-Z][A-Z0-9]*-\d+\._\s*$/, "") : stripHidden(raw);
+  return COMMANDS.get(text.trim().toLowerCase().replace(/[.!]+$/, ""));
+}
+
+/**
+ * Normalize "org/repo", "https://github.com/org/repo(.git)", "git@github.com:org/repo.git", or any
+ * of these as Paperclip stores them: Markdown links ("[url](url)"), "<url>", backslash escapes.
+ */
+export function normalizeRepo(value) {
+  const text = String(value ?? "")
+    .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, "$2") // [text](url) → url
+    .replace(/\\(.)/g, "$1") // \_ → _
+    .replace(/[<>`]/g, " ")
+    .trim();
+  const m =
+    /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/#?\s)]|$)/.exec(text) ??
+    /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/#?\s]|$)/.exec(text);
+  if (!m) return undefined;
+  return { org: m[1], name: m[2], slug: `${m[1]}/${m[2]}` };
+}
+
+export function repoAllowed(repo, allowedOrgs) {
+  return Boolean(repo) && allowedOrgs.some((o) => o.toLowerCase() === repo.org.toLowerCase());
+}
+
+/** Find allowlisted repositories mentioned in free text (URLs or org/repo tokens). */
+export function findRepos(text, allowedOrgs) {
+  return mentionedRepos(text).filter((r) => repoAllowed(r, allowedOrgs));
+}
+
+/**
+ * Every org/repo token in free text, in any org. Many aren't repositories at all ("DA/L1"), so
+ * ones outside the allowed orgs only count once GitHub confirms them as public (`publicRepo`).
+ */
+export function mentionedRepos(text) {
+  const found = new Map();
+  // Dots belong to names (acme/widget.js); one only ends a name at the end of a sentence
+  // ("see org/repo."). A match never starts inside another token (".js/pull" in a URL).
+  const re = /(?:https?:\/\/github\.com\/|git@github\.com:|(?<![\w.\/@:-]))([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[\s/#?)\]>,;:'"`]|\.(?:[\s)\]>,;:'"`]|$)|$)/g;
+  for (const m of String(text ?? "").matchAll(re)) {
+    if (/^\.+$/.test(m[1]) || /^\.+$/.test(m[2])) continue;
+    // An all-digit name is a Projects board or issue number ("acme/28"), not a repository.
+    if (/^\d+$/.test(m[2])) continue;
+    const repo = { org: m[1], name: m[2], slug: `${m[1]}/${m[2]}` };
+    if (!found.has(repo.slug.toLowerCase())) found.set(repo.slug.toLowerCase(), repo);
+  }
+  return [...found.values()];
+}
+
+/**
+ * Resolve the engine for a job: `engines.default` in the config (codex if unset), `engine: claude` (Claude Code),
+ * `engine: openrouter` / `glm` (configured default OpenRouter model), `engine: openrouter:<model>`,
+ * or a bare OpenRouter model id like `z-ai/glm-5.3`. A Claude model name alone (`model: opus`)
+ * picks Claude Code.
+ */
+export function resolveEngine(directives, cfg, previous) {
+  const raw = (directives.engine ?? "").trim().toLowerCase();
+  const model = directives.model?.trim();
+  if (!raw && !model) return previous ?? resolveEngine({ engine: cfg.engines.default ?? "codex" }, cfg); // engines.default: the engine with an Engineer
+  if (raw === "codex") return { kind: "codex", model: model || cfg.engines.codex.model || undefined };
+  if (["claude", "claude-code", "claude code", "anthropic"].includes(raw)) return { kind: "claude", model: model || cfg.engines.claude?.model || undefined };
+  if (raw === "glm" || raw === "openrouter" || raw === "opencode") return { kind: "openrouter", model: model || cfg.engines.openrouter.model };
+  if (raw.startsWith("openrouter:")) return { kind: "openrouter", model: directives.engine.trim().slice("openrouter:".length) };
+  if (raw.includes("/")) return { kind: "openrouter", model: directives.engine.trim() };
+  if (!raw && isClaudeModel(model)) return { kind: "claude", model };
+  if (!raw && model) return { kind: previous?.kind === "claude" ? "codex" : previous?.kind ?? "codex", model };
+  throw new Error(`unknown engine "${directives.engine}" (use codex, claude, openrouter, or openrouter:<model>)`);
+}
+
+// The Engineer agents: Paperclip adapter type ↔ runner engine.
+const ADAPTER_ENGINE = { codex_local: "codex", claude_local: "claude", opencode_local: "openrouter" };
+const ENGINE_ADAPTER = Object.fromEntries(Object.entries(ADAPTER_ENGINE).map(([a, e]) => [e, a]));
+const EFFORT_KEY = { codex: "modelReasoningEffort", claude: "effort" }; // where Paperclip's picker stores it
+const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * The executor picked on the task in Paperclip: the Engineer agent it's assigned to sets the engine;
+ * the task's model override, else the agent's primary model, else config/runner.yaml sets the model.
+ * Undefined when the task isn't assigned to an Engineer.
+ */
+export function pickedEngine(issue, engineers, cfg) {
+  const agent = engineers.find((a) => a.id === issue?.assigneeAgentId);
+  const kind = ADAPTER_ENGINE[agent?.adapterType];
+  if (!kind) return undefined;
+  const override = issue.assigneeAdapterOverrides?.adapterConfig ?? {};
+  const primary = agent.adapterConfig ?? {};
+  // opencode ids are provider/model; only OpenRouter models are runnable here.
+  const usable = (m) => {
+    const v = typeof m === "string" ? m.trim() : "";
+    if (kind !== "openrouter") return v;
+    return v.startsWith("openrouter/") ? v.slice("openrouter/".length) : "";
+  };
+  const fallback = kind === "codex" ? cfg.engines.codex.model : kind === "claude" ? cfg.engines.claude?.model : cfg.engines.openrouter.model;
+  const model = usable(override.model) || usable(primary.model) || fallback || undefined;
+  const key = EFFORT_KEY[kind];
+  const effort = key ? String(override[key] ?? primary[key] ?? "").trim().toLowerCase() : "";
+  return { kind, model, ...(EFFORTS.has(effort) ? { effort } : {}) };
+}
+
+/**
+ * The Paperclip fields that show `engine` as the task's picker: the matching Engineer as assignee,
+ * and a model override unless the model is that Engineer's primary model. Undefined if no Engineer runs it.
+ */
+export function pickerFor(engine, engineers) {
+  const agent = engineers.find((a) => a.adapterType === ENGINE_ADAPTER[engine.kind]);
+  if (!agent) return undefined;
+  const model = engine.model && engine.kind === "openrouter" ? `openrouter/${engine.model}` : engine.model;
+  const config = { ...(model && model !== agent.adapterConfig?.model ? { model } : {}), ...(engine.effort && EFFORT_KEY[engine.kind] ? { [EFFORT_KEY[engine.kind]]: engine.effort } : {}) };
+  return { assigneeAgentId: agent.id, assigneeAdapterOverrides: Object.keys(config).length ? { adapterConfig: config } : null };
+}
+
+/** OpenRouter models offered for the OpenRouter Engineer (config/paperclip.yaml `models`), primary first. */
+export function openrouterModels(engineers) {
+  const agent = engineers.find((a) => a.adapterType === "opencode_local");
+  const ids = [agent?.adapterConfig?.model, ...(Array.isArray(agent?.metadata?.models) ? agent.metadata.models : [])];
+  return [...new Set(ids.filter((m) => typeof m === "string" && m.startsWith("openrouter/")).map((m) => m.slice("openrouter/".length)))];
+}
+
+/** The Engineer's board identity for an engine: name and voice, when setup gave it one. */
+export function personaFor(kind, engineers) {
+  const p = engineers.find((a) => ADAPTER_ENGINE[a.adapterType] === kind)?.metadata?.persona;
+  return typeof p?.name === "string" && p.name ? { name: p.name, voice: typeof p.voice === "string" ? p.voice : "" } : undefined;
+}
+
+/** The Engineers' names and the engines they stand for ("Ada" → claude), for the intake. */
+export function crewNames(engineers) {
+  return engineers.flatMap((a) => {
+    const engine = ADAPTER_ENGINE[a.adapterType];
+    const name = a.metadata?.persona?.name;
+    return engine && typeof name === "string" && name ? [{ name, engine }] : [];
+  });
+}
+
+/** Claude Code model names: the aliases (opus, sonnet, haiku, fable) or a full `claude-…` id. */
+export function isClaudeModel(model) {
+  return /^(opus|sonnet|haiku|fable|claude-[a-z0-9.-]+)(\[1m\])?$/i.test(String(model ?? "").trim());
+}
+
+/**
+ * The request in a task's description, when the user wrote the task themselves: created with
+ * their own key, by no agent, and without the source marker that AidenHQ's generated tasks
+ * carry. Descriptions of generated tasks hold Slack/email text and stay untrusted context.
+ */
+export function ownRequest(issue) {
+  const text = String(issue?.description ?? "");
+  if (!issue?.createdByUserId || issue.createdByAgentId || /<!--\s*source:/.test(text)) return "";
+  return stripHidden(text).trim();
+}
+
+/** A part of the user's task they gave an Engineer themselves: their own request, no go-ahead needed. */
+export function isUserPart(issue, engineers) {
+  return Boolean(issue?.parentId && issue.createdByUserId && !issue.createdByAgentId && engineers.some((e) => e.id === issue.assigneeAgentId));
+}
+
+/**
+ * A sub-task an agent (the Research Assistant) created for an Engineer under one of the user's tasks. Its
+ * description is agent-written, so it waits for the user's go-ahead before it is the request.
+ */
+export function isAgentSubtask(issue) {
+  return Boolean(issue?.parentId && issue.createdByAgentId && !issue.createdByUserId);
+}
+
+/**
+ * Whether an agent's Engineer sub-task runs without the owner's go-ahead: one delegated from a chat, or under a task an
+ * agent or routine created (an app incident). `chain`: the sub-task, then each parent up to the root (null: one that
+ * couldn't be read).
+ */
+export function runsUnasked(chain) {
+  const [full] = chain;
+  const root = chain.at(-1);
+  if (!isAgentSubtask(full) || chain.length < 2 || chain.includes(null) || root.parentId) return false;
+  return Boolean(root.labels?.some((l) => l.name === "chat") || !root.createdByUserId);
+}
+
+/**
+ * A rule or access proposal an agent filed straight to the Platform Engineer (`task_create`, marker `rule:<agent>:<slug>`; the
+ * Librarian's `task_propose_rule` wraps it as `delegate:<parent>:rule:...`). It runs without the owner's go-ahead: its only
+ * output is a fleet apply card, which the AI reviewer or the owner still decides (the runner pushes and merges nothing without
+ * one). Three checks, none of them typeable in free text: the marker is the tool's own last line (the tools strip `<!--` from
+ * what agents write, so it can't appear mid-description), the assignee is the Platform Engineer, and the creator is an agent
+ * whose grants (the host's table, not Paperclip metadata) let it file tasks.
+ */
+export function isRuleProposal(issue, grants) {
+  const filer = grants?.agents?.[issue?.createdByAgentId]?.tools?.paperclip_tasks ?? [];
+  return Boolean(
+    issue?.createdByAgentId && !issue.createdByUserId &&
+    grants?.agents?.[issue.assigneeAgentId]?.key === "fleet-engineer" &&
+    (filer.includes("task_create") || filer.includes("task_propose_rule")) &&
+    /\n<!--\s*source:(?:delegate:[^:\s]+:)?rule:[A-Za-z0-9:._\/-]+\s*-->\s*$/.test(String(issue.description ?? "")),
+  );
+}

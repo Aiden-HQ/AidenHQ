@@ -1,0 +1,41 @@
+# Local state and secrets
+data/*
+!data/.gitkeep
+.env
+config/system.yaml
+config/routing.yaml
+backups/
+*.sqlite
+*.sqlite-*
+
+# Node
+node_modules/
+dist/
+*.log
+config/paperclip.yaml
+
+# gThumb image metadata sidecars
+.comments/
+config/runner.yaml
+config/intake-cases.yaml
+config/authorize-cases.yaml
+config/busy-cases.yaml
+
+# aidenhq
+.private/
+config/apps.modules.yaml
+compose.modules.yaml
+config/modules.json
+config/grants/*.json
+.claude/worktrees/
+config/computers.json
+config/gate.json
+config/cloudflared.yml
+
+# Personal, untracked notes for coding agents
+CLAUDE.local.md
+
+# Local tool state (browser automation, plugin memory, brainstorming)
+.playwright-mcp/
+.remember/
+.superpowers/

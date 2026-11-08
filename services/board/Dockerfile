@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+FROM node:24.22.2-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY tsconfig.json tsconfig.build.json ./
+COPY src ./src
+COPY web ./web
+RUN npm run build && npm prune --omit=dev
+
+FROM node:24.22.2-bookworm-slim
+ENV NODE_ENV=production
+# Node 24.22.2 ships npm 11.19.1, whose bundled undici 6.28.0 and brace-expansion 5.0.9 carry published
+# advisories; npm 11.21.2 bundles undici 6.29.1 and brace-expansion 5.0.12 at the paths the scanner reads.
+RUN npm install -g npm@11.21.2 && npm cache clean --force
+# pdftotext: attached PDFs get a text version the agents can read.
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY package.json ./
+# Bucket/rank state lives in /data/board (mounted).
+USER 1000:1000
+EXPOSE 3120
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3120/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+CMD ["node", "--disable-warning=ExperimentalWarning", "dist/src/main.js"]

@@ -1,0 +1,9 @@
+{
+  "name": "AidenHQ",
+  "short_name": "AidenHQ",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f5f2",
+  "theme_color": "#f6f5f2",
+  "icons": [{ "src": "/icon.png", "sizes": "627x627", "type": "image/png", "purpose": "any" }]
+}

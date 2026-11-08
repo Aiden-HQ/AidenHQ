@@ -1,0 +1,103 @@
+// Publishing an Engineer task's document to Primer. The agent writes the document to a
+// file in the workspace, Markdown or a self-contained HTML page; after a finished run the runner publishes it through primer-mcp: a new
+// document the first time, then a new version of that same document whenever the file changed.
+// The agent never gets a publishing tool.
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+export const PRIMER_FILE = join(".aidenhq", "primer.md");
+/** A designed page instead (colours, sections, filtering): Primer serves HTML with its scripts, sandboxed. */
+export const PRIMER_HTML = join(".aidenhq", "primer.html");
+/** Both, for the agent and the check on writes. */
+export const PRIMER_FILES = `${PRIMER_FILE} (or ${PRIMER_HTML})`;
+
+const decode = (s) => s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+
+/**
+ * The document's title, content and format; undefined when there's none. With both files, the one
+ * written last is the document. A Markdown title is its first `# ` heading; an HTML one its <title> or <h1>.
+ */
+export function readDocument(workspace, fallbackTitle) {
+  const found = [PRIMER_FILE, PRIMER_HTML]
+    .map((f) => join(workspace, f))
+    .filter((path) => existsSync(path) && readFileSync(path, "utf8").trim())
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  const path = found[0];
+  if (!path) return undefined;
+  const content = readFileSync(path, "utf8").trim();
+  const format = path.endsWith(".html") ? "html" : "markdown";
+  const heading =
+    format === "html"
+      ? decode((/<title[^>]*>([\s\S]*?)<\/title>/i.exec(content) ?? /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(content))?.[1]?.replace(/<[^>]*>/g, "") ?? "").replace(/\s+/g, " ").trim() || undefined
+      : /^#\s+(.+?)\s*#*\s*$/m.exec(content)?.[1];
+  const title = (heading ?? fallbackTitle ?? "Report").replace(/[*_`]/g, "").trim().slice(0, 200);
+  return { path, title, content, format, hash: createHash("sha256").update(content).digest("hex") };
+}
+
+/** A Primer document's ID and link from a create_document result (JSON or text with the link). */
+export function documentRef(text) {
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {}
+  const url = json?.url ?? json?.documentUrl ?? /https?:\/\/[^\s"')]+\/d\/[A-Za-z0-9-]+/.exec(String(text))?.[0];
+  const documentId = json?.documentId ?? json?.id ?? (url ? /\/d\/([A-Za-z0-9-]+)/.exec(url)?.[1] : undefined);
+  return { url, documentId };
+}
+
+/** A Primer document the user linked: its link and ID, or undefined for anything else. */
+export function primerLink(text) {
+  let url;
+  try {
+    url = new URL(String(text).trim());
+  } catch {
+    return undefined;
+  }
+  const id = /^\/d\/([A-Za-z0-9-]{8,64})\/?$/.exec(url.pathname)?.[1];
+  if (url.protocol !== "https:" || !id) return undefined;
+  return { url: `${url.origin}/d/${id}`, documentId: id };
+}
+
+/** One tool call on primer-mcp (stateless streamable HTTP). Resolves with the result's text; rejects on errors. */
+export async function primerCall({ url, token, fetchImpl = fetch }, name, args) {
+  let id = 0;
+  const rpc = async (method, params) => {
+    const res = await fetchImpl(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`primer-mcp answered ${res.status}`);
+    const json = JSON.parse(text.startsWith("event:") ? text.split("\n").find((l) => l.startsWith("data:")).slice(5) : text);
+    if (json.error) throw new Error(String(json.error.message ?? JSON.stringify(json.error)).slice(0, 300));
+    return json.result;
+  };
+  await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "aidenhq-runner", version: "0.1.0" } });
+  const result = await rpc("tools/call", { name, arguments: args });
+  const text = (result?.content ?? []).map((c) => c.text ?? "").join("\n");
+  if (result?.isError) throw new Error(text.slice(0, 300) || `${name} failed`);
+  return text;
+}
+
+/**
+ * Publish the workspace's document if it changed since the last publish. `record` is the task's
+ * Primer state ({ documentId, url, hash }); resolves with what happened and the new record.
+ */
+export async function publishDocument({ endpoint, workspace, record = {}, fallbackTitle }) {
+  const doc = readDocument(workspace, fallbackTitle);
+  if (!doc) return { outcome: "missing", record };
+  if (doc.hash === record.hash) return { outcome: "unchanged", record };
+  if (record.documentId) {
+    await primerCall(endpoint, "primer_add_version", { documentId: record.documentId, content: doc.content, format: doc.format });
+    return { outcome: "updated", record: { ...record, hash: doc.hash } };
+  }
+  const text = await primerCall(endpoint, "primer_create_document", { title: doc.title, content: doc.content, format: doc.format });
+  let ref = documentRef(text);
+  if (!ref.documentId && ref.url) ref = { ...ref, ...documentRef(await primerCall(endpoint, "primer_resolve_url", { url: ref.url })) };
+  // Without an ID a later change makes a new document instead of a version; the hash is kept
+  // either way, so a retry never publishes the same content twice.
+  return { outcome: "created", record: { ...record, documentId: ref.documentId, url: ref.url, hash: doc.hash } };
+}

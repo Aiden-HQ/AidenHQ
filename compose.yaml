@@ -1,0 +1,340 @@
+# AidenHQ core stack. Start with: docker compose up -d (ops/apply-config.sh does this).
+# Configuration comes from .env (see .env.example); secrets from $AIDENHQ_SECRETS_DIR.
+# Module services (connections) live in modules/<name>/compose.yaml; scripts/compile.mjs merges the enabled ones into
+# compose.modules.yaml, which COMPOSE_FILE in .env adds after this file.
+
+name: aidenhq
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+
+services:
+  paperclip:
+    <<: *hardening
+    # Pinned upstream release (2026.1106.0, commit d69631b0) by digest.
+    image: ghcr.io/paperclipai/paperclip:2026.1106.0@sha256:d6584f05cf57a4b26c117eb083725f18c1fe69ddafa7d16c9f8cce83f6fa17da
+    user: "${PUID:-1000}:${PGID:-100}"
+    # Read the auth secret from a file instead of putting its value in this file.
+    entrypoint:
+      - /bin/sh
+      - -c
+      # Also exports every MCP bearer token mounted here: /run/secrets/<name>_mcp_token → AIDENHQ_<NAME>_MCP_TOKEN (the
+      # bearer_token_env_var in the shared Codex config). scripts/compile.mjs mounts one per enabled connection
+      # (compose.modules.yaml). $$ escapes compose interpolation.
+      - >-
+        export BETTER_AUTH_SECRET="$$(cat /run/secrets/paperclip_auth_secret)"
+        PAPERCLIP_AGENT_JWT_SECRET="$$(cat /run/secrets/paperclip_agent_jwt_secret)"
+        AIDENHQ_BOARD_TOKEN="$$(cat /run/secrets/board_internal_token)"
+        OPENROUTER_API_KEY="$$(cat /run/secrets/openrouter_key)";
+        for f in /run/secrets/*_mcp_token; do [ -e "$$f" ] || continue; n="$$(basename "$$f" | tr a-z A-Z)"; export "AIDENHQ_$$n=$$(cat "$$f")"; done;
+        exec /usr/bin/tini -- docker-entrypoint.sh "$$@"
+      - paperclip
+    # The image CMD (overriding entrypoint drops it); 2026.1106 boots from the precompiled runtime bundle.
+    command: [ "node", "server/dist-runtime/index.mjs" ]
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3100"
+      PAPERCLIP_HOME: /paperclip
+      PAPERCLIP_DEPLOYMENT_MODE: authenticated
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: private
+      PAPERCLIP_PUBLIC_URL: http://localhost:3100
+      # Agents reach the API here even when PAPERCLIP_PUBLIC_URL is a tailnet/LAN name the container can't resolve.
+      PAPERCLIP_API_URL: http://localhost:3100
+      # "paperclip" lets ops-mcp and the watcher reach the API by service name.
+      PAPERCLIP_ALLOWED_HOSTNAMES: paperclip,localhost
+      PAPERCLIP_AUTH_DISABLE_SIGN_UP: "${PAPERCLIP_DISABLE_SIGN_UP:-false}"
+      USER_UID: "${PUID:-1000}"
+      USER_GID: "${PGID:-100}"
+      # No usage telemetry to Paperclip's servers.
+      PAPERCLIP_TELEMETRY_DISABLED: "1"
+      DO_NOT_TRACK: "1"
+      # Agents use the ChatGPT login in /paperclip/.codex, never an API key from here.
+      OPENAI_API_KEY: ""
+      # OpenRouter as an extra Codex provider (no model_provider here: agents opt in, so ChatGPT-login agents are unaffected).
+      # Paperclip's secret-store key, from the secret vault (ops/vault) instead of its data dir.
+      PAPERCLIP_SECRETS_MASTER_KEY_FILE: /run/secrets/paperclip_master_key
+      PAPERCLIP_CODEX_PROVIDERS: '{"providers":{"or":{"name":"OpenRouter","base_url":"https://openrouter.ai/api/v1","env_key":"OPENROUTER_API_KEY","wire_api":"responses"}}}'
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ${AIDENHQ_DATA_DIR:-./data}/paperclip:/paperclip
+      # Stdio MCP bridge for Paperclip task updates from sandboxed agents (read-only).
+      - ./services/paperclip-tasks-mcp:/opt/aidenhq:ro
+      # The grants table (setup writes it): the tasks bridge checks the calling agent's tools and roles there.
+      - ${AIDENHQ_CONFIG_DIR:-./config}/grants:/aidenhq-grants:ro
+      # The agent-computer provider plugin (services/computer): setup installs it from here when an agent has an image.
+      - ./services/computer/plugin:/opt/aidenhq-computer:ro
+    secrets:
+      - paperclip_auth_secret
+      - paperclip_agent_jwt_secret
+      # The board's internal API, for the Research Assistant's task_schedule / task_recurring.
+      - board_internal_token
+      - openrouter_key
+      - paperclip_master_key
+      - computer_launcher_token # the computer plugin's key to the launcher on the host
+    pids_limit: 2048
+    # Fixed public resolvers: containers keep the host's DNS servers from when they started, and
+    # a network or WARP change left every agent run failing at startup (2026-10-07).
+    dns: [ 1.1.1.1, 8.8.8.8 ]
+    networks:
+      egress:
+        gw_priority: 1 # published port and outbound traffic go through egress
+      backplane: {}
+    healthcheck:
+      test: [ "CMD", "node", "-e", "fetch('http://localhost:3100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # The task board: Today/Tomorrow/Later over your Paperclip tasks. Acts as you through the
+  # board key, kept server-side; loopback only (put `tailscale serve` in front for the phone).
+  # App platform: deploys the apps in the registry (instance apps.yaml + config/apps.modules.yaml; sandboxed compose projects) and exposes app_* tools to agents,
+  # identified by their Paperclip key. Holds the host Docker socket (root-equivalent), so it takes no inbound traffic
+  # beyond the compose network, and every compose file is resolved and sandboxed in code before it runs.
+  apps-mcp:
+    <<: *hardening
+    build: ./services/apps-mcp
+    image: aidenhq/apps-mcp:local
+    user: "${PUID:-1000}:${DOCKER_GID:?set DOCKER_GID in .env (getent group docker | cut -d: -f3)}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    environment:
+      # App secrets: files in the vault, mounted into apps by the Docker daemon from this host path.
+      APPS_HOST_SECRETS_DIR: "${AIDENHQ_SECRETS_DIR}/apps"
+      REPO_DIR: "${PWD}"
+      INSTANCE_DIR: "${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env}"
+      # Default: https://github.com/<agents org>/aidenhq-instance.git with an App token when the GitHub App is configured, else the instance checkout's origin remote.
+      REGISTRY_PUSH_URL: "${AIDENHQ_INSTANCE_PUSH_URL:-}"
+      APPS_DATA: "${PWD}/data/apps"
+      APPS_DB: /data/apps-mcp.sqlite
+      # https://<apps-edge's hostname>.<tailnet>.ts.net: apps are served at <base>:<port> by their own tailnet node.
+      APPS_URL_BASE: "${APPS_URL_BASE:-}"
+      APPS_EDGE_DIR: /edge
+      GITHUB_TOKEN_FILE: /run/secrets/github_token
+      APPS_INTERNAL_TOKEN_FILE: /run/secrets/apps_internal_token
+      PAPERCLIP_URL: http://paperclip:3100
+      # Caller identity and grants (services/shared/agent-auth.ts), as compile wires every module connection.
+      AIDENHQ_CONNECTION: apps
+      AIDENHQ_GRANTS_FILE: /grants/grants.json
+      # Run tokens from agent computers are resolved by the computer launcher on the host (services/computer).
+      AIDENHQ_LAUNCHER_URL: "${AIDENHQ_LAUNCHER_URL:-http://10.231.0.1:8199}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The apps node's serve config (apps-edge reads it); never the host's tailscaled.
+      - ${AIDENHQ_DATA_DIR:-./data}/apps-edge/serve:/edge
+      # The repo at its own path: Docker resolves bind mounts on the host, so paths must match. Holds each app's checkout and
+      # data under data/apps. The instance repo likewise (apps.yaml registry, commits pushed with the deploy key).
+      - ${PWD}:${PWD}
+      - ${AIDENHQ_INSTANCE_DIR}:${AIDENHQ_INSTANCE_DIR}
+      # A local instance repo (ops/setup.sh): the bare repo the checkout pushes to, at the same path. Unused otherwise.
+      - ${AIDENHQ_INSTANCE_REMOTE:-/dev/null}:${AIDENHQ_INSTANCE_REMOTE:-/aidenhq-no-local-remote}
+      - ${AIDENHQ_DATA_DIR:-./data}/apps-mcp:/data
+      # Read-write, and only this vault dir: apps-mcp writes the DATABASE_URL of `database: warehouse` apps here.
+      - ${AIDENHQ_SECRETS_DIR}/apps:/secrets/apps
+      # The instance's GitHub App: app_id + key.pem, to read private agents-org app repos with a repo-narrowed token.
+      - ${AIDENHQ_SECRETS_DIR}/github-app:/secrets/github-app:ro
+      - ${HOME}/.ssh/aidenhq_instance_deploy:/secrets/deploy_key:ro
+      - ${AIDENHQ_CONFIG_DIR:-./config}/grants:/grants:ro
+    secrets:
+      - github_token
+      - apps_internal_token
+      - apps_incident_webhook_url
+      - apps_incident_webhook_secret
+    dns: [ 1.1.1.1, 8.8.8.8 ] # see paperclip
+    networks:
+      - backplane
+      - egress
+      - sources # warehouse_query / source_new as the readonly login
+
+  # The apps' own tailnet node (https://${APPS_TS_HOSTNAME}.<tailnet>.ts.net:<port>). The board and Paperclip keep the
+  # host's name: a browser sends a host's cookies to every port of it, so an app on that name could read the board's
+  # session. apps-mcp writes this node's serve config (services/apps-mcp/src/tailnet.ts) and joins it to each exposed
+  # app's own network; it is on no AidenHQ network. Userspace networking: it serves, it never routes. Its key (vault
+  # tailscale_apps_authkey: reusable, tagged, pre-authorized; docs/setup.md) is used once, then /state keeps the node.
+  apps-edge:
+    <<: *hardening
+    image: tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c
+    container_name: aidenhq-apps-edge # apps-mcp connects it by name (tailnet.ts EDGE_CONTAINER)
+    user: "${PUID:-1000}:${PGID:-100}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      TS_HOSTNAME: "${APPS_TS_HOSTNAME:-aidenhq-apps}"
+      TS_AUTHKEY: file:/run/secrets/tailscale_apps_authkey # read by `tailscale up`, never an env value
+      TS_AUTH_ONCE: "true"
+      TS_USERSPACE: "true"
+      TS_ACCEPT_DNS: "false"
+      TS_STATE_DIR: /state
+      TS_SOCKET: /tmp/tailscaled.sock
+      TS_SERVE_CONFIG: /serve/serve.json
+      HOME: /tmp
+    volumes:
+      - ${AIDENHQ_DATA_DIR:-./data}/apps-edge/state:/state
+      - ${AIDENHQ_DATA_DIR:-./data}/apps-edge/serve:/serve:ro
+    secrets:
+      - tailscale_apps_authkey
+    networks:
+      - apps-edge
+
+  board:
+    <<: *hardening
+    build: ./services/board
+    image: aidenhq/board:local
+    user: "${PUID:-1000}:${PGID:-100}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      BOARD_SYSTEM_CONFIG: /config/system.yaml
+      BOARD_KEY_FILE: /run/secrets/paperclip_board_key
+      BOARD_DB: /data/board/board.sqlite
+      PAPERCLIP_URL: http://paperclip:3100
+      # Host names the board answers to (DNS-rebinding guard); add your tailnet name for the phone.
+      BOARD_ALLOWED_HOSTS: "${BOARD_ALLOWED_HOSTS:-localhost:3120,127.0.0.1:3120}"
+      # The second listener (3121): the board's https address (`tailscale serve`) and phones on the home network,
+      # signed-in admins only, at BOARD_LAN_HOSTS (aidenhq.local is published by mDNS).
+      BOARD_LAN_HOSTS: "${BOARD_LAN_HOSTS:-aidenhq.local}"
+      # The board's https address (default http://<first LAN host>), e.g. the tailnet name: account links open there.
+      BOARD_LAN_URL: "${BOARD_LAN_URL:-}"
+      # Google's Connect at BOARD_LAN_URL (a Web-app OAuth client; ops/setup.sh sets it).
+      BOARD_GOOGLE_CONNECT: "${BOARD_GOOGLE_CONNECT:-}"
+      # apps-mcp's internal API: the Apps tab, and stateful deploys approved in chat (needs the token).
+      APPS_INTERNAL_TOKEN_FILE: /run/secrets/apps_internal_token
+      # Roles of the calling agent (fleet tools): the grants table setup writes.
+      AIDENHQ_GRANTS_FILE: /grants/grants.json
+      # Live view of what an agent is doing: Codex session logs under Paperclip's data (below), and for agents in their own
+      # computers the launcher's /progress (the board is on the backplane, which the launcher's address belongs to).
+      PAPERCLIP_COMPANIES_DIR: /paperclip-companies
+      AIDENHQ_LAUNCHER_URL: "${AIDENHQ_LAUNCHER_URL:-http://10.231.0.1:8199}"
+      # The Costs tab: OpenRouter's own spend for the key (GET /api/v1/key), next to the board's token estimate.
+      OPENROUTER_KEY_FILE: /run/secrets/openrouter_key
+      # The gate's sign-in listener answers only to these Host names (the
+      # gate calls it at 127.0.0.1:3129; the sign-in host's name comes from config/gate.json, mounted with settings.edge).
+      BOARD_SIGNIN_HOSTS: "${BOARD_SIGNIN_HOSTS:-127.0.0.1:3129,localhost:3129}"
+    volumes:
+      - ${AIDENHQ_CONFIG_DIR:-./config}/system.yaml:/config/system.yaml:ro
+      - ${AIDENHQ_CONFIG_DIR:-./config}/modules.json:/config/modules.json:ro # the Modules tab
+      - ${AIDENHQ_DATA_DIR:-./data}/paperclip/instances/default/companies:/paperclip-companies:ro
+      - ${AIDENHQ_CONFIG_DIR:-./config}/grants:/grants:ro
+      - ${AIDENHQ_DATA_DIR:-./data}/board:/data/board
+    secrets:
+      - paperclip_board_key
+      - board_internal_token
+      - apps_internal_token
+      - owner_decide_key # the owner-channel's approval decisions; generated by compile, held only here and there
+      - reviewer_key # the runner's AI reviewer's Tier 1 verdicts; generated by compile, held only here and by the runner
+      - watcher_decide_key # the owner's Claude watcher's decisions, stamped `watcher`; generated by compile
+      - board_operator_key # ops/setup.sh only: the owner's setup link, welcome chat and account resets; generated by compile, never a job's
+      - gate_board_secret # the gate's proof on the auth listener (3129): sign-in client addresses and app access
+      # The app-request routine's webhook (paperclip-setup.mjs writes it; empty = no wake): the board wakes an app's maintainer.
+      - app_request_webhook_url
+      - app_request_webhook_secret
+      - google_auth_token # Google sign-in state and reconnect only; not the MCP token
+      - openrouter_key # read only for the key's spend totals (the Costs tab)
+      - glean_auth_token # Glean sign-in state and sign-in only; not the MCP token
+      - grafana_auth_token # Grafana sign-in state and sign-in only; not the MCP token
+      - clickhouse_auth_token # ClickHouse sign-in state and sign-in only; not the MCP token
+      - computer_progress_token # the launcher's /progress only: an agent computer's session log for the live view
+    ports:
+      - "127.0.0.1:3120:3120"
+      # LAN listener; loopback-only unless .env sets BOARD_LAN_BIND=0.0.0.0 (e.g. with BOARD_LAN_PORT=80).
+      - "${BOARD_LAN_BIND:-127.0.0.1}:${BOARD_LAN_PORT:-3121}:3121"
+      # Internal API: bearer token, /internal/ only. The runner on the host claims recurring
+      # runs here; the tasks bridge in paperclip reaches it as board:3122 on the backplane.
+      - "127.0.0.1:3122:3122"
+      # The gate's sign-in listener: loopback only, the gate is on the host.
+      - "127.0.0.1:3129:3129"
+    # backplane reaches Paperclip; egress only carries the published port (the board makes no outbound calls).
+    networks:
+      - backplane
+      - egress
+    depends_on:
+      paperclip:
+        condition: service_started
+
+networks:
+  # Explicit 10.x subnets: some host firewalls (here: NordVPN's) drop traffic to Docker's
+  # default 172.16.0.0/12 pools, which breaks the published 127.0.0.1:3100 port.
+  # Service-to-service traffic only, no route to the Internet. ops-mcp lives only here.
+  backplane:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AIDENHQ_BACKPLANE_SUBNET:-10.231.0.0/24}
+  # Outbound access (Paperclip → OpenAI, Google sidecar → Google APIs) and the published port.
+  egress:
+    ipam:
+      config:
+        - subnet: ${AIDENHQ_EGRESS_SUBNET:-10.231.1.0/24}
+  # Shared sources: the source writers and apps-mcp's warehouse tools reach app-warehouse-postgres-1 here. The warehouse
+  # app joins it (`connects: [sources]`); no other app can, so apps never reach these services.
+  sources:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AIDENHQ_SOURCES_SUBNET:-10.231.3.0/24}
+  # The apps node's own way out (Tailscale's control plane and relays); nothing else is on it. It reaches apps only
+  # through their own networks, which apps-mcp joins it to.
+  apps-edge:
+    ipam:
+      config:
+        - subnet: ${AIDENHQ_APPS_EDGE_SUBNET:-10.231.5.0/24}
+
+secrets:
+  paperclip_auth_secret:
+    file: ${AIDENHQ_SECRETS_DIR:?set AIDENHQ_SECRETS_DIR in .env}/paperclip_auth_secret
+  paperclip_agent_jwt_secret:
+    file: ${AIDENHQ_SECRETS_DIR}/paperclip_agent_jwt_secret
+  google_auth_token:
+    file: ${AIDENHQ_SECRETS_DIR}/google_auth_token
+  glean_auth_token:
+    file: ${AIDENHQ_SECRETS_DIR}/glean_auth_token
+  grafana_auth_token:
+    file: ${AIDENHQ_SECRETS_DIR}/grafana_auth_token
+  clickhouse_auth_token:
+    file: ${AIDENHQ_SECRETS_DIR}/clickhouse_auth_token
+  # The user's gh token (scripts/github-auth.sh), for github-mcp only.
+  github_token:
+    file: ${AIDENHQ_SECRETS_DIR}/github_token
+  paperclip_board_key:
+    file: ${AIDENHQ_SECRETS_DIR}/paperclip_board_key
+  board_internal_token:
+    file: ${AIDENHQ_SECRETS_DIR}/board_internal_token
+  openrouter_key:
+    file: ${AIDENHQ_SECRETS_DIR}/openrouter_key
+  paperclip_master_key:
+    file: ${AIDENHQ_SECRETS_DIR}/paperclip_master_key
+  computer_launcher_token:
+    file: ${AIDENHQ_SECRETS_DIR}/computer_launcher_token
+  computer_progress_token:
+    file: ${AIDENHQ_SECRETS_DIR}/computer_progress_token
+  apps_internal_token:
+    file: ${AIDENHQ_SECRETS_DIR}/apps_internal_token
+  owner_decide_key:
+    file: ${AIDENHQ_SECRETS_DIR}/owner_decide_key
+  reviewer_key:
+    file: ${AIDENHQ_SECRETS_DIR}/reviewer_key
+  watcher_decide_key:
+    file: ${AIDENHQ_SECRETS_DIR}/watcher_decide_key
+  board_operator_key:
+    file: ${AIDENHQ_SECRETS_DIR}/board_operator_key
+  gate_board_secret:
+    file: ${AIDENHQ_SECRETS_DIR}/gate_board_secret
+  apps_incident_webhook_url:
+    file: ${AIDENHQ_SECRETS_DIR}/apps_incident_webhook_url
+  apps_incident_webhook_secret:
+    file: ${AIDENHQ_SECRETS_DIR}/apps_incident_webhook_secret
+  app_request_webhook_url:
+    file: ${AIDENHQ_SECRETS_DIR}/app_request_webhook_url
+  app_request_webhook_secret:
+    file: ${AIDENHQ_SECRETS_DIR}/app_request_webhook_secret
+  # The apps node's join key (optional: compile creates it empty; until it's filled the node waits, unjoined).
+  tailscale_apps_authkey:
+    file: ${AIDENHQ_SECRETS_DIR}/tailscale_apps_authkey
