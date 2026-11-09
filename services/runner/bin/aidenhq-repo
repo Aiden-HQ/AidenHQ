@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Clone another repository into this task's workspace: aidenhq-repo <org/name or GitHub URL>.
+# Agents have no SSH agent to clone private repositories with, so the runner does the clone
+# and prints where it is.
+set -euo pipefail
+[ $# -eq 1 ] || { echo "usage: aidenhq-repo <org/name>" >&2; exit 2; }
+[ -n "${AIDENHQ_REPO_URL:-}" ] || { echo "aidenhq-repo: only available inside a task run" >&2; exit 2; }
+repo="$(printf '%s' "$1" | tr -d '"\\')"
+# While the runner restarts (deploys), a refused connection is retried for up to two minutes.
+out="$(curl -sS --max-time 900 --retry 60 --retry-connrefused --retry-delay 2 --retry-max-time 120 -X POST -H "Authorization: Bearer ${AIDENHQ_REPO_TOKEN:-}" -H 'content-type: application/json' \
+  --data "{\"repo\":\"$repo\"}" -w '\n%{http_code}' "$AIDENHQ_REPO_URL/repo")"
+code="${out##*$'\n'}"
+out="${out%$'\n'*}"
+[ "$code" = 200 ] || { echo "aidenhq-repo: $out" >&2; exit 1; }
+echo "$out"

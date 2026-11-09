@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch meeting transcripts for AidenHQ
+
+[Path]
+PathChanged=%h/transcripts
+TriggerLimitIntervalSec=30
+TriggerLimitBurst=4
+
+[Install]
+WantedBy=paths.target

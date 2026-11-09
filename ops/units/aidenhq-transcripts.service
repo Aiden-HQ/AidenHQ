@@ -1,0 +1,8 @@
+[Unit]
+Description=Wake the AidenHQ Meeting Librarian
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 15
+ExecStart=/bin/bash %h/aidenhq/scripts/trigger-meeting-scan.sh
+NoNewPrivileges=true

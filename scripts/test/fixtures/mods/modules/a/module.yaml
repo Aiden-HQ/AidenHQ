@@ -1,0 +1,12 @@
+name: a
+description: Module A
+requires: [b]
+settings:
+  owner_email: { required: true }
+connections:
+  aconn: { url: "http://a-mcp:1/mcp", bearer_token_env_var: AIDENHQ_A_MCP_TOKEN, tools: { read: [a_get], write: [a_set] } }
+agents:
+  x: { adapter: codex_local, model: m1, connections: { tasks: [t], "glean?": [search], bconn: read, aconn: write } }
+routines:
+  r: { title: R, agent: x, description: "Today is {{date}}; mail ${settings.owner_email}" }
+compose: compose.yaml

@@ -1,0 +1,44 @@
+# google module: its compose services. Paths are relative to this module; scripts/compile.mjs makes them absolute.
+
+services:
+  google-workspace-mcp:
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    build: ./connections/google-workspace-mcp
+    image: aidenhq/google-workspace-mcp:local
+    user: "${PUID:-1000}:${PGID:-100}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      GOOGLE_CREDENTIALS_FILE: /credentials/google_oauth.json
+      MCP_TOKEN_FILE: /run/secrets/google_mcp_token
+      # The board's sign-in endpoints: state per account, and reconnecting an expired one.
+      GOOGLE_AUTH_TOKEN_FILE: /run/secrets/google_auth_token
+      # The board's https address: Connect there returns there (ops/setup.sh sets BOARD_LAN_URL).
+      BOARD_URL: "${BOARD_LAN_URL:-}"
+      CALENDAR_ID: "${GOOGLE_CALENDAR_ID:-primary}"
+      # Set GOOGLE_FIXTURES_DIR=/fixtures in .env to serve fixtures/ instead of Google (testing).
+      GOOGLE_FIXTURES_DIR: "${GOOGLE_FIXTURES_DIR:-}"
+      # Shared sources (src_docs): its warehouse login, and the OpenRouter key for doc summaries (the root openrouter_key).
+      WAREHOUSE_PASSWORD_FILE: /run/secrets/warehouse_src_docs_password
+      OPENROUTER_KEY_FILE: /run/secrets/openrouter_key
+    volumes:
+      - ./fixtures:/fixtures:ro
+      # Writable (not a secret) so a reconnect from the board can store the new refresh token.
+      # A single-file mount: google-auth.sh writes the same file, and the service reloads on change.
+      - ${AIDENHQ_SECRETS_DIR}/google_oauth.json:/credentials/google_oauth.json
+    secrets:
+      - google_mcp_token
+      - google_auth_token
+      - warehouse_src_docs_password
+      - openrouter_key
+    dns: [ 1.1.1.1, 8.8.8.8 ] # see paperclip
+    networks:
+      - backplane
+      - egress
+      - sources # the warehouse (shared sources)
+secrets:
+  google_mcp_token:
+    file: ${AIDENHQ_SECRETS_DIR}/google_mcp_token
+  warehouse_src_docs_password:
+    file: ${AIDENHQ_SECRETS_DIR}/warehouse_src_docs_password

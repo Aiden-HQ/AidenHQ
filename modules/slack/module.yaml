@@ -1,0 +1,11 @@
+name: slack
+description: "Slack: read MCP (search, read, drafts). The live listener and notify_owner are in owner-channel."
+connections:
+  slack:
+    guide: "Slack directly: a full thread or channel history, exact messages and their timestamps, the newest messages Glean hasn't indexed yet. Search Glean first to find where to look."
+    url: http://slack-mcp:8082/mcp
+    bearer_token_env_var: AIDENHQ_SLACK_MCP_TOKEN
+    tools:
+      read: [ slack_search_public, slack_search_public_and_private, slack_search_channels, slack_search_users, slack_read_channel, slack_read_thread, slack_read_user_profile, slack_list_user_channels ]
+      write: [ slack_send_message_draft ]
+compose: compose.yaml

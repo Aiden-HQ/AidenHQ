@@ -1,0 +1,33 @@
+# clickhouse module: its compose services. Paths are relative to this module; scripts/compile.mjs makes them absolute.
+
+services:
+  clickhouse-mcp:
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    build: ./connections/clickhouse-mcp
+    image: aidenhq/clickhouse-mcp:local
+    user: "${PUID:-1000}:${PGID:-100}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      CLICKHOUSE_MCP_URL: "${CLICKHOUSE_MCP_URL:-}"
+      CLICKHOUSE_STATE_DIR: /state
+      MCP_TOKEN_FILE: /run/secrets/clickhouse_mcp_token
+      # The board's sign-in endpoints: state, and starting or finishing a sign-in.
+      CLICKHOUSE_AUTH_TOKEN_FILE: /run/secrets/clickhouse_auth_token
+    volumes:
+      # Read-write: the registered client and the token pair, refreshed here.
+      - ${AIDENHQ_SECRETS_DIR}/clickhouse:/state
+    secrets:
+      - clickhouse_mcp_token
+      - clickhouse_auth_token
+    dns: [ 1.1.1.1, 8.8.8.8 ] # see paperclip
+    ports:
+      # Loopback only, for the runner's Engineer jobs on the host: /mcp, bearer token.
+      - "127.0.0.1:3127:8088"
+    networks:
+      - backplane
+      - egress
+secrets:
+  clickhouse_mcp_token:
+    file: ${AIDENHQ_SECRETS_DIR}/clickhouse_mcp_token

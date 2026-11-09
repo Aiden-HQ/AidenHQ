@@ -1,0 +1,14 @@
+name: core
+description: Core
+settings:
+  timezone: { required: true }
+  company_name: { default: work }
+company: { name: "${settings.company_name}", description: Core company }
+codex_args: [--sandbox, read-only]
+labels: [ { name: todo, color: "#000" } ]
+connections:
+  tasks: { command: node, tools: { read: [t], write: [t2] } }
+agents:
+  boss: { adapter: codex_local, connections: { tasks: [t] } }
+routines:
+  daily: { title: Daily, agent: boss, description: "Today is {{date}}", schedules: [ { cron: "0 9 * * *", timezone: "${settings.timezone}", label: m } ] }

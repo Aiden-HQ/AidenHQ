@@ -1,0 +1,15 @@
+name: github
+description: "GitHub issues and pull requests: read, and comment when asked."
+connections:
+  github:
+    guide: "GitHub issues and pull requests directly: live state, reviews, checks. Organization Projects (v2) boards (roadmaps, status, iterations): `github_project_read`. Use Glean's `code_search` for code."
+    url: http://github-mcp:8086/mcp
+    bearer_token_env_var: AIDENHQ_GITHUB_MCP_TOKEN
+    tools:
+      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues ]
+      # commit_status_set: the design-review check on agents-org PRs, as the GitHub App; it also needs the design-review role.
+      write: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_rerun_failed, commit_status_set ]
+compose: compose.yaml
+# src_github's warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.
+generated_secrets:
+  - warehouse_src_github_password

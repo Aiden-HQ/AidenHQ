@@ -1,0 +1,4 @@
+name: typo
+description: typo
+routines:
+  t: { title: T, agent: boss, description: "at ${settings.tz}" }

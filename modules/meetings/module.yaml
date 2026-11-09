@@ -1,0 +1,46 @@
+name: meetings
+description: "Meeting memory: transcripts and the Obsidian vault (ops-mcp) published by the Meeting Librarian."
+requires:
+  - google
+agents:
+  meeting-librarian:
+    adapter: codex_local
+    model: ~deepseek/deepseek-flash-latest # OpenRouter ids; "" = Codex default
+    reasoning_effort: medium
+    timeout_sec: 1800
+    connections:
+      # Public web pages (web_view) and the apps' live pages (app_view): reads, like every agent.
+      apps: [ web_view, app_view ]
+      ops_mcp: write
+      google_workspace: read
+      paperclip_tasks: [ task_current, task_get, task_comment, task_set_status, task_finish ]
+    # ops-key: ops-mcp creates meeting tasks in Paperclip as this agent (setup gives ops-mcp its API key).
+    roles: [ ops-key ]
+routines:
+  meeting-scan:
+    title: Meeting scan
+    agent: meeting-librarian
+    description: |
+      Meeting artifacts may have changed. Follow your instructions: scan with ops-mcp,
+      match new sources against the calendar, publish matched meetings, check Drive
+      meeting documents if the Drive tool is available, then close this task with a
+      short count summary.
+    concurrency: coalesce_if_active
+    webhook: true # fired by the transcript watcher
+    schedules:
+      # Backstop for missed file events, review decisions and Drive documents.
+      - { cron: "*/15 8-20 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
+connections:
+  ops_mcp:
+    guide: "The owner's notes vault: meeting notes, voice notes and reference documents."
+    url: http://ops-mcp:8080/mcp
+    bearer_token_env_var: AIDENHQ_OPS_MCP_TOKEN
+    tools:
+      read: [ source_read, sync_cursor_get, obsidian_search, obsidian_read, obsidian_read_document_map, voice_note_read, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
+      write: [ transcripts_scan, source_register_drive_document, meeting_match, meeting_resolve, meeting_publish, meeting_note_correct, source_mark_failed, sync_cursor_set, voice_note_add ]
+labels:
+  - { name: meeting-action, color: "#2563eb" }
+compose: compose.yaml
+# src_meetings' warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.
+generated_secrets:
+  - warehouse_src_meetings_password

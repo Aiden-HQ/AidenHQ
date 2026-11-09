@@ -1,0 +1,3 @@
+name: grafana
+description: Grafana for the runner's Engineer jobs (loopback MCP).
+compose: compose.yaml

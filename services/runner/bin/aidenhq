@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+// The task's GitHub actions for the agent (docs/design/conversational-engineers.md, Tools). The
+// runner does the work and checks each write against the user's words; this only forwards the request.
+//
+//   aidenhq status                                   branches, PRs, reviews, checks, merge queue (live)
+//   aidenhq push [<org/repo> <branch>]...            push the task's branches (or the ones named)
+//   aidenhq pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>]
+//                                                       push, and open a draft PR for each
+//   aidenhq merge <PR link>... [--gap <minutes>]     merge PRs one at a time, after this turn
+//   aidenhq close <PR link>... --reason "<one line>"  close superseded or duplicate PRs in the agents org
+//   aidenhq apply                                  (Platform Engineer) nothing to run: the runner files the approval card
+//   aidenhq repo <org/name>                          clone another repository into the workspace
+//   aidenhq engine <claude|codex|openrouter> [model] run this request again on another engine/model
+//   aidenhq primer [<Primer link>]                   publish .aidenhq/primer.md on Primer after runs (a new
+//                                                       document, or new versions of the one linked)
+//   aidenhq pass <name>                              pass the user's latest message on to another agent on the task
+//   aidenhq reset                                    start the next turn with a fresh session
+//   aidenhq cleanup                                  remove the workspace when this run ends
+//   aidenhq task <PEN-N>                             read one of the user's tasks: description, parts, conversation
+//   aidenhq tasks [<words>] [--agent <name>]         find tasks, closed ones too
+import { readFileSync } from "node:fs";
+
+const usage = `usage: aidenhq status | push [<org/repo> <branch>]... | pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>] | merge <PR link>... [--gap <minutes>] | close <PR link>... --reason "<one line>" | apply | repo <org/name> | engine <claude|codex|openrouter> [model] | primer [<Primer link>] | pass <name> | reset | cleanup | task <PEN-N> | tasks [<words>] [--agent <name>]`;
+const [command, ...rest] = process.argv.slice(2);
+const fail = (msg, code = 1) => {
+  console.error(`aidenhq: ${msg}`);
+  process.exit(code);
+};
+// Help is answered here: asking how a command works must never reach the runner as a request (PEN-3322).
+if (!command || ["help", "-h", "--help"].includes(command) || rest.some((w) => w === "-h" || w === "--help")) {
+  console.log(usage);
+  process.exit(0);
+}
+if (!["status", "push", "pr", "merge", "close", "apply", "repo", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks"].includes(command)) fail(usage, 2);
+if (!process.env.AIDENHQ_REPO_URL) fail("only available inside a task run", 2);
+
+const flags = {};
+const words = [];
+for (let i = 0; i < rest.length; i++) {
+  if (rest[i] === "--title" || rest[i] === "--body-file" || rest[i] === "--gap" || rest[i] === "--reason" || rest[i] === "--agent") flags[rest[i].slice(2)] = rest[++i];
+  else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
+  else words.push(rest[i]);
+}
+let body;
+if (command === "repo") {
+  if (words.length !== 1) fail(usage, 2);
+  body = { repo: words[0] };
+} else if (command === "engine") {
+  if (!words.length || words.length > 2) fail("usage: aidenhq engine <claude|codex|openrouter> [model]", 2);
+  body = { engine: words[0], model: words[1] };
+} else if (command === "primer") {
+  if (words.length > 1) fail("usage: aidenhq primer [<Primer link>]", 2);
+  body = words.length ? { link: words[0] } : {};
+} else if (command === "pass") {
+  if (words.length !== 1) fail("usage: aidenhq pass <name>", 2);
+  body = { to: words[0] };
+} else if (command === "task") {
+  if (words.length !== 1) fail("usage: aidenhq task <PEN-N>", 2);
+  body = { task: words[0] };
+} else if (command === "tasks") {
+  body = { query: words.join(" "), agent: flags.agent };
+} else if (command === "merge") {
+  if (!words.length) fail("name the pull requests to merge, in order", 2);
+  body = { prs: words, gap: flags.gap === undefined ? undefined : Number(flags.gap) };
+} else if (command === "close") {
+  if (!words.length) fail("name the pull requests to close", 2);
+  if (!flags.reason?.trim()) fail('give a reason: aidenhq close <PR link>... --reason "<one line>"', 2);
+  body = { prs: words, reason: flags.reason };
+} else if (command === "push" || command === "pr") {
+  if (words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
+  const branches = [];
+  for (let i = 0; i < words.length; i += 2) branches.push({ repo: words[i], branch: words[i + 1] });
+  body = { branches };
+  if (command === "pr" && flags.title) body.title = flags.title;
+  if (command === "pr" && flags["body-file"]) body.body = readFileSync(flags["body-file"], "utf8");
+} else {
+  if (words.length) fail(usage, 2);
+  body = {};
+}
+
+// The runner restarts on deploys (its runs keep going): while it's down the request is retried for up to two
+// minutes. Only a refused connection, never a request it may have taken in.
+const send = () =>
+  fetch(`${process.env.AIDENHQ_REPO_URL}/${command}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${process.env.AIDENHQ_REPO_TOKEN ?? ""}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20 * 60_000),
+  });
+let res;
+for (const end = Date.now() + 120_000; !res; ) {
+  res = await send().catch(async (err) => {
+    if (err.cause?.code !== "ECONNREFUSED" || Date.now() > end) fail(`the runner didn't answer (${err.message})`);
+    await new Promise((r) => setTimeout(r, 2000));
+  });
+}
+const text = await res.text();
+if (!res.ok) fail(text);
+console.log(text);

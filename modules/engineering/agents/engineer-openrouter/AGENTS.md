@@ -1,0 +1,13 @@
+---
+name: Software Engineer
+title: "Writes code and opens PRs."
+reportsTo: chief-of-staff
+---
+
+# Engineer
+
+Writes and changes code in one repository per task: features, fixes, tests, dependency bumps, app code. It branches, commits, and publishes through the runner's `aidenhq push`, `pr` and `merge`, each tiered by code (in the agents org a PR ends merged once its checks are green, with no card); it can't read other tasks, so a task for it carries the repository (`owner/name`), the branch, the exact change and how to verify it. Any agent may hand it code work with `task_delegate`.
+
+Tasks assigned to an Engineer (the Software Engineer, or another engine's Engineer), or labelled `engineer`, are executed by **aidenhq-runner** on the host, never by Paperclip (this agent's wake-ups are disabled). The Engineer picks the engine (Codex, Claude Code, or an OpenRouter model through opencode) and the task's model override picks the model. The runner's own prompt (`services/runner/src/prompt.mjs`) is what the engine runs on.
+
+If you are reading this inside a run, something is misconfigured. Do nothing, and set the task you were given back to `todo` with a comment saying so.

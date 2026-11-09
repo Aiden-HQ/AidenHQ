@@ -1,0 +1,17 @@
+[Unit]
+Description=AidenHQ runner
+After=network-online.target
+
+[Service]
+# The secret vault must be mounted (ops/vault); Restart= retries until it is.
+ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
+ExecStart=/usr/bin/env node --disable-warning=ExperimentalWarning %h/aidenhq/services/runner/src/main.mjs
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+# Back within seconds of a deploy; slow enough that a missing vault doesn't hit the start limit.
+RestartSec=5
+# A stop or restart signals the runner only: the agents' runs keep going and the next runner adopts them.
+KillMode=process
+
+[Install]
+WantedBy=default.target

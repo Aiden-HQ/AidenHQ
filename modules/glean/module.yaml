@@ -1,0 +1,11 @@
+name: glean
+description: "The organization's Glean: search and documents (reads)."
+connections:
+  glean:
+    guide: "Start here for anything about the company. One search covers Slack, Google Drive, Confluence, Jira, GitHub, meeting transcripts and people, ranked by relevance and permissions. `search` finds documents and threads (then `read_document` for the full text), `chat` gives a summarized, cited answer across all of them, `employee_search` finds who owns or works on something, `meeting_lookup` finds meetings and their notes, `code_search` finds code. Go to the single-system tools only for what Glean can't give (exact Jira history, a full Slack thread, a live PR state)."
+    url: http://glean-mcp:8085/mcp
+    bearer_token_env_var: AIDENHQ_GLEAN_MCP_TOKEN
+    tools:
+      read: [ search, read_document, employee_search, meeting_lookup, code_search, chat ]
+      write: []
+compose: compose.yaml

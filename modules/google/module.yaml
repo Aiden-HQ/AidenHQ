@@ -1,0 +1,14 @@
+name: google
+description: "Google Workspace: Gmail, Calendar, Drive and Docs (reads)."
+connections:
+  google_workspace:
+    guide: "Google Drive, Docs, Calendar and Gmail directly: a document's full current text, events, threads. Glean finds Drive documents faster; read them here when you need the exact current text."
+    url: http://google-workspace-mcp:8081/mcp
+    bearer_token_env_var: AIDENHQ_GOOGLE_MCP_TOKEN
+    tools:
+      read: [ calendar_list_events, calendar_search_events, calendar_get_event, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read ]
+      write: []
+compose: compose.yaml
+# src_docs' warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.
+generated_secrets:
+  - warehouse_src_docs_password

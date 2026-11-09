@@ -1,0 +1,9 @@
+# Service templates for module compose fragments: `extends: { file: ../../compose.base.yaml, service: hardened }`.
+# Not a compose project of its own (nothing here runs).
+services:
+  hardened:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
