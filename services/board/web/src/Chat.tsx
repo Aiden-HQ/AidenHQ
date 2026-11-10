@@ -1,0 +1,289 @@
+import { useCallback, useEffect, useState } from "react";
+import { SignInRequired, api } from "./api";
+import { Markdown } from "./markdown";
+import type { Approval, ChatState, NeedsYou } from "./types";
+import { ago } from "./util";
+
+const STATE_CLASS: Record<ChatState, string> = {
+  working: "st-working",
+  queued: "st-queued",
+  "waiting for you": "st-you",
+  "waiting for approval": "st-you",
+  "in review": "st-queued",
+  done: "st-done",
+  failed: "st-failed",
+  idle: "st-done",
+};
+
+export function StateChip({ state, reason }: { state: ChatState; reason?: string }) {
+  return (
+    <span className={`state-chip ${STATE_CLASS[state]}`} title={reason ?? state}>
+      {state}
+      {reason ? `: ${reason}` : ""}
+    </span>
+  );
+}
+
+const OUTCOME: Record<Approval["state"], string> = {
+  pending: "",
+  approved: "Approved: applying…",
+  used: "Applying…",
+  rejected: "Rejected: nothing ran.",
+  expired: "Expired: nothing ran.",
+  unknown: "Unknown: the apply stopped without reporting back. Check the task; it is never retried.",
+  auto: "Ran at once (Tier 0).",
+};
+const TIER_WORDS = ["Tier 0: ran at once", "Tier 1: the AI reviewer decides", "Tier 2: yours to decide"];
+/** Waiting for the owner: a pending Tier 2 card. A pending Tier 1 card is with the AI reviewer. */
+const forOwner = (a: Approval) => a.state === "pending" && a.tier === 2;
+
+/**
+ * One approval card: one sentence, what it reads and changes, the cost, Details, Approve / Reject; the outcome stays here.
+ * An expired card (timed out or replaced by a newer request) folds to one muted line; a tap shows it whole.
+ */
+export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold }: { a: Approval; open: (identifier: string) => void; decided: () => Promise<void>; inline?: boolean; prefix?: string; unfold?: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [unfolded, setUnfolded] = useState(Boolean(unfold));
+  const act = async (d: "approve" | "reject") => {
+    setBusy(true);
+    setError("");
+    await api.decide(a.id, d).then(decided, (e: Error) => setError(e.message));
+    setBusy(false);
+  };
+  if (a.state === "expired" && !unfolded) {
+    const replaced = /replaced/.test(a.outcomeText ?? "");
+    return (
+      <li className={`approval-folded${inline ? " inline" : ""}`}>
+        <button className="folded-line" onClick={() => setUnfolded(true)} title={a.sentence}>
+          {replaced ? "Replaced" : "Expired"} request {a.id}: {a.sentence}
+        </button>
+      </li>
+    );
+  }
+  const buttons = (
+    <div className="approval-actions">
+      <button className="btn" disabled={busy} onClick={() => void act("reject")}>
+        Reject
+      </button>
+      <button className="btn primary approve" disabled={busy} onClick={() => void act("approve")}>
+        Approve
+      </button>
+    </div>
+  );
+  const top = !inline && forOwner(a);
+  const label = a.outcome === "applied" ? "Applied." : a.outcome === "failed" ? "Failed:" : OUTCOME[a.state];
+  const text = a.outcome === "applied" ? (a.outcomeText ?? "") : a.outcome === "failed" ? (a.outcomeText ?? "no reason given") : "";
+  return (
+    <li className={`approval-card ap-${a.outcome ?? a.state}${inline ? " inline" : ""}`}>
+      <div className="approval-head">
+        <button className="chat-open" onClick={() => open(a.identifier)}>
+          <span className="chat-agent">{a.requestedBy}</span>
+          <span className="chat-title">{!inline ? "Open the chat" : a.state === "auto" ? "ran it at once (Tier 0)" : a.tier === 1 && a.state === "pending" ? "asks the AI reviewer" : "asks for your approval"}</span>
+        </button>
+        <span className="muted small">{a.id}</span>
+        {top && buttons}
+      </div>
+      <p className="approval-sentence">{a.sentence}</p>
+      <dl className="approval-facts">
+        <dt>Reads</dt>
+        <dd>{a.reads}</dd>
+        <dt>Changes</dt>
+        <dd className="pre">{a.changes}</dd>
+        <dt>Cost</dt>
+        <dd>{a.cost}</dd>
+        <dt>Exact request</dt>
+        <dd className="mono">{a.digest.slice(0, 12)}</dd>
+        <dt>Tier</dt>
+        <dd>
+          {TIER_WORDS[a.tier] ?? `Tier ${a.tier}`}
+          {a.reason && <span className="muted"> ({a.reason})</span>}
+        </dd>
+        {a.decidedBy && (
+          <>
+            <dt>Decided by</dt>
+            <dd className={a.decidedByName ? "" : "mono"}>{a.decidedByName ?? a.decidedBy}</dd>
+          </>
+        )}
+        {a.review && (
+          <>
+            <dt>Reviewer's note</dt>
+            <dd className="pre">{a.review}</dd>
+          </>
+        )}
+      </dl>
+      {a.replaced && a.state === "pending" && <p className="muted small">This replaces an earlier request in this chat.</p>}
+      {a.details && (
+        <details className="approval-more">
+          <summary>Details</summary>
+          <pre className="approval-details">{a.details}</pre>
+        </details>
+      )}
+      {a.state === "pending" ? (
+        !top && <div className="row-end">{buttons}</div>
+      ) : (
+        <div className={`approval-outcome ${a.outcome === "failed" || a.state === "unknown" ? "bad" : ""}`}>
+          {label && <b>{label}</b>}
+          {a.decidedByName && <span className="by">by {a.decidedByName}</span>}
+          {text &&<Markdown text={text} prefix={prefix} />}
+        </div>
+      )}
+      {error && <div className="alert">{error}</div>}
+    </li>
+  );
+}
+
+type Outcome = { text: string; tone: "ok" | "bad" | "meh" | "needs" };
+/** One word for where an approval ended. */
+export function outcomeOf(a: Approval): Outcome {
+  if (a.state === "pending") return a.tier === 1 ? { text: "With the reviewer", tone: "meh" } : { text: "Pending", tone: "needs" };
+  if (a.state === "auto") return { text: a.outcome === "failed" ? "Ran, failed" : "Ran (Tier 0)", tone: a.outcome === "failed" ? "bad" : "ok" };
+  if (a.outcome === "applied") return { text: "Applied", tone: "ok" };
+  if (a.outcome === "failed") return { text: "Failed", tone: "bad" };
+  if (a.state === "unknown") return { text: "Unknown", tone: "bad" };
+  if (a.state === "rejected") return { text: "Rejected", tone: "meh" };
+  if (a.state === "expired") return { text: /replaced/.test(a.outcomeText ?? "") || a.replaced ? "Replaced" : "Expired", tone: "meh" };
+  return { text: "Applying", tone: "meh" };
+}
+
+type Filter = "pending" | "done" | "failed" | "all";
+const FILTERS: [Filter, string][] = [["pending", "Pending"], ["done", "Done"], ["failed", "Failed"], ["all", "All"]];
+const inFilter = (a: Approval, f: Filter) => f === "all" || (f === "pending" ? forOwner(a) : f === "failed" ? outcomeOf(a).tone === "bad" : !forOwner(a) && outcomeOf(a).tone !== "bad");
+
+/** Retries of one request (same chat, action and target) as one group, newest first. */
+function groups(list: Approval[]): Approval[][] {
+  const by = new Map<string, Approval[]>();
+  for (const a of [...list].sort((x, y) => y.createdAt.localeCompare(x.createdAt))) {
+    const k = `${a.identifier}|${a.action}|${a.target}`;
+    by.set(k, [...(by.get(k) ?? []), a]);
+  }
+  return [...by.values()];
+}
+
+/** Approvals: what waits for you first, big; then the history as one line per request, open to the full card. */
+export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) => void; onSignIn: () => void }) {
+  const [data, setData] = useState<NeedsYou | null>(null);
+  const [cards, setCards] = useState<Approval[] | null>(null);
+  const [error, setError] = useState("");
+  const [filter, setFilter] = useState<Filter | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const [n, a] = await Promise.all([api.needsYou(), api.approvals()]);
+      setData(n);
+      setCards(a.approvals);
+      setError("");
+    } catch (e) {
+      if (e instanceof SignInRequired) onSignIn();
+      else setError((e as Error).message);
+    }
+  }, [onSignIn]);
+  useEffect(() => {
+    void load();
+    const t = setInterval(() => void load(), 5_000);
+    return () => clearInterval(t);
+  }, [load]);
+  const all = cards ?? [];
+  // Only Tier 2 waits for you; Tier 1 (with the reviewer) and Tier 0 runs (audit rows) are history lines.
+  const pending = all.filter(forOwner);
+  const f: Filter = filter ?? (pending.length ? "pending" : "all");
+  const others = (data?.items ?? []).filter((i) => i.state !== "waiting for approval");
+  const past = groups(all.filter((a) => !forOwner(a)));
+  const history = past.filter((g) => inFilter(g[0]!, f));
+  const count = (k: Filter) => (k === "pending" ? pending.length : k === "all" ? pending.length + past.length : past.filter((g) => inFilter(g[0]!, k)).length);
+  return (
+    <main className="page wide">
+      <header className="page-head">
+        <div>
+          <h1>Approvals</h1>
+          <p className="page-sub">{pending.length ? `${pending.length} waiting for you` : "Nothing waiting for you"}</p>
+        </div>
+        <span className="spacer" />
+        <div className="seg-tabs" role="tablist" aria-label="Show">
+          {FILTERS.map(([k, name]) => (
+            <button key={k} role="tab" aria-selected={f === k} className={f === k ? "on" : ""} onClick={() => setFilter(k)}>
+              {name}
+              <span className="seg-count">{count(k)}</span>
+            </button>
+          ))}
+        </div>
+      </header>
+      {error && <div className="alert">{error}</div>}
+      {!cards || !data ? (
+        <span className="spinner" />
+      ) : (
+        <>
+          {(f === "pending" || f === "all") && pending.length > 0 && (
+            <ul className="approval-list pending-grid">
+              {pending.map((a) => (
+                <ApprovalCard key={a.id} a={a} open={open} decided={load} />
+              ))}
+            </ul>
+          )}
+          {(f === "pending" || f === "all") && others.length > 0 && (
+            <section>
+              <header className="section-head">
+                <h2>Also waiting on you</h2>
+                <span className="count">{others.length}</span>
+              </header>
+              <ul className="history">
+                {others.map((i) => (
+                  <li key={i.identifier}>
+                    <button className="history-row" onClick={() => open(i.identifier)}>
+                      <StateChip state={i.state} reason={i.reason} />
+                      <span className="history-who">{i.agent}</span>
+                      <span className="history-what">{i.title}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {f === "pending" && !pending.length && !others.length && <p className="empty-state">You're all caught up. New requests from your agents show here and in Telegram.</p>}
+          {f !== "pending" && (
+            <section>
+              <header className="section-head">
+                <h2>History</h2>
+                <span className="count">{history.length}</span>
+              </header>
+              {history.length ? (
+                <ul className="history">
+                  {history.map((g) => (
+                    <HistoryRow key={g[0]!.id} group={g} open={open} decided={load} />
+                  ))}
+                </ul>
+              ) : (
+                <p className="empty-state">Nothing here yet.</p>
+              )}
+            </section>
+          )}
+        </>
+      )}
+    </main>
+  );
+}
+
+/** One request in the history: its latest attempt in a line (earlier tries counted), the full cards a tap away. */
+function HistoryRow({ group, open, decided }: { group: Approval[]; open: (identifier: string) => void; decided: () => Promise<void> }) {
+  const [shown, setShown] = useState(false);
+  const a = group[0]!;
+  const o = outcomeOf(a);
+  return (
+    <li className={shown ? "open" : ""}>
+      <button className="history-row" aria-expanded={shown} onClick={() => setShown(!shown)}>
+        <span className={`run-status run-${o.tone}`}>{o.text}</span>
+        <span className="history-who">{a.requestedBy}</span>
+        <span className="history-what">{a.sentence}</span>
+        <span className="history-target">{a.target}</span>
+        {group.length > 1 && <span className="recent-count" title="Earlier attempts at the same request">{group.length} tries</span>}
+        <span className="time">{ago(a.createdAt)}</span>
+      </button>
+      {shown && (
+        <ul className="approval-list history-cards">
+          {group.map((x) => (
+            <ApprovalCard key={x.id} a={x} open={open} decided={decided} unfold />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}

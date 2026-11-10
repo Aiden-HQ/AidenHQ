@@ -1,0 +1,31 @@
+name: owner-channel
+description: "How the owner talks to Aiden and agents reach the owner: Telegram bot, Slack DM and Socket Mode (both optional), voice notes, notify_owner. Always installed (core requires it)."
+connections:
+  slack_live:
+    url: http://slack-live-mcp:8089/mcp
+    bearer_token_env_var: AIDENHQ_SLACK_LIVE_MCP_TOKEN
+    tools:
+      read: [ slack_pending_events ]
+      # slack_post: to channels in the slack_post_channels setting only, as the labelled bot; granted per agent.
+      write: [ notify_owner, slack_post ]
+settings:
+  # Slack channel ids agents may post to with slack_post (an agent still needs the tool granted).
+  slack_post_channels:
+    default: []
+compose: compose.yaml
+# Channels the owner may not use: created empty when missing, so compose starts; an empty token means "not configured".
+optional_secrets:
+  - telegram_notify_bot_token
+  - slack_live_app_token
+  - slack_live_bot_token
+  - slack_live_triage_webhook_url
+  - slack_live_triage_webhook_secret
+  # The owner's user token (xoxp-) of the Slack live app, for the src_slack gap sync: channels:history, groups:history,
+  # im:history, mpim:history, channels:read, groups:read, im:read, mpim:read, users:read (users:read.email for emails).
+  - slack_live_user_token
+# Generated once by compile (random): the key the owner channel proves an approval decision with (Telegram taps and exact
+# replies). Mounted only into slack-live-mcp and the board; agents never hold it.
+generated_secrets:
+  - owner_decide_key
+  # src_slack's warehouse login (ops/warehouse-sources.sh gives the role this password).
+  - warehouse_src_slack_password

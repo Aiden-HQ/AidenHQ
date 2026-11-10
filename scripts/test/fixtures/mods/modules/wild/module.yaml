@@ -1,0 +1,5 @@
+name: wild
+description: an untrusted module whose agent asks for a write tool
+isolation: untrusted
+agents:
+  w: { adapter: codex_local, isolation: trusted, connections: { tasks: [t, t2] } }

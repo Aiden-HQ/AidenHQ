@@ -1,0 +1,25 @@
+name: jira
+description: "Jira (and Confluence reads) through Atlassian's remote MCP server, signed in as the owner on the board."
+settings:
+  # The Atlassian site every call is pinned to (its cloudId is looked up from the signed-in account's sites).
+  jira_url:
+    required: true  # e.g. https://your-company.atlassian.net
+  # Atlassian's remote MCP server; v2 with ?tools=all lists every tool flat, so per-tool grants hold (no discover/execute*).
+  atlassian_mcp_url:
+    default: https://mcp.atlassian.com/v2/mcp?tools=all
+connections:
+  jira:
+    guide: "Jira and Confluence directly: exact issue fields, change history (when a status or date changed), comments, versions and JQL queries. Use it for precise dates and history; use Glean to find the issue or page first."
+    url: http://jira-mcp:8091/mcp
+    bearer_token_env_var: AIDENHQ_JIRA_MCP_TOKEN
+    tools:
+      read: [ searchJiraIssuesUsingJql, getJiraIssue, listJiraIssueChangelogs, listJiraIssueComments, listJiraProjects, getJiraProjectVersions, getJiraProjectVersionRelatedWork, listJiraBoards, getJiraBoardConfig, listJiraBoardSprints, lookupJiraAccountId, searchConfluence, getConfluenceContent ]
+      # Defined for later; nobody is granted them by default.
+      write: [ addOrEditJiraIssueComment, createJiraIssue ]
+compose: compose.yaml
+# Paperclip's bearer for jira-mcp, and the board's for its sign-in endpoints: compile creates them (random) when missing.
+generated_secrets:
+  - jira_mcp_token
+  - jira_auth_token
+  # src_jira's warehouse login (ops/warehouse-sources.sh gives the role this password).
+  - warehouse_src_jira_password

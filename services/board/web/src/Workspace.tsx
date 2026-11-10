@@ -1,0 +1,1111 @@
+// The chat workspace: agents on the left with their chats (Aiden pinned on top
+// as the front door), the conversation in the middle, and a panel with Progress, Files and Context on the right. On a
+// phone: the list, then the conversation full screen. Lives at #/c/ (a new chat) and #/c/<chat>.
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { SignInRequired, api } from "./api";
+import { ApprovalCard, StateChip } from "./Chat";
+import { CloseIcon, Plan, PlusIcon } from "./components";
+import { Markdown } from "./markdown";
+import { anyLive, groupChats, groupTasks, showsChip, taskSummary, type AgentGroup } from "./sidebar";
+import type { Approval, Assignee, ChatAgent, ChatDetail, ChatMessage, ChatRow, ChatState, FileView, Question, Working } from "./types";
+import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
+import { openQuestions } from "./questions";
+
+interface Props {
+  selected: string | null;
+  /** #/c/ itself: a new chat (on a phone, full screen instead of the list). */
+  composing: boolean;
+  mobile: boolean;
+  crew: Assignee[];
+  prefix: string;
+  go: (hash: string) => void;
+  onSignIn: () => void;
+  toast: (text: string) => void;
+}
+
+const QUIET_MS = 2 * 60_000;
+const PANEL_KEY = "aidenhq.panel";
+const initial = (name: string) => name.trim().charAt(0).toUpperCase() || "?";
+/** A steady hue per agent name, so each agent keeps its colour everywhere it shows. */
+const hue = (name: string) => [...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
+
+/** An agent's portrait (/crew/<avatar>.svg), by its key or name, when it has one. */
+export const portraitOf = (crew: Assignee[], keyOrName: string) => {
+  const a = crew.find((c) => c.key === keyOrName) ?? crew.find((c) => c.name === keyOrName);
+  return a?.persona?.avatar ?? a?.avatar;
+};
+
+export function Monogram({ name, size: px = 28, front, avatar }: { name: string; size?: number; front?: boolean; avatar?: string }) {
+  if (avatar) return <img className="monogram portrait" src={`/crew/${avatar}.svg`} alt="" style={{ width: px, height: px }} draggable={false} />;
+  return (
+    <span className={`monogram${front ? " front" : ""}`} style={{ width: px, height: px, fontSize: Math.round(px * 0.45), ["--hue" as string]: hue(name) }} aria-hidden>
+      {initial(name)}
+    </span>
+  );
+}
+
+function usePoll(load: () => Promise<unknown>, fast: boolean, idleMs: number) {
+  useEffect(() => {
+    void load();
+    const t = setInterval(() => void load(), fast ? 2_000 : idleMs);
+    return () => clearInterval(t);
+  }, [load, fast, idleMs]);
+}
+
+export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, onSignIn, toast }: Props) {
+  const [rows, setRows] = useState<ChatRow[] | null>(null);
+  const [agents, setAgents] = useState<ChatAgent[]>([]);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    try {
+      const r = await api.chats();
+      setRows(r.chats);
+      setAgents(r.agents);
+      setError("");
+    } catch (e) {
+      if (e instanceof SignInRequired) onSignIn();
+      else setError((e as Error).message);
+    }
+  }, [onSignIn]);
+  usePoll(load, anyLive(rows ?? []), 6_000);
+  const [panel, setPanel] = useState(() => {
+    try {
+      return localStorage.getItem(PANEL_KEY) ? localStorage.getItem(PANEL_KEY) === "1" : window.innerWidth >= 1280;
+    } catch {
+      return false;
+    }
+  });
+  const togglePanel = () =>
+    setPanel((p) => {
+      try {
+        localStorage.setItem(PANEL_KEY, p ? "0" : "1");
+      } catch {}
+      return !p;
+    });
+
+  const list = <Sidebar rows={rows} agents={agents} crew={crew} selected={selected} go={go} error={error} retry={load} />;
+  const main = selected ? (
+    <Conversation key={selected} refId={selected} mobile={mobile} crew={crew} prefix={prefix} go={go} onSignIn={onSignIn} toast={toast} panel={panel} togglePanel={togglePanel} reloadList={load} />
+  ) : (
+    <NewChat agents={agents} crew={crew} mobile={mobile} go={go} toast={toast} reloadList={load} />
+  );
+  if (mobile) return <div className="ws ws-phone">{selected || composing || (rows && !rows.length) ? main : list}</div>;
+  return (
+    <div className="ws">
+      {list}
+      {main}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ sidebar
+
+function Sidebar({ rows, agents, crew, selected, go, error, retry }: { rows: ChatRow[] | null; agents: ChatAgent[]; crew: Assignee[]; selected: string | null; go: (h: string) => void; error: string; retry: () => void }) {
+  const groups = useMemo(() => groupChats(rows ?? [], agents), [rows, agents]);
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  // A search looks through every chat of the agent, open or finished, and lists the matches flat.
+  const filter = (g: AgentGroup): AgentGroup => {
+    if (!q) return g;
+    const hit = (c: ChatRow) => `${c.title} ${c.preview?.text ?? ""} ${g.agent.name}`.toLowerCase().includes(q);
+    return { ...g, chats: [...g.chats, ...g.more].filter(hit), more: [], earlier: g.earlier.filter(hit) };
+  };
+  return (
+    <aside className="ws-side" aria-label="Chats">
+      <div className="side-top">
+        <button className="btn primary new-chat-btn" onClick={() => go("#/c/")}>
+          <PlusIcon /> New chat
+        </button>
+        <input className="side-search" type="search" placeholder="Search chats" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search chats" />
+      </div>
+      {error && (
+        <div className="alert">
+          Couldn't load your chats: {error}{" "}
+          <button className="link-btn" onClick={retry}>
+            Retry
+          </button>
+        </div>
+      )}
+      {!rows ? (
+        <span className="spinner" />
+      ) : (
+        <nav className="side-scroll">
+          {groups.front && <Group g={filter(groups.front)} crew={crew} selected={selected} go={go} front searching={!!q} />}
+          {groups.others.length > 0 && <h3 className="side-h">Agents</h3>}
+          {groups.others.map((g) => (
+            <Group key={g.agent.key} g={filter(g)} crew={crew} selected={selected} go={go} searching={!!q} />
+          ))}
+        </nav>
+      )}
+    </aside>
+  );
+}
+
+function Group({ g, crew, selected, go, front, searching }: { g: AgentGroup; crew: Assignee[]; selected: string | null; go: (h: string) => void; front?: boolean; searching?: boolean }) {
+  const inMore = g.more.some((c) => c.identifier === selected);
+  const inEarlier = g.earlier.some((c) => c.identifier === selected);
+  const holds = g.chats.some((c) => c.identifier === selected) || inMore || inEarlier || [...g.handedOut.values()].flat().some((c) => c.identifier === selected);
+  const [open, setOpen] = useState(front || holds || g.chats.length > 0);
+  const [showMore, setShowMore] = useState(inMore);
+  const [showEarlier, setShowEarlier] = useState(inEarlier);
+  useEffect(() => {
+    if (holds) setOpen(true);
+    if (inMore) setShowMore(true);
+    if (inEarlier) setShowEarlier(true);
+  }, [holds, inMore, inEarlier]);
+  const row = (c: ChatRow) => (
+    <li key={c.identifier}>
+      <ChatLink c={c} selected={selected} go={go} tasks={g.handedOut.get(c.identifier)} />
+    </li>
+  );
+  return (
+    <section className={`side-group${front ? " front" : ""}`}>
+      <div className="side-agent">
+        <button className="side-agent-btn" onClick={() => (front && !open ? setOpen(true) : setOpen(!open))} aria-expanded={open}>
+          <Monogram name={g.agent.name} size={front ? 32 : 26} front={front} avatar={portraitOf(crew, g.agent.key)} />
+          <span className="side-agent-name">{g.agent.name}</span>
+          {g.busy && <span className="live-dot" title="Working" />}
+          {g.needsYou && <span className="needs-dot" title="Needs you" />}
+          {!open && g.unread && <span className="unread-dot" title="New reply" />}
+          <span className={`chev${open ? " open" : ""}`} aria-hidden>
+            <Chevron />
+          </span>
+        </button>
+        <button className="icon-btn subtle" title={`New chat with ${g.agent.name}`} aria-label={`New chat with ${g.agent.name}`} onClick={() => go(`#/c/?to=${encodeURIComponent(g.agent.key)}`)}>
+          <PlusIcon />
+        </button>
+      </div>
+      {open && (
+        <ul className="side-chats">
+          {!g.chats.length && !g.earlier.length && <li className="side-empty muted small">{searching ? "No matches." : "No chats yet."}</li>}
+          {g.chats.map(row)}
+          {showMore && g.more.map(row)}
+          {g.more.length > 0 && !showMore && (
+            <li>
+              <button className="side-toggle" onClick={() => setShowMore(true)}>
+                Show {g.more.length} more
+              </button>
+            </li>
+          )}
+          {g.earlier.length > 0 && (
+            <li>
+              <button className="side-toggle" aria-expanded={showEarlier || !!searching} onClick={() => setShowEarlier(!showEarlier)}>
+                Earlier ({g.earlier.length})
+                <span className={`chev${showEarlier || searching ? " open" : ""}`} aria-hidden>
+                  <Chevron />
+                </span>
+              </button>
+            </li>
+          )}
+          {(showEarlier || searching) && g.earlier.map(row)}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function ChatLink({ c, selected, go, tasks }: { c: ChatRow; selected: string | null; go: (h: string) => void; tasks?: ChatRow[] }) {
+  const t = tasks?.length ? taskSummary(tasks) : undefined;
+  return (
+    <button className={`side-chat${c.identifier === selected ? " on" : ""}${c.open ? "" : " closed"}`} onClick={() => go(`#/c/${c.identifier}`)}>
+      <span className="side-chat-top">
+        <span className={`side-chat-title${c.unread ? " unread" : ""}`}>{c.title}</span>
+        <span className="side-time">{ago(c.preview?.at ?? c.updatedAt)}</span>
+      </span>
+      <span className="side-chat-bottom">
+        <span className="side-preview">{c.preview ? `${c.preview.from === "you" ? "You: " : ""}${c.preview.text}` : ""}</span>
+        {showsChip(c.state) && <StateChip state={c.state} reason={c.reason} />}
+        {c.unread && <span className="unread-dot" title="New reply" />}
+      </span>
+      {t && (
+        <span className="side-tasks">
+          {t.busy && <span className="live-dot" title="Working" />}
+          {t.total} task{t.total > 1 ? "s" : ""}
+          {t.needs > 0 && (
+            <>
+              {" · "}
+              <b className="side-tasks-needs">{t.needs} needs you</b>
+            </>
+          )}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ------------------------------------------------------------------ a new chat (the home screen)
+
+const STARTERS = ["What's waiting on me today?", "Who is working on what right now?", "Brief me on yesterday", "I need a new agent for…"];
+
+function NewChat({ agents, crew, mobile, go, toast, reloadList }: { agents: ChatAgent[]; crew: Assignee[]; mobile: boolean; go: (h: string) => void; toast: (t: string) => void; reloadList: () => Promise<void> }) {
+  const to = new URLSearchParams(location.hash.split("?")[1] ?? "").get("to") ?? "";
+  const text = new URLSearchParams(location.hash.split("?")[1] ?? "").get("text") ?? ""; // a pre-filled message (the Modules tab)
+  const [agent, setAgent] = useState(to);
+  useEffect(() => setAgent(to), [to]);
+  const front = agents.find((a) => a.front);
+  const name = agents.find((a) => a.key === agent)?.name ?? front?.name ?? "Aiden";
+  const send = async (text: string, files: File[]) => {
+    const { identifier } = await api.newChat(text || `Files: ${files.map((f) => f.name).join(", ")}`, agent || undefined);
+    for (const f of files) await api.attach(identifier, f).catch((e: Error) => toast(`Couldn't attach ${f.name}: ${e.message}`));
+    await reloadList();
+    go(`#/c/${identifier}`);
+  };
+  return (
+    <section className="ws-main ws-home">
+      {mobile && (
+        <header className="conv-head">
+          <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
+            ‹
+          </button>
+          <span className="conv-name">New chat</span>
+        </header>
+      )}
+      <div className="home-center">
+        <Monogram name={name} size={56} front={!agent || agent === front?.key} avatar={portraitOf(crew, agent || front?.key || "")} />
+        <h1 className="home-title">What should {name} take off your plate?</h1>
+        <div className="home-to">
+          <label className="muted small" htmlFor="home-agent">
+            To
+          </label>
+          <select id="home-agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
+            <option value="">{front?.name ?? "Aiden"}</option>
+            {agents
+              .filter((a) => !a.front)
+              .map((a) => (
+                <option key={a.key} value={a.key}>
+                  {a.name}
+                </option>
+              ))}
+          </select>
+        </div>
+        <Composer key={`${agent}|${text}`} initialText={text} placeholder={`Message ${name}`} draftKey={`draft:new:${agent}`} mobile={mobile} autoFocus={!mobile} onSend={send} starters={!agent || agent === front?.key ? STARTERS : []} />
+      </div>
+    </section>
+  );
+}
+
+// ------------------------------------------------------------------ the conversation
+
+interface Pending {
+  id: number;
+  text: string;
+  files: string[];
+  state: "sending" | "sent" | "failed";
+  queued: boolean;
+  error?: string;
+  retry: () => void;
+}
+
+type Ask = ChatDetail["asks"][number];
+type Item = { at: string; key: string } & ({ type: "message"; m: ChatMessage } | { type: "approval"; a: Approval } | { type: "ask"; q: Ask });
+
+function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel, togglePanel, reloadList }: { refId: string; mobile: boolean; crew: Assignee[]; prefix: string; go: (h: string) => void; onSignIn: () => void; toast: (t: string) => void; panel: boolean; togglePanel: () => void; reloadList: () => Promise<void> }) {
+  const [chat, setChat] = useState<ChatDetail | null>(null);
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState<Pending[]>([]);
+  const [sheet, setSheet] = useState(false);
+  const [tasksSheet, setTasksSheet] = useState(false);
+  const [, tick] = useState(0);
+  const load = useCallback(async () => {
+    try {
+      const c = await api.chat(refId);
+      setChat(c);
+      setError("");
+      // A sent message drops its placeholder once it shows in the conversation.
+      const said = new Set(c.messages.filter((m) => m.kind === "owner").map((m) => (m as { text: string }).text.trim()));
+      setPending((p) => p.filter((x) => x.state !== "sent" || !said.has(x.text.trim())));
+    } catch (e) {
+      if (e instanceof SignInRequired) onSignIn();
+      else setError((e as Error).message);
+    }
+  }, [refId, onSignIn]);
+  const live = anyLive(chat ? [chat, ...chat.handedOut] : []);
+  usePoll(load, live, 8_000);
+  useEffect(() => {
+    // The live row's clock ("1m 20s", "nothing new for 3 min").
+    if (!live) return;
+    const t = setInterval(() => tick((n) => n + 1), 1_000);
+    return () => clearInterval(t);
+  }, [live]);
+
+  const scroller = useRef<HTMLDivElement>(null);
+  const [atEnd, setAtEnd] = useState(true);
+  const count = (chat?.messages.length ?? 0) + pending.length + (chat?.approvals.length ?? 0);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el && atEnd) el.scrollTop = el.scrollHeight;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [count, chat?.working?.said, chat?.state]);
+  const toEnd = () => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
+
+  async function send(text: string, files: File[], answer = false) {
+    const id = Date.now();
+    const queued = live;
+    const attempt = async () => {
+      setPending((p) => p.map((x) => (x.id === id ? { ...x, state: "sending", error: undefined } : x)));
+      try {
+        const names: string[] = [];
+        for (const f of files) {
+          await api.attach(refId, f);
+          names.push(f.name);
+        }
+        if (text.trim()) {
+          const body = names.length ? `${text.trimEnd()}\n\nAttached: ${names.map((n) => `\`${n.replace(/`/g, "")}\``).join(", ")}` : text;
+          const view = await api.comment(refId, body, answer);
+          if (view.approval) toast(view.approval.state === "rejected" ? `Rejected: ${view.approval.sentence}` : `Approved: ${view.approval.sentence}`);
+          if (view.movedTo) toast("Sent to the agent you mentioned");
+          setPending((p) => (view.approval ? p.filter((x) => x.id !== id) : p.map((x) => (x.id === id ? { ...x, text: body, state: "sent" } : x))));
+        } else setPending((p) => p.filter((x) => x.id !== id));
+        await Promise.all([load(), reloadList()]);
+      } catch (e) {
+        setPending((p) => p.map((x) => (x.id === id ? { ...x, state: "failed", error: (e as Error).message } : x)));
+      }
+    };
+    setPending((p) => [...p, { id, text, files: files.map((f) => f.name), state: "sending", queued, retry: () => void attempt() }]);
+    setAtEnd(true);
+    await attempt();
+  }
+
+  async function stop() {
+    const r = await api.stopChat(refId).catch((e: Error) => (toast(`Couldn't stop: ${e.message}`), undefined));
+    if (r) toast(r.stopped ? "Stopped." : "Nothing was running.");
+    await load();
+  }
+
+  async function notRight(text: string) {
+    await api.notRight(refId, text);
+    toast("Sent back as a correction");
+    await load();
+  }
+
+  const items: Item[] = useMemo(() => {
+    if (!chat) return [];
+    const list: Item[] = [
+      ...chat.messages.map((m) => ({ type: "message" as const, m, at: m.at, key: m.id })),
+      ...chat.approvals.map((a) => ({ type: "approval" as const, a, at: a.createdAt, key: a.id })),
+      ...(chat.asks ?? []).map((q) => ({ type: "ask" as const, q, at: q.at, key: q.id })),
+    ];
+    return list.sort((x, y) => x.at.localeCompare(y.at));
+  }, [chat]);
+  const lastReply = chat ? [...chat.messages].reverse().find((m) => m.kind === "reply" || m.kind === "owner") : undefined;
+  // Questions stay answerable after the agent posts later updates, until the owner replies.
+  const asking = chat ? openQuestions(chat.messages) : undefined;
+
+  if (!chat)
+    return (
+      <section className="ws-main">
+        {error ? (
+          <div className="alert">
+            Couldn't open this chat: {error}{" "}
+            <button className="link-btn" onClick={() => void load()}>
+              Retry
+            </button>
+          </div>
+        ) : (
+          <span className="spinner center" />
+        )}
+      </section>
+    );
+
+  const side = <SidePanel chat={chat} go={go} />;
+  return (
+    <>
+      <section
+        className="ws-main conv"
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+        }}
+      >
+        <header className="conv-head">
+          {mobile && (
+            <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
+              ‹
+            </button>
+          )}
+          <Monogram name={chat.agent.name} size={32} avatar={portraitOf(crew, chat.agent.key)} />
+          <span className="conv-who">
+            <span className="conv-name">{chat.agent.name}</span>
+            <span className="conv-title" title={chat.title}>
+              {chat.title}
+            </span>
+          </span>
+          {showsChip(chat.state) && <StateChip state={chat.state} reason={chat.reason} />}
+          {live && (
+            <button className="btn" onClick={() => void stop()} title="End the run in progress and clear its queue">
+              Stop
+            </button>
+          )}
+          {chat.handedOut.length > 0 && (
+            <button className={`btn tasks-btn${mobile ? " always" : ""}${tasksSheet ? " on" : ""}`} onClick={() => setTasksSheet(!tasksSheet)} title="Work handed out from this chat">
+              Tasks ({chat.handedOut.length})
+            </button>
+          )}
+          <button className={`btn${(mobile ? sheet : panel) ? " on" : ""}`} onClick={() => (mobile ? setSheet(!sheet) : togglePanel())} title="Progress, files and context">
+            {mobile ? "Details" : panel ? "Hide details" : "Details"}
+          </button>
+        </header>
+        {chat.parent && (
+          <div className="conv-from muted small">
+            Handed out from{" "}
+            <a href={`#/c/${chat.parent.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/c/${chat.parent!.identifier}`))}>
+              {chat.parent.title}
+            </a>
+          </div>
+        )}
+        <div
+          className="conv-scroll"
+          ref={scroller}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            setAtEnd(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
+          }}
+        >
+          <div className="conv-inner">
+            {items.map((it, i) => {
+              const prev = items[i - 1];
+              const day = new Date(it.at).toDateString();
+              const sep = !prev || new Date(prev.at).toDateString() !== day;
+              return (
+                <div key={it.key}>
+                  {sep && <div className="day-sep">{dayLabel(it.at)}</div>}
+                  {it.type === "approval" ? (
+                    <ul className="approval-list inline">
+                      <ApprovalCard a={it.a} open={(id) => go(`#/c/${id}`)} decided={load} inline prefix={prefix} />
+                    </ul>
+                  ) : it.type === "ask" ? (
+                    <AskView q={it.q} crew={crew} prefix={prefix} go={go} answered={load} toast={toast} />
+                  ) : (
+                    <MessageView m={it.m} crew={crew} prefix={prefix} lastReply={it.m === lastReply} asking={it.m === asking} open={chat.open} notRight={notRight} answer={(t) => void send(t, [], true)} />
+                  )}
+                </div>
+              );
+            })}
+            {pending.map((p) => (
+              <div key={p.id} className={`msg owner pending ${p.state}`}>
+                <div className="bubble">{p.text || p.files.join(", ")}</div>
+                <div className="msg-meta">
+                  {p.state === "failed" ? (
+                    <>
+                      <span className="bad">Not sent{p.error ? `: ${p.error}` : ""}</span> ·{" "}
+                      <button className="link-btn" onClick={p.retry}>
+                        Retry
+                      </button>
+                    </>
+                  ) : p.state === "sending" ? (
+                    p.files.length ? "Uploading…" : "Sending…"
+                  ) : p.queued ? (
+                    "Queued for the next turn"
+                  ) : (
+                    "Sent"
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        {!atEnd && (
+          <button className="jump-end" onClick={toEnd} aria-label="Jump to the latest message">
+            ↓
+          </button>
+        )}
+        <LiveRow chat={chat} retry={() => void send("Please try again.", [], true)} />
+        <Composer
+          placeholder={`Message ${chat.agent.name}${chat.open ? "" : " (this reopens the chat)"}`}
+          draftKey={`draft:${chat.id}`}
+          mobile={mobile}
+          crew={crew}
+          autoFocus={!mobile}
+          onSend={send}
+          dropZone
+        />
+      </section>
+      {!mobile && chat.handedOut.length > 0 && (
+        <aside className="ws-panel ws-tasks" aria-label="Tasks">
+          <TasksPanel items={chat.handedOut} go={go} />
+        </aside>
+      )}
+      {tasksSheet && chat.handedOut.length > 0 && (
+        <div className="sheet-backdrop" onClick={(e) => e.target === e.currentTarget && setTasksSheet(false)}>
+          <div className="sheet" role="dialog" aria-label="Tasks">
+            <button className="icon-btn subtle sheet-close" aria-label="Close" onClick={() => setTasksSheet(false)}>
+              <CloseIcon />
+            </button>
+            <TasksPanel
+              items={chat.handedOut}
+              go={(h) => {
+                setTasksSheet(false);
+                go(h);
+              }}
+            />
+          </div>
+        </div>
+      )}
+      {!mobile && panel && <aside className="ws-panel">{side}</aside>}
+      {mobile && sheet && (
+        <div className="sheet-backdrop" onClick={(e) => e.target === e.currentTarget && setSheet(false)}>
+          <div className="sheet" role="dialog" aria-label="Details">
+            <button className="icon-btn subtle sheet-close" aria-label="Close" onClick={() => setSheet(false)}>
+              <CloseIcon />
+            </button>
+            {side}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function dayLabel(iso: string): string {
+  const d = new Date(iso);
+  const today = new Date();
+  const y = new Date(Date.now() - 86_400_000);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+}
+const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answer }: { m: ChatMessage; crew: Assignee[]; prefix: string; lastReply: boolean; asking: boolean; open: boolean; notRight: (t: string) => Promise<void>; answer: (t: string) => void }) {
+  const [fixing, setFixing] = useState(false);
+  const [fix, setFix] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  if (m.kind === "owner")
+    return (
+      <div className="msg owner">
+        <div className="bubble">
+          {m.correction && <span className="tag bad">Not right</span>}
+          <Markdown text={m.text} prefix={prefix} className="md" />
+        </div>
+        <div className="msg-meta" title={new Date(m.at).toLocaleString()}>
+          {clock(m.at)}
+          {m.by ? ` · by ${m.by}` : ""}
+          {m.via ? ` · via ${m.via}` : ""}
+        </div>
+      </div>
+    );
+  if (m.kind === "notice") return <div className="notice">{m.text}</div>;
+  if (m.kind === "notes")
+    return (
+      <div className="notes">
+        <button className="notes-line" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>
+          {m.agent} · {m.notes.length === 1 ? "1 note" : `${m.notes.length} notes`} · {clock(m.at)} <span className={`chev${expanded ? " open" : ""}`} aria-hidden>
+            <Chevron />
+          </span>
+        </button>
+        {expanded && (
+          <ol className="notes-list">
+            {m.notes.map((n, i) => (
+              <li key={i}>
+                <span className="muted small">
+                  {n.by} · {clock(n.at)}
+                </span>
+                <Markdown text={n.text} prefix={prefix} className="md" />
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    );
+  const long = m.text.split("\n").length > 25 || m.text.length > 2400;
+  return (
+    <div className="msg agent">
+      <div className="msg-who">
+        <Monogram name={m.agent} size={26} avatar={portraitOf(crew, m.agent)} /> <b className="msg-name">{m.agent}</b> <span className="msg-time">{clock(m.at)}</span>
+      </div>
+      <div className={`bubble${long && !expanded ? " clipped" : ""}`}>
+        <Markdown text={m.text} prefix={prefix} className="md" />
+      </div>
+      {long && (
+        <button className="link-btn small" onClick={() => setExpanded(!expanded)}>
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+      {lastReply && open && m.actions && (
+        <div className="answers">
+          {m.actions.map((a) => (
+            <button key={a} className="btn answer" onClick={() => answer(a)}>
+              {a}
+            </button>
+          ))}
+        </div>
+      )}
+      {asking && open && m.questions && <QuestionForm questions={m.questions} answer={answer} />}
+      <div className="msg-actions">
+        <button className="link-btn small" onClick={() => setFixing(!fixing)} title="Tell the agent this reply was wrong (recorded as a correction)">
+          Not right
+        </button>
+      </div>
+      {fixing && (
+        <div className="not-right">
+          <input
+            autoFocus
+            placeholder="What's not right, in one line"
+            value={fix}
+            maxLength={500}
+            onChange={(e) => setFix(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && fix.trim() && void (setBusy(true), notRight(fix.trim()).finally(() => (setBusy(false), setFixing(false), setFix(""))))}
+            aria-label="What's not right"
+          />
+          <button className="btn primary" disabled={!fix.trim() || busy} onClick={() => void (setBusy(true), notRight(fix.trim()).finally(() => (setBusy(false), setFixing(false), setFix(""))))}>
+            Send
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const STEP_ICON = { tool: "⚙", thought: "…", message: "💬" } as const;
+
+/** The latest line, a tap away from every step so far: proof the agent is working, not a guess. */
+function Steps({ steps, said }: { steps: NonNullable<Working["steps"]>; said?: string }) {
+  const [open, setOpen] = useState(false);
+  const last = steps.at(-1)!;
+  return (
+    <div className="live-steps">
+      <button className="live-said live-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="muted">{open ? "▾" : "▸"}</span> {said ?? last.text}
+        {!open && <span className="muted small"> · {steps.length} steps</span>}
+      </button>
+      {open && (
+        <ol className="step-list">
+          {steps.map((s, i) => (
+            <li key={i} className={`step-${s.kind}`}>
+              <span className="step-icon" aria-hidden>{STEP_ICON[s.kind]}</span>
+              <span className="step-text">{s.text}</span>
+              {s.at && <span className="step-at muted small">{ago(s.at)}</span>}
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+/** One live row pinned above the composer: what the run is doing now, or why it stopped. The plan lives in the panel. */
+function LiveRow({ chat, retry }: { chat: ChatDetail; retry: () => void }) {
+  const w = chat.working;
+  const name = chat.agent.name;
+  if (chat.state === "working" && w) {
+    const lastAt = w.saidAt ?? w.since;
+    const quiet = lastAt ? Date.now() - Date.parse(lastAt) : 0;
+    return (
+      <div className="live-row working">
+        <div className="live-line">
+          <span className="pulse" /> <b>{w.agent || name}</b> <span className="shimmer">is working</span>
+          {w.since && <span className="live-clock">{elapsed(w.since)}</span>}
+          {quiet > QUIET_MS && <span className="muted"> · nothing new for {Math.floor(quiet / 60_000)} min</span>}
+        </div>
+        {w.steps?.length ? <Steps steps={w.steps} said={w.said} /> : w.said && <div className="live-said">{w.said}</div>}
+      </div>
+    );
+  }
+  if (chat.state === "working") return <div className="live-row working"><div className="live-line"><span className="pulse" /> <b>{name}</b> <span className="shimmer">is working</span></div></div>;
+  if (chat.state === "queued") return <div className="live-row">Queued: {name} starts when free.</div>;
+  if (chat.state === "waiting for approval") return <div className="live-row you">Waiting for your approval (above).</div>;
+  if (chat.state === "waiting for you") return <div className="live-row you">Needs your input.</div>;
+  if (chat.state === "failed")
+    return (
+      <div className="live-row failed">
+        {chat.reason === "ended without a reply" ? `${name} ended without a reply.` : `${name} stopped: ${chat.reason ?? "no reason given"}.`}{" "}
+        <button className="btn" onClick={retry}>
+          Try again
+        </button>
+      </div>
+    );
+  if (!chat.open) return <div className="live-row muted">Finished. A new message reopens this chat.</div>;
+  return null;
+}
+
+// ------------------------------------------------------------------ the right panel
+
+function SidePanel({ chat, go }: { chat: ChatDetail; go: (h: string) => void }) {
+  const files = chat.files.filter((f) => !f.textOf);
+  const plan = chat.working?.plan ?? [];
+  const waiting = chat.approvals.filter((a) => a.state === "pending");
+  return (
+    <div className="panel">
+      <section className="panel-card">
+        <h3>
+          Progress
+          {plan.length > 0 && (
+            <span className="panel-count">
+              {plan.filter((p) => p.state === "done").length} of {plan.length}
+            </span>
+          )}
+        </h3>
+        {plan.length > 0 && (
+          <div className="meter" aria-hidden>
+            <i style={{ width: `${(100 * plan.filter((p) => p.state === "done").length) / plan.length}%` }} />
+          </div>
+        )}
+        {plan.length > 0 ? <Plan items={plan} /> : <p className="muted small">{chat.state === "working" ? "Working; no plan shared yet." : "Nothing in progress."}</p>}
+      </section>
+      <section className="panel-card">
+        <h3>
+          Files{files.length > 0 && <span className="panel-count">{files.length}</span>}
+        </h3>
+        {files.length ? (
+          <ul className="panel-list">
+            {files.map((f) => (
+              <FileRow key={f.id} f={f} chatId={chat.id} />
+            ))}
+          </ul>
+        ) : (
+          <p className="muted small">No files yet. Drop one on the chat or use the paperclip.</p>
+        )}
+      </section>
+      <section className="panel-card">
+        <h3>Context</h3>
+        <dl className="panel-facts">
+          <dt>Agent</dt>
+          <dd>{chat.agent.name}</dd>
+          <dt>State</dt>
+          <dd>{chat.state === "idle" ? "open" : chat.state}</dd>
+          {chat.parent && (
+            <>
+              <dt>From</dt>
+              <dd>
+                <a href={`#/c/${chat.parent.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/c/${chat.parent!.identifier}`))}>
+                  {chat.parent.title}
+                </a>
+              </dd>
+            </>
+          )}
+          <dt>Waiting on you</dt>
+          <dd>{waiting.length ? `${waiting.length} approval${waiting.length > 1 ? "s" : ""}` : chat.state === "waiting for you" ? "a reply" : "nothing"}</dd>
+        </dl>
+      </section>
+    </div>
+  );
+}
+
+type Handed = ChatDetail["handedOut"][number];
+const HANDED_LABEL: Partial<Record<ChatState, string>> = { "waiting for you": "needs you", "waiting for approval": "approval", idle: "open" };
+
+/** The work a chat handed out, by what it needs: you, running, waiting on someone else, finished (folded). */
+function TasksPanel({ items, go }: { items: Handed[]; go: (h: string) => void }) {
+  const g = groupTasks(items);
+  const row = (h: Handed) => (
+    <li key={h.identifier}>
+      <a className="handed-row" href={`#/c/${h.identifier}`} title={`${h.agent}: ${h.title}${h.reason ? ` (${h.reason})` : ""}`} onClick={(e) => (e.preventDefault(), go(`#/c/${h.identifier}`))}>
+        <span className={`handed-dot hs-${h.state.replace(/ /g, "-")}`} aria-hidden />
+        <span className="handed-title">{h.title}</span>
+        <span className="handed-agent">
+          {h.agent} · {ago(h.updatedAt)}
+        </span>
+        <span className={`handed-state hs-${h.state.replace(/ /g, "-")}`}>{HANDED_LABEL[h.state] ?? h.state}</span>
+      </a>
+    </li>
+  );
+  const section = (label: string, list: Handed[], cls = "") =>
+    list.length > 0 && (
+      <section className={`tasks-sec ${cls}`}>
+        <h4 className="panel-sub">
+          {label} <span className="panel-count">{list.length}</span>
+        </h4>
+        <ul className="handed-list">{list.map(row)}</ul>
+      </section>
+    );
+  return (
+    <div className="panel">
+      <section className="panel-card">
+        <h3>
+          Tasks<span className="panel-count">{items.length}</span>
+        </h3>
+        {section("Needs you", g.needs, "needs")}
+        {section("Working", g.working)}
+        {section("Waiting", g.waiting)}
+        {g.finished.length > 0 && (
+          <details className="handed-done">
+            <summary>Finished ({g.finished.length})</summary>
+            <ul className="handed-list">{g.finished.map(row)}</ul>
+          </details>
+        )}
+        {!g.needs.length && !g.working.length && !g.waiting.length && !g.finished.length && <p className="muted small">Nothing open.</p>}
+      </section>
+    </div>
+  );
+}
+
+function FileRow({ f, chatId }: { f: FileView; chatId: string }) {
+  return (
+    <li>
+      <a href={`/api/issues/${encodeURIComponent(chatId)}/files/${f.id}`} target="_blank" rel="noopener noreferrer">
+        {f.name}
+      </a>
+      <span className="muted small">
+        {fileSize(f.size)} · {f.by === "me" ? "you" : "agent"} · {ago(f.createdAt)}
+      </span>
+    </li>
+  );
+}
+
+// ------------------------------------------------------------------ the composer
+
+function Composer({ initialText, placeholder, draftKey, mobile, crew = [], autoFocus, onSend, starters = [], dropZone }: { initialText?: string; placeholder: string; draftKey: string; mobile: boolean; crew?: Assignee[]; autoFocus?: boolean; onSend: (text: string, files: File[]) => Promise<void>; starters?: string[]; dropZone?: boolean }) {
+  const [text, setText] = useState(() => {
+    if (initialText) return initialText;
+    try {
+      return localStorage.getItem(draftKey) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [files, setFiles] = useState<File[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const box = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const [caret, setCaret] = useState(0);
+  const typed = crew.length ? /(?:^|\s)@([A-Za-z]*)$/.exec(text.slice(0, caret)) : null;
+  const offers = typed ? crew.filter((a) => a.kind !== "me" && handleOf(a).toLowerCase().startsWith(typed[1]!.toLowerCase())).slice(0, 6) : [];
+  useEffect(() => {
+    try {
+      if (text) localStorage.setItem(draftKey, text);
+      else localStorage.removeItem(draftKey);
+    } catch {}
+  }, [draftKey, text]);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
+  }, [text]);
+  // Drop anywhere on the conversation, not only on the box.
+  useEffect(() => {
+    if (!dropZone) return;
+    const pane = box.current?.closest(".ws-main");
+    if (!pane) return;
+    const over = (e: Event) => {
+      const d = (e as DragEvent).dataTransfer;
+      if (d?.types.includes("Files")) (e.preventDefault(), setDragging(true));
+    };
+    const leave = (e: Event) => {
+      if (e.target === pane || !(pane as HTMLElement).contains((e as DragEvent).relatedTarget as Node)) setDragging(false);
+    };
+    const drop = (e: Event) => {
+      const d = (e as DragEvent).dataTransfer;
+      setDragging(false);
+      if (d?.files.length) (e.preventDefault(), add(d.files));
+    };
+    pane.addEventListener("dragover", over);
+    pane.addEventListener("dragleave", leave);
+    pane.addEventListener("drop", drop);
+    return () => {
+      pane.removeEventListener("dragover", over);
+      pane.removeEventListener("dragleave", leave);
+      pane.removeEventListener("drop", drop);
+    };
+  });
+  function add(list: FileList | null | undefined) {
+    const picked = [...(list ?? [])];
+    const big = picked.filter((f) => f.size > MAX_FILE);
+    setNote(big.length ? `${big.map((f) => f.name).join(", ")} ${big.length > 1 ? "are" : "is"} over 10 MB and can't be sent.` : "");
+    setFiles((now) => [...now, ...picked.filter((f) => f.size <= MAX_FILE && f.size > 0)]);
+  }
+  function mention(a: Assignee) {
+    const start = caret - typed![1]!.length;
+    const next = `${text.slice(0, start)}${handleOf(a)} ${text.slice(caret)}`;
+    setText(next);
+    const at = start + handleOf(a).length + 1;
+    setCaret(at);
+    requestAnimationFrame(() => box.current?.setSelectionRange(at, at));
+  }
+  async function send() {
+    if ((!text.trim() && !files.length) || busy) return;
+    const t = text;
+    const f = files;
+    setBusy(true);
+    setText("");
+    setFiles([]);
+    try {
+      await onSend(t, f);
+    } catch (e) {
+      // Nothing is lost: the words and files come back to the box.
+      setText(t);
+      setFiles(f);
+      setNote(`Couldn't send: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+      box.current?.focus();
+    }
+  }
+  return (
+    <footer className="ws-composer">
+      {dragging && <div className="drop-hint">Drop files to attach them</div>}
+      {starters.length > 0 && !text && (
+        <div className="starters">
+          {starters.map((s) => (
+            <button key={s} className="btn starter" onClick={() => (setText(s), box.current?.focus())}>
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+      {offers.length > 0 && (
+        <div className="mention-offers" role="listbox" aria-label="Mention an agent">
+          {offers.map((a) => (
+            <button key={a.key} className="mention-offer" role="option" aria-selected={a === offers[0]} onMouseDown={(e) => (e.preventDefault(), mention(a))}>
+              @{handleOf(a)}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="composer-box">
+        {files.length > 0 && (
+          <div className="attach-list">
+            {files.map((f, i) => (
+              <span key={`${f.name}-${i}`} className="attach-chip">
+                {f.name} <span className="muted small">{fileSize(f.size)}</span>
+                <button className="icon-btn subtle" aria-label={`Remove ${f.name}`} disabled={busy} onClick={() => setFiles((now) => now.filter((x) => x !== f))}>
+                  <CloseIcon />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <textarea
+          ref={box}
+          rows={1}
+          autoFocus={autoFocus}
+          placeholder={placeholder}
+          value={text}
+          onChange={(e) => (setText(e.target.value), setCaret(e.target.selectionStart))}
+          onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
+          onPaste={(e) => {
+            if (!e.clipboardData.files.length) return;
+            e.preventDefault();
+            add(e.clipboardData.files);
+          }}
+          onKeyDown={(e) => {
+            if (offers.length && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) return e.preventDefault(), mention(offers[0]!);
+            // Enter sends on a computer (Shift+Enter: a new line); on a phone, return is a new line and Send sends.
+            if (e.key === "Enter" && !e.shiftKey && !mobile && !e.nativeEvent.isComposing) return e.preventDefault(), void send();
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) return e.preventDefault(), void send();
+          }}
+          aria-label={placeholder}
+        />
+        <div className="composer-row">
+          <input
+            ref={picker}
+            type="file"
+            multiple
+            hidden
+            onChange={(e) => {
+              add(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <button className="icon-btn" title="Attach files" aria-label="Attach files" disabled={busy} onClick={() => picker.current?.click()}>
+            <ClipIcon />
+          </button>
+          <span className="muted small composer-hint">{mobile ? "" : "Enter to send · Shift+Enter for a new line · @ to bring in an agent"}</span>
+          <button className="send-btn" aria-label="Send" disabled={(!text.trim() && !files.length) || busy} onClick={() => void send()}>
+            <SendIcon />
+          </button>
+        </div>
+      </div>
+      {note && (
+        <div className="composer-note" role="status" onClick={() => setNote("")}>
+          {note}
+        </div>
+      )}
+    </footer>
+  );
+}
+
+const Chevron = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M9 6l6 6-6 6" />
+  </svg>
+);
+const ClipIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" />
+  </svg>
+);
+const SendIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M12 19V5M5 12l7-7 7 7" />
+  </svg>
+);
+
+/**
+ * A question from an agent this chat handed work to, shown in this chat: the answer goes to that agent's own task (as
+ * the owner's message there, which wakes it), not to this chat's agent.
+ */
+function AskView({ q, crew, prefix, go, answered, toast }: { q: Ask; crew: Assignee[]; prefix: string; go: (h: string) => void; answered: () => Promise<void>; toast: (t: string) => void }) {
+  const answer = (t: string) =>
+    void api.comment(q.identifier, t, true).then(
+      () => (toast(`Sent to ${q.agent}`), answered()),
+      (e: Error) => toast(`Couldn't send: ${e.message}`),
+    );
+  return (
+    <div className="msg agent">
+      <div className="msg-who">
+        <Monogram name={q.agent} size={26} avatar={portraitOf(crew, q.agent)} /> <b className="msg-name">{q.agent}</b>{" "}
+        <span className="msg-time">
+          {clock(q.at)} · on{" "}
+          <a href={`#/c/${q.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/c/${q.identifier}`))}>
+            {q.identifier}
+          </a>
+        </span>
+      </div>
+      <div className="bubble">
+        <Markdown text={q.text} prefix={prefix} className="md" />
+      </div>
+      <QuestionForm questions={q.questions} answer={answer} />
+    </div>
+  );
+}
+
+/**
+ * An agent's multiple-choice questions as one form (like Claude's own): pick an option, or several where it says so, or
+ * write your own answer; one Send posts them all as your message. Answers are only words: they never approve anything.
+ */
+function QuestionForm({ questions, answer }: { questions: Question[]; answer: (t: string) => void }) {
+  const [picked, setPicked] = useState<string[][]>(() => questions.map(() => []));
+  const [own, setOwn] = useState<string[]>(() => questions.map(() => ""));
+  const [sent, setSent] = useState(false);
+  const pick = (n: number, o: string, multi?: boolean) =>
+    setPicked((p) => p.map((cur, i) => (i !== n ? cur : multi ? (cur.includes(o) ? cur.filter((x) => x !== o) : [...cur, o]) : cur[0] === o ? [] : [o])));
+  const reply = (n: number) => [...picked[n]!, own[n]!.trim()].filter(Boolean).join(", ");
+  const ready = questions.some((_, n) => reply(n));
+  const send = () => {
+    setSent(true);
+    answer(questions.map((q, n) => (questions.length === 1 ? reply(n) : `**${q.question}**\n${reply(n) || "(skipped)"}`)).join("\n\n"));
+  };
+  if (sent) return null;
+  return (
+    <div className="qform">
+      {questions.map((q, n) => (
+        <fieldset key={n} className="q">
+          <legend>
+            {questions.length > 1 && <span className="q-num">{n + 1}</span>}
+            {q.question}
+            {q.multi && <span className="muted small"> · pick any</span>}
+          </legend>
+          {q.options.map((o, i) => {
+            const on = picked[n]!.includes(o);
+            return (
+              <button key={o} type="button" className={`q-opt${on ? " on" : ""}`} aria-pressed={on} onClick={() => pick(n, o, q.multi)}>
+                <span className={`q-mark${q.multi ? " box" : ""}`} />
+                <span className="q-label">{o}</span>
+                {i === 0 && <span className="q-rec">Recommended</span>}
+              </button>
+            );
+          })}
+          <input className="q-own" placeholder="Or in your own words…" value={own[n]} onChange={(e) => setOwn((p) => p.map((x, i) => (i === n ? e.target.value : x)))} onKeyDown={(e) => e.key === "Enter" && ready && send()} />
+        </fieldset>
+      ))}
+      <div className="row-end">
+        <button className="btn primary" disabled={!ready} onClick={send}>
+          Send {questions.length > 1 ? "answers" : "answer"}
+        </button>
+      </div>
+    </div>
+  );
+}

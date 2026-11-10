@@ -1,0 +1,103 @@
+# owner-channel module: how the owner talks to Aiden (Telegram bot, Slack DM/Socket Mode, voice notes) and how agents
+# reach the owner (notify_owner). Paths are relative to this module; scripts/compile.mjs makes them absolute.
+
+services:
+  slack-live-mcp:
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    build: ./connections/slack-live-mcp
+    image: aidenhq/slack-live-mcp:local
+    user: "${PUID:-1000}:${PGID:-100}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      SLACK_LIVE_DB: /data/slack-live.sqlite
+      OWNER_NAME: "${settings.owner_name}"
+      OWNER_TIMEZONE: "${settings.timezone}"
+      OWNER_COMPANY: "${settings.company_name}"
+      # Host-controlled (.env), never instance.yaml: this identity decides whose Slack words count and who gets paged.
+      OWNER_SLACK_USER_ID: "${OWNER_SLACK_USER_ID:-}"
+      IGNORE_CHANNELS: "${SLACK_LIVE_IGNORE_CHANNELS:-}"
+      # Channels agents may post to (slack_post), from the instance.
+      SLACK_POST_CHANNELS: "${settings.slack_post_channels}"
+      URGENT_COOLDOWN_MIN: "60"
+      MCP_BEARER_TOKEN_FILE: /run/secrets/slack_live_mcp_token
+      SLACK_APP_TOKEN_FILE: /run/secrets/slack_live_app_token
+      SLACK_BOT_TOKEN_FILE: /run/secrets/slack_live_bot_token
+      TRIAGE_WEBHOOK_URL_FILE: /run/secrets/slack_live_triage_webhook_url
+      TRIAGE_WEBHOOK_SECRET_FILE: /run/secrets/slack_live_triage_webhook_secret
+      TELEGRAM_NOTIFY_BOT_TOKEN_FILE: /run/secrets/telegram_notify_bot_token
+      TELEGRAM_OWNER_CHAT_ID: "${TELEGRAM_OWNER_CHAT_ID:-}"
+      # Host-controlled link target for task IDs in Telegram messages, e.g. https://<paperclip>/WOR/issues/{id}.
+      TELEGRAM_TASK_URL: "${TELEGRAM_TASK_URL:-}"
+      # Inbound chat bridge: comments on the daily "Chat with <owner>" issue, authored as the owner (board key).
+      PAPERCLIP_URL: http://paperclip:3100
+      PAPERCLIP_BOARD_KEY_FILE: /run/secrets/paperclip_board_key
+      OWNER_COMMAND_CHANNEL: "${OWNER_COMMAND_CHANNEL:-}"
+      # Voice notes are transcribed on this VM (audio never leaves it).
+      WHISPER_URL: http://whisper:9000
+      # Approvals: pending cards from the board's internal API; decisions proven with the decide key.
+      BOARD_INTERNAL_URL: http://board:3122
+      BOARD_INTERNAL_TOKEN_FILE: /run/secrets/board_internal_token
+      OWNER_DECIDE_KEY_FILE: /run/secrets/owner_decide_key
+      # Shared sources (src_slack): its warehouse login, and the owner's user token (xoxp, history scopes) for the gap sync.
+      WAREHOUSE_PASSWORD_FILE: /run/secrets/warehouse_src_slack_password
+      SLACK_USER_TOKEN_FILE: /run/secrets/slack_live_user_token
+    volumes:
+      - ${AIDENHQ_DATA_DIR:-./data}/slack-live:/data
+    secrets:
+      - slack_live_mcp_token
+      - slack_live_app_token
+      - slack_live_bot_token
+      - slack_live_triage_webhook_url
+      - slack_live_triage_webhook_secret
+      - telegram_notify_bot_token
+      - paperclip_board_key
+      - board_internal_token
+      - owner_decide_key
+      - warehouse_src_slack_password
+      - slack_live_user_token
+    dns: [ 1.1.1.1, 8.8.8.8 ] # see paperclip
+    networks:
+      - backplane
+      - egress
+      - sources # the warehouse (shared sources)
+  # Local speech-to-text for Telegram voice notes (faster-whisper, CPU). The model downloads once into the data dir.
+  # Built here from upstream v1.10.0 on patched bases (see whisper/Dockerfile), not pulled from the upstream tag.
+  whisper:
+    extends: { file: ../../compose.base.yaml, service: hardened } # root in the container owns its model dir, so cap_drop ALL is enough
+    build: ./whisper
+    image: aidenhq/whisper-asr-webservice:1.10.0-patched
+    environment:
+      ASR_ENGINE: faster_whisper
+      ASR_MODEL: small
+      ASR_MODEL_PATH: /data/whisper
+      MODEL_IDLE_TIMEOUT: "300" # unload the model after 5 idle minutes (it holds ~1.5 GB); reloads on the next note
+    volumes:
+      - ${AIDENHQ_DATA_DIR:-./data}/whisper:/data/whisper
+    mem_limit: 2g
+    cpus: 2
+    networks:
+      - backplane
+      - egress
+secrets:
+  slack_live_mcp_token:
+    file: ${AIDENHQ_SECRETS_DIR}/slack_live_mcp_token
+  slack_live_app_token:
+    file: ${AIDENHQ_SECRETS_DIR}/slack_live_app_token
+  slack_live_bot_token:
+    file: ${AIDENHQ_SECRETS_DIR}/slack_live_bot_token
+  telegram_notify_bot_token:
+    file: ${AIDENHQ_SECRETS_DIR}/telegram_notify_bot_token
+  slack_live_triage_webhook_url:
+    file: ${AIDENHQ_SECRETS_DIR}/slack_live_triage_webhook_url
+  slack_live_triage_webhook_secret:
+    file: ${AIDENHQ_SECRETS_DIR}/slack_live_triage_webhook_secret
+  board_internal_token:
+    file: ${AIDENHQ_SECRETS_DIR}/board_internal_token
+  owner_decide_key:
+    file: ${AIDENHQ_SECRETS_DIR}/owner_decide_key
+  warehouse_src_slack_password:
+    file: ${AIDENHQ_SECRETS_DIR}/warehouse_src_slack_password
+  slack_live_user_token:
+    file: ${AIDENHQ_SECRETS_DIR}/slack_live_user_token

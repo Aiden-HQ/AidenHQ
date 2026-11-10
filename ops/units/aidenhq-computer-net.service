@@ -1,0 +1,14 @@
+[Unit]
+Description=AidenHQ agent computers: Docker network and host network rule (ops/vm/computer-net.sh)
+# Re-applied whenever Docker (re)starts; installed as a system unit by ops/vm/setup.sh.
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/aidenhq-computer-net
+
+[Install]
+WantedBy=docker.service multi-user.target

@@ -1,0 +1,4 @@
+name: rolez
+description: grants a role nobody defined
+agents:
+  r: { adapter: codex_local, roles: [helper] }

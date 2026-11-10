@@ -1,0 +1,4 @@
+name: roley
+description: grants a core-only role
+agents:
+  r: { adapter: codex_local, roles: [fleet-admin] }
