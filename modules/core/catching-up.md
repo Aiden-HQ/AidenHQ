@@ -1,0 +1,27 @@
+## Catching up
+
+A "Catch up" run wakes you on a schedule in case an event that should have woken you was missed (a merge or result
+posted only on a sub-task, a comment that arrived while you were busy, a restart). Its task is only the catch-up; your
+work lives in your other tasks and chats. A catch-up only inspects your open work, nudges the original task, flags what is
+stuck and finishes. It never does the substantive work itself (a review, a build, an answer): that happens in the original
+task's run, so comment on that task to wake it, or re-delegate under it.
+
+1. **List what you're waiting on.** `task_list` with `mine: true`: your open tasks and chats (and open incident runs). For
+   each, read the latest comments (`task_comments`) and what it waits on: sub-tasks you delegated (their status and last
+   comment), approval cards (`task_approvals` on the task the card was filed on: an Engineer's sub-task, or the task you
+   ran `fleet_control` on), merges and PRs, deploys (`app_status`, if you have it), or the person.
+2. **Check the real state** of each. Don't rely on update times: comments don't always move them.
+3. **If something moved and you weren't told**, nudge the original task or re-delegate under it, but only for work that's
+   already authorized (the next step of a plan the person approved, a delegation you already decided). Nothing new that needs
+   their OK.
+4. **Speak in the original chat or task only for a new answer, question or decision.** Read its latest comments first and
+   never repeat what you or the runner already posted there. Nothing new: say nothing there.
+5. **Delegate under the original work task** (`task_delegate` with `parent:` that task), never under the catch-up task.
+6. **Waiting on the person is not a fault.** Leave it.
+7. **A missed wake-up or stuck item** (a sub-task finished but nobody told you, a card that should exist but doesn't, a
+   job stuck far past its usual time): add ONE comment to the "Fleet issues" task, {{fleet_issues}}. Read its recent
+   comments first and skip it if the same key is already there. Form:
+   `key: <task> · <failure kind> · <event, card or job id>`, then expected vs observed, with timestamps. In trial, put it
+   in your own report instead.
+8. **Finish the catch-up task** with `task_finish`: one line on what you did, or "nothing to catch up". This finishes the
+   catch-up task only, never your work task.

@@ -1,0 +1,232 @@
+# Operations
+
+## Apply, upgrade, rollback
+
+`ops/apply-config.sh [<instance commit sha>]` is the whole apply, run on the host from the product checkout. It:
+
+1. refuses to run if either checkout has local changes to tracked files;
+2. fast-forwards the instance repo (`AIDENHQ_INSTANCE_DIR`) to `origin/main`, or to exactly the commit given;
+3. checks out the product commit pinned by `product:` in `instance.yaml` (it must be on the product's `origin/main`);
+4. runs `node scripts/compile.mjs`, builds agent computer images, `docker compose up -d --build --remove-orphans`, and
+   `node scripts/paperclip-setup.mjs`;
+5. schedules a runner restart when runner code changed.
+
+It is idempotent. The Platform Engineer runs it for you after you approve a change.
+
+- **Upgrade the product:** merge to product `main`, bump `product: <sha>` in the instance repo, commit and push, apply.
+- **Roll back:** revert the instance commit (or set `product:` to the earlier sha), push, apply again.
+- **After changing a connection service:** `docker compose up -d --force-recreate <svc>`.
+- **After changing runner code:** `ops/apply-config.sh` sends `systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`: the runner takes nothing new, exits as soon as nothing is half done (a reply being posted, a publish, an apply), and systemd starts it again 5s later. Running agent jobs are not touched (`KillMode=process`; each runs in its own process group, writing its log and exit status under the runner's state dir): the new runner adopts them, keeps their `aidenhq` tools working (same helper port and token) and reports each turn once. A plain `systemctl --user restart aidenhq-runner` does the same. A job that died while no runner was up (no exit status) resumes in the same session. apply-config installs the unit (and daemon-reloads) when `ops/units/aidenhq-runner.service` changes.
+
+## Health
+
+- `scripts/healthcheck.sh`: read-only check of Paperclip, the board and each service; prints `ok` or `FAIL` per check.
+- `scripts/verify-security.sh`: mechanical checks of the security criteria (token scoping, read-only endpoints,
+  exposure). Run with the stack up.
+- The board's Apps tab lists each app's health; the DevOps Engineer owns an unhealthy app and pages the owner only when
+  it cannot fix it.
+- Fleet Ops (module `fleet-ops`): the board's detector (`services/board/src/fleet-ops.ts`) checks every
+  `fleet_ops_interval_minutes` for a Tier 2 card waiting over 2 hours, a run stuck past twice its timeout, an agent's last
+  3 runs failed, an app incident open over 15 minutes (or apps-mcp not answering for 15 minutes) a source with no good pass in an hour and an agents-org pull request open over an hour without merging (from the warehouse)
+  (or failing for 15 minutes; apps-mcp's `/internal/sources`). It fires the "Fleet Ops: check" webhook once per incident
+  and once on recovery (state in the board's store, meta `fleet_ops_detector`); Fleet Ops reads it from `fleet_status`
+  → `detector` and logs on the "Fleet issues" task (`log ·` lines).
+
+## Backups
+
+`scripts/backup.sh [output-dir]` writes `aidenhq-<timestamp>.tar.gz` with Paperclip's data directory, the ops-mcp and
+board SQLite databases, non-secret configuration and the instance repo as a git bundle. For a complete Paperclip
+database, stop the stack first. Secrets and the notes vault are not included: secrets are sealed to the host and
+logins are reconnected after a restore. A whole-host snapshot also works.
+
+`scripts/restore.sh <backup.tar.gz>` refuses to run while containers are up and moves existing state aside rather
+than deleting it. A new host can be built from a backup with `ops/setup.sh --restore`.
+
+## Run-history pruning
+
+Paperclip has no pruning of its own and long run history exhausts memory. `ops/prune-runs.sh` deletes run logs and
+`heartbeat_run_events` older than `PRUNE_DAYS` (default 30); the `prune-runs.timer` unit runs it weekly. Enable it
+with `systemctl --user enable --now prune-runs.timer`.
+
+## Logs and debugging a run
+
+- `docker compose logs -f <service>` for any service; `systemctl --user status aidenhq-runner` and
+  `journalctl --user -u aidenhq-runner` for the runner.
+- A run's full transcript is its Codex session log: `**/sessions/**/*.jsonl` under the Paperclip container's codex
+  home (or `/workspace/.paperclip-runtime/codex/home/sessions` in an agent computer). Tool calls are `function_call`
+  lines.
+- Paperclip's UI shows runs, costs and activity per agent.
+- Every agent run failing at once usually means the OpenRouter balance is empty.
+
+## App deploys
+
+Agents deploy apps through `apps-mcp`; sensitive ones wait for the owner's approval. Stateful apps (such as the
+warehouse) are deployed only on the owner's explicit say-so. To deploy by hand, on the host:
+
+```sh
+ops/app-deploy.sh deploy <app> [sha]
+```
+
+This calls the running apps-mcp, so its per-app lock applies.
+
+### Where apps are served
+
+Apps are on their own tailnet node, `https://$APPS_TS_HOSTNAME.<tailnet>.ts.net:<port>` (`apps-edge` in
+`compose.yaml`), never on the host's name: a browser sends the host's cookies, the board's session among them, to
+every port of it. The host's own `tailscale serve` has the board only (`https://<board-host>` on 443, to `127.0.0.1:3121`;
+Paperclip's `127.0.0.1:3100` is also allowed, but `ops/setup.sh` doesn't publish it): apply turns anything else off (`scripts/host-serve.mjs prune`) and `scripts/verify-security.sh` fails on it. apps-mcp writes the
+node's serve config (`data/apps-edge/serve/serve.json`) from the registry and joins the node to each exposed app's
+own network, where the app's port-publishing service answers as `edge-<app>` (an alias only the platform sets; an
+app deployed before it is served after its next deploy). The node joins once with the vault's
+`tailscale_apps_authkey` (a reusable, tagged, pre-authorized key; compile creates the file empty), then keeps its
+identity in `data/apps-edge/state`. Until the key is there it waits, unjoined (`docker compose logs apps-edge`);
+after adding it, `docker compose up -d --force-recreate apps-edge` (the key is read only at start). Set
+`APPS_URL_BASE` in `.env` to its address.
+
+## Tiered approvals
+
+Design: [design/approvals.md](design/approvals.md).
+
+The instance setting `autonomy` (`off` | `tier0` | `full`; docs/configuration.md) decides who approves. Code tiers each
+write from verified state (`services/runner/src/tiers.mjs`): Tier 0 runs at once with an audit row on the board, Tier 1
+goes to the AI reviewer (`services/runner/src/review.mjs`, policy `modules/core/security/policy.md`), Tier 2 to the
+owner (Telegram card). Every record shows its tier, reason and `decided_by` on the board; a digest of what was decided
+without the owner reaches Telegram once a day from 21:00.
+
+- Agents-org PRs end merged: whenever the runner opens or pushes to a PR in an agents-org repo (not
+  the product or instance repo), it requests the merge itself, and tiers each PR on its own. A head the runner itself
+  pushed to a branch of that repo (any task's; `pushed_heads` in its state), with named checks green or still running on
+  it, is Tier 0: it starts at once, even while the task's run goes on (merges are GitHub calls, not workspace changes),
+  with an audit row. Each Tier 0 PR merges independently, checked every poll, as soon as its named checks are green on
+  that exact head and GitHub can merge it: no order, gap or base-branch check, and no branch update after other merges.
+  Green means every named check passed, GitHub's own rollup is green, `UNSTABLE` only from advisory checks, and no
+  more than one page (100) of checks. A conflict (or "behind" under an up-to-date rule) is updated once, and the PR
+  then merges only at GitHub's own update commit of that head (parents: the head and the base's current tip, signed
+  by GitHub), once its checks pass there; any other new head is tiered again (a head the runner didn't push goes to
+  the AI reviewer). Each PR is tiered on its own, and one still waiting for its first checks (up to five minutes after
+  the push) doesn't hold the others. A card approved while such a queue runs takes over; the queue's waiting PRs are
+  requested again and start once the card's queue ends. A PR with a failing
+  check, an unresolvable conflict or a refused merge is reported once on the task and left; the others keep merging. A
+  queue that finishes during the run sets the task's status only after the run ends. A fork's or anyone else's head
+  goes to the AI reviewer; `.github/` changes, sensitive apps and missing checks are cards and red checks a comment, as
+  before, once the run is over. Card-approved merges, and everything in the product and instance repos, still use the
+  one-at-a-time queue with the base branch green before and after each merge. The `design-review` status is advisory:
+  merges ignore it.
+
+- Keys (generated by compile, in the vault): `reviewer_key` (the runner's: files Tier 1, records Tier 0, posts verdicts;
+  board and runner only) and `watcher_decide_key` (the owner's Claude watcher: same endpoint and header as the owner
+  channel, `x-owner-key`, stamped `watcher`).
+- Before `autonomy: full`, run the planted eval on the host and require 100%:
+
+```sh
+cd ~/aidenhq && OPENROUTER_API_KEY="$(cat ~/.config/aidenhq/openrouter_key)" node services/runner/scripts/reviewer-eval.mjs
+```
+
+- Pause: set `autonomy: off` and apply (that change is itself a Tier 2 card).
+
+## Shared sources
+
+Slack, GitHub, Jira, meeting notes and Drive documents are ingested once into the warehouse (`src_slack`, `src_github`,
+`src_jira`, `src_meetings`, `src_docs`; design: [design/sources.md](design/sources.md)). The writers
+are slack-live-mcp, github-mcp, jira-mcp, ops-mcp (meeting notes in full, from the vault) and google-workspace-mcp (the
+primary account's Drive: metadata + a cheap summary + link); agents read with apps-mcp's `warehouse_query`,
+`source_new` and `source_ack`. apps-mcp also proposes cross-source identity links hourly (`src_meta.people_identities`,
+exact email match only).
+
+- Network: writers and apps-mcp reach Postgres on compose's `sources` network (`aidenhq_sources`), which only the
+  warehouse app joins (`connects: [sources]`); apps can't, so they never reach those services. The warehouse is stateful:
+  after the apply that adds this, deploy it once (the owner's approval) so its container joins `sources`.
+- `ops/warehouse-sources.sh` (run by every apply) creates the writer roles, their schemas and `src_meta`; each writer
+  creates its own tables and views at start. While the warehouse isn't running it skips; run it again once it is.
+- Writer passwords are generated secrets (`warehouse_src_<source>_password`, made by compile). Writers connect lazily and
+  retry each pass, so a role created after they started is picked up without a restart.
+- The DevOps Engineer checks `src_meta.ingest_run` on each catch-up and posts a source stale for over an hour to the
+  "Fleet issues" task (its handbook, "Shared sources").
+- Slack's gap sync needs the owner's user token of the Slack live app in `slack_live_user_token` (scopes in
+  `modules/owner-channel/module.yaml`); without it src_slack gets live events only.
+- Each pass writes `src_meta.ingest_run` (source, scope, rows, error). src_docs has two scopes: `drive` (code) and
+  `summaries` (OpenRouter, the root `openrouter_key`; model `DOCS_SUMMARY_MODEL`, default `~deepseek/deepseek-flash-latest`,
+  ZDR). Without the key it stores metadata only.
+- Confluence pages are `src_jira.confluence_pages` (jira-mcp; ingest_run source `jira`, scopes `confluence` and
+  `confluence_summaries`, model `CONFLUENCE_SUMMARY_MODEL`, else `DOCS_SUMMARY_MODEL`). To check the Atlassian tool
+  parameters it uses: `docker compose exec jira-mcp node dist/src/probe.js` (schemas), or with a tool name and JSON args
+  to make one read call.
+
+## Security module
+
+`modules/security`: Security Watch (`security-watch`) and the Red Teamer (`red-teamer`), plus `security-scanner`, the
+`src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
+filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
+runs pinned syft over the host packages, every running image, the product and instance checkouts and each app's deployed
+source, into `data/security/sbom/current/`. The scanner matches a new batch within the hour (or daily anyway) and fires
+Security Watch's webhook when anything changed. On demand: `ops/security-sbom.sh`, then
+`docker compose exec security-scanner node dist/src/main.js once`.
+
+To enable, before adding `security` to the instance's modules:
+
+```sh
+cp ops/units/aidenhq-security-sbom.service ops/units/aidenhq-security-sbom.timer ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now aidenhq-security-sbom.timer
+systemctl --user start aidenhq-security-sbom   # first batch; also creates data/security/sbom as you (not root)
+```
+
+After the apply, `ops/warehouse-sources.sh` creates `src_security` (apply runs it). A stale batch shows as an
+`ingest_run` error on scope `sbom-batch`.
+
+App Auditor (optional): set `app_auditor_url` (the security module's setting) to your App Auditor MCP server and put
+a Cloudflare Access service token for it in the vault
+(`app_auditor_cf_client_id`, `app_auditor_cf_client_secret`), the scanner starts a vibe audit of each registry app when
+it is new and weekly after (one start per pass), and writes the findings to `src_security` (tool `app-auditor`). The token
+can read every team's audits, so it stays in the scanner. Empty files: off, and Security Watch asks the owner to run
+the audit by hand instead.
+
+## Vault
+
+The secrets directory is a gocryptfs view mounted at boot by `aidenhq-vault.service`; Docker requires it and the
+runner waits for it. Check with `systemctl status aidenhq-vault` and `mountpoint ~/.config/aidenhq`. If it is
+locked, nothing that needs secrets starts. Recovery without the TPM: [ops/vault/README.md](../ops/vault/README.md).
+
+## The runner unit
+
+`aidenhq-runner` (`ops/units/aidenhq-runner.service`) is a systemd user unit running
+`services/runner/src/main.mjs` as the AidenHQ user, configured by `config/runner.yaml`. It starts only once the vault is
+mounted and restarts on failure. Other units: `aidenhq-computers` (the agent computer launcher, optional) and
+`aidenhq-transcripts.path` (meeting transcript watcher). Enable user units to survive logout with
+`loginctl enable-linger <user>`.
+
+## CI runners (modules/ci)
+
+App repos' CI (`modules/core/templates/ci`: jobs `tests` and `code-review`; `code-review` skips codegenie and passes on a
+change under 20 lines with no sensitive path) runs on our own GitHub Actions runners,
+`runs-on: [self-hosted, aidenhq]`, registered to the agents org. Each `aidenhq-ci-runner@<n>` user unit runs
+`ops/ci-runner.sh`: it mints a one-hour registration token on the host from the GitHub App
+(`ops/ci-runner-token.mjs`, installation token narrowed to `organization_self_hosted_runners`), then
+`docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
+the unit then starts the next. Nothing carries between jobs. The container has no host mounts, no docker socket and none
+of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: public Internet only, no LAN, tailnet,
+host or other containers). Limits per runner: 2 CPUs, 4 GB.
+
+**Register (once).**
+1. GitHub App: add the organization permission *Self-hosted runners: Read and write* in the App's settings (GitHub →
+   the agents org → Settings → Developer settings → GitHub Apps → the App → Permissions), save, then accept the new
+   permission on each installation (every org that installed the App is asked). New Apps get it from the manifest.
+2. Agents org → Settings → Actions → Runner groups → Default: allow private repositories (and public if any).
+   Secret `OPENROUTER_API_KEY` (Settings → Secrets and variables → Actions): an org secret on a paid plan; on GitHub
+   Free, org secrets don't reach private repos, so set it on each app repo. Optional variable `CODEGENIE_MODEL`
+   (default `openrouter/~deepseek/deepseek-flash-latest`; `openrouter/deepseek/deepseek-v4-flash-0731` gets codegenie's
+   DeepSeek routing workaround if the `~` alias misbehaves).
+3. Instance repo: add `ci` to `modules:` in `instance.yaml`; deploy (`ops/apply-config.sh`).
+4. On the VM (sudo, once): `sudo install -m0755 ops/vm/computer-net.sh /usr/local/sbin/aidenhq-computer-net && sudo install
+   -m0644 ops/units/aidenhq-ci-net.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable
+   --now aidenhq-ci-net` (`ops/vm/setup.sh` does this on new hosts).
+5. `cp ops/units/aidenhq-ci-runner@.service ~/.config/systemd/user/ && systemctl --user daemon-reload &&
+   systemctl --user enable --now aidenhq-ci-runner@1 aidenhq-ci-runner@2`. Check: the org's Settings → Actions →
+   Runners lists `aidenhq-<container id>` idle; `journalctl --user -u aidenhq-ci-runner@1`.
+
+**Rotate.** Nothing long-lived to rotate: each job's token is minted fresh from the App key (to rotate the App key, generate a new private key in the App's settings and replace
+`github-app/key.pem` in the vault). Upgrade the runner by bumping the image tag in `modules/ci/compose.yaml`; GitHub stops accepting
+runners some weeks after a newer release, so bump when the org's runners page warns.
+
+**Scale.** One unit per concurrent job: `systemctl --user enable --now aidenhq-ci-runner@3`, or `disable --now` one to
+shrink. Keep it at 1-2 on a VM of the size SETUP.md suggests. Stop all: `systemctl --user stop 'aidenhq-ci-runner@*'` (a running job
+is cancelled; GitHub retries nothing, so re-run it).

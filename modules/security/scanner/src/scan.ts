@@ -1,0 +1,175 @@
+// src_security writer (shared sources): CVE findings for everything we run. No LLM.
+//
+// The inventory (SBOMs) is made on the host by ops/security-sbom.sh (a daily user timer running pinned syft over the host
+// packages, every running container image, the product and instance checkouts and each app's deployed source), because
+// that needs the Docker socket and the host's root filesystem, which this service never gets. This service only matches
+// those SBOMs against grype's vulnerability database and keeps one row per (target, package, version, vuln_id).
+//
+// A pass: refresh grype's DB (a failure fails the pass: transient), then each target oldest-scanned first, within a time
+// budget. One target that can't be matched (bad SBOM, grype error) is an error ingest_run row and is skipped; database
+// errors rethrow. A finding no longer matched in a target that scanned cleanly is marked present = false. Targets gone
+// from a fresh, complete SBOM batch are resolved too; a stale batch resolves nothing.
+import { createHash } from "node:crypto";
+import { capText, tableDdl, type Row, type SourceStore, type Table } from "./source-store.js";
+
+export const FINDING: Table = {
+  name: "finding",
+  key: ["target", "package", "version", "vuln_id"],
+  cols: {
+    target: "text", package: "text", version: "text", vuln_id: "text", finding_id: "text", target_kind: "text", tool: "text",
+    pkg_type: "text", purl: "text", locations: "text[]", severity: "text", cvss: "real", fixed_version: "text", fix_state: "text",
+    aliases: "text[]", title: "text", description: "text", url: "text", present: "boolean", resolved_at: "timestamptz", last_seen: "timestamptz",
+  },
+  tracked: ["severity", "fixed_version", "fix_state", "present"],
+  scope: "target",
+  url: "url",
+  search: ["package", "vuln_id", "title", "description"],
+};
+
+const common = "baseline, first_seen_at, ingested_at, seq";
+export const DDL = `${tableDdl("src_security", FINDING)}
+CREATE INDEX IF NOT EXISTS finding_present ON src_security.finding (target, tool) WHERE present;
+-- Security Watch's verdicts (apps-mcp finding_verdict writes them as the warehouse superuser). at_* is the finding as the
+-- verdict saw it: the view shows the verdict only while severity, fix and presence still match, so a changed finding is open again.
+CREATE TABLE IF NOT EXISTS src_security.verdict (
+  finding_id text PRIMARY KEY, verdict text NOT NULL, reason text NOT NULL, by_agent text NOT NULL, decided_at timestamptz NOT NULL DEFAULT now(),
+  at_severity text, at_fixed_version text, at_fix_state text, at_present boolean
+);
+CREATE OR REPLACE VIEW src_security.findings AS
+  SELECT f.finding_id, target, target_kind, tool, package, version, pkg_type, purl, locations, vuln_id, aliases, severity, cvss, fixed_version, fix_state,
+    title, description, url, present, resolved_at, last_seen, first_seen_at AS first_seen, ${common}, tsv,
+    d.verdict, d.reason AS verdict_reason, d.by_agent AS verdict_by, d.decided_at AS verdict_at
+  FROM src_security.finding f LEFT JOIN src_security.verdict d ON d.finding_id = f.finding_id
+    AND d.at_severity IS NOT DISTINCT FROM f.severity AND d.at_fixed_version IS NOT DISTINCT FROM f.fixed_version
+    AND d.at_fix_state IS NOT DISTINCT FROM f.fix_state AND d.at_present IS NOT DISTINCT FROM f.present
+    AND (d.verdict <> 'not-affected' OR d.decided_at > now() - interval '30 days');
+COMMENT ON VIEW src_security.findings IS 'Vulnerabilities in what we run, one row per (target, package, version, vuln_id). target: host (the VM''s OS packages, kernel, Docker, Node), image:<ref> (a running container image), repo:product, repo:instance, app:<name> (an app''s deployed source). tool grype = a known CVE/GHSA matched against the inventory (severity critical|high|medium|low|negligible|unknown; fixed_version and fix_state fixed|not-fixed|wont-fix|unknown); tool app-auditor = AppSec''s App Auditor vibe audit of an app repo (no fixed_version). finding_id = stable short id (use it in task markers). present false = no longer found (resolved_at). first_seen / last_seen = when our scans first and last saw it. verdict (confirmed|not-affected, with verdict_reason, verdict_by, verdict_at) = Security Watch''s review of this finding as it stands now; null = not reviewed, or the finding changed since, or a not-affected verdict is over 30 days old. Changes (severity, fix, present): src_security.changes.';
+CREATE OR REPLACE VIEW src_security.changes AS
+  SELECT seq, entity, entity_id, scope, field, old_value, new_value, url, observed_at, false AS baseline FROM src_security.change;
+COMMENT ON VIEW src_security.changes IS 'Finding changes after first sight: field severity, fixed_version, fix_state or present (false = resolved, true = back). scope = the target; entity_id = target/package/version/vuln_id.';
+GRANT SELECT ON src_security.findings, src_security.changes TO agents_open;`;
+
+export const findingId = (target: string, pkg: string, version: string, vuln: string) =>
+  createHash("sha256").update(`${target}|${pkg}|${version}|${vuln}`).digest("hex").slice(0, 16);
+
+const kindOf = (target: string) => (target === "host" ? "host" : target.split(":")[0] ?? "other");
+const SEVERITIES = ["critical", "high", "medium", "low", "negligible", "unknown"];
+const severity = (s: unknown) => (SEVERITIES.includes(String(s ?? "").toLowerCase()) ? String(s).toLowerCase() : "unknown");
+
+/** grype's JSON (`-o json`) as finding rows for one target, one per key (a package matched at several paths is one row). */
+export function parseGrype(target: string, out: any): Row[] {
+  if (!Array.isArray(out?.matches)) throw new Error("grype output has no matches array");
+  const rows = new Map<string, Row>();
+  for (const m of out.matches) {
+    const v = m?.vulnerability ?? {};
+    const a = m?.artifact ?? {};
+    if (!v.id || !a.name) continue;
+    const pkg = String(a.name);
+    const version = String(a.version ?? "");
+    const key = `${pkg}|${version}|${v.id}`;
+    const paths: string[] = (a.locations ?? []).map((l: any) => String(l?.path ?? "")).filter(Boolean);
+    const prev = rows.get(key);
+    if (prev) {
+      prev.locations = [...new Set([...(prev.locations as string[]), ...paths])].sort().slice(0, 20);
+      continue;
+    }
+    const related: any[] = Array.isArray(m.relatedVulnerabilities) ? m.relatedVulnerabilities : [];
+    const scores = [v, ...related].flatMap((x) => (x?.cvss ?? []).map((c: any) => Number(c?.metrics?.baseScore))).filter(Number.isFinite);
+    rows.set(key, {
+      target, package: pkg, version, vuln_id: String(v.id), finding_id: findingId(target, pkg, version, String(v.id)), target_kind: kindOf(target), tool: "grype",
+      pkg_type: a.type ?? null, purl: a.purl ?? null, locations: [...new Set(paths)].sort().slice(0, 20), severity: severity(v.severity),
+      cvss: scores.length ? Math.max(...scores) : null, fixed_version: (v.fix?.versions ?? []).join(", ") || null, fix_state: v.fix?.state ?? null,
+      aliases: [...new Set(related.map((r) => String(r?.id ?? "")).filter((id) => id && id !== v.id))].sort(), title: null,
+      description: capText(v.description || related.find((r) => r?.description)?.description || null, 1000).text,
+      url: v.dataSource || v.urls?.[0] || related[0]?.dataSource || null, present: true, resolved_at: null,
+    });
+  }
+  return [...rows.values()];
+}
+
+/**
+ * Writes one clean scan of a target for one tool: its rows present, its earlier present rows that are gone marked
+ * present = false, and last_seen bumped outside upsert (so a daily re-sighting doesn't re-deliver the row to source_new).
+ */
+export async function syncTarget(store: SourceStore, target: string, tool: string, rows: Row[], now = new Date()): Promise<number> {
+  let written = 0;
+  const seen = new Set<string>();
+  for (const r of rows) {
+    seen.add(`${r.package}|${r.version}|${r.vuln_id}`);
+    if ((await store.upsert(FINDING, r, { baseline: false })) !== "same") written++;
+  }
+  written += await resolveGone(store, target, tool, seen, now);
+  await store.pool.query(`UPDATE src_security.finding SET last_seen = $3 WHERE target = $1 AND tool = $2 AND present`, [target, tool, now]);
+  return written;
+}
+
+/** Marks a target's present rows of `tool` not in `keep` (package|version|vuln_id) as resolved. */
+async function resolveGone(store: SourceStore, target: string, tool: string, keep: Set<string>, now: Date): Promise<number> {
+  const cur = await store.pool.query(`SELECT package, version, vuln_id FROM src_security.finding WHERE target = $1 AND tool = $2 AND present`, [target, tool]);
+  let n = 0;
+  for (const r of cur.rows as { package: string; version: string; vuln_id: string }[]) {
+    if (keep.has(`${r.package}|${r.version}|${r.vuln_id}`)) continue;
+    if ((await store.upsert(FINDING, { target, package: r.package, version: r.version, vuln_id: r.vuln_id, present: false, resolved_at: now }, { baseline: false })) !== "same") n++;
+  }
+  return n;
+}
+
+/** The host's SBOM batch (ops/security-sbom.sh): each target's SBOM file, or the reason the host couldn't make one. */
+export interface Batch {
+  finishedAt: Date | null; // null: no batch yet
+  targets: { target: string; file?: string; error?: string }[];
+}
+
+export interface PassDeps {
+  dbUpdate: () => Promise<void>;
+  readBatch: () => Promise<Batch>;
+  grype: (file: string) => Promise<unknown>;
+  now?: () => number;
+  deadlineMs?: number; // the pass stops starting targets after this long (the rest go first next time)
+  staleMs?: number; // a batch older than this is reported and resolves nothing
+}
+
+/** A target that can't be scanned this pass, for a reason a retry won't fix: recorded, skipped, never fails the pass. */
+export class Skip extends Error {}
+
+export async function scanPass(store: SourceStore, d: PassDeps): Promise<number> {
+  const now = d.now ?? Date.now;
+  const start = now();
+  await store.migrate(DDL);
+  await d.dbUpdate(); // offline or a broken DB download: transient, the whole pass fails and runs again later
+  const batch = await d.readBatch();
+  const staleMs = d.staleMs ?? 3 * 86_400_000;
+  const fresh = !!batch.finishedAt && start - batch.finishedAt.getTime() < staleMs;
+  if (!fresh) {
+    const why = batch.finishedAt ? `SBOM batch is from ${batch.finishedAt.toISOString()}: is the host timer (aidenhq-security-sbom.timer) running?` : "no SBOM batch yet: run ops/security-sbom.sh on the host (operator step)";
+    await store.run("security", "sbom-batch", async () => { throw new Error(why); }).catch(() => undefined);
+  }
+  const synced = await store.scopesByPrefix("");
+  const order = [...batch.targets].sort((a, b) => (synced.get(a.target)?.syncedAt ?? 0) - (synced.get(b.target)?.syncedAt ?? 0));
+  let written = 0;
+  for (const t of order) {
+    if (now() - start > (d.deadlineMs ?? 50 * 60_000)) break;
+    try {
+      written += await store.run("security", t.target, async () => {
+        if (t.error || !t.file) throw new Skip(`host could not inventory ${t.target}: ${t.error ?? "no SBOM"}`);
+        let rows: Row[];
+        try {
+          rows = parseGrype(t.target, await d.grype(t.file));
+        } catch (err) {
+          throw new Skip(`grype on ${t.target}: ${String((err as Error).message ?? err).slice(0, 300)}`);
+        }
+        return syncTarget(store, t.target, "grype", rows, new Date(now()));
+      });
+      await store.saveScope(t.target, new Date(now()).toISOString(), true);
+    } catch (err) {
+      if (!(err instanceof Skip)) throw err;
+    }
+  }
+  // Gone from a fresh batch (an image no longer running, a removed app): its findings are resolved.
+  if (fresh) {
+    const listed = new Set(batch.targets.map((t) => t.target));
+    const r = await store.pool.query(`SELECT DISTINCT target FROM src_security.finding WHERE tool = 'grype' AND present`);
+    for (const { target } of r.rows as { target: string }[]) if (!listed.has(target)) written += await resolveGone(store, target, "grype", new Set(), new Date(now()));
+  }
+  return written;
+}

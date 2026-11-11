@@ -1,0 +1,3 @@
+name: ext2
+description: also extends the board
+compose: compose.yaml

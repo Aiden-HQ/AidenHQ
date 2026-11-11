@@ -1,0 +1,8 @@
+[Unit]
+Description=AidenHQ security inventory (SBOMs for the security module's scanner)
+
+[Service]
+Type=oneshot
+ExecStart=%h/aidenhq/ops/security-sbom.sh
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Nice=10

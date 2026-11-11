@@ -1,0 +1,15 @@
+# fleet-ops module: switches on the board's detector (merged by compose into the root compose's board service).
+services:
+  board:
+    environment:
+      FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"
+      FLEET_OPS_WEBHOOK_URL_FILE: /run/secrets/fleet_ops_webhook_url
+      FLEET_OPS_WEBHOOK_SECRET_FILE: /run/secrets/fleet_ops_webhook_secret
+    secrets:
+      - fleet_ops_webhook_url
+      - fleet_ops_webhook_secret
+secrets:
+  fleet_ops_webhook_url:
+    file: ${AIDENHQ_SECRETS_DIR}/fleet_ops_webhook_url
+  fleet_ops_webhook_secret:
+    file: ${AIDENHQ_SECRETS_DIR}/fleet_ops_webhook_secret

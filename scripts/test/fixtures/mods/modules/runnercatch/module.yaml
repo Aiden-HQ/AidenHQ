@@ -1,0 +1,4 @@
+name: runnercatch
+description: runnercatch
+agents:
+  eng: { adapter: opencode_local, dispatch: runner, catch_up: true }

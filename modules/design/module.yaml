@@ -1,0 +1,23 @@
+name: design
+description: "The UI/UX Engineer: mockups the Engineer builds from, screenshot reviews of UI PRs (the design-review check), and the shared design system."
+requires:
+  - github
+agents:
+  ui-designer:
+    adapter: codex_local
+    max_parallel: 2 # design reviews per PR are independent; each run gets its own box
+    # Looks at screenshots: Kimi takes images on OpenRouter (input_modalities text, image, video).
+    model: moonshotai/kimi-k3.1-pro
+    reasoning_effort: high
+    timeout_sec: 2400
+    # Its own computer (services/computer): Chrome + agent-browser to run an app and screenshot it, and repo-checkout for a PR's head.
+    image: agent-base
+    connections:
+      slack_live: [ notify_owner ]
+      apps: [ app_list, app_status, app_view, web_view ]
+      # Reads PRs and their checks; commit_status_set is the design-review verdict (role-checked in github-mcp).
+      github: [ github_whoami, github_issue_read, github_search_issues, commit_status_set ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_comment, task_handoff, task_set_status, task_finish ]
+    catch_up: true
+    # repo-checkout: a commit of an agents-org repo in its computer; design-review: the design-review commit status.
+    roles: [ repo-checkout, design-review ]

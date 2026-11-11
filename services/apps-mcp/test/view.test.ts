@@ -1,0 +1,104 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { describe, expect, it } from "vitest";
+import type { Resolve } from "../src/api.js";
+import { parseApp } from "../src/registry.js";
+import { isPublicIp, renderArgs, viewApp, viewContent, VIEW_IMAGE, VIEW_SCRIPT, webView, WEB_NETWORK, type Render, type ViewResult } from "../src/view.js";
+
+const app = (o: object = {}) => parseApp({ name: "roadmap-keeper", repo: "example-org/roadmap-keeper", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, ...o });
+const ID = "c".padEnd(64, "0");
+const resolve: Resolve = async () => ({ ids: "cccc", inspect: async () => JSON.stringify([{ Id: ID, Config: { Labels: { "com.docker.compose.project": "app-roadmap-keeper", "com.docker.compose.service": "app" } } }]) });
+const PAGE: ViewResult = { status: 200, url: "http://127.0.0.1:8080/", title: "Roadmap", timed_out: false, snapshot: '- heading "Roadmap" [level=1]', truncated: false, png: "iVBORw0KGgo=" };
+const fake = () => {
+  const calls: { network: string; req: object }[] = [];
+  const render: Render = async (network, req) => (calls.push({ network, req }), PAGE);
+  return { calls, render };
+};
+const agent = (key: string, roles: string[] = []) => ({ key, roles });
+
+describe("app_view", () => {
+  it("renders an open app inside its verified container's namespace at 127.0.0.1; role-gated apps need the role", async () => {
+    const { calls, render } = fake();
+    const audit: object[] = [];
+    await viewApp(app(), agent("roadmap-keeper"), { path: "/roadmap?tab=q1", screenshot: true }, { resolve, render, secretsDir: "/nonexistent", audit: (o) => audit.push(o) });
+    await viewApp(app({ access: { roles: ["finance"] } }), agent("cfo-agent", ["finance"]), { width: 390 }, { resolve, render, secretsDir: "/nonexistent" });
+    expect(calls).toEqual([
+      { network: `container:${ID}`, req: { url: "http://127.0.0.1:8080/roadmap?tab=q1", width: 1280, screenshot: true, web: false } },
+      { network: `container:${ID}`, req: { url: "http://127.0.0.1:8080/", width: 390, screenshot: false, web: false } },
+    ]);
+    expect(audit).toEqual([{ caller: "roadmap-keeper", app: "roadmap-keeper", path: "/roadmap?tab=q1", status: 200 }]);
+  });
+  it("refuses before rendering: no role, traversal, no health.url, a remote host, a bad width", async () => {
+    const { calls, render } = fake();
+    const d = { resolve, render, secretsDir: "/nonexistent" };
+    await expect(viewApp(app({ access: { roles: ["finance"] } }), agent("intruder"), {}, d)).rejects.toThrow(/no access/);
+    for (const p of ["/a/../admin", "//evil.example/", "http://evil/", "/a#x", "/%2e%2e/x", "a"]) await expect(viewApp(app(), agent("x"), { path: p }, d), p).rejects.toThrow(/bad/);
+    await expect(viewApp(app({ health: {} }), agent("x"), {}, d)).rejects.toThrow(/health.url/);
+    await expect(viewApp(app({ host: "vps" }), agent("x"), {}, d)).rejects.toThrow(/docker context/);
+    await expect(viewApp(app(), agent("x"), { width: 100 }, d)).rejects.toThrow(/width/);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("app_view on a shared app", () => {
+  it("passes the gate secret and the agent's identity as headers for the renderer to scope to the app's origin; none for a non-shared app", async () => {
+    const dir = mkdtempSync(`${tmpdir()}/view-`);
+    mkdirSync(`${dir}/roadmap-keeper`);
+    writeFileSync(`${dir}/roadmap-keeper/AIDENHQ_GATE_SECRET`, "g".repeat(64));
+    const { calls, render } = fake();
+    await viewApp(app({ port: 8080, share: { host: "r.example.com", aud: "aud-12345678" } }), agent("scout"), {}, { resolve, render, secretsDir: dir });
+    await viewApp(app(), agent("scout"), {}, { resolve, render, secretsDir: dir });
+    expect((calls[0]!.req as any).headers).toEqual({ "x-aidenhq-gate": "g".repeat(64), "x-aidenhq-user": "agent:scout", "x-aidenhq-role": "member", "x-aidenhq-name": "", "x-aidenhq-app": "roadmap-keeper" });
+    expect(calls[1]!.req).not.toHaveProperty("headers");
+    expect(VIEW_SCRIPT).toContain("new URL(q.url()).origin === own"); // per-request origin check
+    expect(VIEW_SCRIPT).toMatch(/q\.method\(\) !== "GET" && q\.method\(\) !== "HEAD"\) return q\.abort\(\)/); // a POST from the page is aborted
+    const echo: Render = async () => ({ ...PAGE, url: `http://127.0.0.1:8080/?k=${"g".repeat(64)}`, title: "g".repeat(64), snapshot: `- text "${"g".repeat(64)}"` });
+    const r = await viewApp(app({ port: 8080, share: { host: "r.example.com", aud: "aud-12345678" } }), agent("scout"), {}, { resolve, render: echo, secretsDir: dir });
+    expect(JSON.stringify(r)).not.toContain("g".repeat(64));
+    const boom: Render = async () => { throw new Error(`failed at ${"g".repeat(64)}`); };
+    await expect(viewApp(app({ port: 8080, share: { host: "r.example.com", aud: "aud-12345678" } }), agent("scout"), {}, { resolve, render: boom, secretsDir: dir })).rejects.not.toThrow("g".repeat(64));
+  });
+});
+
+describe("web_view", () => {
+  const dns = async (h: string) => (({ "example.com": ["93.184.215.14"], "v6.example": ["2606:4700::1111"], "rebind.example": ["93.184.215.14", "192.168.20.5"], "paperclip": ["172.18.0.4"] }) as Record<string, string[]>)[h]?.map((address) => ({ address })) ?? [];
+  it("renders public pages on the computers network; refuses private addresses and non-http(s) URLs before rendering", async () => {
+    const { calls, render } = fake();
+    const d = { lookup: dns, render };
+    await webView("https://example.com/a?b=1", agent("x"), {}, d);
+    await webView("http://v6.example/", agent("x"), { screenshot: true }, d);
+    expect(calls.map((c) => c.network)).toEqual([WEB_NETWORK, WEB_NETWORK]);
+    expect(calls[0]!.req).toEqual({ url: "https://example.com/a?b=1", width: 1280, screenshot: false, web: true });
+    for (const u of ["http://127.0.0.1/", "http://10.231.2.1:8200/", "http://172.20.0.2:8080/", "https://192.168.20.5:8443/", "http://100.100.1.2/", "http://169.254.169.254/latest/meta-data", "http://[::1]/", "http://[fd00::1]/", "http://[::ffff:127.0.0.1]/", "http://0.0.0.0/", "http://2130706433/", "http://rebind.example/", "http://paperclip:3100/", "http://nowhere.example/"])
+      await expect(webView(u, agent("x"), {}, d), u).rejects.toThrow(/not a public address|doesn't resolve/);
+    for (const u of ["file:///etc/passwd", "ftp://example.com/", "javascript:alert(1)", "https://user:pw@example.com/", "not a url", `https://example.com/${"a".repeat(2000)}`]) await expect(webView(u, agent("x"), {}, d), u).rejects.toThrow(/http|too long/);
+    expect(calls).toHaveLength(2);
+  });
+  it("classifies addresses", () => {
+    for (const ip of ["8.8.8.8", "93.184.215.14", "2606:4700::1111"]) expect(isPublicIp(ip), ip).toBe(true);
+    for (const ip of ["10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.0.1", "100.64.0.1", "100.127.255.255", "127.0.0.1", "169.254.169.254", "0.0.0.0", "224.0.0.1", "255.255.255.255", "198.18.0.1", "::", "::1", "fe80::1", "fc00::1", "ff02::1", "::ffff:8.8.8.8", "64:ff9b::808:808", "2001:db8::1", "2002:a00:1::1", "nonsense"]) expect(isPublicIp(ip), ip).toBe(false);
+  });
+});
+
+describe("renderer", () => {
+  it("runs pinned, non-root, without capabilities, read-only and limited, with no mounts, secrets or token", () => {
+    const a = renderArgs(`container:${ID}`, VIEW_IMAGE);
+    const after = (f: string) => a[a.indexOf(f) + 1];
+    expect([after("--network"), after("--pull"), after("--cap-drop"), after("--security-opt"), after("--user")]).toEqual([`container:${ID}`, "never", "ALL", "no-new-privileges", "pptruser"]);
+    for (const f of ["--rm", "-i", "--init", "--read-only", "--memory", "--cpus", "--pids-limit"]) expect(a).toContain(f);
+    expect(a.slice(-4)).toEqual([VIEW_IMAGE, "node", "-e", VIEW_SCRIPT]);
+    expect(VIEW_IMAGE).toMatch(/@sha256:[0-9a-f]{64}$/);
+    expect(a.slice(0, -1).join(" ")).not.toMatch(/token|secret|authorization|bearer|-v |--volume|--mount|--privileged|--cap-add/i);
+    expect(renderArgs(WEB_NETWORK, VIEW_IMAGE)).toContain(WEB_NETWORK);
+    for (const n of ["host", "bridge", "container:abc", "app-roadmap-keeper"]) expect(() => renderArgs(n, VIEW_IMAGE), n).toThrow(/network/);
+  });
+  it("answers with the fenced snapshot, and the screenshot only when taken", () => {
+    const c = viewContent(PAGE);
+    expect(c.content[0]!.type).toBe("text");
+    const text = (c.content[0] as { text: string }).text;
+    expect(text).toContain(`<untrusted_page_accessibility_snapshot>\n${PAGE.snapshot}\n</untrusted_page_accessibility_snapshot>`);
+    expect(JSON.parse(text.split("\n")[0]!)).toEqual({ status: 200, url: PAGE.url, title: "Roadmap", timed_out: false, truncated: false });
+    expect(c.content[1]).toEqual({ type: "image", data: PAGE.png, mimeType: "image/png" });
+    expect(viewContent({ ...PAGE, png: undefined }).content).toHaveLength(1);
+  });
+});

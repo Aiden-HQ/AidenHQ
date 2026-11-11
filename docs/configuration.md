@@ -1,0 +1,194 @@
+# Configuration
+
+Configuration has two sources: **modules** in the product repo (`modules/<name>/`) and your private **instance repo**.
+`scripts/compile.mjs` merges them into the files the stack reads.
+
+## Modules
+
+A module is a folder with a `module.yaml` and any of `agents/<key>/AGENTS.md`, `connections/<svc>/`, `apps/<app>/` and
+`compose.yaml`. `modules/core` (agents, tasks and apps connections, the board's roles) is always installed and requires
+`owner-channel`.
+
+`module.yaml` fields:
+
+| Field | Meaning |
+|---|---|
+| `name`, `description` | Identity; shown in the catalog. |
+| `requires` | Modules that must also be enabled. |
+| `settings` | Values the instance supplies: `required`, `default`, `values` (allowed choices). |
+| `agents` | Agent definitions: `adapter`, `model`, `reasoning_effort`, `timeout_sec`, `connections` (grants), `roles`, `persona`, `catch_up`, `image`, `isolation`. |
+| `routines` | Scheduled or webhook-triggered runs for an agent: `title`, `agent`, `description`, `concurrency`, `schedules`, `status`, and `model` (see below). |
+| `connections` | MCP servers: `url` (or `command`/`args`), `bearer_token_env_var`, `guide` (shown to agents), and `tools: { read: [...], write: [...] }`. |
+| `apps` | Apps for `apps-mcp`: `name`, `owner`, `port`, `stateful`, `expose`, `caps`, `secrets`, `repo`, `path`. |
+| `compose` | A compose file for the module's services, merged into `compose.modules.yaml`. |
+| `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
+| `generated_secrets` | Secret files compile creates randomly when missing. |
+
+Any string may use `${settings.<name>}`, replaced with the instance's value (or the default).
+
+An agent's `connections` map names a connection and a grant: `read`, `write` (read plus write tools) or an explicit
+tool list. A trailing `?` (`github?: read`) grants it only when that module is enabled. A handbook is the agent's
+`AGENTS.md`; keep it generic and put workflow in prose, not core code.
+
+## The instance repo
+
+A private git repo (one per owner), checked out on the host and pointed to by `AIDENHQ_INSTANCE_DIR`:
+
+```
+instance.yaml                 product pin, modules, settings, overrides
+apps.yaml                     apps agents created (read and written by apps-mcp)
+agents/<key>.md               extra rules appended to that module agent's handbook
+agents/<key>/agent.yaml       an instance-defined agent
+agents/<key>/AGENTS.md        its handbook
+```
+
+```yaml
+product: 0123456789abcdef0123456789abcdef01234567   # full sha; must be on product main
+modules: [open-loops, google, slack, github]
+settings:
+  owner_name: Alice Doe
+  timezone: Europe/London
+  channels: [web, telegram]
+  instance_name: acme
+overrides:
+  agents:   { assistant: { model: moonshotai/kimi-k3.1-pro } }
+  routines: { daily-brief: { status: paused } }
+```
+
+- **Overrides** change a fixed set of fields on things that exist: agents (`model`, `reasoning_effort`, `timeout_sec`,
+  `image`) and routines (`schedules`, `status`, `model`). Anything else is refused.
+- **A model per routine:** `model: <id>` on a routine runs its tasks on that model instead of the agent's (e.g. a cheap
+  model for a frequent sweep, the agent's stronger one for everything else). Setup puts it in the routine's env
+  (`AIDENHQ_MODEL`), Paperclip passes that env to the routine's runs, and the agent's Codex is started through
+  `/opt/aidenhq/codex-model` (`services/paperclip-tasks-mcp/codex-model`), which swaps it in for the agent's `--model`.
+  `reasoning_effort:` on a routine works the same way (`AIDENHQ_REASONING_EFFORT`; generated catch-ups use both). For an
+  agent in a computer (`image:`) the computer launcher applies them to the exec in the box (`routineArgs`). Only for
+  `codex_local` agents (not `dispatch: runner`); compile refuses others. Removing them clears the env on the next apply.
+- **Instance agents** (`agents/<key>/`) take `name`, `description` (the routing contract), `reports_to`, `model`,
+  `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules and `model` only), `budget` (USD, required), `max_parallel`,
+  `image`, `trial` and `catch_up`. They cannot have roles. `trial: true` keeps writes to reporting on the agent's own
+  tasks. The Agent Architect designs these and the Platform Engineer commits them after the owner approves.
+- Disabling a module pauses its agents and routines; nothing is deleted.
+
+## Compile and apply
+
+1. `scripts/compile.mjs` reads `modules/` and the instance and writes `config/paperclip.yaml` (company, agents,
+   routines, labels, MCP servers), `config/apps.modules.yaml`, `compose.modules.yaml`, `config/modules.json` (the
+   catalog) and `config/computers.json`. These are generated: edit the module or instance instead.
+2. `docker compose up -d --build --remove-orphans` starts the services (`COMPOSE_FILE=compose.yaml:compose.modules.yaml`).
+3. `scripts/paperclip-setup.mjs` applies the Paperclip config idempotently and writes `config/grants/grants.json`.
+
+`ops/apply-config.sh` runs all of it (see [operations.md](operations.md)).
+
+## Grants and roles
+
+Every tool call to a connection is checked against `config/grants/grants.json`, keyed by the caller's Paperclip agent
+id: the tools it may use per connection and its roles. Roles gate a few capabilities and may be granted only by the
+modules the registry allows: `fleet-admin` (the board's fleet tools), `board-writer`, `engineer-dispatch`,
+`app-incidents`, `security-verdict` (security-watch records finding verdicts), `ops-key`, `architect`, and `fleet-read` (fleet-ops: the board's fleet status only). Instance agents get none. After editing `services/shared/agent-auth.ts`,
+run `node scripts/sync-shared.mjs`.
+
+## The web and apps' pages
+
+- **Web search** is live for every codex agent (`web_search="live"` in core's `codex_args`).
+  An agent may set `web_search: cached` or `disabled` (module or instance `agent.yaml`); computers inherit both.
+- **`web_view(url, screenshot?, width?)`** and **`app_view(name, path?, screenshot?, width?)`** (apps-mcp, read tools):
+  every codex agent is granted both explicitly (`apps: [web_view, app_view]`). One renderer
+  (`services/apps-mcp/src/view.ts`): a one-shot container of the pinned Puppeteer image (Node, the library and Chrome;
+  amd64, ~3 GB on disk, pulled on first use), non-root, `--cap-drop ALL`, read-only with a `/tmp` tmpfs, 1 GB / 1 CPU /
+  512 pids, no mounts, secrets or token, at most two at once, 40 s. GET only: no clicks, forms or cookies. It returns the
+  page's accessibility snapshot (≤20 KB, fenced as untrusted) and, with `screenshot: true`, a PNG of the first screen.
+- `web_view` runs on the `aidenhq-computers` network, whose host firewall (`ops/vm/computer-net.sh`) is the SSRF control:
+  no LAN, tailnet, host (except the launcher gateway, which refuses without a run token), Docker networks or IPv6.
+  apps-mcp also refuses non-http(s) URLs, `user:pass@`, URLs over 2,000 characters and hosts resolving to a non-public
+  address. Without that network (no `ops/vm/setup.sh` yet), web_view fails. Each call is logged (caller, url, status).
+- `app_view` runs inside the app's own container's network namespace (found by compose labels, like `app_api`) at
+  `127.0.0.1:<port of health.url>`; the app needs `health.url` and must run on the local Docker host. Readable like
+  `app_status`: open unless the app sets `access.roles`. Interactive browsing (sign-ins, forms) is agent-browser in an
+  agent's computer.
+- `repo-checkout <org/name> [sha]` in a computer (role `repo-checkout`): the launcher streams `git archive` of that commit
+  from the runner's cache clone (`<work_dir>/repos/<org>/<name>`) into `/workspace/repos/<name>` of the caller's box. Agents
+  org only, full SHA (none: the default branch), files only; no token enters the box, and a commit the cache hasn't
+  fetched is refused rather than fetched.
+- `design-review` (module `design`): repos with UI opt in with `modules/design/templates/design-review.yml`, which sets
+  the `design-review` commit status to pending on each PR head that touches UI files. The UI/UX Engineer reviews in its
+  computer and sets it with github-mcp's `commit_status_set` (role `design-review`, agents org only, as the GitHub App,
+  which needs Commit statuses: write). The status is advisory: the merge queue ignores it, so a PR
+  can merge before the review; its findings become follow-up fixes. Don't make it a required check in branch protection.
+
+## Settings reference
+
+Set under `settings:` in `instance.yaml`.
+
+| Setting | Module | Required | Default | Meaning |
+|---|---|---|---|---|
+| `owner_name` | core | yes | | The owner's name. |
+| `timezone` | core | yes | | IANA timezone for schedules, for example `Europe/London`. |
+| `channels` | core | no | `[web]` | Owner channels: any of `web`, `telegram`, `slack`. |
+| `company_name` | core | no | `work` | The Paperclip company name. |
+| `instance_name` | core | no | | Short name of this AidenHQ; the agents org is `aidenhq-<instance_name>`. |
+| `github_agents_org` | core | no | derived | The GitHub org where the runner creates repositories; overrides the derived name. |
+| `github_orgs` | core | no | `[]` | GitHub orgs or users, besides the agents org, whose repos apps may be deployed from. |
+| `autonomy` | core | no | `off` | Tiered approvals: `off` = every write is the owner's card (also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. Move to `full` only after `services/runner/scripts/reviewer-eval.mjs` prints 100%. Changing it is itself a Tier 2 apply. |
+| `slack_post_channels` | owner-channel | no | `[]` | Slack channel ids agents may post to with `slack_post` (the tool must also be granted). |
+| `owner_slack_user_id` | open-loops | yes | | The owner's Slack user id: decides whose words count and who is paged. |
+| `owner_email` | core | yes | | The owner's email address: the only board account `ops/setup.sh` can make the owner's ([setup](setup.md#board-accounts)). With `edge`, the owner's account (like every admin account) is an admin of every shared app; the email alone grants nothing at the gate. |
+| `edge` | core | no | off | Shared access ([setup](setup.md#shared-access-apps-for-people-beyond-the-tailnet)): `{ team_domain: <team>.cloudflareaccess.com, tunnel_id: <tunnel UUID>, my_apps: { host, aud } }`. Turns on the gate and cloudflared. `my_apps` is the gate's page listing the apps a visitor may open (optional with `access`; required with `password`, where it is also the one sign-in host); `aud` is its Access application's tag. `team_domain` and every `aud` may be left out only with `app_login: password`. Changing it is a Tier 2 apply. |
+| `app_login` | core | no | `access` | How visitors sign in to shared apps (with `edge`). `access`: Cloudflare Access on every gate host; the token's email is mapped to the board's accounts (a disabled account is refused; an admin account is an admin of every shared app). `password`: the gate signs people in with their AidenHQ account through the board's auth listener (127.0.0.1:3129); a host that still has an `aud` needs Access too. In both modes each app's admins set its roles on the my-apps host's Access page (see [App access](#app-access)). |
+| `jira_url` | jira | yes | | Your Atlassian site URL, for example `https://your-company.atlassian.net`. All calls are pinned to it. |
+| `atlassian_mcp_url` | jira | no | Atlassian's v2 MCP URL | Atlassian's remote MCP server. |
+| `fleet_ops_interval_minutes` | fleet-ops | no | `10` | Minutes between the board's Fleet Ops detector checks (lower while developing). |
+| `product_repo` | warehouse | yes | | `owner/repo` of your AidenHQ product checkout; the warehouse app is built from it at the pinned commit. Its org must be in `github_orgs` or be the agents org. |
+
+## App access
+
+Design: [design/access.md](design/access.md).
+
+- **Members.** `password` mode: an enabled account. `access` mode: everyone the Cloudflare Access policy admits, with or
+  without an account, unless their account is disabled. Users (accounts without the admin role) never get the board.
+- **Roles per app.** `blocked`, `member`, `admin`, plus any the app declares in `aidenhq-app.yaml` (name and meaning),
+  assigned by email. Someone with no assignment gets the app's default: set by its admins, else `share.default_role` in
+  `apps.yaml`, else the manifest's `default_role`, else `blocked` (never `admin`). A role the running manifest no longer
+  declares counts as `blocked`; the assignment is kept for an admin to fix.
+- **Enforced:** only `blocked` (403, and the app is off their My apps list). The app gets `X-AidenHQ-User` (email),
+  `X-AidenHQ-Role`, `X-AidenHQ-Name` and `X-AidenHQ-App` and decides the rest.
+- **Admins.** AidenHQ admins are admins of every app and can't be blocked. The owner names each app's admins on the
+  board (Accounts, App admins); an app admin can name other admins of that app and change any role there except an
+  AidenHQ admin's. App admins have no board access and can't create accounts.
+- **Access page:** `https://<my_apps host>/access?app=<name>` (linked from My apps for admins, and `/.aidenhq/access`
+  on the app's host): roles and meanings, the default, assignments and the last 50 changes. Writes need the page's exact
+  origin.
+- **In-app requests:** the app's page posts to `/.aidenhq/request`; the board stores it (20 an hour per person, at most
+  50 open per app) and wakes the DevOps Engineer (routine `app-request`; the text never enters Paperclip). It reads them
+  with `app_requests` and answers with `app_request_reply`; the person sees the reply at `/.aidenhq/requests`. It changes
+  a role (`app_role_set`) only for an open request whose requester is an admin of that app at the time; the owner's own
+  chat words reach it the same way (Aiden's `app_request_from_owner`). Every change is logged on the Access page.
+- **Data:** `data/board/auth.db` (`app_roles`, `app_defaults`, `app_requests`, `app_access_log`), keyed by app name and
+  exported to the gate in `data/gate/accounts.json`. An app that leaves `gate.json` takes its rows with it within a
+  minute. A block or demotion returns only once the gate's file has it.
+
+
+## Host-side `.env`
+
+Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-editable values:
+
+- Identity and paths: `PUID`/`PGID`, `AIDENHQ_SECRETS_DIR` (the vault view), `AIDENHQ_DATA_DIR`, `AIDENHQ_INSTANCE_DIR`.
+- `AIDENHQ_INSTANCE_PUSH_URL`: where apps-mcp pushes instance changes. It defaults to
+  `https://github.com/<agents org>/aidenhq-instance.git` (App token) when the GitHub App is configured, else the
+  instance checkout's `origin` remote; `ops/setup.sh` sets it to a local bare repo (`AIDENHQ_INSTANCE_REMOTE`).
+- Apps: `DOCKER_GID`, `WORK_COMPANY_ID`, `APPS_URL_BASE` (apps are served at `<base>:<port>`: the apps node's address,
+  `https://<APPS_TS_HOSTNAME>.<tailnet>.ts.net`), `APPS_TS_HOSTNAME` (the apps' own tailnet node, default `aidenhq-apps`).
+- Meetings: `TRANSCRIPTS_DIR`, `VAULT_DIR`, `VAULT_FOLDERS`, `KNOWLEDGE_BASES`.
+- Connection endpoints: `SLACK_CLIENT_ID`, `PRIMER_MCP_URL`, `GLEAN_MCP_URL`, `GRAFANA_URL`, `GRAFANA_MCP_URL`,
+  `CLICKHOUSE_MCP_URL`, `GITHUB_COMMENT_ORGS`. Leave one empty to skip that connection.
+- Board: `BOARD_ALLOWED_HOSTS`, and the second listener's (3121: the tailnet https address, LAN phones; signed-in
+  admins only) `BOARD_LAN_BIND`, `BOARD_LAN_PORT`, `BOARD_LAN_HOSTS`, `BOARD_LAN_URL`.
+- `PAPERCLIP_DISABLE_SIGN_UP`, `OWNER_SLACK_USER_ID`, `TELEGRAM_TASK_URL`, `COMPOSE_FILE`.
+
+## Runner config
+
+`config/runner.yaml` (from `config/runner.example.yaml`) configures the host runner: the `engineer` label it polls,
+`allowed_orgs` (the organizations it may implement, push and open PRs in; public repositories elsewhere are read-only),
+optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, and the engines
+(`codex`, `openrouter`, `claude`). Other example files in `config/` (`routing`, `authorize-cases`, `busy-cases`,
+`intake-cases`, `system`) configure the runner's evals and ops-mcp.

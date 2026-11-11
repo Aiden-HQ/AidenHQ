@@ -1,0 +1,5 @@
+name: ci
+description: "Self-hosted GitHub Actions runners for the agents org's app repos (labels self-hosted, aidenhq): one fresh container per job."
+# No agents and no connections: the runner service (compose.yaml) is started per job by the host's
+# aidenhq-ci-runner@<n> units (ops/ci-runner.sh), never by `docker compose up`. docs/operations.md, "CI runners".
+compose: compose.yaml

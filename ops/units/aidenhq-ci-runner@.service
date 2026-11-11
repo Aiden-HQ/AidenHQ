@@ -1,0 +1,16 @@
+[Unit]
+Description=AidenHQ CI runner %i: one fresh container per GitHub Actions job (ops/ci-runner.sh, modules/ci)
+After=network-online.target
+
+[Service]
+# The vault holds the GitHub App key the token is minted from; the CI network is a system unit (aidenhq-ci-net).
+ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
+ExecStartPre=/usr/bin/docker network inspect aidenhq-ci
+ExecStart=%h/aidenhq/ops/ci-runner.sh %i
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# A finished job ends the container (and this run); the next one starts a new container.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

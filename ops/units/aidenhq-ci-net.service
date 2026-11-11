@@ -1,0 +1,16 @@
+[Unit]
+Description=AidenHQ CI runners: Docker network and host network rule (ops/vm/computer-net.sh, CI values)
+# The ci module's runners (modules/ci) reach the public Internet only: not the LAN, the tailnet, the host, the other
+# compose services or each other. Re-applied whenever Docker (re)starts; installed as a system unit by ops/vm/setup.sh.
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=NET=aidenhq-ci BRIDGE=ahq-ci SUBNET=10.231.4.0/24 GATEWAY=10.231.4.1 GATEWAY_PORT= TABLE=aidenhq_ci
+ExecStart=/usr/local/sbin/aidenhq-computer-net
+
+[Install]
+WantedBy=docker.service multi-user.target

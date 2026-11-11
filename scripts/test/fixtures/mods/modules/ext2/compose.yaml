@@ -1,0 +1,6 @@
+services:
+  board:
+    environment: { B: "2" }
+    secrets: [ s2 ]
+secrets:
+  s2: { file: /s/s2 }

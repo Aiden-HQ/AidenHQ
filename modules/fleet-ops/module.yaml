@@ -1,0 +1,49 @@
+name: fleet-ops
+description: "Fleet Ops: watches the fleet (stuck or failing runs, Tier 2 cards waiting, sources and apps down), nudges, files fixes through the normal tiers and tells the owner."
+settings:
+  # Minutes between the board's detector checks (lower while developing). The detector wakes Fleet Ops only when a
+  # threshold trips or recovers (services/board/src/fleet-ops.ts).
+  fleet_ops_interval_minutes:
+    default: 10
+agents:
+  fleet-ops:
+    adapter: codex_local
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: medium
+    timeout_sec: 1200
+    connections:
+      # Reads only: apps, their logs, and the warehouse (src_meta.ingest_run).
+      apps: [ app_list, app_status, app_logs, warehouse_query ]
+      slack_live: [ notify_owner ]
+      # fleet_status through the fleet-read role: no fleet_control, no relaying, no approvals decided.
+      # task_delegate: runner Engineers only (they take tasks from any agent; it has no reports): product and instance fixes
+      # through the Platform Engineer. task_create with assignee: app fixes to an app's owner, rule proposals to the Platform
+      # Engineer. Product bugs go on the "Fleet issues" task and into the digest.
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team, task_create, task_comment, task_delegate, task_handoff, task_set_status, task_finish, fleet_status, fleet_catalog ]
+    roles: [ fleet-read ]
+routines:
+  fleet-ops-check:
+    title: "Fleet Ops: check"
+    agent: fleet-ops
+    description: |
+      Now {{timestamp}}. The board's detector tripped or recovered. Follow "On a check" in your instructions: `fleet_status`
+      → `detector` lists what is open and what recovered. Close this task with one line.
+    concurrency: coalesce_if_active
+    webhook: true # fired by the board's detector
+    webhook_base: http://paperclip:3100 # the board calls it from inside the compose network
+    secrets_prefix: fleet_ops_webhook # setup saves <prefix>_url / _secret; the module's compose mounts them into the board
+  fleet-ops-digest:
+    title: "Fleet Ops: daily digest"
+    agent: fleet-ops
+    description: |
+      Today is {{date}}. Follow "Daily digest" in your instructions, then close this task with one line.
+    concurrency: skip_if_active
+    # The day's second look: hard cases marked `deep-look` in the log are worked here. No routine `model:` for now:
+    # it needs the codex-model launcher, which fails Paperclip 2026.1106's harness verification (the agent stays paused).
+    schedules:
+      - { cron: "45 20 * * *", timezone: "${settings.timezone}", label: "evening" }
+compose: compose.yaml
+# Written by setup once the routine's webhook exists; empty until then (the detector stays off while they're empty).
+optional_secrets:
+  - fleet_ops_webhook_url
+  - fleet_ops_webhook_secret

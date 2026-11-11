@@ -1,0 +1,100 @@
+# CI: tests and an automated code review, on the org's self-hosted runners (one fresh container per job).
+# The job names `tests` and `code-review` are the required check names: don't rename them, don't add a matrix.
+# Secret OPENROUTER_API_KEY (code-review only); optional variable CODEGENIE_MODEL (default below).
+name: ci
+
+on:
+  pull_request:
+    # labeled: adding `deep-review` re-runs the review at depth deep.
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Runs the PR's code, so it gets no secrets.
+  tests:
+    runs-on: [self-hosted, aidenhq]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.x
+      - name: Test
+        run: npm ci && npm test
+
+  # Never runs the PR's code: codegenie only reads it from git objects. Its config and rules come from the base commit
+  # (reviewed code), so a PR can't loosen its own review; the gate comes from the default branch's current tip, so a
+  # gate update protects every open PR at once. Only the PR that first adds CI (no gate on the default branch yet)
+  # passes unreviewed; changes under .github/ get a human review anyway.
+  code-review:
+    runs-on: [self-hosted, aidenhq]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.x
+      - name: Review
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          MODEL: ${{ vars.CODEGENIE_MODEL || 'openrouter/~deepseek/deepseek-flash-latest' }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        # fetch-depth 0 fetched every branch, the PR's head included (app PRs come from branches of the same repo).
+        run: |
+          set +e
+          # Mostly light: these are small, fast-moving apps. Normal when the diff touches dependencies, CI, Dockerfiles or
+          # auth/security code, has binary files, is very large, or can't be read. Deep only when asked: the PR's
+          # `deep-review` label.
+          stat=$(git diff --numstat "$BASE_SHA...$HEAD_SHA") || stat=""
+          lines=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 1000} {n += $1 + $2} END {print n + 0}')
+          depth=light
+          if [ -z "$stat" ] || [ "$lines" -gt 800 ] || printf '%s\n' "$stat" | grep -qiE 'package(-lock)?\.json|lock|\.github/|dockerfile|auth|secur|token|session|permission'; then depth=normal; fi
+          case ",$PR_LABELS," in *,deep-review,*) depth=deep ;; esac
+          # Tiny changes in non-sensitive files (still light: no sensitive path, no deep-review label) skip the review.
+          if [ "$depth" = light ] && [ "$lines" -lt 20 ]; then
+            echo "::notice::$lines changed lines, no sensitive files: no code review needed."
+            echo "CODE_REVIEW_SKIPPED=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "Changed lines: $lines, review depth: $depth"
+          npx -y @0xsequence/codegenie@0.7.0 review --base "$BASE_SHA" --head "$HEAD_SHA" --model "$MODEL" --depth "$depth" \
+            --format json --ci --no-progress --max-time 40 > "$RUNNER_TEMP/review.json"
+          echo "CODEGENIE_EXIT=$?" >> "$GITHUB_ENV"
+      - name: Verdict
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "${CODE_REVIEW_SKIPPED:-}" = 1 ]; then
+            echo "::notice::A tiny change: not reviewed, and it passes."; exit 0
+          fi
+          # The gate is the default branch's current tip, not this PR's recorded base: a merged gate update applies to
+          # every open PR without a rebase, and a PR still can't weaken the gate it is checked against. Checkout removed
+          # its credentials, so this fetch carries the read-only token itself.
+          git -c http.extraHeader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')" \
+            fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          if ! git cat-file -e "origin/$DEFAULT_BRANCH:.github/codegenie-gate.mjs" 2>/dev/null; then
+            echo "::notice::No code-review gate on the default branch yet: this PR adds CI, so it is not reviewed."; exit 0
+          fi
+          git show "origin/$DEFAULT_BRANCH:.github/codegenie-gate.mjs" > "$RUNNER_TEMP/codegenie-gate.mjs"
+          node "$RUNNER_TEMP/codegenie-gate.mjs" "$RUNNER_TEMP/review.json" "${CODEGENIE_EXIT:-1}"

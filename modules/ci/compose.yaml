@@ -1,0 +1,36 @@
+# ci module: the self-hosted Actions runner. Profile `ci` keeps `docker compose up` from starting it: each
+# aidenhq-ci-runner@<n> unit runs `docker compose run --rm ci-runner` (ops/ci-runner.sh), so every job gets a new container
+# (nothing shared between jobs: no tool cache, no npm cache), which registers ephemerally, runs one job, exits and is removed.
+# It gets only a one-hour registration token (RUNNER_TOKEN, minted on the host from the GitHub App): no host mounts, no
+# docker socket, none of the instance's secrets, and a network that reaches only the public Internet (aidenhq-ci).
+
+services:
+  ci-runner:
+    profiles: [ ci ]
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    # The official runner image (actions/runner images/Dockerfile): git, curl, jq; setup-node fetches Node per job.
+    image: ghcr.io/actions/actions-runner:2.338.2@sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232
+    restart: "no"
+    environment:
+      RUNNER_URL: https://github.com/${settings.agents_org}
+    # $$: compose leaves $ to the shell. The token is dropped from the environment before any job runs.
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        : "$${RUNNER_TOKEN:?no registration token (ops/ci-runner.sh mints it)}"
+        ./config.sh --unattended --ephemeral --disableupdate --url "$$RUNNER_URL" --token "$$RUNNER_TOKEN" --name "aidenhq-$$(hostname)" --labels aidenhq --work _work
+        unset RUNNER_TOKEN
+        exec ./run.sh
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 2048
+    dns: [ 1.1.1.1, 8.8.8.8 ] # the host's resolver is off limits on aidenhq-ci
+    networks:
+      - ci
+
+networks:
+  ci:
+    external: true
+    name: aidenhq-ci
