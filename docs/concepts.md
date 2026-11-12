@@ -1,0 +1,73 @@
+# Concepts
+
+A one-page map of the words used everywhere else. [architecture.md](architecture.md) shows how the parts connect;
+[configuration.md](configuration.md) shows how to set them.
+
+**AidenHQ.** A self-hosted agentic workspace for one person (the *owner*). It runs on one server you control: Docker
+Compose for the services, plus a few systemd user units on the host. You talk to one agent; a fleet works behind it.
+
+**Aiden (chief of staff).** The single agent the owner talks to, on Telegram, Slack or the board's chat. It reads
+widely, turns messages and forwards into tasks, delegates the doing to other agents, chases, sends a daily brief and
+relays the owner's decisions. It never needs the owner to write prompts.
+
+**Crews and agents.** Specialist agents under Aiden: the Research Assistant, DevOps Engineer (app health), Agent
+Architect (designs new agents), Platform Engineer (edits the instance), and whatever modules add (Follow-up Tracker,
+Meeting Librarian, Engineers, UI/UX Engineer, Security Watch, ...). Each agent is a definition (adapter, model,
+grants, schedules) plus an `AGENTS.md` handbook. Agents wake on schedules (Paperclip routines), events (routine
+webhooks) or a task assigned to them; they don't loop.
+
+**Paperclip.** The control plane ([paperclipai/paperclip](https://github.com/paperclipai/paperclip)): companies,
+agents, tasks, routines, run history. Its UI is the fleet console. AidenHQ generates Paperclip's configuration and
+applies it idempotently; edits made in Paperclip's UI are overwritten by the next apply.
+
+**Modules.** Product features ship as `modules/<name>/`: a `module.yaml` (settings, agents, routines), agent
+handbooks, connection services, apps and a `compose.yaml`. `core` and `owner-channel` are always installed; the rest
+(`open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-ops`, `librarian`, `ci`, `warehouse`, and the
+connection modules) are switched on per instance.
+
+**Instance repo.** Your private repo holding everything specific to your deployment: `instance.yaml` (the pinned
+`product:` commit, enabled `modules`, `settings`, limited `overrides`), `apps.yaml` (your apps) and `agents/<key>/`
+(agents defined just for you). The product repo (this one) is shared; the instance repo is yours. Secrets are in
+neither: they live in the vault on the server.
+
+**Connections.** Each external system (Google Workspace, Slack, GitHub, Glean, Jira, Primer, Grafana, ClickHouse) is
+an MCP server that holds one sign-in. Agents never see the credentials; they call the connection's tools.
+
+**Grants and roles.** Every tool is tagged read or write. An agent is granted `connection: read | write | [tool list]`
+and optional roles. Every tool call is checked in code against the grants table that setup writes
+(`services/shared/agent-auth.ts`), using the caller's Paperclip identity. Roles gate a few extra powers, such as fleet
+tools or deploying apps.
+
+**Runner.** A host service (`services/runner`) that runs coding jobs for the Engineer agents in sandboxed per-task
+workspaces, and owns every git write: pushes, pull requests and merges. It checks each write in code before it
+happens. See [design/conversational-engineers.md](design/conversational-engineers.md).
+
+**Approvals and tiers.** Every write that matters (push, PR, merge, fleet change, app deploy) is an *approval record*
+on the board: the exact request, decided once, outcome on the card. Code assigns the tier from verified state, never
+from text an agent wrote ([`services/runner/src/tiers.mjs`](../services/runner/src/tiers.mjs)):
+- **Tier 0** runs at once (for example a green merge in the agents org on a branch the runner pushed).
+- **Tier 1** is decided by an AI reviewer model with a written policy.
+- **Tier 2** is the owner's tap on the board or the owner channel, or an exact typed reply such as `apply WOR-184`.
+
+**Autonomy.** The `autonomy` setting chooses how much of that runs without the owner: `off` (every write is the
+owner's card; also the pause switch), `tier0` (Tier 0 runs, the reviewer only comments), `full` (the reviewer decides
+Tier 1). Move to `full` only after `services/runner/scripts/reviewer-eval.mjs` scores 100%. See
+[design/approvals.md](design/approvals.md).
+
+**Apps.** Long-running services that agents build, deploy and maintain through `apps-mcp`: dashboards, trackers,
+small tools. Each runs sandboxed with no host access unless its registry entry grants it, gets secrets as files, and
+can be shared with colleagues through the gate. See [design/access.md](design/access.md).
+
+**Warehouse.** A shared Postgres (`modules/warehouse`) that every source writer ingests into (`src_slack`,
+`src_github`, `src_jira`, `src_docs`, `src_meetings`, ...) and apps can read. Agents query it read-only. See
+[design/sources.md](design/sources.md).
+
+**Board.** The owner's daily web surface (`services/board`): tasks, chats with agents, approvals, connections, apps,
+costs and the fleet. Sign-in is a board account with password and TOTP.
+
+**Agent computers.** Optional gVisor containers (`services/computer`) for agents that run code or a browser; an agent
+gets one when its definition sets `image:`.
+
+**Trust model.** Inbound is private (LAN or Tailscale; board accounts with TOTP; Cloudflare Access for shared apps).
+Outbound is open by design. Untrusted text (Slack, email, documents, forwards) is data, never instructions. Gates live
+in code below the model, and nothing is ever sent as the owner's own account.

@@ -105,7 +105,7 @@ describe("git with the App's token", () => {
   // The VM's global rewrites: clone over https, push over ssh deploy keys.
   const global = join(dir, "gitconfig");
   writeFileSync(global, '[url "https://github.com/"]\n\tinsteadOf = git@github.com:\n[url "git@github.com:"]\n\tpushInsteadOf = https://github.com/\n[credential]\n\thelper = !echo username=host-login; echo password=host-token; true\n');
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: global, GIT_CONFIG_NOSYSTEM: "1" };
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: global, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
   const g = (args, opts = {}) => execFileSync("git", args, { cwd: dir, env, encoding: "utf8", ...opts });
 
   it("pushes to the x-access-token URL over https (no ssh rewrite); the plain https URL would be rewritten", () => {

@@ -1,0 +1,55 @@
+# Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used.
+# The AI reviewer's exit test (services/runner/scripts/reviewer-eval.mjs) needs a paid OpenRouter key, so the
+# maintainer runs it by hand for changes to the reviewer, its policy or its cases.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.dir }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { dir: scripts, run: "npm ci && npm test" }
+          - { dir: services/runner, run: "npm ci && npm test" }
+          - { dir: services/computer, run: "node --test test/*.test.mjs" }
+          - { dir: services/gate, run: "npm test && npm run typecheck" }
+          - { dir: services/board, run: "npm ci && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build" }
+          - { dir: services/apps-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/clickhouse/connections/clickhouse-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/github/connections/github-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/glean/connections/glean-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/google/connections/google-workspace-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/grafana/connections/grafana-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/jira/connections/jira-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/meetings/connections/ops-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/owner-channel/connections/slack-live-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/primer/connections/primer-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/slack/connections/slack-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/security/scanner, run: "npm ci && npm test && npm run typecheck" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Git identity (the runner's tests make commits)
+        run: git config --global user.name ci && git config --global user.email ci@example.com
+      - name: Test
+        working-directory: ${{ matrix.dir }}
+        run: ${{ matrix.run }}
