@@ -1,6 +1,7 @@
 // The tier table, row by row, from verified state; plus the four real rejects of 2026-11-10/11.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import YAML from "yaml";
 import { classify } from "../src/tiers.mjs";
 
 const base = { agentsOrg: "acme-agents", productRepo: "acme/aidenhq", instanceRepo: "acme-agents/aidenhq-instance", requester: { platform: false }, taskStatus: "in_progress" };
@@ -22,7 +23,7 @@ test("push and draft pr", () => {
   assert.equal(tierOf(pub("push", { empty: true })), 2, "empty repo: the first push lands on main");
   assert.equal(tierOf(pub("push", { files: [".github/workflows/ci.yml"] })), 2, ".github change");
   assert.equal(tierOf(pub("push", { repo: base.instanceRepo })), 2, "instance repo");
-  assert.equal(tierOf(pub("push", { repo: base.productRepo })), 2, "product repo push");
+  assert.equal(tierOf(pub("push", { repo: base.productRepo })), 2, "product repo push from outside the Platform Engineer's line");
   assert.equal(tierOf(pub("pr", { repo: "acme/bor" })), 1, "pr outside the agents org");
   assert.equal(tierOf(pub("push", { repo: "acme/bor" })), 2, "push outside the agents org");
   assert.equal(tierOf(pub("pr", {}, { sticky: true })), 2, "sticky after a reject");
@@ -39,6 +40,77 @@ test("product repo PRs: platform only, gate files are the owner's", () => {
   assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["services/apps-mcp/src/agent-auth.ts"] }, { requester: { platform: true } })), 2);
   assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["ops/apply-config.sh"] }, { requester: { platform: true } })), 2);
   assert.equal(tierOf(pub("pr", { repo: base.productRepo })), "reject", "any other requester");
+});
+
+// Owner, 2026-11-13: product writes are the reviewer's for the Platform Engineer's line unless they touch the actual gates.
+const P = { requester: { platform: true }, roles: { "fleet-ops": ["fleet-read"] } };
+const prod = (action, b = {}, over = {}) => pub(action, { repo: base.productRepo, ...b }, { ...P, ...over });
+const yml = (o) => YAML.stringify(o);
+const mod = (agents, extra = {}) => yml({ name: "m", agents, ...extra });
+test("product repo: branch push, PR and merge are Tier 1 for the Platform Engineer's line", () => {
+  assert.equal(tierOf(prod("push")), 1, "a branch push");
+  assert.equal(tierOf(prod("push", { branch: "main" })), 2, "the default branch");
+  assert.equal(tierOf(prod("push", {}, { requester: { platform: false } })), 2, "another agent's push stays the owner's");
+  assert.equal(tierOf(prod("pr", { files: ["services/board/src/tasks.ts", "package-lock.json", "scripts/computers.mjs", "services/runner/src/prompt.mjs"] })), 1, "general code and computers.mjs are not gate code");
+  for (const g of ["services/runner/src/tiers.mjs", "modules/core/security/policy.md", "scripts/no-shell.mjs", "services/computer/launcher.mjs", "services/computer/plugin/worker.js", "services/computer/images/engineer/Dockerfile", "services/runner/src/main.mjs", "services/runner/src/engines.mjs", "services/runner/src/state.mjs", "services/runner/src/config.mjs", "services/runner/src/github-app.mjs", "scripts/paperclip-setup.mjs", "scripts/modules.mjs", "services/gateway/lib.mjs", "scripts/verify-security.sh", "scripts/supply-chain/npm-age.mjs", ".github/workflows/ci.yml", "services/board/src/approvals.ts", "modules/glean/connections/glean-mcp/src/agent-auth.ts"])
+    assert.equal(tierOf(prod("pr", { files: ["package.json", g] })), 2, g);
+  assert.equal(tierOf(prod("pr", { files: ["modules/fleet-ops/agents/fleet-ops/AGENTS.md"] })), 2, "a role holder's handbook");
+  assert.equal(tierOf(prod("pr", { files: ["modules/slack/agents/slack-scout/AGENTS.md"] })), 1, "a handbook of an agent without a role");
+  const pm = (p = {}, over = {}) => merge({ repo: base.productRepo, ...p }, { ...P, ...over });
+  assert.equal(tierOf(pm()), 1, "CI green on the exact head");
+  assert.equal(tierOf(pm({ checks: [{ name: "test", ok: false, pending: true }] })), 1, "still running: the strict queue merges only once green");
+  assert.equal(tierOf(pm({ checks: [{ name: "test", ok: false }] })), 2, "red");
+  assert.equal(tierOf(pm({ checks: [] })), 2, "no checks");
+  assert.equal(tierOf(pm({ headMatches: false })), 2, "head moved");
+  assert.equal(tierOf(pm({ ownHead: false })), 2, "a fork's or someone else's head");
+  assert.equal(tierOf(pm({ files: ["package.json", "services/runner/src/review.mjs"] })), 2, "gate code");
+  assert.equal(tierOf(pm({}, { requester: { platform: false } })), 2, "another agent's merge");
+});
+
+test("product repo: a bump that quietly edits a gate file is the owner's", () => {
+  const files = ["services/whisper/requirements.txt", "services/runner/package-lock.json", "services/runner/src/review.mjs"];
+  const t = prod("pr", { files });
+  assert.equal(tierOf(t), 2);
+  assert.equal(t.rule, "product-gate");
+  assert.match(t.reason, /review\.mjs/);
+});
+
+test("product repo: module.yaml and compose.yaml by content", () => {
+  const f = "modules/m/module.yaml";
+  const agent = { model: "a", reasoning_effort: "low", connections: { github: "read", paperclip_tasks: ["task_get"] }, roles: [] };
+  const withText = (b, h) => prod("pr", { files: [f], texts: { [f]: { base: b, head: h } } });
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: { ...agent, reasoning_effort: "high" } }, { description: "new words" }))), 1, "effort and text");
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: { ...agent, connections: { ...agent.connections, github: "write" } } }))), 2, "a wider grant");
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: { ...agent, connections: { ...agent.connections, paperclip_tasks: ["task_get", "task_create"] } } }))), 2, "a new tool");
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: { ...agent, connections: { github: "read" } } }))), 1, "a narrower grant");
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: { ...agent, model: "b" } }))), 2, "a model");
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: { ...agent, roles: ["fleet-admin"] } }))), 2, "a role");
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: agent, y: agent }))), 2, "a new agent");
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: agent }, { codex_args: ["--sandbox", "workspace-write"] }))), 2, "the tool-only sandbox");
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: agent }, { generated_secrets: ["k"] }))), 2, "a credential");
+  const conn = (tools, extra = {}) => mod({ x: agent }, { connections: { gh: { guide: "g", url: "http://gh:1/mcp", tools, ...extra } } });
+  assert.equal(tierOf(withText(conn({ read: ["a"], write: ["b"] }), conn({ read: ["a"], write: ["b"] }, { guide: "better guide" }))), 1, "a connection's guide");
+  assert.equal(tierOf(withText(conn({ read: ["a"], write: ["b"] }), conn({ read: ["a", "c"], write: ["b"] }))), 2, "a new tool on a connection");
+  assert.equal(tierOf(withText(conn({ read: ["a"], write: ["b"] }), conn({ read: [], write: ["a", "b"] }))), 2, "a tool tagged write");
+  const rt = (model) => mod({ x: agent }, { routines: { r: { agent: "x", schedules: [{ cron: "0 9 * * *" }], ...(model ? { model } : {}) } } });
+  assert.equal(tierOf(withText(rt(), yml({ ...YAML.parse(rt()), routines: { r: { agent: "x", schedules: [{ cron: "0 10 * * *" }] } } }))), 1, "a schedule");
+  assert.equal(tierOf(withText(rt(), rt("m2"))), 2, "a routine model");
+  assert.equal(tierOf(prod("pr", { files: [f] })), 2, "content not read: the owner's");
+  const compose = (image, extra = {}) => yml({ services: { tailscale: { image, network_mode: "host", ...extra } } });
+  const c = (b, h) => prod("pr", { files: ["compose.yaml"], texts: { "compose.yaml": { base: b, head: h } } });
+  assert.equal(tierOf(c(compose("tailscale/tailscale:v1.90.1@sha256:aa"), compose("tailscale/tailscale:v1.90.4@sha256:bb"))), 1, "an image bump");
+  assert.equal(tierOf(c(compose("t:1"), compose("t:1", { volumes: ["/var/run/docker.sock:/var/run/docker.sock"] }))), 2, "a new mount");
+  assert.equal(tierOf(c(compose("tailscale/tailscale:v1.90.1"), compose("evil/tailscale:v1.90.1"))), 2, "another image repository");
+  assert.equal(tierOf(c(compose("t:1"), yml({ services: { tailscale: { image: "t:1", network_mode: "host" }, extra: { image: "x:1" } } }))), 2, "a new service");
+  // A module's compose fragment gets the same rules; unread, it is the owner's.
+  const frag = "modules/glean/compose.yaml";
+  const cf = (b, h) => prod("pr", { files: [frag], texts: { [frag]: { base: b, head: h } } });
+  assert.equal(tierOf(cf(compose("g:1@sha256:aa"), compose("g:1@sha256:bb"))), 1, "a fragment's digest bump");
+  assert.equal(tierOf(cf(compose("g:1"), compose("g:1", { privileged: true }))), 2, "a fragment turns privileged");
+  assert.equal(tierOf(cf(compose("g:1"), compose("g:1", { environment: { TOKEN: "x" } }))), 2, "a fragment's env");
+  assert.equal(tierOf(prod("pr", { files: [frag] })), 2, "a fragment not read");
+  assert.equal(tierOf(withText(mod({ x: agent }, { compose: "compose.yaml" }), mod({ x: agent }, { compose: "other.yaml" }))), 2, "a module's compose path");
+  assert.equal(tierOf(withText(mod({ x: agent }, { settings: { autonomy: { default: "off" } } }), mod({ x: agent }, { settings: { autonomy: { default: "full" } } }))), 2, "a setting's default");
 });
 
 test("merge in the agents org", () => {

@@ -13,7 +13,7 @@ turns what you ask for into work for the right agent, chases it, and brings you 
 | Block | What it is |
 |---|---|
 | **Chief of staff (Aiden)** | The one agent you talk to. Turns chat and forwards into tasks, delegates, chases, sends the daily brief, relays your approvals word for word. |
-| **Crews** | Specialist agents on schedules and events. Core: Aiden, Research Assistant, DevOps Engineer, Agent Architect, Platform Engineer. Modules add the rest (Follow-up Tracker with its Slack and inbox scouts, Meeting Librarian, Engineers, Security Watch, ...). Each is a `module.yaml` entry plus a handbook (`modules/<m>/agents/<key>/AGENTS.md`). |
+| **Crews** | Specialist agents on schedules and events. Core: Aiden, Research Assistant, DevOps Engineer, Agent Architect, Agent Coach, Platform Engineer. Modules add the rest (Follow-up Tracker with its Slack and inbox scouts, Meeting Librarian, Engineers, Security Watch, ...). Each is a `module.yaml` entry plus a handbook (`modules/<m>/agents/<key>/AGENTS.md`). |
 | **Control plane** | [Paperclip](https://github.com/paperclipai/paperclip): tasks, routines, budgets, approvals, run history. Agents run on Codex via OpenRouter. |
 | **Shared connections** | MCP servers any agent can be granted: Google Workspace, Slack, Glean, Jira, GitHub, Primer, tasks, apps (Grafana and ClickHouse are runner-only). Each optional one is a module (`modules/<m>/connections/`). Tools are tagged read or write; every call is checked against the agent's grants. |
 | **Runner** | Host service for coding jobs. Pushes, PRs and merges happen only on the owner's own words, enforced in code. |

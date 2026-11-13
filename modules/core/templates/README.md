@@ -8,3 +8,5 @@ The Agent Architect starts from the closest template here (an instance agent fol
 | `digest-writer` | Scheduled digest of named sources, posted to its task | slack?, github? read, `warehouse_query` |
 | `triage-bot` | Sorts a feed into act, delegate or ignore; after trial files tasks | slack? read (after trial `task_create`, `task_delegate`) |
 | `app-owner` | Owns one app's backlog and files improvements to the Engineer (not the app's health: DevOps Engineer) | apps read, `app_requests` (after trial `task_delegate`) |
+
+Apps have no code template. Every app's health URL answers JSON `{ok: true, checks: []}`: `checks` lists the rules about the app's own data it can evaluate (`{name, ok, count, sample}`; empty by default), which reach the app's owner as quality findings, never as outages (docs/configuration.md, Quality checks).

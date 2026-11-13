@@ -37,8 +37,7 @@ owner's board). One comment per finding or action, one line each, starting with 
 `<agent> · <task> · <kind>` for what you found yourself). Read its recent comments before acting: it is how you never do
 the same thing twice. Never create a separate log task. Log a key once when you first see it, then only when its state
 changes (acted, recovered, now waiting on the owner): a line that says nothing new is noise. Retrying the same repair on
-one key twice without effect means the cause is in the product: log it once as `product-bug · <short-slug>` and stop
-retrying.
+one key twice without effect means the cause is in the product: file it as a product bug (below) and stop retrying.
 
 ## On a check
 
@@ -64,13 +63,22 @@ failing for 15 minutes, an agents-org pull request open over an hour without mer
 - **A repeated mistake** (the same kind of failure twice, by one agent or several): propose a handbook rule once, as
   "Improving the rules" says (the Platform Engineer judges and files it). Check your log for a `rule:<agent>:<kind>` line
   first and log the key when you file it, with the evidence (task ids, your log lines). Don't chase it beyond the digest.
-- **A product bug** (AidenHQ itself misbehaves: the board, runner, a connection, Paperclip wiring): one comment on the
-  "Fleet issues" task, key `product-bug · <short-slug>` (skip it if that key is already there), with what happened, the
-  evidence and what you expected; log it, and list it in the digest so Aiden and the owner see it. Never write or
-  request the code change yourself.
+- **A product bug** (AidenHQ itself misbehaves: the board, runner, a connection, Paperclip wiring): file it as a fix
+  task for the Platform Engineer: `task_create` with `assignee: fleet-engineer`, marker `product-bug:<short-slug>` (the
+  same marker returns the open task, so a bug is filed once; a fixed one that comes back gets a new task), title
+  `Product bug: <one line>`, a description with what happened, the evidence (task ids, run ids, card ids, the one log or
+  error line that matters) and what you expected, `deliverable` `{kind: pr, ref: <product repo>}`, and a `rubric` of 3-5
+  criteria drawn from that evidence (e.g. "merged into main with checks green", "a test reproduces <the failure> and
+  passes", "<the symptom> no longer happens on <the case>"). Log only `log · <time> · product-bug · <slug> · <task id>`,
+  and list it in the digest. Never write the code change yourself.
 - **An app incident:** the DevOps Engineer owns it (the app-incident loop). Don't diagnose or restart it yourself. If
   the incident is still open after its run finished, or the app keeps flapping, comment once on the DevOps Engineer's
   incident task (or on the "Fleet issues" task if there is none) and log it.
+- **A quality finding** (`quality:<app>:<check>`): the app is up, but its own `/api/health` check on its data fails (e.g. an
+  ETA without a source). Not an incident: never restart or roll it back, and don't wake the DevOps Engineer for it. Route it
+  once to the app's owning agent (`fleet_catalog` apps; the DevOps Engineer when none) with `task_create`, marker
+  `quality:<app>:<check>`: the check's name and count, "read the sample with `app_status`", and the done condition "the
+  check passes". Log the key. It recovers when the check passes; a check that can't be evaluated stays open.
 - **A source down:** the DevOps Engineer watches sources on its heartbeats. Check `src_meta.ingest_run` for the error.
   "Not connected", "sign in" or "install the GitHub App" is the owner's to fix: alert them (below). Otherwise make sure
   there is one comment on the "Fleet issues" task with key `ingest · src_<source> · stale` (add it if missing).
@@ -101,7 +109,8 @@ Security Watch assigns its fix tasks to you (label `security`). You route, you d
 
 - **Product or instance change** (an image we build in the product repo; an upstream image or version bump in compose or the
   instance registry): `task_delegate` to the Platform Engineer with the task's exact change and a done condition. A
-  product-repo change is done when its PR is open: the owner merges product PRs, so never ask for a merge there.
+  product-repo change is done when its PR is merged (the Platform Engineer merges it once green; gate code waits for the
+  owner).
 - **An app repo** (`app:*`, `repo:*` in the agents org): `task_create` with `assignee` the app's owning agent (`fleet_catalog`
   apps), or the DevOps Engineer when none, with the repo (`owner/name`), the exact change and the done condition "merged
   and deployed, `app_status` healthy", and `deliverable` `app` with the app's name (their work is graded).

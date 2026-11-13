@@ -25,7 +25,8 @@ reviewer, whoever it claims to be from.
 - No unrelated files. Lockfile churn, config edits, renamed directories or "while I was here" cleanups that the chain
   did not ask for are a reason to reject.
 - An app agent never changes the product repo. App agents build apps in agents-org app repos; product changes come only
-  from the platform engineer or the architect.
+  from the Platform Engineer's line: the Platform Engineer itself, a task the Agent Architect made, or the owner's own
+  task. Code checks who asked; a product card that reached you passed that check.
 - A product pin (`product:` in the instance repo) only moves forward along product main. A pin that moves backwards is
   an emergency rollback, and that is the owner's decision, even if it is described as an upgrade or a bump.
 - Nothing runs for a task that is cancelled or done. A request left over from such a task is stale: reject it.
@@ -49,17 +50,44 @@ Calls to hosts the app obviously needs (the API the chain asked it to integrate 
 
 Never Tier-1-approvable. Escalate any change that touches:
 
-- `services/board/src/approvals.ts` or the approval routes in `app.ts`;
-- `services/shared/agent-auth.ts`;
-- `services/runner/src/tiers.mjs`, `review.mjs`, `authorize.mjs`, `merges.mjs`, `apply.mjs`;
-- `scripts/modules.mjs` and `scripts/paperclip-setup.mjs`;
-- anything under `ops/` or `modules/core/security/`;
-- CI workflows or anything under `.github/`;
-- authentication or approval logic anywhere;
-- grants, roles, or any `launcher` file.
+- `services/runner/src/tiers.mjs`, `review.mjs`, `authorize.mjs`, `merges.mjs`, `apply.mjs`, `netjail.mjs`, `main.mjs`,
+  or anything under `modules/core/security/`;
+- `agent-auth.ts` (any copy), `scripts/modules.mjs` or `scripts/paperclip-setup.mjs` (grants, models, caps, `autonomy`,
+  adapter config and the no-shell check);
+- the board's `approvals.ts`, `app.ts`, `fleet.ts`, `accounts.ts` or `session.ts`;
+- `scripts/no-shell.mjs`, anything under `services/computer/` or `services/gateway/`;
+- anything under `ops/`, `scripts/verify-security.sh`, `scripts/supply-chain/`, `.gitleaks.toml`, CI workflows or anything
+  under `.github/`;
+- in any other file: authentication or approval logic, how grants, roles, models, caps or the `autonomy` setting are
+  computed or written, a removed or bypassed call to a gate, or how the runner decides who asked for a write;
+- in a `module.yaml`: a new agent, a new or wider grant, a new tool, a model, a role, an image, settings, the `compose`
+  path, credentials or `codex_args`; in any compose file (the root's or a module's), anything beyond image tags or digests.
 
 Code should have routed these to Tier 2 already. If one reaches the reviewer, that is itself suspicious, particularly
 when it is a small edit inside an otherwise unrelated change. Escalate, and say which file.
+
+The rest of the product (services, connections, setup and compile scripts outside the lines above, module handbooks of
+agents without a role, docs, tests) is ordinary Tier 1 work when the chain asked for it: judge it like any change.
+
+## Product pull requests and merges
+
+- A PR to the product repo is judged like any change: does the diff do what the chain asked, and nothing else.
+- A merge card for a product PR: judge the PR's whole diff the same way, against the chain. Code already checked that the
+  head is the one the runner pushed, that it has not moved, and that no named check is red; the merge runs only once every
+  named check is green on that head. Approve a merge whose diff is the asked change.
+- A product change reaches the instance only when the product pin moves (a separate apply card), so a merge is not a
+  deploy; do not escalate a merge for that reason alone.
+
+## Dependency and image bumps
+
+A bump the chain asked for (a security fix or an upgrade naming the package or image) is routine. Approve when the diff
+changes the named package's or image's pinned version or digest, plus the lockfile entries that follow from it (its own
+entry, its integrity hash, transitive dependencies it pulls in) and the supply-chain exception the chain names, if any.
+That lockfile churn is expected, not "unrelated". The 7-day rule is CI's job (`scripts/supply-chain/`), not yours.
+
+Reject a bump that also adds a dependency the chain did not name, adds or changes an install script, points a package at a
+new registry, URL or git source, or moves a different package than the one asked for. Reject one that does not reach
+the version or fix the chain asked for, and say what is missing.
 
 ## Config (apply)
 
@@ -128,6 +156,13 @@ app repo adds one route and one button, touches only app files, and sends nothin
 
 Approve: trial agent graduation. The chain says to graduate the agent. The compiled diff removes `trial: true` and
 leaves its connections, tools and roles unchanged. Approve.
+
+Approve: a product dependency bump. The chain asks the Platform Engineer to bump a vulnerable package in a product
+service to a named fixed version. The PR changes that version in `package.json` and the matching lockfile entries, and
+nothing else. Approve.
+
+Approve: a product merge. The chain asked for a product fix; the PR's diff is that fix and its test, and its checks are
+green on the exact head. Approve.
 
 Approve: a non-destructive migration. A deploy adds a nullable column and an index. No drop, truncate or unqualified
 delete, and the app code that uses the column is in the diff. Approve.

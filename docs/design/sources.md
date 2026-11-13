@@ -63,8 +63,11 @@ apps-mcp (`services/apps-mcp/src/sources.ts`) gives agents three tools:
   Rows younger than five seconds wait, so a transaction that took a lower `seq` but committed later is not missed.
 - `source_ack(view, cursor)`: advances the cursor to what `source_new` returned, after the rows were handled.
 
-Cursors live in `src_meta.cursor`, keyed by the agent's Paperclip identity (never a tool argument), and only apps-mcp
-writes them. The set of views `source_new` serves is the `VIEWS` table in that file. A security finding that was
+Cursors live in `src_meta.cursor`, keyed by the agent's Paperclip identity (never a tool argument), the view and the
+filter (`filter_key`: empty when unfiltered, else a hash of the scopes and `q`, carried in the cursor token as
+`<seq>.<key>`), and only apps-mcp writes them. Acking a filtered read therefore never moves another read's cursor past rows
+it didn't return; a filtered read starts after the later of its own cursor and the unfiltered one. A channel, repo or project with no row
+in any view of that source is refused, with the nearest real values, so a guessed scope can't read nothing silently. The set of views `source_new` serves is the `VIEWS` table in that file. A security finding that was
 reviewed as not affected is excluded from `src_security.findings`.
 
 ## People

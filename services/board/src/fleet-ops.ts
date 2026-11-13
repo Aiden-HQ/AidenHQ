@@ -35,6 +35,25 @@ export function stalePrs(rows: PrRow[], t: number): { key: string; reason: strin
     .filter((x) => age(x.opened_at, t) > PR_OPEN_MS)
     .map((x) => ({ key: `${x.repo}#${x.number}`, reason: `${x.repo}#${x.number} open ${mins(age(x.opened_at, t))} without merging` }));
 }
+// Never a sample: apps-mcp keeps app data behind app_status (per-caller read access); fleet_status shows what the detector holds.
+type QualityRow = { name: string; state: "none" | "ok" | "unknown"; checks?: { name: string; ok: boolean; count: number | null }[] };
+/**
+ * Quality findings (apps' own /api/health checks, apps-mcp quality.ts): a failing check is `<app>:<check>` in the `quality`
+ * group, never an app incident (bad data must not look like an outage or roll a deploy back). An app whose checks couldn't be
+ * evaluated keeps its open findings open (`openKeys`: the detector's open keys): unknown is not recovered.
+ */
+export function qualityFindings(apps: QualityRow[], openKeys: string[]): Incident[] {
+  const out: Incident[] = [];
+  for (const a of apps) {
+    if (a.state === "unknown") {
+      for (const k of openKeys.filter((k) => k.startsWith(`quality:${a.name}:`))) out.push({ key: k.slice("quality:".length), reason: "" });
+      continue;
+    }
+    for (const c of a.state === "ok" ? (a.checks ?? []).filter((c) => !c.ok) : [])
+      out.push({ key: `${a.name}:${c.name}`, reason: `app ${a.name}: quality check ${c.name} failing${c.count != null ? ` (${c.count})` : ""}; its owner reads the sample with app_status` });
+  }
+  return out;
+}
 const STUCK_DEFAULT_MS = 180 * MIN; // a run with no known timeout, running this long
 const FAILS = 3; // an agent's last finished runs, all failed
 
@@ -238,6 +257,12 @@ export function checks(pc: Paperclip, store: Pick<Store, "approvals" | "grades" 
       const apps = await appsApi<{ name: string; incident?: { opened_at: string; kind: string; detail: string } }[]>("/internal/status");
       appsOkAt = t;
       return apps.filter((a) => a.incident && age(a.incident.opened_at, t) > DOWN_MS).map((a) => ({ key: a.name, reason: `app ${a.name} unhealthy for ${mins(age(a.incident!.opened_at, t))} (${a.incident!.kind}); the app-incident loop hasn't fixed it` }));
+    },
+    // Apps' quality checks: findings for the app's owner (Fleet Ops routes them), separate from the `app` availability group.
+    async quality() {
+      const r = await appsApi<{ apps?: QualityRow[] }>("/internal/quality", undefined, { auth: true });
+      if (!r.apps) return undefined;
+      return qualityFindings(r.apps, Object.keys(detectorState(store).open));
     },
     async service() {
       const down = now() - appsOkAt;

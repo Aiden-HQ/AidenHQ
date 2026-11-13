@@ -370,7 +370,8 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # mutation marks a draft ready) are: merge and update-branch; in the agents org only, retargeting a stacked PR to the
 # default branch once its parent merged, deleting a merged PR's own head branch (never the default branch, only at the
 # merged head, never under an open PR), and `aidenhq close` (a comment, then the PR closed). allowedWrite refuses all but
-# PUT outside the agents org (the host gh login writes there). WRITES allows paths, not
+# PUT outside the agents org. The card is the review (bound to the head) in the agents org and the product repo, whose
+# merges go through the App; elsewhere the host gh login merges, behind GitHub's own review. WRITES allows paths, not
 # bodies or orgs, so the call sites and their gates are asserted here too. Pushes and draft PRs stay on the exact word.
 rm_="services/runner/src/merges.mjs"; rmain="services/runner/src/main.mjs"; rtiers="services/runner/src/tiers.mjs"
 merge_writes="$(sed -n '/^export const WRITES/,/^\];/p' "$rm_" | grep -oE 'method: "[A-Z]+", path: /[^ ]+/' | tr '\n' ' ')"
@@ -385,7 +386,10 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF 'if (pr.isCrossRepository || !pr.headRefName || pr.headRefName === defaultBranch) return;' "$rm_" \
   && grep -qF 'if (b.tip === pr.headRefOid && !b.stacked) await github.deleteBranch(repo, pr.headRefName);' "$rm_" \
   && [ "$(grep -c 'deleteHead(' "$rm_")" = 3 ] && grep -qF 'if (cardIsReview(next.repo)) await deleteHead(' "$rm_" \
-  && grep -qF 'cardIsReview: (slug) => inOrg(cfg.agentsOrg, slug)' "$rmain" \
+  && grep -qF 'cardIsReview: ownRepo });' "$rmain" \
+  && grep -qF 'const ownRepo = (slug) =>inOrg(cfg.agentsOrg, slug) || (Boolean(cfg.productRepo) && String(slug).toLowerCase() === String(cfg.productRepo).toLowerCase());' "$rmain" \
+  && grep -qF 'if (same(p.repo, s.productRepo)) return productMergePart(p, ref, s);' "$rtiers" \
+  && [ "$(awk '/^function productMergePart/,/^}/' "$rtiers" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 T(2 " ] \
   && [ "$(grep -c 'each: true' "$rmain")" = 1 ] && grep -qF 'startMerges(issue, { prs: zero, strict: true, each: true })' "$rmain" \
   && grep -qF 'const isZero = (t) => t.tier === 0 && !t.reject;' "$rmain" \
   && grep -qF 'if (!s.agentsOrg || !same(orgOf(p.repo), s.agentsOrg)) return T(2, "outside-merge"' "$rtiers" \
@@ -397,7 +401,12 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && [ "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n '^  if (t.tier !== 0) throw ' | cut -d: -f1)" -lt "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n 'merges.closePrs(' | cut -d: -f1)" ] \
   && grep -qF 'if (!same(orgOf(p.repo), s.agentsOrg)) return REJECT("outside-close"' "$rtiers" \
   && grep -qF 'if (same(p.repo, s.instanceRepo) || same(p.repo, s.productRepo)) return REJECT("core-repo-close"' "$rtiers" \
-  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues), merged-head branch deletes (after any agents-org merge) and closes (Tier 0, not the product or instance repo) ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
+  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues), merged-head branch deletes (after any agents-org merge) and closes (Tier 0, not the product or instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
+# Tool-only agents get no shell: setup (gate code too) must run the gate's check on every Codex agent without image:.
+grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-setup.mjs \
+  && [ "$(grep -c 'assertNoShell(' scripts/paperclip-setup.mjs)" = 1 ] \
+  && grep -qF '  if (!a.image) assertNoShell(key, extraArgs, adapterConfig.dangerouslyBypassApprovalsAndSandbox);' scripts/paperclip-setup.mjs \
+  && pass "setup: every tool-only Codex agent passes the no-shell check (scripts/no-shell.mjs)" || fail "setup: the no-shell check's call site changed (scripts/paperclip-setup.mjs)"
 # The Engineer's own tools (docs/design/conversational-engineers.md): a fixed command list on the per-run loopback
 # endpoint, every write tiered (tiers.mjs) or checked against the user's words, and the check given nothing else.
 # `close` is tiered only: Tier 0 for agents-org PRs outside the product and instance repos, refused anywhere else.

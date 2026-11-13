@@ -17,9 +17,11 @@
  * after 3 minutes' grace for the primary paths, the board posts one notice on the task naming what changed (ids and
  * states only), which wakes the agent through Paperclip's comment wake; a recovery-held task's agent is woken directly.
  * Cursors advance only once the notice is posted. The notice is on the agent's own task and nothing here reads comments,
- * so a wake never causes another. At most 4 wakes per agent per hour. Kill switch: instance setting `wake_ups: off`.
+ * so a wake never causes another. At most 4 wakes per agent per hour, and each counts against the task's daily limit
+ * (brake.ts). Kill switch: instance setting `wake_ups: off`.
  */
 import { readFileSync } from "node:fs";
+import { takeWake } from "./brake.js";
 import { NOTICE_MARKER } from "./chats.js";
 import { appsApi } from "./fleet.js";
 import { OPEN, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
@@ -210,6 +212,11 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     recent.set(agent, mine);
     if (mine.length >= PER_HOUR) {
       log.warn({ issue: t.identifier, agent }, "wake-up held: this agent's hourly limit");
+      continue;
+    }
+    // The loop brake (brake.ts): the board's own wakes on this task today are used up; the change stays news for tomorrow.
+    if (!takeWake(store, t.id, "board", now, deps.grantsFile)) {
+      log.warn({ issue: t.identifier, agent }, "wake-up held: the task's daily limit");
       continue;
     }
     const body = `Wake-up: something ${t.identifier} waits on changed.\n${changed.map(([k, s]) => `- ${s.line(was[k]!)}`).join("\n")}\n\n${NOTICE_MARKER}${WAKE_MARKER}`;

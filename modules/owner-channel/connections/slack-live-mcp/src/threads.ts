@@ -70,7 +70,16 @@ export function ownerVia(description: string | null | undefined, comments: { bod
   return opening ? from(opening) : undefined;
 }
 
-type ViaIssue = { description?: string | null; parentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null };
+/**
+ * The owner's own words on a task: not an agent's, and no AidenHQ marker (the runner and the board post as the owner's
+ * account with one), except the board passing on what the owner wrote elsewhere (`aidenhq-from`).
+ */
+export function isOwnerComment(c: { body: string; authorType?: string | null; authorAgentId?: string | null }): boolean {
+  if (c.authorType === "agent" || c.authorAgentId) return false;
+  return !c.body.includes("<!-- aidenhq-") || c.body.includes("<!-- aidenhq-from:");
+}
+
+type ViaIssue ={ description?: string | null; parentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null };
 type ViaComment = { body: string; authorType?: string | null };
 /**
  * Where an agent's message on a task goes: where the owner last wrote on it. Work handed out from a chat (a sub-task its

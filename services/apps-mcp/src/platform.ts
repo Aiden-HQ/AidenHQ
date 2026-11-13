@@ -15,9 +15,9 @@ import { posix } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { EDGE_CONTAINER, edgeTarget, exposes, writeServeConfig, type EdgeTarget } from "./tailnet.js";
 import { readonlyPool, type WarehouseDeps } from "./sources.js";
+import { parseChecks, PROBE, withoutSamples, type Quality } from "./quality.js";
 
 const run = promisify(execFile);
-const PROBE = "fetch(process.argv[1],{signal:AbortSignal.timeout(5000)}).then(r=>process.exit(r.status<400?0:1)).catch(()=>process.exit(1))";
 
 export interface PlatformConfig {
   registryPath: string;
@@ -38,6 +38,8 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   const apps = (): App[] => loadRegistry(cfg.registryPath, cfg.modulesRegistryPath);
   const find = (name: string): App => apps().find((a) => a.name === name) ?? (() => { throw new Error(`unknown app ${name}`); })();
   const healthy = new Map<string, boolean>();
+  // Each app's quality checks from its last probe (quality.ts): findings only, never part of `healthy`.
+  const quality = new Map<string, Quality>();
   const cache = new Map<string, Awaited<ReturnType<typeof status>>>(); // last computed status per app: the health tick fills it
   const errors = new Map<string, string>(); // why the last reconcile of an app failed before anything started
 
@@ -55,9 +57,12 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
 
   const probe = async (app: App): Promise<boolean> => {
       let ok: boolean;
-      if (app.health.url)
-        ok = await exec(["run", "--rm", "--pull", "never", "--network", `app-${app.name}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "64m", cfg.healthImage, "node", "-e", PROBE, app.health.url]).then(() => true, () => false);
-      else ok = await engine.containersHealthy(app);
+      if (app.health.url) {
+        const out = await exec(["run", "--rm", "--pull", "never", "--network", `app-${app.name}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "64m", cfg.healthImage, "node", "-e", PROBE, app.health.url]).then((o) => o, () => undefined);
+        ok = out !== undefined;
+        // Down: its checks weren't evaluated (unknown keeps their findings open; the outage is the availability incident's).
+        quality.set(app.name, out !== undefined ? parseChecks(out) : { state: "unknown", why: "the health check failed" });
+      } else ok = await engine.containersHealthy(app);
       healthy.set(app.name, ok);
       return ok;
     };
@@ -114,7 +119,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
 
   /** Registry plus (cached) status, for the catalog. */
   async function listing() {
-    return apps().map((a) => ({ name: a.name, description: a.description, owner: a.owner, url: url(a), access: a.access, stateful: a.stateful, sources: a.sources, connects: a.connects, status: cached(a).state }));
+    return apps().map((a) => ({ name: a.name, description: a.description, owner: a.owner, repo: a.repo, url: url(a), access: a.access, stateful: a.stateful, sources: a.sources, connects: a.connects, status: cached(a).state }));
   }
 
   /** Wakes the DevOps Engineer: signed like slack-live's triage webhook. Skipped when the routine's secrets aren't mounted. */
@@ -208,6 +213,10 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       sql: (script, vars) => exec(["exec", "-i", WAREHOUSE.container, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", ...Object.entries(vars).flatMap(([k, v]) => ["-v", `${k}=${v}`]), "-U", "warehouse", "-d", WAREHOUSE.db], { input: script }),
     };
   };
-  return { syncEdge, warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
+  /** An app's quality checks from its last probe, samples included (app_status, for a caller who may read the app). */
+  const qualityFor = (a: App): Quality => quality.get(a.name) ?? { state: "unknown", why: "not probed yet" };
+  /** Every probed app's checks without samples (the board's detector raises the failing ones; samples never leave here). */
+  const qualityOf = () => apps().filter((a) => a.health.url).map((a) => ({ name: a.name, ...withoutSamples(qualityFor(a)) }));
+  return { qualityOf, qualityFor, syncEdge, warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;

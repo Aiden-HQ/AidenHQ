@@ -128,6 +128,12 @@ const http = createServer(async (req, res) => {
       );
       return send(res, 200, { sources: r.rows });
     }
+    // Each app's quality checks from its last health probe (quality.ts): name, ok and count only, never samples (app data,
+    // read through app_status by a caller who may read the app). The board's detector raises the failing ones for Fleet Ops.
+    if (url.pathname === "/internal/quality" && req.method === "GET") {
+      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
+      return send(res, 200, { apps: p.qualityOf() });
+    }
     // Open pull requests in the agents org's repos, from the warehouse (src_github syncs every 15 minutes): the board's Fleet Ops
     // detector raises the ones nobody has merged. Empty when there is no agents org or no warehouse yet.
     if (url.pathname === "/internal/open-prs" && req.method === "GET") {

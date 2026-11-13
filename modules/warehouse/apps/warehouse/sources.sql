@@ -72,16 +72,24 @@ GRANT INSERT ON src_meta.ingest_run TO writers;
 GRANT USAGE ON SEQUENCE src_meta.ingest_run_id_seq TO writers;
 GRANT SELECT ON src_meta.ingest_run TO agents_open;
 
--- Consumer cursors (source_new / source_ack in apps-mcp), keyed by the consumer's Paperclip agent id; written only by
--- apps-mcp as the superuser.
+-- Consumer cursors (source_new / source_ack in apps-mcp), keyed by the consumer's Paperclip agent id, the view and the
+-- read's filter (filter_key: '' unfiltered, else a hash of the filter), so acking a filtered read never moves the cursor of
+-- another filter past rows it hasn't read; written only by apps-mcp as the superuser.
 CREATE TABLE IF NOT EXISTS src_meta.cursor (
   agent_id text NOT NULL,
   view text NOT NULL,
+  filter_key text NOT NULL DEFAULT '',
   seq bigint NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (agent_id, view)
+  PRIMARY KEY (agent_id, view, filter_key)
 );
-COMMENT ON TABLE src_meta.cursor IS 'Each consumer agent''s read position (src_meta.seq) per source view; advanced by source_ack.';
+ALTER TABLE src_meta.cursor ADD COLUMN IF NOT EXISTS filter_key text NOT NULL DEFAULT '';
+DO $$ BEGIN
+  IF (SELECT array_length(conkey, 1) FROM pg_constraint WHERE conrelid = 'src_meta.cursor'::regclass AND contype = 'p') = 2 THEN
+    ALTER TABLE src_meta.cursor DROP CONSTRAINT cursor_pkey, ADD PRIMARY KEY (agent_id, view, filter_key);
+  END IF;
+END $$;
+COMMENT ON TABLE src_meta.cursor IS 'Each consumer agent''s read position (src_meta.seq) per source view and filter (filter_key '''' = unfiltered); advanced by source_ack.';
 GRANT SELECT ON src_meta.cursor TO agents_open;
 
 -- People across sources: one row per human, and each source identity (src_<source>.users) linked to one. apps-mcp

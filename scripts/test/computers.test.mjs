@@ -7,7 +7,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
-import { assertNoShell, computerAdapterConfig, computersConfig, ensureComputers, validateImages, GATEWAY_URL } from "../computers.mjs";
+import { computerAdapterConfig, computersConfig, ensureComputers, validateImages, GATEWAY_URL } from "../computers.mjs";
+import { assertNoShell } from "../no-shell.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
 function inst(overrides) {

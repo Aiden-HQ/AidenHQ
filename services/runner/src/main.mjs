@@ -61,11 +61,12 @@ async function appFor(slug) {
   return app && repo && repoAllowed(repo, cfg.allowed_orgs) && (await app.covers(repo.slug).catch((err) => (log("github app check failed", { repo: repo.slug, err: String(err.message).slice(0, 200) }), false))) ? app : undefined;
 }
 const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, perms, extra);
-// Outside the agents org the App only pushes and opens PRs: merges there take today's path (the host's gh login).
+// Outside the agents org and the product repo the App only pushes and opens PRs: merges there take the host's gh login (GitHub's
+// own review gates them). Product merges (Tier 1 since 2026-11-13) go through the App, as its bot, never the owner's account.
 /** Our own repositories (the product repo, the agents org): their reviewers are us, so internal names are fine there. */
 const sameRepo = (a, b) => Boolean(a && b) && String(a).toLowerCase() === String(b).toLowerCase();
 const ownRepo = (slug) =>inOrg(cfg.agentsOrg, slug) || (Boolean(cfg.productRepo) && String(slug).toLowerCase() === String(cfg.productRepo).toLowerCase());
-const ghoMerge = async (slug, extra) => (inOrg(cfg.agentsOrg, slug) ? gho(slug, WRITE, extra) : extra);
+const ghoMerge = async (slug, extra) => (ownRepo(slug) ? gho(slug, WRITE, extra) : extra);
 /**
  * The job's gh token: the App's, read-only (READ), narrowed to the task's repos it covers in the first such repo's org
  * (one token, one org), and fresh so it lasts the run. Undefined when it covers none: the job's gh then has no GitHub
@@ -185,6 +186,8 @@ const boardApi = (() => {
   }
 })();
 const board = cfg.recurring?.enabled === false ? undefined : boardApi;
+// The loop brake: every runner comment is reported to the board, which cancels its wake past the daily limit on that task.
+if (boardApi) pc.posted = (issueId, commentId) => void boardApi.post("/internal/wake-check", { issue: issueId, comment: commentId }).catch((err) => log("wake check failed", { err: String(err.message ?? err).slice(0, 200) }));
 
 // ------------------------------------------------------------------ model usage for the board's Costs tab
 
@@ -664,7 +667,7 @@ async function advanceMerges({ minute = true } = {}) {
     if (!queue.independent && !minute) continue;
     let step;
     try {
-      step = await merges.advance(queue, { github: mergeGithub, timeoutMinutes: cfg.merges?.timeout_minutes ?? 90, cardIsReview: (slug) => inOrg(cfg.agentsOrg, slug) });
+      step = await merges.advance(queue, { github: mergeGithub, timeoutMinutes: cfg.merges?.timeout_minutes ?? 90, cardIsReview: ownRepo });
       queue.errors = 0;
     } catch (err) {
       // GitHub or the network: try again next minute, and give up after ten in a row.
@@ -1177,6 +1180,7 @@ async function commonTierState(issue, action) {
   const grants = readGrants();
   let root = full;
   for (let i = 0; i < 6 && root.parentId; i++) root = await pc.issue(root.parentId);
+  const walked = !root.parentId; // a chain longer than the walk is unknown: never owner-started
   const key = grants?.agents?.[full.assigneeAgentId]?.key;
   const creator = grants?.agents?.[full.createdByAgentId];
   const ownerMade = Boolean(full.createdByUserId) && !full.createdByAgentId;
@@ -1186,10 +1190,11 @@ async function commonTierState(issue, action) {
     productRepo: cfg.productRepo,
     instanceRepo: cfg.apply?.repo,
     // The Platform Engineer, a task the Agent Architect made, or the owner's own task (ruling: the owner may always ask).
+    // Only these write to the product repo below Tier 2; an Engineer's product push stays the owner's.
     requester: { platform: key === "fleet-engineer" || (creator?.roles ?? []).includes("architect") || ownerMade },
     taskStatus: full.status,
     sticky: records.some((r) => r.action === action && r.state === "rejected"),
-    ownerStarted: Boolean(root.createdByUserId) && !root.createdByAgentId,
+    ownerStarted: walked && Boolean(root.createdByUserId) && !root.createdByAgentId,
     trialNoTap: trialNoTapBy(full, grants),
     roles: Object.fromEntries(Object.values(grants?.agents ?? {}).map((a) => [a.key, a.roles ?? []])),
     moduleApps: appsRegistry().modules,
@@ -1203,7 +1208,29 @@ async function branchTierState(r, sha) {
   const base = empty ? "" : await git(r.path, "merge-base", `refs/remotes/origin/${r.defaultBase}`, sha).catch(() => "");
   const files = base ? (await git(r.path, "diff", "--no-renames", "--name-only", base, sha).catch(() => null))?.split("\n").filter(Boolean) ?? null : null;
   const app = appsRegistry().all.find((a) => String(a.repo).toLowerCase() === r.repo.toLowerCase());
-  return { repo: r.repo, branch: r.branch, defaultBranch: r.defaultBase, deployBranch: app?.branch ?? (app ? "main" : undefined), empty, files: empty ? [] : files, base, path: r.path, sha };
+  const texts = sameRepo(r.repo, cfg.productRepo) && files ? await productTexts(files, (rev, f) => git(r.path, "show", `${rev}:${f}`), base, sha) : undefined;
+  return { repo: r.repo, branch: r.branch, defaultBranch: r.defaultBase, deployBranch: app?.branch ?? (app ? "main" : undefined), empty, files: empty ? [] : files, ...(texts ? { texts } : {}), base, path: r.path, sha };
+}
+
+/**
+ * A product change's module.yaml and compose files on both sides, for tiering by content: { path: { base, head } }, a side
+ * undefined where the file is absent; a file left out when a read failed (tiers.mjs then fails closed).
+ */
+const PRODUCT_CONFIG = /^modules\/[^/]+\/module\.yaml$|(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
+async function productTexts(files, show, base, head) {
+  const read = async (rev, f) => {
+    try {
+      return { text: await show(rev, f) };
+    } catch (err) {
+      return /does not exist|exists on disk, but not in|HTTP 404|Not Found/i.test(`${err.message ?? err} ${err.stderr ?? ""}`) ? { text: undefined } : null;
+    }
+  };
+  const out = {};
+  for (const f of files.filter((x) => PRODUCT_CONFIG.test(x))) {
+    const [b, h] = [await read(base, f), await read(head, f)];
+    if (b && h) out[f] = { base: b.text, head: h.text };
+  }
+  return out;
 }
 
 /**
@@ -1232,9 +1259,20 @@ async function mergeTierState(prs) {
       const sensitive = traits.length > 0 && !(traits.length === 1 && traits[0] === "database" && app.database === "warehouse");
       // A merge without a card needs a head the runner itself pushed (any task's), on a branch of the same repo (no fork).
       const ownHead = Boolean(pr) && pr.isCrossRepository === false && state.pushedHead(p.repo, pr.headRefName, pr.headRefOid);
-      return { repo: p.repo, number: p.number, url: p.url, files, checks, headMatches: Boolean(p.head) && pr?.headRefOid === p.head, ownHead, sensitive };
+      const texts = sameRepo(p.repo, cfg.productRepo) && files && pr ? await productMergeTexts(p.repo, files, pr).catch(() => ({})) : undefined;
+      return { repo: p.repo, number: p.number, url: p.url, files, ...(texts ? { texts } : {}), checks, headMatches: Boolean(p.head) && pr?.headRefOid === p.head, ownHead, sensitive };
     }),
   );
+}
+
+/** A product PR's config files at its merge base and its head (GitHub's compare and contents APIs), for productTexts. */
+async function productMergeTexts(repo, files, pr) {
+  const opts = await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 });
+  const gh = await findRealGh();
+  const base = (await execFileP(gh, ["api", `repos/${repo}/compare/${pr.baseRef?.target?.oid}...${pr.headRefOid}`, "--jq", ".merge_base_commit.sha"], opts)).stdout.trim();
+  if (!/^[0-9a-f]{40}$/.test(base)) return {};
+  const show = async (rev, f) => (await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${f.split("/").map(encodeURIComponent).join("/")}?ref=${rev}`], opts)).stdout;
+  return productTexts(files, show, base, pr.headRefOid);
 }
 
 /** The instance change as tiering sees it: every changed file (and the agent.yaml of each handbook) at `baseRev` and at the change. */
@@ -1853,10 +1891,11 @@ async function agentMerge(ctx, args) {
     if (read.every((pr) => pr?.state === "MERGED"))
       return alreadyApplied(ctx.issue, "merge", prs.map((p) => p.url).join(","), prs.map((p, i) => `${p.url} is already merged${read[i].mergeCommit?.oid ? ` (merge commit \`${read[i].mergeCommit.oid.slice(0, 12)}\`)` : ""}`).join("; "));
   }
-  // Each card is bound to the PR's current head; in the agents org the tap is the review (merges.prDecision).
+  // Each card is bound to the PR's current head; in the agents org and the product repo the tap (or the reviewer's
+  // approval) is the review (merges.prDecision).
   const bound = [];
   for (const { repo, number, url } of prs) {
-    if (!inOrg(cfg.agentsOrg, repo)) {
+    if (!ownRepo(repo)) {
       bound.push({ repo, number, url }); // GitHub's own review gates these
       continue;
     }

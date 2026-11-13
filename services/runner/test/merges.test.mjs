@@ -194,6 +194,26 @@ describe("merge queue: a run through", () => {
     assert.equal(moved.writes.length, 0);
   });
 
+  it("a reviewer-approved product merge readies the agent's draft, then merges it at the card's head once green", async () => {
+    // main.mjs passes cardIsReview: ownRepo (the agents org or the product repo). Before 2026-11-13 the product repo was left
+    // out, so its unreviewed drafts stopped at "isn't approved" (PR #7 sat as a green draft until the grader escalated it).
+    const ownRepo = (repo) => repo.startsWith("acme-agents/") || repo === "acme/aidenhq";
+    const draft = () => ({ 7: { ...pr(7, { isDraft: true, reviewDecision: null, latestOpinionatedReviews: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: pending } }] } }), url: "https://github.com/acme/aidenhq/pull/7" } });
+    const card = () => Object.assign(newQueue(findPrs("acme/aidenhq#7").map((p) => ({ ...p, head: "head7" })), { gapMinutes: 0, now: at(0) }), { strict: true });
+    const gh = fakeGithub(draft());
+    const q = card();
+    await advance(q, { github: gh, now: at(0), cardIsReview: ownRepo });
+    assert.deepEqual(gh.writes, [{ ready: "PR_7" }]);
+    await advance(q, { github: gh, now: at(1), cardIsReview: ownRepo });
+    assert.equal(gh.writes.length, 1, "checks still running: no merge yet");
+    gh.prs[7] = { ...gh.prs[7], commits: { nodes: [{ commit: { statusCheckRollup: green } }] } };
+    await advance(q, { github: gh, now: at(2), cardIsReview: ownRepo });
+    assert.deepEqual(gh.writes.at(-1), { merge: 7, sha: "head7", method: "squash" });
+    const old = fakeGithub(draft());
+    assert.equal((await advance(card(), { github: old, now: at(0), cardIsReview: (repo) => repo.startsWith("acme-agents/") })).done, "stopped", "the old predicate");
+    assert.equal(old.writes.length, 0);
+  });
+
   it("marks an approved draft ready, then merges it", async () => {
     const gh = fakeGithub({ 1: pr(1, { isDraft: true }) });
     const q = newQueue(findPrs("o/r#1"), { gapMinutes: 15, now: at(0) });

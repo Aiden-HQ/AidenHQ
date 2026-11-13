@@ -215,6 +215,12 @@ export class Paperclip {
   }
 
   /** Stops a run (live or queued). */
+  /** One agent's newest runs, uncached, with the comment that woke each (the loop brake, brake.ts). */
+  async agentRuns(agentId: string, limit = 20): Promise<{ id: string; status: string; wakeCommentId: string | null }[]> {
+    const raw = await this.request<{ id: string; status: string; contextSnapshot?: { wakeCommentId?: string; commentId?: string } | null }[]>("GET", `/api/companies/${this.companyId}/heartbeat-runs?agentId=${encodeURIComponent(agentId)}&limit=${limit}`);
+    return raw.map((r) => ({ id: r.id, status: r.status, wakeCommentId: r.contextSnapshot?.wakeCommentId ?? r.contextSnapshot?.commentId ?? null }));
+  }
+
   cancelRun(runId: string): Promise<unknown> {
     this.cache.delete("live-runs");
     return this.request("POST", `/api/heartbeat-runs/${encodeURIComponent(runId)}/cancel`, {});

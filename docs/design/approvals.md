@@ -18,9 +18,17 @@ owner's attention for decisions that deserve it, without moving the trust bounda
   `reviewer:<model>`, `auto:<rule>`), never from a caller-supplied field.
 - **Rejected once, owner's after.** After the owner or reviewer rejects an action on a task, any further request of that
   action on that task is Tier 2 (sticky).
-- **Gate code is always Tier 2.** Changes to the approval path itself (`approvals.ts`, `agent-auth.ts`, the runner's
-  `tiers`, `review`, `authorize`, `merges` and `apply`, the compiler and setup scripts, `ops/`, `modules/core/security/`,
-  `.github/`, launcher files) are the owner's decision.
+- **Gate code is always Tier 2.** Changes to the gates themselves are the owner's decision (`PRODUCT_GATES` in
+  `tiers.mjs`, owner 2026-11-13): the runner's `tiers`, `review`, `authorize`, `merges`, `apply`, `netjail` and `main`
+  (it builds the state tiering trusts and holds the GitHub writes); the reviewer policy (`modules/core/security/`);
+  `agent-auth.ts` (every copy), `scripts/modules.mjs` and `scripts/paperclip-setup.mjs` (grants, models, caps, autonomy,
+  adapter config, the no-shell call); the board's `approvals`, `app` (decision routes), `fleet` (its own tier rules),
+  `accounts` and `session`; the no-shell guard (`scripts/no-shell.mjs`); `services/computer/`; the model gateway (key and
+  caps); `ops/`; `scripts/verify-security.sh`, `scripts/supply-chain/`, `.gitleaks.toml` and `.github/`. In the product
+  repo, a role holder's module handbook, a `module.yaml` that adds an agent, a grant, a tool, a model, a role, an image,
+  settings, its `compose` path, credentials or `codex_args`, and any compose file (root or module fragment) changing more
+  than image tags or digests are Tier 2 too, judged by content (an unreadable one fails closed). Everything else in the
+  product (services, connections, `scripts/computers.mjs`, docs, tests, dependency and image bumps) is Tier 1.
 
 ## Tiers
 
@@ -30,8 +38,13 @@ owner's attention for decisions that deserve it, without moving the trust bounda
   missing evidence escalates the card to Tier 2.
 - **Tier 2: owner.** A board card plus a message on the owner channel. If the reviewer looked first, its note is attached.
 
-Some requests are refused by code before any review: a request on a cancelled or done task, an app PR into the product
-repo from an agent that is not allowed to open one, and a close or merge outside the agents org.
+Some requests are refused by code before any review: a request on a cancelled or done task, a PR into the product
+repo from outside the Platform Engineer's line, and a close outside the agents org or of a product or instance PR.
+
+**The Platform Engineer's line** (`requester.platform`, looked up by the runner): the Platform Engineer itself, a task
+the Agent Architect made, or the owner's own task. Only this line writes to the product repo below Tier 2. An Engineer
+that another agent delegated to (e.g. WOR-3514, a Software Engineer on a DevOps Engineer's task) is outside it: its
+product push stays Tier 2. Product code changes go to the Platform Engineer, never to another Engineer.
 
 Typical assignments in `tiers.mjs` (read the file for the full rules):
 
@@ -41,9 +54,11 @@ Typical assignments in `tiers.mjs` (read the file for the full rules):
 | Close a PR in the agents org | 0 |
 | Merge in the agents org: every named check green on the exact head, head pushed by the runner, no `.github/` change, app not sensitive | 0 (merged only once green) |
 | Same merge, but the head was not pushed by the runner | 1 |
-| Merge with no named checks, red checks, a moved head, a sensitive app, or the instance or product repo | 2 |
+| Merge with no named checks, red checks, a moved head, a sensitive app, or the instance repo | 2 |
 | Draft PR outside the agents org | 1 |
-| PR to the product repo by an allowed agent (platform or architect) | 1, or 2 if it touches gate code |
+| Product repo, Platform Engineer's line: push of a non-default branch, or PR | 1 (2 with gate code, a role holder's handbook, or grants, tools, models, roles, images, credentials or `codex_args` in a `module.yaml`; compose beyond image versions) |
+| Product repo, Platform Engineer's line: merge, head pushed by the runner and unmoved, no red named check | 1 (the strict queue readies a draft and merges only once every named check is green on that head; same Tier 2 file rules) |
+| Product repo: push to the default branch; any push or merge from outside the line; a fork's head | 2 |
 | `apply`: new trial agent on a task the owner started | 0 |
 | `apply`: handbook of an agent without a role, graduation that adds no tools, model or schedule change, non-sensitive app registry change, forward product pin | 1 |
 | `apply`: role-holding agent's handbook, new grants, roles, write connections or credentials, sensitive app (access, share, caps, connects to Paperclip or sources), other settings, backward product pin | 2 |

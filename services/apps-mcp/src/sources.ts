@@ -2,8 +2,10 @@
 //   warehouse_query  one read-only SELECT as the `readonly` login (grants are the real control);
 //   source_new       rows of a source view newer than the caller's cursor, with a code filter;
 //   source_ack       advances that cursor once the caller has handled the rows.
-// The cursor is keyed by the caller's Paperclip agent id (agent-auth), never a tool argument. Cursor writes go through the
-// superuser psql path apps-mcp already uses, with values passed as psql variables; `readonly` has no write grant.
+// The cursor is keyed by the caller's Paperclip agent id (agent-auth, never a tool argument), the view and the filter.
+// Cursor writes go through the superuser psql path apps-mcp already uses, with values passed as psql variables;
+// `readonly` has no write grant.
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import { WAREHOUSE } from "./database.js";
@@ -123,28 +125,73 @@ export async function warehouseQuery(d: WarehouseDeps, sql: string): Promise<{ r
   }
 }
 
+/**
+ * The cursor a read keeps: '' unfiltered, else a hash of its scopes and words, so acking a filtered read never moves
+ * another read's cursor past rows that filter didn't return. include_baseline only adds rows, so it isn't part of it.
+ */
+export function filterKey(f: Filter): string {
+  const list = (x?: string[]) => [...new Set(x ?? [])].sort();
+  const n = { channels: list(f.channels), repos: list(f.repos), projects: list(f.projects), q: f.q?.trim() ?? "" };
+  if (!n.channels.length && !n.repos.length && !n.projects.length && !n.q) return "";
+  return createHash("sha256").update(JSON.stringify(n)).digest("hex").slice(0, 16);
+}
+/** A cursor token: the seq, then `.<filter key>` for a filtered read. */
+const TOKEN = /^(\d{1,18})(?:\.([0-9a-f]{16}))?$/;
+
+/**
+ * Refuses scope values (channels, repos, projects) with no row in the view's source: a guessed name would read nothing
+ * and say nothing. A changes view has rows only for changed entities, so every view of the same source counts.
+ */
+async function checkScopes(d: WarehouseDeps, view: string, f: Filter): Promise<void> {
+  const schema = view.slice(0, view.indexOf("."));
+  const bad: string[] = [];
+  for (const [k, field] of [["channels", "channel"], ["repos", "repo"], ["projects", "project"]] as const) {
+    const want = [...new Set(f[k] ?? [])];
+    if (!want.length) continue;
+    const homes = Object.entries(VIEWS).filter(([n, v]) => n.startsWith(`${schema}.`) && v[field]).map(([n, v]) => [n, v[field]!] as const);
+    const missing = await d.pool.query(`SELECT u FROM unnest($1::text[]) u WHERE ${homes.map(([n, c]) => `NOT EXISTS (SELECT 1 FROM ${n} WHERE ${c} = u)`).join(" AND ")}`, [want]);
+    const all = homes.map(([n, c]) => `SELECT ${c} AS s FROM ${n}`).join(" UNION ");
+    for (const { u } of missing.rows.slice(0, 5) as { u: string }[]) {
+      // Suggest values sharing the last part of the name (acme/bridge → bridge/bridge), else a few that exist.
+      const like = `%${u.split("/").pop()!.toLowerCase().replace(/[\\%_]/g, "\\$&")}%`;
+      const near = await d.pool.query(`SELECT s FROM (${all}) x WHERE s ILIKE $1 ORDER BY s LIMIT 6`, [like]);
+      const some = near.rows.length ? near.rows : (await d.pool.query(`SELECT s FROM (${all}) x WHERE s IS NOT NULL ORDER BY s LIMIT 10`)).rows;
+      bad.push(`${u} (${near.rows.length ? "did you mean" : "some that exist:"} ${some.map((r: { s: string }) => r.s).join(", ")})`);
+    }
+    if (missing.rows.length > 5) bad.push(`and ${missing.rows.length - 5} more`);
+  }
+  if (bad.length) throw new Error(`${view}: nothing ingested for ${bad.join("; ")}. Filter only by values that exist (look them up with warehouse_query); nothing was read.`);
+}
+
 export async function sourceNew(d: WarehouseDeps, agentId: string, view: string, f: Filter, limit: number) {
-  const cur = await d.pool.query("SELECT seq FROM src_meta.cursor WHERE agent_id = $1 AND view = $2", [agentId, view]);
-  const cursor = cur.rows[0] ? Number(cur.rows[0].seq) : null;
+  const key = filterKey(f);
+  newRowsSql(view, f, null, limit); // the view and its filters exist, before their values are looked up
+  await checkScopes(d, view, f);
+  // A filtered read starts after the later of its own cursor and the unfiltered one (whose reads covered every scope), or a
+  // day back.
+  const cur = await d.pool.query("SELECT filter_key, seq FROM src_meta.cursor WHERE agent_id = $1 AND view = $2 AND filter_key IN ('', $3)", [agentId, view, key]);
+  const cursor = cur.rows.length ? Math.max(...cur.rows.map((r) => Number(r.seq))) : null;
   const q = newRowsSql(view, f, cursor, limit);
   const r = await d.pool.query(q.text, q.values);
   const got = parseRows(r.rows);
   const last = got.rows.length ? r.rows[got.rows.length - 1].n : undefined; // n = the row's seq
+  const seq = last != null ? String(last) : cursor != null ? String(cursor) : null;
   return {
     rows: got.rows,
-    // Ack this once the rows are handled; the next call starts after it.
-    cursor: last != null ? String(last) : cursor != null ? String(cursor) : null,
+    // Ack this once the rows are handled; the next call with the same filter starts after it.
+    cursor: seq != null && key ? `${seq}.${key}` : seq,
     more: got.cut || r.rows.length === limit,
   };
 }
 
 export async function sourceAck(d: WarehouseDeps, agentId: string, view: string, cursor: string): Promise<{ view: string; cursor: string }> {
   if (!VIEWS[view]) throw new Error(`unknown view ${view}`);
-  if (!/^\d{1,18}$/.test(cursor)) throw new Error("cursor must be the cursor source_new returned");
+  const m = TOKEN.exec(cursor);
+  if (!m) throw new Error("cursor must be the cursor source_new returned");
   await d.sql(
-    `INSERT INTO src_meta.cursor (agent_id, view, seq) VALUES (:'agent', :'view', :'seq'::bigint)
-     ON CONFLICT (agent_id, view) DO UPDATE SET seq = GREATEST(src_meta.cursor.seq, EXCLUDED.seq), updated_at = now();`,
-    { agent: agentId, view, seq: cursor },
+    `INSERT INTO src_meta.cursor (agent_id, view, filter_key, seq) VALUES (:'agent', :'view', :'key', :'seq'::bigint)
+     ON CONFLICT (agent_id, view, filter_key) DO UPDATE SET seq = GREATEST(src_meta.cursor.seq, EXCLUDED.seq), updated_at = now();`,
+    { agent: agentId, view, key: m[2] ?? "", seq: m[1]! },
   );
   return { view, cursor };
 }

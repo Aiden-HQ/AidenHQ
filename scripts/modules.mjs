@@ -26,7 +26,8 @@ const ROLES = {
   "ops-key": ["meetings"], // the agent ops-mcp acts as in Paperclip
   architect: ["core"], // its Platform Engineer tasks may use the trial exception (the runner reads it from the grants table)
   librarian: ["librarian"], // read every handbook, decide proposed identity links, hand rule proposals to the Platform Engineer (tasks bridge, apps-mcp)
-  "fleet-read": ["fleet-ops"], // the board's fleet status only (never fleet_control or relaying the owner's words)
+  "fleet-read": ["fleet-ops", "core"], // the board's fleet status only (never fleet_control or relaying the owner's words)
+  "fleet-audit": ["core"], // read any agent's evidence (the board's coach routes) and keep a review log (tasks bridge coach_*)
   "repo-checkout": ["design"], // a commit of an agents-org repo placed in its computer (services/computer/launcher.mjs POST /repo)
   "design-review": ["design"], // the design-review commit status on agents-org PRs (github-mcp commit_status_set)
 };
@@ -193,7 +194,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), agentsOrg(settings)].filter(Boolean))].join(",");
 
   const core = substitute(all.get("core").def, settings);
-  const paperclip = { company: core.company, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), grading: String(settings.grading ?? "on"), live_updates: String(settings.live_updates ?? "on"), batch_approvals: String(settings.batch_approvals ?? "on"), dup_guard: String(settings.dup_guard ?? "on"), wake_ups: String(settings.wake_ups ?? "on"), labels: [], mcp_servers: {}, codex_args: core.codex_args ?? [], agents: {}, routines: {} };
+  const paperclip = { company: core.company, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), grading: String(settings.grading ?? "on"), live_updates: String(settings.live_updates ?? "on"), batch_approvals: String(settings.batch_approvals ?? "on"), dup_guard: String(settings.dup_guard ?? "on"), coach: String(settings.coach ?? "on"), wake_ups: String(settings.wake_ups ?? "on"), loop_brake: String(settings.loop_brake ?? "on"), labels: [], mcp_servers: {}, codex_args: core.codex_args ?? [], agents: {}, routines: {} };
   const apps = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a) => a.name);
@@ -317,6 +318,14 @@ export function compile(productDir, instanceDir, { revision } = {}) {
         if (writes.length) fail(`${key}: an untrusted module's agent may not have ${name} write tools (${writes.join(", ")})`);
       }
     }
+  }
+  // delegate_to: the agents a module agent may assign work to (the tasks bridge refuses others): keys, `key?` (only when that
+  // agent's module is on, as with connections), or app-owners (any agent that owns an app).
+  for (const [key, a] of Object.entries(paperclip.agents)) {
+    if (a.delegate_to === undefined) continue;
+    if (!Array.isArray(a.delegate_to)) fail(`${key}: delegate_to is a list of agent keys (or app-owners)`);
+    for (const k of a.delegate_to) if (k !== "app-owners" && !k.endsWith("?") && !paperclip.agents[k]) fail(`${key}: delegate_to names ${k}, which is not an enabled agent (write "${k}?" if optional)`);
+    a.delegate_to = a.delegate_to.map((k) => k.replace(/\?$/, "")).filter((k) => k === "app-owners" || paperclip.agents[k]);
   }
   heartbeatRoutines(paperclip, settings, instance.overrides?.agents ?? {}, routineTitles); // before the overrides, which may change their schedules
   for (const [key, r] of Object.entries(paperclip.routines)) if (!paperclip.agents[r.agent]) fail(`routine ${key}: agent ${r.agent} is not enabled`);
@@ -508,6 +517,34 @@ export async function ensureMemoryInboxes({ api, companyId, keys, step }) {
     step(`Created task ${made.identifier} (memory inbox of ${key})`);
   }
   return inboxes;
+}
+
+/**
+ * One unassigned "Agent reviews: <key>" task per fleet-audit agent (marker review-log:<key>): the Agent Coach's review log, one
+ * record per review (tasks bridge coach_record), which coach_due reads back (only records that agent authored). Created by
+ * this identity, held by nobody, so a review wakes nobody; never touched once made. Returns { key: issue id } for the grants table.
+ */
+export async function ensureReviewLogs({ api, companyId, keys, step }) {
+  const logs = {};
+  if (!keys.length) return logs;
+  const { json: me } = await api("GET", "/api/cli-auth/me");
+  for (const key of keys) {
+    const marker = `review-log:${key}`;
+    const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
+    const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
+    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
+    if (ours) {
+      logs[key] = ours.id;
+      continue;
+    }
+    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
+      title: `Agent reviews: ${key}`, status: "backlog", priority: "low",
+      description: `The review log of ${key}: one record per agent review (coach_record), which decides who is due next. Read it for the history; nobody else writes here.\n\n<!-- source:${marker} -->`,
+    });
+    logs[key] = made.id;
+    step(`Created task ${made.identifier} (review log of ${key})`);
+  }
+  return logs;
 }
 
 /** The shared "Heartbeats" handbook section (modules/core/heartbeat.md) for an agent with a heartbeat, naming the Fleet issues task. */

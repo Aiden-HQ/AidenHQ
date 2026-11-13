@@ -143,8 +143,14 @@ export class Paperclip {
     return c.authorType === "user" && !hasMarker(c.body, RUNNER_MARKER);
   }
 
-  comment(issueId, body) {
-    return this.api("POST", `/api/issues/${encodeURIComponent(issueId)}/comments`, { body: `${body}\n\n${RUNNER_MARKER}` });
+  /**
+   * The loop brake (board brake.ts): `posted`, when set, reports each comment to the board (not awaited), which cancels the
+   * wake it caused once the runner's daily wakes on that task are used up. The comment itself always posts.
+   */
+  async comment(issueId, body) {
+    const c = await this.api("POST", `/api/issues/${encodeURIComponent(issueId)}/comments`, { body: `${body}\n\n${RUNNER_MARKER}` });
+    if (this.posted && c?.id) this.posted(issueId, c.id);
+    return c;
   }
 
   async me() {

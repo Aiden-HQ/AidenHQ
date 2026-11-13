@@ -19,8 +19,10 @@ import { ControlSchema, CostsSchema, RelaySchema, Refused, appsApi, appsToken, a
 import { detectorState, takeOwnerLines } from "./fleet-ops.js";
 import { ARGS, BOARD_ACTIONS, BatchItemsSchema, REVIEWER_MODELS, RaiseCapSchema, RunRequestSchema, autonomy, batchesOn, card, digestText, parseReply, raiseCapRequest, shown, type Approval, type BatchResult, type RaiseCap, type RunnerAction } from "./approvals.js";
 import { liveUpdatesOn } from "./events.js";
+import { wakeCheck } from "./brake.js";
 import { REVIEW_CODES, TIER_RULE } from "./reason-codes.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
+import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
 import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradingOn, prRefAllowed } from "./grades.js";
 import { UsageSchema, WINDOWS, costs, type CostWindow } from "./costs.js";
@@ -801,6 +803,9 @@ export function createApp(opts: AppOptions): Server {
       const summary = await statusSummary(pc, store, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
       return { ...status, detector: detectorState(store), summary };
     }, ["fleet-admin", "fleet-read"]) },
+    // The Agent Coach's reads (coach.ts), for the fleet-audit role: who is due a review (never the caller) and one agent's bounded evidence.
+    { method: "POST", path: /^\/internal\/coach\/due$/, handle: async (_m, _b, _u, req) => fleetCall(req, (pc, caller) => coachDue(pc, store, caller), ["fleet-audit"]) },
+    { method: "POST", path: /^\/internal\/coach\/evidence$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc, caller) => coachEvidence(pc, store, runOf, parse(z.object({ agent_key: z.string().trim().min(1).max(64) }).strict(), body).agent_key, caller), ["fleet-audit"]) },
     { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
@@ -1285,6 +1290,24 @@ export function createApp(opts: AppOptions): Server {
         const u = parse(UsageSchema, body);
         store.addUsage({ ...u, at: new Date().toISOString() });
         return { ok: true };
+      },
+    },
+    {
+      // The loop brake (brake.ts): the runner or an agent reports a comment it posted; past its daily limit the wake is cancelled.
+      method: "POST",
+      path: /^\/internal\/wake-check$/,
+      handle: async (_m, body, _u, req) => {
+        const b = parse(z.object({ issue: z.string().min(1).max(100), comment: z.string().min(1).max(100) }), body);
+        let caller = "runner";
+        if (!runnerKeyed(req)) {
+          const me = await requireAgent(pc, String(req.headers["x-agent-key"] ?? ""), () => true, "only the runner or an agent reports its comments here").catch((err) => {
+            throw err instanceof Refused ? new HttpError(403, err.message) : err;
+          });
+          caller = me.id;
+        }
+        return wakeCheck(pc, store, b.issue, b.comment, caller, opts.log).catch((err: Error) => {
+          throw /not your comment/.test(err.message) ? new HttpError(403, err.message) : err;
+        });
       },
     },
     {

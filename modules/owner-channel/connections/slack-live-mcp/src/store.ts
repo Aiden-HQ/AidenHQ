@@ -22,6 +22,8 @@ export function openStore(path: string) {
     CREATE TABLE IF NOT EXISTS urgent_dms (channel_id TEXT, thread_key TEXT, posted_at INTEGER);
     CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
     CREATE TABLE IF NOT EXISTS thread (channel TEXT, chat_id TEXT, message_id TEXT, issue_id TEXT, PRIMARY KEY (channel, chat_id, message_id));
+    CREATE TABLE IF NOT EXISTS notify_sent (task TEXT, agent TEXT, at INTEGER);
+    CREATE INDEX IF NOT EXISTS notify_sent_task ON notify_sent (task, agent, at);
     CREATE INDEX IF NOT EXISTS urgent_dms_thread ON urgent_dms (channel_id, thread_key, posted_at);`);
 
   const insert = db.prepare(
@@ -37,6 +39,9 @@ export function openStore(path: string) {
   const kvSet = db.prepare(`INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)`);
   const threadSet = db.prepare(`INSERT OR REPLACE INTO thread (channel, chat_id, message_id, issue_id) VALUES (?, ?, ?, ?)`);
   const threadGet = db.prepare(`SELECT issue_id FROM thread WHERE channel = ? AND chat_id = ? AND message_id = ?`);
+  const notifyCount = db.prepare(`SELECT count(*) AS n FROM notify_sent WHERE task = ? AND agent = ? AND at >= ?`);
+  const notifyAdd = db.prepare(`INSERT INTO notify_sent (task, agent, at) VALUES (?, ?, ?)`);
+  const notifyPrune = db.prepare(`DELETE FROM notify_sent WHERE at < ?`);
 
   return {
     getKv: (k: string): string | undefined => (kvGet.get(k) as { v: string } | undefined)?.v,
@@ -44,6 +49,12 @@ export function openStore(path: string) {
     setThread: (channel: string, chatId: string, messageId: string, issueId: string): void => void threadSet.run(channel, chatId, messageId, issueId),
     threadOf: (channel: string, chatId: string, messageId: string): string | undefined => (threadGet.get(channel, chatId, messageId) as { issue_id: string } | undefined)?.issue_id,
     setKv: (k: string, v: string): void => void kvSet.run(k, v),
+    /** notify_owner(task) messages one agent sent about one task since `since` (the loop brake). */
+    notifiesSince: (task: string, agent: string, since: number): number => (notifyCount.get(task, agent, since) as { n: number }).n,
+    recordNotify: (task: string, agent: string, at: number): void => {
+      notifyAdd.run(task, agent, at);
+      notifyPrune.run(at - 2 * 86_400_000);
+    },
     // False when event_id was already stored (Slack redelivery).
     insertEvent: (e: LiveEvent): boolean => insert.run({ ...e, threadTs: e.threadTs ?? null }).changes > 0,
     takePending: db.transaction((limit: number): LiveEvent[] => {

@@ -27,8 +27,15 @@ export interface NotifyConfig {
   resolveTask?: (identifier: string) => Promise<{ issueId: string; agentId?: string; agentName: string; ownerVia?: "board" | "telegram" | "slack" | undefined } | undefined>;
   /** Posts the reply on the chat as the calling agent (its own key), so the board shows what it said. */
   postReply?: (issueId: string, body: string, agentKey: string) => Promise<boolean>;
+  /** When the owner last wrote on the task (ms), for the loop brake; undefined if never or unknown. */
+  ownerLastAt?: (identifier: string) => Promise<number | undefined>;
+  /** The instance setting `loop_brake` (on unless "off"). */
+  brakeOn?: () => boolean;
 }
-export type NotifyResult = { sent: boolean; reason?: "cooldown" | "error" | "duplicate"; onChat?: boolean };
+export type NotifyResult = { sent: boolean; reason?: "cooldown" | "error" | "duplicate" | "limit"; onChat?: boolean; note?: string };
+
+/** The loop brake: notify_owner(task) messages one agent may send about a task since the owner last wrote there (and UTC midnight). */
+export const NOTIFY_LIMIT = 5;
 /** Who called notify_owner: the agent behind the run key (agent-auth), and that key. */
 export interface NotifyCaller {
   id: string;
@@ -208,6 +215,15 @@ export async function notifyOwner(store: Store, cfg: NotifyConfig, a: NotifyArgs
       const dupKey = `notify:${createHash("sha256").update(`${a.channel ?? "both"}\n${a.task ?? ""}\n${a.text}\n${JSON.stringify(a.questions ?? [])}`).digest("hex").slice(0, 32)}`;
       const last = Number(store.getKv(dupKey) ?? 0);
       if (last && now - last < DUPLICATE_MS) return { sent: true, reason: "duplicate" };
+      // The loop brake: a few messages about one task between the owner's own words, so a looping agent can't flood them.
+      const agent = caller?.id ?? "";
+      // Fails open: without the owner's last message (no Paperclip, or it didn't answer) nothing is limited.
+      const owner = a.task && cfg.ownerLastAt && (cfg.brakeOn?.() ?? true) ? await cfg.ownerLastAt(a.task).then((at) => ({ at }), () => undefined) : undefined;
+      if (a.task && owner) {
+        const since = Math.max(Date.parse(new Date(now).toISOString().slice(0, 10)), owner.at ?? 0);
+        if (store.notifiesSince(a.task, agent, since) >= NOTIFY_LIMIT)
+          return { sent: false, reason: "limit", note: `Limit reached: ${NOTIFY_LIMIT} messages about ${a.task} since the owner last wrote there (or since UTC midnight). Nothing was sent; batch it into your next update, after they reply or tomorrow.` };
+      }
       const found = a.task && cfg.resolveTask ? await cfg.resolveTask(a.task).catch(() => undefined) : undefined;
       // The owner is typing in this chat on the board: the reply stays there (the board notifies them), no pings elsewhere.
       const where = found?.ownerVia === "board" ? "board" : (a.channel ?? "both");
@@ -225,6 +241,7 @@ export async function notifyOwner(store: Store, cfg: NotifyConfig, a: NotifyArgs
       const onChat = await onChatP;
       // A web-only owner has no Telegram or Slack: the reply on the chat counts as sent.
       if (slack || tg || onChat) store.setKv(dupKey, String(now));
+      if ((slack || tg || onChat) && a.task) store.recordNotify(a.task, agent, now);
       const on = onChat ? { onChat } : {};
       return slack || tg || onChat ? { sent: true, ...on } : { sent: false, reason: "error", ...on };
     }

@@ -119,6 +119,6 @@ instance change), one agent at a time.
 
 Tool-only agents share one container user, so a run that could write files could change later runs (a planted
 `AGENTS.md`, Codex's own config) or read Paperclip's master key file. We don't add a uid per run: a tool-only agent has
-no shell and a read-only sandbox (setup's allowlist guard, `scripts/computers.mjs` `assertNoShell`), so it cannot write
+no shell and a read-only sandbox (setup's allowlist guard, `scripts/no-shell.mjs` `assertNoShell`, gate code), so it cannot write
 or run anything there. Agents that need a shell or file writes get an `image:` and run in a gVisor box; Engineers run
 in the runner's bubblewrap jail. Revisit only if a tool-only agent ever needs writes.

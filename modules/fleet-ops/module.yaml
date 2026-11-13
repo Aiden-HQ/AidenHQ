@@ -23,7 +23,7 @@ agents:
       # fleet_status through the fleet-read role: no fleet_control, no relaying, no approvals decided.
       # task_delegate: runner Engineers only (they take tasks from any agent; it has no reports): product and instance fixes
       # through the Platform Engineer. task_create with assignee: app fixes to an app's owner, rule proposals to the Platform
-      # Engineer. Product bugs go on the "Fleet issues" task and into the digest.
+      # Engineer, product bugs to the Platform Engineer (marker product-bug:<slug>, graded pr).
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team, task_create, task_comment, task_delegate, task_handoff, task_set_status, task_finish, fleet_status, fleet_catalog, fanout_map ]
     roles: [ fleet-read ]
 routines:

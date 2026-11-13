@@ -8,7 +8,7 @@ import pino from "pino";
 import { boardClient, sendBatch, sendCards, sendOutcomes, sendResetLinks } from "./approvals.js";
 import { makeChat, startTelegramPoll, type ChatConfig } from "./chat.js";
 import { quickCommand } from "./commands.js";
-import { taskForNotify, ownerViaOf } from "./threads.js";
+import { isOwnerComment, taskForNotify, ownerViaOf } from "./threads.js";
 import { buttonsMarkup } from "./telegram.js";
 import { transcribe } from "./voice.js";
 import { buildServer } from "./mcp.js";
@@ -33,7 +33,7 @@ const port = Number(process.env.PORT ?? 8089);
 const inboundToken = env("MCP_BEARER_TOKEN");
 if (!inboundToken) throw new Error("MCP_BEARER_TOKEN(_FILE) is required");
 const store = openStore(process.env.SLACK_LIVE_DB ?? "/data/slack-live.sqlite");
-const cfg = { botToken: env("SLACK_BOT_TOKEN"), ownerId: env("OWNER_SLACK_USER_ID"), cooldownMs: Number(process.env.URGENT_COOLDOWN_MIN ?? 60) * 60_000, telegramToken: env("TELEGRAM_NOTIFY_BOT_TOKEN"), telegramChatId: env("TELEGRAM_OWNER_CHAT_ID"), taskUrl: env("TELEGRAM_TASK_URL"), resolveTask: undefined as NotifyConfig["resolveTask"], postReply: undefined as NotifyConfig["postReply"] };
+const cfg = { botToken: env("SLACK_BOT_TOKEN"), ownerId: env("OWNER_SLACK_USER_ID"), cooldownMs: Number(process.env.URGENT_COOLDOWN_MIN ?? 60) * 60_000, telegramToken: env("TELEGRAM_NOTIFY_BOT_TOKEN"), telegramChatId: env("TELEGRAM_OWNER_CHAT_ID"), taskUrl: env("TELEGRAM_TASK_URL"), resolveTask: undefined as NotifyConfig["resolveTask"], postReply: undefined as NotifyConfig["postReply"], ownerLastAt: undefined as NotifyConfig["ownerLastAt"], brakeOn: undefined as NotifyConfig["brakeOn"] };
 const postCfg = { botToken: cfg.botToken, allowed: new Set((process.env.SLACK_POST_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) };
 const ignored = new Set((process.env.IGNORE_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
 
@@ -124,7 +124,21 @@ if (deliver) {
     const parent = parentIssue ? { issue: parentIssue, comments: await commentsOf(parentId!) } : undefined;
     return { ...found, ownerVia: ownerViaOf(issue, await commentsOf(String(issue.id)), parent) };
   };
+  // The loop brake: when the owner last wrote on the task (their own words, never the runner's or a notice).
+  cfg.ownerLastAt = async (identifier) => {
+    const comments = await deliver.api("GET", `/api/issues/${encodeURIComponent(identifier)}/comments?order=desc&limit=100`);
+    const list = (Array.isArray(comments) ? comments : (comments?.comments ?? [])) as { body: string; authorType?: string; authorAgentId?: string; createdAt: string }[];
+    const at = list.filter(isOwnerComment).map((c) => Date.parse(c.createdAt)).filter(Number.isFinite);
+    return at.length ? Math.max(...at) : undefined;
+  };
 }
+cfg.brakeOn = () => {
+  try {
+    return JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8"))?.loop_brake !== "off";
+  } catch {
+    return true;
+  }
+};
 // The agent's reply on its chat, posted with its own key (never the board key, which writes as the owner).
 // From a computer (a launcher run token), the launcher posts it with that run's own Paperclip credential.
 if (chatCfg.paperclipUrl)

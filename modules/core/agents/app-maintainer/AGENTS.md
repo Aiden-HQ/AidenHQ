@@ -105,6 +105,7 @@ To create an app, call `app_create` directly (it is yours to do; the owner appro
      database: warehouse   # implies the DATABASE_URL secret and connects: [warehouse]
      secrets: [<NAME>_DATABASE_URL]   # only if the app reads a different file name; other secrets need the owner to put them in the vault
    ```
+   The health URL answers JSON `{ok: true, checks: []}`: `checks` (empty by default) is where the app's owner later adds rules about its data (`{name, ok, count, sample}`); a failing one is a quality finding for the owner, never an incident for you.
    The owner's tap on its apply card is the approval.
 3. After the apply, the app deploys with its database ready: check `app_status`. If its first deploy didn't start, `app_deploy` shows why (a "warehouse login" error means the warehouse wasn't up: `app_status warehouse`); once it has run, `app_logs`.
 
