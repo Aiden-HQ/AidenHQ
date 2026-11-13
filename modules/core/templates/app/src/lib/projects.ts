@@ -1,4 +1,4 @@
-// The example's data model, filters and formatting. Replace with the app's own; keep the filter rules (guidelines §6).
+// The example's data model, filters and formatting. Replace with the app's own; keep the filter rules (guidelines: Filters, search and updates).
 
 export type Status = "on-track" | "at-risk" | "late" | "done"
 export type Source = { label: string; url: string }

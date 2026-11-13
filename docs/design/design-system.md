@@ -34,11 +34,15 @@ polished, modern UI with it by default (it is what v0, Lovable and Bolt generate
 - **The old kit** (`components.css`, `kit.js`) is deprecated and kept only while an app still vendors
   it; its `catalog.html` is replaced by the starter's `/catalog`. Existing apps migrate when they are next touched for UI (the README's migration guide).
 - **Rules:** the behaviour rules from the owner's corrections stay (filters apply instantly, URL state, partial updates,
-  details in a drawer, status first, sources on facts, honest empty states). New composition rules target the generic
-  look: one surface per section, at most one bordered level, tables instead of card grids, a clear type scale, no grey on
-  grey, and an anti-patterns section.
+  details in a drawer, status first, sources on facts, honest empty states).
+- **Floors, not a template (revised 2026-11-14).** The first shadcn guidelines prescribed composition down to the block,
+  the shell, the type classes and where the gradient went, and mockups came out the same: a full sidebar for three
+  links, a permanent detail column beside a board, a large gradient tile. The owner judged the handbooks overfitted.
+  Now only behaviour, states, accessibility and the stack are floors (and block a review); layout, navigation, colour,
+  type and motion are guidance with examples, the starter's blocks and shell are optional, and the designer is asked to
+  explore directions and fit each app to its people and job. Owner corrections first change or delete an existing rule.
 - **Toolkit and process** are unchanged: `ui-review` (agent-browser with axe, vitals, layout checks and diffs) and the
-  UI/UX Designer's plan, build, capture, critique, fix loop, at most 3 rounds, now building from the starter.
+  UI/UX Designer's plan, explore, build, capture, critique, fix loop, iterated while it improves.
 
 ## Pieces
 
@@ -68,5 +72,5 @@ The guidelines distil public guidance, adapted for small internal apps:
   from screenshots).
 - **Review loops:** AI design-review loops (run deterministic checks first, axe is authoritative, judge against a
   written rubric, cap iterations), <https://21st.dev/blog/visual-regression-testing-vs-ai-design-review>.
-- **The owner's corrections on live apps,** generalised into rules: guidelines §6 and §12, and the checklist's "Behaviour
-  the owner has had to correct before".
+- **The owner's corrections on live apps,** generalised into rules: the guidelines' "Filters, search and updates" and
+  "Detail views", and the checklist's "Behaviour the owner has had to correct before".

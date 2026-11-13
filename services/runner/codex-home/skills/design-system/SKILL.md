@@ -7,8 +7,8 @@ description: Build or change the UI of an AidenHQ app (or the board) with the ap
 
 Two folders, copied from the product at the start of this run:
 
-- `$CODEX_HOME/skills/design-system/files/`: the design system. Read `files/guidelines.md` (the rules; §2 composition and
-  §17 anti-patterns are where generic-looking apps fail) and `files/review-checklist.md` (what blocks a UI PR).
+- `$CODEX_HOME/skills/design-system/files/`: the design system. Read `files/guidelines.md` (the floors every app meets, craft
+  guidance, and the generic tells to avoid) and `files/review-checklist.md` (what blocks a UI PR).
 - `$CODEX_HOME/skills/design-system/starter/`: the app starter. Its `README.md` says what's where; its `AGENTS.md` is the
   short version of how to build on it.
 
@@ -16,11 +16,12 @@ Two folders, copied from the product at the start of this run:
 the sample data and the example page with the app's own. Never start from a blank Vite app, server-rendered HTML or another
 UI library.
 
-**Compose, don't invent.** Pages are built from `src/components/blocks/` (page header, stat strip, sortable headers,
-pagination, empty/loading/error states, detail list, form section, charts) and `src/components/ui/` (shadcn/ui), copying
-the example page (`src/pages/projects.tsx`) and `/catalog` (`src/pages/catalog.tsx`, every block and component in use).
-A table, not a grid of cards, for anything people compare; details in a `Sheet` at `?item=`; filters, sort and page in
-the URL (`useUrlState`). Colours only from the theme's names (`bg-background`, `text-muted-foreground`, `bg-primary`,
+**Building blocks, not a template.** `src/components/blocks/` (page header, stat strip, sortable headers, pagination,
+board, activity list, empty/loading/error states, detail list, form section, charts), `src/components/ui/` (shadcn/ui),
+the example page (`src/pages/projects.tsx`) and `/catalog` are there to use, adapt or ignore; the top-bar shell in
+`src/App.tsx` is a sample (many destinations or nested groups: the `SidebarShell` block). What always holds: filters, sort and page in the
+URL (`useUrlState`), applied as they change; details open over the list in a `Sheet` at `?item=`; every data view's
+states. Colours only from the theme's names (`bg-background`, `text-muted-foreground`, `bg-primary`,
 `text-danger`, `bg-chart-1`…), never literal colours or Tailwind palette colours.
 
 **A mockup is the spec.** When the task comes with a mockup (a page's `.tsx` file and screenshots in `.aidenhq/files/`),
@@ -50,9 +51,9 @@ passing (it builds, serves and checks the CSP), and an existing app's server mus
   what looks wrong (overlap, clipping, unstyled or empty areas, a misaligned table) and every reported problem, then run it
   again until it prints `clean`. `--width 390` checks the phone layout. Files in `.aidenhq/out/` (at most 20) are
   attached to the task after the run; name them in your report.
-- Go through the checklist's "Self-review" by reading your code: one surface per section, a table for data, one primary
-  button, every data view's empty, loading, error and no-match states, plain-word copy, phone layout (`max-md:`/`md:`
-  classes, nothing wider than the screen).
+- Go through the checklist's "Self-review" by reading your code: the mockup matched when there is one, every data
+  view's empty, loading, error and no-match states, plain-word copy, phone layout (`max-md:`/`md:` classes, nothing
+  wider than the screen).
 - A seed or sample-data mode still runs the app locally (you and the reviewer screenshot it), and new states are reachable with
   `?preview=loading|error|empty` or the seed.
 

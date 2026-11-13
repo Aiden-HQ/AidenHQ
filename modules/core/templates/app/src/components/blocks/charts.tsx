@@ -1,7 +1,7 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-// Three charts that cover most internal tools, with no chart library (guidelines §16): `BarList` to compare a few
+// Three charts that cover most internal tools, with no chart library (guidelines: Data views): `BarList` to compare a few
 // categories (horizontal bars from zero, labels and values readable on a phone), `TrendChart` for one measure over
 // time (a smooth line over a soft area) and `ScheduleChart` for dated items on a calendar (a point or a from-to bar
 // per row, against today). Each is a <figure> whose caption states the takeaway, which is also its text alternative. Colours are the theme's

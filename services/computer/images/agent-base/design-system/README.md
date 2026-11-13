@@ -8,7 +8,7 @@ components wear, the rules, and the review checklist.
 |---|---|
 | `tokens.css` | Every colour, size, space, radius and duration: four palettes (`neutral`, `warm`, `contrast`, `data`) from Radix Colors, each in light and dark, all AA (`scripts/test/design-system.test.mjs`). |
 | `shadcn.css` | Maps the tokens onto shadcn's variables (`--background`, `--primary`, `--muted-foreground`, `--sidebar`…) and Tailwind's colour names, plus status (`ok`, `warn`, `danger`, `info`), `link`, `page` and `chart-1…6`. Points Tailwind's `dark:` at `<html data-theme>`. |
-| `guidelines.md` | The rules: composition and hierarchy, type, colour, navigation, filters and URL state, states, forms, tables and boards, sheets, accessibility, copy, data visualisation, anti-patterns. |
+| `guidelines.md` | The floors every app meets (behaviour, states, accessibility, the stack) and craft guidance (layout, navigation, emphasis, colour, type, motion, data views), with the generic tells to avoid. |
 | `review-checklist.md` | What blocks a UI pull request and what goes to the backlog, plus the Engineer's self-review. |
 | `components.css`, `kit.js` | **Deprecated:** the plain-CSS kit (version 2), kept only for apps that still vendor it until they migrate (below). Don't use it in new work. |
 
@@ -20,8 +20,9 @@ The catalog is the starter's own `/catalog` page: every component in use, themed
 ## A new app
 
 Start from the UI/UX Designer's mockup when the app has one. Copy the starter (without `node_modules` and `dist`) into
-the app's repo, keep its `AGENTS.md`, and follow its README. Compose pages from its building blocks
-(`src/components/blocks/`), components and the example page's patterns; add shadcn components with the pinned CLI (`npx shadcn@4.23.0 add <name>`, then the fix-ups in the starter's README), pin any new
+the app's repo, keep its `AGENTS.md`, and follow its README. Use its building blocks
+(`src/components/blocks/`), components and the example page's patterns where they fit, and replace the sample shell
+with navigation that suits the app; add shadcn components with the pinned CLI (`npx shadcn@4.23.0 add <name>`, then the fix-ups in the starter's README), pin any new
 dependency exactly at a version at least 7 days old, and check the browser console for CSP violations.
 
 **Re-theming:** an app or instance overrides tokens (`--accent*`, `--focus`, `--font`) or shadcn's variables in a
@@ -47,14 +48,14 @@ gate check and migrations stay as they are: only the UI moves.
    the server serve `dist/` the way the starter's `server.mjs` does: the HTML with a fresh nonce and the strict CSP
    (`script-src 'self'; style-src 'self' 'nonce-…'`, no `'unsafe-inline'`), hashed assets from `/assets/`, and the same
    HTML for every client route. A multi-stage Dockerfile builds the client.
-3. **Rebuild one page at a time,** most-used first, from the starter's patterns: the shell (sidebar and bottom bar), page
-   header, summary strip, filters in the URL (`useUrlState`) with the same parameter names as before so old links keep
-   working, a table where a card grid compared items, the `Board` block where the page had lanes (keep every lane),
-   details in a `Sheet` at `?item=`, and every state. Until a page moves, its old server-rendered route keeps working;
+3. **Rebuild one page at a time,** most-used first, following its mockup when it has one: navigation that fits the
+   number of destinations, filters in the URL (`useUrlState`) with the same parameter names as before so old links keep
+   working, details in a `Sheet` at `?item=`, and every state. Everything people could see and do before (every lane,
+   group and view) stays. Until a page moves, its old server-rendered route keeps working;
    switch routes over as they land.
 4. **Fix composition as you go,** not by porting markup: drop nested panels, boxed rows, stripes, eyebrow labels and
-   provenance pills (guidelines §2, §17), but keep the page's structure (its groups, lanes and views; guidelines §1.9).
-   Move long feeds into a capped `ActivityList` in a side rail, and history into the detail sheet or its own paged view.
+   provenance pills (guidelines, "Generic tells"). Move long feeds out of the way of the main content, and history into
+   the detail sheet or its own paged view.
 5. **Retire the old UI:** delete the templates, the vendored kit (`components.css`, `kit.js`) and its copy script once the
    last page has moved. Run `ui-review` at 390 and 1280 in light and dark on every page and fix anything blocking,
    then ask the UI/UX Designer for the app's design audit (one task naming the app and its repository).

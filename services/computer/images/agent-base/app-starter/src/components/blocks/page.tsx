@@ -1,7 +1,7 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-// The page frame and header every page uses (guidelines §2): room for tables and dashboards (`wide`), a reading width for
+// A page frame and header (guidelines: Layout and navigation): room for tables and dashboards (`wide`), a reading width for
 // forms and settings (`narrow`), sections 24px apart, and a header with the title, one line of context and the actions.
 
 export function Page({ width = "wide", className, children }: { width?: "wide" | "narrow"; className?: string; children: React.ReactNode }) {

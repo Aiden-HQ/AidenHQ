@@ -40,7 +40,7 @@ import { cn } from "@/lib/utils"
 // state (loading, error, empty, no match, unknown value). Built from the blocks in src/components/blocks/: copy the
 // composition, not the data.
 
-// Rows per page. 10 so the sample shows paging; real tables show 25 to 50 (guidelines §10).
+// Rows per page. 10 so the sample shows paging; real tables show 25 to 50 (guidelines: Data views).
 const PAGE_SIZE = 10
 
 export function ProjectsPage() {
@@ -352,7 +352,7 @@ function Summary({ items, loading, active, onPick }: { items: Project[]; loading
     <StatStrip
       loading={loading}
       stats={[
-        { label: "All projects", value: items.length, note: `${count("done")} done`, tone: "hero", ...pick(null) },
+        { label: "All projects", value: items.length, note: `${count("done")} done`, ...pick(null) },
         { label: "On track", value: count("on-track"), note: `${soon} due within a week`, dot: STATUS["on-track"].dot, ...pick("on-track") },
         { label: "At risk", value: count("at-risk"), note: "Need a decision or help", dot: STATUS["at-risk"].dot, tone: count("at-risk") ? "warn" : undefined, ...pick("at-risk") },
         { label: "Late", value: count("late"), note: "Past their due date", dot: STATUS.late.dot, tone: count("late") ? "danger" : undefined, ...pick("late") },

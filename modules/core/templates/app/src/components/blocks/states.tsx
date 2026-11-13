@@ -1,7 +1,7 @@
 import * as React from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 
-// Every data view's empty, error and loading states, in the place the content would be (guidelines §8): one container,
+// Every data view's empty, error and loading states, in the place the content would be (guidelines: States and speed): one container,
 // written for this view. Empty says what goes here and the one action that fills it; an error says what went wrong, what
 // was kept and offers Try again (`role="alert"`); a filter that empties the view says so and offers Clear filters.
 

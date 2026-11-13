@@ -1,8 +1,8 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-// A board (guidelines §10): items grouped into lanes by stage or status, side by side, when the question people ask is
-// "what is in each stage". Keep the lanes the app already has; don't flatten them into tabs over one table. Each lane is
+// A board (guidelines: Data views): items grouped into lanes by stage or status, side by side, when the question people ask is
+// "what is in each stage". Keep the stages the app already shows. Each lane is
 // a tinted column (no border) of compact items on the background (one border, no pills: the lane already says the
 // status); the lane's own text is full-strength ink, so the tint never holds muted text (no grey on grey). A long lane
 // shows `limit` items and a "Show all" button; an empty lane says so in one line. Lanes stack on phones. Read-only:

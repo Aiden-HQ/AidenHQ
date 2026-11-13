@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { TableHead } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
 
-// The pieces a data table needs beyond shadcn's Table (guidelines §10): sortable headers that say which way they sort,
+// The pieces a data table needs beyond shadcn's Table (guidelines: Data views): sortable headers that say which way they sort,
 // and a page of rows at a time, with the page in the URL (`?page=`) like the filters. Reset the page when a filter changes.
 
 /** A column header that sorts. The page keeps the sort in the URL (`?sort=`) and passes whether this column is active. */

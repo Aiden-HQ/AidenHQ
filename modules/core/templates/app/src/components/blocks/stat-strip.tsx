@@ -2,9 +2,10 @@ import * as React from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 
-// A summary of numbers: one surface split into cells, never a row of floating cards (guidelines §2). A cell with
+// A summary of numbers: one surface split into cells, never a row of floating cards (guidelines: Data views). A cell with
 // `onPick` is a toggle that filters the view (`pressed` when its filter is on); the figures count what the filters show.
-// Give the page's main figure the `hero` tone and a figure that needs attention its status tone; leave the rest plain. A toned cell writes in its
+// The `hero` tone is optional, for the one figure the page is about when one deserves it; a figure that needs attention
+// takes its status tone; leave the rest plain. A toned cell writes in its
 // status ink (AA on the soft tint), never muted grey on the tint.
 
 const TONE = {

@@ -1,7 +1,7 @@
 import * as React from "react"
 import type { Project, Status } from "@/lib/projects"
 
-// Loads the projects once and keeps them; a refresh keeps the old rows on screen (guidelines §7). `setStatus` is
+// Loads the projects once and keeps them; a refresh keeps the old rows on screen (guidelines: States and speed). `setStatus` is
 // optimistic: the row changes at once and rolls back if the server refuses.
 // Sample only: ?preview=loading|error|empty shows that state, so a reviewer can screenshot each one. Delete it with the
 // sample data.

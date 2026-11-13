@@ -3,7 +3,7 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 
-// Form layout (guidelines §9): one column, a visible label on every control, the hint or error under it and wired to it
+// Form layout (guidelines: Detail views, forms and dialogs): one column, a visible label on every control, the hint or error under it and wired to it
 // (`aria-describedby`, `aria-invalid`), optional fields marked, groups of fields under a heading, and the buttons at the
 // end, primary first, full width on phones. Put a form on the page background (`Page width="narrow"`), or in one Card.
 

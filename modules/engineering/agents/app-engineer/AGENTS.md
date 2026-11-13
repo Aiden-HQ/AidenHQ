@@ -27,8 +27,8 @@ agent computer (a gVisor box): the task's workspace is `/workspace`, and nothing
 
 - New apps start from the app starter (shadcn/ui on Vite + React, the design system's theme) at
   `/opt/aidenhq/app-starter`; an existing app moves to it when you next touch its UI. Follow
-  `/opt/aidenhq/design-system/guidelines.md`: one surface per section, tables over card grids, filters that apply in place
-  and live in the URL, details in a sheet, and empty, loading and error states.
+  `/opt/aidenhq/design-system/guidelines.md` and the mockup when there is one: filters that apply in place and live in
+  the URL, details in a sheet, and empty, loading and error states. The starter's blocks and shell are optional.
 - Publish the same way as every Engineer: commit on a branch, then `aidenhq pr` (or `aidenhq push`); the runner tiers each
   write. Ship what was asked, live: no feature flags or off-by-default switches unless asked.
 - Pin every dependency you add, to a version at least 7 days old (the supply-chain skill picks it).
