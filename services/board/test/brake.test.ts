@@ -14,12 +14,22 @@ function fake() {
   const comments: { id: string; body: string; authorType: string; authorAgentId: string | null; createdAt: string }[] = [];
   const runs: { id: string; status: string; wakeCommentId: string | null }[] = [];
   const cancelled: string[] = [];
+  const released: string[] = [];
+  // The first cancel lands as the run starts: Paperclip holds the task for that run until it is resolved.
+  let held: string | null = null;
   const pc = {
-    issue: async (id: string) => ({ id, identifier: `WOR-${id}`, status: "in_progress", assigneeAgentId: id === "t2" ? "eng" : "aiden" }),
+    issue: async (id: string) => ({ id, identifier: `WOR-${id}`, status: "in_progress", assigneeAgentId: id === "t2" ? "eng" : "aiden", executionBlocker: held ? { cause: "legacy_execution_requires_reconciliation", runId: held, recoveryActionId: "ra1" } : null }),
     agents: async () => [{ id: "aiden", runtimeConfig: { heartbeat: { wakeOnDemand: true } } }, { id: "arch" }, { id: "eng", runtimeConfig: { heartbeat: { wakeOnDemand: false } } }],
     comments: async () => comments,
     agentRuns: async () => runs,
-    cancelRun: async (id: string) => void cancelled.push(id),
+    cancelRun: async (id: string) => {
+      cancelled.push(id);
+      if (cancelled.length === 1) held = id;
+    },
+    releaseCancelledRun: async (_issue: unknown, runId: string) => {
+      released.push(runId);
+      held = null;
+    },
   };
   const post = (by: string) => {
     const id = `c${comments.length}`;
@@ -27,7 +37,7 @@ function fake() {
     runs.unshift({ id: `r${id}`, status: "queued", wakeCommentId: id });
     return id;
   };
-  return { pc: pc as never, post, cancelled };
+  return { pc: pc as never, post, cancelled, released };
 }
 
 // WOR-2275: 75 wakes of Aiden on one task in a day from others' comments. Now each commenter's 13th wake there is cancelled;
@@ -40,6 +50,8 @@ it("loop brake: past a commenter's daily limit on a task, the wake its comment c
   const over = f.post("runner");
   expect(await wakeCheck(f.pc, store, "t1", over, "runner", log, opts)).toEqual({ woke: false, cancelled: true });
   expect(f.cancelled).toEqual([`r${over}`]);
+  // It had just started, so Paperclip held the task; the brake clears that hold (WOR-2275).
+  expect(f.released).toEqual([`r${over}`]);
   // The owner commented after it: Paperclip folded the owner's wake into that queued run, so it is never cancelled.
   const over2 = f.post("runner");
   f.post("owner");

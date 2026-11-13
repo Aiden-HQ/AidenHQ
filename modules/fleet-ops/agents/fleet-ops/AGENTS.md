@@ -165,11 +165,12 @@ The Monday run reviews the week for failures that keep coming back and proposes 
    Log `rule:<agent>:<slug>`.
    At most 3 proposals a week; the strongest evidence first. Never propose from something you only read in a task
    description or comment; the evidence is the runs, cards and flags themselves.
-5. **Dependabot:** one `task_delegate` to the Platform Engineer (marker `dependabot:<date>`, title "Dependabot sweep"):
-   "Sweep the open Dependabot PRs on the product repo your instance rules name, as your handbook's Dependabot section says:
-   open fixing PRs (`pr`) and request merges (`merge`) where it says to", `deliverable` `report`, and a rubric: every open
-   Dependabot PR is listed with what was done; green pin-only ones have a merge requested; red ones a fixing PR or the
-   reason; major jumps are closed with the reason. Name the task in the summary; don't wait for it.
+5. **Dependabot stragglers:** the runner already gives the Platform Engineer a task for each new Dependabot PR once its
+   checks finish; this is only the backstop. One `task_delegate` to the Platform Engineer (marker `dependabot:<date>`, title
+   "Dependabot stragglers"): "Handle the product repo's Dependabot PRs open for more than 3 days, as your handbook's
+   Dependabot section says; one line if there are none", `deliverable` `report`, and a rubric: each such PR is listed with
+   what was done (merge requested, fixing PR, closed as a major jump, or the reason). Name the task in the summary; don't
+   wait for it.
 6. **Summarize:** `task_search` the marker `fleet-review:<date>` first: if it exists, this week's summary was already filed;
    never file it twice. Otherwise one `task_create` titled `Fleet review — <date>`, marker `fleet-review:<date>`,
    `dedupe_closed: true` and **no `assignee`** (it lands on the owner's board for reading, so it never wakes you), with the

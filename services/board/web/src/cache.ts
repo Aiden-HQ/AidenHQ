@@ -1,7 +1,8 @@
 // Stale-while-revalidate for the board's pages: a view shows the last good response at once (from memory, or from
 // localStorage after a reload), marks it as updating, then swaps in the fresh one. Keyed per route (with its params).
 // Persisted entries belong to the signed-in account (`setAccount`); signing out, or any 401, clears them. Only display
-// data is persisted: callers pass `persist: false` for anything a decision is made on (approvals) or private chat text.
+// data is persisted: callers pass `persist: false` for anything a decision is made on (approvals) or private chat text,
+// or a function giving the part that may be kept (the chat list without any message text).
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 // A 401 from api.ts (its SignInRequired, message "sign in"); matched by message so this module needs no app imports.
 const signedOut = (e: unknown) => e instanceof Error && e.message === "sign in";
@@ -109,7 +110,10 @@ export function share<T>(prev: unknown, next: T): T {
   return (same ? prev : out) as T;
 }
 
-export function put(key: string, data: unknown, persist = true) {
+/** Kept on the device (true), memory only (false), or only what the function returns kept. */
+export type Persist = boolean | ((data: any) => unknown);
+
+export function put(key: string, data: unknown, persist: Persist = true) {
   const at = Date.now();
   data = share(mem.get(key)?.data, data);
   mem.set(key, { data, at });
@@ -118,10 +122,11 @@ export function put(key: string, data: unknown, persist = true) {
   const s = storage();
   try {
     // Polls mostly bring the same answer: rewrite storage only when it changed (a reload shows its older `at` as stale anyway).
-    const body = JSON.stringify(data);
+    const kept = typeof persist === "function" ? persist(data) : data;
+    const body = JSON.stringify(kept);
     if (written.get(key) === body) return;
     written.set(key, body);
-    const raw = JSON.stringify({ account, at, data });
+    const raw = JSON.stringify({ account, at, data: kept });
     if (raw.length > MAX_BYTES) return s?.removeItem(PREFIX + key);
     s?.setItem(PREFIX + key, raw);
   } catch {
@@ -134,7 +139,7 @@ export function put(key: string, data: unknown, persist = true) {
  * one and then fetches again, for a refresh that must see a change just made). A 401 clears the cache (the session ended)
  * and rethrows, so the view can ask to sign in.
  */
-export function load<T>(key: string, fetcher: () => Promise<T>, persist = true, after = false): Promise<T> {
+export function load<T>(key: string, fetcher: () => Promise<T>, persist: Persist = true, after = false): Promise<T> {
   const running = inflight.get(key);
   if (running && after) {
     // At most one follow-up per key: polls on a slow route share it instead of queueing behind each other.
@@ -166,7 +171,7 @@ export function load<T>(key: string, fetcher: () => Promise<T>, persist = true, 
 }
 
 /** Warm the cache (a hovered tab): ignores errors; skips a key fetched in the last 15 seconds. */
-export function prefetch(key: string, fetcher: () => Promise<unknown>, persist = true) {
+export function prefetch(key: string, fetcher: () => Promise<unknown>, persist: Persist = true) {
   const e = mem.get(key);
   if (e && Date.now() - e.at < 15_000) return;
   load(key, fetcher, persist).catch(() => {});
@@ -191,7 +196,7 @@ export interface Cached<T> {
  * The response for `key`, cached: renders what's cached immediately, fetches on mount (and when `key` changes), and
  * re-renders when any loader of the same key lands. `onSignIn` is called on a 401.
  */
-export function useCached<T>(key: string, fetcher: () => Promise<T>, opts: { persist?: boolean; onSignIn?: () => void } = {}): Cached<T> {
+export function useCached<T>(key: string, fetcher: () => Promise<T>, opts: { persist?: Persist; onSignIn?: () => void } = {}): Cached<T> {
   const persist = opts.persist ?? true;
   const ref = useRef({ fetcher, onSignIn: opts.onSignIn });
   ref.current = { fetcher, onSignIn: opts.onSignIn };

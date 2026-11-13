@@ -1,15 +1,16 @@
 // The board's cached reads (cache.ts): one place names each route's cache key and whether it may be kept on the device,
 // so a page and the tab that prefetches it share the same entry.
 import { api } from "./api";
-import { adoptStoredAccount, load, prefetch, useCached } from "./cache";
+import { adoptStoredAccount, load, prefetch, useCached, type Persist } from "./cache";
+import { chatListForDevice } from "./conversation";
 
 export interface Query<T> {
   key: string;
   fetch: () => Promise<T>;
-  /** Kept in localStorage across reloads (display data only); false keeps it in memory for this page load. */
-  persist: boolean;
+  /** Kept in localStorage across reloads (display data only); false keeps it in memory for this page load; a function keeps only what it returns. */
+  persist: Persist;
 }
-const q = <T,>(key: string, fetch: () => Promise<T>, persist = true): Query<T> => ({ key, fetch, persist });
+const q = <T,>(key: string, fetch: () => Promise<T>, persist: Persist = true): Query<T> => ({ key, fetch, persist });
 
 export const QUERIES = {
   roster: q("agents.roster", api.roster),
@@ -20,8 +21,9 @@ export const QUERIES = {
   // What the owner decides on is never read back from the device: memory only, refetched on every visit.
   approvals: q("approvals", api.approvals, false),
   needsYou: q("needs-you", api.needsYou, false),
-  // Chat text stays off the device too: memory only, so switching chats and tabs paints at once within a page load.
-  chats: q("chats", api.chats, false),
+  // The chat list is kept on the device without any message text (titles, states, times, unread), so a reload paints it
+  // at once; the preview of the last message and the failure reason come only from the network. Chats stay memory only.
+  chats: q("chats", api.chats, chatListForDevice),
 };
 
 export const scorecardQuery = (id: string) => q(`agents.${id}.scorecard`, () => api.scorecard(id));
@@ -73,7 +75,7 @@ export function preloadBoot() {
   try {
     view = localStorage.getItem("aidenhq.view") ?? "chat";
   } catch {}
-  if (h === "c" || h.startsWith("c/") || (!h && view === "chat")) quiet(load(QUERIES.chats.key, QUERIES.chats.fetch, false));
+  if (h === "c" || h.startsWith("c/") || (!h && view === "chat")) quiet(load(QUERIES.chats.key, QUERIES.chats.fetch, QUERIES.chats.persist));
   const ref = h.startsWith("c/") ? h.slice(2).split("?")[0] : "";
   if (ref) quiet(load(chatQuery(ref).key, chatQuery(ref).fetch, false));
   // The other pages' code once the first screen is up, so a tab never waits on a download.

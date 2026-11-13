@@ -33,6 +33,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], ot
   const unknown = [];
   const approvals = new Map();
   const autos = [];
+  const created = []; // tasks the runner filed (POST …/issues), as the board key
   let n = 0;
   const addComment = (issueId, body) => comments.get(issueId).push({ id: `comment-${++n}`, authorType: "user", authorUserId: USER, body, createdAt: new Date(Date.now() + n).toISOString() });
   const find = (ref) => issues.get(ref) ?? [...issues.values()].find((i) => i.identifier === ref);
@@ -60,6 +61,14 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], ot
       return send(list);
     }
     if (req.method === "GET" && path === "/api/cli-auth/me") return send({ userId: USER });
+    if (req.method === "POST" && path === `/api/companies/${COMPANY}/issues`) {
+      const b = JSON.parse(body);
+      const i = { id: `made-${created.length + 1}`, identifier: `PEN-${100 + created.length}`, status: b.status, title: b.title, description: b.description, assigneeAgentId: b.assigneeAgentId, assigneeUserId: null, parentId: null, createdByUserId: USER, createdByAgentId: null, labels: [] };
+      created.push({ ...b, id: i.id });
+      issues.set(i.id, i);
+      comments.set(i.id, []);
+      return send(i, 201);
+    }
     const upload = new RegExp(`^/api/companies/${COMPANY}/issues/([^/]+)/attachments$`).exec(path);
     if (req.method === "POST" && upload) {
       const name = /filename="([^"]+)"/.exec(body)?.[1];
@@ -159,11 +168,14 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], ot
     a.state = state;
     return a;
   };
-  return { server, comments, patches, activity, passed, attached, unknown, addComment, approvals, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers };
+  return { server, comments, patches, activity, passed, attached, unknown, addComment, approvals, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created };
 }
 
-/** Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. */
-export function flow({ parent: parentOver, part: partOver, grants, grades, gradingOff } = {}) {
+/**
+ * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
+ * environment; `runnerYaml`: more lines for config/runner.yaml.
+ */
+export function flow({ parent: parentOver, part: partOver, grants, grades, gradingOff, env = {}, runnerYaml = "" } = {}) {
   let dir, runner, runnerEnv, paperclip, output = "";
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -247,7 +259,7 @@ reviews:
   enabled: false
 recurring:
   enabled: false
-`,
+${runnerYaml}`,
     );
     if (grants) {
       mkdirSync(join(config, "grants"), { recursive: true });
@@ -292,6 +304,7 @@ recurring:
         FAKE_LOG: join(dir, "fake.log"),
         FAKE_STEP: join(dir, "claude-step"),
         AIDENHQ_GRADER_URL: `${url}/grader`,
+        ...env,
     };
     startRunner();
   });

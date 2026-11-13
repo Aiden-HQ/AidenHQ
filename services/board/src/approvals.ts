@@ -109,7 +109,8 @@ const REPO = z.string().regex(/^[\w.-]+\/[\w.-]+$/);
 const BRANCH = z.object({ repo: REPO, branch: z.string().min(1).max(200).regex(/^[^\s`]+$/), sha: SHA }).strict();
 export const ARGS = {
   push: z.object({ only: z.array(BRANCH).min(1).max(30) }).strict(),
-  pr: z.object({ only: z.array(BRANCH).min(1).max(30), text: z.object({ title: z.string().max(300), body: z.string().max(60_000) }).strict().optional() }).strict(),
+  // merge: the product repo's one-card path (push, PR, then merge at exactly these commits once green), shown on the card.
+  pr: z.object({ only: z.array(BRANCH).min(1).max(30), text: z.object({ title: z.string().max(300), body: z.string().max(60_000) }).strict().optional(), merge: z.literal(true).optional() }).strict(),
   merge: z.object({ prs: z.array(z.object({ repo: REPO, number: z.number().int().positive(), url: z.string().regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/), head: z.string().regex(/^[0-9a-f]{40}$/).optional(), noReview: z.literal(true).optional() }).strict()).min(1).max(30), gap: z.number().int().min(0).max(720).optional() }).strict(),
   apply: z.object({ repo: REPO, branch: z.string().min(1).max(200).regex(/^[^\s`]+$/), sha: SHA, files: z.array(z.string().max(300)).min(1).max(200) }).strict(),
 };
@@ -123,7 +124,11 @@ export function card(action: RunnerAction, args: any, diff = ""): Pick<Request, 
   if (action === "push" || action === "pr") {
     const list = branches(args.only);
     const text = action === "pr" && args.text ? `\n\nPR title: ${args.text.title}\n\n${args.text.body}` : "";
-    return { ...base, target: list.join(", ").slice(0, 500), sentence: action === "push" ? `Push ${list.length} branch${list.length === 1 ? "" : "es"} to GitHub.` : `Push and open (or update) a draft PR for ${list.length} branch${list.length === 1 ? "" : "es"}.`, changes: list.join("\n"), details: `${list.join("\n")}${text}` };
+    const n = `${list.length} branch${list.length === 1 ? "" : "es"}`;
+    const merge = action === "pr" && args.merge === true;
+    const sentence = action === "push" ? `Push ${n} to GitHub.` : merge ? `Push and open (or update) a PR for ${n}, then merge each PR once its checks are green.` : `Push and open (or update) a draft PR for ${n}.`;
+    const then = merge ? "\nThen merges each PR at exactly this commit, once every named check is green on it and its base branch is green." : "";
+    return { ...base, target: list.join(", ").slice(0, 500), sentence, changes: `${list.join("\n")}${then}`, details: `${list.join("\n")}${then}${text}` };
   }
   if (action === "merge") {
     const prs = args.prs as { url: string; head?: string; noReview?: true }[];

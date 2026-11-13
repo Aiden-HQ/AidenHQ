@@ -61,6 +61,8 @@ test("the no-tap path is only for tasks the owner or the Architect (by the grant
   assert.equal(trialNoTapBy({ createdByUserId: null, createdByAgentId: "cos" }, grants), false, "another agent's task (and its follow-ups): a card");
   assert.equal(trialNoTapBy({ createdByUserId: null, createdByAgentId: "arch" }, undefined), false, "no grants table: fail closed");
   assert.equal(trialNoTapBy({}, grants), false);
+  // A task the runner filed with the board key (a Dependabot PR's) names the owner as creator, but is never theirs.
+  assert.equal(trialNoTapBy({ createdByUserId: "u1", createdByAgentId: null }, grants, true), false, "runner-made: a card");
 });
 test("only the Architect's follow-ups on a task it created count as a request (review rounds with the Fleet Engineer)", async () => {
   const { architectFollowUps } = await import("../src/apply.mjs");

@@ -70,6 +70,17 @@ export function classify(action, s) {
   return t;
 }
 
+/**
+ * `sticky` for a request from the task's approval records: a rejected card of the same action, or of one the request also
+ * carries (`also`). A product PR card with `args.merge` carries a merge, so its reject makes later merges sticky, and a
+ * rejected merge makes a merge-carrying PR card sticky: neither can be refiled as the other to dodge it.
+ */
+export function stickyFrom(records, action, also = []) {
+  const carried = (r) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
+  const want = [action, ...also];
+  return (records ?? []).some((r) => r.state === "rejected" && carried(r).some((x) => want.includes(x)));
+}
+
 function publishParts(action, s) {
   return (s.branches ?? []).map((b) => {
     const inAgents = Boolean(s.agentsOrg) && same(orgOf(b.repo), s.agentsOrg);

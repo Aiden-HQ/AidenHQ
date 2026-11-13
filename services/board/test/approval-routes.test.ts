@@ -108,6 +108,15 @@ describe("approval routes", () => {
     expect((await post(`/internal/approvals/${deploy.id}/outcome`, { nonce: "f".repeat(32), ok: true, text: "x" })).status).toBe(404);
   });
 
+  it("a product PR card that also merges says so, and the runner's per-task read carries its args (sticky rejects)", async () => {
+    const only = [{ repo: "acme/aidenhq", branch: "fleet/x", sha: "d".repeat(40) }];
+    const filed = await post("/internal/approvals", { issue: "WOR-184", action: "pr", args: { only, merge: true } });
+    expect(filed.json.sentence).toBe("Push and open (or update) a PR for 1 branch, then merge each PR once its checks are green.");
+    const onTask = await get("/internal/approvals?issue=WOR-184", { "x-reviewer-key": RUNNER_KEY });
+    expect(onTask.json.approvals.find((a: any) => a.id === filed.json.id).args).toEqual({ only, merge: true });
+    expect((await post("/internal/approvals", { issue: "WOR-184", action: "pr", args: { only, merge: false } })).status).toBe(400);
+  });
+
   const fresh = new Store(":memory:");
   // The owner's session (taps without one, and stamps, are admins.test.ts's and accounts.test.ts's).
   const owner = () => ({ accountId: "acct-owner", role: "admin" as const });

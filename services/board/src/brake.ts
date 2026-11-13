@@ -41,7 +41,7 @@ export function takeWake(store: Pick<Store, "meta" | "setMeta">, task: string, b
   return true;
 }
 
-type Pc = Pick<Paperclip, "issue" | "agents" | "comments" | "agentRuns" | "cancelRun">;
+type Pc = Pick<Paperclip, "issue" | "agents" | "comments" | "agentRuns" | "cancelRun" | "releaseCancelledRun">;
 type CheckLog = { info(o: object, m: string): void };
 
 /**
@@ -73,6 +73,10 @@ export async function wakeCheck(pc: Pc, store: Pick<Store, "meta" | "setMeta">, 
   const after = all.slice(all.findIndex((x) => x.id === commentId) + 1);
   if (after.some((x) => (by === "runner" ? x.authorAgentId || !x.body.includes(RUNNER_MARKER) : x.authorAgentId !== by))) return { woke: true };
   await pc.cancelRun(run.id);
+  // A run that started between our read and the cancel leaves Paperclip's recovery hold on the task, which parks every later
+  // wake there, the owner's included (WOR-2275): clear it, since the run did nothing.
+  const after2 = await pc.issue(issue.id).catch(() => undefined);
+  if (after2?.executionBlocker?.runId === run.id) await pc.releaseCancelledRun(after2, run.id).catch((err) => log.info({ issue: issue.identifier, err: String(err) }, "couldn't clear the hold the cancel left"));
   log.info({ issue: issue.identifier, agent, by, run: run.id }, "wake cancelled: this commenter's daily limit on the task");
   return { woke: false, cancelled: true };
 }

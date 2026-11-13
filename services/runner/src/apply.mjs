@@ -76,10 +76,16 @@ const isArchitect = (grants, agentId) => Boolean(agentId) && (grants?.agents?.[a
 export const architectFollowUps = (comments, delegatorId, grants, { approved = false } = {}) =>
   delegatorId && (approved || isArchitect(grants, delegatorId)) ? comments.filter((c) => c.authorAgentId === delegatorId) : [];
 
-export function trialNoTapBy(issue, grants) {
+export function trialNoTapBy(issue, grants, runnerMade = false) {
   if (issue?.createdByAgentId) return isArchitect(grants, issue.createdByAgentId);
-  return Boolean(issue?.createdByUserId);
+  return ownerMade(issue, runnerMade);
 }
+
+/**
+ * The owner wrote the task: a user created it and no agent did. `runnerMade`: the runner filed it itself (a Dependabot PR's
+ * task, with the board key, so Paperclip names the owner): never the owner's. Every owner-origin check uses this.
+ */
+export const ownerMade = (issue, runnerMade = false) => Boolean(issue?.createdByUserId) && !issue.createdByAgentId && !runnerMade;
 
 /** instance.yaml's top-level `product:` pin (a full sha), or undefined. */
 export function productPin(text) {

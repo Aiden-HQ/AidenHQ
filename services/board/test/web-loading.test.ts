@@ -65,6 +65,26 @@ describe("cache (stale while revalidate)", () => {
     expect(c.peek("board")).toBeUndefined();
   });
 
+  it("keeps the chat list on the device without any message text, and drops it on sign-out", async () => {
+    let c = await pageLoad();
+    const { chatListForDevice } = await import("../web/src/conversation.js");
+    const key = "chats"; // QUERIES.chats in queries.ts, kept with chatListForDevice
+    c.setAccount("acct-1");
+    const row = { identifier: "W-1", title: "Move the brief", open: true, agent: { key: "a", name: "Aiden" }, state: "failed", reason: "SECRET run error", updatedAt: "2026-11-13T10:00:00Z", unread: true, preview: { text: "SECRET last message", at: "2026-11-13T10:00:00Z", from: "agent" } };
+    await c.load(key, async () => ({ chats: [row], agents: [{ key: "a", name: "Aiden", front: true }] }), chatListForDevice);
+    // The page keeps the network copy, preview and all; the device only titles, states, times and unread.
+    expect((c.peek(key)?.data as { chats: typeof row[] }).chats[0]!.preview?.text).toBe("SECRET last message");
+    const stored = localStorage.getItem(`aidenhq.cache.${key}`)!;
+    expect(stored).not.toContain("SECRET");
+    expect(stored).not.toContain("preview");
+
+    c = await pageLoad();
+    c.adoptStoredAccount();
+    expect(c.peek(key)?.data).toMatchObject({ chats: [{ identifier: "W-1", title: "Move the brief", state: "failed", unread: true }] });
+    c.setAccount(null);
+    expect(localStorage.getItem(`aidenhq.cache.${key}`)).toBeNull();
+  });
+
   it("keeps unchanged parts of a refetch the same objects, so rows that didn't change don't re-render", async () => {
     const c = await pageLoad();
     const first = await c.load("chats.W-1", async () => ({ messages: [{ id: "a", text: "hi" }, { id: "b", text: "yo" }], state: "idle" }), false);

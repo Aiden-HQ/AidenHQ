@@ -246,7 +246,8 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
   // A merge the AI reviewer approved: no checks is not green; every named check must have passed on this head.
   if (strictChecks) {
     const named = namedChecks(checks);
-    if (!named.length) return { do: "stop", why: `${ref} has no checks, and a merge without the owner's tap needs green checks` };
+    // CI starts a little after a push (a card's merge is stepped seconds after it): no checks yet waits, ten minutes at most.
+    if (!named.length) return { do: "wait", why: `${ref} has no checks yet, and a merge without the owner's tap needs green checks`, limit: 10 };
     if (named.some((c) => c.pending)) return { do: "wait", why: `${ref}'s checks are running` };
     if (named.some((c) => !c.ok)) return { do: "stop", why: `${ref}: ${named.filter((c) => !c.ok).map((c) => c.name).join(", ")} not green` };
   }
@@ -277,11 +278,11 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     queue.reason = why;
     return { queue, say: [...say, stoppedComment(queue)], done: "stopped" };
   };
-  const waiting = (key, why) => {
+  const waiting = (key, why, limit = timeoutMinutes) => {
     queue.wait ??= { key, since: now.toISOString() };
     if (queue.wait.key !== key) queue.wait = { key, since: now.toISOString() };
     queue.waiting = why;
-    if (t - Date.parse(queue.wait.since) > timeoutMinutes * 60_000) return stop(`stuck for ${timeoutMinutes} minutes: ${why}`);
+    if (t - Date.parse(queue.wait.since) > limit * 60_000) return stop(`stuck for ${limit} minutes: ${why}`);
     return { queue, say };
   };
 
@@ -327,7 +328,7 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
       continue;
     }
     if (d.do === "stop") return stop(d.why);
-    if (d.do === "wait") return waiting(`pr:${next.number}:${pr.headRefOid}:${d.why}`, d.why);
+    if (d.do === "wait") return waiting(`pr:${next.number}:${pr.headRefOid}:${d.why}`, d.why, d.limit);
     if (d.do === "ready") {
       if (next.readied) return stop(`#${next.number} is still a draft after I marked it ready`);
       await github.markReady(pr.id, next.repo);

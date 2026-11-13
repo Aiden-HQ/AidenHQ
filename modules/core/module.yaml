@@ -219,6 +219,7 @@ agents:
     model: openrouter/~deepseek/deepseek-flash-latest
     dispatch: runner
     isolation: code-exec
+    max_parallel: 3 # independent product and instance changes run side by side, each in its own task workspace
 routines:
   daily-brief:
     title: Prepare daily brief

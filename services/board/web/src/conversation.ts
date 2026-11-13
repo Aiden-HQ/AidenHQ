@@ -1,6 +1,17 @@
 // The conversation's shape, pure so it can be tested without React: which lines fold together, which approval cards
 // fold to one line, the chat's short title, and which chats are throwaway tests.
-import type { Approval, ChatMessage } from "./types.js";
+import type { Approval, ChatAgent, ChatMessage, ChatRow } from "./types.js";
+
+/**
+ * The chat list as the device may keep it (queries.ts): each row's fields named one by one, so a field added later stays
+ * off the device until listed here; never the last message's preview or a run's failure text.
+ */
+export function chatListForDevice(r: { chats: ChatRow[]; agents: ChatAgent[] }) {
+  return {
+    agents: r.agents,
+    chats: r.chats.map(({ identifier, title, open, agent, state, updatedAt, unread, from }) => ({ identifier, title, open, agent, state, updatedAt, unread, ...(from ? { from } : {}) })),
+  };
+}
 
 /**
  * A system line that only reports progress: runner and agent notes, wake-ups and approval outcomes (the card shows

@@ -68,6 +68,9 @@ overrides:
   `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules and `model` only), `budget` (USD, required), `max_parallel`,
   `image`, `trial` and `heartbeat`. They cannot have roles. `trial: true` keeps writes to reporting on the agent's own
   tasks. The Agent Architect designs these and the Platform Engineer commits them after the owner approves.
+- `max_parallel` on an agent: how many of its runs go at once (Paperclip's `maxConcurrentRuns`). For a `dispatch: runner`
+  agent (the Engineers, the Platform Engineer) it caps that agent's parallel runner jobs, each in its own task workspace,
+  within the host's `max_concurrent` (config/runner.yaml); unset, only the host's cap applies.
 - Disabling a module pauses its agents and routines; nothing is deleted.
 
 ## Compile and apply

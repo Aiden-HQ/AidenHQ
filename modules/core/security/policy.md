@@ -77,6 +77,10 @@ agents without a role, docs, tests) is ordinary Tier 1 work when the chain asked
 ## Product pull requests and merges
 
 - A PR to the product repo is judged like any change: does the diff do what the chain asked, and nothing else.
+- A product PR card is also its merge ("Push and open (or update) a PR …, then merge each PR once its checks are green"):
+  approving it approves merging that diff. Code merges only at exactly the commit the card shows, once every named check
+  is green on it and `main` is green; a commit added later voids it. Judge it as you would the merge: approve when the
+  diff is the asked change. Its checks have not run yet when you read it; that is expected, not a reason to escalate.
 - A merge card for a product PR: judge the PR's whole diff the same way, against the chain. Code already checked that the
   head is the one the runner pushed (or, under `product-dependabot-merge`, Dependabot's), that it has not moved, and that no named check is red; the merge runs only once every
   named check is green on that head. Approve a merge whose diff is the asked change.
@@ -103,8 +107,8 @@ changed file is pin-only: lockfile versions from the npm registry, `package.json
 Dockerfile `FROM` tag or digest on the same image, compose image tags or digests, or a CI workflow
 `uses: owner/action@<sha> # tag` line moving to a new SHA of the same action. No version jumps a major.
 
-The request chain is a Dependabot sweep: the Platform Engineer's task to merge the green, pin-only Dependabot PRs. It
-does not name each package; Dependabot chose the versions, and that is the asked change. Approve when the diff is only
+The request chain is a Dependabot sweep (the Platform Engineer's task to merge the green, pin-only Dependabot PRs) or the
+task the runner filed for that one Dependabot PR once its checks finished. It does not name each package; Dependabot chose the versions, and that is the asked change. Approve when the diff is only
 such pins, including inside CI workflows, Dockerfiles or other gate files. Lockfile churn that follows from the bumped
 versions (new transitive entries, integrity hashes) is expected.
 

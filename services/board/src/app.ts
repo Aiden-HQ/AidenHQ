@@ -978,7 +978,8 @@ export function createApp(opts: AppOptions): Server {
         const issue = url.searchParams.get("issue");
         if (issue) {
           if (!runnerKeyed(req)) await requireAgentTool(req, "task_approvals");
-          return { approvals: store.approvals.on(issue).map(approvalView) };
+          // The runner gets the args too: a rejected product PR card that carried the merge makes later merges sticky.
+          return { approvals: store.approvals.on(issue).map((a) => (runnerKeyed(req) ? { ...approvalView(a), args: a.args } : approvalView(a))) };
         }
         // pending and finished: the owner channel's (or the watcher's); review and approved: the runner's.
         if (state === "pending" || state === "finished") {

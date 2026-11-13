@@ -267,7 +267,8 @@ describe("a merge the AI reviewer approved", () => {
   it("needs named checks, all passed: no checks is not green", () => {
     const none = pr(7, { commits: { nodes: [{ commit: { statusCheckRollup: null } }] } });
     assert.equal(prDecision(none).do, "merge", "the owner's merges: unchanged");
-    assert.equal(prDecision(none, { strictChecks: true }).do, "stop");
+    // CI may not have started yet on a just-pushed head: never merged, waited for ten minutes at most.
+    assert.deepEqual([prDecision(none, { strictChecks: true }).do, prDecision(none, { strictChecks: true }).limit], ["wait", 10]);
     assert.equal(prDecision(pr(8), { strictChecks: true }).do, "merge");
   });
 });

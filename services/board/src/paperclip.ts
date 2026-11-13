@@ -43,7 +43,7 @@ export interface Issue {
   /** "routine_execution" for a routine's run task. */
   originKind?: string | null;
   /** A recovery hold: Paperclip parks the assignee's wakes for this task until it clears (single-issue reads only). */
-  executionBlocker?: { cause: string; runError?: string | null } | null;
+  executionBlocker?: { cause: string; runError?: string | null; runId?: string | null; recoveryActionId?: string | null } | null;
 }
 
 /** An agent run in progress (Paperclip's live-runs). */
@@ -224,6 +224,23 @@ export class Paperclip {
   cancelRun(runId: string): Promise<unknown> {
     this.cache.delete("live-runs");
     return this.request("POST", `/api/heartbeat-runs/${encodeURIComponent(runId)}/cancel`, {});
+  }
+
+  /**
+   * Clears the recovery hold Paperclip puts on a task when a run we cancelled had just started: it did nothing (the brake
+   * cancels only runs it saw queued), so the hold is resolved as restored with no action performed.
+   */
+  releaseCancelledRun(issue: Pick<Issue, "id" | "status" | "executionBlocker">, runId: string): Promise<unknown> {
+    const b = issue.executionBlocker;
+    if (!b?.recoveryActionId || b.runId !== runId) return Promise.resolve(undefined);
+    const status = ["todo", "done", "in_review"].includes(issue.status) ? issue.status : "todo";
+    return this.request("POST", `/api/issues/${encodeURIComponent(issue.id)}/recovery-actions/resolve`, {
+      actionId: b.recoveryActionId,
+      outcome: "restored",
+      sourceIssueStatus: status,
+      resolutionNote: "The board's loop brake cancelled this run as it started; it did nothing.",
+      executionReconciliation: { runId, providerStopped: true, actionOutcome: "not_performed", outcomeEvidence: "Cancelled by the board's loop brake, which only cancels a run it saw still queued; it was stopped as it started, before any action." },
+    });
   }
 
   closedSince(since: string, limit = "100"): Promise<Issue[]> {

@@ -2,7 +2,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import YAML from "yaml";
-import { classify, dependabotCommits } from "../src/tiers.mjs";
+import { classify, dependabotCommits, stickyFrom } from "../src/tiers.mjs";
+
+test("sticky: a rejected product PR card that carried the merge and a rejected merge count for each other", () => {
+  const rejected = (action, args = {}) => [{ action, args, state: "rejected" }];
+  assert.equal(stickyFrom(rejected("pr", { merge: true }), "merge"), true, "the combined card's reject holds for a plain merge");
+  assert.equal(stickyFrom(rejected("merge"), "pr", ["merge"]), true, "a merge's reject holds for a merge-carrying PR card");
+  assert.equal(stickyFrom(rejected("pr"), "merge"), false, "a plain PR card carries no merge");
+  assert.equal(stickyFrom([{ action: "pr", args: { merge: true }, state: "approved" }], "merge"), false);
+});
 
 const base = { agentsOrg: "acme-agents", productRepo: "acme/aidenhq", instanceRepo: "acme-agents/aidenhq-instance", requester: { platform: false }, taskStatus: "in_progress" };
 const branch = (over = {}) => ({ repo: "acme-agents/roadmap", branch: "feat/x", defaultBranch: "main", empty: false, files: ["src/a.ts"], ...over });
