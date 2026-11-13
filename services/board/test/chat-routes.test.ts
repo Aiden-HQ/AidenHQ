@@ -69,6 +69,11 @@ describe("chat routes", () => {
     expect(r.agents.find((a: { name: string }) => a.name === "Aiden").front).toBe(true);
   });
 
+  it("leaves the chat unread when a hovered row only prefetches it", async () => {
+    expect((await get("/api/chats/WOR-10?peek")).identifier).toBe("WOR-10");
+    expect((await get("/api/chats")).chats[0].unread).toBe(true);
+  });
+
   it("opens the chat as a conversation with the handed-out work and its approval inline, and marks it read", async () => {
     const c = await get("/api/chats/WOR-10");
     expect(c.messages.map((m: { kind: string }) => m.kind)).toEqual(["owner", "notes", "reply"]);

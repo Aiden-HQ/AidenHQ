@@ -31,6 +31,16 @@ export interface ConnectionRow {
   probe: Probe | null;
   signIn: SignIn | null;
   google?: GoogleState | null;
+  /** Its module's URL settings, which the page can change (src/settings.ts UrlSetting). */
+  urls?: UrlSetting[];
+}
+export interface UrlSetting {
+  key: string;
+  value: string;
+  set: boolean;
+  default?: string;
+  host?: string;
+  doc?: string;
 }
 export interface SourceRow {
   name: string;
@@ -45,8 +55,8 @@ export interface ConnectionsData {
   sourcesError: boolean;
 }
 
-export type Status = "connected" | "not_configured" | "signed_out" | "error" | "unknown";
-export const STATUS_LABEL: Record<Status, string> = { connected: "Connected", not_configured: "Not set up", signed_out: "Signed out", error: "Error", unknown: "Unknown" };
+export type Status = "connected" | "not_configured" | "signed_out" | "error" | "unknown" | "builtin";
+export const STATUS_LABEL: Record<Status, string> = { connected: "Connected", not_configured: "Not set up", signed_out: "Signed out", error: "Error", unknown: "Unknown", builtin: "Built in" };
 
 export interface Verdict {
   status: Status;
@@ -56,6 +66,9 @@ export interface Verdict {
   /** Why the button isn't offered here (sign-ins return to the host's loopback address). */
   hint?: string;
 }
+
+/** What a built-in connection is for, in the owner's words (it runs inside each agent run: nothing to check). */
+const BUILT_IN: Record<string, string> = { paperclip_tasks: "How agents read and update their tasks, delegate, and ask for approvals." };
 
 const NAMES: Record<string, string> = { google_workspace: "Google", ops_mcp: "Meetings and notes", slack_live: "Owner channel", paperclip_tasks: "Tasks bridge", apps: "Apps and warehouse", glean: "Glean", jira: "Jira", primer: "Primer", slack: "Slack", github: "GitHub", grafana: "Grafana", clickhouse: "ClickHouse" };
 export const displayName = (name: string) => NAMES[name] ?? name.replace(/[_-]+/g, " ").replace(/^./, (c) => c.toUpperCase());
@@ -79,18 +92,18 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
 
   // A sign-in through an MCP proxy (Glean, Jira, Grafana, ClickHouse): set up at all, then signed in.
   const s = row.signIn;
-  if (s && !s.configured) return { status: "not_configured", reason: s.detail ?? "Its URL isn't set yet." };
+  if (s && !s.configured) return { status: "not_configured", reason: row.urls?.length ? "Add its URL to set it up." : (s.detail ?? "Its URL isn't set yet.") };
   if (s?.state === "missing") return { status: "signed_out", reason: "Set up, but not signed in yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) };
   if (s?.state === "expired") return { status: "signed_out", reason: `Sign-in stopped working (since ${day(s.since)}).`, ...connect("Reconnect", `/${row.name}/connect`, canConnect.signIn) };
 
   const p = row.probe;
   if (!p) {
     if (row.kind === "service") return s?.state === "ok" ? { status: "connected", reason: "Signed in." } : { status: "unknown", reason: s ? "Its sign-in hasn't been checked yet." : "The board can't ask this service." };
-    return { status: "unknown", reason: row.transport === "built in" ? "Built in: runs inside each agent run; nothing to check." : "Not checked yet." };
+    return row.transport === "built in" ? { status: "builtin", reason: BUILT_IN[row.name] ?? "Part of every agent run." } : { status: "unknown", reason: "Not checked yet." };
   }
   if (p.ok) return { status: "connected", reason: p.detail ? `Answering; it notes: ${p.detail}` : "Answering its health check." };
   const detail = p.detail ?? (p.status ? `health check answered HTTP ${p.status}` : "health check failed");
-  if (/not set|not configured|no token|missing/i.test(detail) && !/sign/i.test(detail)) return { status: "not_configured", reason: detail };
+  if (/not set|not configured|no token|missing/i.test(detail) && !/sign/i.test(detail)) return { status: "not_configured", reason: row.urls?.some((u) => !u.value) && /URL/.test(detail) ? "Add its URL to set it up." : detail };
   if (p.state === "missing" || p.state === "expired" || /sign.?in|unauthori[sz]ed|expired|401/i.test(detail)) return { status: "signed_out", reason: detail };
   return { status: "error", reason: detail.replace(/^unreachable: /, "Unreachable: ") };
 }

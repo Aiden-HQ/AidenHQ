@@ -4,9 +4,13 @@ settings:
   # The Atlassian site every call is pinned to (its cloudId is looked up from the signed-in account's sites).
   jira_url:
     required: true  # e.g. https://your-company.atlassian.net
+    type: url
+    host: "*.atlassian.net"
   # Atlassian's remote MCP server; v2 with ?tools=all lists every tool flat, so per-tool grants hold (no discover/execute*).
   atlassian_mcp_url:
     default: https://mcp.atlassian.com/v2/mcp?tools=all
+    type: url
+    host: mcp.atlassian.com
   # Quiet projects' history: the live sync starts 30 days back site-wide, so a project with little recent activity would be
   # nearly empty. Each listed project is read once, back history_days (baseline rows), then left alone.
   history_projects:
@@ -15,7 +19,7 @@ settings:
     default: 365
 connections:
   jira:
-    setup: "Set settings.jira_url in instance.yaml (an apply), then press Connect on the board from the host's loopback address (http://127.0.0.1:3120)."
+    setup: "Set your Atlassian site's URL on the board (Settings, Connections) and approve the change, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120)."
     guide: "Jira and Confluence directly: exact issue fields, change history (when a status or date changed), comments, versions and JQL queries. Use it for precise dates and history; use Glean to find the issue or page first."
     url: http://jira-mcp:8091/mcp
     bearer_token_env_var: AIDENHQ_JIRA_MCP_TOKEN

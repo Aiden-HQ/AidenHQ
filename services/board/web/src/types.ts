@@ -519,6 +519,24 @@ export interface NeedsYou {
 /** A multiple-choice question an agent asks (recommended option first); the owner may answer in his own words. */
 export type Question = { question: string; options: string[]; multi?: boolean };
 
+/** A change the Settings pages file (services/board/src/settings-change.ts): it becomes an apply card, never applied here. */
+export type SettingChange =
+  | { kind: "setting"; key: string; value: unknown }
+  | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat"; value: string | number | boolean }
+  | { kind: "caps"; agent: string; value: Partial<Record<"run_usd" | "task_usd" | "day_usd", number>> }
+  | { kind: "module"; name: string; on: boolean };
+export type ChangeStage = "working" | "waiting" | "applying" | "applied" | "failed" | "rejected" | "closed";
+export interface FiledChange {
+  identifier: string;
+  title: string;
+  createdAt: string;
+  items: SettingChange[];
+  stage: ChangeStage;
+  tier?: number;
+  approval?: string;
+  detail?: string;
+}
+
 /** GET /api/settings (services/board/src/settings.ts): the compiled config, read-only. */
 export interface SettingRow {
   key: string;
@@ -535,6 +553,9 @@ export interface SettingRow {
   /** What the running system reads now, where the board can see it (grants table, gateway, its own environment). */
   live?: string;
   switch: boolean;
+  /** `url`: a URL input, checked like the compiler does (src/url-setting.ts), against `host` when set. */
+  type?: string;
+  host?: string;
 }
 export interface AgentSettings {
   key: string;
@@ -552,6 +573,11 @@ export interface AgentSettings {
   roles: string[];
   caps: Record<string, number>;
   connections: string[];
+  /** A heartbeat may be turned on (not a runner agent, and it has the tools). */
+  canHeartbeat: boolean;
+  /** The reasoning efforts its engine takes (none: no effort setting). */
+  efforts: string[];
+  department: { id: string; name: string; description?: string; order: number };
 }
 export interface SettingsData {
   compiled: boolean;
@@ -559,6 +585,7 @@ export interface SettingsData {
   instance: { product: string | null; instance: string | null; lastChangeAt: string | null; boardTimezone: string; node: string };
   settings: SettingRow[];
   agents: AgentSettings[];
+  choices: { heartbeatHours: number[]; models: string[] };
   approvals: { pending: number };
   spend: { enforcing: boolean | null; defaults: Record<string, number>; pendingRaises: number };
 }

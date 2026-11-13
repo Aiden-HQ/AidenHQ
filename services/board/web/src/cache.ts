@@ -49,6 +49,16 @@ export function setAccount(id: string | null) {
   } catch {}
 }
 
+/**
+ * At boot, before the session is checked: whose cache this device last held, so the last board paints at once. The
+ * session's answer then confirms it (setAccount) or signs out and drops everything.
+ */
+export function adoptStoredAccount() {
+  try {
+    account = storage()?.getItem(ACCOUNT_KEY) ?? null;
+  } catch {}
+}
+
 /** Drop every cached response, in memory and in storage. */
 export function clearCache() {
   const keys = [...mem.keys()];
@@ -81,8 +91,27 @@ export function peek<T>(key: string): { data: T; at: number } | undefined {
   }
 }
 
+/**
+ * `next`, reusing every part of `prev` that is deep-equal to it: a refetch that changed one message keeps every other
+ * message the same object, so memoised rows don't re-render, and an unchanged refetch keeps `data` itself.
+ */
+export function share<T>(prev: unknown, next: T): T {
+  if (prev === next || typeof prev !== "object" || typeof next !== "object" || !prev || !next || Array.isArray(prev) !== Array.isArray(next)) return next;
+  const a = prev as Record<string, unknown>;
+  const b = next as Record<string, unknown>;
+  const keys = Object.keys(b);
+  let same = keys.length === Object.keys(a).length;
+  const out: Record<string, unknown> = Array.isArray(b) ? ([] as unknown as Record<string, unknown>) : {};
+  for (const k of keys) {
+    out[k] = share(a[k], b[k]);
+    if (out[k] !== a[k]) same = false;
+  }
+  return (same ? prev : out) as T;
+}
+
 export function put(key: string, data: unknown, persist = true) {
   const at = Date.now();
+  data = share(mem.get(key)?.data, data);
   mem.set(key, { data, at });
   notify(key);
   if (!persist || !account) return;
@@ -118,8 +147,10 @@ export function load<T>(key: string, fetcher: () => Promise<T>, persist = true, 
   if (running) return running as Promise<T>;
   const p = fetcher().then(
     (data) => {
-      if (inflight.get(key) === p) put(key, data, persist);
-      return data;
+      if (inflight.get(key) !== p) return data;
+      put(key, data, persist);
+      // The stored copy: unchanged parts keep their identity (share), so callers' memos hold.
+      return mem.get(key)!.data as T;
     },
     (e) => {
       if (signedOut(e)) clearCache();

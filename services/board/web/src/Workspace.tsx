@@ -2,9 +2,11 @@
 // in the middle, and one details panel on the right (context, the tasks the chat handed out, progress and files). On a
 // narrow screen the panel opens over the conversation; on a phone: the list, then the conversation full screen, the
 // panel as a sheet. Lives at #/c/ (a new chat) and #/c/<chat>.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
+import { load as loadCached } from "./cache";
+import { QUERIES, chatQuery, peekingChat, prefetchChat, useQuery } from "./queries";
 import { ChatListSkeleton, SkeletonLines } from "./Skeleton";
 import { ApprovalCard, StateChip } from "./Chat";
 import { useEvents } from "./events";
@@ -43,29 +45,23 @@ export function Monogram({ name, size = 28, front, avatar }: { name: string; siz
   return <AgentAvatar className="monogram" name={name} portrait={avatar} size={size} front={front} />;
 }
 
+/** Refetch on a timer (the cache fetched on mount already). */
 function usePoll(load: () => Promise<unknown>, fast: boolean, idleMs: number) {
   useEffect(() => {
-    void load();
     const t = setInterval(() => void load(), fast ? 2_000 : idleMs);
     return () => clearInterval(t);
   }, [load, fast, idleMs]);
 }
 
+const NO_AGENTS: ChatAgent[] = [];
+
 export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, onSignIn, toast }: Props) {
-  const [rows, setRows] = useState<ChatRow[] | null>(null);
-  const [agents, setAgents] = useState<ChatAgent[]>([]);
-  const [error, setError] = useState("");
-  const load = useCallback(async () => {
-    try {
-      const r = await api.chats();
-      setRows(r.chats);
-      setAgents(r.agents);
-      setError("");
-    } catch (e) {
-      if (e instanceof SignInRequired) onSignIn();
-      else setError((e as Error).message);
-    }
-  }, [onSignIn]);
+  // From the cache (queries.ts): coming back to Chat paints the last list at once while it refreshes.
+  const chats = useQuery(QUERIES.chats, onSignIn);
+  const rows = chats.data?.chats ?? null;
+  const agents = chats.data?.agents ?? NO_AGENTS;
+  const error = chats.error;
+  const load = chats.reload;
   usePoll(load, anyLive(rows ?? []), 6_000);
   useEvents(["chat", "approvals"], load);
   const [panel, setPanel] = useState(() => {
@@ -86,7 +82,7 @@ export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, o
 
   const list = <Sidebar rows={rows} agents={agents} crew={crew} selected={selected} go={go} error={error} retry={load} />;
   const main = selected ? (
-    <Conversation key={selected} refId={selected} mobile={mobile} crew={crew} prefix={prefix} go={go} onSignIn={onSignIn} toast={toast} panel={panel} togglePanel={togglePanel} reloadList={load} />
+    <Conversation key={selected} refId={selected} row={rows?.find((r) => r.identifier === selected)} mobile={mobile} crew={crew} prefix={prefix} go={go} onSignIn={onSignIn} toast={toast} panel={panel} togglePanel={togglePanel} reloadList={load} />
   ) : (
     <NewChat agents={agents} crew={crew} mobile={mobile} go={go} toast={toast} reloadList={load} />
   );
@@ -227,7 +223,14 @@ function Group({ g, crew, selected, go, front, searching }: { g: AgentGroup; cre
 function ChatLink({ c, selected, go, tasks }: { c: ChatRow; selected: string | null; go: (h: string) => void; tasks?: ChatRow[] }) {
   const t = tasks?.length ? taskSummary(tasks) : undefined;
   return (
-    <button className={`side-chat${c.identifier === selected ? " on" : ""}${c.open ? "" : " closed"}`} title={c.title} onClick={() => go(`#/c/${c.identifier}`)}>
+    <button
+      className={`side-chat${c.identifier === selected ? " on" : ""}${c.open ? "" : " closed"}`}
+      title={c.title}
+      onClick={() => go(`#/c/${c.identifier}`)}
+      // Warmed on hover or focus, so the click paints the conversation at once.
+      onPointerEnter={() => prefetchChat(c.identifier)}
+      onFocus={() => prefetchChat(c.identifier)}
+    >
       <span className="side-chat-top">
         <span className={`side-chat-title${c.unread ? " unread" : ""}`}>{c.title}</span>
         <span className="side-time">{ago(c.preview?.at ?? c.updatedAt)}</span>
@@ -316,39 +319,58 @@ interface Pending {
   retry: () => void;
 }
 
+/**
+ * Messages on their way, per chat, outside any component: switching chats and back keeps a sending or failed message
+ * (with its Retry) in place, and a send that lands after the switch still settles.
+ */
+const outbox = { byChat: new Map<string, Pending[]>(), listeners: new Set<() => void>() };
+const NOTHING_PENDING: Pending[] = [];
+function setOutbox(ref: string, fn: (p: Pending[]) => Pending[]) {
+  const now = outbox.byChat.get(ref) ?? NOTHING_PENDING;
+  const next = fn(now);
+  if (next === now) return;
+  if (next.length) outbox.byChat.set(ref, next);
+  else outbox.byChat.delete(ref);
+  outbox.listeners.forEach((l) => l());
+}
+/** One send at a time per chat, in the order written: the box is free at once, but messages never overtake each other. */
+const turns = new Map<string, Promise<void>>();
+function inTurn(ref: string, run: () => Promise<void>): Promise<void> {
+  const next = (turns.get(ref) ?? Promise.resolve()).then(run);
+  turns.set(ref, next);
+  void next.then(() => turns.get(ref) === next && turns.delete(ref));
+  return next;
+}
+const subscribeOutbox =(l: () => void) => (outbox.listeners.add(l), () => void outbox.listeners.delete(l));
+const useOutbox = (ref: string) => useSyncExternalStore(subscribeOutbox, () => outbox.byChat.get(ref) ?? NOTHING_PENDING);
+
 type Ask = ChatDetail["asks"][number];
 type Item = { at: string; key: string } & ({ type: "message"; m: ChatMessage } | { type: "approval"; a: Approval } | { type: "ask"; q: Ask });
 
-function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel, togglePanel, reloadList }: { refId: string; mobile: boolean; crew: Assignee[]; prefix: string; go: (h: string) => void; onSignIn: () => void; toast: (t: string) => void; panel: boolean; togglePanel: () => void; reloadList: () => Promise<void> }) {
-  const [chat, setChat] = useState<ChatDetail | null>(null);
-  const [error, setError] = useState("");
-  const [pending, setPending] = useState<Pending[]>([]);
+function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, panel, togglePanel, reloadList }: { refId: string; row?: ChatRow; mobile: boolean; crew: Assignee[]; prefix: string; go: (h: string) => void; onSignIn: () => void; toast: (t: string) => void; panel: boolean; togglePanel: () => void; reloadList: () => Promise<void> }) {
+  // From the cache (queries.ts): a chat opened before (or warmed by a hover) paints at once, then refreshes.
+  const query = useQuery(chatQuery(refId), onSignIn);
+  const chat = query.data ?? null;
+  const error = query.error;
+  const load = query.reload;
+  // Cards shown from an earlier load can't be decided until the fresh copy lands (as on Approvals).
+  const hold = query.stale;
+  // Opened while a hover's prefetch (which leaves it unread) is still on its way: read it properly once that lands.
+  useEffect(() => void (peekingChat(refId) && load()), [refId, load]);
+  const pending = useOutbox(refId);
+  const setPending = useCallback((fn: (p: Pending[]) => Pending[]) => setOutbox(refId, fn), [refId]);
   const [sheet, setSheet] = useState(false);
-  const [, tick] = useState(0);
-  const load = useCallback(async () => {
-    try {
-      const c = await api.chat(refId);
-      setChat(c);
-      setError("");
-      // A sent message drops its placeholder once it shows in the conversation.
-      const said = new Set(c.messages.filter((m) => m.kind === "owner").map((m) => (m as { text: string }).text.trim()));
-      setPending((p) => p.filter((x) => x.state !== "sent" || !said.has(x.text.trim())));
-    } catch (e) {
-      if (e instanceof SignInRequired) onSignIn();
-      else setError((e as Error).message);
-    }
-  }, [refId, onSignIn]);
+  // A sent message drops its placeholder once it shows in the conversation.
+  useEffect(() => {
+    if (!chat) return;
+    const said = new Set(chat.messages.filter((m) => m.kind === "owner").map((m) => (m as { text: string }).text.trim()));
+    setPending((p) => (p.some((x) => x.state === "sent" && said.has(x.text.trim())) ? p.filter((x) => x.state !== "sent" || !said.has(x.text.trim())) : p));
+  }, [chat, pending, setPending]);
   const live = anyLive(chat ? [chat, ...chat.handedOut] : []);
   usePoll(load, live, 8_000);
   // The board's own changes arrive at once: a message posted here, a card filed or decided, a grade (events.ts).
   useEvents(["chat"], load, chat?.id);
   useEvents(["approvals", "grades"], load);
-  useEffect(() => {
-    // The live row's clock ("1m 20s", "nothing new for 3 min").
-    if (!live) return;
-    const t = setInterval(() => tick((n) => n + 1), 1_000);
-    return () => clearInterval(t);
-  }, [live]);
 
   const scroller = useRef<HTMLDivElement>(null);
   const [atEnd, setAtEnd] = useState(true);
@@ -358,13 +380,31 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
     if (el && atEnd) el.scrollTop = el.scrollHeight;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [count, chat?.working?.said, chat?.state]);
+  // At the end, stay there as the conversation grows under you: a failed send's Retry line, a card's outcome, rows
+  // drawn at their real height after an estimate (content-visibility).
+  const stick = useRef(atEnd);
+  stick.current = atEnd;
+  const shown = !!chat;
+  useEffect(() => {
+    const el = scroller.current;
+    const inner = el?.firstElementChild;
+    if (!el || !inner) return;
+    const ro = new ResizeObserver(() => stick.current && (el.scrollTop = el.scrollHeight));
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, [shown]);
   const toEnd = () => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
 
+  /**
+   * The message shows at once (pending), the box is free for the next one straight away, and the send runs on its own:
+   * a failure stays on the message with Retry, even after a switch to another chat and back.
+   */
   async function send(text: string, files: File[], answer = false) {
-    const id = Date.now();
+    const id = Date.now() + Math.random();
     const queued = live;
+    const q = chatQuery(refId);
     const attempt = async () => {
-      setPending((p) => p.map((x) => (x.id === id ? { ...x, state: "sending", error: undefined } : x)));
+      setOutbox(refId, (p) => p.map((x) => (x.id === id ? { ...x, state: "sending", error: undefined } : x)));
       try {
         const names: string[] = [];
         for (const f of files) {
@@ -373,20 +413,26 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
         }
         if (text.trim()) {
           const body = names.length ? `${text.trimEnd()}\n\nAttached: ${names.map((n) => `\`${n.replace(/`/g, "")}\``).join(", ")}` : text;
-          const view = await api.comment(refId, body, answer);
+          const view = await api.comment(refId, body, answer, true);
           if (view.approval) toast(view.approval.state === "rejected" ? `Rejected: ${view.approval.sentence}` : `Approved: ${view.approval.sentence}`);
           if (view.movedTo) toast("Sent to the agent you mentioned");
-          setPending((p) => (view.approval ? p.filter((x) => x.id !== id) : p.map((x) => (x.id === id ? { ...x, text: body, state: "sent" } : x))));
-        } else setPending((p) => p.filter((x) => x.id !== id));
-        await Promise.all([load(), reloadList()]);
+          setOutbox(refId, (p) => (view.approval ? p.filter((x) => x.id !== id) : p.map((x) => (x.id === id ? { ...x, text: body, state: "sent" } : x))));
+        } else setOutbox(refId, (p) => p.filter((x) => x.id !== id));
+        // Through the cache, not this view: it may have closed by now.
+        await Promise.all([loadCached(q.key, q.fetch, false, true), reloadList()]);
       } catch (e) {
-        setPending((p) => p.map((x) => (x.id === id ? { ...x, state: "failed", error: (e as Error).message } : x)));
+        if (e instanceof SignInRequired) onSignIn();
+        setOutbox(refId, (p) => p.map((x) => (x.id === id ? { ...x, state: "failed", error: (e as Error).message } : x)));
       }
     };
-    setPending((p) => [...p, { id, text, files: files.map((f) => f.name), state: "sending", queued, retry: () => void attempt() }]);
+    setOutbox(refId, (p) => [...p, { id, text, files: files.map((f) => f.name), state: "sending", queued, retry: () => void inTurn(refId, attempt) }]);
     setAtEnd(true);
-    await attempt();
+    void inTurn(refId, attempt);
   }
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const answer = useCallback((t: string) => void sendRef.current(t, [], true), []);
+  const openChat = useCallback((id: string) => go(`#/c/${id}`), [go]);
 
   async function stop() {
     const r = await api.stopChat(refId).catch((e: Error) => (toast(`Couldn't stop: ${e.message}`), undefined));
@@ -394,11 +440,14 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
     await load();
   }
 
-  async function notRight(text: string) {
-    await api.notRight(refId, text);
-    toast("Sent back as a correction");
-    await load();
-  }
+  const notRight = useCallback(
+    async (text: string) => {
+      await api.notRight(refId, text);
+      toast("Sent back as a correction");
+      await load();
+    },
+    [refId, toast, load],
+  );
 
   // Messages, cards and questions in time order; runs of progress lines (notes, wake-ups) fold to one line.
   const items: Folded<Item>[] = useMemo(() => {
@@ -412,14 +461,62 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
       list.sort((x, y) => x.at.localeCompare(y.at)),
       (it) => it.type === "message" && isNoise(it.m),
     );
-  }, [chat]);
-  const lastReply = chat ? [...chat.messages].reverse().find((m) => m.kind === "reply" || m.kind === "owner") : undefined;
+  }, [chat?.messages, chat?.approvals, chat?.asks]);
+  const messages = chat?.messages;
+  const lastReply = useMemo(() => messages && [...messages].reverse().find((m) => m.kind === "reply" || m.kind === "owner"), [messages]);
   // Questions stay answerable after the agent posts later updates, until the owner replies.
-  const asking = chat ? openQuestions(chat.messages) : undefined;
+  const asking = useMemo(() => messages && openQuestions(messages), [messages]);
+  // The conversation itself is rebuilt only when what it shows changes: typing, the live clock and polls that bring
+  // nothing new leave it alone, and a new message re-renders only its own row (MessageView is memoised).
+  const open = chat?.open ?? false;
+  const conversationRows = useMemo(
+    () =>
+      items.map((it, i) => {
+        const prev = items[i - 1];
+        const day = new Date(it.at).toDateString();
+        const sep = !prev || new Date(prev.at).toDateString() !== day;
+        return (
+          <div key={it.key} className="conv-item">
+            {sep && <div className="day-sep">{dayLabel(it.at)}</div>}
+            {it.type === "fold" ? (
+              <NoiseFold lines={it.items.map((x) => (x as Item & { type: "message" }).m)} from={it.at} until={it.until} prefix={prefix} />
+            ) : it.type === "approval" ? (
+              <ul className="approval-list inline">
+                <ApprovalCard a={it.a} open={openChat} decided={load} inline prefix={prefix} hold={hold} />
+              </ul>
+            ) : it.type === "ask" ? (
+              <AskView q={it.q} crew={crew} prefix={prefix} go={go} answered={load} toast={toast} />
+            ) : (
+              <MessageView m={it.m} crew={crew} prefix={prefix} lastReply={it.m === lastReply} asking={it.m === asking} open={open} notRight={notRight} answer={answer} />
+            )}
+          </div>
+        );
+      }),
+    [items, crew, prefix, lastReply, asking, open, hold, openChat, load, go, toast, notRight, answer],
+  );
 
   if (!chat)
     return (
-      <section className="ws-main">
+      <section className="ws-main conv">
+        {/* The chat's header comes from its row in the list, so only the messages wait. */}
+        {row && (
+          <header className="conv-head">
+            {mobile && (
+              <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
+                ‹
+              </button>
+            )}
+            <Monogram name={row.agent.name} size={32} avatar={portraitOf(crew, row.agent.key)} />
+            <span className="conv-who">
+              <span className="conv-name" title={row.title}>
+                {shortTitle(row.title)}
+              </span>
+              <span className="conv-title">
+                {row.agent.name} · {row.identifier}
+              </span>
+            </span>
+          </header>
+        )}
         {error ? (
           <div className="alert">
             Couldn't open this chat: {error}{" "}
@@ -500,27 +597,7 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
         >
           <div className="conv-inner">
             {!items.length && !pending.length && <p className="conv-empty muted">No messages yet.</p>}
-            {items.map((it, i) => {
-              const prev = items[i - 1];
-              const day = new Date(it.at).toDateString();
-              const sep = !prev || new Date(prev.at).toDateString() !== day;
-              return (
-                <div key={it.key}>
-                  {sep && <div className="day-sep">{dayLabel(it.at)}</div>}
-                  {it.type === "fold" ? (
-                    <NoiseFold lines={it.items.map((x) => (x as Item & { type: "message" }).m)} from={it.at} until={it.until} prefix={prefix} />
-                  ) : it.type === "approval" ? (
-                    <ul className="approval-list inline">
-                      <ApprovalCard a={it.a} open={(id) => go(`#/c/${id}`)} decided={load} inline prefix={prefix} />
-                    </ul>
-                  ) : it.type === "ask" ? (
-                    <AskView q={it.q} crew={crew} prefix={prefix} go={go} answered={load} toast={toast} />
-                  ) : (
-                    <MessageView m={it.m} crew={crew} prefix={prefix} lastReply={it.m === lastReply} asking={it.m === asking} open={chat.open} notRight={notRight} answer={(t) => void send(t, [], true)} />
-                  )}
-                </div>
-              );
-            })}
+            {conversationRows}
             {pending.map((p) => (
               <div key={p.id} className={`msg owner pending ${p.state}`}>
                 <div className="bubble">{p.text || p.files.join(", ")}</div>
@@ -598,7 +675,7 @@ function dayLabel(iso: string): string {
 }
 const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
-function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answer }: { m: ChatMessage; crew: Assignee[]; prefix: string; lastReply: boolean; asking: boolean; open: boolean; notRight: (t: string) => Promise<void>; answer: (t: string) => void }) {
+const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answer }: { m: ChatMessage; crew: Assignee[]; prefix: string; lastReply: boolean; asking: boolean; open: boolean; notRight: (t: string) => Promise<void>; answer: (t: string) => void }) {
   const [fixing, setFixing] = useState(false);
   const [fix, setFix] = useState("");
   const [busy, setBusy] = useState(false);
@@ -687,7 +764,7 @@ function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answe
       )}
     </div>
   );
-}
+});
 
 /** A run of progress lines (notes, wake-ups, card outcomes) as one muted line; a tap lists each in order. */
 function NoiseFold({ lines, from, until, prefix }: { lines: ChatMessage[]; from: string; until: string; prefix: string }) {
@@ -748,6 +825,14 @@ function Steps({ steps, said }: { steps: NonNullable<Working["steps"]>; said?: s
 
 /** One live row pinned above the composer: what the run is doing now, or why it stopped. The plan lives in the panel. */
 function LiveRow({ chat, retry }: { chat: ChatDetail; retry: () => void }) {
+  const [, tick] = useState(0);
+  const ticking = chat.state === "working";
+  useEffect(() => {
+    // Its clock ("1m 20s", "nothing new for 3 min"): only this row re-renders each second.
+    if (!ticking) return;
+    const t = setInterval(() => tick((n) => n + 1), 1_000);
+    return () => clearInterval(t);
+  }, [ticking]);
   const w = chat.working;
   const name = chat.agent.name;
   if (chat.state === "working" && w) {
@@ -942,9 +1027,15 @@ function Composer({ initialText, placeholder, draftKey, mobile, crew = [], autoF
       else localStorage.removeItem(draftKey);
     } catch {}
   }, [draftKey, text]);
+  // The box grows with its text. Resetting its height lays out the whole conversation above it, so that happens only
+  // when the text got shorter (it may need to shrink) or no longer fits; a keystroke that fits costs nothing.
+  const typedLength = useRef(text.length);
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
+    const shorter = text.length < typedLength.current;
+    typedLength.current = text.length;
+    if (!shorter && el.scrollHeight <= el.clientHeight) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
   }, [text]);

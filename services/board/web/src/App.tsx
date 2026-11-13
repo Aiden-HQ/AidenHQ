@@ -16,26 +16,30 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CrewView } from "./Agents";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, accountsApi, api, type Session } from "./api";
 import { EnrolScreen, SetPasswordScreen, SignInScreen } from "./Accounts";
-import { AppsView } from "./Apps";
 import { SettingsView, isCategory, type Category } from "./Settings";
-import { CostsView } from "./Costs";
-import { ActivityView } from "./Activity";
 import { ApprovalsView } from "./Chat";
-import { clearCache, peek, put, setAccount } from "./cache";
+import { clearCache, load, peek, setAccount } from "./cache";
 import { subscribe } from "./events";
-import { prefetchView } from "./queries";
+import { VIEW_CHUNKS, prefetchView } from "./queries";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
 import { CardView, GearIcon, GoogleBanner, PlusIcon, SignInBanners, SortableCard, memberIssue } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
 import { Markdown, setSlackTeams } from "./markdown";
-import { RunPage } from "./Run";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
 import { dayDate, matches } from "./util";
+
+// Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
+const ActivityView = lazy(() => VIEW_CHUNKS.activity().then((m) => ({ default: m.ActivityView })));
+const AppsView = lazy(() => VIEW_CHUNKS.apps().then((m) => ({ default: m.AppsView })));
+const CostsView = lazy(() => VIEW_CHUNKS.costs().then((m) => ({ default: m.CostsView })));
+const CrewView = lazy(() => VIEW_CHUNKS.agents().then((m) => ({ default: m.CrewView })));
+const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage })));
+/** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
+const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
 type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "set-password"; token: string };
@@ -143,11 +147,19 @@ interface Toast {
   action?: { label: string; run: () => void };
 }
 
+/** The board this device last saw (cache.ts), with its Slack hosts set for links. */
+function cachedBoard(): Board | undefined {
+  const b = peek<Board>("board")?.data;
+  if (b) setSlackTeams(b.slackTeams ?? {});
+  return b;
+}
+
 export function App() {
-  const [board, setBoard] = useState<Board | null>(null);
+  // The device's last board (main.tsx adopted its account) paints at once; /api/board, already on its way, replaces it.
+  const [board, setBoard] = useState<Board | null>(() => cachedBoard() ?? null);
   const [session, setSession] = useState<Session | null>(null);
   const [needsSignIn, setNeedsSignIn] = useState(false);
-  const [items, setItems] = useState<Items | null>(null);
+  const [items, setItems] = useState<Items | null>(() => cachedBoard()?.buckets ?? null);
   const [error, setError] = useState("");
   const [route, setRoute] = useState<Route>(parseRoute);
   // The Approvals badge counts the cards the owner can decide there (not every needs-you item: some are tasks outside it).
@@ -197,14 +209,14 @@ export function App() {
   const refresh = useCallback(async (force = false) => {
     const n = ++seq.current;
     try {
-      const b = await api.board();
+      // The first call shares the boot preload; later ones (after a change) fetch again once any running one lands.
+      const b = await load("board", api.board, true, n > 1);
       if (n !== seq.current) return;
       setSlackTeams(b.slackTeams ?? {});
       setBoard(b);
       setError("");
       setNeedsSignIn(false);
       if (force || Date.now() > holdUntil.current) setItems(b.buckets);
-      put("board", b);
     } catch (e) {
       if (n !== seq.current) return;
       if (e instanceof SignInRequired) (clearCache(), setNeedsSignIn(true));
@@ -225,7 +237,7 @@ export function App() {
 
   useEffect(() => {
     // Also slide the session cookie's expiry forward (Better Auth refreshes it on get-session).
-    api.session().then((s) => {
+    load("session", api.session, false).then((s) => {
       setSession(s);
       if (s.account) void accountsApi.refresh().catch(() => {});
     }, () => {});
@@ -654,11 +666,11 @@ export function App() {
 
       {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} />}
-      {view === "activity" && <ActivityView onSignIn={signInNeeded} />}
+      {view === "activity" && <Suspense fallback={<PageLoading />}><ActivityView onSignIn={signInNeeded} /></Suspense>}
       {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: local, google: googleConnect }} />}
-      {view === "apps" && <AppsView onSignIn={signInNeeded} />}
-      {view === "costs" && <CostsView onSignIn={signInNeeded} />}
-      {view === "agents" && <CrewView crew={board.assignees} onSignIn={signInNeeded} />}
+      {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView onSignIn={signInNeeded} /></Suspense>}
+      {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
+      {view === "agents" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
       <main className="columns" hidden={view !== "board"}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>
           {visibleBuckets.map((b) => (
@@ -748,7 +760,7 @@ export function App() {
           </aside>
         </div>
       )}
-      {route.kind === "run" && <RunPage key={route.id} id={route.id} onClose={() => (history.length > 1 ? history.back() : go("#/"))} onSignIn={signInNeeded} />}
+      {route.kind === "run" && <Suspense fallback={null}><RunPage key={route.id} id={route.id} onClose={() => (history.length > 1 ? history.back() : go("#/"))} onSignIn={signInNeeded} /></Suspense>}
       {route.kind === "help" && <Help />}
       {creating && (
         <NewTask

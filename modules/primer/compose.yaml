@@ -10,7 +10,7 @@ services:
     tmpfs:
       - /tmp:size=16m
     environment:
-      PRIMER_MCP_URL: "${PRIMER_MCP_URL:-}"
+      PRIMER_MCP_URL: "${settings.primer_mcp_url}"
       PRIMER_TOKEN_FILE: /state/token.json
       MCP_TOKEN_FILE: /run/secrets/primer_mcp_token
       MCP_READ_TOKEN_FILE: /run/secrets/primer_mcp_read_token

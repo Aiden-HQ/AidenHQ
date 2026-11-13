@@ -10,7 +10,7 @@ services:
     tmpfs:
       - /tmp:size=16m
     environment:
-      GLEAN_MCP_URL: "${GLEAN_MCP_URL:-}"
+      GLEAN_MCP_URL: "${settings.glean_mcp_url}"
       GLEAN_STATE_DIR: /state
       MCP_TOKEN_FILE: /run/secrets/glean_mcp_token
       MCP_READ_TOKEN_FILE: /run/secrets/glean_mcp_read_token

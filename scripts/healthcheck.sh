@@ -110,11 +110,11 @@ if echo "$gl_health" | grep -q '"ok":true'; then
   # Listing tools signs in to Glean without running a search.
   gltoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/glean_mcp_token" 2>/dev/null)"
   check "glean (read tools)" sh -c "docker compose --env-file '$env_file' exec -T paperclip node /tmp/mcp-call.mjs http://glean-mcp:8085/mcp --list '$gltoken' | grep -q '^search\b'"
-elif [ -n "${GLEAN_MCP_URL:-}" ]; then
+elif echo "$gl_health" | grep -q '"ok":false' && ! echo "$gl_health" | grep -q "not set"; then
   # Set up but not signed in, or Glean stopped accepting the sign-in.
   check "glean sign-in" sh -c "echo '$(echo "$gl_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'glean-mcp unreachable'; exit 1"
 else
-  printf '  skip  glean (GLEAN_MCP_URL not set)\n'
+  printf '  skip  glean (off, or its URL is not set: Settings, Connections)\n'
 fi
 
 # Grafana for the runner's Engineer jobs, on loopback; listing tools signs in without running a query.
@@ -122,11 +122,11 @@ gf_health="$(curl -s -m 10 http://127.0.0.1:3124/healthz 2>/dev/null)"
 if echo "$gf_health" | grep -q '"ok":true'; then
   gftoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/grafana_mcp_token" 2>/dev/null)"
   check "grafana (read tools)" sh -c "curl -fsS -m 30 -X POST http://127.0.0.1:3124/mcp -H 'Authorization: Bearer $gftoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q query_loki_logs"
-elif [ -n "${GRAFANA_URL:-}" ]; then
+elif echo "$gf_health" | grep -q '"ok":false' && ! echo "$gf_health" | grep -q "not set"; then
   # Set up but not signed in, or Grafana stopped accepting the sign-in.
   check "grafana sign-in" sh -c "echo '$(echo "$gf_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'grafana-mcp unreachable'; exit 1"
 else
-  printf '  skip  grafana (GRAFANA_URL not set)\n'
+  printf '  skip  grafana (off, or its URL is not set: Settings, Connections)\n'
 fi
 
 # ClickHouse for the runner's Engineer jobs, on loopback; listing tools signs in without running a query.
@@ -134,11 +134,11 @@ ch_health="$(curl -s -m 10 http://127.0.0.1:3127/healthz 2>/dev/null)"
 if echo "$ch_health" | grep -q '"ok":true'; then
   chtoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/clickhouse_mcp_token" 2>/dev/null)"
   check "clickhouse (read tools)" sh -c "curl -fsS -m 30 -X POST http://127.0.0.1:3127/mcp -H 'Authorization: Bearer $chtoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q run_select_query"
-elif [ -n "${CLICKHOUSE_MCP_URL:-}" ]; then
+elif echo "$ch_health" | grep -q '"ok":false' && ! echo "$ch_health" | grep -q "not set"; then
   # Set up but not signed in, or ClickHouse stopped accepting the sign-in.
   check "clickhouse sign-in" sh -c "echo '$(echo "$ch_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'clickhouse-mcp unreachable'; exit 1"
 else
-  printf '  skip  clickhouse (CLICKHOUSE_MCP_URL not set)\n'
+  printf '  skip  clickhouse (off, or its URL is not set: Settings, Connections)\n'
 fi
 
 gh_health="$(dc exec -T paperclip node -e "fetch('http://github-mcp:8086/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"

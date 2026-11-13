@@ -40,9 +40,9 @@ an `ops/setup.sh` host.
 | Google (Calendar, Drive, Gmail) | On an `ops/setup.sh` host: Connect Google on the board. By hand: `scripts/google-auth.sh <client.json>` with a Desktop-app OAuth client, once per account (`--email`, `--primary`). |
 | Slack (read) | Set `SLACK_CLIENT_ID` in `.env`, then `scripts/slack-auth.sh` (callback on `localhost:3118`). |
 | GitHub (read) | `gh auth login`, then `scripts/github-auth.sh`. |
-| Primer | Set `PRIMER_MCP_URL`, then `scripts/primer-auth.sh`. |
+| Primer | Set its URL on the board (Settings, Connections), then `scripts/primer-auth.sh`. |
 | gcloud | `scripts/gcloud-auth.sh`. |
-| Glean, Jira, Grafana, ClickHouse | Set the URL in `.env` or the instance setting, then press Connect on the board (from the host's loopback address). |
+| Glean, Jira, Grafana, ClickHouse | Set the URL on the board (Settings, Connections) and approve the change, then press Connect (from the host's loopback address). |
 
 ## The apps node's tailnet key
 

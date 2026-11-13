@@ -1,4 +1,4 @@
-import type { ActivityItem, Agents, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingsData, Update } from "./types";
+import type { ActivityItem, Agents, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -107,7 +107,8 @@ export const api = {
   session: () => call<Session>("GET", "/api/session"),
   board: () => call<Board>("GET", "/api/board"),
   chats: () => call<{ chats: ChatRow[]; agents: ChatAgent[] }>("GET", "/api/chats"),
-  chat: (ref: string) => call<ChatDetail>("GET", `/api/chats/${encodeURIComponent(ref)}`),
+  /** `peek`: a prefetch, which leaves the chat unread. */
+  chat: (ref: string, peek = false) => call<ChatDetail>("GET", `/api/chats/${encodeURIComponent(ref)}${peek ? "?peek" : ""}`),
   newChat: (text: string, agent?: string) => call<{ identifier: string }>("POST", "/api/chats", { text, ...(agent ? { agent } : {}) }),
   stopChat: (ref: string) => call<{ stopped: number }>("POST", `/api/chats/${encodeURIComponent(ref)}/stop`, {}),
   notRight: (ref: string, text: string) => call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/not-right`, { text }),
@@ -123,6 +124,9 @@ export const api = {
   modules: () => call<{ modules: ModuleRow[] }>("GET", "/api/modules"),
   settings: () => call<SettingsData>("GET", "/api/settings"),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
+  /** Files a settings change as the Platform Engineer's task; its commit becomes an apply card. */
+  changeSettings: (changes: SettingChange[]) => call<{ identifier: string }>("POST", "/api/settings/change", { changes }),
+  settingsChanges: () => call<{ changes: FiledChange[] }>("GET", "/api/settings/changes"),
   apps: () => call<{ apps: AppRow[]; error?: string }>("GET", "/api/apps"),
   costs: (window: CostWindow) => call<Costs>("GET", `/api/costs?window=${window}`),
   costLedger: (q: URLSearchParams) => call<CostLedger>("GET", `/api/costs/ledger?${q}`),
@@ -130,7 +134,9 @@ export const api = {
   run: (id: string) => call<RunTrace>("GET", `/api/runs/${encodeURIComponent(id)}`),
   issue: (ref: string) => call<IssueView>("GET", `/api/issues/${encodeURIComponent(ref)}`),
   update: (ref: string, u: Update) => call<IssueView>("PATCH", `/api/issues/${encodeURIComponent(ref)}`, u),
-  comment: (ref: string, body: string, answer = false) => call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/comments`, { body, ...(answer ? { answer: true } : {}) }),
+  /** `brief`: the chat's send, which refetches the chat itself; the board then skips building the whole task view. */
+  comment: (ref: string, body: string, answer = false, brief = false) =>
+    call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/comments`, { body, ...(answer ? { answer: true } : {}), ...(brief ? { brief: true } : {}) }),
   attach: async (ref: string, file: File) =>
     call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/files`, { name: file.name, type: file.type, data: await base64(file) }),
   move: (ref: string, bucket: Bucket, position: "top" | "bottom" = "top") => call("POST", `/api/issues/${encodeURIComponent(ref)}/move`, { bucket, position }),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { foldCount, foldNoise, foldsInChat, isNoise, shortTitle } from "../web/src/conversation.js";
+import { deciderOf, foldCount, foldNoise, foldsInChat, isNoise, shortTitle, shownDecision } from "../web/src/conversation.js";
 import { groupChats } from "../web/src/sidebar.js";
 import type { Approval, ChatMessage, ChatRow } from "../web/src/types.js";
 
@@ -27,6 +27,19 @@ describe("approval cards in a chat", () => {
     expect(foldsInChat(card({ state: "rejected", outcome: null }), false)).toBe(true);
     expect(foldsInChat(card({ state: "pending", outcome: null }), true)).toBe(false);
     expect(foldsInChat(card({}), true)).toBe(false);
+  });
+});
+
+describe("a tapped approval", () => {
+  const pending = { id: "A1", state: "pending", tier: 2, outcome: null, decidedBy: null } as unknown as Approval;
+  it("shows the tap at once, lets the board's copy win once it moves on, and goes back to pending when refused", () => {
+    expect(shownDecision(pending, "approve")).toMatchObject({ state: "approved" });
+    expect(deciderOf(shownDecision(pending, "reject"))).toBe("you");
+    // The board's copy has moved on (applied): it wins over the tap.
+    const applied = { ...pending, state: "approved", outcome: "applied", decidedBy: "account:x", decidedByName: "Sam" } as Approval;
+    expect(shownDecision(applied, "approve")).toBe(applied);
+    // A refused tap clears it: the card is pending again, with its buttons.
+    expect(shownDecision(pending, null)).toBe(pending);
   });
 });
 

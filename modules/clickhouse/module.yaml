@@ -1,5 +1,12 @@
 name: clickhouse
 description: ClickHouse for the runner's Engineer jobs (loopback MCP).
+settings:
+  # ClickHouse Cloud's hosted MCP server, e.g. https://mcp.clickhouse.cloud/mcp. Set it on the board (Settings, Connections);
+  # empty: ClickHouse is off.
+  clickhouse_mcp_url:
+    default: ""
+    type: url
+    host: "*.clickhouse.cloud"
 # How to set it up (the board's Settings, Connections).
-setup: "Set CLICKHOUSE_MCP_URL in .env, run `docker compose up -d --force-recreate clickhouse-mcp`, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120). Used by the runner's Engineer jobs."
+setup: "Set ClickHouse Cloud's MCP server URL on the board (Settings, Connections) and approve the change, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120). Used by the runner's Engineer jobs."
 compose: compose.yaml

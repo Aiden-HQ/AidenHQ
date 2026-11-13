@@ -3,7 +3,7 @@ import { api } from "./api";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
 import { QUERIES, useQuery } from "./queries";
-import { deciderOf, foldsInChat, outcomeOf } from "./conversation";
+import { deciderOf, foldsInChat, outcomeOf, shownDecision } from "./conversation";
 import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Approval, ChatState } from "./types";
 import { ago } from "./util";
@@ -47,17 +47,21 @@ const BATCH_MAX = 10;
  * One approval card: one sentence, what it reads and changes, the cost, Details, Approve / Reject; the outcome stays here.
  * An expired card (timed out or replaced by a newer request) folds to one muted line; a tap shows it whole.
  */
-export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold, pick, hold }: { a: Approval; open: (identifier: string) => void; decided: () => Promise<void>; inline?: boolean; prefix?: string; unfold?: boolean; pick?: { on: boolean; full: boolean; toggle: () => void }; hold?: boolean }) {
+export function ApprovalCard({ a: card, open, decided, inline, prefix = "", unfold, pick, hold }: { a: Approval; open: (identifier: string) => void; decided: () => Promise<void>; inline?: boolean; prefix?: string; unfold?: boolean; pick?: { on: boolean; full: boolean; toggle: () => void }; hold?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [unfolded, setUnfolded] = useState(Boolean(unfold));
+  // A tap shows at once (shownDecision); refused, the card goes back to pending with the reason.
+  const [tapped, setTapped] = useState<"approve" | "reject" | null>(null);
+  const a = shownDecision(card, tapped);
   // In a conversation a decided card is one line; one decided while on screen stays open (it doesn't jump under the tap).
   const [seenPending] = useState(a.state === "pending");
   const [shown, setShown] = useState(false);
   const act = async (d: "approve" | "reject") => {
     setBusy(true);
+    setTapped(d);
     setError("");
-    await api.decide(a.id, d).then(decided, (e: Error) => setError(e.message));
+    await api.decide(a.id, d).then(decided, (e: Error) => (setTapped(null), setError(e.message)));
     setBusy(false);
   };
   if (inline && !shown && foldsInChat(a, seenPending)) {

@@ -1,5 +1,16 @@
 name: grafana
 description: Grafana for the runner's Engineer jobs (loopback MCP).
+settings:
+  # Your Grafana Cloud stack, e.g. https://acme.grafana.net. Set it on the board (Settings, Connections); empty: Grafana is off.
+  grafana_url:
+    default: ""
+    type: url
+    host: "*.grafana.net"
+  # Grafana's hosted MCP server, which signs in and reads the stack above.
+  grafana_mcp_url:
+    default: https://mcp.grafana.com/mcp
+    type: url
+    host: mcp.grafana.com
 # How to set it up (the board's Settings, Connections).
-setup: "Set GRAFANA_URL in .env, run `docker compose up -d --force-recreate grafana-mcp`, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120). Used by the runner's Engineer jobs."
+setup: "Set your Grafana Cloud stack's URL on the board (Settings, Connections) and approve the change, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120). Used by the runner's Engineer jobs."
 compose: compose.yaml

@@ -6,8 +6,16 @@ import { slackAppLink } from "./slack";
 let slackTeams: Record<string, string> = {};
 /** Slack host → ID, from the board: links to those hosts open the Slack app, without a tab. */
 export function setSlackTeams(teams: Record<string, string>) {
+  if (JSON.stringify(teams) !== JSON.stringify(slackTeams)) rendered.clear();
   slackTeams = teams;
 }
+
+/**
+ * Rendered HTML by prefix and text, shared by every view: reopening a chat, or a row React mounts again, skips parsing and
+ * sanitising. Bounded; the oldest entries go first.
+ */
+const rendered = new Map<string, string>();
+const RENDERED_MAX = 1_500;
 
 // Task text comes from Slack, email and meetings: untrusted. Render Markdown, then sanitise; no
 // images (tracking pixels), forms or styles. Links open in a new tab without a referrer.
@@ -67,7 +75,16 @@ function decorate(root: HTMLElement) {
 }
 
 export function Markdown({ text, prefix, className = "" }: { text: string; prefix: string; className?: string }) {
-  const html = useMemo(() => renderMarkdown(text, prefix), [text, prefix]);
+  const html = useMemo(() => {
+    const key = `${prefix}\u0000${text}`;
+    let out = rendered.get(key);
+    if (out === undefined) {
+      out = renderMarkdown(text, prefix);
+      if (rendered.size >= RENDERED_MAX) rendered.delete(rendered.keys().next().value!);
+      rendered.set(key, out);
+    }
+    return out;
+  }, [text, prefix]);
   const el = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const root = el.current;

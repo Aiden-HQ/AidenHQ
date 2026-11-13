@@ -1,8 +1,14 @@
 name: primer
 description: "Primer: read, and publish documents when asked."
+settings:
+  # Your organization's Primer MCP endpoint, e.g. https://primer.example.com/mcp. Set it on the board (Settings, Connections);
+  # empty: Primer is off.
+  primer_mcp_url:
+    default: ""
+    type: url
 connections:
   primer:
-    setup: "Set PRIMER_MCP_URL in .env, run `docker compose up -d --force-recreate primer-mcp`, then run `scripts/primer-auth.sh` on the host."
+    setup: "Set its URL on the board (Settings, Connections) and approve the change, then run `scripts/primer-auth.sh` on the host."
     guide: "Primer documents (design docs and write-ups) with their versions and comments."
     url: http://primer-mcp:8084/mcp
     bearer_token_env_var: AIDENHQ_PRIMER_MCP_TOKEN

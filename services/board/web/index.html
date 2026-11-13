@@ -10,6 +10,9 @@
     <link rel="icon" href="/icon.png" />
     <link rel="apple-touch-icon" href="/icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Every screen needs these two: their requests start while the app's code downloads (main.tsx picks them up). -->
+    <link rel="preload" href="/api/session" as="fetch" crossorigin />
+    <link rel="preload" href="/api/board" as="fetch" crossorigin />
     <title>AidenHQ</title>
   </head>
   <body>

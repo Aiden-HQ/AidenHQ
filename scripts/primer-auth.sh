@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time consent for the primer-mcp sidecar (Primer, PRIMER_MCP_URL; AidenHQ registers as
+# One-time consent for the primer-mcp sidecar (Primer, settings.primer_mcp_url; AidenHQ registers as
 # a public OAuth client on the fly). Uses callback http://localhost:3123/callback.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,10 +7,10 @@ cd "$repo"
 env_file="${AIDENHQ_ENV_FILE:-.env}"
 # Read only the keys needed: .env is written for compose, which allows unquoted spaces.
 env_get() { sed -n "s/^$1=//p" "$env_file" | tail -1 | sed -e 's/^["'\'']//' -e 's/["'\'']$//'; }
-PRIMER_MCP_URL="${PRIMER_MCP_URL:-$(env_get PRIMER_MCP_URL)}"
+PRIMER_MCP_URL="${PRIMER_MCP_URL:-$(docker compose exec -T primer-mcp node -p 'process.env.PRIMER_MCP_URL ?? ""' 2>/dev/null)}"
 AIDENHQ_SECRETS_DIR="${AIDENHQ_SECRETS_DIR:-$(env_get AIDENHQ_SECRETS_DIR)}"
 export PRIMER_MCP_URL
-: "${PRIMER_MCP_URL:?set PRIMER_MCP_URL in .env}"
+: "${PRIMER_MCP_URL:?set Primer's URL on the board first (Settings, Connections)}"
 : "${AIDENHQ_SECRETS_DIR:?set AIDENHQ_SECRETS_DIR in .env}"
 dir="$AIDENHQ_SECRETS_DIR/primer"
 mkdir -p "$dir" && chmod 0700 "$dir"

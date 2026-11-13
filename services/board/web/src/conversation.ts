@@ -61,6 +61,15 @@ export function outcomeOf(a: Approval): Outcome {
  */
 export const foldsInChat = (a: Approval, seenPending: boolean) => a.state !== "pending" && !seenPending;
 
+/**
+ * A card while the owner's tap is on its way: decided their way at once. The board's copy wins as soon as it has moved
+ * on from pending; a refused tap clears `tapped`, which puts the card back as it was.
+ */
+export function shownDecision(a: Approval, tapped: "approve" | "reject" | null): Approval {
+  if (!tapped || a.state !== "pending") return a;
+  return { ...a, state: tapped === "approve" ? "approved" : "rejected", decidedBy: "account:you" };
+}
+
 /** Who decided a card, in words: a named admin, you (your tap or reply), the AI reviewer, or the stamp itself (watcher). */
 export function deciderOf(a: Pick<Approval, "decidedBy" | "decidedByName">): string {
   if (a.decidedByName) return a.decidedByName;

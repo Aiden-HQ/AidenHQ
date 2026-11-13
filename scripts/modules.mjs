@@ -7,6 +7,7 @@ import { join, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.mjs";
+import { urlSettingProblem } from "../services/shared/url-setting.ts";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
@@ -72,7 +73,7 @@ function settingDefs(file, def) {
   const map = YAML.parseDocument(readFileSync(file, "utf8")).get("settings", true);
   // The first key's comment is attached to the map itself.
   const docs = Object.fromEntries((map?.items ?? []).map((p, i) => [String(p.key?.value ?? p.key), (p.key?.commentBefore ?? (i === 0 ? map.commentBefore : "") ?? "").replace(/^ ?/gm, "").replace(/\s*\n\s*/g, " ").trim()]));
-  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
 function discover(productDir) {
@@ -105,12 +106,15 @@ function resolveEnabled(all, wanted) {
 /** The agents org: github_agents_org, else aidenhq-<instance_name> (services/runner/src/config.mjs agrees). */
 const agentsOrg = (settings) => settings.github_agents_org || (settings.instance_name ? `aidenhq-${settings.instance_name}` : "");
 
-/** Replaces ${settings.x} in every string. */
-function substitute(value, settings) {
-  const one = (s) => s.replace(SETTING, (_, k) => (k in settings ? String(settings[k]) : fail(`unknown setting: ${k}`)));
+/**
+ * Replaces ${settings.x} in every string. `compose`: the result is a compose file, which expands `$` itself, so a setting
+ * holding one (`${SOME_SECRET}`) fails rather than smuggle another variable in.
+ */
+function substitute(value, settings, compose = false) {
+  const one = (s) => s.replace(SETTING, (_, k) => (!(k in settings) ? fail(`unknown setting: ${k}`) : compose && String(settings[k]).includes("$") ? fail(`settings.${k}: no $ in a value a compose file uses`) : String(settings[k])));
   if (typeof value === "string") return one(value);
-  if (Array.isArray(value)) return value.map((v) => substitute(v, settings));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substitute(v, settings)]));
+  if (Array.isArray(value)) return value.map((v) => substitute(v, settings, compose));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substitute(v, settings, compose)]));
   return value;
 }
 
@@ -190,6 +194,11 @@ export function compile(productDir, instanceDir, { revision } = {}) {
         if (!v.length) fail(`settings.${k}: at least one`);
         if (v.some((x) => !d.values.includes(x))) fail(`settings.${k}: each must be ${words}`);
       }
+      // `type: url` (and `host:`): the board's check, again here, where it is the gate (services/shared/url-setting.ts).
+      if (d?.type === "url") {
+        const problem = urlSettingProblem(settings[k], d.host);
+        if (problem) fail(`settings.${k}: ${problem}`);
+      }
     }
   }
 
@@ -252,7 +261,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       apps.push({ ...rest, path: relative(productDir, join(root, app.path)), ...(untrusted ? { untrusted: true } : {}), module: name, ...(revision ? { pin: revision } : {}) });
     }
     if (def.compose) {
-      const frag = substitute(readYaml(join(root, def.compose)), settings);
+      const frag = substitute(readYaml(join(root, def.compose)), settings, true);
       for (const [k, s] of Object.entries(frag.services ?? {})) mergeService(compose.services, k, rewriteService(root, s));
       for (const kind of ["secrets", "volumes", "networks"]) {
         for (const [k, v] of Object.entries(frag[kind] ?? {})) {

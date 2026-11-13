@@ -4,6 +4,7 @@
 //   services/shared/agent-auth.ts    run identity and grants, in every service that checks callers
 //   services/shared/source-store.ts  the shared-sources writer side, in every source writer
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
+//   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
 //   node scripts/sync-shared.mjs
 import { copyFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -32,6 +33,7 @@ export const SHARED = {
     "modules/security/scanner/src/source-store.ts",
   ],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
+  "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
   // The supply-chain checks and version picker, for app repos (the app CI template is copied into each as it is).
   "scripts/supply-chain/best-version.mjs": ["modules/core/templates/ci/.github/supply-chain/best-version.mjs"],
   "scripts/supply-chain/pins.mjs": ["modules/core/templates/ci/.github/supply-chain/pins.mjs"],

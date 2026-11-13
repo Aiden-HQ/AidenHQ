@@ -10,7 +10,7 @@ services:
     tmpfs:
       - /tmp:size=16m
     environment:
-      CLICKHOUSE_MCP_URL: "${CLICKHOUSE_MCP_URL:-}"
+      CLICKHOUSE_MCP_URL: "${settings.clickhouse_mcp_url}"
       CLICKHOUSE_STATE_DIR: /state
       MCP_TOKEN_FILE: /run/secrets/clickhouse_mcp_token
       # The board's sign-in endpoints: state, and starting or finishing a sign-in.

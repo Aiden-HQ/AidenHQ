@@ -1,8 +1,15 @@
 name: glean
 description: "The organization's Glean: search and documents (reads)."
+settings:
+  # Your Glean MCP server URL, from Glean's MCP Configurator (admin settings, "Custom" host), e.g.
+  # https://acme-be.glean.com/mcp/default. Set it on the board (Settings, Connections); empty: Glean is off.
+  glean_mcp_url:
+    default: ""
+    type: url
+    host: "*.glean.com"
 connections:
   glean:
-    setup: "Set GLEAN_MCP_URL in .env to your Glean MCP server URL (Glean admin, MCP Configurator), run `docker compose up -d --force-recreate glean-mcp`, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120)."
+    setup: "Set its URL on the board (Settings, Connections: your Glean MCP server URL, from Glean admin's MCP Configurator) and approve the change, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120)."
     guide: "Start here for anything about the company. One search covers Slack, Google Drive, Confluence, Jira, GitHub, meeting transcripts and people, ranked by relevance and permissions. `search` finds documents and threads (then `read_document` for the full text), `chat` gives a summarized, cited answer across all of them, `employee_search` finds who owns or works on something, `meeting_lookup` finds meetings and their notes, `code_search` finds code. Go to the single-system tools only for what Glean can't give (exact Jira history, a full Slack thread, a live PR state)."
     url: http://glean-mcp:8085/mcp
     bearer_token_env_var: AIDENHQ_GLEAN_MCP_TOKEN

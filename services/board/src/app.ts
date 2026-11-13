@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
+import { promisify } from "node:util";
+import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { liveActivity, type SessionSources } from "./live-activity.js";
@@ -25,6 +27,7 @@ import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
+import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor } from "./settings-change.js";
 import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradePassed, gradingOn, prRefAllowed } from "./grades.js";
 import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
@@ -274,8 +277,7 @@ export function createApp(opts: AppOptions): Server {
   /** A task the board may change: assigned to the user, the Executive Assistant or an Engineer. */
   async function ownIssue(ref: string) {
     if (!REF.test(ref)) throw new HttpError(400, "bad task reference");
-    const ctx = await context();
-    const issue = await pc.issue(ref);
+    const [ctx, issue] = await Promise.all([context(), pc.issue(ref)]);
     // A chat (label `chat`) is the owner's conversation with any agent.
     const assigned = isChat(issue, ctx) || mine([issue], ctx).length > 0;
     return { ctx, issue, assigned };
@@ -632,8 +634,11 @@ export function createApp(opts: AppOptions): Server {
     return messages;
   }
 
-  /** One chat, as the conversation view shows it: messages, the live run, files, approvals, and the work handed out from it. */
-  async function chatView(ref: string) {
+  /**
+   * One chat, as the conversation view shows it: messages, the live run, files, approvals, and the work handed out from it.
+   * `peek` (a prefetch from a hovered row) leaves it unread.
+   */
+  async function chatView(ref: string, peek = false) {
     const { ctx, issue } = await editableIssue(ref, "this chat isn't yours");
     const [comments, files, busy, live, runs, kids, parent, names] = await Promise.all([
       pc.comments(issue.id),
@@ -645,17 +650,16 @@ export function createApp(opts: AppOptions): Server {
       issue.parentId ? pc.issueSummary(issue.parentId).catch(() => undefined) : undefined,
       bylines(),
     ]);
-    const messages = await chatMessages(issue, ctx, comments);
+    // Questions an agent this chat handed work to is asking the owner: shown here, answered on that agent's task.
+    const [messages, asks] = await Promise.all([chatMessages(issue, ctx, comments), askingKids(issue, kids, ctx.me)]);
     const awaiting = store.approvals.awaiting();
     const lastRun = (id: string) => runs.find((r) => r.issueId === id && r.finishedAt);
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
-    // Questions an agent this chat handed work to is asking the owner: shown here, answered on that agent's task.
-    const asks = await askingKids(issue, kids, ctx.me);
     const base = shownState(chatState(issue, live, lastRun(issue.id), ctx.me, awaiting), messages, lastRun(issue.id));
     const state = base.state === "idle" && asks.length ? { state: "waiting for you" as const } : base;
     const ids = new Set([issue.id, ...kids.map((k) => k.id)]);
     const agent = agentOf(chatAgent(issue));
-    store.markSeen(issue.id);
+    if (!peek) store.markSeen(issue.id);
     return {
       id: issue.id,
       identifier: issue.identifier,
@@ -1402,13 +1406,16 @@ export function createApp(opts: AppOptions): Server {
       handle: async () => {
         const ctx = await context();
         const since = new Date(Date.now() - RECENT_MS).toISOString();
+        // Who is working and the connections' states don't depend on the tasks: started with them, not after.
+        const extras = Promise.all([working(ctx), opts.google?.status(), opts.glean?.status(), opts.grafana?.status(), opts.clickhouse?.status(), opts.jira?.status(), bylines()]);
+        extras.catch(() => {}); // awaited below; this only keeps a failure there from going unhandled meanwhile
         const [all, closed] = await Promise.all([pc.openIssues().then((l) => mine(l, ctx)), pc.closedSince(since).then((l) => mine(l, ctx))]);
         const open = await closeLeftoverParts(all, closed, ctx);
         // Agents' sub-tasks are part of their parent's card: they never get a place of their own.
         const folded = foldedChildren([...open, ...closed], ctx.assignees);
         store.placeNew(open.filter((i) => !folded.has(i.id)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
         const recurring = new Map([...store.allRecurring()].map(([id, r]) => [id, { summary: recurringView(r, opts.timezone).summary, nextRun: r.nextRun, paused: r.paused }]));
-        const [busy, google, glean, grafana, clickhouse, jira, names] = await Promise.all([working(ctx), opts.google?.status(), opts.glean?.status(), opts.grafana?.status(), opts.clickhouse?.status(), opts.jira?.status(), bylines()]);
+        const [busy, google, glean, grafana, clickhouse, jira, names] = await extras;
         const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map, jobs: latestJobs(shared.runner) } });
         for (const card of [...Object.values(board.buckets).flat(), ...board.recurring]) {
           const w = busy.map.get(card.identifier);
@@ -1426,7 +1433,7 @@ export function createApp(opts: AppOptions): Server {
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
     { method: "GET", path: /^\/api\/runs\/([0-9a-f-]{36})$/, handle: async (m) => runView(m[1]!) },
-    { method: "GET", path: /^\/api\/chats\/([^/]+)$/, handle: async (m) => chatView(decodeURIComponent(m[1]!)) },
+    { method: "GET", path: /^\/api\/chats\/([^/]+)$/, handle: async (m, _b, url) => chatView(decodeURIComponent(m[1]!), url.searchParams.has("peek")) },
     { method: "GET", path: /^\/api\/agents$/, handle: async () => activity(await context(), true) },
     // The Agents page's first paint: who is in the fleet, where each sits and its schedules (no run history; /api/agents
     // brings that, with each agent's last run, after).
@@ -1443,7 +1450,8 @@ export function createApp(opts: AppOptions): Server {
       handle: async () => {
         const ctx = await context();
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
-        const [open, closed, live, runs] = await Promise.all([pc.labelled(label.id, OPEN), pc.labelled(label.id, "done,cancelled", "20"), pc.liveRuns(), pc.recentRuns(100)]);
+        // Every open task too (for the work handed out from open chats), in the same round trip rather than after.
+        const [open, closed, live, runs, openTasks] = await Promise.all([pc.labelled(label.id, OPEN), pc.labelled(label.id, "done,cancelled", "20"), pc.liveRuns(), pc.recentRuns(100), pc.openIssues()]);
         const newest = (a: Issue, b: Issue) => (b.lastActivityAt ?? b.updatedAt).localeCompare(a.lastActivityAt ?? a.updatedAt);
         const all = [...open.sort(newest), ...closed.sort(newest)];
         const awaiting = store.approvals.awaiting();
@@ -1472,7 +1480,7 @@ export function createApp(opts: AppOptions): Server {
         const chatIds = new Map(open.map((i) => [i.id, i.identifier]));
         const handedOut = chatIds.size
           ? await Promise.all(
-              (await pc.openIssues())
+              openTasks
                 .filter((i) => i.parentId && chatIds.has(i.parentId) && !all.some((c) => c.id === i.id))
                 .map(async (i) => {
                   // Same state as its own chat: waiting for you only when it asks the owner something.
@@ -1629,6 +1637,50 @@ export function createApp(opts: AppOptions): Server {
     // Settings (web/src/Settings.tsx): the compiled config, read-only, with what the board can see live. Edits go through git.
     { method: "GET", path: /^\/api\/settings$/, handle: async () => settingsData() },
     { method: "GET", path: /^\/api\/settings\/connections$/, handle: async (_m, _b, url) => connectionsData(url.searchParams.has("fresh")) },
+    {
+      // A settings change (a connection's URL, a switch, an agent's model, effort or heartbeat): checked here, then filed as
+      // the owner's task for the Platform Engineer, whose commit becomes the tiered apply card (docs/design/settings-changes.md).
+      method: "POST",
+      path: /^\/api\/settings\/change$/,
+      handle: async (_m, body, _u, req) => {
+        requireAdmin(req);
+        const { changes } = parse(ChangesSchema, body);
+        const { compiled, catalog } = readSources(settingsFiles());
+        try {
+          for (const ch of changes) checkChange(ch, compiled, catalog);
+        } catch (e) {
+          if (e instanceof ChangeRefused) throw new HttpError(400, e.message);
+          throw e;
+        }
+        const ctx = await context();
+        const engineer = ctx.agents.find((a) => a.metadata?.setupKey === "aidenhq:fleet-engineer" && a.status !== "terminated");
+        if (!engineer) throw new HttpError(409, "there is no Platform Engineer to make the change");
+        const label = await labelNamed(ctx, SETTINGS_LABEL, "#7048e8");
+        const { title, description } = taskFor(changes, compiled, catalog.filter((m) => m.chosen).map((m) => m.name));
+        const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", assigneeAgentId: engineer.id, labelIds: [label.id] });
+        log.info({ issue: issue.identifier, changes: changes.map((c) => (c.kind === "setting" ? c.key : c.kind === "module" ? `module ${c.name}` : c.kind === "caps" ? `${c.agent}.caps` : `${c.agent}.${c.field}`)) }, "settings change filed");
+        return { identifier: issue.identifier };
+      },
+    },
+    {
+      // The settings changes filed in the last two weeks, and where each stands (task, then its apply card).
+      method: "GET",
+      path: /^\/api\/settings\/changes$/,
+      handle: async () => {
+        const ctx = await context();
+        const label = ctx.labels.find((l) => l.name === SETTINGS_LABEL);
+        if (!label) return { changes: [] };
+        const since = new Date(Date.now() - 14 * 86_400_000).toISOString();
+        const tasks = (await pc.labelled(label.id, "backlog,todo,in_progress,in_review,blocked,done,cancelled", "20")).filter((i) => i.createdAt >= since);
+        // A list may cut descriptions short; the typed change is at the end of one, so read those in full.
+        const full = await Promise.all(tasks.map((i) => (i.descriptionTruncated ? pc.issue(i.id) : i)));
+        const changes = full.flatMap((i) => {
+          const items = changesOf(i.description);
+          return items ? [{ identifier: i.identifier, title: i.title, createdAt: i.createdAt, items, ...stageOf(i.status, store.approvals.on(i.identifier)) }] : [];
+        });
+        return { changes: changes.sort((a, b) => b.createdAt.localeCompare(a.createdAt)) };
+      },
+    },
     // Read-only view of the apps platform (apps-mcp's status), for the Apps tab.
     { method: "GET", path: /^\/api\/apps$/, handle: async () => appsApi("/internal/status").then((apps) => ({ apps }), (e: Error) => ({ apps: [], error: e.message })) },
     {
@@ -1657,7 +1709,9 @@ export function createApp(opts: AppOptions): Server {
       path: /^\/api\/issues\/([^/]+)\/comments$/,
       handle: async (m, body, _u, req) => {
         const { ctx, issue } = await editableIssue(decodeURIComponent(m[1]!));
-        const { body: text, answer } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional() }).strict(), body);
+        // `brief`: the chat's send, which refetches the chat itself, so the reply skips building the whole task view.
+        const { body: text, answer, brief } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional(), brief: z.boolean().optional() }).strict(), body);
+        const view = async () => (brief ? { identifier: issue.identifier } : issueView(issue.id));
         // A tapped answer button (agent-written label) is only ever a message, never a decision.
         // An exact typed reply decides an open approval on its task (or the one its card id or target names); it isn't posted.
         const reply = parseReply(text);
@@ -1665,7 +1719,7 @@ export function createApp(opts: AppOptions): Server {
         const replyBy = reply && !answer && (reply.ref || reply.target || store.approvals.pendingOn(replyRef).length) ? replyStamp() : null;
         if (reply && replyBy) {
           const a = await decided(store.approvals.decideByReply(replyRef, reply.decision, replyBy, new Date(), reply.target), replyBy);
-          return { ...(await issueView(issue.id)), approval: a };
+          return { ...(await view()), approval: a };
         }
         // @-mentions: the agents named, other than the one this chat is with, get the message on their part.
         const task = await userTaskOf(issue, ctx);
@@ -1689,7 +1743,7 @@ export function createApp(opts: AppOptions): Server {
         const parts = [];
         for (const a of others) parts.push(await deliver(ctx, task!, a, text, { identifier: issue.identifier, commentId: posted?.id, note: `Written in ${where} on ${issue.identifier}.` }));
         // A message that left this chat for another agent's: the board opens that one.
-        return { ...(await issueView(issue.id)), ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
+        return { ...(await view()), ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
       },
     },
     {
@@ -1995,7 +2049,7 @@ export function createApp(opts: AppOptions): Server {
       if (!route) throw new HttpError(404, "not found");
       const body = req.method === "GET" ? undefined : await readJson(req, route.maxBody);
       const result = await route.handle(path.match(route.path)!, body, url, req);
-      send(res, 200, JSON.stringify(result), "application/json");
+      await sendCompressed(req, res, 200, JSON.stringify(result), "application/json");
     });
   }
 
@@ -2088,16 +2142,23 @@ export function createApp(opts: AppOptions): Server {
     throw new HttpError(404, "not found");
   }
 
-  async function serveStatic(res: ServerResponse, path: string) {
+  async function serveStatic(req: IncomingMessage, res: ServerResponse, path: string) {
     const rel = normalize(decodeURIComponent(path)).replace(/^(\.\.[/\\])+/, "");
     let file = join(opts.staticDir, rel);
     if (!file.startsWith(opts.staticDir)) throw new HttpError(404, "not found");
     const isFile = await stat(file).then((s) => s.isFile()).catch(() => false);
+    // A missing hashed asset is a 404, never the page: a tab from before a deploy then reloads itself (main.tsx).
+    if (!isFile && rel.startsWith("/assets/")) throw new HttpError(404, "not found");
     if (!isFile) file = join(opts.staticDir, "index.html"); // client-side routes
     const data = await readFile(file).catch(() => undefined);
     if (!data) throw new HttpError(404, "not found");
     const immutable = rel.startsWith("/assets/");
-    send(res, 200, data, TYPES[extname(file)] ?? "application/octet-stream", immutable ? "public, max-age=31536000, immutable" : "no-cache");
+    const once = (enc: "br" | "gzip") => {
+      const key = `${enc}:${file}`;
+      if (!staticCompressed.has(key)) staticCompressed.set(key, compress(data, enc));
+      return staticCompressed.get(key)!;
+    };
+    await sendCompressed(req, res, 200, data, TYPES[extname(file)] ?? "application/octet-stream", immutable ? "public, max-age=31536000, immutable" : "no-cache", once);
   }
 
   return createServer(async (req, res) => {
@@ -2128,7 +2189,7 @@ export function createApp(opts: AppOptions): Server {
       else if (isConnect(url.pathname) && !(await adminSignedIn(req))) throw new HttpError(403, "sign in as an admin to connect accounts");
       else if (url.pathname.startsWith("/google/") && req.method === "GET") await handleGoogle(req, res, url);
       else if (signInFor(url.pathname) && req.method === "GET") await handleSignIn(req, res, url, signInFor(url.pathname)!);
-      else if (req.method === "GET" || req.method === "HEAD") await serveStatic(res, url.pathname);
+      else if (req.method === "GET" || req.method === "HEAD") await serveStatic(req, res, url.pathname);
       else throw new HttpError(405, "method not allowed");
     } catch (err) {
       const status = statusOf(err);
@@ -2187,6 +2248,30 @@ function send(res: ServerResponse, status: number, body: string | Buffer, type: 
   res.writeHead(status, { ...SECURITY_HEADERS, "content-type": type, "cache-control": cache });
   res.end(body);
 }
+
+const brotli = promisify(brotliCompress);
+const gzipped = promisify(gzip);
+/** The encoding the browser takes, for a body worth compressing (text over 1 KB). */
+function encodingFor(req: IncomingMessage, type: string, size: number): "br" | "gzip" | null {
+  if (size < 1024 || !/^(text\/|application\/(json|javascript|manifest))/.test(type)) return null;
+  const accepts = String(req.headers["accept-encoding"] ?? "");
+  return /\bbr\b/.test(accepts) ? "br" : /\bgzip\b/.test(accepts) ? "gzip" : null;
+}
+/** Fast settings: API answers are compressed on every request; static files once each (staticCompressed). */
+const compress = (body: Buffer, enc: "br" | "gzip") => (enc === "br" ? brotli(body, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } }) : gzipped(body, { level: 6 }));
+
+/** `send`, compressed when the browser takes it: the chat and task JSON shrink to about a fifth. */
+async function sendCompressed(req: IncomingMessage, res: ServerResponse, status: number, body: string | Buffer, type: string, cache = "no-store", encoded?: (enc: "br" | "gzip") => Promise<Buffer>) {
+  const raw = typeof body === "string" ? Buffer.from(body) : body;
+  const enc = encodingFor(req, type, raw.length);
+  if (!enc) return send(res, status, raw, type, cache);
+  const out = await (encoded ?? ((e) => compress(raw, e)))(enc);
+  res.writeHead(status, { ...SECURITY_HEADERS, "content-type": type, "cache-control": cache, "content-encoding": enc, vary: "accept-encoding" });
+  res.end(out);
+}
+
+/** Each built file's compressed copies, made on first request (a deploy restarts the board, so they never go stale). */
+const staticCompressed = new Map<string, Promise<Buffer>>();
 
 /** The runner's latest job result per task (a failed run shows on the agent's portrait). */
 function latestJobs(report: { recent: { identifier: string; status?: string }[]; latest?: { identifier: string; status: string }[] } | undefined): Map<string, string> {

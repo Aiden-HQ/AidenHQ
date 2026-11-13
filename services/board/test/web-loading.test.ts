@@ -54,6 +54,29 @@ describe("cache (stale while revalidate)", () => {
     expect(c.peek("apps")!.at).toBeGreaterThanOrEqual(cached.at);
   });
 
+  it("paints the device's last data at boot, before the session answers; a different account then drops it", async () => {
+    let c = await pageLoad();
+    c.setAccount("acct-1");
+    await c.load("board", async () => ({ cards: 3 }));
+    c = await pageLoad();
+    c.adoptStoredAccount();
+    expect(c.peek("board")?.data).toEqual({ cards: 3 });
+    c.setAccount("acct-2");
+    expect(c.peek("board")).toBeUndefined();
+  });
+
+  it("keeps unchanged parts of a refetch the same objects, so rows that didn't change don't re-render", async () => {
+    const c = await pageLoad();
+    const first = await c.load("chats.W-1", async () => ({ messages: [{ id: "a", text: "hi" }, { id: "b", text: "yo" }], state: "idle" }), false);
+    const same = await c.load("chats.W-1", async () => ({ messages: [{ id: "a", text: "hi" }, { id: "b", text: "yo" }], state: "idle" }), false);
+    expect(same).toBe(first);
+    const next = await c.load("chats.W-1", async () => ({ messages: [{ id: "a", text: "hi" }, { id: "b", text: "yo" }, { id: "c", text: "new" }], state: "working" }), false);
+    expect(next).not.toBe(first);
+    expect(next.messages[0]).toBe(first.messages[0]);
+    expect(next.messages[1]).toBe(first.messages[1]);
+    expect(c.peek("chats.W-1")?.data).toBe(next);
+  });
+
   it("never shows another account's data, keeps memory-only keys off the device, and forgets everything on a 401", async () => {
     let c = await pageLoad();
     c.setAccount("acct-1");

@@ -10,8 +10,8 @@ services:
     tmpfs:
       - /tmp:size=16m
     environment:
-      GRAFANA_URL: "${GRAFANA_URL:-}"
-      GRAFANA_MCP_URL: "${GRAFANA_MCP_URL:-}"
+      GRAFANA_URL: "${settings.grafana_url}"
+      GRAFANA_MCP_URL: "${settings.grafana_mcp_url}"
       GRAFANA_STATE_DIR: /state
       MCP_TOKEN_FILE: /run/secrets/grafana_mcp_token
       # The board's sign-in endpoints: state, and starting or finishing a sign-in.

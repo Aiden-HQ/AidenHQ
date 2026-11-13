@@ -1,29 +1,36 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AccountsView } from "./Accounts";
 import { SignInRequired, api, type Session } from "./api";
-import { STATUS_LABEL, connectionStatus, displayName, needsAttention, sourceStatus, type ConnectionRow, type ConnectionsData, type Status, type Verdict } from "./connections";
-import { ModulesView } from "./Modules";
+import { needsAttention, type ConnectionsData } from "./connections";
 import { askForNotifications, notificationsSupported } from "./notify";
-import type { AgentSettings, SettingRow, SettingsData } from "./types";
+import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
+import { AgentsPage } from "./SettingsAgents";
+import { parseInput, shown } from "./settings-format";
+import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, Segmented, StatusPill, Switch, Toasts, useFiled } from "./settings-ui";
+import type { FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData } from "./types";
+import { urlSettingProblem } from "../../src/url-setting";
+import "./settings.css";
 
-// Settings: one page, categories on the left like Chat's sidebar (#/settings/<category>). Instance settings live in git
-// (instance.yaml): the board shows them and the exact line to change, and the change itself is a message to Aiden, who files
-// it as an apply card. What the board owns (accounts, sign-ins, browser notifications) is changed right here.
+// Settings: categories in a side nav (a selector at phone width), each a page of grouped rows (#/settings/<category>).
+// Instance settings live in git (instance.yaml): a change made here is filed as the Platform Engineer's task, and lands
+// only through its apply card (docs/design/settings-changes.md). What the board owns (accounts, sign-ins, browser
+// notifications) changes right here.
 
 export const CATEGORIES = [
-  { key: "connections", name: "Connections", sub: "Sign-ins and health" },
-  { key: "agents", name: "Agents and models", sub: "Models, schedules, heartbeats" },
-  { key: "approvals", name: "Approvals and autonomy", sub: "Who decides each write" },
-  { key: "spend", name: "Spend caps", sub: "Per run, task and agent-day" },
-  { key: "switches", name: "Kill switches", sub: "Features you can turn off" },
-  { key: "notifications", name: "Notifications", sub: "How you're reached" },
-  { key: "accounts", name: "Accounts and access", sub: "People, authenticators, apps" },
-  { key: "modules", name: "Modules", sub: "What this AidenHQ has on" },
-  { key: "general", name: "General", sub: "Owner, timezone, names" },
-  { key: "instance", name: "Instance", sub: "Versions and every setting" },
+  { key: "connections", name: "Connections", group: "Connect" },
+  { key: "agents", name: "Agents and models", group: "Fleet" },
+  { key: "approvals", name: "Approvals and autonomy", group: "Fleet" },
+  { key: "spend", name: "Spend caps", group: "Fleet" },
+  { key: "switches", name: "Kill switches", group: "Fleet" },
+  { key: "notifications", name: "Notifications", group: "You" },
+  { key: "accounts", name: "Accounts and access", group: "You" },
+  { key: "modules", name: "Modules", group: "System" },
+  { key: "general", name: "General", group: "System" },
+  { key: "instance", name: "Instance", group: "System" },
 ] as const;
 export type Category = (typeof CATEGORIES)[number]["key"];
 export const isCategory = (s: string | null | undefined): s is Category => CATEGORIES.some((c) => c.key === s);
+const GROUPS = [...new Set(CATEGORIES.map((c) => c.group))];
 
 interface Props {
   cat: Category | null;
@@ -37,590 +44,544 @@ interface Props {
 export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props) {
   const [data, setData] = useState<SettingsData | null>(null);
   const [conns, setConns] = useState<ConnectionsData | null>(null);
+  const [changes, setChanges] = useState<FiledChange[]>([]);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
+  const [toasts, setToasts] = useState<{ id: number; text: string; tone?: "ok" | "bad" }[]>([]);
   const fail = useCallback((e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)), [onSignIn]);
   const loadConns = useCallback((fresh = false) => api.connections(fresh).then(setConns, fail), [fail]);
+  const loadSettings = useCallback(() => api.settings().then(setData, fail), [fail]);
+  const loadChanges = useCallback(() => api.settingsChanges().then((r) => setChanges(r.changes), () => {}), []);
   useEffect(() => {
-    void api.settings().then(setData, fail);
+    void loadSettings();
     void loadConns();
-    const t = setInterval(() => document.visibilityState === "visible" && void loadConns(), 30_000);
+    void loadChanges();
+  }, [loadSettings, loadConns, loadChanges]);
+
+  // While a change is under way, follow it closely (and the connections, which come up after it); otherwise every 30 s.
+  const busy = changes.some((c) => IN_FLIGHT.includes(c.stage));
+  const wasBusy = useRef(busy);
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void loadChanges();
+      void loadConns(busy);
+    }, busy ? 5_000 : 30_000);
     return () => clearInterval(t);
-  }, [fail, loadConns]);
+  }, [busy, loadChanges, loadConns]);
+  // A change just went live: the compiled config moved, so read it again.
+  useEffect(() => {
+    if (wasBusy.current && !busy) void loadSettings();
+    wasBusy.current = busy;
+  }, [busy, loadSettings]);
+
+  const toast = useCallback((text: string, tone?: "ok" | "bad") => {
+    const id = Date.now() + Math.random();
+    setToasts((t) => [...t, { id, text, tone }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4_500);
+  }, []);
+  const file = useCallback(
+    async (items: SettingChange[]) => {
+      try {
+        const { identifier } = await api.changeSettings(items);
+        void loadChanges();
+        return identifier;
+      } catch (e) {
+        if (e instanceof SignInRequired) onSignIn();
+        throw e;
+      }
+    },
+    [loadChanges, onSignIn],
+  );
+  const ctx = useMemo(() => ({ changes, file, toast }), [changes, file, toast]);
 
   const current: Category = cat ?? "connections";
   const attention = conns ? needsAttention(conns, can) : false;
-  const side = (
-    <aside className="ws-side settings-side" aria-label="Settings categories">
-      <div className="side-top">
-        <h1 className="settings-title">Settings</h1>
-      </div>
-      <nav className="side-scroll">
-        {CATEGORIES.map((c) => (
-          <a key={c.key} href={`#/settings/${c.key}`} className={`side-chat settings-cat${!mobile && current === c.key ? " on" : ""}`} aria-current={!mobile && current === c.key ? "page" : undefined}>
-            <span className="side-chat-top">
-              <span className="side-chat-title">{c.name}</span>
-              {c.key === "connections" && attention && <span className="needs-dot" title="A connection needs you" />}
-            </span>
-            <span className="side-preview">{c.sub}</span>
-          </a>
-        ))}
-      </nav>
-    </aside>
-  );
+  const check = () => (setChecking(true), void loadConns(true).finally(() => setChecking(false)));
 
-  const pane = (
-    <div className="ws-main settings-main">
-      {mobile && (
-        <header className="conv-head">
-          <button className="icon-btn" onClick={() => go("#/settings")} aria-label="All settings">
-            ‹
-          </button>
-          <span className="conv-name">{CATEGORIES.find((c) => c.key === current)?.name}</span>
-        </header>
-      )}
-      <div className="settings-scroll">
-        {error && <div className="offline">Couldn't load settings: {error}</div>}
-        {data && !data.compiled && current !== "accounts" && current !== "modules" && (
-          <div className="offline">This board can't read the compiled config yet (config/paperclip.yaml). Run ops/apply-config.sh on the host to mount it.</div>
-        )}
-        <Pane cat={current} data={data} conns={conns} session={session} onSignIn={onSignIn} can={can} refresh={() => loadConns(true)} />
-      </div>
-    </div>
-  );
-
-  if (mobile) return <div className="ws ws-phone settings">{cat ? pane : side}</div>;
   return (
-    <div className="ws settings">
-      {side}
-      {pane}
-    </div>
-  );
-}
-
-function Pane({ cat, data, conns, session, onSignIn, can, refresh }: { cat: Category; data: SettingsData | null; conns: ConnectionsData | null; session: Session | null; onSignIn: () => void; can: Props["can"]; refresh: () => Promise<void> }) {
-  if (cat === "accounts") return session ? <AccountsView session={session} onSignIn={onSignIn} /> : null;
-  if (cat === "modules") return <ModulesView onSignIn={onSignIn} />;
-  if (cat === "connections") return <Connections conns={conns} can={can} refresh={refresh} />;
-  if (!data) return <span className="spinner" />;
-  const by = (k: string) => data.settings.find((s) => s.key === k);
-  const rows = (keys: string[]) => keys.map(by).filter((s): s is SettingRow => Boolean(s));
-  if (cat === "agents") return <Agents agents={data.agents} />;
-  if (cat === "approvals")
-    return (
-      <Page title="Approvals and autonomy" sub="Every write (push, merge, apply, deploy, outbound message) is an approval record, tiered in code.">
-        <section className="settings-section">
-          <dl className="tier-list">
-            <dt>Tier 0</dt>
-            <dd>Safe writes run at once and are recorded.</dd>
-            <dt>Tier 1</dt>
-            <dd>The AI reviewer decides, when autonomy is full; otherwise you do.</dd>
-            <dt>Tier 2</dt>
-            <dd>Always yours: one tap in Approvals or Telegram, or an exact typed reply.</dd>
-          </dl>
-          <p className="muted small">
-            {data.approvals.pending ? <><a href="#/approvals">{data.approvals.pending} waiting on you</a> in Approvals.</> : "Nothing is waiting on you."}
-          </p>
-        </section>
-        <SettingList rows={rows(["autonomy", "batch_approvals", "dup_guard", "grading"])} />
-      </Page>
-    );
-  if (cat === "spend") return <Spend data={data} />;
-  if (cat === "switches") return <Page title="Kill switches" sub="Each feature can be turned off in instance.yaml. Most are read on every use, so no restart is needed after the apply."><SettingList rows={data.settings.filter((s) => s.switch)} /></Page>;
-  if (cat === "notifications") return <Notifications rows={rows(["channels", "slack_post_channels", "owner_slack_user_id"])} conns={conns} />;
-  if (cat === "general") {
-    const elsewhere = new Set(["autonomy", "channels", "slack_post_channels", "owner_slack_user_id"]);
-    const general = data.settings.filter((s) => !s.switch && !elsewhere.has(s.key));
-    return (
-      <Page title="General" sub={data.owner.name ? `This AidenHQ belongs to ${data.owner.name}.` : "Who this AidenHQ belongs to, and how it is named."}>
-        <p className="muted small">The board's own day boundaries (Today, Tomorrow) use {data.instance.boardTimezone}, from the host's config/system.yaml.</p>
-        <SettingList rows={general} />
-      </Page>
-    );
-  }
-  return <Instance data={data} />;
-}
-
-function Page({ title, sub, children, tools }: { title: string; sub?: ReactNode; children: ReactNode; tools?: ReactNode }) {
-  return (
-    <main className="page settings-page">
-      <header className="page-head">
-        <div>
-          <h1>{title}</h1>
-          {sub && <p className="page-sub">{sub}</p>}
-        </div>
-        {tools && <div className="page-tools">{tools}</div>}
-      </header>
-      {children}
-    </main>
-  );
-}
-
-// ------------------------------------------------------------------ the instance.yaml line
-
-/** A YAML scalar or flow value, quoted where YAML would read it as something else. */
-export function yamlValue(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(yamlValue).join(", ")}]`;
-  if (v && typeof v === "object") return JSON.stringify(v);
-  if (typeof v === "string") return /^(on|off|yes|no|true|false|null|~|)$/i.test(v) || /[:#{}[\],&*!|>'"%@`]|^\s|\s$/.test(v) ? JSON.stringify(v) : v;
-  return String(v);
-}
-
-const askAiden = (text: string) => `#/c/?text=${encodeURIComponent(text)}`;
-
-/** The exact lines to put in instance.yaml, with Copy and a message to Aiden (who files the change as an apply card). */
-export function SourceLine({ path, value, ask }: { path: string[]; value: unknown; ask: string }) {
-  const [copied, setCopied] = useState(false);
-  const lines = path.map((p, i) => `${"  ".repeat(i)}${p}:${i === path.length - 1 ? ` ${yamlValue(value)}` : ""}`).join("\n");
-  const copy = () => void navigator.clipboard?.writeText(lines).then(() => (setCopied(true), setTimeout(() => setCopied(false), 1500)));
-  return (
-    <div className="source-line">
-      <div className="source-line-head">
-        <span>instance.yaml</span>
-        <button className="link-btn" onClick={copy}>
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <pre>{lines}</pre>
-      <div className="source-line-foot">
-        <span className="muted small">Instance settings live in git. Aiden files the change as an apply card for you to approve.</span>
-        <a className="btn" href={askAiden(ask)}>
-          Ask Aiden to change it
-        </a>
-      </div>
-    </div>
-  );
-}
-
-const shown = (v: unknown) => (v === null || v === undefined ? "not set" : Array.isArray(v) ? (v.length ? v.join(", ") : "none") : typeof v === "object" ? JSON.stringify(v) : String(v));
-
-function SettingList({ rows }: { rows: SettingRow[] }) {
-  if (!rows.length) return <p className="empty">Nothing here on this instance.</p>;
-  return (
-    <ul className="setting-list">
-      {rows.map((s) => (
-        <SettingItem key={s.key} s={s} />
-      ))}
-    </ul>
-  );
-}
-
-function SettingItem({ s }: { s: SettingRow }) {
-  const [open, setOpen] = useState(false);
-  const options = (s.values ?? []).filter((v) => !Array.isArray(s.value) && v !== s.value);
-  const [to, setTo] = useState<unknown>(options[0] ?? s.value ?? s.default ?? "");
-  const drift = s.live !== undefined && s.known && s.live !== String(s.value);
-  return (
-    <li className="setting">
-      <div className="setting-head">
-        <code className="setting-key">{s.key}</code>
-        {s.switch && !s.known && s.live === undefined ? (
-          <span className="pill">Unknown</span>
-        ) : s.switch ? (
-          <span className={`pill ${(s.live ?? s.value ?? s.default) === "off" ? "pill-needs" : "pill-working"}`}>{(s.live ?? s.value ?? s.default) === "off" ? "Off" : "On"}</span>
-        ) : (
-          <span className="setting-value">{s.known ? shown(s.value) : "unknown"}</span>
-        )}
-        <span className="setting-source muted small">{!s.known ? "the board can't read it yet" : s.set ? "set in instance.yaml" : s.default !== undefined ? "default" : "not set"}</span>
-        <button className="link-btn setting-change" onClick={() => setOpen(!open)} aria-expanded={open}>
-          {open ? "Close" : s.switch ? ((s.live ?? s.value) === "off" ? "Turn on" : "Turn off") : "Change"}
-        </button>
-      </div>
-      {s.doc && <p className="setting-doc">{s.doc}</p>}
-      {drift && (
-        <p className="setting-drift small">
-          Running as {s.live}, while the compiled config says {shown(s.value)}: the last apply may not have finished.
-        </p>
-      )}
-      {open && (
-        <>
-          {options.length > 1 && (
-            <label className="setting-pick small">
-              New value{" "}
-              <select value={String(to)} onChange={(e) => setTo(e.target.value)}>
-                {options.map((o) => (
-                  <option key={String(o)}>{String(o)}</option>
+    <Changes.Provider value={ctx}>
+      <div className={`st-shell${mobile ? " phone" : ""}`}>
+        {mobile ? (
+          <header className="st-phone-bar">
+            {cat && (
+              <button className="icon-btn" onClick={() => go("#/")} aria-label="Leave settings">
+                ‹
+              </button>
+            )}
+            <label className="st-phone-select">
+              <span className="sr-only">Settings page</span>
+              <select value={current} onChange={(e) => go(`#/settings/${e.target.value}`)}>
+                {GROUPS.map((g) => (
+                  <optgroup key={g} label={g}>
+                    {CATEGORIES.filter((c) => c.group === g).map((c) => (
+                      <option key={c.key} value={c.key}>
+                        {c.name}
+                        {c.key === "connections" && attention ? " (needs you)" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </label>
-          )}
-          <SourceLine path={["settings", s.key]} value={options.length ? to : (s.value ?? s.default ?? "")} ask={`Please change settings.${s.key} in instance.yaml to ${yamlValue(options.length ? to : "<new value>")} and file the apply for me.`} />
-        </>
-      )}
-    </li>
-  );
-}
-
-// ------------------------------------------------------------------ connections
-
-const ORDER: Status[] = ["signed_out", "error", "not_configured", "unknown", "connected"];
-const PILL: Record<Status, string> = { connected: "pill-working", signed_out: "pill-needs", error: "pill-failed", not_configured: "", unknown: "" };
-const when = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "never");
-
-function Connections({ conns, can, refresh }: { conns: ConnectionsData | null; can: Props["can"]; refresh: () => Promise<void> }) {
-  const [checking, setChecking] = useState(false);
-  if (!conns) return <span className="spinner" />;
-  const rows = conns.connections.map((r) => ({ r, v: connectionStatus(r, can) })).sort((a, b) => ORDER.indexOf(a.v.status) - ORDER.indexOf(b.v.status) || displayName(a.r.name).localeCompare(displayName(b.r.name)));
-  const need = rows.filter((x) => x.v.status === "signed_out" || x.v.status === "error").length;
-  const ok = rows.filter((x) => x.v.status === "connected").length;
-  const check = () => (setChecking(true), void refresh().finally(() => setChecking(false)));
-  return (
-    <Page
-      title="Connections"
-      sub={`${ok} of ${rows.length} connected${need ? `, ${need} need${need === 1 ? "s" : ""} you` : ""}. Each system is connected once; agents get tool-level grants.`}
-      tools={
-        <button className="btn" onClick={check} disabled={checking}>
-          {checking ? "Checking…" : "Check again"}
-        </button>
-      }
-    >
-      <ul className="conn-list">
-        {rows.map(({ r, v }) => (
-          <ConnectionItem key={r.name} r={r} v={v} can={can} />
-        ))}
-      </ul>
-      <section className="settings-section">
-        <div className="section-head">
-          <h2>Warehouse sources</h2>
-          <span className="hint">What each source writer last brought into the shared warehouse.</span>
-        </div>
-        {conns.sourcesError ? (
-          <p className="empty">The apps platform didn't answer, so source state is unknown.</p>
-        ) : !conns.sources.length ? (
-          <p className="empty">No warehouse sources yet.</p>
+          </header>
         ) : (
-          <ul className="conn-list compact">
-            {conns.sources.map((s) => {
-              const sv = sourceStatus(s);
-              return (
-                <li key={s.name} className={`conn conn-${sv.status}`}>
-                  <div className="conn-head">
-                    <code className="conn-name">{s.name}</code>
-                    <span className={`pill ${PILL[sv.status]}`}>{STATUS_LABEL[sv.status]}</span>
-                  </div>
-                  <p className="conn-reason">{sv.reason}</p>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
-    </Page>
-  );
-}
-
-function ConnectionItem({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Props["can"] }) {
-  const writers = r.grants.filter((g) => g.access === "write");
-  const readers = r.grants.filter((g) => g.access === "read");
-  return (
-    <li className={`conn conn-${v.status}`}>
-      <div className="conn-head">
-        <span className="conn-name">{displayName(r.name)}</span>
-        <code className="muted small">{r.name}</code>
-        <span className={`pill ${PILL[v.status]}`}>{STATUS_LABEL[v.status]}</span>
-        <span className="conn-act">
-          {v.action ? (
-            <a className="btn primary" href={v.action.href}>
-              {v.action.label}
-            </a>
-          ) : (
-            v.hint && <span className="muted small">{v.hint}</span>
-          )}
-        </span>
-      </div>
-      <p className="conn-reason">{v.reason}</p>
-      <dl className="panel-facts conn-facts">
-        {r.kind === "service" ? (
-          <>
-            <dt>Used by</dt>
-            <dd>The runner's Engineer jobs</dd>
-          </>
-        ) : (
-          <>
-            <dt>Granted to</dt>
-            <dd>
-              {r.grants.length ? (
-                <>
-                  {writers.length > 0 && <span>Read and write: {writers.map((g) => g.name).join(", ")}</span>}
-                  {writers.length > 0 && readers.length > 0 && <br />}
-                  {readers.length > 0 && <span>Read only: {readers.map((g) => g.name).join(", ")}</span>}
-                </>
-              ) : (
-                <span className="muted">no agent yet</span>
-              )}
-            </dd>
-            <dt>Tools</dt>
-            <dd>
-              {r.tools.read} read, {r.tools.write} write, {r.transport === "built in" ? "built in" : `over ${r.transport}`}
-            </dd>
-          </>
-        )}
-        {r.probe && (
-          <>
-            <dt>Health</dt>
-            <dd>
-              Checked {when(r.probe.checkedAt)}; last answered ok {when(r.probe.lastOkAt)}
-            </dd>
-          </>
-        )}
-        {r.module && (
-          <>
-            <dt>Module</dt>
-            <dd>{r.module}</dd>
-          </>
-        )}
-      </dl>
-      {r.google && r.google.accounts.length > 0 && (
-        <ul className="conn-accounts">
-          {r.google.accounts.map((a) => (
-            <li key={a.email}>
-              <span>
-                <b>{a.email}</b>
-                {a.primary ? " (calendar and meeting notes)" : ""}: {a.state === "ok" ? "working" : a.state === "expired" ? "stopped working" : a.state === "unknown" ? "checking" : "error"}
-              </span>
-              {can.google && (
-                <a className="link-btn" href={`/google/connect?account=${encodeURIComponent(a.email)}`}>
-                  Reconnect
-                </a>
-              )}
-            </li>
-          ))}
-          {can.google && (
-            <li>
-              <a className="link-btn" href="/google/connect">
-                Add a Google account
-              </a>
-            </li>
-          )}
-        </ul>
-      )}
-      {r.setup && (
-        <details className="conn-setup" open={v.status === "not_configured" || v.status === "error"}>
-          <summary>How to set it up</summary>
-          <p>{r.setup}</p>
-        </details>
-      )}
-    </li>
-  );
-}
-
-// ------------------------------------------------------------------ agents, spend, notifications, instance
-
-function Agents({ agents }: { agents: AgentSettings[] }) {
-  return (
-    <Page title="Agents and models" sub="What each agent runs on and when it wakes. Change one with an override in instance.yaml.">
-      <ul className="agent-settings">
-        {agents.map((a) => (
-          <AgentItem key={a.key} a={a} />
-        ))}
-      </ul>
-    </Page>
-  );
-}
-
-function AgentItem({ a }: { a: AgentSettings }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <li className="agent-setting">
-      <div className="setting-head">
-        <span className="conn-name">{a.name}</span>
-        <code className="muted small">{a.key}</code>
-        {a.trial && <span className="pill pill-needs">In trial</span>}
-        {a.graded && <span className="pill">Graded</span>}
-        <button className="link-btn setting-change" onClick={() => setOpen(!open)} aria-expanded={open}>
-          {open ? "Close" : "Change"}
-        </button>
-      </div>
-      <dl className="panel-facts">
-        <dt>Model</dt>
-        <dd>
-          <code>{a.model || "the runner's"}</code>
-          {a.effort ? `, ${a.effort} effort` : ""}
-          {a.models.length > 0 && <span className="muted"> (may also call {a.models.join(", ")})</span>}
-        </dd>
-        <dt>Runs on</dt>
-        <dd>
-          {a.runsOn}, {a.adapter}, module {a.module || "instance"}
-        </dd>
-        <dt>Heartbeat</dt>
-        <dd>{a.heartbeatHours ? `every ${a.heartbeatHours} hour${a.heartbeatHours === 1 ? "" : "s"}` : <span className="muted">none</span>}</dd>
-        <dt>Routines</dt>
-        <dd>
-          {a.routines.filter((r) => !r.key.startsWith("heartbeat-")).length ? (
-            <ul className="routine-list">
-              {a.routines
-                .filter((r) => !r.key.startsWith("heartbeat-"))
-                .map((r) => (
-                  <li key={r.key}>
-                    {r.title}
-                    {r.status === "paused" && <span className="muted"> (paused)</span>}:{" "}
-                    <span className="muted">{r.schedules.length ? r.schedules.map((x) => `${x.label || x.cron} (${x.cron}${x.timezone ? `, ${x.timezone}` : ""})`).join("; ") : r.webhook ? "on an event" : "started on demand"}</span>
-                    {r.model && <span className="muted"> on {r.model}</span>}
-                  </li>
+          <nav className="st-nav" aria-label="Settings">
+            <div className="st-nav-title">Settings</div>
+            {GROUPS.map((g) => (
+              <div key={g} className="st-nav-group">
+                <div className="st-nav-group-name">{g}</div>
+                {CATEGORIES.filter((c) => c.group === g).map((c) => (
+                  <a key={c.key} href={`#/settings/${c.key}`} className={`st-nav-item${current === c.key ? " on" : ""}`} aria-current={current === c.key ? "page" : undefined}>
+                    {c.name}
+                    {c.key === "connections" && attention && <span className="needs-dot" title="A connection needs you" />}
+                  </a>
                 ))}
-            </ul>
-          ) : (
-            <span className="muted">none</span>
-          )}
-        </dd>
-        <dt>Connections</dt>
-        <dd>{a.connections.length ? a.connections.join(", ") : <span className="muted">none</span>}</dd>
-        {a.roles.length > 0 && (
-          <>
-            <dt>Roles</dt>
-            <dd>{a.roles.join(", ")}</dd>
-          </>
+              </div>
+            ))}
+          </nav>
         )}
+        <div className="st-pane">
+          {error && (
+            <div className="st-banner bad" role="alert">
+              Couldn't load settings: {error}.{" "}
+              <button className="link-btn" onClick={() => (setError(""), void loadSettings(), void loadConns(true))}>
+                Try again
+              </button>
+            </div>
+          )}
+          {data && !data.compiled && current !== "accounts" && current !== "modules" && (
+            <div className="st-banner">This board can't read the compiled config yet (config/paperclip.yaml): the next apply on the host mounts it.</div>
+          )}
+          <div className="st-page-in" key={current}>
+            <Pane cat={current} data={data} conns={conns} session={session} onSignIn={onSignIn} can={can} checking={checking} check={check} />
+          </div>
+        </div>
+        <Toasts items={toasts} />
+      </div>
+    </Changes.Provider>
+  );
+}
+
+function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { cat: Category; data: SettingsData | null; conns: ConnectionsData | null; session: Session | null; onSignIn: () => void; can: Props["can"]; checking: boolean; check: () => void }) {
+  if (cat === "accounts") return session ? <div className="st-embedded"><AccountsView session={session} onSignIn={onSignIn} /></div> : null;
+  if (cat === "modules") return <ModulesPage onSignIn={onSignIn} />;
+  if (cat === "connections") return <ConnectionsPage conns={conns} can={can} refresh={checking} onRefresh={check} />;
+  const title = CATEGORIES.find((c) => c.key === cat)!.name;
+  if (!data)
+    return (
+      <Page title={title} sub="Loading…">
+        <RowsSkeleton />
+      </Page>
+    );
+  const rows = (keys: string[]) => keys.map((k) => data.settings.find((s) => s.key === k)).filter((s): s is SettingRow => Boolean(s));
+  if (cat === "agents") return <AgentsPage data={data} />;
+  if (cat === "approvals") return <ApprovalsPage data={data} rows={rows} />;
+  if (cat === "spend") return <SpendPage data={data} />;
+  if (cat === "switches") {
+    const sw = data.settings.filter((s) => s.switch);
+    const off = sw.filter((s) => (s.live ?? s.value ?? s.default) === "off").length;
+    return (
+      <Page title="Kill switches" sub={`${sw.length - off} of ${sw.length} on. Turning one off files a change for you to approve; most take effect on the next use after it lands.`}>
+        <Group>{sw.length ? sw.map((s) => <SettingItem key={s.key} s={s} />) : <p className="st-empty">No switches on this instance.</p>}</Group>
+      </Page>
+    );
+  }
+  if (cat === "notifications") return <NotificationsPage rows={rows(["channels", "slack_post_channels", "owner_slack_user_id"])} conns={conns} />;
+  if (cat === "general") {
+    const elsewhere = new Set(["autonomy", "batch_approvals", "dup_guard", "grading", "channels", "slack_post_channels", "owner_slack_user_id", "spend_caps"]);
+    const general = data.settings.filter((s) => !s.switch && !elsewhere.has(s.key) && s.type !== "url");
+    return (
+      <Page title="General" sub={data.owner.name ? `This AidenHQ belongs to ${data.owner.name}. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.` : `Who this AidenHQ belongs to, and how it is named. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.`}>
+        <Group>{general.length ? general.map((s) => <SettingItem key={s.key} s={s} />) : <p className="st-empty">Nothing here on this instance.</p>}</Group>
+      </Page>
+    );
+  }
+  return <InstancePage data={data} />;
+}
+
+// ------------------------------------------------------------------ one setting, changed in place
+
+const label = (k: string) => k.replace(/_/g, " ").replace(/\burl\b/g, "URL").replace(/\bmcp\b/g, "MCP").replace(/^./, (c) => c.toUpperCase());
+
+function SettingItem({ s, title }: { s: SettingRow; title?: string }) {
+  const filed = useFiled((c) => c.kind === "setting" && c.key === s.key);
+  const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
+  const effective = s.live ?? s.value ?? s.default;
+  const [open, setOpen] = useState(false);
+  const [to, setTo] = useState<unknown>(undefined);
+  const drift = s.live !== undefined && s.known && s.value !== null && s.live !== String(s.value);
+  const pick = (v: unknown) => (setTo(v), setOpen(true));
+  const status = busy ? <StatusPill tone="busy">Changing</StatusPill> : null;
+  if (s.switch) {
+    const on = (to ?? effective) !== "off";
+    return (
+      <Row
+        title={title ?? label(s.key)}
+        sub={s.doc}
+        meta={status ?? (!s.known && s.live === undefined ? <StatusPill tone="off">Unknown</StatusPill> : undefined)}
+        action={<Switch on={on} label={`${label(s.key)}: ${on ? "on" : "off"}`} disabled={busy} onChange={(v) => pick(v ? "on" : "off")} />}
+        open={open || Boolean(filed)}
+        onToggle={(o) => (setOpen(o), !o && setTo(undefined))}
+        details={
+          filed && !open ? (
+            <ChangeProgress f={filed} />
+          ) : to !== undefined ? (
+            <ChangePreview items={[{ kind: "setting", key: s.key, value: to }]} was={[s.value ?? s.default]} onCancel={() => (setOpen(false), setTo(undefined))} onDone={() => (setOpen(false), setTo(undefined))} />
+          ) : (
+            <SettingFacts s={s} drift={drift} />
+          )
+        }
+      />
+    );
+  }
+  return (
+    <Row
+      title={title ?? label(s.key)}
+      sub={s.doc}
+      meta={status ?? <span className="st-value" title={shown(s.value)}>{s.known ? shown(s.value) : "unknown"}</span>}
+      open={open}
+      onToggle={setOpen}
+      details={
+        <>
+          {filed && <ChangeProgress f={filed} />}
+          {!busy && <SettingEditor s={s} onDone={() => setOpen(false)} />}
+          <SettingFacts s={s} drift={drift} />
+        </>
+      }
+    />
+  );
+}
+
+function SettingFacts({ s, drift }: { s: SettingRow; drift: boolean }) {
+  return (
+    <>
+      {drift && <p className="st-hint warn">Running as {s.live}, while the compiled config says {shown(s.value)}: the last apply may not have finished.</p>}
+      <dl className="st-facts compact">
+        <dt>Key</dt>
+        <dd>
+          <code>settings.{s.key}</code>
+        </dd>
+        <dt>From</dt>
+        <dd>{!s.known ? "the board can't read it yet" : s.set ? "instance.yaml" : s.default !== undefined ? `the default (${shown(s.default)})` : "not set"}</dd>
+        <dt>Module</dt>
+        <dd>{s.module}</dd>
       </dl>
-      {open && <SourceLine path={["overrides", "agents", a.key, "model"]} value={a.model} ask={`Please change ${a.name}'s (${a.key}) model in instance.yaml overrides to <model> and file the apply for me.`} />}
-    </li>
+    </>
+  );
+}
+
+/** The control a setting's type calls for: a choice, several choices, a URL, a number or text; then its preview. */
+function SettingEditor({ s, onDone }: { s: SettingRow; onDone: () => void }) {
+  const values = s.values ?? [];
+  const multi = Array.isArray(s.value ?? s.default);
+  const [v, setV] = useState<unknown>(s.value ?? s.default ?? (multi ? [] : ""));
+  const [text, setText] = useState(Array.isArray(v) ? (v as unknown[]).join(", ") : v === null || v === undefined ? "" : String(v));
+  const [review, setReview] = useState(false);
+  const next = values.length ? v : parseInput(s, text);
+  const problem = s.type === "url" ? urlSettingProblem(next, s.host) : typeof (s.default ?? s.value) === "number" && Number.isNaN(next) ? "a number" : null;
+  const same = JSON.stringify(next) === JSON.stringify(s.value ?? s.default);
+  return (
+    <form className="st-editor" onSubmit={(e) => (e.preventDefault(), !problem && !same && setReview(true))}>
+      {values.length && !multi ? (
+        values.length <= 4 ? (
+          <Segmented value={String(v)} label={label(s.key)} options={values.map((x) => ({ value: String(x), label: String(x) }))} onChange={(x) => (setV(values.find((y) => String(y) === x)), setReview(false))} />
+        ) : (
+          <select className="st-select" value={String(v)} onChange={(e) => (setV(values.find((y) => String(y) === e.target.value)), setReview(false))} aria-label={label(s.key)}>
+            {values.map((x) => (
+              <option key={String(x)}>{String(x)}</option>
+            ))}
+          </select>
+        )
+      ) : values.length ? (
+        <div className="st-checks" role="group" aria-label={label(s.key)}>
+          {values.map((x) => {
+            const on = (v as unknown[]).includes(x);
+            return (
+              <label key={String(x)} className={`st-check${on ? " on" : ""}`}>
+                <input type="checkbox" checked={on} onChange={() => (setV(on ? (v as unknown[]).filter((y) => y !== x) : [...(v as unknown[]), x]), setReview(false))} />
+                {String(x)}
+              </label>
+            );
+          })}
+        </div>
+      ) : (
+        <input className="st-input" value={text} onChange={(e) => (setText(e.target.value), setReview(false))} type={s.type === "url" ? "url" : "text"} spellCheck={false} aria-label={label(s.key)} placeholder={multi ? "comma, separated" : ""} />
+      )}
+      {problem && !same && <span className="st-field-help bad">{problem.replace(/^./, (c) => c.toUpperCase())}</span>}
+      {review ? (
+        <ChangePreview items={[{ kind: "setting", key: s.key, value: next }]} was={[s.value ?? s.default]} onCancel={() => setReview(false)} onDone={onDone} />
+      ) : (
+        <div className="st-change-actions">
+          <button className="btn primary" disabled={same || Boolean(problem)}>
+            Review change
+          </button>
+        </div>
+      )}
+    </form>
+  );
+}
+
+// ------------------------------------------------------------------ approvals, spend, notifications, modules, instance
+
+function ApprovalsPage({ data, rows }: { data: SettingsData; rows: (keys: string[]) => SettingRow[] }) {
+  const [autonomy] = rows(["autonomy"]);
+  return (
+    <Page title="Approvals and autonomy" sub="Every write (a push, merge, apply, deploy or outbound message) is an approval record. Code sets each one's tier; autonomy says how much of Tier 1 the AI reviewer decides.">
+      <div className="st-tiers">
+        <div className="st-tier">
+          <span className="st-tier-n">Tier 0</span>
+          <p>Safe writes run at once and are recorded.</p>
+        </div>
+        <div className="st-tier">
+          <span className="st-tier-n">Tier 1</span>
+          <p>The AI reviewer decides when autonomy is full; otherwise you do.</p>
+        </div>
+        <div className="st-tier">
+          <span className="st-tier-n">Tier 2</span>
+          <p>Always yours: one tap in Approvals or Telegram, or an exact typed reply.</p>
+        </div>
+      </div>
+      <p className="st-note">{data.approvals.pending ? <><a href="#/approvals">{data.approvals.pending} waiting on you</a> in Approvals.</> : "Nothing is waiting on you."}</p>
+      <Group title="Settings">
+        {autonomy && <SettingItem s={autonomy} />}
+        {rows(["batch_approvals", "dup_guard", "grading"]).map((s) => (
+          <SettingItem key={s.key} s={s} />
+        ))}
+      </Group>
+    </Page>
   );
 }
 
 const usd = (n: number) => `$${n.toFixed(n % 1 ? 2 : 0)}`;
+const CAP_KEYS = ["run_usd", "task_usd", "day_usd"] as const;
+const CAP_NAMES = { run_usd: "a run", task_usd: "a task", day_usd: "an agent-day" };
 
-function Spend({ data }: { data: SettingsData }) {
+function SpendPage({ data }: { data: SettingsData }) {
   const caps = data.settings.find((s) => s.key === "spend_caps");
   const d = data.spend.defaults;
-  const own = data.agents.filter((a) => Object.entries(a.caps).some(([k, v]) => d[k] !== v));
   return (
-    <Page title="Spend caps" sub={`Fleet defaults: ${usd(d.run_usd ?? 0)} a run, ${usd(d.task_usd ?? 0)} a task, ${usd(d.day_usd ?? 0)} an agent-day (UTC).`}>
-      <section className="settings-section">
-        <p>
-          {data.spend.enforcing === null
-            ? "The model gateway didn't answer, so whether caps are enforced right now is unknown."
-            : data.spend.enforcing
-              ? "The model gateway is enforcing caps: a call past one is refused and you get a Raise card."
-              : "Caps are off: every call is still billed and logged, none is refused."}
-        </p>
-        <p className="muted small">
-          To raise a cap once, approve the Raise card the gateway files (it doubles the cap for that run, task or day).{" "}
-          {data.spend.pendingRaises ? <a href="#/approvals">{data.spend.pendingRaises} waiting in Approvals.</a> : "None is waiting."} To change an agent's caps for good, set them in instance.yaml.
-        </p>
-      </section>
-      <section className="settings-section">
-        <div className="section-head">
-          <h2>Agents with their own caps</h2>
-        </div>
-        {own.length ? (
-          <table className="settings-table">
-            <thead>
-              <tr>
-                <th>Agent</th>
-                <th>Run</th>
-                <th>Task</th>
-                <th>Day</th>
-              </tr>
-            </thead>
-            <tbody>
-              {own.map((a) => (
-                <tr key={a.key}>
-                  <td>{a.name}</td>
-                  <td>{usd(a.caps.run_usd ?? 0)}</td>
-                  <td>{usd(a.caps.task_usd ?? 0)}</td>
-                  <td>{usd(a.caps.day_usd ?? 0)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="empty">Every agent uses the fleet defaults.</p>
-        )}
-        <SourceLine path={["overrides", "agents", "<agent key>", "caps"]} value={{ day_usd: (d.day_usd ?? 30) * 2 }} ask="Please raise <agent>'s spend caps in instance.yaml overrides to <caps> and file the apply for me." />
-      </section>
-      {caps && <SettingList rows={[caps]} />}
+    <Page
+      title="Spend caps"
+      sub="The model gateway refuses a call past a cap and files a Raise card; approving it doubles that cap once."
+      tools={data.spend.enforcing === null ? <StatusPill tone="off">Gateway not answering</StatusPill> : data.spend.enforcing ? <StatusPill tone="ok">Enforcing</StatusPill> : <StatusPill tone="warn">Not enforcing</StatusPill>}
+    >
+      <div className="st-figures">
+        {CAP_KEYS.map((k) => (
+          <div key={k} className="st-figure">
+            <span className="st-figure-n">{usd(d[k] ?? 0)}</span>
+            <span className="st-figure-l">{CAP_NAMES[k]}</span>
+          </div>
+        ))}
+      </div>
+      <p className="st-note">
+        Fleet defaults, in USD (agent-days in UTC). {data.spend.pendingRaises ? <a href="#/approvals">{data.spend.pendingRaises} Raise card{data.spend.pendingRaises === 1 ? "" : "s"} waiting.</a> : "No Raise card is waiting."}
+      </p>
+      <Group title="Each agent's caps" hint="Open an agent to set its own caps for good.">
+        {data.agents.map((a) => (
+          <CapsRow key={a.key} name={a.name} agent={a.key} caps={a.caps} defaults={d} />
+        ))}
+      </Group>
+      {caps && (
+        <Group title="Switch">
+          <SettingItem s={caps} title="Enforce spend caps" />
+        </Group>
+      )}
     </Page>
   );
 }
 
-function Notifications({ rows, conns }: { rows: SettingRow[]; conns: ConnectionsData | null }) {
+function CapsRow({ name, agent, caps, defaults }: { name: string; agent: string; caps: Record<string, number>; defaults: Record<string, number> }) {
+  const filed = useFiled((c) => c.kind === "caps" && c.agent === agent);
+  const own = CAP_KEYS.some((k) => caps[k] !== defaults[k]);
+  const [v, setV] = useState<Record<string, string>>(Object.fromEntries(CAP_KEYS.map((k) => [k, String(caps[k] ?? defaults[k] ?? "")])));
+  const [review, setReview] = useState(false);
+  const changed = Object.fromEntries(CAP_KEYS.filter((k) => Number(v[k]) !== caps[k]).map((k) => [k, Number(v[k])]));
+  const bad = Object.values(changed).some((n) => !(n > 0) || n > 1000);
+  return (
+    <Row
+      title={name}
+      meta={
+        <>
+          {filed && IN_FLIGHT.includes(filed.stage) && <StatusPill tone="busy">Changing</StatusPill>}
+          <span className={`st-caps${own ? " own" : ""}`}>{CAP_KEYS.map((k) => usd(caps[k] ?? 0)).join(" / ")}</span>
+        </>
+      }
+      details={
+        <>
+          {filed && <ChangeProgress f={filed} />}
+          <form className="st-caps-form" onSubmit={(e) => (e.preventDefault(), Object.keys(changed).length && !bad && setReview(true))}>
+            {CAP_KEYS.map((k) => (
+              <label key={k} className="st-field">
+                <span className="st-field-label">Per {CAP_NAMES[k].replace(/^an? /, "")}</span>
+                <span className="st-money">
+                  $<input inputMode="decimal" value={v[k]} onChange={(e) => (setV({ ...v, [k]: e.target.value }), setReview(false))} aria-label={`${name}: cap per ${CAP_NAMES[k]}`} />
+                </span>
+              </label>
+            ))}
+            {!review && (
+              <button className="btn primary" disabled={!Object.keys(changed).length || bad}>
+                Review change
+              </button>
+            )}
+          </form>
+          {bad && <span className="st-field-help bad">Each cap is above $0 and at most $1000.</span>}
+          {review && <ChangePreview items={[{ kind: "caps", agent, value: changed }]} was={[Object.fromEntries(Object.keys(changed).map((k) => [k, caps[k]]))]} onCancel={() => setReview(false)} onDone={() => setReview(false)} />}
+        </>
+      }
+    />
+  );
+}
+
+function NotificationsPage({ rows, conns }: { rows: SettingRow[]; conns: ConnectionsData | null }) {
   const live = conns?.connections.find((c) => c.name === "slack_live")?.probe;
   const chosen = (rows.find((r) => r.key === "channels")?.value as string[] | undefined) ?? [];
   const [perm, setPerm] = useState(() => (notificationsSupported() ? Notification.permission : "unsupported"));
   const state = (k: string) => (!live?.channels ? "unknown" : live.channels[k] ? "set up" : "not set up");
+  const channels: [string, string, string][] = [
+    ["telegram", "Telegram", "The work bot: messages, approvals with one tap, voice notes."],
+    ["slack", "Slack", "A DM from the labelled bot, and Socket Mode for urgent pages."],
+    ["voice", "Voice notes", "Telegram voice notes transcribed on the host."],
+  ];
   return (
     <Page title="Notifications" sub="Where Aiden and the agents reach you, and where you can tap approvals.">
-      <ul className="conn-list">
-        <li className="conn">
-          <div className="conn-head">
-            <span className="conn-name">This browser</span>
-            <span className={`pill ${perm === "granted" ? "pill-working" : ""}`}>{perm === "granted" ? "On" : perm === "denied" ? "Blocked" : perm === "unsupported" ? "Not supported" : "Off"}</span>
-            {perm === "default" && (
-              <span className="conn-act">
-                <button className="btn" onClick={() => void askForNotifications().then(setPerm)}>
-                  Notify me here
-                </button>
-              </span>
-            )}
-          </div>
-          <p className="conn-reason">A browser notification when something needs you, while the board is open.{perm === "denied" ? " Allow notifications for this site in the browser's settings." : ""}</p>
-        </li>
-        {[
-          ["telegram", "Telegram", "The work bot: messages, approvals with one tap, voice notes."],
-          ["slack", "Slack", "A DM from the labelled bot, and Socket Mode for urgent pages."],
-          ["voice", "Voice notes", "Telegram voice notes transcribed on the host (whisper)."],
-        ].map(([k, name, what]) => (
-          <li key={k} className="conn">
-            <div className="conn-head">
-              <span className="conn-name">{name}</span>
-              <span className={`pill ${state(k!) === "set up" ? "pill-working" : ""}`}>{state(k!)}</span>
-              {k !== "voice" && <span className="muted small">{chosen.includes(k!) ? "in your channels" : "not in your channels"}</span>}
-            </div>
-            <p className="conn-reason">{what}</p>
-          </li>
+      <Group title="This browser">
+        <Row
+          title="Browser notifications"
+          sub={perm === "denied" ? "Blocked: allow notifications for this site in the browser's settings." : "A notification when something needs you, while the board is open."}
+          meta={<StatusPill tone={perm === "granted" ? "ok" : perm === "denied" ? "warn" : "off"}>{perm === "granted" ? "On" : perm === "denied" ? "Blocked" : perm === "unsupported" ? "Not supported" : "Off"}</StatusPill>}
+          action={
+            perm === "default" ? (
+              <button className="btn" onClick={() => void askForNotifications().then(setPerm)}>
+                Turn on
+              </button>
+            ) : undefined
+          }
+        />
+      </Group>
+      <Group title="Channels" hint={!live?.channels ? "The owner channel didn't say which channels have tokens." : undefined}>
+        {channels.map(([k, name, what]) => (
+          <Row key={k} title={name} sub={what} meta={<>{k !== "voice" && <span className="st-chip">{chosen.includes(k) ? "in your channels" : "not in your channels"}</span>}<StatusPill tone={state(k) === "set up" ? "ok" : "off"}>{state(k)}</StatusPill></>} />
         ))}
-      </ul>
-      {!live?.channels && <p className="muted small">The owner channel didn't say which channels have tokens (an older slack-live-mcp, or it is down).</p>}
-      <SettingList rows={rows} />
+      </Group>
+      {rows.length > 0 && (
+        <Group title="Settings">
+          {rows.map((s) => (
+            <SettingItem key={s.key} s={s} />
+          ))}
+        </Group>
+      )}
     </Page>
   );
 }
 
-function Instance({ data }: { data: SettingsData }) {
-  const i = data.instance;
-  const sha = (s: string | null) => (s ? <code title={s}>{s.slice(0, 12)}</code> : <span className="muted">unknown</span>);
+function ModulesPage({ onSignIn }: { onSignIn: () => void }) {
+  const [mods, setMods] = useState<ModuleRow[] | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api.modules().then(
+      (r) => setMods(r.modules),
+      (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)),
+    );
+  }, [onSignIn]);
+  if (!mods)
+    return (
+      <Page title="Modules" sub={error ? `Couldn't load modules: ${error}` : "Loading…"}>
+        {!error && <RowsSkeleton />}
+      </Page>
+    );
+  const on = mods.filter((m) => m.state !== "off");
+  const off = mods.filter((m) => m.state === "off");
   return (
-    <Page title="Instance" sub="What this AidenHQ runs, and every setting it was compiled with.">
-      <dl className="panel-facts settings-section">
-        <dt>Product</dt>
-        <dd>{sha(i.product)} (instance.yaml product:)</dd>
-        <dt>Instance repo</dt>
-        <dd>{sha(i.instance)} at the last applied agent change</dd>
-        <dt>Last applied change</dt>
-        <dd>{i.lastChangeAt ? when(i.lastChangeAt) : <span className="muted">unknown</span>}</dd>
-        <dt>Board</dt>
-        <dd>
-          Node {i.node}, timezone {i.boardTimezone}
-        </dd>
-      </dl>
-      <p className="muted small">To move to a newer product, set product: to a commit on main in instance.yaml, commit and push, then run ops/apply-config.sh on the host.</p>
-      <section className="settings-section">
-        <div className="section-head">
-          <h2>Every setting</h2>
-          <span className="count">{data.settings.length}</span>
-        </div>
-        <table className="settings-table">
-          <thead>
-            <tr>
-              <th>Setting</th>
-              <th>Value</th>
-              <th>From</th>
-              <th>Module</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.settings.map((s) => (
-              <tr key={s.key}>
-                <td>
-                  <code>{s.key}</code>
-                </td>
-                <td>{s.known ? shown(s.value) : "unknown"}</td>
-                <td className="muted">{s.set ? "instance.yaml" : "default"}</td>
-                <td className="muted">{s.module}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
+    <Page title="Modules" sub={`${on.length} on, ${off.length} available. A module brings its agents, connections and apps; turning one on or off is a change you approve.`}>
+      <Group title="On" count={on.length}>
+        {on.map((m) => (
+          <ModuleItem key={m.name} m={m} />
+        ))}
+      </Group>
+      {off.length > 0 && (
+        <Group title="Available" count={off.length}>
+          {off.map((m) => (
+            <ModuleItem key={m.name} m={m} />
+          ))}
+        </Group>
+      )}
     </Page>
   );
 }
+
+function ModuleItem({ m }: { m: ModuleRow }) {
+  const filed = useFiled((c) => c.kind === "module" && c.name === m.name);
+  const [want, setWant] = useState<boolean | null>(null);
+  const isOn = m.state !== "off";
+  const fixed = m.state === "core" || m.state === "dependency";
+  return (
+    <Row
+      title={m.name}
+      sub={m.description}
+      meta={filed && IN_FLIGHT.includes(filed.stage) ? <StatusPill tone="busy">Changing</StatusPill> : m.state === "core" ? <span className="st-chip">always on</span> : m.state === "dependency" ? <span className="st-chip">needed by another</span> : undefined}
+      action={!fixed ? <Switch on={want ?? isOn} label={`${m.name}: ${isOn ? "on" : "off"}`} disabled={Boolean(filed && IN_FLIGHT.includes(filed.stage))} onChange={(v) => setWant(v)} /> : undefined}
+      open={want !== null || undefined}
+      onToggle={(o) => !o && setWant(null)}
+      details={
+        <>
+          {filed && <ChangeProgress f={filed} />}
+          {want !== null && want !== isOn ? (
+            <ChangePreview items={[{ kind: "module", name: m.name, on: want }]} was={[isOn]} onCancel={() => setWant(null)} onDone={() => setWant(null)} note={want ? "You approve it on the card. A module that needs settings (a URL, a site) asks for them on its page once it is on." : "You approve it on the card. Its agents stop and its connections close."} />
+          ) : (
+            <dl className="st-facts compact">
+              <dt>Agents</dt>
+              <dd>{m.agents.length ? m.agents.join(", ") : <span className="muted">none</span>}</dd>
+              <dt>Needs</dt>
+              <dd>{m.requires.length ? m.requires.join(", ") : <span className="muted">nothing</span>}</dd>
+            </dl>
+          )}
+        </>
+      }
+    />
+  );
+}
+
+function InstancePage({ data }: { data: SettingsData }) {
+  const i = data.instance;
+  const [q, setQ] = useState("");
+  const sha = (s: string | null) => (s ? <code title={s}>{s.slice(0, 12)}</code> : <span className="muted">unknown</span>);
+  const list = data.settings.filter((s) => !q || `${s.key} ${s.module} ${shown(s.value)}`.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <Page title="Instance" sub="What this AidenHQ runs, and every setting it was compiled with.">
+      <div className="st-figures">
+        <Fig n={sha(i.product)} l="Product" />
+        <Fig n={sha(i.instance)} l="Instance repo, at the last applied change" />
+        <Fig n={i.lastChangeAt ? new Date(i.lastChangeAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "unknown"} l="Last applied change" />
+        <Fig n={i.node} l={`Board runtime, ${i.boardTimezone}`} />
+      </div>
+      <p className="st-note">A newer product is a change to instance.yaml's product: pin; the Platform Engineer files it with its commit log for you to approve.</p>
+      <Group title="Every setting" count={data.settings.length} hint={<input className="st-search small" type="search" placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter settings" />}>
+        <div className="st-table" role="table">
+          <div className="st-tr st-th" role="row">
+            <span role="columnheader">Setting</span>
+            <span role="columnheader">Value</span>
+            <span role="columnheader">From</span>
+            <span role="columnheader">Module</span>
+          </div>
+          {list.map((s) => (
+            <div key={s.key} className="st-tr" role="row">
+              <code role="cell">{s.key}</code>
+              <span role="cell" className="st-td-value">{s.known ? shown(s.value) : "unknown"}</span>
+              <span role="cell" className="muted">{s.set ? "instance.yaml" : "default"}</span>
+              <span role="cell" className="muted">{s.module}</span>
+            </div>
+          ))}
+          {!list.length && <p className="st-empty">No setting matches “{q}”.</p>}
+        </div>
+      </Group>
+    </Page>
+  );
+}
+
+const Fig = ({ n, l }: { n: ReactNode; l: string }) => (
+  <div className="st-figure">
+    <span className="st-figure-n">{n}</span>
+    <span className="st-figure-l">{l}</span>
+  </div>
+);

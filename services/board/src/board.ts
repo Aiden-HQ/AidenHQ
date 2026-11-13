@@ -12,7 +12,7 @@ export const hasMarker = (body: string, marker: string) => body.includes(marker)
 export const BRIEF_LABEL = "daily-brief";
 
 export type Engine = "codex" | "claude" | "openrouter";
-const ADAPTER_ENGINE: Record<string, Engine> = { codex_local: "codex", claude_local: "claude", opencode_local: "openrouter" };
+export const ADAPTER_ENGINE: Record<string, Engine> = { codex_local: "codex", claude_local: "claude", opencode_local: "openrouter" };
 const EFFORT_KEY: Partial<Record<Engine, string>> = { codex: "modelReasoningEffort", claude: "effort" };
 export const EFFORTS: Record<Engine, string[]> = { codex: ["low", "medium", "high", "xhigh"], claude: ["low", "medium", "high", "xhigh", "max"], openrouter: [] };
 

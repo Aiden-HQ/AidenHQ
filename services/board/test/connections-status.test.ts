@@ -18,7 +18,7 @@ describe("connection status", () => {
     expect(connectionStatus(row({ probe: probe({ detail: "unreachable: ENOTFOUND" }) }), here)).toMatchObject({ status: "error", reason: "Unreachable: ENOTFOUND" });
     expect(connectionStatus(row({ probe: probe({ status: 500 }) }), here)).toMatchObject({ status: "error", reason: "health check answered HTTP 500" });
     // The tasks bridge runs inside each run: nothing to probe.
-    expect(connectionStatus(row({ transport: "built in" }), here).status).toBe("unknown");
+    expect(connectionStatus(row({ name: "paperclip_tasks", transport: "built in" }), here)).toMatchObject({ status: "builtin", reason: expect.stringContaining("delegate") });
   });
 
   it("offers Connect where the board can start the sign-in, and says where to go otherwise", () => {
