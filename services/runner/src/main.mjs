@@ -21,7 +21,7 @@ import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, 
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine } from "./prompt.mjs";
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
 import { startRepoHelper } from "./repohelper.mjs";
-import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, keepBranches, messagesSince, moveOffDefault, readManifest, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
+import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, keepBranches, messagesSince, moveOffDefault, readManifest, repairWorkspaceGit, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.mjs";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.mjs";
 import * as merges from "./merges.mjs";
@@ -2474,6 +2474,16 @@ async function startJob({ issue, instructions }) {
   } catch (err) {
     if (stopping) return;
     if (jobId) state.finishJob(jobId, "failed", String(err).slice(0, 500));
+    // A turn that failed before its run started (its workspace couldn't be prepared) is still this task's latest job:
+    // recorded, it reads as failed, never as the run before it ("Done, nothing changed", on a task that did nothing).
+    else {
+      try {
+        const id = state.startJob(issue.id, "", join(logsDir, `${issue.identifier}-${Date.now()}.log`));
+        state.finishJob(id, "failed", `setup: ${String(err).slice(0, 480)}`);
+      } catch (e) {
+        log("couldn't record the failed setup", { issue: issue.identifier, err: String(e.message ?? e).slice(0, 200) });
+      }
+    }
     await reportError(issue, err);
   } finally {
     if (!launched) {
@@ -3025,6 +3035,9 @@ async function addRepo(workspace, slug, { copy = false } = {}) {
 async function prepareWorkspace(issue, task, { clone = true, copy = false } = {}) {
   const workspace = task.workspace ?? workspacePath(cfg.workDir, issue.identifier);
   if (!task.workspace) state.updateTask(issue.id, { workspace });
+  // A restart keeps the workspace, and a job's sandbox leaves an empty `.git` mount point at its root: the runner's git
+  // would refuse every clone in it. Cleared before anything else touches the workspace (clone or not).
+  if (repairWorkspaceGit(workspace)) log("cleared a stray .git at the workspace root", { issue: issue.identifier });
   if (clone) {
     mkdirSync(workspace, { recursive: true });
     for (const slug of [task.repo, ...rememberRepos(issue.id, [])].filter(Boolean)) {
@@ -3042,6 +3055,9 @@ const repoHelper = startRepoHelper(async ({ issue, workspace, box }, raw) => {
   const repo = normalizeRepo(raw);
   if (!repo) throw new Error(`\`${raw}\` isn't a GitHub repository (use org/name).`);
   if (!repoAllowed(repo, cfg.allowed_orgs) && !(await publicRepo(repo.slug))) throw new Error(`${repo.slug} is outside ${cfg.allowed_orgs.join(", ")} and isn't a public repository I can read.`);
+  // The run's own sandbox masks the workspace's root `.git` mount point: the same repair the runner makes before a
+  // turn, so a clone in a turn that began before it still works.
+  if (repairWorkspaceGit(workspace)) log("cleared a stray .git at the workspace root", { issue: issue.identifier });
   const path = await addRepo(workspace, repo.slug, { copy: Boolean(box) });
   rememberRepos(issue.id, [repo.slug]);
   log("repository added by the agent", { issue: issue.identifier, repo: repo.slug });
@@ -3232,7 +3248,7 @@ async function findRealGh() {
 }
 
 async function reportError(issue, err) {
-  const userFacing = err instanceof UserError || /not allowed|unknown engine|isn't set up/.test(String(err.message));
+  const userFacing = err instanceof UserError || /not allowed|unknown engine|isn't set up|this task's workspace/.test(String(err.message));
   log("error", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 500) });
   try {
     await pc.comment(issue.id, userFacing ? err.message : `Runner error: \`${String(err.message ?? err).slice(0, 400)}\``);

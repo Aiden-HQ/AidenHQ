@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -652,6 +652,72 @@ describe("task workspaces", async () => {
     execFileSync("git", ["-C", path, "remote", "set-url", "origin", "git@github.com:acme/api.git"]);
     assert.deepEqual((await workspaceRepos(ws)).map((r) => r.slug), ["acme/api"]);
     assert.deepEqual(readManifest(ws), []);
+  });
+
+  // A resumed task's workspace kept the empty, read-only `.git` a job's sandbox mounts over the workspace root (its mount
+  // point survives the restart): the runner's own git refused every command in the task, so every clone failed.
+  it("clears the empty .git a job's sandbox leaves at the workspace root, so the task clones again", async (t) => {
+    const { repairWorkspaceGit, workspaceRepos } = await import("../src/workspace.mjs");
+    const { scrubFor, setUntrusted } = await import("../src/git.mjs");
+    const dir = mkdtempSync(join(tmpdir(), "pw-rootgit-"));
+    const tasks = join(dir, "tasks");
+    const ws = join(tasks, "PEN-9");
+    const remote = join(dir, "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+    const seed = join(dir, "seed");
+    execFileSync("git", ["clone", "-q", remote, seed]);
+    writeFileSync(join(seed, "README.md"), "hi");
+    execFileSync("git", ["-C", seed, "add", "."]);
+    execFileSync("git", ["-C", seed, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "init"]);
+    execFileSync("git", ["-C", seed, "push", "-q", "origin", "HEAD:main"]);
+    const cache = join(dir, "cache");
+    execFileSync("git", ["clone", "-q", remote, cache]);
+    // What the sandbox leaves: an empty directory, mode 0555, mounted read-only while the job ran (gone, its path stays).
+    mkdirSync(join(ws, ".git"), { recursive: true });
+    chmodSync(join(ws, ".git"), 0o555);
+    setUntrusted({ tasksDir: tasks, hooksDir: join(dir, "hooks") });
+    t.after(() => { setUntrusted(undefined); rmSync(dir, { recursive: true, force: true }); });
+    await assert.rejects(scrubFor(join(ws, "anything")), /isn't a valid git directory/, "before the repair, the runner's git refuses the task");
+    // The clone the runner's `/repo` makes is refused before any repository is looked at.
+    await assert.rejects(ensureRepo(ws, { org: "acme", name: "api", slug: "acme/api" }, { cache, remoteUrl: remote }), /isn't a valid git directory/);
+    assert.equal(repairWorkspaceGit(ws), true);
+    assert.equal(existsSync(join(ws, ".git")), false);
+    assert.equal(await scrubFor(join(ws, "anything")), true, "and after it, the task is a plain folder");
+    const path = await ensureRepo(ws, { org: "acme", name: "api", slug: "acme/api" }, { cache, remoteUrl: remote });
+    assert.equal(await git(path, "rev-parse", "--abbrev-ref", "HEAD"), "main", "the clone the task's first turn makes works");
+    assert.deepEqual((await workspaceRepos(ws)).map((r) => r.slug), ["acme/api"]);
+
+    // A second turn finds nothing to repair (and a real repository at a clone, not the root, is never touched).
+    assert.equal(repairWorkspaceGit(ws), false);
+
+    // A `.git` at the root with files in it that isn't a repository is a hard, explicit error, never a silent no-op.
+    mkdirSync(join(ws, ".git"));
+    writeFileSync(join(ws, ".git/config"), "[core]\n\tbare = false\n");
+    assert.throws(() => repairWorkspaceGit(ws), /isn't a git directory/);
+    rmSync(join(ws, ".git"), { recursive: true, force: true });
+  });
+
+  // The literal mount from the report: an empty, read-only tmpfs at `<workspace>/.git`, as a job's namespace sees it. The
+  // runner's git refuses the task while it is there; with the mount attached the repair refuses (an explicit, retryable
+  // error); once the job's namespace is gone the empty mount point bwrap left is cleared and the task clones again.
+  it("repairs a workspace whose root .git is a read-only tmpfs mount point, and reports one still attached", async (t) => {
+    const { repairWorkspaceGit } = await import("../src/workspace.mjs");
+    const dir = mkdtempSync(join(tmpdir(), "pw-tmpfs-"));
+    const ws = join(dir, "tasks/PEN-8");
+    mkdirSync(join(ws, ".git"), { recursive: true });
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    // A host without unprivileged user namespaces can't show the mount; the repair itself is covered above.
+    if (spawnSync("unshare", ["-Ur", "-m", "--", "true"]).status !== 0) return t.skip("no private mount namespace on this host");
+    const moduleUrl = new URL("../src/workspace.mjs", import.meta.url).href;
+    // Inside the job's namespace the mount is there: git sees no repository, and the mount point can't be removed.
+    const inside = spawnSync("unshare", ["-Ur", "-m", "--", "sh", "-c", `mount -t tmpfs -o ro,mode=555 none '${join(ws, ".git")}' && cd '${ws}' && git rev-parse --git-dir; echo "---"; ${JSON.stringify(process.execPath)} -e 'import(${JSON.stringify(moduleUrl)}).then(({ repairWorkspaceGit }) => { try { repairWorkspaceGit(process.argv[1]); console.log("removed"); } catch (err) { console.log(err.message); } })' '${ws}'`], { encoding: "utf8" });
+    const output = `${inside.stdout}${inside.stderr}`;
+    assert.match(output, /not a git repository/, "the bug: git finds no repository in the task");
+    assert.match(output, /not be used yet|still attached/);
+    assert.doesNotMatch(output, /removed/, "a mount point still attached is never reported as repaired");
+    // The job's namespace is gone (a restart): what is left is an empty directory, which is cleared.
+    assert.equal(repairWorkspaceGit(ws), true);
+    assert.equal(existsSync(join(ws, ".git")), false);
   });
 
   it("never blocks on or follows what the agent plants in its clone's refs: git lists them instead", { timeout: 20_000 }, async () => {

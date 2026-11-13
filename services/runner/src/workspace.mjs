@@ -5,7 +5,7 @@
 // cache (hardlinked objects), so they are quick and keep every write inside the workspace.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeRepo } from "./commands.mjs";
@@ -94,6 +94,36 @@ async function cloneSlug(path) {
   const repo = normalizeRepo(value("aidenhq.slug") || value("remote.origin.url"));
   if (repo && stamp) slugs.set(path, { stamp, repo });
   return repo;
+}
+
+/**
+ * A `.git` at a workspace's root that isn't a repository: a job's sandbox masks `<workspace>/.git` by mounting a read-only
+ * tmpfs over it, and bwrap creates that mount point as a real, empty directory on the host. Left behind (a restart that
+ * keeps the workspace is enough), the runner's own git finds it in the task folder and refuses every command there, so
+ * every clone fails. Clones live in the workspace's subdirectories, never at its root, so an empty `.git` there is only
+ * that mount point: it is removed, and returns true. A real git directory is left alone (false). Anything else is a hard
+ * error, with a message that says the workspace must be started afresh.
+ */
+export function repairWorkspaceGit(workspace) {
+  const dir = join(workspace, ".git");
+  if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) return false;
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch (err) {
+    throw new Error(`this task's workspace can't be used: ${dir} can't be read (${err.code ?? "unknown error"}). Reply again to retry, or start the task afresh (\`aidenhq cleanup\`).`);
+  }
+  if (!entries.length) {
+    try {
+      rmdirSync(dir);
+    } catch (err) {
+      throw new Error(`this task's workspace can't be used yet: ${dir} is an empty mount point a job's sandbox left behind that is still attached (${err.code ?? "unknown error"}). A runner restart clears it, or start the task afresh (\`aidenhq cleanup\`).`);
+    }
+    return true;
+  }
+  const has = (name, isDir = false) => entries.includes(name) && (isDir ? lstatSync(join(dir, name), { throwIfNoEntry: false })?.isDirectory() : lstatSync(join(dir, name), { throwIfNoEntry: false })?.isFile());
+  if (has("HEAD") && has("objects", true) && has("refs", true)) return false; // a real git directory: not ours to touch
+  throw new Error(`this task's workspace can't be used: ${dir} holds files but isn't a git directory. Start the task afresh (\`aidenhq cleanup\`) and ask again.`);
 }
 
 /** The repositories cloned in a workspace: top-level directories that are git clones (not worktrees). */
