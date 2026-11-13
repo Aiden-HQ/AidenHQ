@@ -90,6 +90,8 @@ Keep deliverables tight: the user reviews everything. For agendas, follow the st
 
 ## B. Processing the user's replies
 
+Before you answer a reply, read the task's newest agent comments and any task that supersedes it. The owner's reply may already have been actioned. If later work replaces the task, say so in one line and do not re-pose choices from the superseded task.
+
 The task says which tasks to look at, for example "Process replies on: PEN-30, PEN-41". For each task:
 
 1. Call `task_get` and `task_comments`. Find the user's newest comments since the last AidenHQ comment. Those are what to act on. A comment ending in "Attached: `name`, …" came with files: find them with `task_files` and read them with `task_file_read` before acting.
