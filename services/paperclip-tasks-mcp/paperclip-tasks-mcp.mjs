@@ -50,7 +50,14 @@ async function api(method, path, body) {
   if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(`${API}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
   const text = await res.text();
-  if (!res.ok) throw new Error(`Paperclip ${method} ${path} → ${res.status}: ${text.slice(0, 300)}`);
+  if (!res.ok) {
+    const err = new Error(`Paperclip ${method} ${path} → ${res.status}: ${text.slice(0, 300)}`);
+    err.status = res.status;
+    try {
+      err.body = text ? JSON.parse(text) : undefined;
+    } catch {}
+    throw err;
+  }
   return text ? JSON.parse(text) : {};
 }
 
@@ -136,6 +143,40 @@ async function postLeadingParts(issue, text) {
   const parts = commentParts(text);
   for (const p of parts.slice(0, -1)) await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: p });
   return parts.at(-1) ?? "";
+}
+
+/** The blocker ids a Paperclip 409 says are still unresolved, or undefined for any other error. */
+function unresolvedBlockers(err) {
+  const ids = err?.status === 409 ? err.body?.details?.unresolvedBlockerIssueIds : undefined;
+  return Array.isArray(ids) ? ids : undefined;
+}
+
+/**
+ * Paperclip refuses to move a blocked task while any blocker is not done, and it counts a cancelled blocker as
+ * unresolved: only removing or replacing the relation releases the dependent (its own diagnosis says so).
+ * Agents have no other way to do that, so a task whose only blocker was cancelled could never reach done,
+ * cancelled or a handoff (2026-11-13). When every unresolved blocker is cancelled, clear those
+ * relations, name them in a comment, and retry the update. An active blocker still refuses, as before.
+ */
+async function patchIssue(issue, body) {
+  try {
+    return await api("PATCH", `/api/issues/${issueRef(issue)}`, body);
+  } catch (err) {
+    const unresolvedIds = unresolvedBlockers(err);
+    if (!unresolvedIds?.length) throw err;
+    const current = await api("GET", `/api/issues/${issueRef(issue)}`);
+    const blockedBy = current.blockedBy ?? [];
+    const cancelled = blockedBy.filter((b) => b.status === "cancelled");
+    const cancelledIds = new Set(cancelled.map((b) => b.id));
+    // Leave a live blocker (or a done blocker still finalizing its workspace) to Paperclip.
+    if (!unresolvedIds.every((id) => cancelledIds.has(id))) throw err;
+    const keep = blockedBy.filter((b) => b.status !== "cancelled").map((b) => b.id);
+    await api("PATCH", `/api/issues/${issueRef(issue)}`, { blockedByIssueIds: keep });
+    await api("POST", `/api/issues/${issueRef(issue)}/comments`, {
+      body: `Released ${cancelled.map((b) => `${b.identifier ?? b.id} (${b.status})`).join(", ")}: a cancelled blocker no longer holds this task.`,
+    }).catch(() => undefined);
+    return await api("PATCH", `/api/issues/${issueRef(issue)}`, body);
+  }
 }
 
 /** The other parts of one of the user's tasks, with whom each is, for reading their conversations. */
@@ -1011,10 +1052,10 @@ const TOOLS = {
       // The crew: an agent's sub-task on the user's task stays the agent's, as `todo` (a valid
       // ending for Paperclip, unlike in_progress), so the user's next comment there wakes it again.
       if (await isOwnPart(current)) {
-        const i = await api("PATCH", `/api/issues/${issueRef(issue)}`, { status: "todo", comment: body });
+        const i = await patchIssue(issue, { status: "todo", comment: body });
         return { ...brief(i), ...(await tellParent(i, true)) };
       }
-      const i = await api("PATCH", `/api/issues/${issueRef(issue)}`, { assigneeUserId: owner, assigneeAgentId: null, status: "todo", comment: body });
+      const i = await patchIssue(issue, { assigneeUserId: owner, assigneeAgentId: null, status: "todo", comment: body });
       return { ...brief(i), ...(await tellParent(i, true)) };
     },
   },
@@ -1043,7 +1084,7 @@ const TOOLS = {
         await api("POST", `/api/issues/${issueRef(CURRENT_TASK)}/comments`, { body: await postLeadingParts(CURRENT_TASK, comment) });
         return { ...brief(await api("GET", `/api/issues/${issueRef(CURRENT_TASK)}`)), grading: GRADING_NOTE };
       }
-      const i = await api("PATCH", `/api/issues/${issueRef(CURRENT_TASK)}`, { status: "done", comment: await postLeadingParts(CURRENT_TASK, comment) });
+      const i = await patchIssue(CURRENT_TASK, { status: "done", comment: await postLeadingParts(CURRENT_TASK, comment) });
       const parent = current.status !== "done" ? await tellParent(i) : undefined;
       return { ...brief(i), ...parent };
     },
@@ -1073,7 +1114,7 @@ const TOOLS = {
       }
       const body = { status };
       if (comment) body.comment = await postLeadingParts(issue, comment);
-      const i = await api("PATCH", `/api/issues/${issueRef(issue)}`, body);
+      const i = await patchIssue(issue, body);
       const parent = was && was !== status ? await tellParent(i) : undefined;
       return { ...brief(i), ...parent };
     },
