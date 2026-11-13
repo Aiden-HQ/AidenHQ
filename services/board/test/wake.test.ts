@@ -9,7 +9,7 @@ const t0 = Date.parse("2026-11-13T12:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
 const MIN = 60_000;
 
-type T = { id: string; identifier: string; title: string; status: string; assigneeAgentId: string | null; parentId?: string | null; description?: string | null; updatedAt: string; completedAt?: string | null };
+type T = { id: string; identifier: string; title: string; status: string; assigneeAgentId: string | null; parentId?: string | null; description?: string | null; updatedAt: string; completedAt?: string | null; cancelledAt?: string | null };
 
 /** A Paperclip with two heartbeat agents (Aiden "a", the Architect "b") and one Engineer ("e"), tasks and runs set by the test. */
 function fake() {
@@ -105,6 +105,46 @@ describe("event wake-ups", () => {
     f.put({ id: "2", status: "todo" }, t0 + 45 * MIN);
     expect(await wakeTick(deps(f, store), recent, t0 + 50 * MIN)).toEqual(["1"]);
     expect(f.comments[0]!.body).toContain("WOR-2 is reopened (todo).");
+  });
+
+  it("wakes once when a delegated task closes, not for its intermediate status changes", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "1", assigneeAgentId: "a", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "2", parentId: "1", assigneeAgentId: "e", status: "todo" }, t0 - 60 * MIN);
+    await wakeTick(deps(f, store), recent, t0); // the baseline: nothing is news yet
+
+    // Picking the work up and sending it to review is not news for the chat that waits on it.
+    f.put({ id: "2", status: "in_progress" }, t0 + MIN);
+    for (const at of [2, 5]) expect(await wakeTick(deps(f, store), recent, t0 + at * MIN)).toEqual([]);
+    f.put({ id: "2", status: "in_review" }, t0 + 6 * MIN);
+    for (const at of [8, 11]) expect(await wakeTick(deps(f, store), recent, t0 + at * MIN)).toEqual([]);
+    expect(f.comments).toHaveLength(0);
+
+    // Closing it wakes the waiting task once, after the usual grace.
+    f.put({ id: "2", status: "done", completedAt: iso(t0 + 15 * MIN) }, t0 + 15 * MIN);
+    expect(await wakeTick(deps(f, store), recent, t0 + 19 * MIN)).toEqual(["1"]);
+    expect(f.comments).toHaveLength(1);
+    expect(f.comments[0]!.body).toContain("WOR-2 is now done.");
+    expect(await wakeTick(deps(f, store), recent, t0 + 25 * MIN)).toEqual([]);
+  });
+
+  it("coalesces blockers that close in the same tick into one wake", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "1", assigneeAgentId: "a", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "2", parentId: "1", assigneeAgentId: "e", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "3", parentId: "1", assigneeAgentId: "e", status: "in_progress" }, t0 - 60 * MIN);
+    await wakeTick(deps(f, store), recent, t0); // the baseline
+
+    f.put({ id: "2", status: "done", completedAt: iso(t0 + 2 * MIN) }, t0 + 2 * MIN);
+    f.put({ id: "3", status: "cancelled", cancelledAt: iso(t0 + 3 * MIN) }, t0 + 3 * MIN);
+    expect(await wakeTick(deps(f, store), recent, t0 + 7 * MIN)).toEqual(["1"]);
+    expect(f.comments).toHaveLength(1);
+    expect(f.comments[0]!.body).toContain("WOR-2 is now done.");
+    expect(f.comments[0]!.body).toContain("WOR-3 is now cancelled.");
   });
 
   it("wakes on a merged PR the task names, and wake_ups: off means off", async () => {

@@ -5,7 +5,8 @@
  * two minutes it lists the state and compares it with per-task cursors, never trusting update times or comment text.
  *
  * What it watches, per open task of an agent with an active "Heartbeat: <key>" routine:
- *   - each sub-task delegated to someone else: its status (done, cancelled, blocked, in review, reopened);
+ *   - each sub-task delegated to someone else: its status (done or cancelled, or reopened from one; intermediate
+ *     updates such as in progress or in review are not news);
  *   - approval cards on the task and its sub-tasks: rejected, or applied/failed (approved-not-yet-applied is not an event:
  *     the runner's outcome follows);
  *   - each sub-task's grade: satisfied, needs revision, escalated;
@@ -83,8 +84,8 @@ function prRefs(text: string | null | undefined): string[] {
 }
 
 const latest = (...xs: (string | null | undefined)[]) => xs.filter(Boolean).sort().at(-1) ?? undefined;
-/** A sub-task's status as an event: the open statuses are one state (picking a task up is not news). */
-const childState = (status: string) => (["done", "cancelled", "blocked", "in_review"].includes(status) ? status : "open");
+/** A sub-task's status as an event: only a terminal state is news (picking a task up, reviewing it or blocking it is not). */
+const childState = (status: string) => (status === "done" || status === "cancelled" ? status : "open");
 
 /** The PRs a task or sub-task names: its description, its merge cards, its PR deliverable. */
 function prsOf(x: Issue, store: WakeDeps["store"], sub: boolean): string[] {
