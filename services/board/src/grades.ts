@@ -202,6 +202,17 @@ export class Grades {
   }
 }
 
+/**
+ * Whether a board-side cascade (closing a task's crew parts when the task closes) may close one done: an ungraded task
+ * passes, and so does one whose grade is satisfied. Anything else waits for the grader, so a cascade never satisfies a
+ * rubric by itself.
+ */
+export function gradePassed(grades: Grades, issueId: string, on = gradingOn()): boolean {
+  if (!on) return true;
+  const g = grades.get(issueId);
+  return !g || g.state === "satisfied";
+}
+
 /** Every way a task reaches done: the tasks bridge's task_finish and task_set_status(done), the runner's finishTurn and finishMerges. */
 export type CompletionPath = z.infer<typeof GateSchema>["via"];
 /**

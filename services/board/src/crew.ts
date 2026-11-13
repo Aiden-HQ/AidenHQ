@@ -57,13 +57,15 @@ export function foldedChildren(issues: Issue[], assignees: Assignee[]): Map<stri
  * on the board's recent list and lands in Triage as a card of its own. A part the user took up again after
  * the task closed (a comment of theirs there reopens it) stays open; an agent's reply that lands after the
  * close (a run still going when the PR merged, PEN-3516) doesn't keep it. `parents` holds every parent the
- * caller found; `ownCommentAt` gives the time of the user's last own comment on a part.
+ * caller found; `ownCommentAt` gives the time of the user's last own comment on a part; `mayClose` says a part
+ * may close `done` (a graded one only with a passing grade).
  */
 export async function partsToClose(
   open: Issue[],
   parents: Map<string, Issue>,
   assignees: Assignee[],
   ownCommentAt: (part: Issue) => Promise<string | undefined>,
+  mayClose: (part: Issue) => boolean = () => true,
 ): Promise<{ part: Issue; status: "done" | "cancelled" }[]> {
   const out: { part: Issue; status: "done" | "cancelled" }[] = [];
   for (const part of open) {
@@ -71,6 +73,7 @@ export async function partsToClose(
     if (!parent || !crewAgent(part, assignees) || (parent.status !== "done" && parent.status !== "cancelled")) continue;
     const closedAt = (parent.status === "done" ? parent.completedAt : parent.cancelledAt) ?? parent.updatedAt;
     if ((part.lastActivityAt ?? part.updatedAt) > closedAt && ((await ownCommentAt(part)) ?? "") > closedAt) continue;
+    if (parent.status === "done" && !mayClose(part)) continue;
     out.push({ part, status: parent.status });
   }
   return out;

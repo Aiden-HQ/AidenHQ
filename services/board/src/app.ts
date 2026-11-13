@@ -25,7 +25,7 @@ import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
-import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradingOn, prRefAllowed } from "./grades.js";
+import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradePassed, gradingOn, prRefAllowed } from "./grades.js";
 import { UsageSchema, WINDOWS, costs, keyUsage, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -475,7 +475,7 @@ export function createApp(opts: AppOptions): Server {
     const missing = [...new Set(open.filter((i) => i.parentId && crew(i) && !known.has(i.parentId)).map((i) => i.parentId!))];
     for (const p of await Promise.all(missing.map((id) => pc.issue(id).catch(() => null)))) if (p) known.set(p.id, p);
     const ownCommentAt = async (part: Issue) => (await pc.comments(part.id)).filter((c) => commentView(c, ctx.me, []).author.kind === "me").at(-1)?.createdAt;
-    const leftover = await partsToClose(open, known, ctx.assignees, ownCommentAt);
+    const leftover = await partsToClose(open, known, ctx.assignees, ownCommentAt, (part) => gradePassed(store.grades, part.id));
     if (!leftover.length) return open;
     const busy = (await working(ctx)).map;
     const gone = new Set<string>();
@@ -1634,6 +1634,7 @@ export function createApp(opts: AppOptions): Server {
           const [kids, busy] = await Promise.all([pc.children(issue.id), working(ctx)]);
           for (const k of kids) {
             if (["done", "cancelled"].includes(k.status) || busy.map.has(k.identifier) || !ctx.assignees.some((a) => a.kind !== "me" && a.key === k.assigneeAgentId)) continue;
+            if (update.status === "done" && !gradePassed(store.grades, k.id)) continue;
             await pc.updateIssue(k.id, { status: update.status });
           }
         }

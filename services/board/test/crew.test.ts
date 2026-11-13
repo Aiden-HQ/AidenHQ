@@ -63,6 +63,14 @@ describe("parts of a task closed elsewhere", () => {
     expect(await partsToClose([part], new Map([[parent.id, parent]]), list, owned())).toHaveLength(1);
   });
 
+  it("leave a graded part open unless its latest grade is a pass", async () => {
+    const parent = closed({});
+    const rejected = issue({ parentId: parent.id, assigneeAgentId: "a-grace", status: "in_review", lastActivityAt: "2026-10-28T17:00:00Z" });
+    const passed = issue({ parentId: parent.id, assigneeAgentId: "a-ada", status: "in_review", lastActivityAt: "2026-10-28T17:00:00Z" });
+    const res = await partsToClose([rejected, passed], new Map([[parent.id, parent]]), list, owned(), (part) => part.id === passed.id);
+    expect(res.map((r) => [r.part.id, r.status])).toEqual([[passed.id, "done"]]);
+  });
+
   it("stay open when the task is open, the user took the part up again, or it's the user's own", async () => {
     const open = issue({ assigneeUserId: ME });
     const parent = closed({});

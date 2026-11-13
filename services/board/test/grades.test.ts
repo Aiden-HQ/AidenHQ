@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GRADE_RETRY_MS, completionGate } from "../src/grades.js";
+import { GRADE_RETRY_MS, completionGate, gradePassed } from "../src/grades.js";
 import { Store } from "../src/store.js";
 
 describe("graded done", () => {
@@ -37,6 +37,19 @@ describe("graded done", () => {
     expect(rejected.state).toBe("needs_revision");
     expect(completionGate(grades, "t", "finish_turn")).toEqual({ pass: false, state: "needs_revision", label: "grading" });
     expect(grades.get("t")!.verdicts.at(-1)).toMatchObject({ verdict: "needs_revision", criteria: [{ id: "1", met: "no", evidence: "still a draft" }] });
+  });
+
+  it("a board cascade closes a graded task done only with a passing grade", () => {
+    const { grades } = new Store(":memory:");
+    expect(gradePassed(grades, "plain")).toBe(true);
+    grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
+    expect(gradePassed(grades, "t")).toBe(false);
+    completionGate(grades, "t", "task_finish");
+    expect(gradePassed(grades, "t")).toBe(false);
+    grades.record("t", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
+    expect(gradePassed(grades, "t")).toBe(false);
+    grades.record("t", { version: "sha2", outcome: "satisfied", model: "glm", criteria: [] });
+    expect(gradePassed(grades, "t")).toBe(true);
   });
 
   it("a grader pass with no usable criteria is retried, not escalated and never a verdict", () => {
