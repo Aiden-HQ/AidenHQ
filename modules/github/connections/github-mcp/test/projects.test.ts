@@ -63,6 +63,25 @@ it("mints a read-only narrowed token and flattens project items", async () => {
   expect(out.next_cursor).toBeNull();
 });
 
+it("mints a read-only token for an org, and reports a miss when the App isn't installed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
+  writeFileSync(join(dir, "app_id"), "123\n");
+  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
+  const calls: { method: string; url: string; body?: any }[] = [];
+  const fetchFn = (async (url: string, init: RequestInit) => {
+    calls.push({ method: init.method!, url, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    const json = (status: number, body: unknown) => ({ status, json: async () => body });
+    if (url.endsWith("/orgs/acme/installation")) return json(200, { id: 7, permissions: { issues: "read", pull_requests: "read" } });
+    if (url.endsWith("/app/installations/7/access_tokens")) return json(201, { token: "ghs_o", expires_at: new Date(Date.now() + 3600_000).toISOString() });
+    return json(404, { message: "Not Found" });
+  }) as unknown as typeof fetch;
+  const p = new Projects(dir, fetchFn);
+
+  expect(await p.orgToken("acme")).toBe("ghs_o");
+  expect(await p.orgToken("other")).toBeUndefined();
+  expect(calls.find((c) => c.url.endsWith("access_tokens"))!.body).toEqual({ permissions: { issues: "read", pull_requests: "read" } });
+});
+
 it("mints a read-only token for a repo the App covers, and reports a miss elsewhere", async () => {
   const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
   writeFileSync(join(dir, "app_id"), "123\n");

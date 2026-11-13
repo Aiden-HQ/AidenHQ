@@ -127,6 +127,29 @@ describe("GitHub", () => {
     expect(calls.map((c) => c.auth)).toEqual(["Bearer ghs_app", "Bearer gho_owner"]);
   });
 
+  it("searches an org the App covers with its installation token, not the user's", async () => {
+    const { impl, calls } = fake({ "GET /search/issues": { total_count: 0, items: [] } });
+    const asked: string[] = [];
+    const gh = new GitHub(tokenFile("gho_owner"), new Set(), impl, {
+      repoToken: async () => undefined,
+      orgToken: async (org: string) => {
+        asked.push(org);
+        return org === "acme-agents" ? "ghs_agents" : undefined;
+      },
+    });
+    await gh.search("org:acme-agents is:pr is:open status:pending");
+    expect(asked).toEqual(["acme-agents"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.auth).toBe("Bearer ghs_agents");
+  });
+
+  it("keeps the user's token for a search outside an org the App covers", async () => {
+    const { impl, calls } = fake({ "GET /search/issues": { total_count: 0, items: [] } });
+    const gh = new GitHub(tokenFile("gho_owner"), new Set(), impl, { repoToken: async () => undefined, orgToken: async () => undefined });
+    await gh.search("is:pr is:open");
+    expect(calls[0]?.auth).toBe("Bearer gho_owner");
+  });
+
   it("never uses the App token for a write", async () => {
     const { impl, calls } = fake({ "POST /repos/acme/app/issues/7/comments": { id: 1, html_url: "h" } });
     const gh = new GitHub(tokenFile("gho_owner"), new Set(["acme"]), impl, { repoToken: async () => "ghs_app" });

@@ -110,24 +110,48 @@ export class Projects {
   }
 
   /**
+   * A read-only installation token for the org or user account, or undefined when the App isn't installed there.
+   * Search has no repository in its path, so it uses this instead of the user's token, which can't see the agents org.
+   */
+  async orgToken(org: string): Promise<string | undefined> {
+    if (!NAME.test(org) || !this.configured()) return undefined;
+    const hit = this.cache.get(org.toLowerCase());
+    if (hit && hit.expires - Date.now() > 5 * 60_000) return hit.token;
+    const found = await this.find(org);
+    return found ? (await this.mint(org, found)).token : undefined;
+  }
+
+  /** The App's installation on `org` (or a user account of that name), or undefined when it isn't installed. */
+  private async find(org: string): Promise<{ id: number; permissions?: Record<string, string>; user: boolean } | undefined> {
+    const jwt = this.jwt();
+    let user = false;
+    let inst = await this.api("GET", `${API}/orgs/${org}/installation`, { authorization: jwt });
+    if (inst.status === 404) [user, inst] = [true, await this.api("GET", `${API}/users/${org}/installation`, { authorization: jwt })];
+    if (inst.status === 404) return undefined;
+    if (inst.status !== 200) throw new Error(`couldn't check the GitHub App for ${org} (GitHub said ${inst.status} ${inst.body?.message ?? ""})`.trim());
+    return { id: inst.body.id, permissions: inst.body.permissions, user };
+  }
+
+  /** An installation token for the org or user account, asking only for the read permissions the installation grants. */
+  private async mint(org: string, found: { id: number; permissions?: Record<string, string>; user: boolean }): Promise<{ token: string; expires: number; user: boolean; projects: boolean }> {
+    const permissions = found.permissions ? Object.fromEntries(Object.entries(PERMISSIONS).filter(([k]) => found.permissions![k])) : PERMISSIONS;
+    const r = await this.api("POST", `${API}/app/installations/${found.id}/access_tokens`, { authorization: this.jwt() }, { permissions });
+    if (r.status !== 201) throw new Error(`couldn't get a GitHub App token for ${org} (GitHub said ${r.status} ${r.body?.message ?? ""})`.trim());
+    const out = { token: r.body.token, expires: Date.parse(r.body.expires_at), user: found.user, projects: "organization_projects" in permissions && !found.user };
+    this.cache.set(org.toLowerCase(), out);
+    return out;
+  }
+
+  /**
    * An installation token for the org or user account, asking only for the read permissions the installation grants
    * (projects, issues, pull requests), reused until 5 minutes before expiry.
    */
   private async install(org: string): Promise<{ token: string; expires: number; user: boolean; projects: boolean }> {
     const hit = this.cache.get(org.toLowerCase());
     if (hit && hit.expires - Date.now() > 5 * 60_000) return hit;
-    const jwt = this.jwt();
-    let user = false;
-    let inst = await this.api("GET", `${API}/orgs/${org}/installation`, { authorization: jwt });
-    if (inst.status === 404) [user, inst] = [true, await this.api("GET", `${API}/users/${org}/installation`, { authorization: jwt })];
-    if (inst.status !== 200) throw new Error(`the AidenHQ GitHub App isn't installed on ${org} (GitHub said ${inst.status} ${inst.body?.message ?? ""})`.trim());
-    const granted = inst.body.permissions;
-    const permissions = granted ? Object.fromEntries(Object.entries(PERMISSIONS).filter(([k]) => granted[k])) : PERMISSIONS;
-    const r = await this.api("POST", `${API}/app/installations/${inst.body.id}/access_tokens`, { authorization: jwt }, { permissions });
-    if (r.status !== 201) throw new Error(`couldn't get a GitHub App token for ${org} (GitHub said ${r.status} ${r.body?.message ?? ""})`.trim());
-    const out = { token: r.body.token, expires: Date.parse(r.body.expires_at), user, projects: "organization_projects" in permissions && !user };
-    this.cache.set(org.toLowerCase(), out);
-    return out;
+    const found = await this.find(org);
+    if (!found) throw new Error(`the AidenHQ GitHub App isn't installed on ${org}`);
+    return this.mint(org, found);
   }
 
   /**

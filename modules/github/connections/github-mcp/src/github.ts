@@ -111,12 +111,19 @@ type Fetch = typeof fetch;
 export interface AppTokenSource {
   /** A read-only token for owner/repo, or undefined when the App isn't installed there. */
   repoToken(owner: string, repo: string): Promise<string | undefined>;
+  /** A read-only token for an org or user account, or undefined when the App isn't installed there. */
+  orgToken?(org: string): Promise<string | undefined>;
 }
 
 /** The repository a REST path is about, when it is one of the repo endpoints. */
 function repoOf(path: string): { owner: string; repo: string } | undefined {
   const m = path.match(new RegExp(`^/repos/(${NAME})/(${NAME})(?:/|$)`));
   return m ? { owner: m[1]!, repo: m[2]! } : undefined;
+}
+
+/** The org or user a search query is scoped to (`org:acme`, `user:acme`), when it names one. */
+function searchScope(query: string): string | undefined {
+  return query.match(/(?:^|\s)(?:org|user):([A-Za-z0-9_.-]{1,100})(?=\s|$)/i)?.[1];
 }
 
 export class GitHub {
@@ -152,10 +159,12 @@ export class GitHub {
     const url = new URL(path, API);
     // ".." passes the name pattern but URL resolution would move the path.
     if (url.origin !== API || url.pathname !== path) throw new GitHubRefused(`refused a GitHub request that isn't allowed: ${method} ${path}`);
-    // Reads use the App's read-only installation token when it covers the repo (the user's token can't see the agents
-    // org); writes and repos it doesn't cover keep the user's token, and no token is ever logged.
+    // Reads use the App's read-only installation token when it covers the repo, or the org a search is scoped to (the
+    // user's token can't see the agents org); writes and repos it doesn't cover keep the user's token, and no token is
+    // ever logged.
     const repo = method === "GET" ? repoOf(path) : undefined;
-    const appToken = repo ? await this.app?.repoToken(repo.owner, repo.repo) : undefined;
+    const scope = method === "GET" && path === "/search/issues" ? searchScope(String(opts.query?.q ?? "")) : undefined;
+    const appToken = repo ? await this.app?.repoToken(repo.owner, repo.repo) : scope ? await this.app?.orgToken?.(scope) : undefined;
     for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, String(v));
     const res = await this.fetchImpl(url, {
       method,
