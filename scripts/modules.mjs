@@ -67,6 +67,14 @@ export function frontmatter(text) {
 }
 
 /** Every module under <productDir>/modules, as { name, root, def }. */
+/** A module's settings for the board: default, allowed values, required, and the comment above each key as its `doc`. */
+function settingDefs(file, def) {
+  const map = YAML.parseDocument(readFileSync(file, "utf8")).get("settings", true);
+  // The first key's comment is attached to the map itself.
+  const docs = Object.fromEntries((map?.items ?? []).map((p, i) => [String(p.key?.value ?? p.key), (p.key?.commentBefore ?? (i === 0 ? map.commentBefore : "") ?? "").replace(/^ ?/gm, "").replace(/\s*\n\s*/g, " ").trim()]));
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+}
+
 function discover(productDir) {
   const dir = join(productDir, "modules");
   const out = new Map();
@@ -193,8 +201,14 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   settings.agents_org = agentsOrg(settings); // the only org github-mcp's commit_status_set may write to
   settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), agentsOrg(settings)].filter(Boolean))].join(",");
 
+  // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
+  // sets, with whether instance.yaml sets it. Snapshotted before the derived keys below; never a secret-looking key.
+  const shownSettings = Object.fromEntries([...new Set([...enabled.flatMap((n) => Object.keys(all.get(n).def.settings ?? {})), ...Object.keys(instance.settings ?? {})])]
+    .filter((k) => !/token|secret|password/i.test(k) && settings[k] !== undefined)
+    .map((k) => [k, { value: settings[k], set: Object.hasOwn(instance.settings ?? {}, k) }]));
+
   const core = substitute(all.get("core").def, settings);
-  const paperclip = { company: core.company, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), grading: String(settings.grading ?? "on"), live_updates: String(settings.live_updates ?? "on"), batch_approvals: String(settings.batch_approvals ?? "on"), dup_guard: String(settings.dup_guard ?? "on"), coach: String(settings.coach ?? "on"), wake_ups: String(settings.wake_ups ?? "on"), loop_brake: String(settings.loop_brake ?? "on"), labels: [], mcp_servers: {}, codex_args: core.codex_args ?? [], agents: {}, routines: {} };
+  const paperclip = { company: core.company, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), grading: String(settings.grading ?? "on"), live_updates: String(settings.live_updates ?? "on"), batch_approvals: String(settings.batch_approvals ?? "on"), dup_guard: String(settings.dup_guard ?? "on"), coach: String(settings.coach ?? "on"), wake_ups: String(settings.wake_ups ?? "on"), loop_brake: String(settings.loop_brake ?? "on"), settings: shownSettings, labels: [], mcp_servers: {}, codex_args: core.codex_args ?? [], agents: {}, routines: {} };
   const apps = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a) => a.name);
@@ -383,10 +397,13 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     .map((v) => v.replace(/^AIDENHQ_/, "").toLowerCase()).filter((s) => s in compose.secrets);
   if (tokens.length) compose.services.paperclip = { secrets: tokens };
 
-  const catalog = [...all.values()].map(({ name, def }) => ({
+  const catalog = [...all.values()].map(({ name, root, def }) => ({
     name, description: def.description ?? "", enabled: enabled.includes(name), chosen: (instance.modules ?? []).includes(name), requires: def.requires ?? [],
     agents: Object.keys(def.agents ?? {}), routines: Object.keys(def.routines ?? {}), connections: Object.keys(def.connections ?? {}),
     apps: (def.apps ?? []).map((a) => a.name), ...(revision ? { revision } : {}),
+    // The board's Settings: each setting's default, allowed values and the comment above it in module.yaml; `setup`, how to set
+    // up a module that serves the runner rather than agents' connections (Grafana, ClickHouse).
+    settings: settingDefs(join(root, "module.yaml"), def), ...(def.setup ? { setup: String(def.setup).trim() } : {}),
   }));
   // Secrets of channels the owner may not use: created empty when missing so compose starts (compile.mjs).
   const optionalSecrets = enabled.flatMap((name) => all.get(name).def.optional_secrets ?? []);

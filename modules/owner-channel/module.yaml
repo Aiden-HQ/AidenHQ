@@ -2,6 +2,7 @@ name: owner-channel
 description: "How the owner talks to Aiden and agents reach the owner: Telegram bot, Slack DM and Socket Mode (both optional), voice notes, notify_owner. Always installed (core requires it)."
 connections:
   slack_live:
+    setup: "Telegram: put the bot token in the vault as telegram_notify_bot_token. Slack: slack_live_app_token and slack_live_bot_token. Then run `docker compose up -d --force-recreate slack-live-mcp`. See SETUP.md step 7."
     url: http://slack-live-mcp:8089/mcp
     bearer_token_env_var: AIDENHQ_SLACK_LIVE_MCP_TOKEN
     tools:

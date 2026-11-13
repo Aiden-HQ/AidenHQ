@@ -2,6 +2,7 @@ name: slack
 description: "Slack: read MCP (search, read, drafts). The live listener and notify_owner are in owner-channel."
 connections:
   slack:
+    setup: "Set SLACK_CLIENT_ID in .env, then run `scripts/slack-auth.sh` on the host (its callback is localhost:3118: tunnel it with `ssh -N -L 3118:127.0.0.1:3118 <you>@<host>`)."
     guide: "Slack directly: a full thread or channel history, exact messages and their timestamps, the newest messages Glean hasn't indexed yet. Search Glean first to find where to look."
     url: http://slack-mcp:8082/mcp
     bearer_token_env_var: AIDENHQ_SLACK_MCP_TOKEN

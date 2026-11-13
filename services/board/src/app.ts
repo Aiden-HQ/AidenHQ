@@ -16,7 +16,7 @@ import { AccountError, forwardedProto, type Accounts, type AccountSession, type 
 import { AccessError, assertNamesApp } from "./app-access.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
 import { ControlSchema, CostsSchema, RelaySchema, Refused, appsApi, appsToken, assertMeantTask, deployApproved, fleetControl, fleetCosts, fleetStatus, relayableWords, requestRun, requireAgent, requireFleetRole, runApproved } from "./fleet.js";
-import { detectorState, takeOwnerLines } from "./fleet-ops.js";
+import { detectorState, staleSources, takeOwnerLines } from "./fleet-ops.js";
 import { ARGS, BOARD_ACTIONS, BatchItemsSchema, REVIEWER_MODELS, RaiseCapSchema, RunRequestSchema, autonomy, batchesOn, card, digestText, parseReply, raiseCapRequest, shown, type Approval, type BatchResult, type RaiseCap, type RunnerAction } from "./approvals.js";
 import { liveUpdatesOn } from "./events.js";
 import { wakeCheck } from "./brake.js";
@@ -24,6 +24,7 @@ import { REVIEW_CODES, TIER_RULE } from "./reason-codes.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
+import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradingOn, prRefAllowed } from "./grades.js";
 import { UsageSchema, WINDOWS, costs, type CostWindow } from "./costs.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -1324,6 +1325,60 @@ export function createApp(opts: AppOptions): Server {
 
   const googleViaBoard = mode === "lan" && !!opts.lan?.googleConnect && !!opts.lan.url.startsWith("https://");
 
+  // ------------------------------------------------------------------ Settings (settings.ts)
+
+  const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
+
+  /** The model gateway's /health `enforcing` (spend_caps as the gateway reads it), or null when it doesn't answer. */
+  async function gatewayEnforcing(): Promise<boolean | null> {
+    if (!opts.gateway) return null;
+    try {
+      const r = await fetch(`${opts.gateway.url}/health`, { signal: AbortSignal.timeout(3000) });
+      const j = (await r.json()) as { enforcing?: unknown };
+      return typeof j.enforcing === "boolean" ? j.enforcing : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function settingsData() {
+    const pending = store.approvals.pending();
+    return settingsView({
+      ...readSources(settingsFiles()),
+      enforcing: await gatewayEnforcing(),
+      autopause: process.env.FLEET_OPS_AUTOPAUSE || undefined,
+      boardTimezone: opts.timezone,
+      pendingRaises: pending.filter((a) => a.action === "raise_cap").length,
+      pendingApprovals: pending.length,
+    });
+  }
+
+  // Each HTTP connection's /healthz, asked at most every 20 s (the page polls); when it last answered ok, since the board started.
+  let probed: { at: number; probes: Record<string, Probe> } | null = null;
+  const lastOk = new Map<string, string>();
+  async function connectionsData(fresh: boolean) {
+    const { compiled, catalog } = readSources(settingsFiles());
+    if (fresh || !probed || Date.now() - probed.at > 20_000) {
+      const targets = Object.entries(compiled?.mcp_servers ?? {}).filter(([, c]) => c.url);
+      const results = await Promise.all(targets.map(async ([n, c]) => [n, await probe(c.url!)] as const));
+      for (const [n, p] of results) if (p.ok) lastOk.set(n, p.checkedAt);
+      probed = { at: Date.now(), probes: Object.fromEntries(results.map(([n, p]) => [n, { ...p, ...(lastOk.has(n) ? { lastOkAt: lastOk.get(n) } : {}) }])) };
+    }
+    const [google, glean, grafana, clickhouse, jira, sources] = await Promise.all([
+      opts.google?.status(),
+      opts.glean?.status(),
+      opts.grafana?.status(),
+      opts.clickhouse?.status(),
+      opts.jira?.status(),
+      appsApi<{ sources?: { source: string; last_ok: string | null; failing: boolean }[] }>("/internal/sources", undefined, { auth: true, timeoutMs: 5000 }).then(
+        (r) => r.sources ?? [],
+        () => null,
+      ),
+    ]);
+    const signIns = { glean, grafana, clickhouse, jira };
+    return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources, staleSources: new Set(staleSources(sources ?? [], Date.now()).map((s) => s.key)) });
+  }
+
   const routes: { method: string; path: RegExp; maxBody?: number; handle: (m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => Promise<unknown> }[] = [
     {
       method: "GET",
@@ -1534,8 +1589,11 @@ export function createApp(opts: AppOptions): Server {
         return costs(pc, store, w as CostWindow);
       },
     },
-    // Read-only module catalog (compiled config/modules.json), for the Modules tab.
+    // Read-only module catalog (compiled config/modules.json), for Settings > Modules.
     { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")) }) },
+    // Settings (web/src/Settings.tsx): the compiled config, read-only, with what the board can see live. Edits go through git.
+    { method: "GET", path: /^\/api\/settings$/, handle: async () => settingsData() },
+    { method: "GET", path: /^\/api\/settings\/connections$/, handle: async (_m, _b, url) => connectionsData(url.searchParams.has("fresh")) },
     // Read-only view of the apps platform (apps-mcp's status), for the Apps tab.
     { method: "GET", path: /^\/api\/apps$/, handle: async () => appsApi("/internal/status").then((apps) => ({ apps }), (e: Error) => ({ apps: [], error: e.message })) },
     {

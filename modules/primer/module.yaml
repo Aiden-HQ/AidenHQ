@@ -2,6 +2,7 @@ name: primer
 description: "Primer: read, and publish documents when asked."
 connections:
   primer:
+    setup: "Set PRIMER_MCP_URL in .env, run `docker compose up -d --force-recreate primer-mcp`, then run `scripts/primer-auth.sh` on the host."
     guide: "Primer documents (design docs and write-ups) with their versions and comments."
     url: http://primer-mcp:8084/mcp
     bearer_token_env_var: AIDENHQ_PRIMER_MCP_TOKEN

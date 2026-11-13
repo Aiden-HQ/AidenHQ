@@ -33,6 +33,7 @@ routines:
       - { cron: "*/15 8-20 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
 connections:
   ops_mcp:
+    setup: "Set VAULT_DIR (and KNOWLEDGE_BASES for reference docs) in the host's .env, then run `ops/apply-config.sh`. Check with `scripts/healthcheck.sh`."
     guide: "The owner's notes vault: meeting notes, voice notes and reference documents."
     url: http://ops-mcp:8080/mcp
     bearer_token_env_var: AIDENHQ_OPS_MCP_TOKEN

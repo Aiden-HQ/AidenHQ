@@ -1195,3 +1195,67 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .run-name { font-weight: 600; }
 .run-text { color: var(--muted); overflow-wrap: anywhere; }
 .run-err { flex-basis: 100%; padding-left: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ------------------------------------------------------------------ Settings (Settings.tsx): Chat's sidebar, one pane per category */
+.settings-btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; color: var(--text); }
+.settings-btn .needs-dot { margin-left: 2px; }
+.settings-title { margin: 4px 8px 0; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.settings-cat { text-decoration: none; }
+.settings-cat:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.settings-main { background: var(--bg); }
+.settings-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.settings-scroll > .offline { margin: 12px clamp(16px, 2.4vw, 40px) 0; border-radius: 8px; }
+.settings-scroll > .spinner { margin: 40px auto; }
+.settings-page { max-width: 980px; margin: 0; }
+.page-tools { margin-left: auto; display: flex; gap: 8px; }
+.settings-section { display: grid; gap: 8px; }
+.settings-section p { margin: 0; }
+
+.setting-list, .conn-list, .agent-settings { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.setting, .conn, .agent-setting { position: relative; display: grid; gap: 6px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.setting-head, .conn-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.setting-key { font-size: 13px; font-weight: 600; }
+.setting-value { font-weight: 600; overflow-wrap: anywhere; }
+.setting-source { flex: 1; }
+.setting-change { margin-left: auto; font-size: 13px; }
+.setting-doc { margin: 0; color: var(--muted); font-size: 13px; max-width: 78ch; }
+.setting-drift { margin: 0; color: var(--warn-text); }
+.setting-pick select { margin-left: 6px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); }
+
+/* The instance.yaml line: git is where the setting lives; the board only shows it. */
+.source-line { border: 1px solid var(--border-strong); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--surface-2); overflow: hidden; }
+.source-line-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px 0; font-size: 12px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.source-line pre { margin: 0; padding: 6px 12px 10px; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; }
+.source-line-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.source-line-foot > span { flex: 1; min-width: 200px; }
+.source-line-foot .btn { text-decoration: none; }
+
+/* Connections: a status rail on the left edge carries the state at a glance. */
+.conn::before { content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px; width: 4px; border-radius: var(--radius) 0 0 var(--radius); background: var(--border-strong); }
+.conn-connected::before { background: var(--working); }
+.conn-signed_out::before { background: var(--warn); }
+.conn-error::before { background: var(--urgent); }
+.conn-name { font-weight: 650; font-size: 14.5px; }
+.conn-act { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.conn-act .btn { text-decoration: none; }
+.conn-reason { margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.conn-signed_out .conn-reason { color: var(--warn-text); }
+.conn-error .conn-reason { color: var(--bad-text); }
+.conn-facts { margin-top: 2px; }
+.conn-list.compact .conn { padding: 8px 14px; gap: 2px; }
+.conn-accounts { list-style: none; margin: 0; padding: 8px 0 0; border-top: 1px solid var(--border); display: grid; gap: 4px; font-size: 13px; }
+.conn-accounts li { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.conn-setup summary { cursor: pointer; font-size: 13px; color: var(--accent); width: max-content; }
+.conn-setup p { margin: 6px 0 0; font-size: 13px; max-width: 78ch; overflow-wrap: anywhere; }
+
+.tier-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); font-size: 13.5px; }
+.tier-list dt { font-weight: 650; }
+.tier-list dd { margin: 0; color: var(--muted); }
+.routine-list { margin: 0; padding-left: 16px; display: grid; gap: 2px; }
+.settings-table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.settings-table th { text-align: left; font-weight: 600; color: var(--muted); padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.settings-table td { padding: 6px 12px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.settings-table tr:last-child td { border-bottom: 0; }
+.ws-phone.settings .ws-main { position: fixed; inset: 0; z-index: 20; }
+.ws-phone .settings-page { padding: 14px 16px 40px; }
+@media (max-width: 860px) { .settings-table { display: block; overflow-x: auto; } }

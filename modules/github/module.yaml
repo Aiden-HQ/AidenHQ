@@ -2,6 +2,7 @@ name: github
 description: "GitHub issues and pull requests: read, and comment when asked."
 connections:
   github:
+    setup: "Run `gh auth login`, then `scripts/github-auth.sh` on the host. Repo writes go through the runner's GitHub App (`node ops/github-app-setup.mjs`)."
     guide: "GitHub issues and pull requests directly: live state, reviews, checks. Organization Projects (v2) boards (roadmaps, status, iterations): `github_project_read`. Use Glean's `code_search` for code."
     url: http://github-mcp:8086/mcp
     bearer_token_env_var: AIDENHQ_GITHUB_MCP_TOKEN

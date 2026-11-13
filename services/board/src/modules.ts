@@ -1,4 +1,4 @@
-// The Modules tab's rows: the compiled catalog (config/modules.json, scripts/modules.mjs) with how each module is on.
+// Settings > Modules rows: the compiled catalog (config/modules.json, scripts/modules.mjs) with how each module is on.
 export type ModuleState = "core" | "on" | "dependency" | "off";
 
 interface CatalogEntry {

@@ -443,6 +443,13 @@ export const PlusIcon = () => (
     <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
   </svg>
 );
+export const GearIcon = () => (
+  <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+    <circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M8 1.8v1.7M8 12.5v1.7M14.2 8h-1.7M3.5 8H1.8M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2M12.4 12.4l-1.2-1.2M4.8 4.8L3.6 3.6" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <circle cx="8" cy="8" r="4.3" fill="none" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+);
 
 /**
  * Google accounts whose sign-in Google refused: what's paused, and a way back. Reconnecting
@@ -482,36 +489,6 @@ export function GoogleBanner({ google, canReconnect }: { google: Board["google"]
           )}
         </div>
       ))}
-    </div>
-  );
-}
-
-/** The Connections tab's Google list: every account with its state and a Reconnect, and adding another account. */
-export function GoogleConnections({ google, canConnect }: { google: Board["google"]; canConnect: boolean }) {
-  if (!google || !google.accounts.length) return null;
-  return (
-    <div className="alert ok">
-      {google.accounts.map((a) => (
-        <div key={a.email} className="alert-row">
-          <span>
-            Google: <b>{a.email}</b>
-            {a.primary ? " (calendar and meeting notes)" : ""} · {a.state === "ok" ? "working" : a.state === "expired" ? "stopped working" : a.state === "unknown" ? "checking" : "error"}
-          </span>
-          {canConnect && (
-            <a className="btn" href={`/google/connect?account=${encodeURIComponent(a.email)}`}>
-              Reconnect
-            </a>
-          )}
-        </div>
-      ))}
-      {canConnect && (
-        <div className="alert-row">
-          <span />
-          <a className="btn" href="/google/connect">
-            Add a Google account
-          </a>
-        </div>
-      )}
     </div>
   );
 }

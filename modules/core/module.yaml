@@ -295,6 +295,7 @@ routines:
 # resolves them); each HTTP call carries the agent's run key and the service checks it against the grants table.
 connections:
   apps:
+    setup: "Built in (apps-mcp). If it is down, run `docker compose up -d apps-mcp` on the host, then read `docker compose logs apps-mcp`."
     url: http://apps-mcp:8090/mcp
     tool_timeout_sec: 600 # deploys are synchronous
     tools:
@@ -303,6 +304,7 @@ connections:
       read: [ app_list, app_status, app_logs, app_view, web_view, warehouse_query, source_new, app_requests, app_roles ]
       write: [ app_deploy, app_restart, app_rollback, app_create, app_remove, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
   paperclip_tasks:
+    setup: "Built in: the tasks bridge runs inside Paperclip for each agent run. Nothing to set up."
     command: node
     args: [ /opt/aidenhq/paperclip-tasks-mcp.mjs ]
     # AIDENHQ_BOARD_TOKEN: the board's internal API (scheduled moves, recurring tasks). It only reaches the listener:

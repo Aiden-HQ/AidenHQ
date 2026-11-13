@@ -712,7 +712,8 @@ function writeCatalog() {
   mkdirSync(dirname(path), { recursive: true });
   // Every module found, enabled or not (scripts/compile.mjs): what can be installed, and what each one brings.
   const modulesFile = join(repo, "config/modules.json");
-  const modules = existsSync(modulesFile) ? JSON.parse(readFileSync(modulesFile, "utf8")) : [];
+  // Without the board's setting docs and setup steps (Settings page only): agents' fleet_catalog stays small.
+  const modules = existsSync(modulesFile) ? JSON.parse(readFileSync(modulesFile, "utf8")).map(({ settings, setup, ...m }) => m) : [];
   writeFileSync(path, JSON.stringify({ agents: agentsOut, mcp_servers: mcp, modules }, null, 1));
   step("Wrote the capabilities catalog");
 }

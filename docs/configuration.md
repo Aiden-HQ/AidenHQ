@@ -18,7 +18,7 @@ A module is a folder with a `module.yaml` and any of `agents/<key>/AGENTS.md`, `
 | `settings` | Values the instance supplies: `required`, `default`, `values` (allowed choices). |
 | `agents` | Agent definitions: `adapter`, `model`, `reasoning_effort`, `timeout_sec`, `connections` (grants), `roles`, `persona`, `heartbeat`, `image`, `isolation`. |
 | `routines` | Scheduled or webhook-triggered runs for an agent: `title`, `agent`, `description`, `concurrency`, `schedules`, `status`, and `model` (see below). |
-| `connections` | MCP servers: `url` (or `command`/`args`), `bearer_token_env_var`, `guide` (shown to agents), and `tools: { read: [...], write: [...] }`. |
+| `connections` | MCP servers: `url` (or `command`/`args`), `bearer_token_env_var`, `guide` (shown to agents), `setup` (how to set it up, shown on the board's Settings, Connections), and `tools: { read: [...], write: [...] }`. |
 | `apps` | Apps for `apps-mcp`: `name`, `owner`, `port`, `stateful`, `expose`, `caps`, `secrets`, `repo`, `path`. |
 | `compose` | A compose file for the module's services, merged into `compose.modules.yaml`. |
 | `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
@@ -129,7 +129,7 @@ is the same as an empty list.
 
 ## Settings reference
 
-Set under `settings:` in `instance.yaml`.
+Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the top bar) shows each one with its value, default, the comment above it in `module.yaml` and, for switches the running system re-reads, its live state; changing one is a commit to `instance.yaml` (Ask Aiden files it as an apply card). A module without connections may set a top-level `setup:` for its row on Settings, Connections.
 
 | Setting | Module | Required | Default | Meaning |
 |---|---|---|---|---|

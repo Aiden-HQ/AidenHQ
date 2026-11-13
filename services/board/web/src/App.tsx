@@ -19,16 +19,16 @@ import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSo
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CrewView } from "./Agents";
 import { SignInRequired, accountsApi, api, type Session } from "./api";
-import { AccountsView, EnrolScreen, SetPasswordScreen, SignInScreen } from "./Accounts";
+import { EnrolScreen, SetPasswordScreen, SignInScreen } from "./Accounts";
 import { AppsView } from "./Apps";
-import { ModulesView } from "./Modules";
+import { SettingsView, isCategory, type Category } from "./Settings";
 import { CostsView } from "./Costs";
 import { ActivityView } from "./Activity";
 import { ApprovalsView } from "./Chat";
 import { subscribe } from "./events";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
-import { CardView, GoogleBanner, GoogleConnections, PlusIcon, SignInBanners, SortableCard, memberIssue } from "./components";
+import { CardView, GearIcon, GoogleBanner, PlusIcon, SignInBanners, SortableCard, memberIssue } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
 import { Markdown, setSlackTeams } from "./markdown";
 import { RunPage } from "./Run";
@@ -36,7 +36,7 @@ import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./typ
 import { dayDate, matches } from "./util";
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "set-password"; token: string };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "set-password"; token: string };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -90,6 +90,12 @@ function parseRoute(): Route {
   if (/^r\/[0-9a-f-]{36}$/.test(h)) return { kind: "run", id: h.slice(2) };
   // #/c/ starts a new chat; #/c/WOR-12 opens that chat in the chat workspace.
   if (h === "c" || h.startsWith("c/")) return { kind: "chat", ref: h.slice(2).split("?")[0] || null };
+  // #/settings/<category> opens Settings there; the old tabs (#/connections, #/modules, #/accounts) are categories now.
+  if (h === "settings" || h.startsWith("settings/")) {
+    const cat = h.slice("settings/".length);
+    return { kind: "settings", cat: isCategory(cat) ? cat : null };
+  }
+  if (h === "connections" || h === "modules" || h === "accounts") return { kind: "settings", cat: h };
   // #/approvals, #/activity, ...: deep links to a tab.
   if ((VIEWS as string[]).includes(h)) return { kind: "view", view: h as View };
   if (h === "brief") return { kind: "brief" };
@@ -113,15 +119,16 @@ function useMedia(query: string) {
   return on;
 }
 
-type View = "chat" | "agents" | "approvals" | "connections" | "activity" | "board" | "apps" | "modules" | "costs" | "accounts";
-const VIEWS: View[] = ["chat", "agents", "approvals", "connections", "activity", "board", "apps", "modules", "costs", "accounts"];
-// Daily use first, then the rest; all in the bar (there are few).
-const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["apps", "Apps"], ["modules", "Modules"], ["board", "Tasks"], ["activity", "Activity"], ["costs", "Costs"], ["connections", "Connections"]];
+type View = "chat" | "agents" | "approvals" | "activity" | "board" | "apps" | "costs" | "settings";
+const VIEWS: View[] = ["chat", "agents", "approvals", "activity", "board", "apps", "costs", "settings"];
+// Daily work in the bar; configuration (connections, modules, accounts, instance settings) is behind the Settings gear.
+const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["apps", "Apps"], ["board", "Tasks"], ["activity", "Activity"], ["costs", "Costs"]];
 const VIEW_KEY = "aidenhq.view";
 const savedView = (): View => {
   try {
-    const v = localStorage.getItem(VIEW_KEY) as View | null;
-    return v && VIEWS.includes(v) ? v : "chat";
+    const v = localStorage.getItem(VIEW_KEY);
+    if (v === "connections" || v === "modules" || v === "accounts") return "settings"; // tabs that moved into Settings
+    return v && (VIEWS as string[]).includes(v) ? (v as View) : "chat";
   } catch {
     return "chat";
   }
@@ -217,6 +224,7 @@ export function App() {
       // A chat link opens the Chat tab; a tab link opens that tab.
       if (r.kind === "chat") setView("chat");
       if (r.kind === "view") setView(r.view);
+      if (r.kind === "settings") setView("settings");
     };
     hash();
     window.addEventListener("hashchange", hash);
@@ -429,7 +437,7 @@ export function App() {
       if (e.key === "Escape") {
         if (creating) return setCreating(false);
         if (typing) return el.blur();
-        if (route.kind !== "board" && route.kind !== "chat" && route.kind !== "view") return go("#/");
+        if (route.kind !== "board" && route.kind !== "chat" && route.kind !== "view" && route.kind !== "settings") return go("#/");
         if (query) return setQuery("");
         return setSelected(null);
       }
@@ -533,11 +541,10 @@ export function App() {
   const counts = Object.fromEntries(BUCKETS.map((b) => [b, items[b].length])) as Record<Bucket, number>;
   const mergeTargets = BUCKETS.flatMap((b) => items[b]).filter((c) => c.assignee === "me" && !c.recurring);
   const openChat = (identifier: string) => go(`#/c/${identifier}`);
-  // Accounts: people, and your signed-in browsers.
-  const tabs: [View, string][] = [...TABS, ["accounts", "Accounts"]];
+  const tabs = TABS;
   const onBoard = view === "board";
-  // A chat open on a phone takes the whole screen (back arrow to the list).
-  const chatFull = mobile && view === "chat" && route.kind === "chat";
+  // A chat (or a settings category) open on a phone takes the whole screen (back arrow to the list).
+  const chatFull = mobile && ((view === "chat" && route.kind === "chat") || (view === "settings" && route.kind === "settings" && route.cat !== null));
   const local = session?.mode === "local" && ["localhost", "127.0.0.1"].includes(location.hostname);
   const googleConnect = local || !!session?.googleConnect;
   const connectionsOk = !board.google?.error && !board.google?.accounts.some((a) => a.state === "expired") && [board.glean, board.grafana, board.clickhouse, board.jira].every((c) => !c || !c.configured || c.state === "ok" || c.state === "unknown");
@@ -560,7 +567,6 @@ export function App() {
                 {v === "agents" && board.agentsActive > 0 && <span className="live-dot" title={`${board.agentsActive} working`} />}
                 {name}
                 {v === "approvals" && approvalsOpen > 0 && <span className="btn-count needs">{approvalsOpen}</span>}
-                {v === "connections" && !connectionsOk && <span className="needs-dot" title="A connection needs you" />}
               </button>
             ))}
           </nav>
@@ -597,6 +603,11 @@ export function App() {
             Brief
           </a>
         )}
+        <a className={`btn settings-btn${view === "settings" ? " on" : ""}`} href="#/settings" onClick={() => setView("settings")} aria-current={view === "settings" ? "page" : undefined} title="Settings: connections, agents, approvals, accounts and the instance">
+          <GearIcon />
+          {!mobile && "Settings"}
+          {!connectionsOk && <span className="needs-dot" title="A connection needs you" />}
+        </a>
         {!mobile && (
           <a className="icon-btn" href="#/help" title="Keyboard shortcuts (?)">
             ?
@@ -629,23 +640,9 @@ export function App() {
       {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} />}
       {view === "activity" && <ActivityView onSignIn={signInNeeded} />}
-      {view === "connections" && (
-        <main className="page">
-          <header className="page-head">
-            <div>
-              <h1>Connections</h1>
-              <p className="page-sub">{connectionsOk ? "All your connections are working" : "Some connections need you"}</p>
-            </div>
-          </header>
-          <GoogleBanner google={board.google} canReconnect={googleConnect} />
-          <GoogleConnections google={board.google} canConnect={googleConnect} />
-          <SignInBanners board={board} canConnect={local} />
-        </main>
-      )}
+      {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: local, google: googleConnect }} />}
       {view === "apps" && <AppsView onSignIn={signInNeeded} />}
-      {view === "modules" && <ModulesView onSignIn={signInNeeded} />}
       {view === "costs" && <CostsView onSignIn={signInNeeded} />}
-      {view === "accounts" && session && <AccountsView session={session} onSignIn={signInNeeded} />}
       {view === "agents" && <CrewView crew={board.assignees} onSignIn={signInNeeded} />}
       <main className="columns" hidden={view !== "board"}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>

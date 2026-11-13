@@ -70,9 +70,12 @@ function authorized(req: IncomingMessage): boolean {
   return presented.length === expected.length && timingSafeEqual(presented, expected);
 }
 
+// Which owner channels are set up (the board's Settings shows them): booleans only, never a token.
+const health = JSON.stringify({ ok: true, channels: { telegram: Boolean(cfg.telegramToken && cfg.telegramChatId), slack: Boolean(env("SLACK_APP_TOKEN") && cfg.botToken), voice: Boolean(process.env.WHISPER_URL) } });
+
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
-  if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+  if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(health);
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
   if (!authorized(req)) return void res.writeHead(401).end();
   if (req.method !== "POST") return void res.writeHead(405).end();

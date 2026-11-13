@@ -449,3 +449,47 @@ export interface NeedsYou {
 
 /** A multiple-choice question an agent asks (recommended option first); the owner may answer in his own words. */
 export type Question = { question: string; options: string[]; multi?: boolean };
+
+/** GET /api/settings (services/board/src/settings.ts): the compiled config, read-only. */
+export interface SettingRow {
+  key: string;
+  module: string;
+  value: unknown;
+  /** instance.yaml sets it (otherwise the module's default applies). */
+  set: boolean;
+  /** The compiled config has it (false: an older compile, before the board could read settings). */
+  known: boolean;
+  default?: unknown;
+  values?: unknown[];
+  required?: boolean;
+  doc?: string;
+  /** What the running system reads now, where the board can see it (grants table, gateway, its own environment). */
+  live?: string;
+  switch: boolean;
+}
+export interface AgentSettings {
+  key: string;
+  name: string;
+  module: string;
+  adapter: string;
+  runsOn: string;
+  model: string;
+  models: string[];
+  effort: string;
+  heartbeatHours: number | null;
+  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; status?: string; webhook?: boolean }[];
+  trial: boolean;
+  graded: boolean;
+  roles: string[];
+  caps: Record<string, number>;
+  connections: string[];
+}
+export interface SettingsData {
+  compiled: boolean;
+  owner: { name: string | null };
+  instance: { product: string | null; instance: string | null; lastChangeAt: string | null; boardTimezone: string; node: string };
+  settings: SettingRow[];
+  agents: AgentSettings[];
+  approvals: { pending: number };
+  spend: { enforcing: boolean | null; defaults: Record<string, number>; pendingRaises: number };
+}

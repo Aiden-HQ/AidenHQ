@@ -1,4 +1,5 @@
-import type { ActivityItem, Agents, Approval, AppRow, Board, Bucket, Cadence, ChatAgent, ChatDetail, ChatRow, Costs, CostWindow, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RunTrace, Scorecard, Update } from "./types";
+import type { ActivityItem, Agents, Approval, AppRow, Board, Bucket, Cadence, ChatAgent, ChatDetail, ChatRow, Costs, CostWindow, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RunTrace, Scorecard, SettingsData, Update } from "./types";
+import type { ConnectionsData } from "./connections";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -118,6 +119,8 @@ export const api = {
   agents: () => call<Agents>("GET", "/api/agents"),
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
   modules: () => call<{ modules: ModuleRow[] }>("GET", "/api/modules"),
+  settings: () => call<SettingsData>("GET", "/api/settings"),
+  connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
   apps: () => call<{ apps: AppRow[]; error?: string }>("GET", "/api/apps"),
   costs: (window: CostWindow) => call<Costs>("GET", `/api/costs?window=${window}`),
   run: (id: string) => call<RunTrace>("GET", `/api/runs/${encodeURIComponent(id)}`),

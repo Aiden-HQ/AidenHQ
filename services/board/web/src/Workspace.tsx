@@ -241,7 +241,7 @@ const STARTERS = ["What's waiting on me today?", "Who is working on what right n
 
 function NewChat({ agents, crew, mobile, go, toast, reloadList }: { agents: ChatAgent[]; crew: Assignee[]; mobile: boolean; go: (h: string) => void; toast: (t: string) => void; reloadList: () => Promise<void> }) {
   const to = new URLSearchParams(location.hash.split("?")[1] ?? "").get("to") ?? "";
-  const text = new URLSearchParams(location.hash.split("?")[1] ?? "").get("text") ?? ""; // a pre-filled message (the Modules tab)
+  const text = new URLSearchParams(location.hash.split("?")[1] ?? "").get("text") ?? ""; // a pre-filled message (Settings: Ask Aiden)
   const [agent, setAgent] = useState(to);
   useEffect(() => setAgent(to), [to]);
   const front = agents.find((a) => a.front);

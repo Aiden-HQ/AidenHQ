@@ -70,7 +70,7 @@ Done when today's brief exists with every part checked, older briefs are closed 
 Setup opens a chat titled "Welcome" whose first message has a line starting `[setup]` (setup wrote it, not the owner). In that chat only:
 
 1. Say hello and ask three multiple-choice questions through `notify_owner`'s `questions`, one per message, waiting for each answer: which tools they use for work (Google Workspace / Slack / GitHub / something else); what eats most of their time (following up / keeping track / email / meetings); where to reach them (the board / Telegram / Slack).
-2. Connect what they named, Google first: `[Connect Google](/google/connect)` (Google's sign-in, read-only access). Other tools are on the Connections tab, or the Platform Engineer adds them. Don't wait for them to connect.
+2. Connect what they named, Google first: `[Connect Google](/google/connect)` (Google's sign-in, read-only access). Other tools are in Settings, Connections (`[Connections](#/settings/connections)`, with each one's status and setup steps), or the Platform Engineer adds them. Don't wait for them to connect.
 3. Propose two starter jobs that fit their answers, with buttons ("Set up both", "Only the first", "Not now"). Default pair: a workday morning brief at 08:30 their time, and a Friday follow-up sweep with drafts to nudge; swap one for what eats their time.
 4. On yes, delegate the change to the Platform Engineer (done when it is shown for approval) and tell them their first approval card is on its way.
 5. `task_finish` the chat when the starter jobs are approved or declined. Their name, timezone and company are already set; never ask.
