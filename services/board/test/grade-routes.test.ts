@@ -28,6 +28,8 @@ const task = { id: "33333333-3333-3333-3333-333333333333", identifier: "WOR-7", 
 // An Engineer sub-task the Research Assistant created (task_create_engineer_task): it has no task_delegate.
 const engineerTask = { ...task, id: "44444444-4444-4444-4444-444444444444", identifier: "WOR-8", createdByAgentId: "ra" };
 const patches: Record<string, unknown>[] = [];
+/** The task's saved Paperclip review path: its scheduled check, as a time. */
+const reviewCheck = (patch: Record<string, unknown>) => Date.parse((patch.executionPolicy as { monitor?: { nextCheckAt?: string } }).monitor?.nextCheckAt ?? "");
 const pc = {
   companyId: "co",
   agentMe: async (key: string) => agents.find((a) => a.id === key) ?? Promise.reject(new Error("401")),
@@ -71,7 +73,8 @@ describe("grade routes", () => {
     expect((await gate(as("cos"), "task_set_status")).status).toBe(403);
     expect(store.grades.get(task.id)!.state).toBe("open");
     expect((await gate(as("eng"))).json).toEqual({ pass: false, state: "pending", label: "grading" });
-    expect(patches.at(-1)).toEqual({ status: "in_review", labelIds: ["lbl-grading"] });
+    expect(patches.at(-1)).toMatchObject({ status: "in_review", labelIds: ["lbl-grading"] });
+    expect(reviewCheck(patches.at(-1)!)).toBeGreaterThan(Date.now());
   });
 
   it("an Engineer sub-task's creator files its rubric without task_delegate; an ungranted caller can't", async () => {
@@ -97,12 +100,14 @@ describe("grade routes", () => {
     }
   });
 
-  it("satisfied is not sticky: a reopened task finished again is graded again", async () => {
+  it("satisfied is not sticky: a reopened task finished again is graded again, with a saved review path", async () => {
     expect((await post("/internal/grades/WOR-7/verdict", { version: "sha1", outcome: "satisfied", model: "glm" }, runner)).json.state).toBe("satisfied");
     task.status = "done";
     expect((await gate(runner, "finish_merges")).json).toEqual({ pass: true });
     task.status = "todo"; // reopened
     expect((await gate(as("eng"))).json).toMatchObject({ pass: false, state: "pending" });
+    // The re-finished task is held for grading with the scheduled check that keeps Paperclip from repairing a lost review path.
+    expect(reviewCheck(patches.at(-1)!)).toBeGreaterThan(Date.now());
   });
 
   it("an escalated task stays the owner's until a new deliverable version", async () => {

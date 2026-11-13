@@ -233,6 +233,16 @@ export function gradePassed(grades: Grades, issueId: string, on = gradingOn()): 
   return !g || g.state === "satisfied";
 }
 
+/** A held task's scheduled check sits at the runner's evidence deadline, well past a normal grader pass. */
+export const GRADE_CHECK_MS = 24 * 60 * 60_000;
+/**
+ * Paperclip's execution policy with a one-shot scheduled check for a task held for grading. The grader is that check; without
+ * a saved review path Paperclip wakes the assignee to repair the review instead of leaving it for the grader.
+ */
+export function gradingReviewPolicy(policy: Record<string, unknown> | null | undefined, now = Date.now()): Record<string, unknown> {
+  return { ...(policy ?? {}), monitor: { nextCheckAt: new Date(now + GRADE_CHECK_MS).toISOString(), notes: "The grader checks this task against its rubric." } };
+}
+
 /** Every way a task reaches done: the tasks bridge's task_finish and task_set_status(done), the runner's finishTurn and finishMerges. */
 export type CompletionPath = z.infer<typeof GateSchema>["via"];
 /**

@@ -28,7 +28,7 @@ import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor } from "./settings-change.js";
-import { FileGradeSchema, GateSchema, MAX_GRADER_FAILURES, VerdictSchema, completionGate, gradePassed, gradingOn, prRefAllowed } from "./grades.js";
+import { FileGradeSchema, GateSchema, MAX_GRADER_FAILURES, VerdictSchema, completionGate, gradePassed, gradingOn, gradingReviewPolicy, prRefAllowed } from "./grades.js";
 import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -1064,12 +1064,15 @@ export function createApp(opts: AppOptions): Server {
         }
         const r = completionGate(store.grades, issue.id, via, { done: issue.status === "done" });
         if (r.pass) return r;
-        // A board-key change: Paperclip refuses an agent's move to in_review without a review path; the grader is that path.
+        // A board-key change: Paperclip refuses an agent's move to in_review without a review path; the grader's scheduled
+        // check is that path, so Paperclip doesn't wake the assignee to repair one on a task the grader already owns.
         const label = (await pc.labels()).find((l) => l.name === "grading");
         if (!label) log.warn('label "grading" missing in Paperclip (run scripts/paperclip-setup.mjs)');
         const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
         const labelIds = label && !ids.includes(label.id) ? [...ids, label.id] : undefined;
-        if (issue.status !== "in_review" || labelIds) await pc.updateIssue(issue.id, { status: "in_review", ...(labelIds ? { labelIds } : {}) });
+        const executionPolicy = issue.assigneeAgentId && !issue.assigneeUserId ? gradingReviewPolicy(issue.executionPolicy) : undefined;
+        const patch = { ...(issue.status !== "in_review" ? { status: "in_review" } : {}), ...(labelIds ? { labelIds } : {}), ...(executionPolicy ? { executionPolicy } : {}) };
+        if (Object.keys(patch).length) await pc.updateIssue(issue.id, patch);
         log.info({ task: issue.identifier, via, state: r.state }, "completion held for grading");
         return r;
       },

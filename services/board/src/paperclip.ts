@@ -42,6 +42,8 @@ export interface Issue {
   parentId?: string | null;
   /** "routine_execution" for a routine's run task. */
   originKind?: string | null;
+  /** Paperclip's execution policy; a scheduled monitor is its persisted review path. */
+  executionPolicy?: Record<string, unknown> | null;
   /** A recovery hold: Paperclip parks the assignee's wakes for this task until it clears (single-issue reads only). */
   executionBlocker?: { cause: string; runError?: string | null; runId?: string | null; recoveryActionId?: string | null } | null;
 }
