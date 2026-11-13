@@ -78,3 +78,21 @@ test("parseable criteria still take the genuine satisfied and needs_revision pat
   const pass = await grade({ rubric, deliverable: { kind: "pr", ref: "" }, facts: [], data: {}, request: "", authorModel: "", ask: async () => answer(["yes", "yes", "yes"]) });
   assert.equal(pass.outcome, "satisfied");
 });
+
+test("a pr on an app's repo also gets that app's deploy facts", async () => {
+  const app = { name: "keeper", sha: "d".repeat(40), state: "healthy", healthy: true };
+  const asked = [];
+  const merged = { pr: async () => pr({ state: "MERGED" }) };
+  const ev = await gather({ kind: "pr", ref }, deps({ ...merged, appOfRepo: async (r) => (asked.push(r), app) }));
+  assert.deepEqual(asked, ["acme/app"]);
+  assert.ok(ev.facts.some((f) => f.includes(`app keeper: deployed commit ${app.sha}`) && f.includes("healthy")));
+  assert.match(ev.version, /^acme\/app#7@m+\+d{12}$/);
+  assert.ok(ev.facts.includes("acme/app#7 deployed_at_merge_commit: false"), "deployed sha d.. is not the merge commit m..");
+  const same = await gather({ kind: "pr", ref }, deps({ ...merged, appOfRepo: async () => ({ ...app, sha: "m".repeat(40) }) }));
+  assert.ok(same.facts.includes("acme/app#7 deployed_at_merge_commit: true"));
+  // Two repos in scope: no app lookup at all.
+  const two = [own, { repo: "acme/other", number: 2, url: "https://github.com/acme/other/pull/2" }];
+  assert.equal((await gather({ kind: "pr", ref: "" }, deps({ ...merged, taskPrs: async () => two, appOfRepo: async () => assert.fail("looked up") }))).facts.length, 2);
+  const [plain, none] = [await gather({ kind: "pr", ref }, deps(merged)), await gather({ kind: "pr", ref }, deps({ ...merged, appOfRepo: async () => null }))];
+  assert.deepEqual(none, plain, "no app: exactly as today");
+});

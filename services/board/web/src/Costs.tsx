@@ -199,6 +199,7 @@ export function CostsView({ onSignIn }: { onSignIn: () => void }) {
       ) : (
         <>
           <Overview d={d} />
+          <InsightStrip d={d} />
           <div className={`cost-body${stale ? " cost-stale" : ""}`} aria-busy={ledger.loading}>
             <section className="cost-card cost-chart-card" aria-labelledby="cost-time">
               <div className="cost-card-head">
@@ -215,6 +216,11 @@ export function CostsView({ onSignIn }: { onSignIn: () => void }) {
               <AgentTable d={d} focus={view.agent} onOpen={(agent) => open({ agent })} />
               <KindList d={d} />
             </div>
+            <div className="cost-split">
+              <TaskCard d={d} />
+              <DepartmentCard d={d} />
+            </div>
+            <WastedCard d={d} />
             <section ref={drill} className="cost-drill-anchor">
               {focus && <Drill top={top.key === topKey ? top.data : null} loading={top.loading} error={top.error} label={view.agent ? (d.agents.find((a) => a.agentId === view.agent)?.name ?? "This agent") : short(view.model!)} onClose={() => set({ agent: null, model: null })} />}
             </section>
@@ -646,12 +652,212 @@ function Drill({ top, loading, error, label, onClose }: { top: CostTop | null; l
   );
 }
 
+/* ----------------------------------------------------------------------------- insights */
+const thisMonth = () => new Date().toLocaleDateString(undefined, { month: "long", timeZone: "UTC" });
+const signed = (n: number) => `${n < 0 ? "−" : "+"}${usd(Math.abs(n))}`;
+const COVERAGE_WORDS = { accurate: "Accurate", gap: "Gap", unverified: "Not yet checkable", unavailable: "Unavailable" } as const;
+
+/** Four answers above the charts: where the month is heading, what caching saves, what was wasted, and whether the ledger is complete. */
+function InsightStrip({ d }: { d: CostLedger }) {
+  const { forecast: f, cache, wasted: w, coverage: c } = d.insights;
+  const waste = w.failed.usd + w.cancelled.usd + w.looping.usd;
+  return (
+    <section className="cost-insights" aria-label="Insights">
+      <div className="cost-insight">
+        <span className="cost-tile-label">Forecast for {thisMonth()}</span>
+        <span className="cost-tile-value">{f.projected == null ? "—" : usd(f.projected)}</span>
+        <span className="cost-insight-line">{f.projected == null ? "Needs 6 hours of ledger history." : `${usd(f.monthToDate)} so far, ${usd(f.perDay)} a day, ${Math.round(f.daysLeft)} days left`}</span>
+        <span className="cost-tile-note">Month so far plus the last 7 days' daily average for the days left.{f.partialMonth ? " The ledger began mid-month, so earlier days are missing." : ""}</span>
+      </div>
+      <div className="cost-insight">
+        <span className="cost-tile-label">Saved by caching</span>
+        <span className="cost-tile-value">{cache.savedUsd == null ? "—" : usd(cache.savedUsd)}</span>
+        <span className="cost-insight-line">{cache.hit == null ? "No input in this range." : `${pct(cache.hit)} of input came from the cache`}</span>
+        <span className="cost-tile-note">Cached tokens × the list price gap between fresh and cached input. List prices, so an estimate; routing can bill more.</span>
+      </div>
+      <div className={`cost-insight${waste >= 0.01 ? " warn" : ""}`}>
+        <span className="cost-tile-label">Wasted spend</span>
+        <span className="cost-tile-value">{usd(waste)}</span>
+        <span className="cost-insight-line">
+          {usd(w.failed.usd)} failed · {usd(w.cancelled.usd)} cancelled · {usd(w.looping.usd)} looping
+        </span>
+        <span className="cost-tile-note">At most, as a looping run on a cancelled task counts twice. Lists below.</span>
+      </div>
+      <div className={`cost-insight cost-cover ${c.state}`}>
+        <span className="cost-tile-label">Is every call counted?</span>
+        <span className="cost-cover-state">
+          <span className="cost-cover-dot" aria-hidden />
+          {COVERAGE_WORDS[c.state]}
+        </span>
+        {c.error && <span className="cost-tile-note">OpenRouter's own figure is missing: {c.error}</span>}
+        <ul className="cost-cover-rows">
+          {c.periods.map((p) => (
+            <li key={p.name} className={p.state} title={p.state === "partial" ? `The ledger starts ${when(d.earliest)}, after this period began, so it can't be compared` : `OpenRouter ${usd(p.real)} against ${usd(p.ledger)} itemised`}>
+              <span>{p.name}</span>
+              {p.state === "partial" ? (
+                <span className="muted">ledger starts {when(d.earliest)}</span>
+              ) : (
+                <span>
+                  {p.state === "accurate" ? "matches" : `${signed(p.gap)} (${pct(Math.abs(p.share))})`} <span className="muted">of {usd(p.real)}</span>
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+        <span className="cost-tile-note">Gateway ledger against OpenRouter's counter for the key. A gap means calls that skip the gateway.</span>
+      </div>
+    </section>
+  );
+}
+
+function TaskCard({ d }: { d: CostLedger }) {
+  const t = d.insights.tasks;
+  return (
+    <section className="cost-card" aria-labelledby="cost-tasks">
+      <div className="cost-card-head">
+        <h2 id="cost-tasks">Costliest tasks</h2>
+        <p className="muted">{t.count ? `${compact(t.count)} tasks spent ${usd(t.usd)} in this range.` : "No calls tied to a task in this range."}</p>
+      </div>
+      {t.count > 0 && (
+        <dl className="cost-facts cost-task-facts">
+          <dt>Average per task</dt>
+          <dd>{usd(t.perTask)}</dd>
+          <dt title={`Among the ${t.sampled} costliest tasks, which are the ones looked up in Paperclip. Cheap tasks are not in it, so it runs high.`}>Average per finished task</dt>
+          <dd>
+            {usd(t.done.perTask)} {t.done.count > 0 && <span className="muted">median {usd(t.done.median)}, {t.done.count} done of the top {t.sampled}</span>}
+          </dd>
+        </dl>
+      )}
+      <ol className="cost-top">
+        {t.top.map((x) => (
+          <li key={x.issueId}>
+            <a href={`#/t/${encodeURIComponent(x.identifier ?? x.issueId)}`} className="cost-top-name">
+              {x.identifier && <span className="cost-top-id">{x.identifier}</span>}
+              {x.title ?? "Task"}
+            </a>
+            <span className="cost-top-meta">
+              <strong>{usd(x.usd)}</strong> · {compact(x.calls)} calls · {x.agent}
+              {x.status && <span className={`cost-status ${x.status}`}>{x.status.replace(/_/g, " ")}</span>}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function DepartmentCard({ d }: { d: CostLedger }) {
+  const deps = d.insights.departments;
+  const max = Math.max(...deps.map((x) => x.usd), 0);
+  return (
+    <section className="cost-card" aria-labelledby="cost-depts">
+      <div className="cost-card-head">
+        <h2 id="cost-depts">By department</h2>
+        <p className="muted">As the Agents page groups them.</p>
+      </div>
+      <ul className="cost-kinds">
+        {deps.map((x) => (
+          <li key={x.id}>
+            <div className="cost-kind-text">
+              <span className="ct-strong">
+                {x.name} {x.agents > 0 && <span className="muted">{x.agents} agent{x.agents === 1 ? "" : "s"}</span>}
+              </span>
+              <span>
+                <strong>{usd(x.usd)}</strong> <span className="muted">· {d.totals.usd ? pct(x.usd / d.totals.usd) : "—"}</span>
+              </span>
+            </div>
+            <div className="cost-kind-bar" aria-hidden>
+              <span style={{ width: `${max ? Math.max(x.usd > 0 ? 1 : 0, (x.usd / max) * 100) : 0}%` }} />
+            </div>
+          </li>
+        ))}
+        {!deps.length && <li className="cost-empty">No calls in this range.</li>}
+      </ul>
+    </section>
+  );
+}
+
+function WastedCard({ d }: { d: CostLedger }) {
+  const w = d.insights.wasted;
+  return (
+    <section className="cost-card" aria-labelledby="cost-wasted">
+      <div className="cost-card-head">
+        <h2 id="cost-wasted">Wasted spend</h2>
+        <p className="muted">Money that bought nothing: failed calls, work on cancelled tasks, runs that looped.</p>
+      </div>
+      <div className="cost-drill-grid cost-waste-grid">
+        <div>
+          <h3>
+            Failed calls <span className="cost-waste-usd">{usd(w.failed.usd)}</span>
+          </h3>
+          <p className="cost-waste-note">{compact(w.failed.calls)} calls ended in a refusal or an upstream error.</p>
+          <ol className="cost-top">
+            {w.failed.list.map((x) => (
+              <li key={`${x.agent}${x.status}`}>
+                <span className="cost-top-name">{x.agent}</span>
+                <span className="cost-top-meta">
+                  <strong>{usd(x.usd)}</strong> · {compact(x.calls)} × {x.status.replace(/_/g, " ")}
+                </span>
+              </li>
+            ))}
+            {!w.failed.list.length && <li className="muted">None in this range.</li>}
+          </ol>
+        </div>
+        <div>
+          <h3>
+            Cancelled tasks <span className="cost-waste-usd">{usd(w.cancelled.usd)}</span>
+          </h3>
+          <p className="cost-waste-note">Spent on tasks that ended cancelled, among the {d.insights.tasks.sampled} costliest.</p>
+          <ol className="cost-top">
+            {w.cancelled.list.map((x) => (
+              <li key={x.issueId}>
+                <a href={`#/t/${encodeURIComponent(x.identifier ?? x.issueId)}`} className="cost-top-name">
+                  {x.identifier && <span className="cost-top-id">{x.identifier}</span>}
+                  {x.title ?? "Task"}
+                </a>
+                <span className="cost-top-meta">
+                  <strong>{usd(x.usd)}</strong> · {compact(x.calls)} calls · {x.agent}
+                </span>
+              </li>
+            ))}
+            {!w.cancelled.list.length && <li className="muted">None in this range.</li>}
+          </ol>
+        </div>
+        <div>
+          <h3>
+            Looping runs <span className="cost-waste-usd">{usd(w.looping.usd)}</span>
+          </h3>
+          <p className="cost-waste-note">{w.looping.count} runs made {w.looping.threshold} calls or more. Their whole spend is counted.</p>
+          <ol className="cost-top">
+            {w.looping.list.map((x) => (
+              <li key={x.runId}>
+                <a href={`#/r/${x.runId}`} className="cost-top-name">
+                  Run {x.runId.slice(0, 8)} · {x.agent}
+                </a>
+                <span className="cost-top-meta">
+                  <strong>{usd(x.usd)}</strong> · {compact(x.calls)} calls · {when(x.first)}
+                </span>
+              </li>
+            ))}
+            {!w.looping.list.length && <li className="muted">None in this range.</li>}
+          </ol>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function CostSkeleton() {
   return (
     <div className="cost-skeleton" aria-busy="true" aria-label="Loading costs">
       <div className="cost-overview">
         {[0, 1, 2, 3].map((i) => (
           <div key={i} className="cost-skel" style={{ height: 112 }} />
+        ))}
+      </div>
+      <div className="cost-insights">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="cost-skel" style={{ height: 150 }} />
         ))}
       </div>
       <div className="cost-skel" style={{ height: 320 }} />

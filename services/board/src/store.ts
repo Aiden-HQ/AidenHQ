@@ -291,6 +291,25 @@ export class Store {
       .all(...args) as unknown as LedgerGroupRow[];
   }
 
+  /** Tasks that spent anything in [from, to): how many, for the cost-per-task figures. */
+  taskCount(from: string, to: string): number {
+    return (this.db.prepare("SELECT COUNT(DISTINCT issue_id) AS n FROM usage WHERE at >= ? AND at < ? AND issue_id IS NOT NULL").get(from, to) as { n: number }).n;
+  }
+
+  /** Failed calls (a status other than ok) in [from, to) by agent and status: what they billed and how many. Most spend, then most calls, first. */
+  failedCalls(from: string, to: string): { agentId: string | null; status: string; calls: number; usd: number }[] {
+    return this.db
+      .prepare("SELECT agent_id AS agentId, status, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd FROM usage WHERE at >= ? AND at < ? AND status IS NOT NULL AND status <> 'ok' GROUP BY 1, 2 ORDER BY usd DESC, calls DESC")
+      .all(from, to) as unknown as { agentId: string | null; status: string; calls: number; usd: number }[];
+  }
+
+  /** Runs with at least `minCalls` calls in [from, to) (looping), most spend first. */
+  longRuns(from: string, to: string, minCalls: number): { runId: string; agentId: string | null; calls: number; usd: number; first: string; last: string }[] {
+    return this.db
+      .prepare("SELECT run_id AS runId, MAX(agent_id) AS agentId, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd, MIN(at) AS first, MAX(at) AS last FROM usage WHERE at >= ? AND at < ? AND run_id IS NOT NULL GROUP BY run_id HAVING COUNT(*) >= ? ORDER BY usd DESC LIMIT 200")
+      .all(from, to, minCalls) as unknown as { runId: string; agentId: string | null; calls: number; usd: number; first: string; last: string }[];
+  }
+
   /** Each agent's spend in [from, to) (the day caps): agent calls only. */
   spendByAgent(from: string, to: string): Map<string, number> {
     const rows = this.db.prepare("SELECT agent_id AS id, COALESCE(SUM(cost_usd), 0) AS usd FROM usage WHERE at >= ? AND at < ? AND agent_id IS NOT NULL GROUP BY 1").all(from, to) as { id: string; usd: number }[];

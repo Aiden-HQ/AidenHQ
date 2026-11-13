@@ -29,7 +29,7 @@ import { State } from "./state.mjs";
 import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.mjs";
 import { authorize } from "./authorize.mjs";
 import YAML from "yaml";
-import { classify, highest, normalizeApp, sensitiveTraits } from "./tiers.mjs";
+import { classify, dependabotCommits, highest, normalizeApp, sensitiveTraits } from "./tiers.mjs";
 import { KIMI, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
 import { GRADE_SCHEMA, gather, grade, gradeNote, template } from "./grade.mjs";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.mjs";
@@ -753,7 +753,7 @@ const mergeGithub = {
 };
 
 async function githubWrite(repo, path, fields, method = "PUT") {
-  if (!merges.allowedWrite(method, path, cfg.agentsOrg)) throw new Error(`refused GitHub write ${method} ${path}`);
+  if (!merges.allowedWrite(method, path, cfg.agentsOrg, cfg.productRepo)) throw new Error(`refused GitHub write ${method} ${path}`);
   const args = ["api", "-X", method, path];
   for (const [k, v] of Object.entries(fields)) args.push("-f", `${k}=${v}`);
   const { stdout } = await execFileP(await findRealGh(), args, await ghoMerge(repo));
@@ -860,6 +860,7 @@ function gradeDeps(issue) {
     pr: (repo, number) => mergeGithub.pr(repo, number),
     diff: async (repo, number) => (await execFileP(await findRealGh(), ["api", "-H", "Accept: application/vnd.github.diff", `repos/${repo}/pulls/${number}`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }))).stdout,
     app: async (name) => (/^[a-z0-9-]{1,63}$/.test(name) ? (await boardApi.get(`/internal/grades/app/${name}`)).app : null),
+    appOfRepo: async (repo) => (await boardApi.get(`/internal/grades/app-of/${repo}`)).app,
     comments: () => pc.comments(issue.id),
     attachments: () => pc.attachments(issue.id),
   };
@@ -909,10 +910,7 @@ async function gradeOne(g) {
       await boardApi.post(verdictPath, { version: "", outcome: "awaiting_evidence" }).catch(() => {});
       throw err;
     }
-    if (issue.parentId) {
-      const p = await pc.issue(issue.parentId).catch(() => undefined);
-      if (p?.assigneeAgentId && !["done", "cancelled"].includes(p.status)) await pc.comment(p.id, `${issue.identifier} (${agent?.metadata?.persona?.name ?? agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.`);
-    }
+    await tellOpenParent(issue, `${issue.identifier} (${agent?.metadata?.persona?.name ?? agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.`);
   } else if (row.state === "needs_revision") {
     await pc.setStatus(issue.id, "todo", note);
     // The runner ignores comments with its own marker, and takes a todo task only before its first run: a reopened Engineer
@@ -924,8 +922,18 @@ async function gradeOne(g) {
     }
   } else if (row.state === "escalated") {
     await pc.comment(issue.id, note);
-    if (issue.parentId) await pc.comment(issue.parentId, `${issue.identifier} went to the owner after grading: ${issue.title}. See ${issue.identifier}.`).catch(() => {});
+    await tellOpenParent(issue, `${issue.identifier} went to the owner after grading: ${issue.title}. See ${issue.identifier}.`).catch(() => {});
   }
+}
+
+/**
+ * Tells a graded task's parent, only while the parent is open with an agent on it: Paperclip reopens a done or cancelled task
+ * on any user-authored comment (the runner's included), which would wake its agent and send finished work round again (WOR-3582).
+ */
+async function tellOpenParent(issue, text) {
+  if (!issue.parentId) return;
+  const p = await pc.issue(issue.parentId).catch(() => undefined);
+  if (p?.assigneeAgentId && !["done", "cancelled"].includes(p.status)) await pc.comment(p.id, text);
 }
 const GRADER_NOTE_TAIL = /\n\n<!-- aidenhq:grader -->$/;
 
@@ -1213,11 +1221,12 @@ async function branchTierState(r, sha) {
 }
 
 /**
- * A product change's module.yaml and compose files on both sides, for tiering by content: { path: { base, head } }, a side
- * undefined where the file is absent; a file left out when a read failed (tiers.mjs then fails closed).
+ * A product change's module.yaml and compose files (`all`: every file) on both sides, for tiering by content:
+ * { path: { base, head } }, a side undefined where the file is absent; a file left out when a read failed (tiers.mjs then
+ * fails closed).
  */
 const PRODUCT_CONFIG = /^modules\/[^/]+\/module\.yaml$|(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
-async function productTexts(files, show, base, head) {
+async function productTexts(files, show, base, head, all = false) {
   const read = async (rev, f) => {
     try {
       return { text: await show(rev, f) };
@@ -1226,7 +1235,7 @@ async function productTexts(files, show, base, head) {
     }
   };
   const out = {};
-  for (const f of files.filter((x) => PRODUCT_CONFIG.test(x))) {
+  for (const f of files.filter((x) => all || PRODUCT_CONFIG.test(x))) {
     const [b, h] = [await read(base, f), await read(head, f)];
     if (b && h) out[f] = { base: b.text, head: h.text };
   }
@@ -1259,20 +1268,48 @@ async function mergeTierState(prs) {
       const sensitive = traits.length > 0 && !(traits.length === 1 && traits[0] === "database" && app.database === "warehouse");
       // A merge without a card needs a head the runner itself pushed (any task's), on a branch of the same repo (no fork).
       const ownHead = Boolean(pr) && pr.isCrossRepository === false && state.pushedHead(p.repo, pr.headRefName, pr.headRefOid);
-      const texts = sameRepo(p.repo, cfg.productRepo) && files && pr ? await productMergeTexts(p.repo, files, pr).catch(() => ({})) : undefined;
-      return { repo: p.repo, number: p.number, url: p.url, files, ...(texts ? { texts } : {}), checks, headMatches: Boolean(p.head) && pr?.headRefOid === p.head, ownHead, sensitive };
+      // A product PR that is Dependabot's (its author and every commit, from the API): every changed file is read for tiering by content.
+      const dependabot = sameRepo(p.repo, cfg.productRepo) && files && pr ? await dependabotPr(p.repo, p.number, pr).catch(() => false) : false;
+      const texts = sameRepo(p.repo, cfg.productRepo) && files && pr ? await productMergeTexts(p.repo, files, pr, dependabot).catch(() => ({})) : undefined;
+      return { repo: p.repo, number: p.number, url: p.url, files, ...(texts ? { texts } : {}), checks, headMatches: Boolean(p.head) && pr?.headRefOid === p.head, ownHead, sensitive, ...(dependabot ? { dependabot } : {}) };
     }),
   );
 }
 
-/** A product PR's config files at its merge base and its head (GitHub's compare and contents APIs), for productTexts. */
-async function productMergeTexts(repo, files, pr) {
-  const opts = await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 });
+/**
+ * A product PR's config files (`all`: every changed file) at its merge base and its head (GitHub's compare and contents
+ * APIs), for productTexts.
+ */
+async function productMergeTexts(repo, files, pr, all = false) {
+  const opts = await gho(repo, READ, { maxBuffer: 64 * 1024 * 1024 });
   const gh = await findRealGh();
   const base = (await execFileP(gh, ["api", `repos/${repo}/compare/${pr.baseRef?.target?.oid}...${pr.headRefOid}`, "--jq", ".merge_base_commit.sha"], opts)).stdout.trim();
   if (!/^[0-9a-f]{40}$/.test(base)) return {};
   const show = async (rev, f) => (await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${f.split("/").map(encodeURIComponent).join("/")}?ref=${rev}`], opts)).stdout;
-  return productTexts(files, show, base, pr.headRefOid);
+  return productTexts(files, show, base, pr.headRefOid, all);
+}
+
+const DEPENDABOT = "dependabot[bot]";
+/** The PR's author on GitHub (REST: { login, type }), read by the runner; never from text. */
+async function prAuthor(repo, number) {
+  const { stdout } = await execFileP(await findRealGh(), ["api", `repos/${repo}/pulls/${number}`, "--jq", "{ login: .user.login, type: .user.type, commits: .commits, sameRepo: (.head.repo.full_name == .base.repo.full_name) }"], await gho(repo, READ));
+  return JSON.parse(stdout);
+}
+
+/**
+ * Whether a PR is Dependabot's, from the GitHub API: opened by dependabot[bot] (a Bot) from a branch of the same repo, and
+ * every commit on it Dependabot's (tiers.mjs dependabotCommits: author dependabot[bot], committed and signed by GitHub;
+ * an author email alone can be forged). A commit of anyone else's, the runner's included, leaves the ordinary rules.
+ * A commit list GitHub can't give whole (over 250) fails closed.
+ */
+async function dependabotPr(repo, number, pr) {
+  if (pr.isCrossRepository !== false) return false;
+  const a = await prAuthor(repo, number);
+  if (a.login !== DEPENDABOT || a.type !== "Bot" || !a.sameRepo) return false;
+  const { stdout } = await execFileP(await findRealGh(), ["api", "--paginate", `repos/${repo}/pulls/${number}/commits?per_page=100`, "--jq", ".[] | { sha, author: .author.login, committer: .committer.login, verified: .commit.verification.verified }"], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }));
+  const commits = stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  if (commits.length !== a.commits || commits.length >= 250) return false;
+  return dependabotCommits(commits, pr.headRefOid);
 }
 
 /** The instance change as tiering sees it: every changed file (and the agent.yaml of each handbook) at `baseRev` and at the change. */
@@ -1927,14 +1964,20 @@ async function agentMerge(ctx, args) {
   return `${merging ? `${merging} ` : ""}${waitingFor(a, ctx.issue)} Once approved, ${card.map((p) => `#${p.number}`).join(", ")} merge one at a time${gap !== undefined ? `, ${gap} minutes apart` : ""}, each only at the commit the card shows, with green checks and a green base branch (outside ${cfg.agentsOrg ?? "the agents org"} also approved on GitHub), or the queue stops and says why on the task.`;
 }
 
-/** `aidenhq close`: close superseded or duplicate PRs in the agents org, the reason posted on each as a comment. Tier 0: no card. */
+/**
+ * `aidenhq close`: close superseded or duplicate PRs in the agents org, or the product repo's Dependabot PRs (the Platform
+ * Engineer's line), the reason posted on each as a comment. Tier 0: no card.
+ */
 async function agentClose(ctx, args) {
   const prs = merges.findPrs((Array.isArray(args.prs) ? args.prs : []).join("\n"));
   if (!prs.length) throw new UserError("Name the pull requests as links or org/repo#number.");
   const reason = String(args.reason ?? "").trim();
   if (!reason) throw new UserError('Give a reason: `aidenhq close <PR link>… --reason "<one line>"`.');
-  const t = await tierFor(ctx.issue, "close", { prs });
-  if (t.tier !== 0) throw new UserError(`Not closed: ${t.reason}. Only PRs in the agents org (${cfg.agentsOrg}) can be closed; the product and instance repos' PRs are ${cfg.selfName}'s.`);
+  // A product PR's author, from the API: only Dependabot's may be closed there (tiers.mjs).
+  const isBot = (a) => a.login === DEPENDABOT && a.type === "Bot";
+  const read = await Promise.all(prs.map(async (p) => (sameRepo(p.repo, cfg.productRepo) ? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p)));
+  const t = await tierFor(ctx.issue, "close", { prs: read });
+  if (t.tier !== 0) throw new UserError(`Not closed: ${t.reason}. Only PRs in the agents org (${cfg.agentsOrg}) and the product repo's Dependabot PRs can be closed; the instance repo's and the product repo's other PRs are ${cfg.selfName}'s.`);
   const lines = await merges.closePrs(prs, reason, mergeGithub);
   await recordAuto(ctx.issue, "close", { prs: prs.map((p) => p.url), reason }, "", t, { ok: lines.every((l) => l.startsWith("Closed")), text: lines.join("\n") });
   return lines.join("\n");

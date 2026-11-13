@@ -28,7 +28,7 @@ describe("flow-graded: fail, re-dispatch, pass", () => {
     assert.ok(/From the grader, not Dana's own words/.test(JSON.stringify(t.fakeLog())), "the re-dispatch says who is asking");
     // Cross-family: an Anthropic-engine author gets GLM first.
     assert.match(paperclip.graderCalls[0].model, /glm/);
-    assert.ok(paperclip.comments.get("parent").some((c) => /PEN-2 .* is done, graded against its rubric/.test(c.body)), "the parent is told");
+    await waitFor("the parent is told", () => (paperclip.comments.get("parent") ?? []).some((c) => /PEN-2 .* is done, graded against its rubric/.test(c.body)));
   });
 });
 
@@ -62,6 +62,22 @@ describe("flow-graded: evidence that never comes", () => {
     await waitFor("the escalation", () => partComments().some((c) => /escalated to the owner\*\* \(still waiting for its evidence a day after it was finished: no pull request yet\)/.test(c)));
     assert.equal(paperclip.grades.get("part").state, "escalated");
     assert.equal(paperclip.graderCalls.length, 0);
+    await waitFor("an open parent is told", () => (paperclip.comments.get("parent") ?? []).some((c) => /went to the owner after grading/.test(c.body)));
+  });
+});
+
+// WOR-3582: a runner comment on a finished task reopens it in Paperclip (it posts as a user), which woke the parent's agent,
+// sent its closed task back through grading and looped. A finished parent hears nothing.
+describe("flow-graded: a finished parent is not reopened by an escalation", () => {
+  const d = delegated("done-parent");
+  const t = flow(held("done-parent", { rubric: [], deliverable: { kind: "pr", ref: "" }, state: "awaiting_evidence", updatedAt: new Date(Date.now() - 2 * 86_400_000).toISOString() }, { parent: { ...d.parent, status: "done" } }));
+
+  it("escalates the part and leaves the parent alone", async () => {
+    const { waitFor, paperclip } = t;
+    await waitFor("the escalation", () => paperclip.grades.get("part")?.state === "escalated");
+    await t.idle(300);
+    assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /went to the owner/.test(c.body)), "no comment on the finished parent");
+    assert.equal(paperclip.issues.get("parent").status, "done");
   });
 });
 

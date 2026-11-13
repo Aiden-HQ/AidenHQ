@@ -1,6 +1,7 @@
-// The chat workspace: agents on the left with their chats (Aiden pinned on top
-// as the front door), the conversation in the middle, and a panel with Progress, Files and Context on the right. On a
-// phone: the list, then the conversation full screen. Lives at #/c/ (a new chat) and #/c/<chat>.
+// The chat workspace: agents on the left with their chats (Aiden pinned on top as the front door), the conversation
+// in the middle, and one details panel on the right (context, the tasks the chat handed out, progress and files). On a
+// narrow screen the panel opens over the conversation; on a phone: the list, then the conversation full screen, the
+// panel as a sheet. Lives at #/c/ (a new chat) and #/c/<chat>.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
@@ -10,6 +11,7 @@ import { useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
 import { anyLive, groupChats, groupTasks, showsChip, taskSummary, type AgentGroup } from "./sidebar";
+import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conversation";
 import type { Approval, Assignee, ChatAgent, ChatDetail, ChatMessage, ChatRow, ChatState, FileView, Question, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
 import { openQuestions } from "./questions";
@@ -28,6 +30,8 @@ interface Props {
 
 const QUIET_MS = 2 * 60_000;
 const PANEL_KEY = "aidenhq.panel";
+/** From this width the details panel sits beside the conversation; below it, it opens over it (styles.css). */
+const PANEL_SIDE_BY_SIDE = 1180;
 /** An agent's portrait (/crew/<avatar>.svg), by its key or name, when it has one. */
 export const portraitOf = (crew: Assignee[], keyOrName: string) => {
   const a = crew.find((c) => c.key === keyOrName) ?? crew.find((c) => c.name === keyOrName);
@@ -66,7 +70,8 @@ export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, o
   useEvents(["chat", "approvals"], load);
   const [panel, setPanel] = useState(() => {
     try {
-      return localStorage.getItem(PANEL_KEY) ? localStorage.getItem(PANEL_KEY) === "1" : window.innerWidth >= 1280;
+      // A narrow window starts with the panel shut: there it opens over the conversation.
+      return window.innerWidth >= PANEL_SIDE_BY_SIDE && localStorage.getItem(PANEL_KEY) !== "0";
     } catch {
       return false;
     }
@@ -104,7 +109,7 @@ function Sidebar({ rows, agents, crew, selected, go, error, retry }: { rows: Cha
   const filter = (g: AgentGroup): AgentGroup => {
     if (!q) return g;
     const hit = (c: ChatRow) => `${c.title} ${c.preview?.text ?? ""} ${g.agent.name}`.toLowerCase().includes(q);
-    return { ...g, chats: [...g.chats, ...g.more].filter(hit), more: [], earlier: g.earlier.filter(hit) };
+    return { ...g, chats: [...g.chats, ...g.more].filter(hit), more: [], earlier: g.earlier.filter(hit), tests: g.tests.filter(hit) };
   };
   return (
     <aside className="ws-side" aria-label="Chats">
@@ -140,15 +145,18 @@ function Sidebar({ rows, agents, crew, selected, go, error, retry }: { rows: Cha
 function Group({ g, crew, selected, go, front, searching }: { g: AgentGroup; crew: Assignee[]; selected: string | null; go: (h: string) => void; front?: boolean; searching?: boolean }) {
   const inMore = g.more.some((c) => c.identifier === selected);
   const inEarlier = g.earlier.some((c) => c.identifier === selected);
-  const holds = g.chats.some((c) => c.identifier === selected) || inMore || inEarlier || [...g.handedOut.values()].flat().some((c) => c.identifier === selected);
+  const inTests = g.tests.some((c) => c.identifier === selected);
+  const holds = g.chats.some((c) => c.identifier === selected) || inMore || inEarlier || inTests || [...g.handedOut.values()].flat().some((c) => c.identifier === selected);
   const [open, setOpen] = useState(front || holds || g.chats.length > 0);
   const [showMore, setShowMore] = useState(inMore);
   const [showEarlier, setShowEarlier] = useState(inEarlier);
+  const [showTests, setShowTests] = useState(inTests);
   useEffect(() => {
     if (holds) setOpen(true);
     if (inMore) setShowMore(true);
     if (inEarlier) setShowEarlier(true);
-  }, [holds, inMore, inEarlier]);
+    if (inTests) setShowTests(true);
+  }, [holds, inMore, inEarlier, inTests]);
   const row = (c: ChatRow) => (
     <li key={c.identifier}>
       <ChatLink c={c} selected={selected} go={go} tasks={g.handedOut.get(c.identifier)} />
@@ -173,7 +181,7 @@ function Group({ g, crew, selected, go, front, searching }: { g: AgentGroup; cre
       </div>
       {open && (
         <ul className="side-chats">
-          {!g.chats.length && !g.earlier.length && <li className="side-empty muted small">{searching ? "No matches." : "No chats yet."}</li>}
+          {!g.chats.length && !g.earlier.length && !g.tests.length && <li className="side-empty muted small">{searching ? "No matches." : "No chats yet."}</li>}
           {g.chats.map(row)}
           {showMore && g.more.map(row)}
           {g.more.length > 0 && !showMore && (
@@ -194,6 +202,22 @@ function Group({ g, crew, selected, go, front, searching }: { g: AgentGroup; cre
             </li>
           )}
           {(showEarlier || searching) && g.earlier.map(row)}
+          {g.tests.length > 0 && (
+            <li>
+              <button className="side-toggle" aria-expanded={showTests || !!searching} onClick={() => setShowTests(!showTests)} title="Chats titled TEST or throwaway">
+                Tests ({g.tests.length})
+                <span className={`chev${showTests || searching ? " open" : ""}`} aria-hidden>
+                  <Chevron />
+                </span>
+              </button>
+            </li>
+          )}
+          {(showTests || searching) &&
+            g.tests.map((c) => (
+              <li key={c.identifier} className="side-test">
+                <ChatLink c={c} selected={selected} go={go} />
+              </li>
+            ))}
         </ul>
       )}
     </section>
@@ -203,7 +227,7 @@ function Group({ g, crew, selected, go, front, searching }: { g: AgentGroup; cre
 function ChatLink({ c, selected, go, tasks }: { c: ChatRow; selected: string | null; go: (h: string) => void; tasks?: ChatRow[] }) {
   const t = tasks?.length ? taskSummary(tasks) : undefined;
   return (
-    <button className={`side-chat${c.identifier === selected ? " on" : ""}${c.open ? "" : " closed"}`} onClick={() => go(`#/c/${c.identifier}`)}>
+    <button className={`side-chat${c.identifier === selected ? " on" : ""}${c.open ? "" : " closed"}`} title={c.title} onClick={() => go(`#/c/${c.identifier}`)}>
       <span className="side-chat-top">
         <span className={`side-chat-title${c.unread ? " unread" : ""}`}>{c.title}</span>
         <span className="side-time">{ago(c.preview?.at ?? c.updatedAt)}</span>
@@ -300,7 +324,6 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
   const [error, setError] = useState("");
   const [pending, setPending] = useState<Pending[]>([]);
   const [sheet, setSheet] = useState(false);
-  const [tasksSheet, setTasksSheet] = useState(false);
   const [, tick] = useState(0);
   const load = useCallback(async () => {
     try {
@@ -377,14 +400,18 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
     await load();
   }
 
-  const items: Item[] = useMemo(() => {
+  // Messages, cards and questions in time order; runs of progress lines (notes, wake-ups) fold to one line.
+  const items: Folded<Item>[] = useMemo(() => {
     if (!chat) return [];
     const list: Item[] = [
       ...chat.messages.map((m) => ({ type: "message" as const, m, at: m.at, key: m.id })),
       ...chat.approvals.map((a) => ({ type: "approval" as const, a, at: a.createdAt, key: a.id })),
       ...(chat.asks ?? []).map((q) => ({ type: "ask" as const, q, at: q.at, key: q.id })),
     ];
-    return list.sort((x, y) => x.at.localeCompare(y.at));
+    return foldNoise(
+      list.sort((x, y) => x.at.localeCompare(y.at)),
+      (it) => it.type === "message" && isNoise(it.m),
+    );
   }, [chat]);
   const lastReply = chat ? [...chat.messages].reverse().find((m) => m.kind === "reply" || m.kind === "owner") : undefined;
   // Questions stay answerable after the agent posts later updates, until the owner replies.
@@ -410,7 +437,8 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
       </section>
     );
 
-  const side = <SidePanel chat={chat} go={go} />;
+  const needs = groupTasks(chat.handedOut).needs.length;
+  const shut = mobile ? !sheet : !panel;
   return (
     <>
       <section
@@ -427,9 +455,11 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
           )}
           <Monogram name={chat.agent.name} size={32} avatar={portraitOf(crew, chat.agent.key)} />
           <span className="conv-who">
-            <span className="conv-name">{chat.agent.name}</span>
-            <span className="conv-title" title={chat.title}>
-              {chat.title}
+            <span className="conv-name" title={chat.title}>
+              {shortTitle(chat.title)}
+            </span>
+            <span className="conv-title">
+              {chat.agent.name} · {chat.identifier}
             </span>
           </span>
           {showsChip(chat.state) && <StateChip state={chat.state} reason={chat.reason} />}
@@ -439,17 +469,17 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
             </button>
           )}
           {chat.runs.length > 0 && (
-            <a className="btn" href={`#/r/${chat.runs[0]!.id}`} title="The trace of this chat's latest run">
+            <a className="btn last-run-btn" href={`#/r/${chat.runs[0]!.id}`} title="The trace of this chat's latest run">
               Last run
             </a>
           )}
-          {chat.handedOut.length > 0 && (
-            <button className={`btn tasks-btn${mobile ? " always" : ""}${tasksSheet ? " on" : ""}`} onClick={() => setTasksSheet(!tasksSheet)} title="Work handed out from this chat">
-              Tasks ({chat.handedOut.length})
-            </button>
-          )}
-          <button className={`btn${(mobile ? sheet : panel) ? " on" : ""}`} onClick={() => (mobile ? setSheet(!sheet) : togglePanel())} title="Progress, files and context">
-            {mobile ? "Details" : panel ? "Hide details" : "Details"}
+          <button className={`btn details-btn${shut ? "" : " on"}`} aria-expanded={!shut} onClick={() => (mobile ? setSheet(!sheet) : togglePanel())} title="Tasks, progress, files and context">
+            {mobile || shut ? "Details" : "Hide details"}
+            {shut && needs > 0 && (
+              <span className="details-needs" title={`${needs} task${needs > 1 ? "s" : ""} need${needs > 1 ? "" : "s"} you`}>
+                {needs}
+              </span>
+            )}
           </button>
         </header>
         {chat.parent && (
@@ -469,6 +499,7 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
           }}
         >
           <div className="conv-inner">
+            {!items.length && !pending.length && <p className="conv-empty muted">No messages yet.</p>}
             {items.map((it, i) => {
               const prev = items[i - 1];
               const day = new Date(it.at).toDateString();
@@ -476,7 +507,9 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
               return (
                 <div key={it.key}>
                   {sep && <div className="day-sep">{dayLabel(it.at)}</div>}
-                  {it.type === "approval" ? (
+                  {it.type === "fold" ? (
+                    <NoiseFold lines={it.items.map((x) => (x as Item & { type: "message" }).m)} from={it.at} until={it.until} prefix={prefix} />
+                  ) : it.type === "approval" ? (
                     <ul className="approval-list inline">
                       <ApprovalCard a={it.a} open={(id) => go(`#/c/${id}`)} decided={load} inline prefix={prefix} />
                     </ul>
@@ -527,35 +560,27 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
           dropZone
         />
       </section>
-      {!mobile && chat.handedOut.length > 0 && (
-        <aside className="ws-panel ws-tasks" aria-label="Tasks">
-          <TasksPanel items={chat.handedOut} go={go} />
+      {!mobile && panel && (
+        <aside className="ws-panel" aria-label="Details">
+          <button className="icon-btn subtle panel-close" aria-label="Hide details" onClick={togglePanel}>
+            <CloseIcon />
+          </button>
+          <DetailsPanel chat={chat} go={go} />
         </aside>
       )}
-      {tasksSheet && chat.handedOut.length > 0 && (
-        <div className="sheet-backdrop" onClick={(e) => e.target === e.currentTarget && setTasksSheet(false)}>
-          <div className="sheet" role="dialog" aria-label="Tasks">
-            <button className="icon-btn subtle sheet-close" aria-label="Close" onClick={() => setTasksSheet(false)}>
-              <CloseIcon />
-            </button>
-            <TasksPanel
-              items={chat.handedOut}
-              go={(h) => {
-                setTasksSheet(false);
-                go(h);
-              }}
-            />
-          </div>
-        </div>
-      )}
-      {!mobile && panel && <aside className="ws-panel">{side}</aside>}
       {mobile && sheet && (
         <div className="sheet-backdrop" onClick={(e) => e.target === e.currentTarget && setSheet(false)}>
           <div className="sheet" role="dialog" aria-label="Details">
             <button className="icon-btn subtle sheet-close" aria-label="Close" onClick={() => setSheet(false)}>
               <CloseIcon />
             </button>
-            {side}
+            <DetailsPanel
+              chat={chat}
+              go={(h) => {
+                setSheet(false);
+                go(h);
+              }}
+            />
           </div>
         </div>
       )}
@@ -664,7 +689,37 @@ function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answe
   );
 }
 
-const STEP_ICON = { tool: "⚙", thought: "…", message: "💬" } as const;
+/** A run of progress lines (notes, wake-ups, card outcomes) as one muted line; a tap lists each in order. */
+function NoiseFold({ lines, from, until, prefix }: { lines: ChatMessage[]; from: string; until: string; prefix: string }) {
+  const [open, setOpen] = useState(false);
+  const n = foldCount(lines);
+  const span = clock(from) === clock(until) ? clock(from) : `${clock(from)}–${clock(until)}`;
+  const entries = lines.flatMap((m) => (m.kind === "notes" ? m.notes.map((x) => ({ by: x.by, at: x.at, text: x.text })) : m.kind === "notice" ? [{ by: "Board", at: m.at, text: m.text }] : []));
+  return (
+    <div className="notes">
+      <button className="notes-line" onClick={() => setOpen(!open)} aria-expanded={open}>
+        {n} updates · {span}{" "}
+        <span className={`chev${open ? " open" : ""}`} aria-hidden>
+          <Chevron />
+        </span>
+      </button>
+      {open && (
+        <ol className="notes-list">
+          {entries.map((e, i) => (
+            <li key={i}>
+              <span className="muted small">
+                {e.by} · {clock(e.at)}
+              </span>
+              <Markdown text={e.text} prefix={prefix} className="md" />
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+const STEP_ICON ={ tool: "⚙", thought: "…", message: "💬" } as const;
 
 /** The latest line, a tap away from every step so far: proof the agent is working, not a guess. */
 function Steps({ steps, said }: { steps: NonNullable<Working["steps"]>; said?: string }) {
@@ -728,73 +783,20 @@ function LiveRow({ chat, retry }: { chat: ChatDetail; retry: () => void }) {
 
 // ------------------------------------------------------------------ the right panel
 
-function SidePanel({ chat, go }: { chat: ChatDetail; go: (h: string) => void }) {
-  const files = chat.files.filter((f) => !f.textOf);
-  const plan = chat.working?.plan ?? [];
-  const waiting = chat.approvals.filter((a) => a.state === "pending");
-  return (
-    <div className="panel">
-      <section className="panel-card">
-        <h3>
-          Progress
-          {plan.length > 0 && (
-            <span className="panel-count">
-              {plan.filter((p) => p.state === "done").length} of {plan.length}
-            </span>
-          )}
-        </h3>
-        {plan.length > 0 && (
-          <div className="meter" aria-hidden>
-            <i style={{ width: `${(100 * plan.filter((p) => p.state === "done").length) / plan.length}%` }} />
-          </div>
-        )}
-        {plan.length > 0 ? <Plan items={plan} /> : <p className="muted small">{chat.state === "working" ? "Working; no plan shared yet." : "Nothing in progress."}</p>}
-      </section>
-      <section className="panel-card">
-        <h3>
-          Files{files.length > 0 && <span className="panel-count">{files.length}</span>}
-        </h3>
-        {files.length ? (
-          <ul className="panel-list">
-            {files.map((f) => (
-              <FileRow key={f.id} f={f} chatId={chat.id} />
-            ))}
-          </ul>
-        ) : (
-          <p className="muted small">No files yet. Drop one on the chat or use the paperclip.</p>
-        )}
-      </section>
-      <section className="panel-card">
-        <h3>Context</h3>
-        <dl className="panel-facts">
-          <dt>Agent</dt>
-          <dd>{chat.agent.name}</dd>
-          <dt>State</dt>
-          <dd>{chat.state === "idle" ? "open" : chat.state}</dd>
-          {chat.parent && (
-            <>
-              <dt>From</dt>
-              <dd>
-                <a href={`#/c/${chat.parent.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/c/${chat.parent!.identifier}`))}>
-                  {chat.parent.title}
-                </a>
-              </dd>
-            </>
-          )}
-          <dt>Waiting on you</dt>
-          <dd>{waiting.length ? `${waiting.length} approval${waiting.length > 1 ? "s" : ""}` : chat.state === "waiting for you" ? "a reply" : "nothing"}</dd>
-        </dl>
-      </section>
-    </div>
-  );
-}
-
 type Handed = ChatDetail["handedOut"][number];
 const HANDED_LABEL: Partial<Record<ChatState, string>> = { "waiting for you": "needs you", "waiting for approval": "approval", idle: "open" };
 
-/** The work a chat handed out, by what it needs: you, running, waiting on someone else, finished (folded). */
-function TasksPanel({ items, go }: { items: Handed[]; go: (h: string) => void }) {
-  const g = groupTasks(items);
+/**
+ * The one details panel: the chat's context in a line, then the work it handed out by what it needs (you first,
+ * finished folded), then progress and files only when there are some.
+ */
+function DetailsPanel({ chat, go }: { chat: ChatDetail; go: (h: string) => void }) {
+  const files = chat.files.filter((f) => !f.textOf);
+  const plan = chat.working?.plan ?? [];
+  const done = plan.filter((p) => p.state === "done").length;
+  const waiting = chat.approvals.filter((a) => a.state === "pending");
+  const g = groupTasks(chat.handedOut);
+  const onYou = waiting.length ? `${waiting.length} approval${waiting.length > 1 ? "s" : ""}` : chat.state === "waiting for you" ? "a reply" : "";
   const row = (h: Handed) => (
     <li key={h.identifier}>
       <a className="handed-row" href={`#/c/${h.identifier}`} title={`${h.agent}: ${h.title}${h.reason ? ` (${h.reason})` : ""}`} onClick={(e) => (e.preventDefault(), go(`#/c/${h.identifier}`))}>
@@ -816,23 +818,87 @@ function TasksPanel({ items, go }: { items: Handed[]; go: (h: string) => void })
         <ul className="handed-list">{list.map(row)}</ul>
       </section>
     );
+  const quiet = !chat.handedOut.length && !plan.length && chat.state !== "working" && !files.length;
   return (
     <div className="panel">
-      <section className="panel-card">
-        <h3>
-          Tasks<span className="panel-count">{items.length}</span>
-        </h3>
-        {section("Needs you", g.needs, "needs")}
-        {section("Working", g.working)}
-        {section("Waiting", g.waiting)}
-        {g.finished.length > 0 && (
-          <details className="handed-done">
-            <summary>Finished ({g.finished.length})</summary>
-            <ul className="handed-list">{g.finished.map(row)}</ul>
-          </details>
+      <dl className="panel-context" aria-label="Context">
+        <div>
+          <dt>State</dt>
+          <dd>{chat.state === "idle" ? (chat.open ? "open" : "finished") : chat.state}</dd>
+        </div>
+        <div>
+          <dt>On you</dt>
+          <dd className={onYou ? "needs" : ""}>{onYou || "nothing"}</dd>
+        </div>
+        {chat.runs.length > 0 && (
+          <div className="panel-run">
+            <dt>Run</dt>
+            <dd>
+              <a href={`#/r/${chat.runs[0]!.id}`} onClick={(e) => (e.preventDefault(), go(`#/r/${chat.runs[0]!.id}`))}>
+                the latest
+              </a>
+            </dd>
+          </div>
         )}
-        {!g.needs.length && !g.working.length && !g.waiting.length && !g.finished.length && <p className="muted small">Nothing open.</p>}
-      </section>
+        {chat.parent && (
+          <div className="wide">
+            <dt>From</dt>
+            <dd>
+              <a href={`#/c/${chat.parent.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/c/${chat.parent!.identifier}`))}>
+                {chat.parent.title}
+              </a>
+            </dd>
+          </div>
+        )}
+      </dl>
+      {chat.handedOut.length > 0 && (
+        <section className="panel-card">
+          <h3>
+            Tasks<span className="panel-count">{chat.handedOut.length}</span>
+          </h3>
+          {section("Needs you", g.needs, "needs")}
+          {section("Working", g.working)}
+          {section("Waiting", g.waiting)}
+          {g.finished.length > 0 && (
+            <details className="handed-done">
+              <summary>Finished ({g.finished.length})</summary>
+              <ul className="handed-list">{g.finished.map(row)}</ul>
+            </details>
+          )}
+          {!g.needs.length && !g.working.length && !g.waiting.length && !g.finished.length && <p className="muted small">Nothing open.</p>}
+        </section>
+      )}
+      {(plan.length > 0 || chat.state === "working") && (
+        <section className="panel-card">
+          <h3>
+            Progress
+            {plan.length > 0 && (
+              <span className="panel-count">
+                {done} of {plan.length}
+              </span>
+            )}
+          </h3>
+          {plan.length > 0 && (
+            <div className="meter" aria-hidden>
+              <i style={{ width: `${(100 * done) / plan.length}%` }} />
+            </div>
+          )}
+          {plan.length > 0 ? <Plan items={plan} /> : <p className="muted small">Working; no plan shared yet.</p>}
+        </section>
+      )}
+      {files.length > 0 && (
+        <section className="panel-card">
+          <h3>
+            Files<span className="panel-count">{files.length}</span>
+          </h3>
+          <ul className="panel-list">
+            {files.map((f) => (
+              <FileRow key={f.id} f={f} chatId={chat.id} />
+            ))}
+          </ul>
+        </section>
+      )}
+      {quiet && <p className="panel-empty muted small">Work this chat hands out, its plan and any files show here. Drop a file on the chat to attach it.</p>}
     </div>
   );
 }

@@ -58,6 +58,19 @@ export async function gather(deliverable, deps) {
   const kind = deliverable.kind;
   const ev = kind === "pr" ? await prEvidence(await deps.taskPrs(), deliverable.ref, deps) : kind === "app" ? appEvidence(await deps.app(deliverable.ref), deliverable.ref) : kind === "apply" ? applyEvidence(cards) : null;
   if (ev?.awaiting) return { awaiting: ev.awaiting };
+  if (kind === "pr" && deps.appOfRepo) {
+    // A pr on an app's repo: the app's deploy facts too (its rubric may ask for "deployed at the merged commit").
+    // Only the PRs graded (by the ref), and only when they sit in exactly one repo.
+    const repos = [...new Set(ev.prs.map((p) => p.repo.toLowerCase()))];
+    const app = repos.length === 1 ? await deps.appOfRepo(ev.prs[0].repo).catch(() => null) : null;
+    if (app) {
+      const a = appEvidence(app, app.name);
+      ev.facts.push(...(a.facts ?? [`app ${app.name}: not deployed yet`]).map((f) => `${ev.prs[0].repo}: ${f}`));
+      // Code compares the commits, so the grader doesn't.
+      for (const p of ev.prs) ev.facts.push(`${p.repo}#${p.number} deployed_at_merge_commit: ${!!(app.sha && p.merge && app.sha === p.merge)}`);
+      if (a.version) ev.version = `${ev.version.slice(0, 150)}+${app.sha.slice(0, 12)}`; // a new deploy is a new version to grade
+    }
+  }
   const w = await wordsEvidence(deps);
   if (ev) return { version: ev.version, facts: ev.facts, data: { ...ev.data, ...w.data } };
   if (!w.version) return { awaiting: "nothing posted on the task yet" };

@@ -78,10 +78,14 @@ export const WRITES = [
   { method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ },
 ];
 
-/** A write in WRITES; comments, PR edits and branch deletes in the agents org only (outside it the host's gh login writes). */
-export function allowedWrite(method, path, agentsOrg) {
+/**
+ * A write in WRITES; comments, PR edits and branch deletes in the agents org only (outside it the host's gh login writes),
+ * plus comments and PR edits on the product repo (`aidenhq close` of its Dependabot PRs; never a branch delete there).
+ */
+export function allowedWrite(method, path, agentsOrg, productRepo) {
   if (!WRITES.some((w) => w.method === method && w.path.test(path))) return false;
-  return method === "PUT" || (Boolean(agentsOrg) && path.split("/")[1].toLowerCase() === agentsOrg.toLowerCase());
+  if (method === "PUT" || (Boolean(agentsOrg) && path.split("/")[1].toLowerCase() === agentsOrg.toLowerCase())) return true;
+  return Boolean(productRepo) && method !== "DELETE" && path.split("/").slice(1, 3).join("/").toLowerCase() === productRepo.toLowerCase();
 }
 
 /**

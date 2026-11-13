@@ -26,7 +26,7 @@ import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradePassed, gradingOn, prRefAllowed } from "./grades.js";
-import { UsageSchema, WINDOWS, costs, keyUsage, type CostWindow } from "./costs.js";
+import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
 import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
@@ -1137,6 +1137,17 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
+      // A pr deliverable on an app's repo: that app's status too, so the grader can check "deployed at the merged commit".
+      method: "GET",
+      path: /^\/internal\/grades\/app-of\/([\w.-]+\/[\w.-]+)$/,
+      handle: async (m, _b, _u, req) => {
+        requireRunner(req, "reads app evidence");
+        const apps = await appsApi<{ name: string; repo?: string }[]>("/internal/status");
+        const same = apps.filter((a) => a.repo?.toLowerCase() === decodeURIComponent(m[1]!).toLowerCase());
+        return { app: same.length === 1 ? same[0]! : null }; // several apps in one repo: no single app to vouch for the PR
+      },
+    },
+    {
       // Escalated grades for the owner's Telegram, each handed over once (the owner channel, decide key).
       method: "GET",
       path: /^\/internal\/owner\/grades$/,
@@ -1605,7 +1616,7 @@ export function createApp(opts: AppOptions): Server {
     {
       method: "GET",
       path: /^\/api\/costs\/ledger$/,
-      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, grantsFile: process.env.AIDENHQ_GRANTS_FILE }, ledgerRange(url.searchParams)),
+      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, issue: (id) => pc.issueSummary(id), prices, grantsFile: process.env.AIDENHQ_GRANTS_FILE }, ledgerRange(url.searchParams)),
     },
     {
       method: "GET",

@@ -22,6 +22,7 @@ export async function prEvidence(prs, ref, deps) {
   if (!prs.length) return { awaiting: "no pull request yet" };
   const facts = [];
   const versions = [];
+  const prs_ = []; // each graded PR with its merge commit ("" while unmerged)
   let diff = "";
   for (const p of prs.slice(0, 5)) {
     const pr = (await deps.pr(p.repo, p.number))?.repository?.pullRequest;
@@ -33,12 +34,13 @@ export async function prEvidence(prs, ref, deps) {
     const merged = pr.state === "MERGED";
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     versions.push(`${p.repo}#${p.number}@${sha}`);
+    prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "" });
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${c.ok ? "green" : "red"}`).join(", ") : "none"}`);
     diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)")).slice(0, MAX_DIFF)}\n`;
   }
   // The board keeps a version in 200 characters: several PRs are bound by their hash.
   const version = versions.join(" ").length <= 200 ? versions.join(" ") : `prs:${hash(versions.join(" "))}`;
-  return { version, facts, data: { DIFF: diff.slice(0, MAX_DIFF) } };
+  return { version, facts, prs: prs_, data: { DIFF: diff.slice(0, MAX_DIFF) } };
 }
 
 /** A deployed app (apps-mcp status row, or null) as evidence: its commit, state, health and incident. */

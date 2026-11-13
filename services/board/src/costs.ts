@@ -255,7 +255,7 @@ export function costRows(byModel: ByAgentModel[], byAgent: ByAgent[], usage: Usa
 
 let priceCache: { at: number; prices: Prices } | undefined;
 /** OpenRouter's public model list, refreshed every 6 hours; an empty map (no dollars, tokens still shown) when unreachable. */
-async function prices(): Promise<Prices> {
+export async function prices(): Promise<Prices> {
   if (priceCache && Date.now() - priceCache.at < 6 * 3600_000) return priceCache.prices;
   try {
     const res = await fetch(`${OPENROUTER}/models`, { signal: AbortSignal.timeout(15_000) });

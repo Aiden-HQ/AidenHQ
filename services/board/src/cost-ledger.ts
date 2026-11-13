@@ -5,7 +5,8 @@
 //  - top: one agent's or model's most expensive runs and tasks in the range, for the drill-down.
 import { readFileSync } from "node:fs";
 import { BadRequest } from "./board.js";
-import type { KeyUsage } from "./costs.js";
+import { departmentOf } from "./activity.js";
+import type { KeyUsage, Prices } from "./costs.js";
 import type { Agent, Issue } from "./paperclip.js";
 import type { LedgerFilter, LedgerMetrics, Store } from "./store.js";
 
@@ -65,9 +66,13 @@ function dayCaps(grantsFile: string | undefined): (agentId: string) => number {
 }
 
 export interface LedgerDeps {
-  store: Pick<Store, "ledgerCube" | "ledgerBy" | "usageSpend" | "spendByAgent" | "usageEarliest">;
+  store: Pick<Store, "ledgerCube" | "ledgerBy" | "usageSpend" | "spendByAgent" | "usageEarliest" | "taskCount" | "failedCalls" | "longRuns">;
   agents: () => Promise<Agent[]>;
   key: () => Promise<KeyUsage | string>;
+  /** A task's identifier, title and status (Paperclip); without it the task figures are left out. */
+  issue?: (id: string) => Promise<Pick<Issue, "identifier" | "title" | "status">>;
+  /** OpenRouter's list prices, for the cache savings; without them the savings are left out. */
+  prices?: () => Promise<Prices>;
   grantsFile?: string;
 }
 
@@ -119,10 +124,153 @@ export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.no
     models: rollup(cube, (c) => c.model, all).map(([model, m]) => ({ model, ...metrics(m) })),
     lanes: rollup(cube, (c) => c.lane, all).map(([lane, m]) => ({ lane, ...metrics(m) })),
     agents: rollup(cube.filter((c) => c.agentId), (c) => c.agentId!, all).map(([agentId, m]) => ({ agentId, name: nameOf(agentId), model: mainModel.get(agentId) ?? null, ...metrics(m), today: today.get(agentId) ?? 0, dayCap: capOf(agentId) })),
+    insights: await ledgerInsights(d, r, cube, agents, key, earliest, now),
     series: rollup(cube, (c) => `${c.t}\n${c.model}`, all)
       .map(([k, m]) => ({ t: k.split("\n")[0]!, model: k.split("\n")[1]!, usd: m.usd, calls: m.calls }))
       .sort((a, b) => a.t.localeCompare(b.t)),
   };
+}
+
+/* ----------------------------------------------------------------------------- insights */
+/** A run with this many calls or more is taken as looping. */
+export const LOOP_CALLS = 150;
+/** Tasks looked up in Paperclip for status: the costliest ones in the range. */
+const TASK_SAMPLE = 80;
+/** A forecast needs at least this much ledger history behind its run-rate. */
+const MIN_RATE_MS = 6 * 36e5;
+/** The ledger and OpenRouter agree when within this much of OpenRouter's figure (the board pulls the ledger every 60 s). */
+const AGREE = { usd: 0.1, share: 0.03 };
+
+/**
+ * End-of-month forecast: spend so far this month plus the run-rate over the last 7 days (or since the ledger began, when that is
+ * shorter; at least 6 hours of it) times the days left. null when there is too little history.
+ */
+export function forecast(a: { monthToDate: number; windowUsd: number; windowMs: number; now: number }) {
+  const d = new Date(a.now);
+  const daysLeft = (Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) - a.now) / DAY;
+  if (a.windowMs < MIN_RATE_MS) return { projected: null, perDay: null, daysLeft };
+  const perDay = a.windowUsd / (a.windowMs / DAY);
+  return { projected: a.monthToDate + perDay * daysLeft, perDay, daysLeft };
+}
+
+/**
+ * The ledger against OpenRouter's own figure for each calendar period (UTC): "accurate" within AGREE of it, "gap" beyond. A period
+ * the ledger doesn't fully cover (it starts at `earliest`) is "partial" and not judged. gap = OpenRouter minus ledger: positive is
+ * spend that bypassed the gateway (or isn't itemised), negative a ledger ahead of OpenRouter's counter.
+ */
+export function coverage(periods: { name: string; from: number; real: number; ledger: number }[], earliest: string | null) {
+  const rows = periods.map((p) => {
+    const covered = earliest !== null && Date.parse(earliest) <= p.from;
+    const gap = p.real - p.ledger;
+    const state = !covered ? ("partial" as const) : Math.abs(gap) <= Math.max(AGREE.usd, AGREE.share * p.real) ? ("accurate" as const) : ("gap" as const);
+    return { name: p.name, from: new Date(p.from).toISOString(), real: p.real, ledger: p.ledger, gap, share: p.real > 0 ? gap / p.real : 0, state };
+  });
+  const judged = rows.filter((x) => x.state !== "partial");
+  return { state: !judged.length ? ("unverified" as const) : judged.some((x) => x.state === "gap") ? ("gap" as const) : ("accurate" as const), periods: rows };
+}
+
+/**
+ * What caching saved: cached input tokens × (the model's list price for fresh input minus its list price for cached input). List
+ * prices only (OpenRouter's /models); routing can bill more than list, so it is an estimate. Models with no cached price are left out.
+ */
+export function cacheSavings(models: { model: string; cached: number }[], prices: Prices | null | undefined) {
+  if (!prices?.size) return null;
+  const n = (s?: string) => Number(s ?? 0) || 0;
+  let saved = 0;
+  for (const m of models) {
+    const p = prices.get(m.model.replace(/^openrouter\//, ""));
+    if (p?.input_cache_read !== undefined) saved += m.cached * Math.max(0, n(p.prompt) - n(p.input_cache_read));
+  }
+  return saved;
+}
+
+const median = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]! : null);
+
+async function ledgerInsights(d: LedgerDeps, r: LedgerRange, cube: ReturnType<Store["ledgerCube"]>, agents: Agent[], key: KeyUsage | string, earliest: string | null, now: number) {
+  const { store } = d;
+  const iso = (n: number) => new Date(n).toISOString();
+  const nameOf = (id: string | null) => (id ? (agents.find((a) => a.id === id)?.name ?? `Agent ${id.slice(0, 8)}`) : "System calls");
+  const all = (c: LedgerMetrics) => c;
+
+  // Forecast: this month so far (the part the ledger covers) and the recent run-rate.
+  const monthStart = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), 1);
+  const since = earliest ? Math.max(monthStart, Date.parse(earliest)) : now;
+  const rateFrom = Math.max(now - 7 * DAY, earliest ? Date.parse(earliest) : now);
+  const monthToDate = store.usageSpend(iso(since), iso(now)).usd;
+  const fc = { ...forecast({ monthToDate, windowUsd: store.usageSpend(iso(rateFrom), iso(now)).usd, windowMs: now - rateFrom, now }), monthToDate, partialMonth: earliest !== null && Date.parse(earliest) > monthStart };
+
+  // Coverage: today, this week (since Monday), this month, each against OpenRouter's counter for the key.
+  const day = Math.floor(now / DAY) * DAY;
+  const cov =
+    typeof key === "string"
+      ? { state: "unavailable" as const, error: key, periods: [] }
+      : {
+          ...coverage(
+            [
+              { name: "Today", from: day, real: key.usage_daily },
+              { name: "This week", from: day - ((new Date(now).getUTCDay() + 6) % 7) * DAY, real: key.usage_weekly },
+              { name: "This month", from: monthStart, real: key.usage_monthly },
+            ].map((p) => ({ ...p, ledger: store.usageSpend(iso(p.from), iso(now)).usd })),
+            earliest,
+          ),
+          error: null,
+        };
+
+  // Cache: hit rate over the range and what it saved at list prices.
+  const total = rollup(cube, () => "", all)[0]?.[1] ?? ZERO;
+  const prices = await d.prices?.().catch(() => null);
+  const cache = {
+    hit: total.input + total.cached ? total.cached / (total.input + total.cached) : null,
+    cached: total.cached,
+    input: total.input,
+    savedUsd: cacheSavings(rollup(cube, (c) => c.model, all).map(([model, m]) => ({ model, cached: m.cached })), prices),
+  };
+
+  // Departments: each agent's own `department:` (the registry compile resolved), system calls apart.
+  const dept = new Map(agents.map((a) => [a.id, departmentOf(a)]));
+  const depts = new Map<string, { id: string; name: string; order: number; agents: Set<string>; m: LedgerMetrics }>();
+  for (const c of cube) {
+    const x = c.agentId ? (dept.get(c.agentId) ?? { id: "general", name: "General", order: 1_000 }) : { id: "system", name: "System calls", order: 2_000 };
+    const row = depts.get(x.id) ?? { id: x.id, name: x.name, order: x.order, agents: new Set<string>(), m: ZERO };
+    if (c.agentId) row.agents.add(c.agentId);
+    row.m = plus(row.m, c);
+    depts.set(x.id, row);
+  }
+  const departments = [...depts.values()].sort((a, b) => b.m.usd - a.m.usd).map((x) => ({ id: x.id, name: x.name, agents: x.agents.size, ...metrics(x.m) }));
+
+  // Tasks: the costliest ones are looked up in Paperclip for title and status; the totals over all tasks come from SQL.
+  const attributed = store.ledgerBy("hasIssue", r.from, r.to).find((x) => Number(x.a) === 1)?.usd ?? 0;
+  const count = store.taskCount(r.from, r.to);
+  const sample = d.issue
+    ? await Promise.all(
+        store.ledgerBy("issue", r.from, r.to, {}, TASK_SAMPLE).map(async (x) => {
+          const issue = await d.issue!(x.a!).catch(() => null);
+          return { issueId: x.a!, identifier: issue?.identifier ?? null, title: issue?.title ?? null, status: issue?.status ?? null, agent: nameOf(x.b), usd: x.usd, calls: x.calls };
+        }),
+      )
+    : [];
+  const done = sample.filter((t) => t.status === "done");
+  const cancelled = sample.filter((t) => t.status === "cancelled");
+  const sum = (xs: { usd: number }[]) => xs.reduce((s, t) => s + t.usd, 0);
+  const tasks = {
+    count,
+    usd: attributed,
+    perTask: count ? attributed / count : null,
+    sampled: sample.length,
+    // Among the costliest tasks only (a cheap one never makes the sample), so an upper estimate.
+    done: { count: done.length, perTask: done.length ? sum(done) / done.length : null, median: median(done.map((t) => t.usd)) },
+    top: sample.slice(0, 10),
+  };
+
+  const failed = store.failedCalls(r.from, r.to);
+  const long = store.longRuns(r.from, r.to, LOOP_CALLS);
+  const wasted = {
+    failed: { usd: sum(failed), calls: failed.reduce((s, f) => s + f.calls, 0), list: failed.slice(0, 8).map((f) => ({ agent: nameOf(f.agentId), status: f.status, calls: f.calls, usd: f.usd })) },
+    cancelled: { usd: sum(cancelled), count: cancelled.length, list: cancelled.slice(0, 8) },
+    looping: { threshold: LOOP_CALLS, usd: sum(long), count: long.length, list: long.slice(0, 8).map((x) => ({ runId: x.runId, agent: nameOf(x.agentId), calls: x.calls, usd: x.usd, first: x.first })) },
+  };
+
+  return { forecast: fc, coverage: cov, cache, departments, tasks, wasted };
 }
 
 const TOP = 15;

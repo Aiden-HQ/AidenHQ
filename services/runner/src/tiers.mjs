@@ -51,8 +51,10 @@ export function highest(parts) {
  * - every action's requester.platform: the Platform Engineer's line (the Platform Engineer itself, a task the Agent
  *   Architect made, or the owner's own task), the only one that writes to the product repo below Tier 2
  * - push/pr: branches [{ repo, branch, defaultBranch, deployBranch?, empty, files, texts? }]
- * - merge: prs [{ repo, files, texts?, checks: [{ name, ok, pending }] (advisory checks such as design-review left out), headMatches, ownHead (a commit the runner pushed to a same-repo branch), sensitive }]
- *   (texts, product repo only: { path: { base, head } } for each changed module.yaml and compose file)
+ * - merge: prs [{ repo, files, texts?, checks: [{ name, ok, pending }] (advisory checks such as design-review left out), headMatches, ownHead (a commit the runner pushed to a same-repo branch), sensitive, dependabot? }]
+ *   (texts, product repo only: { path: { base, head } } for each changed module.yaml and compose file, and for every changed
+ *   file of a PR the runner verified as Dependabot's from the API: its author and every commit; then `dependabot: true`)
+ * - close: prs [{ repo, dependabot? }] (`dependabot`: a product PR whose author the runner read from the API as dependabot[bot])
  * - apply: { files, base, head (path → text, absent when missing), pin: null | { forward, back }, roles (agent key → roles),
  *   ownerStarted (the task chain began with the owner), trialNoTap (today's trial-handbook rule) }
  */
@@ -91,11 +93,21 @@ function publishParts(action, s) {
   });
 }
 
-/** close: prs [{ repo }]. Tier 0 in the agents org (reversible, no code changes); the product and instance repos' PRs are the owner's. */
+/**
+ * close: prs [{ repo, dependabot? }]. Tier 0 in the agents org (reversible, no code changes); the instance repo's PRs are the
+ * owner's. On the product repo only a Dependabot PR (its author verified as dependabot[bot] from the GitHub API by the runner,
+ * never from text) may be closed, by the Platform Engineer's line, at Tier 0 (owner, 2026-11-13): closing changes no code,
+ * the reason is posted on the PR, and reopening it undoes it.
+ */
 function closeParts(s) {
   return (s.prs ?? []).map((p) => {
+    if (same(p.repo, s.productRepo)) {
+      if (p.dependabot !== true) return REJECT("core-repo-close", `${p.repo} is the product repo: only its Dependabot PRs may be closed`);
+      if (!s.requester?.platform) return REJECT("product-close-requester", "only the Platform Engineer's line may close the product repo's Dependabot PRs");
+      return T(0, "product-dependabot-close", "closing a Dependabot PR of the product repo is reversible (reopen) and changes no code");
+    }
     if (!same(orgOf(p.repo), s.agentsOrg)) return REJECT("outside-close", `${p.repo} is outside the agents org`);
-    if (same(p.repo, s.instanceRepo) || same(p.repo, s.productRepo)) return REJECT("core-repo-close", `${p.repo} is the instance or product repo: its PRs are the owner's`);
+    if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close", `${p.repo} is the instance repo: its PRs are the owner's`);
     return T(0, "agents-org-close", `closing a PR of ${p.repo} is reversible and changes no code`);
   });
 }
@@ -132,6 +144,11 @@ function mergeParts(s) {
 function productMergePart(p, ref, s) {
   if (!s.requester?.platform) return T(2, "product-merge-requester", `${ref}: a product merge from outside the Platform Engineer's line`);
   if (!Array.isArray(p.files)) return T(2, "unknown-files", `couldn't list every file ${ref} changes`);
+  // A Dependabot pin bump: the reviewer's when every condition holds; otherwise the rules below (a head not the runner's: Tier 2).
+  if (p.dependabot === true) {
+    const d = dependabotMergePart(p, ref);
+    if (d.tier === 1 || !p.ownHead) return d;
+  }
   const parts = productFileParts(p.files, p.texts, s);
   if (parts.some((x) => x.tier === 2)) return highest(parts);
   if (!p.headMatches) return T(2, "head-moved", `${ref} moved since the card`);
@@ -140,6 +157,177 @@ function productMergePart(p, ref, s) {
   const red = p.checks.filter((c) => !c.ok && !c.pending);
   if (red.length) return T(2, "checks-not-green", `${ref}: ${red.map((c) => c.name).join(", ")} failed on the head`);
   return T(1, "product-merge", `${ref}: a product PR from the Platform Engineer's line, no gate code, merged only once its ${p.checks.length} named check${p.checks.length === 1 ? "" : "s"} are green on the exact head`);
+}
+
+/**
+ * Whether a PR's commits (GitHub REST, oldest first: [{ sha, author, committer, verified }]) are all Dependabot's and end at
+ * `head`: author dependabot[bot], signed by GitHub (verified) and committed by web-flow or dependabot[bot]. Any other
+ * commit, the runner's own included, leaves the PR to the ordinary product rules.
+ */
+export function dependabotCommits(commits, head) {
+  const D = "dependabot[bot]";
+  return commits.length > 0 && commits.at(-1).sha === head && commits.every((c) => c.author === D && c.verified === true && ["web-flow", D].includes(c.committer));
+}
+
+/** The supply-chain job in .github/workflows/ci.yml (npm-age and pins): a Dependabot merge needs it by name, green. */
+export const SUPPLY_CHAIN_CHECK = "supply-chain";
+
+/**
+ * A Dependabot PR's merge on the product repo (owner, 2026-11-13): Tier 1 (`product-dependabot-merge`) only when the runner
+ * verified from the GitHub API that the PR and every commit on its head are Dependabot's (`p.dependabot`), the head is the
+ * card's, every named check passed on it (none still running) with the supply-chain check among them, and every changed
+ * file is a pin-only change by content (`p.texts` holds each file's base and head), no version jumping a major. Gate files
+ * and `.github/workflows/` included: there only pins may move. Anything else, or anything unreadable, is Tier 2.
+ */
+function dependabotMergePart(p, ref) {
+  const no = (rule, reason) => T(2, rule, `${ref} (Dependabot): ${reason}`);
+  if (!p.headMatches) return no("head-moved", "moved since the card");
+  const checks = p.checks ?? [];
+  if (!checks.length) return no("no-checks", "no named checks");
+  const notGreen = checks.filter((c) => !c.ok || c.pending);
+  if (notGreen.length) return no("dependabot-checks", `${notGreen.map((c) => c.name).join(", ")} not green (still running counts here)`);
+  if (!checks.some((c) => c.name === SUPPLY_CHAIN_CHECK)) return no("dependabot-supply-chain", `no \`${SUPPLY_CHAIN_CHECK}\` check`);
+  if (!p.files.length) return no("unknown-files", "changes no files");
+  for (const f of p.files) {
+    const why = pinOnly(f, p.texts?.[f]);
+    if (why) return no("dependabot-not-pin-only", `${f}: ${why}`);
+  }
+  return T(1, "product-dependabot-merge", `${ref}: a Dependabot PR (author and every commit verified), pin-only changes in ${p.files.length} file${p.files.length === 1 ? "" : "s"}, no major jump, every named check green on the exact head (${SUPPLY_CHAIN_CHECK} included)`);
+}
+
+const LOCKFILE = /(^|\/)package-lock\.json$/;
+const PACKAGE_JSON = /(^|\/)package\.json$/;
+const DOCKERFILE = /(^|\/)(Dockerfile[^/]*|[^/]+\.Dockerfile)$/;
+const WORKFLOW = /^\.github\/workflows\/[^/]+\.ya?ml$/;
+
+/** Why `f` is not a pin-only change (a string), or undefined when it is. `t`: { base, head } texts; missing or one-sided fails. */
+export function pinOnly(f, t) {
+  const kind = LOCKFILE.test(f) ? lockfileWhy : PACKAGE_JSON.test(f) ? packageJsonWhy : DOCKERFILE.test(f) ? dockerfileWhy : WORKFLOW.test(f) ? workflowWhy : COMPOSE.test(f) ? composeWhy : undefined;
+  if (!kind) return "not a lockfile, package.json, Dockerfile, compose file or workflow";
+  if (typeof t?.base !== "string" || typeof t?.head !== "string") return "couldn't read it on both sides (added, removed or unread)";
+  try {
+    return kind(t.base, t.head);
+  } catch {
+    return "doesn't parse";
+  }
+}
+
+/**
+ * The major of a version or tag, for "no major jump": its first number, or `0.<minor>` below 1 (semver: 0.x minors break).
+ * Undefined without a number (a tag such as `latest`): a change from such a tag fails closed.
+ */
+export function majorOf(v) {
+  const m = /(\d+)(?:\.(\d+))?/.exec(String(v ?? ""));
+  if (!m) return undefined;
+  return Number(m[1]) === 0 ? `0.${m[2] ?? ""}` : String(Number(m[1]));
+}
+const majorJump = (a, b) => a !== b && (majorOf(a) === undefined || majorOf(a) !== majorOf(b));
+
+/** A plain version (exact, or a ^/~ range on one version): no npm: alias, git, URL, file: or dist-tag. */
+const PLAIN_VERSION = /^[\^~]?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
+const DEP_MAPS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+const withoutDeps = (o) => Object.fromEntries(Object.entries(o ?? {}).filter(([k]) => !DEP_MAPS.includes(k)));
+
+/** Dependency maps: the same names on both sides, only plain versions changing, no major jump. */
+function depMapsWhy(b, h) {
+  for (const k of DEP_MAPS) {
+    const [bm, hm] = [b?.[k] ?? {}, h?.[k] ?? {}];
+    if (!eq(Object.keys(bm).sort(), Object.keys(hm).sort())) return `${k}: a dependency added or removed`;
+    for (const name of Object.keys(hm)) {
+      if (bm[name] === hm[name]) continue;
+      if (!PLAIN_VERSION.test(String(bm[name])) || !PLAIN_VERSION.test(String(hm[name]))) return `${k}.${name}: not a plain version (${hm[name]})`;
+      if (majorJump(bm[name], hm[name])) return `${k}.${name}: major jump ${bm[name]} → ${hm[name]}`;
+    }
+  }
+  return undefined;
+}
+
+function packageJsonWhy(base, head) {
+  const [b, h] = [JSON.parse(base), JSON.parse(head)];
+  if (!eq(withoutDeps(b), withoutDeps(h))) return "changes more than dependency versions (scripts, overrides or another field)";
+  return depMapsWhy(b, h);
+}
+
+/**
+ * package-lock.json (v2/v3): only `packages` changes; its root entry as package.json; every new or changed entry resolves
+ * from registry.npmjs.org with an integrity hash (bundled entries excepted), gains no install script and is no link; a
+ * version on both sides never jumps a major (transitive entries included).
+ */
+function lockfileWhy(base, head) {
+  const [b, h] = [JSON.parse(base), JSON.parse(head)];
+  if (!(b.lockfileVersion >= 2) || b.lockfileVersion !== h.lockfileVersion) return "not a v2/v3 lockfile on both sides";
+  const { packages: bp = {}, ...bRest } = b;
+  const { packages: hp = {}, ...hRest } = h;
+  if (!eq(bRest, hRest)) return "changes more than `packages`";
+  for (const [path, e] of Object.entries(hp)) {
+    const was = bp[path];
+    if (eq(was, e)) continue;
+    if (path === "") {
+      if (!was || !eq(withoutDeps(was), withoutDeps(e))) return "the root entry changes more than dependency versions";
+      const why = depMapsWhy(was, e);
+      if (why) return `root: ${why}`;
+      continue;
+    }
+    if (e.link || was?.link) return `${path}: a link entry changes`;
+    if ("name" in e) return `${path}: an alias (\`name\` ${e.name})`;
+    if (Boolean(e.inBundle) !== Boolean(was?.inBundle) || e.inBundle) return `${path}: a bundled entry changes`;
+    if (e.hasInstallScript && !was?.hasInstallScript) return `${path}: gains an install script`;
+    // The tarball of exactly this package and version (the name from the path key): no other package, host or alias.
+    const name = path.split("node_modules/").pop();
+    if (!/^(@[\w.-]+\/)?[\w.-]+$/.test(name) || e.resolved !== `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${e.version}.tgz` || !e.integrity) return `${path}: not resolved to ${name}@${e.version} on registry.npmjs.org with an integrity hash`;
+    if (was && was.version !== e.version && majorJump(was.version, e.version)) return `${path}: major jump ${was.version} → ${e.version}`;
+  }
+  return undefined;
+}
+
+/** Line by line: the same number of lines, and `ok(baseLine, headLine)` (a reason when not) for every changed one. */
+function linesWhy(base, head, ok) {
+  const [b, h] = [base.replace(/\r\n/g, "\n").split("\n"), head.replace(/\r\n/g, "\n").split("\n")];
+  if (b.length !== h.length) return "lines added or removed";
+  for (let i = 0; i < b.length; i++) {
+    if (b[i] === h[i]) continue;
+    const why = ok(b[i], h[i]);
+    if (why) return `line ${i + 1}: ${why}`;
+  }
+  return undefined;
+}
+
+const tagOf = (ref) => /:([^/:]+)$/.exec(String(ref ?? "").replace(/@sha256:[0-9a-f]+$/, ""))?.[1] ?? "";
+/** The same image repository, and no major jump between the tags. */
+const imageWhy = (a, b) => (imageRepo(a) !== imageRepo(b) ? `another image (${imageRepo(a)} → ${imageRepo(b)})` : majorJump(tagOf(a), tagOf(b)) ? `major jump ${tagOf(a)} → ${tagOf(b)}` : undefined);
+
+const FROM = /^(\s*FROM\s+(?:--platform=\S+\s+)?)(\S+)((?:\s+AS\s+\S+)?\s*)$/i;
+/** A Dockerfile: only FROM lines change, each on the same image, with the same flags and stage name. */
+function dockerfileWhy(base, head) {
+  return linesWhy(base, head, (bl, hl) => {
+    const [bm, hm] = [FROM.exec(bl), FROM.exec(hl)];
+    if (!bm || !hm) return "not a FROM line";
+    if (bm[1] !== hm[1] || bm[3] !== hm[3]) return "the FROM line's flags or stage name change";
+    return imageWhy(bm[2], hm[2]);
+  });
+}
+
+const USES = /^(\s*(?:-\s+)?uses:\s+)([\w.-]+\/[\w./-]+)@([0-9a-f]{40})(\s+#\s*)(\S+)\s*$/;
+/** A workflow: only `uses: owner/action@<sha> # tag` lines change, each on the same action and step, still SHA-pinned. */
+function workflowWhy(base, head) {
+  return linesWhy(base, head, (bl, hl) => {
+    const [bm, hm] = [USES.exec(bl), USES.exec(hl)];
+    if (!bm || !hm) return "not a SHA-pinned `uses:` line";
+    if (bm[1] !== hm[1] || bm[2] !== hm[2]) return `another action or step (${bm[2]} → ${hm[2]})`;
+    return majorJump(bm[5], hm[5]) ? `major jump ${bm[5]} → ${hm[5]}` : undefined;
+  });
+}
+
+/** A compose file: the image-bump rule (composeParts), and no major jump in any service's image. */
+function composeWhy(base, head) {
+  if (composeParts("", base, head)[0].tier !== 1) return "changes more than image tags or digests";
+  const [b, h] = [parse(base), parse(head)];
+  for (const [name, svc] of Object.entries(h.services ?? {})) {
+    const was = b.services?.[name]?.image;
+    const why = svc?.image === was ? undefined : imageWhy(was, svc?.image);
+    if (why) return `${name}: ${why}`;
+  }
+  return undefined;
 }
 
 /**

@@ -384,6 +384,26 @@ export interface CostLedger {
   lanes: (LedgerMetrics & { lane: string })[];
   agents: (LedgerMetrics & { agentId: string; name: string; model: string | null; today: number; dayCap: number })[];
   series: { t: string; model: string; usd: number; calls: number }[];
+  insights: LedgerInsights;
+}
+export interface LedgerInsights {
+  forecast: { projected: number | null; perDay: number | null; daysLeft: number; monthToDate: number; partialMonth: boolean };
+  coverage: { state: "accurate" | "gap" | "unverified" | "unavailable"; error: string | null; periods: { name: string; from: string; real: number; ledger: number; gap: number; share: number; state: "accurate" | "gap" | "partial" }[] };
+  cache: { hit: number | null; cached: number; input: number; savedUsd: number | null };
+  departments: (LedgerMetrics & { id: string; name: string; agents: number })[];
+  tasks: {
+    count: number;
+    usd: number;
+    perTask: number | null;
+    sampled: number;
+    done: { count: number; perTask: number | null; median: number | null };
+    top: { issueId: string; identifier: string | null; title: string | null; status: string | null; agent: string; usd: number; calls: number }[];
+  };
+  wasted: {
+    failed: { usd: number; calls: number; list: { agent: string; status: string; calls: number; usd: number }[] };
+    cancelled: { usd: number; count: number; list: { issueId: string; identifier: string | null; title: string | null; agent: string; usd: number; calls: number }[] };
+    looping: { threshold: number; usd: number; count: number; list: { runId: string; agent: string; calls: number; usd: number; first: string }[] };
+  };
 }
 export interface CostTop {
   filter: { agentId?: string; model?: string };

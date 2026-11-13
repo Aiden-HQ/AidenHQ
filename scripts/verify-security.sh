@@ -370,7 +370,8 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # mutation marks a draft ready) are: merge and update-branch; in the agents org only, retargeting a stacked PR to the
 # default branch once its parent merged, deleting a merged PR's own head branch (never the default branch, only at the
 # merged head, never under an open PR), and `aidenhq close` (a comment, then the PR closed). allowedWrite refuses all but
-# PUT outside the agents org. The card is the review (bound to the head) in the agents org and the product repo, whose
+# PUT outside the agents org, except comments and PR edits (never a branch delete) on the product repo, for closing its
+# Dependabot PRs (Tier 0 only when the runner read the author as dependabot[bot] from the API). The card is the review (bound to the head) in the agents org and the product repo, whose
 # merges go through the App; elsewhere the host gh login merges, behind GitHub's own review. WRITES allows paths, not
 # bodies or orgs, so the call sites and their gates are asserted here too. Pushes and draft PRs stay on the exact word.
 rm_="services/runner/src/merges.mjs"; rmain="services/runner/src/main.mjs"; rtiers="services/runner/src/tiers.mjs"
@@ -378,8 +379,9 @@ merge_writes="$(sed -n '/^export const WRITES/,/^\];/p' "$rm_" | grep -oE 'metho
 merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'githubWrite\(repo, `[^`]*`, \{[^}]*\}(, "[A-Z]+")?\)' | tr '\n' ' ')"
 [ "$merge_writes" = 'method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/merge$/ method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/update-branch$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/issues\/\d+\/comments$/ method: "PATCH", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+$/ method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ ' ] \
   && [ "$(grep -o 'mutation([^)]*) { [A-Za-z]*' "$rm_" | awk '{print $NF}' | tr '\n' ' ')" = "markPullRequestReadyForReview " ] \
-  && [ "$(grep -c '"-X"' "$rmain")" = 1 ] && grep -qF 'if (!merges.allowedWrite(method, path, cfg.agentsOrg)) throw' "$rmain" \
-  && grep -qF 'return method === "PUT" || (Boolean(agentsOrg) && path.split("/")[1].toLowerCase() === agentsOrg.toLowerCase());' "$rm_" && [ "$(grep -c 'githubWrite(' "$rmain")" = 7 ] \
+  && [ "$(grep -c '"-X"' "$rmain")" = 1 ] && grep -qF 'if (!merges.allowedWrite(method, path, cfg.agentsOrg, cfg.productRepo)) throw' "$rmain" \
+  && grep -qF 'if (method === "PUT" || (Boolean(agentsOrg) && path.split("/")[1].toLowerCase() === agentsOrg.toLowerCase())) return true;' "$rm_" \
+  && grep -qF 'return Boolean(productRepo) && method !== "DELETE" && path.split("/").slice(1, 3).join("/").toLowerCase() === productRepo.toLowerCase();' "$rm_" &&[ "$(grep -c 'githubWrite(' "$rmain")" = 7 ] \
   && [ "$merge_calls" = 'githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha }) githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head }) githubWrite(repo, `repos/${repo}/pulls/${number}`, { base }, "PATCH") githubWrite(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE") githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST") githubWrite(repo, `repos/${repo}/pulls/${number}`, { state: "closed" }, "PATCH") ' ] \
   && [ "$(grep -c 'github\.retarget(' "$rm_")" = 1 ] && grep -qF 'await github.retarget(p.repo, p.number, defaultBranch);' "$rm_" \
   && [ "$(grep -c 'github\.deleteBranch(' "$rm_")" = 1 ] \
@@ -400,8 +402,12 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && [ "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n 'await tierFor(ctx.issue, "close"' | cut -d: -f1)" -lt "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n '^  if (t.tier !== 0) throw ' | cut -d: -f1)" ] \
   && [ "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n '^  if (t.tier !== 0) throw ' | cut -d: -f1)" -lt "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n 'merges.closePrs(' | cut -d: -f1)" ] \
   && grep -qF 'if (!same(orgOf(p.repo), s.agentsOrg)) return REJECT("outside-close"' "$rtiers" \
-  && grep -qF 'if (same(p.repo, s.instanceRepo) || same(p.repo, s.productRepo)) return REJECT("core-repo-close"' "$rtiers" \
-  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues), merged-head branch deletes (after any agents-org merge) and closes (Tier 0, not the product or instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
+  && [ "$(awk '/^function dependabotMergePart/,/^}/' "$rtiers" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 T(2 " ] \
+  && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close"' "$rtiers" \
+  && grep -qF 'if (p.dependabot !== true) return REJECT("core-repo-close"' "$rtiers" \
+  && grep -qF 'if (!s.requester?.platform) return REJECT("product-close-requester"' "$rtiers" \
+  && grep -qF '? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p' "$rmain" \
+  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues), merged-head branch deletes (after any agents-org merge) and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
 # Tool-only agents get no shell: setup (gate code too) must run the gate's check on every Codex agent without image:.
 grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-setup.mjs \
   && [ "$(grep -c 'assertNoShell(' scripts/paperclip-setup.mjs)" = 1 ] \
@@ -409,7 +415,8 @@ grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-set
   && pass "setup: every tool-only Codex agent passes the no-shell check (scripts/no-shell.mjs)" || fail "setup: the no-shell check's call site changed (scripts/paperclip-setup.mjs)"
 # The Engineer's own tools (docs/design/conversational-engineers.md): a fixed command list on the per-run loopback
 # endpoint, every write tiered (tiers.mjs) or checked against the user's words, and the check given nothing else.
-# `close` is tiered only: Tier 0 for agents-org PRs outside the product and instance repos, refused anywhere else.
+# `close` is tiered only: Tier 0 for agents-org PRs outside the instance repo and for the product repo's Dependabot PRs
+# (the Platform Engineer's line), refused anywhere else.
 tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelper.mjs)"
 [ "$tools" = 'export const TOOLS = ["repo", "status", "push", "pr", "merge", "close", "apply", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks"]' ] \
   && grep -qF 'close: agentClose,' "$rmain" \

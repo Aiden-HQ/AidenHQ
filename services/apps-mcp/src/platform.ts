@@ -108,7 +108,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     const state = !last ? "not deployed" : last.status === "failed" ? "failed" : (healthy.get(app.name) ?? (await engine.containersHealthy(app).catch(() => false))) ? "healthy" : "unhealthy";
     const stats = last && last.status !== "failed" ? await engine.stats(app).catch(() => undefined) : undefined;
     return {
-      name: app.name, healthy: state === "healthy", state, sha: last?.sha, deployed_at: last?.at, owner: app.owner, url: url(app),
+      name: app.name, repo: app.repo, healthy: state === "healthy", state, sha: last?.sha, deployed_at: last?.at, owner: app.owner, url: url(app),
       ...(inc ? { incident: { opened_at: inc.opened_at, kind: inc.kind, detail: inc.detail } } : {}),
       ...(stats ? { stats } : {}),
     };

@@ -3,6 +3,7 @@ import { api } from "./api";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
 import { QUERIES, useQuery } from "./queries";
+import { deciderOf, foldsInChat, outcomeOf } from "./conversation";
 import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Approval, ChatState } from "./types";
 import { ago } from "./util";
@@ -50,13 +51,36 @@ export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold, pi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [unfolded, setUnfolded] = useState(Boolean(unfold));
+  // In a conversation a decided card is one line; one decided while on screen stays open (it doesn't jump under the tap).
+  const [seenPending] = useState(a.state === "pending");
+  const [shown, setShown] = useState(false);
   const act = async (d: "approve" | "reject") => {
     setBusy(true);
     setError("");
     await api.decide(a.id, d).then(decided, (e: Error) => setError(e.message));
     setBusy(false);
   };
-  if (a.state === "expired" && !unfolded) {
+  if (inline && !shown && foldsInChat(a, seenPending)) {
+    const o = outcomeOf(a);
+    const by = deciderOf(a);
+    return (
+      <li className={`approval-folded inline tone-${o.tone}`}>
+        <button className="folded-line" onClick={() => setShown(true)} aria-expanded={false} title={`${a.sentence} (${a.id}): show the whole card`}>
+          <span className="folded-mark" aria-hidden>
+            {o.tone === "ok" ? "✓" : o.tone === "bad" ? "✕" : "–"}
+          </span>
+          <b className="folded-outcome">{o.text}</b>
+          <span className="folded-sentence">{a.sentence}</span>
+          <span className="folded-meta">
+            {a.requestedBy}
+            {by ? ` · by ${by}` : ""}
+          </span>
+          <span className="folded-more">details ▸</span>
+        </button>
+      </li>
+    );
+  }
+  if (!inline && a.state === "expired" && !unfolded) {
     const replaced = /replaced/.test(a.outcomeText ?? "");
     return (
       <li className={`approval-folded${inline ? " inline" : ""}`}>
@@ -90,6 +114,11 @@ export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold, pi
           <span className="chat-title">{!inline ? "Open the chat" : a.state === "auto" ? "ran it at once (Tier 0)" : a.tier === 1 && a.state === "pending" ? "asks the AI reviewer" : "asks for your approval"}</span>
         </button>
         <span className="muted small">{a.id}</span>
+        {inline && shown && (
+          <button className="link-btn small" onClick={() => setShown(false)} aria-label="Fold this card to one line">
+            Fold
+          </button>
+        )}
         {top && buttons}
       </div>
       <p className="approval-sentence">{a.sentence}</p>
@@ -145,19 +174,6 @@ export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold, pi
       {error && <div className="alert">{error}</div>}
     </li>
   );
-}
-
-type Outcome = { text: string; tone: "ok" | "bad" | "meh" | "needs" };
-/** One word for where an approval ended. */
-export function outcomeOf(a: Approval): Outcome {
-  if (a.state === "pending") return a.tier === 1 ? { text: "With the reviewer", tone: "meh" } : { text: "Pending", tone: "needs" };
-  if (a.state === "auto") return { text: a.outcome === "failed" ? "Ran, failed" : "Ran (Tier 0)", tone: a.outcome === "failed" ? "bad" : "ok" };
-  if (a.outcome === "applied") return { text: "Applied", tone: "ok" };
-  if (a.outcome === "failed") return { text: "Failed", tone: "bad" };
-  if (a.state === "unknown") return { text: "Unknown", tone: "bad" };
-  if (a.state === "rejected") return { text: "Rejected", tone: "meh" };
-  if (a.state === "expired") return { text: /replaced/.test(a.outcomeText ?? "") || a.replaced ? "Replaced" : "Expired", tone: "meh" };
-  return { text: "Applying", tone: "meh" };
 }
 
 type Filter = "pending" | "done" | "failed" | "all";

@@ -1,5 +1,6 @@
 // The chat sidebar: Aiden pinned on top as the front door, then each agent with its chats. Pure, so
 // it can be tested without React.
+import { isTestChat } from "./conversation.js";
 import type { ChatAgent, ChatRow, ChatState } from "./types.js";
 
 export interface AgentGroup {
@@ -10,6 +11,8 @@ export interface AgentGroup {
   more: ChatRow[];
   /** Finished chats (newest first), behind "Earlier (N)". */
   earlier: ChatRow[];
+  /** Throwaway test chats (newest first), behind a folded "Tests (N)"; one that needs you stays in the list. */
+  tests: ChatRow[];
   /** Work handed out from this agent's open chats, by the chat it came from. */
   handedOut: Map<string, ChatRow[]>;
   busy: boolean;
@@ -45,8 +48,10 @@ export function groupChats(rows: ChatRow[], agents: ChatAgent[]): { front: Agent
   const chatAgent = new Map(own.map((r) => [r.identifier, r.agent.key]));
   const group = (agent: ChatAgent): AgentGroup => {
     const mine = own.filter((r) => r.agent.key === agent.key);
-    const open = mine.filter((r) => r.open).sort(newest);
-    const earlier = mine.filter((r) => !r.open).sort(newest);
+    const test = (r: ChatRow) => isTestChat(r.title) && !NEEDS.includes(r.state);
+    const open = mine.filter((r) => r.open && !test(r)).sort(newest);
+    const earlier = mine.filter((r) => !r.open && !test(r)).sort(newest);
+    const tests = mine.filter(test).sort(newest);
     const handedOut = new Map<string, ChatRow[]>();
     for (const r of handed.filter((h) => chatAgent.get(h.from!) === agent.key)) handedOut.set(r.from!, [...(handedOut.get(r.from!) ?? []), r]);
     const all = [...open, ...handed.filter((h) => chatAgent.get(h.from!) === agent.key)];
@@ -55,6 +60,7 @@ export function groupChats(rows: ChatRow[], agents: ChatAgent[]): { front: Agent
       chats: open.slice(0, VISIBLE),
       more: open.slice(VISIBLE),
       earlier,
+      tests,
       handedOut,
       busy: anyLive(all),
       needsYou: all.some((r) => NEEDS.includes(r.state)),

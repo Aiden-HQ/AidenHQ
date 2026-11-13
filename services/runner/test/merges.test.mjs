@@ -116,6 +116,11 @@ describe("merge queue: deciding", () => {
       assert.ok(!allowedWrite(m, p.replace("acme/", "acme-agents/"), undefined), "no agents org: refused");
     }
     assert.ok(!allowedWrite("PUT", "repos/acme-agents/app/pulls/1/reviews", "acme-agents"));
+    // The product repo: comments and PR edits (closing its Dependabot PRs), never a branch delete.
+    assert.ok(allowedWrite("POST", "repos/acme/aidenhq/issues/1/comments", "acme-agents", "acme/aidenhq"));
+    assert.ok(allowedWrite("PATCH", "repos/Acme/AidenHQ/pulls/1", "acme-agents", "acme/aidenhq"));
+    assert.ok(!allowedWrite("DELETE", "repos/acme/aidenhq/git/refs/heads/dependabot/x", "acme-agents", "acme/aidenhq"));
+    assert.ok(!allowedWrite("PATCH", "repos/acme/aidenhq-other/pulls/1", "acme-agents", "acme/aidenhq"));
   });
 });
 

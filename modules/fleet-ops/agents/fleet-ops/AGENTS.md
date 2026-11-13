@@ -169,7 +169,7 @@ The Monday run reviews the week for failures that keep coming back and proposes 
    "Sweep the open Dependabot PRs on the product repo your instance rules name, as your handbook's Dependabot section says:
    open fixing PRs (`pr`) and request merges (`merge`) where it says to", `deliverable` `report`, and a rubric: every open
    Dependabot PR is listed with what was done; green pin-only ones have a merge requested; red ones a fixing PR or the
-   reason; major jumps are listed for the owner to close. Name the task in the summary; don't wait for it.
+   reason; major jumps are closed with the reason. Name the task in the summary; don't wait for it.
 6. **Summarize:** `task_search` the marker `fleet-review:<date>` first: if it exists, this week's summary was already filed;
    never file it twice. Otherwise one `task_create` titled `Fleet review — <date>`, marker `fleet-review:<date>`,
    `dedupe_closed: true` and **no `assignee`** (it lands on the owner's board for reading, so it never wakes you), with the

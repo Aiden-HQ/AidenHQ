@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ledgerRange, ledgerSummary, ledgerTop } from "../src/cost-ledger.js";
+import { cacheSavings, coverage, forecast, ledgerRange, ledgerSummary, ledgerTop } from "../src/cost-ledger.js";
 import { Store, type UsageRecord } from "../src/store.js";
 
 const NOW = Date.parse("2026-11-13T12:00:00.000Z");
@@ -67,5 +67,60 @@ describe("ledger aggregates", () => {
     expect(ledgerRange(new URLSearchParams(), NOW)).toMatchObject({ bucket: "day", to: "2026-11-13T12:00:00.000Z" });
     expect(() => ledgerRange(new URLSearchParams({ from: "2026-01-01T00:00:00Z", to: range.to }), NOW)).toThrow(/62 days/);
     expect(() => ledgerRange(new URLSearchParams({ from: range.to, to: range.from }), NOW)).toThrow(/after/);
+  });
+});
+
+describe("insights", () => {
+  it("forecasts the month from the recent run-rate, and says so when there is too little history", () => {
+    // Nov 13 12:00: 17.5 days left. $10 over the last 2 days is $5/day; $12 so far.
+    const f = forecast({ monthToDate: 12, windowUsd: 10, windowMs: 2 * 864e5, now: NOW });
+    expect(f.perDay).toBe(5);
+    expect(f.projected).toBeCloseTo(12 + 5 * 17.5, 6);
+    expect(forecast({ monthToDate: 1, windowUsd: 1, windowMs: 3600e3, now: NOW }).projected).toBeNull();
+  });
+
+  it("judges the ledger against OpenRouter only for periods it fully covers", () => {
+    const day = Date.parse("2026-11-13T00:00:00Z");
+    const month = Date.parse("2026-11-01T00:00:00Z");
+    const c = coverage(
+      [
+        { name: "Today", from: day, real: 10, ledger: 9.95 },
+        { name: "This month", from: month, real: 40, ledger: 20 },
+      ],
+      "2026-11-12T20:25:00.000Z",
+    );
+    expect(c.periods.map((p) => p.state)).toEqual(["accurate", "partial"]);
+    expect(c.state).toBe("accurate");
+    // A gateway bypass: OpenRouter saw $3 more than itemised.
+    const gap = coverage([{ name: "Today", from: day, real: 13, ledger: 10 }], "2026-11-12T20:25:00.000Z");
+    expect(gap.state).toBe("gap");
+    expect(gap.periods[0]).toMatchObject({ gap: 3 });
+    expect(gap.periods[0]!.share).toBeCloseTo(3 / 13, 6);
+    expect(coverage([{ name: "Today", from: day, real: 1, ledger: 1 }], null).state).toBe("unverified");
+  });
+
+  it("prices the cache at the list gap between fresh and cached input, and finds waste and departments in SQL", async () => {
+    const prices = new Map([["deepseek/flash", { prompt: "0.000001", input_cache_read: "0.0000002" }]]);
+    // The kimi model has no cached price and is left out.
+    expect(cacheSavings([{ model: "deepseek/flash", cached: 3600 }, { model: "kimi/pro", cached: 9999 }], prices)).toBeCloseTo(3600 * 8e-7, 9);
+    expect(cacheSavings([{ model: "deepseek/flash", cached: 1 }], null)).toBeNull();
+
+    const store = fixture();
+    // A looping run (150+ calls) on a task that ended cancelled.
+    for (let i = 0; i < 150; i++) store.addUsage(call("2026-11-12T07:00:00.000Z", { agentId: "a1", runId: "loop", issueId: "iss-3", kind: "agent", status: "ok", costUsd: 0.02 }));
+    const issue = async (id: string) => ({ identifier: id.toUpperCase(), title: id, status: id === "iss-3" ? "cancelled" : "done" });
+    const agents = async () => [{ id: "a1", name: "Aiden", status: "idle", adapterType: "codex_local", metadata: { department: { id: "leadership", name: "Leadership", order: 1 } } }];
+    const r = await ledgerSummary({ ...deps(store), agents, issue, prices: async () => prices }, range, NOW);
+    const i = r.insights;
+    expect(i.cache.savedUsd).toBeGreaterThan(0);
+    expect(i.wasted.failed).toMatchObject({ calls: 1 });
+    expect(i.wasted.cancelled).toMatchObject({ count: 1 });
+    expect(i.wasted.cancelled.usd).toBeCloseTo(3, 6);
+    expect(i.wasted.looping).toMatchObject({ count: 1 });
+    expect(i.tasks.top[0]).toMatchObject({ identifier: "ISS-3", status: "cancelled" });
+    expect(i.tasks.done.count).toBe(2);
+    expect(i.departments.find((x) => x.id === "leadership")).toMatchObject({ name: "Leadership", agents: 1 });
+    expect(i.departments.map((x) => x.id)).toContain("system");
+    expect(i.coverage).toMatchObject({ state: "unavailable" });
   });
 });
