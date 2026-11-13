@@ -154,6 +154,29 @@ describe("merge queue: deciding", () => {
 });
 
 describe("merge queue: a run through", () => {
+  it("a three-level stack replays each PR from its parent's approved head, not the parent's replay", async () => {
+    // A (merged) ← B ← C, one card. B is replayed onto master after A; C after B, from B's approved head.
+    const prs = { 1: pr(1, { state: "MERGED", headRefName: "a", headRefOid: "headA" }), 2: pr(2, { headRefName: "b", baseRefName: "a", headRefOid: "headB" }), 3: pr(3, { headRefName: "c", baseRefName: "b", headRefOid: "headC" }) };
+    const bases = { a: { tip: "headA", merged: [{ headRefOid: "headA", isCrossRepository: false }] } };
+    const gh = fakeGithub(prs, { merge2: green }, bases);
+    const from = [];
+    gh.rebuild = async (repo, p, start) => {
+      from.push([p.number, start]);
+      prs[p.number] = { ...prs[p.number], headRefOid: `replayed${p.number}` };
+      return `replayed${p.number}`;
+    };
+    const q = newQueue([1, 2, 3].map((n) => ({ ...findPrs(`o/r#${n}`)[0], head: `head${String.fromCharCode(64 + n)}` })), { gapMinutes: 0, now: at(0) });
+    const cardIsReview = () => true;
+    await advance(q, { github: gh, now: at(0), cardIsReview });
+    await advance(q, { github: gh, now: at(1), cardIsReview });
+    assert.deepEqual(gh.writes.find((w) => w.merge), { merge: 2, sha: "replayed2", method: "squash" });
+    bases.b = { tip: "replayed2", merged: [{ headRefOid: "replayed2", isCrossRepository: false }] };
+    await advance(q, { github: gh, now: at(10), cardIsReview });
+    await advance(q, { github: gh, now: at(11), cardIsReview });
+    assert.deepEqual(from, [[2, "headA"], [3, "headB"]]);
+    assert.equal(q.state, "running", q.reason);
+  });
+
   it("merges one at a time, waits for CI and the gap, then finishes", async () => {
     const gh = fakeGithub({ 1: pr(1), 2: pr(2) });
     let q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 15, now: at(0) });

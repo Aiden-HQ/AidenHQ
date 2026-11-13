@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, ensureOptionalSecrets, grantEntry, hostMounts } from "../modules.mjs";
+import { compile, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts } from "../modules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -178,4 +178,15 @@ test("routine autonomy: full by default, tier0 for a webhook routine unless it s
   const { routines } = compile(mods, inst(["wiper"])).paperclip;
   assert.deepEqual([routines.sweep.autonomy, routines.hook.autonomy, routines.hookfull.autonomy], ["full", "tier0", "full"]);
   assert.throws(() => compile(mods, inst(["wiper"], base, { overrides: { routines: { sweep: { autonomy: "yes" } } } })), /routine sweep: autonomy is off, tier0, full/);
+});
+
+test("health check probes call as the least-granted agent holding every probe tool, or none", () => {
+  const agents = {
+    librarian: { enabled_tools: { google_workspace: ["calendar_list_events"] } },
+    assistant: { enabled_tools: { google_workspace: ["gmail_search", "calendar_list_events", "docs_read"], github: ["github_whoami", "github_issue_read"] } },
+    inbox: { enabled_tools: { google_workspace: ["gmail_search", "calendar_list_events"] } },
+  };
+  assert.equal(healthProbeAgent(agents, "google_workspace"), "inbox");
+  assert.equal(healthProbeAgent(agents, "github"), "assistant");
+  assert.equal(healthProbeAgent({ librarian: agents.librarian }, "google_workspace"), undefined);
 });

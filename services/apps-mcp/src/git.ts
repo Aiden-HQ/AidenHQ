@@ -14,6 +14,7 @@ export interface GitEnv {
   orgs?: string[]; // GitHub orgs/users apps may be built from (setting github_orgs), besides the agents org
   agentsOrg?: string; // the instance's agents org: always allowed; its repos are read with the GitHub App when appToken is set
   appToken?: RepoToken;
+  productDir?: string; // the host's product checkout (REPO_DIR): module apps are fetched from it, never from GitHub
 }
 
 // The read-only token travels as an HTTP header for this process only: it never lands in a URL, .git/config or error text.
@@ -63,14 +64,20 @@ export async function remoteHead(env: GitEnv, app: App): Promise<string> {
   return sha;
 }
 
-/** The app's bare repo (created on first use), fetched up to date; returns its --git-dir arg. */
+/**
+ * The app's bare repo (created on first use), fetched up to date; returns its --git-dir arg. A module app's source is the
+ * product commit the instance pins, which the host's product checkout already holds: its origin/<branch> is copied from
+ * there (apply-config fetched it from GitHub and refused a pin not on it), so the reachability check below still means
+ * "on the product's origin/<branch>", and no token is needed for the product repo.
+ */
 async function fetchAll(env: GitEnv, app: App): Promise<string> {
   const gd = `--git-dir=${env.gitDir}/${app.name}.git`;
   if (!existsSync(`${env.gitDir}/${app.name}.git`)) {
     mkdirSync(env.gitDir, { recursive: true });
     await git(env, ["init", "--bare", "-q", `${env.gitDir}/${app.name}.git`]);
   }
-  await git(env, [gd, "fetch", "--prune", url(app), "+refs/heads/*:refs/remotes/origin/*"], undefined, {}, app);
+  if (app.module && env.productDir) await git(env, [gd, "fetch", "--prune", env.productDir, `+refs/remotes/origin/${app.branch}:refs/remotes/origin/${app.branch}`]);
+  else await git(env, [gd, "fetch", "--prune", url(app), "+refs/heads/*:refs/remotes/origin/*"], undefined, {}, app);
   return gd;
 }
 

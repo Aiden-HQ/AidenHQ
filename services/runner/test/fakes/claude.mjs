@@ -36,6 +36,9 @@ out({ type: "system", subtype: "init", session_id: "session-1" });
 
 const repo = [join(process.cwd(), "app"), join(process.cwd(), "acme/app")].find((d) => existsSync(join(d, ".git")));
 const git = (...args) => spawnSync("git", ["-C", repo, ...args], { stdio: "ignore" });
+log("workspace", { repo });
+/** policy.txt: two identical blocks; `allowed` (0 or 1) is the one whose last line says allow = true. */
+const policy = (allowed) => [0, 1].map((i) => `# block ${i}\n\nx1\nx2\nx3\nallow = ${i === allowed}\ny1\ny2\ny3\n`).join("\n");
 const [step, ...tools] = (existsSync(process.env.FAKE_STEP) ? readFileSync(process.env.FAKE_STEP, "utf8").trim() : "commit").split("\n");
 if (step === "commit") {
   git("switch", "-qc", "fix/remove-legacy", "origin/main");
@@ -79,6 +82,69 @@ if (step === "commit") {
   writeFileSync(join(repo, "chains.txt"), `chain\n# ${Date.now()}\n`);
   git("add", "chains.txt");
   git("commit", "-q", "--amend", "-m", "fix: drop Legacy");
+} else if (step.startsWith("rebase ")) {
+  // `rebase <branch>`: onto GitHub's main as it is now, cleanly (the same change on a new base).
+  git("fetch", "-q", "origin");
+  git("switch", "-q", step.slice("rebase ".length));
+  git("rebase", "-q", "origin/main");
+} else if (step.startsWith("new ")) {
+  // `new <branch> [policy|bytes]`: a branch off GitHub's main with one commit: its own file, the first block of policy.txt
+  // allowed, or a file with a byte that isn't UTF-8.
+  const [, branch, kind] = step.split(" ");
+  git("fetch", "-q", "origin");
+  git("switch", "-qc", branch, "origin/main");
+  if (kind === "policy") writeFileSync(join(repo, "policy.txt"), policy(0));
+  else if (kind === "bytes") writeFileSync(join(repo, "raw.txt"), Buffer.from([0x61, 0x80, 0x0a]));
+  else writeFileSync(join(repo, `${branch.replace(/\W/g, "-")}.txt`), `${branch}\n`);
+  git("add", "-A");
+  git("commit", "-qm", `feat: ${branch}`);
+} else if (step.startsWith("hunk-moved ")) {
+  // The approved one-line edit made to policy.txt's other, identical block instead (same hunk text, other place).
+  git("fetch", "-q", "origin");
+  git("switch", "-q", step.slice("hunk-moved ".length));
+  git("reset", "-q", "--hard", "origin/main");
+  writeFileSync(join(repo, "policy.txt"), policy(1));
+  git("add", "-A");
+  git("commit", "-qm", `feat: ${step.slice("hunk-moved ".length)}`);
+} else if (step.startsWith("bytes-swapped ")) {
+  // Rebased, with the approved invalid byte swapped for another (both decode to the same replacement character).
+  git("fetch", "-q", "origin");
+  git("switch", "-q", step.slice("bytes-swapped ".length));
+  git("rebase", "-q", "origin/main");
+  writeFileSync(join(repo, "raw.txt"), Buffer.from([0x61, 0x81, 0x0a]));
+  git("add", "-A");
+  git("commit", "-q", "--amend", "--no-edit");
+} else if (step.startsWith("revert ")) {
+  // Rebased, plus an unapproved commit and its revert: the end result is the approved tree.
+  git("fetch", "-q", "origin");
+  git("switch", "-q", step.slice("revert ".length));
+  git("rebase", "-q", "origin/main");
+  writeFileSync(join(repo, "evil.txt"), "unapproved\n");
+  git("add", "-A");
+  git("commit", "-qm", "chore: tweak");
+  git("revert", "--no-edit", "HEAD");
+} else if (step.startsWith("replace ")) {
+  // `replace <branch>`: the branch's commit shown as a harmless sibling (git replace), so plain git reads the sibling.
+  const branch = step.slice("replace ".length);
+  git("switch", "-q", branch);
+  git("switch", "-qc", "sibling", "HEAD~1");
+  writeFileSync(join(repo, "readme"), "docs\n");
+  git("add", "-A");
+  git("commit", "-qm", "docs");
+  git("switch", "-q", branch);
+  git("replace", branch, "sibling");
+} else if (step.startsWith("forge ")) {
+  // `forge <branch>`: a hostile agent hides an extra change under a forged origin/main and rebases onto it, so its
+  // workspace shows only the approved change against "main".
+  const branch = step.slice("forge ".length);
+  git("fetch", "-q", "origin");
+  git("switch", "-qC", "hidden", "origin/main");
+  writeFileSync(join(repo, "hidden.txt"), "unapproved\n");
+  git("add", "hidden.txt");
+  git("commit", "-qm", "chore: hidden");
+  git("update-ref", "refs/remotes/origin/main", "hidden");
+  git("switch", "-q", branch);
+  git("rebase", "-q", "hidden");
 } else if (step.startsWith("describe")) {
   // A PR description in the workspace, with Claude Code's own footer (and an internal name, for "describe-leak").
   mkdirSync(join(process.cwd(), ".aidenhq"), { recursive: true });

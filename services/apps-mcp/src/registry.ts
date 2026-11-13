@@ -75,7 +75,11 @@ const readApps = (path: string): App[] =>
 
 /** The instance registry plus the module apps (absent before the first compile). */
 export function loadRegistry(path: string, modulesPath?: string): App[] {
-  const apps = [...readApps(path), ...(modulesPath && existsSync(modulesPath) ? readApps(modulesPath) : [])];
+  const own = readApps(path);
+  // A module app's source is the product checkout at its pin (git.ts fetchAll): only the compiler's registry may say so.
+  const forged = own.find((a) => a.module || a.pin);
+  if (forged) throw new Error(`${forged.name}: module and pin are set by the compiler on module apps, never in apps.yaml`);
+  const apps = [...own, ...(modulesPath && existsSync(modulesPath) ? readApps(modulesPath) : [])];
   const dup = apps.find((a, i) => apps.findIndex((b) => b.name === a.name) !== i);
   if (dup) throw new Error(`duplicate app ${dup.name} in registry`);
   checkConnects(apps);

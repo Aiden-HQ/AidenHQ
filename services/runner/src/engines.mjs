@@ -467,6 +467,9 @@ export function startAgent({ cfg, engine, worktree, prompt, sessionId, logPath, 
     PATH: [cfg.ghWrapperDir, ...(cfg.bwrap?.startsWith("/") ? [dirname(cfg.bwrap)] : []), process.env.PATH].join(":"),
     GIT_SSH_COMMAND: join(cfg.ghWrapperDir, "git-ssh-no-push"),
     GIT_TERMINAL_PROMPT: "0",
+    // The agent's git sees the commits the runner will publish, not replacements (the runner's git ignores them too).
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_GRAFT_FILE: "/dev/null",
     AIDENHQ_TASK_WORKTREE: worktree,
     AIDENHQ_BROWSER_DIR: cfg.browserDir,
     // The agent's commits are the App's bot (or AidenHQ agent), never the owner's identity.

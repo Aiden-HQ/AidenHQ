@@ -132,7 +132,7 @@ services:
       # The apps node's serve config (apps-edge reads it); never the host's tailscaled.
       - ${AIDENHQ_DATA_DIR:-./data}/apps-edge/serve:/edge
       # The repo at its own path: Docker resolves bind mounts on the host, so paths must match. Holds each app's checkout and
-      # data under data/apps. The instance repo likewise (apps.yaml registry, commits pushed with the deploy key).
+      # data under data/apps, and module apps' source (its origin/main, at the pin). The instance repo likewise (apps.yaml registry, commits pushed with the deploy key).
       - ${PWD}:${PWD}
       - ${AIDENHQ_INSTANCE_DIR}:${AIDENHQ_INSTANCE_DIR}
       # A local instance repo (ops/setup.sh): the bare repo the checkout pushes to, at the same path. Unused otherwise.

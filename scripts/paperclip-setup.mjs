@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { heartbeatSection, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, memorySection, routineAutonomyDefault, sourcesSection } from "./modules.mjs";
+import { heartbeatSection, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, memorySection, routineAutonomyDefault, sourcesSection } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, computerSection, ensureComputers, runnerBox } from "./computers.mjs";
 import { assertNoShell } from "./no-shell.mjs";
@@ -565,6 +565,29 @@ async function ensureOpsKey(agent) {
   return true;
 }
 
+/**
+ * scripts/healthcheck.sh's caller per probed connection (HEALTH_PROBES): a key, `paperclip_health_key_<connection>`, for
+ * the agent healthProbeAgent picks from the grants. Kept while it still names that agent; emptied when no agent qualifies.
+ */
+async function ensureHealthKeys(agents) {
+  for (const conn of Object.keys(HEALTH_PROBES)) {
+    const name = `paperclip_health_key_${conn}`;
+    const key = healthProbeAgent(cfg.agents, conn);
+    if (!key) {
+      if (readSecret(name)) writeSecret(name, "");
+      continue;
+    }
+    const existing = readSecret(name);
+    if (existing) {
+      const res = await fetch(new URL("/api/agents/me", baseUrl), { headers: { authorization: `Bearer ${existing}` } });
+      if (res.ok && (await res.json()).id === agents[key].id) continue;
+    }
+    const { json } = await api("POST", `/api/agents/${agents[key].id}/keys`, { name: `healthcheck-${conn}` });
+    writeSecret(name, json.token);
+    step(`Created the health check's ${conn} key, as ${key}`);
+  }
+}
+
 function updateSystemYaml(companyId) {
   const path = join(configDir, "system.yaml");
   if (!existsSync(path)) fail("config/system.yaml missing (run scripts/bootstrap.sh)");
@@ -848,6 +871,7 @@ const opsAgents = Object.keys(cfg.agents ?? {}).filter((k) => cfg.agents[k].role
 if (opsAgents.length > 1) fail(`only one agent may hold the ops-key role (${opsAgents.join(", ")})`);
 const librarian = opsAgents.length ? agents[opsAgents[0]] : undefined;
 const keyChanged = librarian ? await ensureOpsKey(librarian) : false;
+if (isWork) await ensureHealthKeys(agents);
 const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
 if (librarian && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
 ensureCodexConfig();

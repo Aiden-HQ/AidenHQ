@@ -240,14 +240,27 @@ ${REPLY(user)}
 }
 
 /**
+ * A reply that is the model's own reasoning stuck in a loop, not a report: long, and ending in a few short lines repeated.
+ * A reasoning model that writes its reasoning delimiter (DeepSeek's think tag) while reasoning has the provider close its
+ * reasoning there; the rest streams as the answer, and with no tool call the engine ends the turn on it (WOR-4423: 92k
+ * characters ending in "Send. Emit. Output." 954 times).
+ */
+export function reasoningLoop(reply) {
+  if (reply.length < 20_000) return false;
+  const tail = reply.split("\n").map((l) => l.trim()).filter(Boolean).slice(-40);
+  return tail.length === 40 && new Set(tail).size <= 4;
+}
+
+/**
  * How a run ended. It finished if it exited cleanly with a reply (or NO_REPLY): opencode, for one,
  * exits 0 when it gives up early, with nothing to say. Otherwise a headline for the runner's comment.
  */
 export function runOutcome({ code, timedOut, stalled, lastMessage, timeoutMinutes, dirty, committed = false }) {
   const reply = String(lastMessage ?? "").trim();
+  const leftover = dirty ? " Its partial changes are in the workspace, uncommitted." : committed ? " What it committed is on its branches." : " Nothing was changed.";
+  if (!code && !timedOut && reasoningLoop(reply)) return { finished: false, headline: `**Stopped before finishing:** the agent's last message was its own reasoning running in a loop, not a report.${leftover} Say **continue** to pick up where it stopped.` };
   const finished = !code && !timedOut && Boolean(reply);
   if (finished) return { finished, silent: reply === NO_REPLY, headline: "" };
-  const leftover = dirty ? " Its partial changes are in the workspace, uncommitted." : committed ? " What it committed is on its branches." : " Nothing was changed.";
   if (stalled) return { finished, headline: `**Stalled:** the agent produced nothing for 15 minutes, so it was stopped.${leftover} Say **continue** to pick up where it stopped.` };
   if (timedOut) return { finished, headline: `**Timed out** after ${timeoutMinutes} minutes.${leftover} Say **continue** to pick up where it stopped.` };
   if (code) return { finished, headline: `**Failed** (exit code ${code}).${leftover}` };

@@ -12,7 +12,7 @@ import { architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, st
 import { adoptRun, boxLastFile, codexHome, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.mjs";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
-import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, landOnMain, remoteIsEmpty, setGitAuth, setUntrusted } from "./git.mjs";
+import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, setGitAuth, setUntrusted } from "./git.mjs";
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg } from "./github-app.mjs";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.mjs";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.mjs";
@@ -492,7 +492,7 @@ async function wakeForRebase(issueId, pr, why, main) {
   }
   await pc.comment(issueId, `${what} Asking for one rebase onto \`${main.name}\` and one publish.`);
   log("rebase requested", { issue: issue.identifier, pr: pr.url, why, main: main.oid });
-  await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq pr\`. If a check still fails for another reason, fix that on the same branch first. Nothing else.` });
+  await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq pr\`, without \`--title\` or \`--body-file\` (the PR keeps its own, and a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.` });
 }
 
 async function handleIssue(issue, engineerIds) {
@@ -926,6 +926,21 @@ const mergeGithub = {
   },
   async retarget(repo, number, base) {
     await githubWrite(repo, `repos/${repo}/pulls/${number}`, { base }, "PATCH");
+  },
+  /**
+   * A stacked PR's own approved commits (from..its head) replayed by the runner onto the default branch's tip in its own
+   * clone, and pushed as the PR's head (leased to the approved head). Returns the new head; throws on a conflict, a head
+   * that moved, or anything that isn't a straight line of commits on top of `from`.
+   */
+  async rebuild(repo, pr, from, defaultBranch) {
+    return withTrusted(repo, [defaultBranch, pr.headRefName], async (path, [tip, head]) => {
+      if (pr.isCrossRepository || head !== pr.headRefOid) throw new Error("its head moved");
+      const re = await replayOnto(path, from, head, tip, await botIdentity());
+      if (!re) throw new Error(`its commits don't replay cleanly onto \`${defaultBranch}\``);
+      const url = await git(path, "remote", "get-url", "origin");
+      await git(path, "push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${pr.headRefName}:${head}`, url, `${re.tip}:refs/heads/${pr.headRefName}`);
+      return re.tip;
+    });
   },
   async deleteBranch(repo, branch) {
     await githubWrite(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE");
@@ -1457,9 +1472,11 @@ async function commonTierState(issue, action, also = []) {
 }
 
 /** One branch as tiering sees it: empty repo, default/deploy branch, and the files it changes against the default branch. */
-async function branchTierState(r, sha) {
+async function branchTierState(r, sha, bound) {
   const empty = await remoteIsEmpty(r.path).catch(() => true);
-  const base = empty ? "" : await git(r.path, "merge-base", `refs/remotes/origin/${r.defaultBase}`, sha).catch(() => "");
+  // `bound`: the card's trusted base (bindBase): the range reviewed is that one, whatever the workspace's origin says now.
+  // A product branch without one (a card from before bases were bound) has no base it can trust: unknown files, Tier 2.
+  const base = empty ? "" : bound || (sameRepo(r.repo, cfg.productRepo) ? "" : await git(r.path, "merge-base", `refs/remotes/origin/${r.defaultBase}`, sha).catch(() => ""));
   const files = base ? (await git(r.path, "diff", "--no-renames", "--name-only", base, sha).catch(() => null))?.split("\n").filter(Boolean) ?? null : null;
   const app = appsRegistry().all.find((a) => String(a.repo).toLowerCase() === r.repo.toLowerCase());
   const texts = sameRepo(r.repo, cfg.productRepo) && files ? await productTexts(files, (rev, f) => git(r.path, "show", `${rev}:${f}`), base, sha) : undefined;
@@ -1598,7 +1615,7 @@ async function currentTier(issue, a, { withDiff = false } = {}) {
       const r = rows.find((x) => x.repo.toLowerCase() === b.repo.toLowerCase() && x.branch === b.branch);
       const tip = r ? await git(r.path, "rev-parse", "--verify", `refs/heads/${b.branch}^{commit}`).catch(() => "") : "";
       if (tip !== b.sha) throw new UserError(`${b.repo} \`${b.branch}\` moved since the card`);
-      branches.push(await branchTierState(r, b.sha));
+      branches.push(await branchTierState(r, b.sha, b.base));
     }
     const t = await tierFor(issue, a.action, { branches }, a.args.merge ? ["merge"] : []);
     if (!withDiff) return t;
@@ -1736,8 +1753,153 @@ async function publishApproved(issue, a) {
     const r = rows.find((x) => x.repo.toLowerCase() === b.repo.toLowerCase() && x.branch === b.branch);
     const tip = r ? await git(r.path, "rev-parse", "--verify", `refs/heads/${b.branch}^{commit}`).catch(() => "") : "";
     if (tip !== b.sha) throw new UserError(`${b.repo} \`${b.branch}\` changed since it was approved (approved \`${b.sha.slice(0, 9)}\`, now ${tip ? `\`${tip.slice(0, 9)}\`` : "gone"}); nothing was published. The agent has to ask again.`);
+    // A bound base: what goes out is still exactly the reviewed range on GitHub's default branch.
+    if (b.base && (await trustedBase(r, b.sha).catch(() => "")) !== b.base) throw new UserError(`${b.repo} \`${b.branch}\` no longer leaves GitHub's default branch where the approved change did, so it would carry commits nobody reviewed; nothing was published. The agent has to ask again.`);
   }
-  return whileApplying(issue, a.action === "pr" ? "opening PRs" : "pushing branches", (signal) => publish(issue, workspace, a.action, signal, { only: a.args.only.map(({ repo, branch }) => ({ repo, branch })), text: a.args.text }));
+  // Checked again right before the push: nothing rewrote the clone's history since the card.
+  await refuseRewritten(a.args.only.map((b) => rows.find((x) => sameRepo(x.repo, b.repo) && x.branch === b.branch)));
+  // Exactly the approved commits go out, whatever the branch says by the time they are pushed.
+  const pins = new Map(a.args.only.map((b) => [pinKey(b.repo, b.branch), b.sha]));
+  const out = await whileApplying(issue, a.action === "pr" ? "opening PRs" : "pushing branches", (signal) => publish(issue, workspace, a.action, signal, { only: a.args.only.map(({ repo, branch }) => ({ repo, branch })), text: a.args.text, check: async () => pins }));
+  if (out.ok) {
+    const by = a.decidedBy?.startsWith("reviewer:") ? "reviewer" : "owner";
+    // Only a range bound into the card before it was reviewed can be replayed later: never a base found afterwards.
+    for (const b of a.args.only.filter((x) => x.base)) approvedRecord(issue.id, b, { sha: b.sha, base: b.base, approval: a.id, action: a.action, merge: Boolean(a.args.merge), by, text: textHash(a.args.text) });
+  }
+  return out;
+}
+
+/**
+ * Approved commits (owner, 2026-11-13: a PR card came back after every rebase with the same commits). Per task and branch,
+ * the last approved head and the base it was approved on (its merge base with the default branch on GitHub), in runner
+ * state. When the agent later publishes the same branch rebased onto a moved default branch, the runner replays those
+ * approved commits itself onto GitHub's current tip, in its own clone (rebuild), and publishes its own result: the approved
+ * change on the new base by construction. Any conflict, or any agent commit that isn't the replayed one tree for tree,
+ * gets a new card.
+ */
+const approvedKey = (issueId, b) => `approved-commits:${issueId}:${b.repo.toLowerCase()}|${b.branch}`;
+const approvedRecord = (issueId, b, record) => (record ? state.set(approvedKey(issueId, b), JSON.stringify(record)) : JSON.parse(state.get(approvedKey(issueId, b)) || "null"));
+/** Refuses a publish from a clone whose history reads differently from what it would push (git.mjs historyRewritten). */
+async function refuseRewritten(rows) {
+  for (const r of new Map(rows.map((r) => [r.path, r])).values()) {
+    const why = await historyRewritten(r.path);
+    if (why) throw new UserError(`Not done: ${r.repo} has ${why}, which makes git show different commits from the ones that would be pushed. Remove it and publish again.`);
+  }
+}
+
+/** A published branch's key in a pin map: the repository case-insensitive, as rows and approvals spell it differently. */
+const pinKey = (repo, branch) => `${String(repo).toLowerCase()}|${branch}`;
+const textHash = (text) => (text ? createHash("sha256").update(JSON.stringify([text.title, text.body])).digest("hex") : undefined);
+
+/**
+ * The runner's own clone of a repository, for replaying approved commits (state dir: no job sees it), never an agent's
+ * workspace, whose refs, remotes and objects the agent controls. Its origin is the real GitHub remote (through the App's
+ * cache clone where the App covers it); objects reach it only through git's transfer, which hashes each one.
+ */
+async function checkRepo(slug) {
+  const path = join(cfg.stateDir, "replay", ...slug.toLowerCase().split("/"));
+  if (!existsSync(join(path, ".git"))) {
+    mkdirSync(path, { recursive: true });
+    await execFileP("git", [...SAFE_GIT_ARGS, "init", "-q", path], { env: ISOLATED_ENV });
+  }
+  const url = (await appFor(slug)) ? appRemoteUrl(slug) : `git@github.com:${slug}.git`;
+  await execFileP("git", [...SAFE_GIT_ARGS, "-C", path, "config", "remote.origin.url", url], { env: ISOLATED_ENV });
+  return path;
+}
+
+const BRANCH_NAME = /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/;
+/** The repository's default branch, from GitHub (never the workspace's idea of it). */
+async function githubDefault(slug) {
+  const { stdout } = await execFileP(await findRealGh(), ["api", `repos/${slug}`, "--jq", ".default_branch"], await gho(slug, READ));
+  const name = stdout.trim();
+  if (!BRANCH_NAME.test(name)) throw new Error("no default branch");
+  return name;
+}
+
+/** `fn(path, oids, out)` with GitHub's `branches` fetched into the runner's clone (their tips: `oids`); `out` is a spare ref. */
+async function withTrusted(slug, branches, fn) {
+  if (!branches.every((b) => BRANCH_NAME.test(b ?? ""))) throw new Error("not a branch name");
+  const path = await checkRepo(slug);
+  const ref = `refs/check/${randomBytes(8).toString("hex")}`;
+  const refs = branches.map((_, i) => `${ref}-${i}`);
+  try {
+    await git(path, "fetch", "--quiet", "origin", ...branches.map((b, i) => `+refs/heads/${b}:${refs[i]}`));
+    return await fn(path, await Promise.all(refs.map((x) => git(path, "rev-parse", "--verify", `${x}^{commit}`))), `${ref}-out`);
+  } finally {
+    for (const x of [...refs, `${ref}-out`]) await git(path, "update-ref", "-d", x).catch(() => {});
+  }
+}
+
+/**
+ * Where a branch's commit `sha` (in the agent's workspace `r`) leaves GitHub's default branch: sent to the runner's clone
+ * (git's transfer hashes every object) and merge-based there against the default branch as GitHub has it now.
+ */
+async function trustedBase(r, sha) {
+  if (!/^[0-9a-f]{40}$/.test(sha ?? "")) throw new Error("not a commit");
+  const main = await githubDefault(r.repo);
+  return withTrusted(r.repo, [main], async (path, [tip], out) => {
+    await git(r.path, "push", "--quiet", "--no-verify", "--force", path, `${sha}:${out}`);
+    return git(path, "merge-base", tip, sha);
+  });
+}
+
+/**
+ * A product branch's reviewed range, bound before anything is tiered, reviewed or carded: its trusted base must be the base
+ * the workspace shows (so the diff the tier and the reviewer read is everything that would go out), and is returned to bind
+ * into the card. Refuses on a mismatch (a stale or forged origin/main), and when it can't be read (try again). Undefined for
+ * other repos.
+ */
+async function bindBase(r, sha) {
+  if (!sameRepo(r.repo, cfg.productRepo)) return undefined;
+  const shown = await git(r.path, "merge-base", `refs/remotes/origin/${r.defaultBase}`, sha).catch(() => "");
+  // Unreadable fails closed: never back to the workspace's own origin for the product repo.
+  const real = await trustedBase(r, sha).catch((err) => void log("trusted base unread", { repo: r.repo, branch: r.branch, err: String(err.message ?? err).slice(0, 200) }));
+  if (!real) throw new UserError(`Not done: couldn't read where \`${r.branch}\` leaves GitHub's \`${r.defaultBase}\` (GitHub or the network on a bad minute), so nothing was published or filed. Try the same command again in a few minutes.`);
+  if (real !== shown) throw new UserError(`Not done: \`${r.branch}\` leaves GitHub's \`${r.defaultBase}\` at \`${real.slice(0, 9)}\`, but your \`origin/${r.defaultBase}\` says \`${shown.slice(0, 9) || "nothing"}\`, so the change would include commits nobody sees. Fetch, rebase onto \`origin/${r.defaultBase}\` and publish again.`);
+  return real;
+}
+
+/**
+ * A push or PR request that runs on an earlier approval instead of a new card: every branch has an approval record of the
+ * same action (and merge) and, when the request rewrites the PR's text, the same text; GitHub's branch is still the
+ * approved commit; the default branch moved on; the approved commits replay onto its tip with no conflict; and the agent's
+ * new commits are exactly the replayed ones, tree for tree (read from its workspace: a mismatch there only means a card).
+ * The owner's approval holds at any tier; the reviewer's only while autonomy is full and the change is still Tier 1 or
+ * lower. `t`: the request's tier now (undefined when unread: fails closed). Returns { records, pins (the runner's commits
+ * to push), moves } or undefined.
+ */
+async function rebuild(issue, action, args, ordered, branches, t) {
+  if (!t || t.reject) return undefined;
+  const records = branches.map((b) => approvedRecord(issue.id, b));
+  if (records.some((r) => !r || r.action !== action || r.merge !== Boolean(args.merge) || (args.text && r.text !== textHash(args.text)))) return undefined;
+  if (records.some((r) => r.by !== "owner") && !(autonomyNow() === "full" && t.tier <= 1)) return undefined;
+  // Any rejected card of this action on the task (the owner's or the reviewer's no) outranks an earlier yes.
+  const cards = boardApi ? ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.identifier)}`)).approvals ?? []) : [];
+  if (stickyFrom(cards, action, args.merge ? ["merge"] : [])) return undefined;
+  const pins = new Map();
+  const moves = [];
+  for (const [i, r] of ordered.entries()) {
+    const rec = records[i];
+    const theirs = branches[i].sha;
+    const main = await githubDefault(r.repo);
+    const built = await withTrusted(r.repo, [main, r.branch], async (path, [tip, onGithub], out) => {
+      if (onGithub !== rec.sha || (await git(path, "merge-base", "--is-ancestor", tip, rec.sha).then(() => true, () => false))) return null;
+      const re = await replayOnto(path, rec.base, rec.sha, tip, await botIdentity());
+      if (!re) return null;
+      const commits = (await git(r.path, "rev-list", "--reverse", `${tip}..${theirs}`)).split("\n").filter(Boolean);
+      const trees = [];
+      for (const c of commits) trees.push(await git(r.path, "rev-parse", "--verify", `${c}^{tree}`));
+      if (trees.join(" ") !== re.trees.join(" ")) return null;
+      // Into the workspace, so the push pinned to it can send it: fetched by the workspace from the runner's clone.
+      await git(path, "update-ref", out, re.tip);
+      await git(r.path, "fetch", "--quiet", path, `+${out}:refs/aidenhq/replayed`);
+      return { tip: re.tip, base: tip };
+    }).catch((err) => void log("rebuild refused", { issue: issue.identifier, branch: r.branch, err: String(err.message ?? err).slice(0, 200) }));
+    if (!built) return undefined;
+    pins.set(pinKey(r.repo, r.branch), built.tip);
+    moves.push({ r, from: theirs, to: built.tip, base: built.base });
+  }
+  return { records, pins, moves };
 }
 
 /** Approved fleet change: lands exactly the approved commit, re-checked, then re-applies the instance on this host. */
@@ -1989,11 +2151,14 @@ async function agentPublish(ctx, command, args) {
     .filter((b) => b.repo && b.branch);
   const text = command === "pr" && args.title ? { title: String(args.title), body: String(args.body ?? "") } : undefined;
   let ranAtOnce; // Tier 0: published now, recorded as an audit row afterwards
+  let carried; // an earlier approval's commits, replayed by the runner: published (and merged) on it, recorded as an audit row
   try {
     const result = await publish(ctx.issue, ctx.workspace, command, ctx.signal, {
       only,
       text,
       check: async (ordered) => {
+        // History rewritten in place (replace refs, grafts, shallow) shows one commit and publishes another: refused before tiering.
+        await refuseRewritten(ordered);
         const branches = await Promise.all(ordered.map(async (r) => ({ repo: r.repo, branch: r.branch, sha: await git(r.path, "rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`) })));
         // A PR on the product repo is one card for push, PR and merge (owner, 2026-11-13): approving it also merges each PR at
         // exactly these commits once every named check and the base branch are green (mergeAfterPublish); the card says so.
@@ -2005,26 +2170,56 @@ async function agentPublish(ctx, command, args) {
           const on = await Promise.all(ordered.map((r, i) => guardBranch(git, r, branches[i].sha)));
           if (on.every((o) => o.satisfied)) throw new AlreadyApplied(await alreadyApplied(ctx.issue, command, branches.map((b) => b.sha).join(","), on.map((o, i) => `${branches[i].repo} \`${branches[i].branch}\`: ${o.evidence}`).join("; ")));
         }
+        // The reviewed range, bound before tiering: a product branch's trusted base must be the one the workspace shows.
+        for (const [i, r] of ordered.entries()) {
+          const base = await bindBase(r, branches[i].sha);
+          if (base) branches[i].base = base;
+        }
         const off = autonomyNow() === "off";
         // Computed here, right before anything is published, from the branches as git sees them. With autonomy off only
         // as the card's base tier (best effort: unknown on a failed read).
-        const tierNow = async () => tierFor(ctx.issue, command, { branches: await Promise.all(ordered.map((r, i) => branchTierState(r, branches[i].sha))) }, merge ? ["merge"] : []);
+        const tierNow = async () => tierFor(ctx.issue, command, { branches: await Promise.all(ordered.map((r, i) => branchTierState(r, branches[i].sha, branches[i].base))) }, merge ? ["merge"] : []);
         const computed = off ? await tierNow().catch(() => null) : await tierNow();
         let t = { tier: 2, reason: "" };
         if (!off) {
           t = computed;
           if (t.reject) throw new UserError(`Not done: ${t.reason}.`);
           if (t.tier === 0) {
+            // Once more right before it goes out at once: nothing rewrote the clone's history while it was tiered.
+            await refuseRewritten(ordered);
             ranAtOnce = { t, args: cardArgs };
             // Exactly the commits classified go out (a branch moved meanwhile can't ride along).
-            return new Map(branches.map((b) => [`${b.repo}|${b.branch}`, b.sha]));
+            return new Map(branches.map((b) => [pinKey(b.repo, b.branch), b.sha]));
           }
+        }
+        // A clean rebase of approved commits: the runner's own replay of them is published on that approval.
+        const built = await rebuild(ctx.issue, command, cardArgs, ordered, branches, off ? computed : t);
+        if (built) {
+          carried = { ...built, args: { ...cardArgs, only: branches.map((b, i) => ({ ...b, sha: built.pins.get(pinKey(b.repo, b.branch)), base: built.moves[i].base })) } };
+          return built.pins;
         }
         const a = await fileApproval(ctx.issue, { action: command, args: cardArgs, tier: t.tier, reason: t.reason, baseTier: baseOf(computed), rule: off ? "autonomy-off" : t.rule });
         throw new AwaitingApproval(waitingFor(a, ctx.issue));
       },
     });
     if (ranAtOnce) await recordAuto(ctx.issue, command, ranAtOnce.args, "", ranAtOnce.t, result);
+    if (carried) {
+      const ids = [...new Set(carried.records.map((r) => r.approval))].join(", ");
+      const said = `The approved commits of ${ids}, replayed by the runner onto the new \`main\` with no conflict (your rebase matches them), so no new card: ${carried.args.merge ? "published, and merging once green on the new commits" : "published"}.`;
+      await pc.comment(ctx.issue.id, said);
+      if (result.ok) {
+        for (const [i, m] of carried.moves.entries()) {
+          // The runner's commits are now the approved ones; the workspace branch takes them (same trees, so its files don't change).
+          approvedRecord(ctx.issue.id, carried.args.only[i], { ...carried.records[i], sha: m.to, base: m.base });
+          await git(m.r.path, "update-ref", `refs/heads/${m.r.branch}`, m.to, m.from).catch(() => {});
+          await git(m.r.path, "update-ref", "-d", "refs/aidenhq/replayed").catch(() => {});
+        }
+      }
+      // Merged as the approved card's own merge would, bound to the runner's commits.
+      const outcome = carried.args.merge && result.ok ? await mergeAfterPublish(ctx.issue, { args: carried.args }, result) : result;
+      await recordAuto(ctx.issue, command, carried.args, "", { rule: "replayed-approval", reason: `the commits of approval ${ids}, replayed by the runner onto a new base with no conflict` }, outcome);
+      return `${said}\n\n${stripHidden(outcome.text).trim()}`;
+    }
     return stripHidden(result.text).trim();
   } catch (err) {
     if (err instanceof AwaitingApproval || err instanceof AlreadyApplied) return err.message;
@@ -2845,6 +3040,9 @@ async function publish(issue, workspace, command, signal, { only = [], text, che
   publishable.forEach(visit);
   // A check may pin the exact commits it cleared (Tier 0): those are what get pushed, whatever the branch says now.
   const pinned = check ? await check(ordered) : undefined;
+  // Pinned (an approval, Tier 0, a replay): every branch going out has its pin, or nothing goes out.
+  const unpinned = pinned ? ordered.filter((r) => !pinned.get(pinKey(r.repo, r.branch))) : [];
+  if (unpinned.length) throw new UserError(`not published: ${unpinned.map((r) => `${r.repo} \`${r.branch}\``).join(", ")} isn't part of what was approved`);
 
   const full = await pc.issue(issue.id);
   const results = [];
@@ -2855,7 +3053,7 @@ async function publish(issue, workspace, command, signal, { only = [], text, che
       continue;
     }
     try {
-      results.push(`| ${label} | ${await publishBranch(issue, full, r, command, rows, ordered.length === 1 ? text : undefined, pinned?.get(`${r.repo}|${r.branch}`))} |`);
+      results.push(`| ${label} | ${await publishBranch(issue, full, r, command, rows, ordered.length === 1 ? text : undefined, pinned?.get(pinKey(r.repo, r.branch)))} |`);
     } catch (err) {
       log("publish failed", { issue: issue.identifier, repo: r.repo, branch: r.branch, err: String(err.stderr || err.message).slice(0, 300) });
       results.push(`| ${label} | ⚠️ ${String(err instanceof UserError ? err.message : err.stderr || err.message).trim().split("\n").slice(-3).join(" ").replace(/\|/g, "/").slice(0, 400)} |`);

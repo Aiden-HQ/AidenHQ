@@ -390,21 +390,41 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # The runner merges the PRs a task lists. Its only GitHub writes (REST, checked against merges.WRITES; one fixed GraphQL
 # mutation marks a draft ready) are: merge and update-branch; in the agents org only, retargeting a stacked PR to the
 # default branch once its parent merged, deleting a merged PR's own head branch (never the default branch, only at the
-# merged head, never under an open PR), and `aidenhq close` (a comment, then the PR closed). allowedWrite refuses all but
-# PUT outside the agents org, except comments and PR edits (never a branch delete) on the product repo, for closing its
+# merged head, never under an open PR), `aidenhq close` (a comment, then the PR closed), and re-running a queued PR's
+# failed jobs when every red check is an infrastructure failure (once per check per head, only from a started queue:
+# merges.mjs infraRetry). A sequential queue on a card that is the review (agents org, product repo) may also replay a
+# stacked PR's approved commits onto the default branch and push them as its head (github.rebuild: only when its parent
+# merged in the same queue at its approved head and the PR's head is still the approved one; the push is leased to that
+# head), then retarget it; the replayed head merges only with every named check green on it. A Tier 0 queue only
+# retargets and hands the PR back to be tiered again. allowedWrite refuses all but
+# PUT outside the agents org, except comments, PR edits and job re-runs (never a branch delete) on the product repo, for closing its
 # Dependabot PRs (Tier 0 only when the runner read the author as dependabot[bot] from the API). The card is the review (bound to the head) in the agents org and the product repo, whose
 # merges go through the App; elsewhere the host gh login merges, behind GitHub's own review. WRITES allows paths, not
 # bodies or orgs, so the call sites and their gates are asserted here too. Pushes and draft PRs stay on the exact word.
 rm_="services/runner/src/merges.mjs"; rmain="services/runner/src/main.mjs"; rtiers="services/runner/src/tiers.mjs"
 merge_writes="$(sed -n '/^export const WRITES/,/^\];/p' "$rm_" | grep -oE 'method: "[A-Z]+", path: /[^ ]+/' | tr '\n' ' ')"
-merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'githubWrite\(repo, `[^`]*`, \{[^}]*\}(, "[A-Z]+")?\)' | tr '\n' ' ')"
-[ "$merge_writes" = 'method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/merge$/ method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/update-branch$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/issues\/\d+\/comments$/ method: "PATCH", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+$/ method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ ' ] \
+merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'githubWrite\(repo, `[^`]*`, \{[^}]*\}(, "[A-Z]+")?(, RERUN)?\)' | tr '\n' ' ')"
+[ "$merge_writes" = 'method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/merge$/ method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/update-branch$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/issues\/\d+\/comments$/ method: "PATCH", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+$/ method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun-failed-jobs$/ ' ] \
   && [ "$(grep -o 'mutation([^)]*) { [A-Za-z]*' "$rm_" | awk '{print $NF}' | tr '\n' ' ')" = "markPullRequestReadyForReview " ] \
   && [ "$(grep -c '"-X"' "$rmain")" = 1 ] && grep -qF 'if (!merges.allowedWrite(method, path, cfg.agentsOrg, cfg.productRepo)) throw' "$rmain" \
   && grep -qF 'if (method === "PUT" || (Boolean(agentsOrg) && path.split("/")[1].toLowerCase() === agentsOrg.toLowerCase())) return true;' "$rm_" \
-  && grep -qF 'return Boolean(productRepo) && method !== "DELETE" && path.split("/").slice(1, 3).join("/").toLowerCase() === productRepo.toLowerCase();' "$rm_" &&[ "$(grep -c 'githubWrite(' "$rmain")" = 7 ] \
-  && [ "$merge_calls" = 'githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha }) githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head }) githubWrite(repo, `repos/${repo}/pulls/${number}`, { base }, "PATCH") githubWrite(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE") githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST") githubWrite(repo, `repos/${repo}/pulls/${number}`, { state: "closed" }, "PATCH") ' ] \
-  && [ "$(grep -c 'github\.retarget(' "$rm_")" = 1 ] && grep -qF 'await github.retarget(p.repo, p.number, defaultBranch);' "$rm_" \
+  && grep -qF 'return Boolean(productRepo) && method !== "DELETE" && path.split("/").slice(1, 3).join("/").toLowerCase() === productRepo.toLowerCase();' "$rm_" &&[ "$(grep -c 'githubWrite(' "$rmain")" = 8 ] \
+  && [ "$merge_calls" = 'githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha }) githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head }) githubWrite(repo, `repos/${repo}/pulls/${number}`, { base }, "PATCH") githubWrite(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE") githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST") githubWrite(repo, `repos/${repo}/pulls/${number}`, { state: "closed" }, "PATCH") githubWrite(repo, `repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}, "POST", RERUN) ' ] \
+  && grep -qF 'const RERUN = { actions: "write" };' "$rmain" \
+  && [ "$(grep -c 'github\.rerun(' "$rm_")" = 1 ] && [ "$(grep -c 'retryInfra(' "$rm_")" = 3 ] \
+  && grep -qF '    const retry = d.do === "stop" && d.red ? await retryInfra(github, next.repo, next.number, pr) : undefined;' "$rm_" \
+  && grep -qF '        const retry = d.red ? await retryInfra(github, p.repo, p.number, pr) : undefined;' "$rm_" \
+  && grep -qF '    if (was?.head === head) {' "$rm_" \
+  && [ "$(grep -c 'github\.retarget(' "$rm_")" = 2 ] && grep -qF 'await github.retarget(p.repo, p.number, defaultBranch);' "$rm_" \
+  && grep -qF '      await github.retarget(next.repo, next.number, defaultBranch);' "$rm_" \
+  && [ "$(grep -c 'github\.rebuild(' "$rm_")" = 1 ] \
+  && grep -qF 'if (!review || !parent || !github.rebuild || pr.headRefOid !== next.head) return stop(' "$rm_" \
+  && grep -qF 'if (!parent.head || parent.headOid !== parent.head) return stop(' "$rm_" \
+  && grep -qF 'const review = pr.state === "OPEN" && cardIsReview(next.repo) && Boolean(next.head);' "$rm_" \
+  && grep -qF 'strictChecks: Boolean(queue.strict || next.rebound)' "$rm_" \
+  && [ "$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -c '"push"')" = 1 ] \
+  && grep -qF 'if (pr.isCrossRepository || head !== pr.headRefOid) throw new Error("its head moved");' "$rmain" \
+  && grep -qF 'await git(path, "push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${pr.headRefName}:${head}`, url, `${re.tip}:refs/heads/${pr.headRefName}`);' "$rmain" \
   && [ "$(grep -c 'github\.deleteBranch(' "$rm_")" = 1 ] \
   && grep -qF 'if (pr.isCrossRepository || !pr.headRefName || pr.headRefName === defaultBranch) return;' "$rm_" \
   && grep -qF 'if (b.tip === pr.headRefOid && !b.stacked) await github.deleteBranch(repo, pr.headRefName);' "$rm_" \
@@ -428,7 +448,7 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF 'if (p.dependabot !== true) return REJECT("core-repo-close"' "$rtiers" \
   && grep -qF 'if (!s.requester?.platform) return REJECT("product-close-requester"' "$rtiers" \
   && grep -qF '? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p' "$rmain" \
-  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues), merged-head branch deletes (after any agents-org merge) and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
+  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues re-tier; reviewed queues replay the approved commits first, leased push), merged-head branch deletes (after any agents-org merge), one re-run of a queued PR's infrastructure-failed jobs, and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
 # Tool-only agents get no shell: setup (gate code too) must run the gate's check on every Codex agent without image:.
 grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-setup.mjs \
   && [ "$(grep -c 'assertNoShell(' scripts/paperclip-setup.mjs)" = 1 ] \

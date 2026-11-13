@@ -383,6 +383,15 @@ describe("run outcome", async () => {
     assert.match(runOutcome({ code: 1, lastMessage: "", dirty: true }).headline, /Failed\*\* \(exit code 1\)\. Its partial changes/);
     assert.match(runOutcome({ timedOut: true, timeoutMinutes: 60, lastMessage: "x" }).headline, /Timed out\*\* after 60 minutes/);
   });
+  it("never passes off a reply that is the model's reasoning in a loop as finished", () => {
+    const thinking = "Now the salvage of the report. Where does the prose live? In the run's log.\n\n".repeat(300);
+    const loop = runOutcome({ code: 0, lastMessage: `${thinking}${"Send.\n\nEmit.\n\nOutput.\n\n".repeat(200)}`, dirty: false });
+    assert.equal(loop.finished, false, "the job is incomplete, never \"Done, nothing changed\"");
+    assert.match(loop.headline, /Stopped before finishing[\s\S]*reasoning running in a loop[\s\S]*Nothing was changed/);
+    // A long real report ending in a diff of similar lines still finishes.
+    const diff = Array.from({ length: 60 }, (_, i) => `+    "feature.op${i}",`).join("\n");
+    assert.equal(runOutcome({ code: 0, lastMessage: `${"Implemented the writer on `feat/x`.\n".repeat(700)}${diff}` }).finished, true);
+  });
 });
 
 describe("tasks the user wrote", async () => {

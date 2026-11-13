@@ -4,7 +4,8 @@
 // a PR is merged only when it is open, approved, its checks are green, GitHub says it can merge and
 // the base branch is green. An approved draft is marked ready first: asking for it to be merged says
 // it's ready. Anything else stops the queue with a comment; nothing is ever forced, reverted or merged
-// as an admin. The only GitHub writes here are WRITES and READY_MUTATION below.
+// as an admin. The only GitHub writes here are WRITES and READY_MUTATION below, and a stacked PR's head replayed by the
+// runner (github.rebuild: a git push leased to the approved head).
 import { isAgentSubtask } from "./commands.mjs";
 
 /**
@@ -339,7 +340,7 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
   if (pr.state === "MERGED") return { do: "skip", why: `${ref} was already merged${pr.mergedBy?.login ? ` by ${pr.mergedBy.login}` : ""}` };
   if (pr.state === "CLOSED") return { do: "stop", why: `${ref} is closed` };
   // In the agents org nobody reviews on GitHub: the owner's tap on the merge card is the review, so it holds only for the
-  // commit the card showed, and never over a change request.
+  // commit the card showed (or the runner's own replay of it, for a stacked PR), and never over a change request.
   if (cardIsReview) {
     if (!approvedHead || pr.headRefOid !== approvedHead) return { do: "stop", why: `${ref} changed since its merge card (now \`${String(pr.headRefOid).slice(0, 12)}\`): it needs a new card` };
     const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r) => r.state);
@@ -456,12 +457,37 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     const data = await github.pr(next.repo, next.number);
     const pr = data?.repository?.pullRequest;
     if (!pr) return stop(`couldn't find ${next.url} on GitHub`);
-    const base = await settleBase(github, next.repo, pr, data.repository.defaultBranchRef?.name);
-    if (base === "retarget") return stop(`#${next.number} is stacked on a merged branch: retarget it to \`${data.repository.defaultBranchRef.name}\` and ask for a new merge`);
+    const defaultBranch = data.repository.defaultBranchRef?.name;
+    const review = pr.state === "OPEN" && cardIsReview(next.repo) && Boolean(next.head);
+    const base = await settleBase(github, next.repo, pr, defaultBranch);
+    if (base === "retarget") {
+      // Stacked on a PR this same approved queue merged (or found merged): the runner replays this PR's own approved commits
+      // (those after the parent's head) onto the default branch in its own clone, pushes them as its head and retargets it.
+      // Its checks then have to pass on that head. A parent outside the queue, a parent that merged at a head its card didn't
+      // approve, a conflict or a moved head needs a new card. The replay starts after the parent's approved head.
+      const parent = queue.prs.find((p) => ["merged", "skipped"].includes(p.status) && p.repo.toLowerCase() === next.repo.toLowerCase() && p.headRef === pr.baseRefName);
+      const by = `#${next.number} is stacked on a merged branch`;
+      if (!review || !parent || !github.rebuild || pr.headRefOid !== next.head) return stop(`${by}: retarget it to \`${defaultBranch}\` and ask for a new merge`);
+      if (!parent.head || parent.headOid !== parent.head) return stop(`${by}, and #${parent.number} merged at a head its card didn't approve: ask for a new merge`);
+      // Replayed once: a retarget that failed after the push is retried on the next poll without replaying again.
+      if (!next.rebound) {
+        try {
+          // The card's own head stays as `approved`: a PR stacked on this one replays from it, not from the replay (A → B → C).
+          Object.assign(next, { approved: next.head, head: await github.rebuild(next.repo, pr, parent.approved ?? parent.head, defaultBranch), rebound: true });
+        } catch (err) {
+          return stop(`${by}, and its approved commits couldn't be replayed onto \`${defaultBranch}\` (${String(err.stderr || err.message || err).trim().split("\n").pop().slice(0, 200)}): it needs a rebase and a new merge`);
+        }
+      }
+      await github.retarget(next.repo, next.number, defaultBranch);
+      const head = next.head;
+      say.push(`Retargeted ${next.url} to \`${defaultBranch}\`: the branch it was stacked on merged with #${parent.number}, so its approved commits were replayed onto \`${defaultBranch}\` as \`${head.slice(0, 12)}\`.`);
+      return waiting(`pr:${next.number}:retarget`, `#${next.number} was just retargeted to \`${defaultBranch}\``);
+    }
     if (base !== "ok") return waiting(`pr:${next.number}:base:${base.wait}`, `#${next.number} ${base.wait}`);
-    const d = prDecision(pr, { updatedHead: next.updatedHead, cardIsReview: cardIsReview(next.repo), approvedHead: next.head, strictChecks: Boolean(queue.strict) });
+    // A head the runner replayed merges only with named checks, all green on it.
+    const d = prDecision(pr, { updatedHead: next.updatedHead, cardIsReview: cardIsReview(next.repo), approvedHead: next.head, strictChecks: Boolean(queue.strict || next.rebound) });
     if (d.do === "skip") {
-      Object.assign(next, { status: "skipped", note: d.why });
+      Object.assign(next, { status: "skipped", note: d.why, headRef: pr.headRefName, headOid: pr.headRefOid });
       say.push(`Skipped ${next.url}: ${d.why}.`);
       continue;
     }
@@ -487,7 +513,7 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     } catch (err) {
       return stop(`GitHub refused to merge #${next.number}: ${String(err.stderr || err.message || err).trim().split("\n").pop().slice(0, 300)}`);
     }
-    Object.assign(next, { status: "merged", mergedAt: now.toISOString(), base: pr.baseRefName, method });
+    Object.assign(next, { status: "merged", mergedAt: now.toISOString(), base: pr.baseRefName, method, headRef: pr.headRefName, headOid: pr.headRefOid });
     if (cardIsReview(next.repo)) await deleteHead(github, next.repo, pr, data.repository.defaultBranchRef.name);
     delete queue.wait;
     queue.waiting = `CI on \`${pr.baseRefName}\` after #${next.number}`;

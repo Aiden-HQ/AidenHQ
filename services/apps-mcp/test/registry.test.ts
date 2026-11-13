@@ -33,6 +33,43 @@ describe("module apps follow the product pin", () => {
     const app = parseApp({ name: "warehouse", repo: "example-org/aidenhq", owner: "a", description: "d", module: "warehouse", pin });
     expect(await remoteHead({ appsData: "/nonexistent", gitDir: "/nonexistent" }, app)).toBe(pin);
   });
+  it("checks the pin out from the host's product checkout, only when it is on that checkout's origin/main", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { readFileSync } = await import("node:fs");
+    const { checkout } = await import("../src/git.js");
+    const root = mkdtempSync(join(tmpdir(), "product-"));
+    const sh = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, encoding: "utf8" }).trim();
+    // GitHub's copy, and the host's checkout of it: detached, with a commit that never reached origin.
+    sh(root, "init", "-q", "-b", "main", "upstream");
+    writeFileSync(join(root, "upstream/app.txt"), "v1\n");
+    sh(`${root}/upstream`, "add", "app.txt");
+    sh(`${root}/upstream`, "commit", "-q", "-m", "v1");
+    sh(root, "clone", "-q", `${root}/upstream`, "product");
+    const pin = sh(`${root}/product`, "rev-parse", "HEAD");
+    sh(`${root}/product`, "checkout", "-q", "--detach");
+    writeFileSync(join(root, "product/app.txt"), "local\n");
+    sh(`${root}/product`, "commit", "-q", "-am", "local only");
+    const local = sh(`${root}/product`, "rev-parse", "HEAD");
+    // The repo is unreachable on purpose: the source must come from productDir.
+    const env = { appsData: `${root}/apps`, gitDir: `${root}/git`, productDir: `${root}/product`, orgs: ["example-org"] };
+    const app = (p: string) => parseApp({ name: "warehouse", repo: "example-org/no-such-repo", owner: "a", description: "d", module: "warehouse", pin: p });
+    const co = await checkout(env, app(pin));
+    expect(co.sha).toBe(pin);
+    expect(readFileSync(join(co.dir, "app.txt"), "utf8")).toBe("v1\n");
+    // Only origin/main's history is copied, so a commit off it isn't there to check out at all.
+    await expect(checkout(env, app(local))).rejects.toThrow(/git rev-parse failed/);
+    // A commit the bare repo already holds but that is no longer on the checkout's origin/main is refused too.
+    writeFileSync(join(root, "upstream/app.txt"), "v2\n");
+    sh(`${root}/upstream`, "commit", "-q", "-am", "v2");
+    sh(`${root}/product`, "fetch", "-q", "origin");
+    const v2 = sh(`${root}/product`, "rev-parse", "origin/main");
+    expect((await checkout(env, app(v2))).sha).toBe(v2);
+    sh(`${root}/product`, "update-ref", "refs/remotes/origin/main", pin);
+    await expect(checkout(env, app(v2))).rejects.toThrow(/not reachable from origin\/main/);
+    // Only the compiler's registry may name a module app: apps.yaml can't point an app at the product checkout.
+    const forged = write("forged.yaml", `apps:\n  - { name: sneaky, repo: example-org/x, owner: a, description: d, module: warehouse, pin: "${pin}" }\n`);
+    expect(() => loadRegistry(forged)).toThrow(/set by the compiler/);
+  });
 });
 
 describe("secret names", () => {

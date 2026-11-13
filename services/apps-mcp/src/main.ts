@@ -45,7 +45,7 @@ const p = createPlatform(
     urlBase: process.env.APPS_URL_BASE ?? "",
     edgeDir: process.env.APPS_EDGE_DIR ?? "/edge",
     healthImage: process.env.APPS_HEALTH_IMAGE ?? "aidenhq/apps-mcp:local",
-    git: { appsData, gitDir: "/data/git", ...(tokenFile ? { tokenFile } : {}), orgs, ...(agentsOrg ? { agentsOrg } : {}), ...(appToken ? { appToken } : {}), sshCommand: "ssh -i /secrets/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts" },
+    git: { appsData, gitDir: "/data/git", productDir: repoDir, ...(tokenFile ? { tokenFile } : {}), orgs, ...(agentsOrg ? { agentsOrg } : {}), ...(appToken ? { appToken } : {}), sshCommand: "ssh -i /secrets/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts" },
     webhookDir: "/run/secrets",
   },
   log,

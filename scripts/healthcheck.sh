@@ -29,6 +29,15 @@ module_on() { # name: installed unless modules.json says it isn't
   node -e 'const m=JSON.parse(require("fs").readFileSync("config/modules.json","utf8")).find(x=>x.name===process.argv[1]); process.exit(m&&!m.enabled?1:0)' "$1"
 }
 secrets="${AIDENHQ_SECRETS_DIR:-/nonexistent}"
+# Tool calls on a connection's /mcp are checked against the calling agent's grants: the probes call as the agent setup
+# keyed for that connection (paperclip_health_key_<connection>, picked from the grants: scripts/modules.mjs HEALTH_PROBES).
+probe_key() { [ -s "$secrets/paperclip_health_key_$1" ]; }
+mcp_as() { # connection, url, tool, json args, bearer token: prints the result; a refusal says "refused", not a token problem
+  local out
+  out="$(dc exec -T -e AGENT_KEY="$(cat "$secrets/paperclip_health_key_$1")" paperclip node /tmp/mcp-call.mjs "$2" "$3" "$4" "$5" 2>&1)" && { printf '%s\n' "$out"; return 0; }
+  if printf '%s' "$out" | grep -q 'Refused:'; then echo "refused by $1's grants: $(printf '%s' "$out" | grep -o 'Refused:.*' | head -1 | cut -c10-)"; else printf '%s\n' "$out"; fi
+  return 1
+}
 engine_default="$(sed -n 's/^  default: *\([a-z]*\).*/\1/p' config/runner.yaml 2>/dev/null | head -1)"
 
 echo "AidenHQ health"
@@ -63,13 +72,15 @@ fi
 
 g_health="$(dc exec -T paperclip node -e "fetch('http://google-workspace-mcp:8081/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
 if echo "$g_health" | grep -q '"ok":true'; then
-  # Harmless read: list today's events (count only).
-  # As the Meeting Librarian (granted Google reads): tool calls need an agent's key (grants).
-  token="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/google_mcp_token" 2>/dev/null)"
-  akey="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/paperclip_ops_key" 2>/dev/null)"
+  # Harmless reads: one message, today's events.
+  token="$(cat "$secrets/google_mcp_token" 2>/dev/null)"
   dc cp scripts/dev/mcp-call.mjs paperclip:/tmp/mcp-call.mjs >/dev/null 2>&1
-  check "gmail read (1 message)" sh -c "docker compose --env-file '$env_file' exec -T -e AGENT_KEY='$akey' paperclip node /tmp/mcp-call.mjs http://google-workspace-mcp:8081/mcp gmail_search '{\"query\":\"in:inbox\",\"max_results\":1}' '$token' >/dev/null"
-  check "google calendar read" sh -c "docker compose --env-file '$env_file' exec -T -e AGENT_KEY='$akey' paperclip node /tmp/mcp-call.mjs http://google-workspace-mcp:8081/mcp calendar_list_events '{\"start\":\"$(date -u +%Y-%m-%dT00:00:00Z)\",\"end\":\"$(date -u +%Y-%m-%dT23:59:59Z)\",\"max_results\":5}' '$token' >/dev/null"
+  if probe_key google_workspace; then
+    check "gmail read (1 message)" mcp_as google_workspace http://google-workspace-mcp:8081/mcp gmail_search '{"query":"in:inbox","max_results":1}' "$token"
+    check "google calendar read" mcp_as google_workspace http://google-workspace-mcp:8081/mcp calendar_list_events "{\"start\":\"$(date -u +%Y-%m-%dT00:00:00Z)\",\"end\":\"$(date -u +%Y-%m-%dT23:59:59Z)\",\"max_results\":5}" "$token"
+  else
+    skip "gmail and calendar reads (no agent is granted gmail_search and calendar_list_events, or setup hasn't keyed one yet: ops/apply-config.sh)"
+  fi
   # Every connected account, not just the one the reads above happened to use.
   atoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/google_auth_token" 2>/dev/null)"
   if [ -n "$atoken" ]; then
@@ -143,8 +154,17 @@ fi
 
 gh_health="$(dc exec -T paperclip node -e "fetch('http://github-mcp:8086/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
 if echo "$gh_health" | grep -q '"ok":true'; then
-  ghtoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/github_mcp_token" 2>/dev/null)"
-  check "github (whoami)" sh -c "docker compose --env-file '$env_file' exec -T paperclip node /tmp/mcp-call.mjs http://github-mcp:8086/mcp github_whoami '{}' '$ghtoken' | grep -q '\"login\"' || { echo 'GitHub rejected the token: run scripts/github-auth.sh'; exit 1; }"
+  ghtoken="$(cat "$secrets/github_mcp_token" 2>/dev/null)"
+  gh_whoami() {
+    local out
+    if ! out="$(mcp_as github http://github-mcp:8086/mcp github_whoami '{}' "$ghtoken")"; then
+      case "$out" in refused*) echo "$out" ;; *) echo "$(printf '%s' "$out" | tail -1) (if GitHub rejected the token: run scripts/github-auth.sh)" ;; esac
+      return 1
+    fi
+    printf '%s' "$out" | grep -q '"login"' || { echo 'GitHub rejected the token: run scripts/github-auth.sh'; return 1; }
+  }
+  if probe_key github; then check "github (whoami)" gh_whoami
+  else skip "github (whoami) (no agent is granted github_whoami, or setup hasn't keyed one yet: ops/apply-config.sh)"; fi
 else
   printf '  skip  github (not connected: %s)\n' "$(echo "$gh_health" | cut -c1-80)"
 fi

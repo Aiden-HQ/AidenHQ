@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, setUntrusted } from "../src/git.mjs";
+import { git, historyRewritten, setUntrusted } from "../src/git.mjs";
 
 test("a hostile clone config (hooks, fsmonitor, filters, signing program) runs nothing in the runner's git", async (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "aidenhq-hostile-")));
@@ -105,4 +105,63 @@ test("a hostile clone config (hooks, fsmonitor, filters, signing program) runs n
   mkdirSync(away);
   writeFileSync(join(away, ".git"), `gitdir: ${join(dir, "elsewhere/.git/worktrees/x")}\n`);
   await assert.rejects(git(away, "status"), /doesn't point at a clone in this task's folder/);
+});
+
+test("a replace ref in a task clone (git replace H F) never changes what the runner's git reads of H", async (t) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "aidenhq-replace-")));
+  t.after(() => { setUntrusted(undefined); rmSync(dir, { recursive: true, force: true }); });
+  const tasks = join(dir, "work/tasks");
+  const clone = join(tasks, "PEN-8/app");
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd: clone, env, stdio: "pipe" }).toString().trim();
+  mkdirSync(clone, { recursive: true });
+  g("init", "-q", "-b", "main");
+  writeFileSync(join(clone, "policy.txt"), "deny\n");
+  g("add", ".");
+  g("commit", "-qm", "M");
+  // H changes the policy (what would be pushed); F only a readme (what a reviewer would be shown).
+  writeFileSync(join(clone, "policy.txt"), "allow everyone\n");
+  g("commit", "-qam", "H");
+  const h = g("rev-parse", "HEAD");
+  g("switch", "-qc", "f", "HEAD~1");
+  writeFileSync(join(clone, "readme"), "docs\n");
+  g("add", ".");
+  g("commit", "-qm", "F");
+  g("replace", h, g("rev-parse", "HEAD"));
+  assert.equal(g("diff", "--name-only", `${h}~1`, h), "readme", "plain git is fooled");
+  setUntrusted({ tasksDir: tasks, hooksDir: join(dir, "work/.guard-hooks") });
+  // The files reviewed are the files published: H's own.
+  assert.equal(await git(clone, "diff", "--name-only", `${h}~1`, h), "policy.txt", "the runner's git reads H itself");
+  assert.equal(await git(clone, "show", `${h}:policy.txt`), "allow everyone");
+  assert.match(await historyRewritten(clone), /replace refs/, "and a publish from it is refused");
+});
+
+test("a grafts file in a worktree's common dir is found, and the runner's git ignores it", async (t) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "aidenhq-grafts-")));
+  t.after(() => { setUntrusted(undefined); rmSync(dir, { recursive: true, force: true }); });
+  const tasks = join(dir, "work/tasks");
+  const clone = join(tasks, "PEN-9/app");
+  const tree = join(tasks, "PEN-9/app-wt");
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const g = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, env, stdio: "pipe" }).toString().trim();
+  mkdirSync(clone, { recursive: true });
+  g(clone, "init", "-q", "-b", "main");
+  for (const n of ["a", "b", "c"]) {
+    writeFileSync(join(clone, `${n}.txt`), `${n}\n`);
+    g(clone, "add", ".");
+    g(clone, "commit", "-qm", n);
+  }
+  g(clone, "worktree", "add", "-q", "-b", "wt", tree);
+  setUntrusted({ tasksDir: tasks, hooksDir: join(dir, "work/.guard-hooks") });
+  assert.equal(await historyRewritten(tree), undefined);
+  // Grafts in the common dir (not the worktree's own .git dir): c's parent becomes a, hiding b.
+  const [c, , a] = g(clone, "rev-list", "main").split("\n");
+  mkdirSync(join(clone, ".git/info"), { recursive: true });
+  writeFileSync(join(clone, ".git/info/grafts"), `${c} ${a}\n`);
+  assert.equal(g(tree, "diff", "--name-only", `${c}~1`, c), "b.txt\nc.txt", "plain git is fooled");
+  assert.equal(await git(tree, "diff", "--name-only", `${c}~1`, c), "c.txt", "the runner's git isn't");
+  assert.match(await historyRewritten(tree), /grafts/);
+  rmSync(join(clone, ".git/info/grafts"));
+  writeFileSync(join(clone, ".git/shallow"), `${a}\n`);
+  assert.match(await historyRewritten(tree), /shallow/);
 });

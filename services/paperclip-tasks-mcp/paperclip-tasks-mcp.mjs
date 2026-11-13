@@ -466,6 +466,12 @@ function gradingOff() {
     return false;
   }
 }
+// A criterion that is purely a negative ("No app code ... change was made", "the live sha is unchanged") can never be shown,
+// so it fails grading every time: one that starts with No/Nothing/Never or claims something unchanged is refused, unless it
+// is about what the grader does see in facts or pages (errors, warnings, incidents, failing checks, findings, CVEs, overflow).
+const NEGATIVE = /^(?:no|nothing|never)\s|\bunchanged\b|\bnot (?:been )?(?:changed|modified|touched)\b|\bno\b[^.;]{0,80}\bchanges?\b/i;
+const CHECKABLE_NEGATIVE = /\b(?:errors?|warnings?|incidents?|failing|failed|findings?|cves?|overflow|horizontal scroll\w*|broken links?|404s?|conflicts?|vulnerabilit\w*|secrets?|dependenc\w*|tests? pass\w*|regressions?)\b/i;
+const unprovable = (c) => NEGATIVE.test(c) && !CHECKABLE_NEGATIVE.test(c);
 /** The rubric to file for a delegation to `target`, or undefined (not graded); throws when a graded assignee gets no deliverable. */
 function gradeFor(target, rubric, deliverable) {
   if (!BOARD_TOKEN || gradingOff()) return undefined;
@@ -473,6 +479,8 @@ function gradeFor(target, rubric, deliverable) {
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
   const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
   if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");
+  const negative = list.find(unprovable);
+  if (negative) throw new Error(`rubric: "${negative.slice(0, 120)}" is a negative no evidence can show (the grader sees only what exists, so it fails every time): name what was delivered instead (e.g. "the PR changes only docs/plan.md", not "no code changed"). Checkable negatives such as "no console errors" or "no open incident" are fine.`);
   if (kind === "none") return undefined;
   if (!kind) {
     if (gradedAgent(target.id)) throw new Error(`${target.metadata?.persona?.name || target.name}'s work is graded: name the deliverable ({kind: pr | app | apply | file | report, ref}, or kind none when nothing ships, e.g. a question) and, ideally, a rubric (see "Graded work" in your instructions)`);

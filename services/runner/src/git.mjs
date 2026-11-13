@@ -15,9 +15,10 @@ const run = promisify(execFile);
 let gitAuth;
 export const setGitAuth = (a) => (gitAuth = a);
 const NETWORK = new Set(["fetch", "push", "ls-remote", "clone", "remote"]);
-// No external diff program and no repository named from outside, whatever the runner's own environment says.
+// No external diff program and no repository named from outside, whatever the runner's own environment says. No replace
+// refs, grafts or shallow file either: an agent's `git replace H F` would show F to tiering and the reviewer while H is what gets pushed.
 const ENV = () => {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null", GIT_SHALLOW_FILE: "/dev/null" };
   for (const k of ["GIT_EXTERNAL_DIFF", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"]) delete env[k];
   return env;
 };
@@ -281,6 +282,43 @@ export async function changeBase(path, mainRef, sha, deployed) {
  * merge is redone once on the new main. A change main already has (a retried apply) lands as nothing: main's sha, no push.
  * Returns the sha main is at, or null when the change conflicts with main.
  */
+/**
+ * Why a clone's history can't be trusted to read as it would push, or undefined: replace refs, a grafts file, or a
+ * shallow file, looked for in the repository's common dir (a worktree's own .git dir doesn't hold them). The runner's git
+ * ignores replace refs and grafts anyway (ENV); this keeps a publish from such a clone from happening at all.
+ */
+export async function historyRewritten(path) {
+  if (await git(path, "for-each-ref", "--count=1", "--format=%(refname)", "refs/replace/")) return "replace refs (`refs/replace/`)";
+  const common = await git(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  if (existsSync(join(common, "info", "grafts"))) return "a grafts file (`info/grafts`)";
+  const shallow = join(common, "shallow");
+  if (existsSync(shallow) && lstatSync(shallow).size > 0) return "a shallow history (`shallow`)";
+  return undefined;
+}
+
+/**
+ * The commits from..head (a straight line, no merges) replayed one by one onto `onto` in the runner's own clone `path`, as
+ * the runner's own commits: each one's tree is git's three-way merge of exactly that commit's change, so the result is the
+ * approved commits on the new base by construction. Returns { tip, trees } (each new commit's tree, in order), or null when
+ * a commit conflicts, the range isn't a straight line on top of `from`, or it is empty.
+ */
+export async function replayOnto(path, from, head, onto, identity = DEFAULT_IDENTITY) {
+  const env = { ...ISOLATED_ENV, ...identityEnv(identity), GIT_NO_REPLACE_OBJECTS: "1" };
+  const g = (...args) => run("git", [...SAFE_GIT_ARGS, ...args], { cwd: path, env, maxBuffer: 32 * 1024 * 1024 }).then((o) => o.stdout.trim());
+  if (!(await g("merge-base", "--is-ancestor", from, head).then(() => true, () => false))) return null;
+  const commits = (await g("rev-list", "--reverse", "--parents", `${from}..${head}`)).split("\n").filter(Boolean).map((l) => l.split(" "));
+  if (!commits.length || commits.some((c) => c.length !== 2) || commits[0][1] !== from || commits.some((c, i) => i && c[1] !== commits[i - 1][0])) return null;
+  let tip = onto;
+  const trees = [];
+  for (const [c, parent] of commits) {
+    const tree = await g("merge-tree", "--write-tree", `--merge-base=${parent}`, tip, c).catch((e) => (e.code === 1 ? null : Promise.reject(e)));
+    if (!tree) return null;
+    trees.push(tree.split("\n")[0]);
+    tip = await g("commit-tree", trees.at(-1), "-p", tip, "-m", await g("log", "-1", "--format=%B", c));
+  }
+  return { tip, trees };
+}
+
 export async function landOnMain(path, base, shown, note, { guard, identity = DEFAULT_IDENTITY } = {}) {
   const id = identityEnv(identity);
   const iso = (...args) => scrubFor(path).then(() => run("git", [...SAFE_GIT_ARGS, ...args], { cwd: path, env: { ...ISOLATED_ENV, ...id } })).then((o) => o.stdout.trim());

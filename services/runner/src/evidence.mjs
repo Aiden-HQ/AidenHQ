@@ -97,32 +97,40 @@ function fitPng(buf, info) {
 
 /**
  * The task's attached files' contents, for the grader (`files` as wordsEvidence labels them): images (sniffed from the
- * bytes, at most 6, newest first, a large PNG downscaled) as image parts, text files (.txt, .md, .json, .csv, ...) as one
- * fenced FILES block, each cut and all within a budget. { awaiting } when a file can't be read yet (missing evidence is never
- * a pass), else { facts, data, images }: the facts say per file label what was shown (its size, its pixel size, what was cut
- * or left out), so a file left out reads as left out, not as missing work. `content(id)` resolves with the file's bytes.
+ * bytes, at most 6, a large PNG downscaled) as image parts, text files (.txt, .md, .json, .csv, ...) as one fenced FILES
+ * block, each cut and all within a budget. Order: files the rubric names by file name, then files the task's recent
+ * comments name, then the newest. { awaiting } when a file can't be read yet (missing evidence is never a pass), else
+ * { facts, data, images }: the facts say per file label (never its name, the agent's string) what was sent (its size, its
+ * pixel size, what was cut or left out), so a file left out reads as not sent, not as missing work. `content(id)` resolves
+ * with the file's bytes.
  */
-export async function fileEvidence(files, content) {
+export async function fileEvidence(files, content, { rubric = "", comments = "" } = {}) {
   const facts = [];
   const images = [];
   const texts = [];
   let imageBytes = 0;
   let textLeft = TEXT_TOTAL;
-  const newest = [...files].sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
-  for (const f of newest) {
-    const name = String(f.originalFilename ?? f.name ?? "");
+  const nameOf = (f) => String(f.originalFilename ?? f.name ?? "");
+  const names = (f, text) => {
+    const base = nameOf(f).split("/").pop().toLowerCase();
+    return base.length >= 3 && text.toLowerCase().includes(base);
+  };
+  const rank = (f) => (names(f, rubric) ? 2 : names(f, comments) ? 1 : 0);
+  const order = [...files].sort((a, b) => rank(b) - rank(a) || String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+  for (const f of order) {
+    const name = nameOf(f);
     const isImage = /^image\//.test(f.contentType ?? "") || /\.(png|jpe?g|gif|webp)$/i.test(name);
     const isText = !isImage && (TEXT_EXT.test(name) || /^text\/|^application\/json/.test(f.contentType ?? ""));
     if (!isImage && !isText) {
-      facts.push(`${f.label}: not shown to the grader (${safeType(f.contentType)})`);
+      facts.push(`${f.label}: not sent to the grader (${safeType(f.contentType)})`);
       continue;
     }
     if (isImage && images.length >= MAX_IMAGES) {
-      facts.push(`${f.label}: not shown to the grader (only the newest ${MAX_IMAGES} images are)`);
+      facts.push(`${f.label}: attached, not sent to the grader (only ${MAX_IMAGES} images are sent: those the rubric names, then those the comments name, then the newest)`);
       continue;
     }
     if (isText && textLeft <= 0) {
-      facts.push(`${f.label}: not shown to the grader (the text budget of ${TEXT_TOTAL} characters was spent on newer files)`);
+      facts.push(`${f.label}: not sent to the grader (the text budget of ${TEXT_TOTAL} characters was spent on other files)`);
       continue;
     }
     let buf;
@@ -134,14 +142,14 @@ export async function fileEvidence(files, content) {
     if (isImage) {
       const info = imageInfo(buf);
       if (!info) {
-        facts.push(`${f.label}: not shown to the grader (not a PNG, JPEG, GIF or WebP image)`);
+        facts.push(`${f.label}: not sent to the grader (not a PNG, JPEG, GIF or WebP image)`);
         continue;
       }
       const real = `${info.width}x${info.height}`;
       let sent = buf;
       if (info.type === "image/png" && (Math.max(info.width, info.height) > IMAGE_SIDE || buf.length > IMAGE_BYTES)) sent = fitPng(buf, info) ?? buf;
       if (sent.length > IMAGE_BYTES || imageBytes + sent.length > IMAGES_BYTES) {
-        facts.push(`${f.label}: image ${real} px, not shown to the grader (${Math.round(sent.length / 1024)} KB is over the image budget)`);
+        facts.push(`${f.label}: image ${real} px, attached, not sent to the grader (${Math.round(sent.length / 1024)} KB is over the image budget)`);
         continue;
       }
       const s = sent === buf ? info : imageInfo(sent);

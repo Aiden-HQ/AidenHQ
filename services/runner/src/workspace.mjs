@@ -331,7 +331,7 @@ export async function signUnsigned(path) {
 function gitEnv(cwd, env, ...args) {
   const clean = Object.fromEntries(Object.entries(env).filter(([, v]) => v));
   return new Promise((resolve, reject) =>
-    execFile("git", [...SAFE_GIT_ARGS, ...args], { cwd, env: { ...process.env, ...clean, GIT_TERMINAL_PROMPT: "0" } }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stderr })) : resolve(stdout.trim()))),
+    execFile("git", [...SAFE_GIT_ARGS, ...args], { cwd, env: { ...process.env, ...clean, GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null", GIT_SHALLOW_FILE: "/dev/null" } }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stderr })) : resolve(stdout.trim()))),
   );
 }
 

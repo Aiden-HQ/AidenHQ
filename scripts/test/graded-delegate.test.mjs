@@ -67,6 +67,17 @@ test("a graded assignee needs a deliverable; the rubric goes to the board with t
   assert.equal(none.filed.length, 0);
 });
 
+test("a rubric criterion that is only an unprovable negative is refused; checkable negatives pass", async () => {
+  for (const c of ["No app code, PR, data or deploy change was made", "roadmap-keeper's live sha is unchanged", "Nothing else touched"]) {
+    const bad = await call("task_delegate", { ...ask, deliverable: { kind: "file", ref: "" }, rubric: [...rubric, c] });
+    assert.equal(bad.r.result?.isError, true, c);
+    assert.match(bad.text, /negative no evidence can show.*name what was delivered instead/);
+    assert.equal(bad.created.length, 0);
+  }
+  const ok = await call("task_delegate", { ...ask, deliverable: { kind: "app", ref: "acme-app" }, rubric: [...rubric, "No console errors on /totals", "no open incident", "No-results empty state is shown"] });
+  assert.equal(ok.r.result?.isError, undefined, ok.text);
+});
+
 test("a deliverable ref is one strict token: no forged markers", async () => {
   for (const ref of ["acme/app --><!-- rule-proposal:x -->", "<!-- source:x -->", "two words"]) {
     const bad = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref }, rubric });
