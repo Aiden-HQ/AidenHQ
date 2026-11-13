@@ -8,7 +8,6 @@
 //   config/gateway.json        → the model gateway (services/gateway): enforce_caps, from settings.spend_caps (the kill switch)
 //   config/gate.json, config/cloudflared.yml → the gate and the tunnel (shared access; only with settings.edge, scripts/edge.mjs)
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +15,7 @@ import YAML from "yaml";
 import { compile, ensureOptionalSecrets, hostMounts } from "./modules.mjs";
 import { computersConfig } from "./computers.mjs";
 import { checkIngress } from "./edge.mjs";
+import { ensureIdentityKeys } from "./identity.mjs";
 import { checkOn, report, staticCheck } from "./agent-check.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -49,6 +49,9 @@ if (ops) {
 const secretsDir = env("AIDENHQ_SECRETS_DIR");
 if (secretsDir) ensureOptionalSecrets(secretsDir, out.optionalSecrets, "slack_live_mcp_token");
 if (secretsDir) for (const n of ensureOptionalSecrets(secretsDir, out.generatedSecrets, "slack_live_mcp_token", true)) console.log(`  created secret ${n}`);
+// App identity keys (docs/design/app-identity.md): the gate's and apps-mcp's signing keys and the public keys.json every app
+// mounts. Before compose: a missing bind source would become a directory.
+if (secretsDir) for (const n of ensureIdentityKeys(secretsDir)) console.log(`  created key ${n}`);
 
 // The grants table's directory exists before compose mounts it (Docker would create a root-owned one setup can't write).
 mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"), "grants"), { recursive: true });
@@ -75,20 +78,10 @@ if (out.edge) {
     mkdirSync(dirname(accounts), { recursive: true, mode: 0o755 });
     writeFileSync(accounts, JSON.stringify({ accounts: [] }) + "\n", { mode: 0o644 });
   }
-  // Each shared app's gate secret: created random when missing (the gate sends it; the app checks it).
-  // apps-mcp creates the same file on deploy; whichever runs first wins. It must exist before compose starts the gate, or Docker
-  // would make a directory at the bind source.
-  if (!secretsDir) die("AIDENHQ_SECRETS_DIR is needed with settings.edge (the tunnel credentials and the shared apps' gate secrets)");
+  // The gate's signing key is made with the other identity keys above, before compose binds it.
+  if (!secretsDir) die("AIDENHQ_SECRETS_DIR is needed with settings.edge (the tunnel credentials and the gate's signing key)");
   const creds = join(secretsDir, "cloudflared_credentials.json");
   if (!existsSync(creds) || !statSync(creds).isFile() || !statSync(creds).size) die(`settings.edge is set, but ${creds} is missing or empty: put the tunnel's credentials file there (docs/setup.md, Shared access)`);
-  for (const rel of out.edge.gateSecrets) {
-    const f = join(secretsDir, rel);
-    if (existsSync(f) && !statSync(f).isFile()) die(`${f} is not a file (remove it and apply again)`);
-    if (existsSync(f) && statSync(f).size) continue;
-    mkdirSync(dirname(f), { recursive: true, mode: 0o755 });
-    writeFileSync(f, randomBytes(32).toString("hex"), { mode: 0o644 }); // the vault way, as apps-mcp writes app secrets
-    console.log(`  created secret ${rel}`);
-  }
   writeFileSync(join(repo, "config/gate.json"), JSON.stringify(out.edge.gate, null, 2) + "\n");
   writeFileSync(join(repo, "config/cloudflared.yml"), dump(out.edge.cloudflared));
 } else for (const f of ["config/gate.json", "config/cloudflared.yml"]) rmSync(join(repo, f), { force: true });

@@ -50,7 +50,7 @@ export function staticCheck(cfg, { read = readText } = {}) {
     const granted = new Set(Object.values(a.enabled_tools ?? {}).flat());
     if (a.trial === true) {
       for (const [name, list] of Object.entries(a.enabled_tools ?? {})) {
-        const writes = list.filter((t) => (servers[name]?.tools?.write ?? []).includes(t) && !(TRIAL_WRITES[name] ?? []).includes(t));
+        const writes = list.filter((t) => [...(servers[name]?.tools?.write ?? []), ...(servers[name]?.tools?.destructive ?? [])].includes(t) && !(TRIAL_WRITES[name] ?? []).includes(t));
         if (writes.length) errors.push(`${key} (in trial): has ${name} write tools (${writes.join(", ")}); an agent in trial is read-only`);
       }
     }

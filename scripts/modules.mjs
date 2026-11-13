@@ -12,7 +12,16 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
 // caps: the agent's spend caps (grantEntry); not agent-safe (services/runner/src/tiers.mjs), so changing them is the owner's.
-const OVERRIDABLE = { agents: ["model", "reasoning_effort", "timeout_sec", "image", "caps", "graded", "heartbeat"], routines: ["schedules", "status", "model"] };
+// autonomy: a routine's cap on approvals (ROUTINE_AUTONOMY); changing it is always the owner's (tiers.mjs).
+const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "caps", "graded", "heartbeat"], routines: ["schedules", "status", "model", "autonomy"] };
+/**
+ * A routine's `autonomy`: the cap on approvals for tasks its runs start (the run task and what it delegates), the stricter of
+ * it and the instance's `autonomy` (services/runner/src/tiers.mjs). The default `full` adds no cap (owner, 2026-11-13), except
+ * for a webhook routine: something outside fires it, often with untrusted text, so it defaults to tier0. tier0 makes Tier 1
+ * the owner's, off Tier 0 too. Direct tools (slack_post, app_api) are governed by grants, not by this.
+ */
+export const ROUTINE_AUTONOMY = ["off", "tier0", "full"];
+export const routineAutonomyDefault = (r) => (r.webhook ? "tier0" : "full");
 // The Codex launcher (services/paperclip-tasks-mcp/codex-model, mounted at /opt/aidenhq) for agents with a per-routine model.
 const CODEX_MODEL_COMMAND = "/opt/aidenhq/codex-model";
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
@@ -35,10 +44,15 @@ const ROLES = {
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
 const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "heartbeat", "web_search", "graded", "department"];
-const INSTANCE_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedules", "status", "agent", "model"];
+const INSTANCE_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedules", "status", "agent", "model", "autonomy"];
 // paperclip-tasks-mcp limits these to the trial agent's own tasks (the grants table marks it in trial); source_ack moves only
 // the caller's own source cursor.
 export const TRIAL_WRITES = { paperclip_tasks: ["task_comment", "task_handoff", "task_finish", "task_set_status"], apps: ["source_ack"] };
+// A tool whose name says it deletes (Jira's camelCase too) must be tagged `destructive`, never plain write or read: the
+// `write` shorthand never grants a destructive tool; an agent gets one only by naming it.
+export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
+/** A connection's write tools, destructive included (trial, untrusted and handbook checks treat both as writes). */
+export const writeTools = (c) => [...(c?.tools?.write ?? []), ...(c?.tools?.destructive ?? [])];
 // The grants table (scripts/paperclip-setup.mjs writes it into config/grants/), mounted read-only into every connection.
 const GRANTS_FILE = "/grants/grants.json";
 const GRANTS_MOUNT = "${AIDENHQ_CONFIG_DIR:-./config}/grants:/grants:ro";
@@ -233,6 +247,9 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     for (const l of def.labels ?? []) { if (labelNames.has(l.name)) fail(`duplicate label: ${l.name}`); labelNames.add(l.name); paperclip.labels.push(l); }
     for (const [k, c] of Object.entries(def.connections ?? {})) {
       if (!Array.isArray(c.tools?.read) || !Array.isArray(c.tools?.write)) fail(`connection ${k}: tools.read and tools.write must list its tools`);
+      if (c.tools.destructive != null && !Array.isArray(c.tools.destructive)) fail(`connection ${k}: tools.destructive must be a list`);
+      const looks = [...c.tools.read, ...c.tools.write].filter((t) => DESTRUCTIVE_NAME.test(t));
+      if (looks.length) fail(`connection ${k}: ${looks.join(", ")} look${looks.length === 1 ? "s" : ""} destructive (delete, trash, remove, purge): tag ${looks.length === 1 ? "it" : "them"} destructive, granted only by name`);
       // Every HTTP call carries the agent's run key; the service checks it against the grants table (whoami).
       put(paperclip.mcp_servers, k, c.url ? { ...c, env_http_headers: { "X-Agent-Key": "PAPERCLIP_API_KEY", ...c.env_http_headers } } : c, "connection");
     }
@@ -315,8 +332,8 @@ export function compile(productDir, instanceDir, { revision } = {}) {
         if (raw.endsWith("?")) continue;
         fail(`${key}: grant to ${name}, which is not enabled (enable its module, or write "${name}?" to make the grant optional)`);
       }
-      const all = [...c.tools.read, ...c.tools.write];
-      const list = grant === "read" ? c.tools.read : grant === "write" ? all : Array.isArray(grant) ? grant : fail(`${key}: grant to ${name} must be read, write or a list of tools`);
+      const all = [...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])];
+      const list = grant === "read" ? c.tools.read : grant === "write" ? [...c.tools.read, ...c.tools.write] : Array.isArray(grant) ? grant : fail(`${key}: grant to ${name} must be read, write or a list of tools`);
       for (const t of list) if (!all.includes(t)) fail(`${key}: ${name} has no tool ${t}`);
       tools[name] = [...list];
     }
@@ -348,7 +365,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     if (a.trial) {
       if (a.reports_to !== "architect") fail(`${key}: an agent in trial reports to architect (got ${a.reports_to ?? "nobody"})`);
       for (const [name, list] of Object.entries(tools)) {
-        const writes = list.filter((t) => paperclip.mcp_servers[name].tools.write.includes(t) && !(TRIAL_WRITES[name] ?? []).includes(t));
+        const writes = list.filter((t) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name] ?? []).includes(t));
         if (writes.length) fail(`${key}: an agent in trial may not have ${name} write tools (${writes.join(", ")}); they come with tap 2`);
       }
     }
@@ -356,7 +373,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     if (a.isolation === "untrusted" || all.get(a.module)?.def.isolation === "untrusted") {
       if (a.roles.length) fail(`${key}: an untrusted module's agent may not have roles`);
       for (const [name, list] of Object.entries(tools)) {
-        const writes = list.filter((t) => paperclip.mcp_servers[name].tools.write.includes(t));
+        const writes = list.filter((t) => writeTools(paperclip.mcp_servers[name]).includes(t));
         if (writes.length) fail(`${key}: an untrusted module's agent may not have ${name} write tools (${writes.join(", ")})`);
       }
     }
@@ -382,6 +399,10 @@ export function compile(productDir, instanceDir, { revision } = {}) {
         target[f] = v;
       }
     }
+  }
+  for (const [key, r] of Object.entries(paperclip.routines)) {
+    r.autonomy ??= routineAutonomyDefault(r);
+    if (!ROUTINE_AUTONOMY.includes(r.autonomy)) fail(`routine ${key}: autonomy is ${ROUTINE_AUTONOMY.join(", ")}`);
   }
   // The gateway's and grader's grants fields (grantEntry), checked after the overrides that may set them.
   for (const [key, a] of Object.entries(paperclip.agents)) {
@@ -440,7 +461,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
   // The model gateway's switches (config/gateway.json, re-read per call): spend_caps off stops refusals, tracking stays.
   const gateway = { enforce_caps: String(settings.spend_caps ?? "on") !== "off" };
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, gateway, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared, gateSecrets: edge.gateSecrets } };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, gateway, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**

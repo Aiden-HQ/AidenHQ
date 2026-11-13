@@ -1,56 +1,63 @@
 # AidenHQ design system
 
-The default look and behaviour of every app agents build: design tokens with four themes, a CSS component kit, a small
-dependency-free script for in-place updates, a live catalog, and the rules the UI/UX Engineer reviews against. It works
-in any stack: plain HTML from a Node server, a template engine, or React (use the class names).
+The default look and behaviour of every app agents build. Apps are **shadcn/ui + Tailwind CSS** (Radix primitives, lucide
+icons) on Vite + React, started from the app starter (`modules/core/templates/app/`). This folder holds the theme those
+components wear, the rules, and the review checklist.
 
 | File | What it is |
 |---|---|
-| `tokens.css` | Every colour, size, space, radius and duration. Four palettes (`neutral`, `warm`, `contrast`, `data`), each in light and dark. |
-| `components.css` | The component classes: app shell, page header, buttons, forms, filters, tables, cards, stat tiles, badges, tabs, drawers, modals, toasts, states, pagination, timeline, board, charts, command palette. |
-| `kit.js` | Opt-in behaviour by data attribute: filters that apply on change with in-place updates and URL state, drawers, async forms, confirms, sortable tables, load more, command palette, tabs, relative times, theme toggle, toasts. |
-| `catalog.html` | Every token and component, live. Open it with `?palette=warm&mode=dark` (or use its pickers). Copy markup from here. |
-| `guidelines.md` | The rules: layout, type, colour, navigation, filters, partial updates, states, forms, tables, dialogs, accessibility, motion, copy, data visualisation. |
+| `tokens.css` | Every colour, size, space, radius and duration: four palettes (`neutral`, `warm`, `contrast`, `data`) from Radix Colors, each in light and dark, all AA (`scripts/test/design-system.test.mjs`). |
+| `shadcn.css` | Maps the tokens onto shadcn's variables (`--background`, `--primary`, `--muted-foreground`, `--sidebar`…) and Tailwind's colour names, plus status (`ok`, `warn`, `danger`, `info`), `link`, `page` and `chart-1…6`. Points Tailwind's `dark:` at `<html data-theme>`. |
+| `guidelines.md` | The rules: composition and hierarchy, type, colour, navigation, filters and URL state, states, forms, tables and boards, sheets, accessibility, copy, data visualisation, anti-patterns. |
 | `review-checklist.md` | What blocks a UI pull request and what goes to the backlog, plus the Engineer's self-review. |
+| `components.css`, `kit.js` | **Deprecated:** the plain-CSS kit (version 2), kept only for apps that still vendor it until they migrate (below). Don't use it in new work. |
 
-The product repo is the source (`modules/core/design-system/`). The app starter (`modules/core/templates/app/`) and the
-agent computers (`/opt/aidenhq/design-system/`) carry byte-identical copies (`node scripts/sync-shared.mjs`).
+The catalog is the starter's own `/catalog` page: every component in use, themed, with palette and mode pickers
+(`?palette=warm&mode=dark`). The product repo is the source. The starter vendors `tokens.css` and `shadcn.css` in
+`src/styles/`, and the agent computers carry this folder at `/opt/aidenhq/design-system/` and the starter at
+`/opt/aidenhq/app-starter/` (byte-identical copies, `node scripts/sync-shared.mjs`; a test fails on drift).
 
-## Using it in an app
+## A new app
 
-1. Copy `tokens.css`, `components.css` and `kit.js` unchanged into the app's static folder (e.g. `public/design-system/`).
-   A new app gets them from the starter, `modules/core/templates/app/`.
-2. Load them in this order, before any app CSS:
-   ```html
-   <html lang="en" data-palette="neutral">
-   <meta name="color-scheme" content="light dark">
-   <link rel="stylesheet" href="/design-system/tokens.css">
-   <link rel="stylesheet" href="/design-system/components.css">
-   <script src="/design-system/kit.js" defer></script>
-   ```
-3. Build from the catalog's markup. App CSS only adds what the kit lacks, and only with tokens (no literal colours or
-   pixel sizes). If two apps need the same thing, it moves into the kit.
-4. **Branding (optional):** a `theme.css` loaded after `tokens.css` may override only `--accent*`, `--focus` and
-   `--font`, in both light and dark. When the instance repo has `design/theme.css`, apps use that file.
-5. To update, copy the three files again and note the version (the `design-system version:` line) in the PR.
+Start from the UI/UX Designer's mockup when the app has one. Copy the starter (without `node_modules` and `dist`) into
+the app's repo, keep its `AGENTS.md`, and follow its README. Compose pages from its building blocks
+(`src/components/blocks/`), components and the example page's patterns; add shadcn components with the pinned CLI (`npx shadcn@4.23.0 add <name>`, then the fix-ups in the starter's README), pin any new
+dependency exactly at a version at least 7 days old, and check the browser console for CSP violations.
 
-## Migrating an existing app
+**Re-theming:** an app or instance overrides tokens (`--accent*`, `--focus`, `--font`) or shadcn's variables in a
+`theme.css` imported after `shadcn.css`, in light and dark, checked for contrast. When the instance repo has
+`design/theme.css`, apps use that file. Don't edit the vendored files.
 
-One Engineer PR per app; the UI/UX Engineer reviews it with `ui-review --baseline` against the old version.
+**Updating:** copy `tokens.css` and `shadcn.css` again and note the version (the `design-system version:` line) in the PR.
+Blocks and fixed components are app-owned copies, so an app made before a block existed doesn't have it: copy any
+missing or older file from the current starter's `src/components/blocks/` and `src/components/ui/` (e.g.
+`ui/sidebar.tsx`) when you need it.
 
-1. Replace the vendored `tokens.css` and `components.css` with this version, and add `kit.js`. Then list the kit's
-   class names that the app's own CSS also defines (`.card`, `.board`, `.stat`, `.tabs`, `.badge`, `.notice`, `.kv` are
-   the usual ones). For each, delete the app's rule where the kit's does the job, or rename the app's class where it
-   doesn't. Otherwise the two rules merge, and you get double padding or stray markers.
-2. Rename tokens that changed in 2.0: links and text on a surface use `--accent-ink`, not `--accent` (which is now
-   the solid fill). `--duration` stays, and `--ease*` are new. Type sizes moved to a 16px body (`--text-md`). Then delete
-   the app's own copies of things the kit now has: buttons, inputs, tables, badges, cards, empty and error states.
-3. Put the shell in place: `.app` > `.topbar` (+ `.bottombar` on phone) > `main.page`, and `.page-header` on each page.
-4. **Filters:** make the filter `<form method="get">` a `data-autoapply` form with `data-target` naming the results
-   region's id, and keep the Apply button as `data-autoapply-submit`. The server keeps rendering the full page for a
-   URL. kit.js fetches it and swaps the region, so no new endpoint is needed.
-5. **Details:** add `data-drawer` to links that open an item, and wrap the detail page's content in
-   `<div data-drawer-content>`. The same URL still works as a full page.
-6. **Tables:** add `.table-stack` and `data-label` on cells, and `data-sortable` where sorting helps.
-7. Add the three states to every data view, and remove bespoke CSS that duplicates the kit. Run `ui-review` at 390 and
-   1280 in light and dark, and fix anything blocking.
+## Migrating an existing server-rendered app
+
+For an app that renders HTML on the server (with or without the old kit). One Engineer PR per step where possible; the
+UI Reviewer reviews each with `ui-review --baseline` against the version before. The data layer, the API, auth, the
+gate check and migrations stay as they are: only the UI moves.
+
+1. **Split the server into an API.** Every page's data becomes a JSON route (`GET /api/<view>?<the page's query>`)
+   returning what the template used to receive, built from the same service functions. Writes stay as they are (or
+   become JSON `POST`/`PATCH` with the same validation). Keep `/api/health`. Agent-facing API routes don't change.
+2. **Add the client.** Copy the starter's `index.html`, `vite.config.ts`, `tsconfig.json`, `components.json`, `src/`
+   (without the example page), `public/theme.js` and its dependencies into the repo. Point the build at `dist/` and have
+   the server serve `dist/` the way the starter's `server.mjs` does: the HTML with a fresh nonce and the strict CSP
+   (`script-src 'self'; style-src 'self' 'nonce-…'`, no `'unsafe-inline'`), hashed assets from `/assets/`, and the same
+   HTML for every client route. A multi-stage Dockerfile builds the client.
+3. **Rebuild one page at a time,** most-used first, from the starter's patterns: the shell (sidebar and bottom bar), page
+   header, summary strip, filters in the URL (`useUrlState`) with the same parameter names as before so old links keep
+   working, a table where a card grid compared items, the `Board` block where the page had lanes (keep every lane),
+   details in a `Sheet` at `?item=`, and every state. Until a page moves, its old server-rendered route keeps working;
+   switch routes over as they land.
+4. **Fix composition as you go,** not by porting markup: drop nested panels, boxed rows, stripes, eyebrow labels and
+   provenance pills (guidelines §2, §17), but keep the page's structure (its groups, lanes and views; guidelines §1.9).
+   Move long feeds into a capped `ActivityList` in a side rail, and history into the detail sheet or its own paged view.
+5. **Retire the old UI:** delete the templates, the vendored kit (`components.css`, `kit.js`) and its copy script once the
+   last page has moved. Run `ui-review` at 390 and 1280 in light and dark on every page and fix anything blocking,
+   then ask the UI/UX Designer for the app's design audit (one task naming the app and its repository).
+
+An app on the old kit that isn't being touched for UI stays as it is. Migrate it the next time its UI changes, or when
+a design audit lists "migrate to shadcn/ui".

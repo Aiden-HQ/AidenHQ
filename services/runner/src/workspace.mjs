@@ -9,9 +9,20 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeRepo } from "./commands.mjs";
-import { defaultBranch, git, smallFile } from "./git.mjs";
+import { readOwn } from "./files.mjs";
+import { SAFE_GIT_ARGS, defaultBranch, git, smallFile } from "./git.mjs";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/**
+ * Whether a clone still shares object files with another (a clone made for the jail is hardlinked to the cache). Only looked
+ * at, never written: the clone's .git is the agent's, so nothing here follows a link or writes by a name found in it.
+ */
+function sharesObjects(clone) {
+  const walk = (dir) => readdirSync(dir, { withFileTypes: true }).some((e) => (e.isDirectory() ? walk(join(dir, e.name)) : e.isFile() && lstatSync(join(dir, e.name)).nlink > 1));
+  const objects = join(clone, ".git", "objects");
+  return Boolean(lstatSync(objects, { throwIfNoEntry: false })?.isDirectory()) && walk(objects);
+}
 const MANIFEST = join(".aidenhq", "branches.json");
 
 export const workspacePath = (workDir, identifier) => join(workDir, "tasks", identifier);
@@ -102,16 +113,19 @@ export async function workspaceRepos(workspace) {
  * Clone `repo` into the workspace from the runner's cache clone (`cache`), pointed at GitHub
  * (`remoteUrl`), on its default branch. An existing clone is fetched instead. Returns its path.
  */
-export async function ensureRepo(workspace, repo, { cache, remoteUrl = `git@github.com:${repo.slug}.git`, hooksDir }) {
+export async function ensureRepo(workspace, repo, { cache, remoteUrl = `git@github.com:${repo.slug}.git`, hooksDir, copy = false }) {
   mkdirSync(workspace, { recursive: true });
   const existing = (await workspaceRepos(workspace)).find((r) => r.slug.toLowerCase() === repo.slug.toLowerCase());
   if (existing) {
     await git(existing.path, "fetch", "--quiet", "--prune", "origin");
+    // A box mounts this clone read-write: one sharing files with the runner's cache (made for the jail) is refused.
+    if (copy && sharesObjects(existing.path)) throw new Error(`${repo.slug} in this task's workspace was cloned for the jail and shares files with the runner's cache, so it can't go into a computer. Start the task afresh (\`aidenhq cleanup\`, then ask again) or hand it back to the Software Engineer.`);
     return existing.path;
   }
   let path = join(workspace, repo.name);
   if (existsSync(path)) path = join(workspace, `${repo.org}--${repo.name}`);
-  await git(workspace, "clone", "--quiet", "--no-checkout", cache, path);
+  // copy: a box job's clone shares no object file with the cache clone (its box writes the workspace through a mount).
+  await git(workspace, "clone", "--quiet", "--no-checkout", ...(copy ? ["--no-hardlinks"] : []), cache, path);
   await git(path, "remote", "set-url", "origin", remoteUrl);
   if (!remoteUrl.includes("github.com")) await git(path, "config", "aidenhq.slug", repo.slug);
   // Pushing is the runner's job: the clone has no push URL and a pre-push hook that refuses.
@@ -131,7 +145,7 @@ export async function ensureRepo(workspace, repo, { cache, remoteUrl = `git@gith
 /** The agent's optional note on its branches: [{ repo, branch, base, purpose }]. */
 export function readManifest(workspace) {
   try {
-    const list = JSON.parse(readFileSync(join(workspace, MANIFEST), "utf8"));
+    const list = JSON.parse(readOwn(workspace, MANIFEST, 256 * 1024)?.toString("utf8") ?? "[]");
     return Array.isArray(list) ? list.filter((e) => e && typeof e.branch === "string") : [];
   } catch {
     return [];
@@ -245,7 +259,8 @@ export async function worktrees(path) {
  * branches stay clean: the trees are identical. Returns the number of commits rewritten.
  */
 export async function signUnsigned(path) {
-  if ((await git(path, "config", "--bool", "--get", "commit.gpgsign").catch(() => "")) !== "true") return 0;
+  // Whether to sign is the host user's own setting (global config): the clone's config is the agent's to write, and task-folder git reads none.
+  if ((await gitEnv(tmpdir(), {}, "config", "--global", "--bool", "--get", "commit.gpgsign").catch(() => "")) !== "true") return 0;
   const list = (await git(path, "rev-list", "--reverse", "--topo-order", "--parents", "--branches", "--not", "--remotes=origin")).split("\n").filter(Boolean).map((l) => l.split(" "));
   const map = new Map();
   const dir = mkdtempSync(join(tmpdir(), "pw-sign-"));
@@ -286,7 +301,7 @@ export async function signUnsigned(path) {
 function gitEnv(cwd, env, ...args) {
   const clean = Object.fromEntries(Object.entries(env).filter(([, v]) => v));
   return new Promise((resolve, reject) =>
-    execFile("git", args, { cwd, env: { ...process.env, ...clean, GIT_TERMINAL_PROMPT: "0" } }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stderr })) : resolve(stdout.trim()))),
+    execFile("git", [...SAFE_GIT_ARGS, ...args], { cwd, env: { ...process.env, ...clean, GIT_TERMINAL_PROMPT: "0" } }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stderr })) : resolve(stdout.trim()))),
   );
 }
 

@@ -1,0 +1,11 @@
+name: wiper
+description: A connection with a destructive tool
+connections:
+  wconn: { url: "http://w-mcp:1/mcp", tools: { read: [w_get], write: [w_set], destructive: [w_delete] } }
+agents:
+  w: { adapter: codex_local, model: m1, connections: { wconn: write } }
+  wd: { adapter: codex_local, model: m1, connections: { wconn: [w_get, w_delete] } }
+routines:
+  sweep: { title: Sweep, agent: w, description: "Then close this task with one line." }
+  hook: { title: Hook, agent: w, description: "Then close this task with one line.", webhook: true }
+  hookfull: { title: Hook full, agent: w, description: "Then close this task with one line.", webhook: true, autonomy: full }

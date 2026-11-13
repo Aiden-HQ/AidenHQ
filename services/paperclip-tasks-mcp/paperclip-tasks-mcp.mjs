@@ -25,8 +25,11 @@ const CURRENT_TASK = process.env.PAPERCLIP_TASK_ID || "";
 const STATUSES = ["todo", "in_progress", "blocked", "done", "cancelled"];
 
 // Engineer sub-tasks: engines map to the Engineer agents' setup keys.
-const ENGINES = ["codex", "claude", "openrouter"];
-const ADAPTERS = { codex: "codex_local", claude: "claude_local", openrouter: "opencode_local" };
+const ENGINES = ["codex", "codex-openrouter", "claude", "openrouter"];
+const ADAPTER_ENGINE = { codex_local: "codex", claude_local: "claude", opencode_local: "openrouter" };
+// An Engineer's engine: the one setup recorded (module.yaml `engine:`), else its adapter's.
+const engineOf = (a) => (ENGINES.includes(a.metadata?.engine) ? a.metadata.engine : ADAPTER_ENGINE[a.adapterType]);
+const openrouterKind = (e) => e === "openrouter" || e === "codex-openrouter";
 const MAX_SUBTASKS = 40;
 
 /** An OpenRouter model id (provider/model) for what the user named, or "" (as the runner's intake). */
@@ -43,6 +46,14 @@ function openrouterModel(name, listed) {
 function authHeaders() {
   if (!KEY) throw new Error("PAPERCLIP_API_KEY is not set (only available inside a Paperclip run)");
   return { authorization: `Bearer ${KEY}`, ...(RUN ? { "x-paperclip-run-id": RUN } : {}) };
+}
+
+/** A text argument carrying a model's tool-call syntax as text (DeepSeek's DSML tags, a stray <invoke>/<parameter> block): its name. */
+function toolMarkup(args) {
+  for (const [k, v] of Object.entries(args ?? {})) {
+    if (typeof v === "string" && (/｜DSML｜/.test(v) || /<\/?(?:invoke|parameter|function_calls)\b[^>]*>/.test(v))) return k;
+  }
+  return undefined;
 }
 
 async function api(method, path, body) {
@@ -736,7 +747,7 @@ const TOOLS = {
         parent: { type: "string", description: "the user's task to split, e.g. PEN-357" },
         title: { type: "string" },
         description: { type: "string", description: "markdown; the complete request for this one task" },
-        engine: { type: "string", enum: ENGINES, description: "codex (default), claude, or openrouter (GLM, DeepSeek, Kimi… models), as the user asked" },
+        engine: { type: "string", enum: ENGINES, description: "codex (default), claude, or an OpenRouter engine for GLM, DeepSeek, Kimi… models: codex-openrouter (Codex) or openrouter (opencode), whichever an Engineer runs (task_team), as the user asked" },
         model: { type: "string", description: "optional model the user named, e.g. gpt-6-astra, opus, deepseek, z-ai/glm-5.3-flash" },
         marker: { type: "string", description: "stable key within the parent, e.g. the repo name" },
       },
@@ -764,7 +775,9 @@ const TOOLS = {
       const siblings = await api("GET", `/api/companies/${encodeURIComponent(COMPANY)}/issues?${new URLSearchParams({ parentId: p.id, limit: "200" })}`);
       if (siblings.filter((i) => i.parentId === p.id).length >= MAX_SUBTASKS) throw new Error(`a task can have at most ${MAX_SUBTASKS} Engineer sub-tasks`);
       const agents = await api("GET", `/api/companies/${encodeURIComponent(COMPANY)}/agents`);
-      const agent = agents.find((a) => a.adapterType === ADAPTERS[engine] && /^aidenhq:engineer(-|$)/.test(a.metadata?.setupKey ?? "") && a.status !== "terminated");
+      const engineers = agents.filter((a) => /^aidenhq:engineer(-|$)/.test(a.metadata?.setupKey ?? "") && a.status !== "terminated");
+      // "openrouter" asks for OpenRouter models: the Engineer that runs them, on whichever OpenRouter engine it is set to.
+      const agent = engineers.find((a) => engineOf(a) === engine) ?? (openrouterKind(engine) ? engineers.find((a) => openrouterKind(engineOf(a))) : undefined);
       if (!agent) throw new Error(`no Engineer for ${engine}`);
       // A graded Engineer's sub-task is graded on its own PRs (the standard pr criteria), as a delegation is.
       const grade = gradedAgent(agent.id) ? gradeFor(agent, [], { kind: "pr" }) : undefined;
@@ -773,8 +786,8 @@ const TOOLS = {
       // opencode model ids are openrouter/<provider>/<model>. A name like "deepseek" or "glm-5.3-flash"
       // is matched against the OpenRouter Engineer's listed models; a bare name we can't place is
       // dropped, so the Engineer's default model runs instead.
-      const orModel = engine === "openrouter" && m2 ? openrouterModel(m2, [agent.adapterConfig?.model, ...(Array.isArray(agent.metadata?.models) ? agent.metadata.models : [])]) : "";
-      const modelId = engine === "openrouter" ? (orModel ? `openrouter/${orModel}` : "") : m2;
+      const orModel = openrouterKind(engine) && m2 ? openrouterModel(m2, [agent.adapterConfig?.model, ...(Array.isArray(agent.metadata?.models) ? agent.metadata.models : [])]) : "";
+      const modelId = openrouterKind(engine) ? (orModel ? `openrouter/${orModel}` : "") : m2;
       const body = {
         title: String(title).slice(0, 200),
         description: `${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${gradedText(grade)}\n\n<!-- source:${m} -->`,
@@ -800,7 +813,7 @@ const TOOLS = {
       if (!COMPANY) throw new Error("PAPERCLIP_COMPANY_ID not set");
       const { reports } = await reportsOf();
       const row = async (a) => ({ key: keyOf(a), name: a.metadata?.persona?.name || a.name, title: a.title, description: await describe(a) });
-      return { reports: await Promise.all(reports.filter((a) => !isRunner(a)).map(row)), engineers: reports.filter(isRunner).map((a) => ({ key: keyOf(a), name: a.metadata?.persona?.name || a.name, title: a.title })) };
+      return { reports: await Promise.all(reports.filter((a) => !isRunner(a)).map(row)), engineers: reports.filter(isRunner).map((a) => ({ key: keyOf(a), name: a.metadata?.persona?.name || a.name, title: a.title, engine: engineOf(a) })) };
     },
   },
   task_delegate: {
@@ -1441,6 +1454,8 @@ rl.on("line", async (line) => {
         const g = await grant();
         if (!g.tools.includes(params.name)) throw new Error(`Refused: ${g.key} isn't granted ${params.name} on paperclip_tasks.`);
         if (g.trial && TRIAL_OWN_TASK.includes(params.name)) await requireOwnTask(g, params.arguments?.issue ?? "");
+        const leaked = toolMarkup(params.arguments);
+        if (leaked) throw new Error(`Refused: \`${leaked}\` holds raw tool-call markup, not words for people. Make that call as a real tool call, and write only the message here.`);
         const result = await tool.run(params.arguments ?? {});
         reply(id, { content: result?.mcpContent ?? [{ type: "text", text: JSON.stringify(result, null, 2) }] });
       } catch (err) {

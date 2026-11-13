@@ -42,9 +42,9 @@ alone does not stop exfiltration.
 
 | Tier | Agents |
 |---|---|
-| Computer (per-run gVisor box, shell and browser) | Agent Architect, DevOps Engineer (app-maintainer), UI/UX Engineer: unchanged |
+| Computer (per-run gVisor box, shell and browser) | Agent Architect, DevOps Engineer (app-maintainer), UI/UX Designer, UI Reviewer: unchanged |
 | Tool-only, in Paperclip, shell off | Chief of staff, assistant, Fleet Ops, librarians, Slack Scout, Slack Triage, Email Triage, Open Loops, Security Watch, Red Teamer, Roadmap Keeper |
-| Runner jail (bwrap, passt netns) | Engineers (fleet-engineer, engineer-openrouter): unchanged |
+| Runner jail (bwrap, passt netns) | Light Engineers (fleet-engineer, engineer-openrouter); strong Engineer work moves to a box (decision below) |
 
 **Rule:** an agent gets `image:` only when its work needs a shell, a browser or files. Later work, not tonight: a
 shell-off box variant for agents that read untrusted text and would gain from leaving the Paperclip container.
@@ -72,7 +72,7 @@ Nothing changes in `services/computer`.
 
 ## Pool and memory
 
-Leave the launcher as it is: `AIDENHQ_COMPUTERS_MAX` 6, 2g and 2 CPUs per box, 10-minute idle reap.
+Launcher pool (2026-11-13, with the App Engineer): `AIDENHQ_COMPUTERS_MAX` 7 (the Paperclip computer agents' 5 plus the App Engineer's 2), 2g and 2 CPUs per Paperclip box, `AIDENHQ_COMPUTERS_JOB_MEMORY` 1536m per runner job box, 10-minute idle reap. Limits are ceilings, not reservations: on the 15 GB VM with no swap, 7 boxes at their limits would not all fit, but typical boxes use 0.6-1 GB.
 
 - **Sizing rule.** Max boxes must be at least the sum of the box agents' `max_parallel` (today 1 + 2 + 2 = 5).
   Max × the per-box memory limit must fit in RAM minus Paperclip and the services, with no swap.
@@ -122,3 +122,17 @@ Tool-only agents share one container user, so a run that could write files could
 no shell and a read-only sandbox (setup's allowlist guard, `scripts/no-shell.mjs` `assertNoShell`, gate code), so it cannot write
 or run anything there. Agents that need a shell or file writes get an `image:` and run in a gVisor box; Engineers run
 in the runner's bubblewrap jail. Revisit only if a tool-only agent ever needs writes.
+
+## Decided 2026-11-13: strong Engineer work runs in agent computers
+
+This supersedes "Engineer jobs stay in the runner's bubblewrap and passt jail" above. Engineers split in two tiers:
+
+- **Light** (the Software and Platform Engineers): runner jobs in the jail, as today. They have the repository, its
+  tests and workspace installs; no Docker, no host and no live apps.
+- **Strong** (a later App Engineer): runner jobs executed inside a gVisor agent computer, for UI, new apps and other work
+  that needs a browser, root installs or app and data tools, at least 2 jobs at once. The runner keeps the workspace,
+  git, cards, tiers and grading; the box holds no credentials.
+
+Image builds and CVE scans run in neither tier: CI's `image-scan` check is their evidence. The grader captures deployed
+apps' live pages itself, for both tiers. Building the strong tier needs the box integration in
+[the App Engineer plan](../superpowers/plans/2026-11-13-app-engineer.md); until it lands, work that needs it waits.

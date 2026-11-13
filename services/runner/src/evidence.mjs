@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { findPrs, namedChecks } from "./merges.mjs";
 import { MAX_DIFF } from "./review.mjs";
+import { downscalePng, imageInfo } from "./images.mjs";
 
 /** Marks the grader's own notes on a task, so they never count as the deliverable's evidence. */
 export const GRADER_MARKER = "<!-- aidenhq:grader -->";
@@ -35,7 +36,7 @@ export async function prEvidence(prs, ref, deps) {
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     versions.push(`${p.repo}#${p.number}@${sha}`);
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "" });
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${c.ok ? "green" : "red"}`).join(", ") : "none"}`);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${c.skipped ? "skipped" : c.ok ? "green" : "red"}`).join(", ") : "none"}`);
     diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)")).slice(0, MAX_DIFF)}\n`;
   }
   // The board keeps a version in 200 characters: several PRs are bound by their hash.
@@ -59,14 +60,107 @@ export function applyEvidence(cards) {
   return { version: applied.id, facts, data: { APPLY_OUTCOME: applied.outcomeText ?? "", APPLY_CHANGE: applied.details ?? "" } };
 }
 
-/** The task's own words (the latest comments other than the grader's) and its files: the evidence for file and report, context for the rest. */
+/**
+ * The task's own words (the latest comments other than the grader's) and its files: the evidence for file and report, context
+ * for the rest. File names and types are the agents' own strings: the trusted facts call each file by a code-made label
+ * (file_1, file_2, ... in the attachments' order) and its name and type go in the fenced FILE_NAMES block, as data.
+ */
 export async function wordsEvidence(deps) {
   const comments = (await deps.comments()).filter((c) => !String(c.body ?? "").includes(GRADER_MARKER)).slice(-4);
-  const files = await deps.attachments().catch(() => []);
-  const facts = files.length ? [`files attached: ${files.map((f) => f.originalFilename ?? f.name ?? f.id).join(", ")}`] : ["no files attached"];
+  const files = (await deps.attachments().catch(() => [])).map((f, i) => ({ ...f, label: `file_${i + 1}` }));
+  const facts = files.length ? [`${files.length} file${files.length > 1 ? "s" : ""} attached: ${files.map((f) => f.label).join(", ")} (their names and types, as the agent gave them, are in FILE_NAMES)`] : ["no files attached"];
   const version = comments.length || files.length ? hash([...comments.map((c) => c.id), ...files.map((f) => f.id)].join(" ")) : "";
-  return { version, facts, data: { TASK_COMMENTS: comments.map((c) => String(c.body ?? "")).join("\n\n---\n\n"), ...(files.length ? { FILES: (await deps.fileTexts?.(files).catch(() => "")) ?? "" } : {}) } };
+  const names = files.map((f) => `${f.label}: ${String(f.originalFilename ?? f.name ?? "").slice(0, 200)} (${String(f.contentType ?? "").slice(0, 100)})`).join("\n");
+  return { version, facts, files, data: { TASK_COMMENTS: comments.map((c) => String(c.body ?? "")).join("\n\n---\n\n"), ...(files.length ? { FILE_NAMES: names } : {}) } };
 }
+
+/** A content type as code may state it among the trusted facts: a plain type/subtype, or "unknown type". */
+const safeType = (t) => (/^[\w.+-]+\/[\w.+-]+$/.test(String(t ?? "")) ? String(t) : "unknown type");
+
+export const MAX_IMAGES = 6;
+const IMAGE_SIDE = 2048; // a PNG with a longer side is downscaled (the vision models scale to about this anyway)
+const IMAGE_BYTES = 3 * 1024 * 1024; // one image as sent; a bigger one is downscaled if a PNG, else left out
+const IMAGES_BYTES = 12 * 1024 * 1024; // all images as sent (base64 adds a third; the gateway takes 32 MB)
+const TEXT_FILE = 6_000; // one text file's characters
+export const TEXT_TOTAL = 16_000; // all text files' characters (the prompt fences a block at 20,000)
+const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|ya?ml|log|html?|tsx|ts|jsx|js|css)$/i;
+
+/** A PNG made to fit: downscaled until its longest side is at most IMAGE_SIDE and its bytes IMAGE_BYTES, or null. */
+function fitPng(buf, info) {
+  for (let side = Math.min(IMAGE_SIDE, Math.max(info.width, info.height)); side >= 256; side = Math.floor(side * 0.7)) {
+    const small = downscalePng(buf, side);
+    if (!small) return null;
+    if (small.length <= IMAGE_BYTES) return small;
+  }
+  return null;
+}
+
+/**
+ * The task's attached files' contents, for the grader (`files` as wordsEvidence labels them): images (sniffed from the
+ * bytes, at most 6, newest first, a large PNG downscaled) as image parts, text files (.txt, .md, .json, .csv, ...) as one
+ * fenced FILES block, each cut and all within a budget. { awaiting } when a file can't be read yet (missing evidence is never
+ * a pass), else { facts, data, images }: the facts say per file label what was shown (its size, its pixel size, what was cut
+ * or left out), so a file left out reads as left out, not as missing work. `content(id)` resolves with the file's bytes.
+ */
+export async function fileEvidence(files, content) {
+  const facts = [];
+  const images = [];
+  const texts = [];
+  let imageBytes = 0;
+  let textLeft = TEXT_TOTAL;
+  const newest = [...files].sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+  for (const f of newest) {
+    const name = String(f.originalFilename ?? f.name ?? "");
+    const isImage = /^image\//.test(f.contentType ?? "") || /\.(png|jpe?g|gif|webp)$/i.test(name);
+    const isText = !isImage && (TEXT_EXT.test(name) || /^text\/|^application\/json/.test(f.contentType ?? ""));
+    if (!isImage && !isText) {
+      facts.push(`${f.label}: not shown to the grader (${safeType(f.contentType)})`);
+      continue;
+    }
+    if (isImage && images.length >= MAX_IMAGES) {
+      facts.push(`${f.label}: not shown to the grader (only the newest ${MAX_IMAGES} images are)`);
+      continue;
+    }
+    if (isText && textLeft <= 0) {
+      facts.push(`${f.label}: not shown to the grader (the text budget of ${TEXT_TOTAL} characters was spent on newer files)`);
+      continue;
+    }
+    let buf;
+    try {
+      buf = await content(f.id);
+    } catch (err) {
+      return { awaiting: `the attached ${f.label} could not be read yet (${String(err.message ?? err).replace(/[^\w .:/()-]/g, "").slice(0, 160)})` };
+    }
+    if (isImage) {
+      const info = imageInfo(buf);
+      if (!info) {
+        facts.push(`${f.label}: not shown to the grader (not a PNG, JPEG, GIF or WebP image)`);
+        continue;
+      }
+      const real = `${info.width}x${info.height}`;
+      let sent = buf;
+      if (info.type === "image/png" && (Math.max(info.width, info.height) > IMAGE_SIDE || buf.length > IMAGE_BYTES)) sent = fitPng(buf, info) ?? buf;
+      if (sent.length > IMAGE_BYTES || imageBytes + sent.length > IMAGES_BYTES) {
+        facts.push(`${f.label}: image ${real} px, not shown to the grader (${Math.round(sent.length / 1024)} KB is over the image budget)`);
+        continue;
+      }
+      const s = sent === buf ? info : imageInfo(sent);
+      imageBytes += sent.length;
+      images.push({ url: `data:${info.type};base64,${sent.toString("base64")}`, label: f.label });
+      facts.push(`${f.label}: image ${real} px (its real size), shown as IMAGE_${images.length}${sent !== buf ? ` downscaled to ${s.width}x${s.height} px` : ""}`);
+      continue;
+    }
+    const text = buf.toString("utf8");
+    const shown = text.slice(0, Math.min(TEXT_FILE, textLeft));
+    textLeft -= shown.length;
+    texts.push(`=== ${f.label}: ${name.slice(0, 200)} ===\n${shown}`);
+    facts.push(`${f.label}: text, ${text.length} characters, in FILES${shown.length < text.length ? ` (cut to its first ${shown.length})` : ""}`);
+  }
+  return { facts, images, data: texts.length ? { FILES: texts.join("\n\n") } : {} };
+}
+
+/** Whether a rubric is about attached files (a screenshot, an image, an attachment): their contents are evidence then. */
+export const rubricNamesFiles = (rubric) => rubric.some((c) => /\b(attach\w*|screenshots?|images?|png|jpe?g|mockups?|files?)\b/i.test(String(c)));
 
 /**
  * Whether one branch commit is already satisfied on the target's current default branch (the duplicate-card guard): its

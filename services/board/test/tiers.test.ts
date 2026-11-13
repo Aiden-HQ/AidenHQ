@@ -46,7 +46,7 @@ describe("tiered approvals", () => {
   // The runner files with its key; the internal token alone (agents can reach it) files nothing.
   const file = async (tier: 1 | 2, action = "push", headers: Record<string, string> = { "x-reviewer-key": REVIEWER }) =>
     (await call("POST", "/internal/approvals", { issue: "WOR-7", action, tier, reason: "r", args: { only: [{ repo: "org/app", branch: `b${++n}`, sha: "a".repeat(40) }] } }, headers)).json;
-  const verdict = (id: string, body: object, key = REVIEWER) => call("POST", `/internal/approvals/${id}/review`, { model: "moonshotai/kimi-k3.1-pro", reason: "fine", ...body }, { "x-reviewer-key": key });
+  const verdict = (id: string, body: object, key = REVIEWER) => call("POST", `/internal/approvals/${id}/review`, { model: "~openai/gpt-luna-latest", reason: "fine", ...body }, { "x-reviewer-key": key });
   const decide = (body: object, key: string) => call("POST", "/internal/owner/approvals/decide", body, { "x-owner-key": key });
   const pendingIds = async () => (await call("GET", "/internal/approvals?state=pending", undefined, { "x-owner-key": OWNER })).json.approvals.map((a: any) => a.id);
 
@@ -85,7 +85,7 @@ describe("tiered approvals", () => {
     expect((await verdict(one.id, { digest: one.digest, decision: "approve", model: "openai/gpt-x" })).status).toBe(400);
     const two = await file(2, "pr"); // another action: a new push would replace `one`
     expect((await verdict(two.id, { digest: two.digest, decision: "approve" })).status).toBe(409); // Tier 2 is the owner's
-    expect((await verdict(one.id, { digest: one.digest, decision: "approve" })).json).toMatchObject({ state: "approved", decidedBy: "reviewer:moonshotai/kimi-k3.1-pro" });
+    expect((await verdict(one.id, { digest: one.digest, decision: "approve" })).json).toMatchObject({ state: "approved", decidedBy: "reviewer:~openai/gpt-luna-latest" });
   });
 
   it("tier0 (shadow): the reviewer may only escalate, which makes it the owner's card; a reject makes the action sticky", async () => {

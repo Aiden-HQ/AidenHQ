@@ -4,20 +4,21 @@
 // `login: password`: the board's Better Auth session, checked on the auth listener, cached 60 s; a host with an aud still
 // needs the Access token too). Every inbound identity header and the Access token/cookie are stripped. Writes and WebSocket
 // upgrades need a same-origin Origin (or Sec-Fetch-Site: same-origin), since sibling app hostnames are same-site.
-// X-AidenHQ-Gate carries the app's own secret, so the app can tell the gate from anything else on the host. The upstream
-// port comes only from the compiled config (config/gate.json, written by scripts/compile.mjs at the owner's apply).
+// The app gets X-AidenHQ-Identity: a JWT the gate mints per request (docs/design/app-identity.md; Ed25519, 5 minutes, aud =
+// the app), verified by the app with the shared middleware and the public keys. The upstream port comes only from the
+// compiled config (config/gate.json, written by scripts/compile.mjs at the owner's apply).
 // App access (docs/design/access.md): the board's accounts.json says who is an
 // account (email, name, role, disabled) and each shared app's default role and assignments by email. A member is an enabled
 // account in password mode, and any Access-verified email whose account isn't disabled in access mode. Their role on an app:
 // admin for an AidenHQ admin account, else their assignment, else the app's default, else blocked. The gate enforces only
-// `blocked` (403, and the app is off their my-apps list); the app gets X-AidenHQ-User (email), -Role, -Name (display only,
-// percent-encoded) and -App and decides the rest. `/.aidenhq/*` on an app host is the gate's own: access (→ the Access page),
+// `blocked` (403, and the app is off their my-apps list); the app gets the identity token (sub, email, name, role) and
+// decides the rest. `/.aidenhq/*` on an app host is the gate's own: access (→ the Access page),
 // request (an in-app request, identity attached here) and requests (the visitor's own, with the agent's reply). The my-apps
 // host lists the visitor's apps and serves each app's Access page to its admins; the board decides every change. Sign-in
 // (password mode) is served only on the my-apps host; an app host gets its own host-only __Host- cookie through a one-time
 // handoff. Whatever the gate can't read or check (keys, accounts, sessions) refuses with a 503.
-import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createHash, createPrivateKey, createPublicKey, randomBytes, sign, timingSafeEqual, verify } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { isIP } from "node:net";
 
@@ -57,6 +58,33 @@ const SESSION_CACHE_MAX = 1000;
 const HOP = ["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"];
 
 const b64json = (s) => JSON.parse(Buffer.from(s, "base64url").toString("utf8"));
+const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+export const IDENTITY_HEADER = "x-aidenhq-identity";
+const IDENTITY_TTL_S = 300;
+
+/** A person's stable, opaque id: the same under every sign-in method, from the email that method verified. */
+export const subOf = (email) => `u_${createHash("sha256").update(`aidenhq-user:${email.trim().toLowerCase()}`).digest("base64url").slice(0, 22)}`;
+
+/** The gate's signing key (identity_key_file, Ed25519 PKCS#8), re-read when the file changes; its kid as scripts/identity.mjs computes it. */
+export function signingKey(file) {
+  let cached, mtime = -1;
+  return () => {
+    const m = statSync(file).mtimeMs;
+    if (m !== mtime) {
+      const key = createPrivateKey(readFileSync(file, "utf8"));
+      const x = createPublicKey(key).export({ format: "jwk" }).x;
+      cached = { key, kid: createHash("sha256").update(Buffer.from(x, "base64url")).digest("base64url").slice(0, 16) };
+      mtime = m;
+    }
+    return cached;
+  };
+}
+
+/** A compact EdDSA JWT. */
+export function mint({ key, kid }, claims) {
+  const body = `${b64url({ alg: "EdDSA", kid, typ: "JWT" })}.${b64url(claims)}`;
+  return `${body}.${sign(null, Buffer.from(body), key).toString("base64url")}`;
+}
 
 /** Thrown when the gate can't trust any keys (never loaded, or the last good load is too old): the request gets a 503. */
 export class KeysUnavailable extends Error {}
@@ -135,8 +163,8 @@ export function sameOrigin(req, host) {
   return req.headers["sec-fetch-site"] === "same-origin";
 }
 
-/** The request headers the app sees: no inbound identity, no Access token or cookie, no sign-in cookie; ours set. */
-export function upstreamHeaders(req, who, secret, { upgrade = false } = {}) {
+/** The request headers the app sees: no inbound identity, no Access token or cookie, no sign-in cookie; our token set. */
+export function upstreamHeaders(req, token, { upgrade = false } = {}) {
   const h = {};
   for (const [k, v] of Object.entries(req.headers)) if (!STRIP.test(k) && (upgrade ? !["proxy-connection", "keep-alive"].includes(k) : !HOP.includes(k))) h[k] = v;
   if (h.cookie) {
@@ -144,7 +172,7 @@ export function upstreamHeaders(req, who, secret, { upgrade = false } = {}) {
     if (kept.length) h.cookie = kept.join("; ");
     else delete h.cookie;
   }
-  return { ...h, "x-aidenhq-user": who.email, "x-aidenhq-role": who.role, "x-aidenhq-name": encodeURIComponent(who.name ?? ""), "x-aidenhq-app": who.app, "x-aidenhq-gate": secret, "x-forwarded-proto": "https", "x-forwarded-host": req.headers.host ?? "" };
+  return { ...h, [IDENTITY_HEADER]: token, "x-forwarded-proto": "https", "x-forwarded-host": req.headers.host ?? "" };
 }
 
 /**
@@ -229,14 +257,16 @@ export function requestsPage(app, rows) {
 /**
  * createGate({ config, fetch }) → http.Server. `config()` returns the compiled gate config (re-read by the caller as it
  * changes): { login, issuer?, certs_url?, auth_url?, auth_secret_file?, accounts_file, owner_email, my_apps?: { host, aud? },
- * hosts: { <host>: { app, port, aud?, default_role?, secret_file } } }.
- * secret_file: the app's AIDENHQ_GATE_SECRET (vault, mounted read-only), sent as X-AidenHQ-Gate.
+ * identity_key_file, hosts: { <host>: { app, port, aud?, default_role? } } }.
+ * identity_key_file: the gate's Ed25519 signing key (vault identity/gate.pem, mounted read-only): it mints each app's token.
  * auth_secret_file: the board's (gate_board_secret), sent as X-AidenHQ-Gate to the auth listener in password mode.
  * accounts_file: the board's account map and app roles (mounted read-only), re-read when its content changes.
  */
 export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)) }) {
   const keysets = new Map(); // certs_url → key lookup (one in practice)
   const keyFor = (url) => keysets.get(url) ?? keysets.set(url, jwks(url, fetchImpl, now)).get(url);
+  const signers = new Map(); // identity_key_file → its key (one in practice)
+  const signerFor = (file) => signers.get(file) ?? signers.set(file, signingKey(file)).get(file);
 
   let state, stateText;
   /** The board's accounts and app roles, re-parsed when the file's text changes; throws when it can't be read. */
@@ -287,6 +317,17 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   }
 
   /**
+   * Sign-in methods (docs/design/app-identity.md): authenticate(req, cfg, host, aud) → { email, idp } with an email the
+   * provider verified, null for no credential, or a refusal { status, msg }. `access` admits (and identifies in access mode);
+   * `password` identifies. When both run (a password host with an aud), both must pass and the session names the person.
+   * A new method (direct OIDC, Google, Tailscale) is one more entry here plus its place in authorize().
+   */
+  const adapters = {
+    access: { authenticate: async (req, cfg, host, aud) => { const a = await accessEmail(req, cfg, host, aud); return a.email ? { email: a.email, idp: "access" } : a; } },
+    password: { authenticate: async (req, cfg) => { const email = await sessionEmail(req, cfg); return email ? { email, idp: "password" } : null; } },
+  };
+
+  /**
    * → { status, msg, location? } to refuse (or send to sign-in), { auth: true } for the auth listener,
    * { mine: true, email, name, roleOf, access } for the my-apps host, { request | requests: true, site, email, role } for
    * the gate's own /.aidenhq paths, or { site, email, name, role, app, secret } to proxy.
@@ -308,11 +349,11 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     const aud = (site ?? cfg.my_apps).aud;
 
     // Access: always in access mode (a host without an aud is refused), and on a password-mode host that has an aud.
-    let email;
+    let email, idp;
     if (login === "access" || aud) {
-      const a = await accessEmail(req, cfg, host, aud);
+      const a = await adapters.access.authenticate(req, cfg, host, aud);
       if (!a.email) return a;
-      email = a.email;
+      ({ email, idp } = a);
     }
     // /.auth is judged on the normalised path (what a server behind us would see), and anything encoded is refused.
     const rawPath = url.split("?")[0];
@@ -337,7 +378,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     }
     if (login === "password") {
       try {
-        email = await sessionEmail(req, cfg);
+        ({ email, idp } = (await adapters.password.authenticate(req, cfg)) ?? {});
       } catch (e) {
         log({ msg: "session check failed", host, err: String(e) });
         return { status: 503, msg: "unavailable: can't check sign-ins right now" };
@@ -375,7 +416,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       const a = Object.hasOwn(st.apps, app) ? st.apps[app] : undefined;
       return (a && Object.hasOwn(a.roles ?? {}, email) ? a.roles[email] : a?.default) ?? "blocked";
     };
-    const who = { email, name: acct?.name ?? "" };
+    const who = { email, name: acct?.name ?? "", idp };
     if (mine) {
       const p = url.split("?")[0];
       if (upgrade || (p !== "/" && p !== ACCESS_PATH) || (p === "/" && !read)) return { status: 404, msg: "not found" };
@@ -398,14 +439,16 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       return { status: 404, msg: "not found" };
     }
     if ((upgrade || !read) && !sameOrigin(req, host)) return { status: 403, msg: "forbidden: cross-origin" };
-    // The app's proof that a request came through the gate (X-AidenHQ-Gate); without it, refuse rather than send a request the app must reject.
-    let secret = "";
-    try { secret = readFileSync(site.secret_file, "utf8").trim(); } catch {}
-    if (!secret) {
-      log({ msg: "no gate secret", host, file: site.secret_file });
-      return { status: 503, msg: "unavailable: the app's gate secret is missing" };
+    // The app's identity token for this request: without the signing key, refuse rather than send one the app must reject.
+    let token;
+    try {
+      const iat = Math.floor(now() / 1000);
+      token = mint(signerFor(cfg.identity_key_file)(), { iss: "aidenhq-gate", aud: site.app, sub: subOf(email), kind: "person", email, name: who.name, role, idp, iat, exp: iat + IDENTITY_TTL_S });
+    } catch (e) {
+      log({ msg: "can't sign identity", host, err: String(e) });
+      return { status: 503, msg: "unavailable: can't sign you in to this app right now" };
     }
-    return { site, ...who, role, app: site.app, secret };
+    return { site, ...who, role, app: site.app, token };
   }
 
   /** The my-apps list: every shared app whose role for the visitor isn't blocked, with that role. */
@@ -611,7 +654,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     if (a.auth) {
       const u = new URL(config().auth_url);
       target = { host: u.hostname, port: Number(u.port) || 80, headers: authHeaders(req, boardSecret(config())) };
-    } else if (a.site) target = { host: "127.0.0.1", port: a.site.port, headers: upstreamHeaders(req, a, a.secret) };
+    } else if (a.site) target = { host: "127.0.0.1", port: a.site.port, headers: upstreamHeaders(req, a.token) };
     else return void res.writeHead(a.status, { "content-type": "text/plain", ...(a.location ? { location: a.location, "cache-control": "no-store" } : {}), ...(a.cookie ? { "set-cookie": a.cookie } : {}) }).end(`${a.msg}\n`);
     const up = httpRequest({ ...target, method: req.method, path: a.auth ? a.path : req.url });
     up.on("response", (r) => {
@@ -636,7 +679,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     socket.on("error", () => socket.destroy());
     const a = await authorize(req, { upgrade: true });
     if (!a.site) return void socket.end(`HTTP/1.1 ${a.status} ${{ 400: "Bad Request", 401: "Unauthorized", 404: "Not Found", 503: "Service Unavailable" }[a.status] ?? "Forbidden"}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${a.msg.length + 1}\r\n\r\n${a.msg}\n`);
-    const up = httpRequest({ host: "127.0.0.1", port: a.site.port, method: req.method, path: req.url, headers: upstreamHeaders(req, a, a.secret, { upgrade: true }) });
+    const up = httpRequest({ host: "127.0.0.1", port: a.site.port, method: req.method, path: req.url, headers: upstreamHeaders(req, a.token, { upgrade: true }) });
     const raw = (status, message, rawHeaders) => {
       let s = `HTTP/1.1 ${status} ${message}\r\n`;
       for (let i = 0; i < rawHeaders.length; i += 2) {

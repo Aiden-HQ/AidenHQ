@@ -14,6 +14,7 @@ import { createPlatform } from "./platform.js";
 import { posix } from "node:path";
 import { show } from "./git.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
+import { graderView } from "./view.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "apps-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 const need = (n: string): string => process.env[n] || (() => { throw new Error(`${n} is required`); })();
@@ -38,6 +39,8 @@ const p = createPlatform(
     appsData,
     secretsDir: process.env.APPS_SECRETS_DIR ?? "/secrets/apps",
     hostSecretsDir: need("APPS_HOST_SECRETS_DIR"),
+    identityKeyFile: process.env.IDENTITY_KEY_FILE ?? "/secrets/identity_key",
+    identityKeysHostFile: need("IDENTITY_KEYS_HOST_FILE"),
     dbPath: process.env.APPS_DB ?? "/data/apps-mcp.sqlite",
     urlBase: process.env.APPS_URL_BASE ?? "",
     edgeDir: process.env.APPS_EDGE_DIR ?? "/edge",
@@ -180,6 +183,12 @@ const http = createServer(async (req, res) => {
       const sha = p.store.running(a.name);
       if (!sha) return send(res, 200, { sha: null, roles: [] });
       return send(res, 200, { sha, ...parseManifest(await show(p.cfg.git, a, sha, posix.join(a.path, MANIFEST_FILE))) });
+    }
+    // The grader's live view of one page of a deployed app (the runner, through the board): view.ts graderView.
+    if (url.pathname === "/internal/view" && req.method === "POST") {
+      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
+      const b = await readBody(req);
+      return send(res, 200, await graderView(p.find(String(b?.name ?? "")), { path: b?.path, width: b?.width }, { resolve: p.resolveApi, render: p.render, sign: p.sign, running: p.store.running, audit: p.auditView }));
     }
     if (url.pathname === "/internal/deploy" && req.method === "POST") {
       if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });

@@ -33,7 +33,7 @@ const port = Number(process.env.PORT ?? 8089);
 const inboundToken = env("MCP_BEARER_TOKEN");
 if (!inboundToken) throw new Error("MCP_BEARER_TOKEN(_FILE) is required");
 const store = openStore(process.env.SLACK_LIVE_DB ?? "/data/slack-live.sqlite");
-const cfg = { botToken: env("SLACK_BOT_TOKEN"), ownerId: env("OWNER_SLACK_USER_ID"), cooldownMs: Number(process.env.URGENT_COOLDOWN_MIN ?? 60) * 60_000, telegramToken: env("TELEGRAM_NOTIFY_BOT_TOKEN"), telegramChatId: env("TELEGRAM_OWNER_CHAT_ID"), taskUrl: env("TELEGRAM_TASK_URL"), resolveTask: undefined as NotifyConfig["resolveTask"], postReply: undefined as NotifyConfig["postReply"], ownerLastAt: undefined as NotifyConfig["ownerLastAt"], brakeOn: undefined as NotifyConfig["brakeOn"] };
+const cfg = { botToken: env("SLACK_BOT_TOKEN"), ownerId: env("OWNER_SLACK_USER_ID"), cooldownMs: Number(process.env.URGENT_COOLDOWN_MIN ?? 60) * 60_000, telegramToken: env("TELEGRAM_NOTIFY_BOT_TOKEN"), telegramChatId: env("TELEGRAM_OWNER_CHAT_ID"), taskUrl: env("TELEGRAM_TASK_URL"), resolveTask: undefined as NotifyConfig["resolveTask"], postReply: undefined as NotifyConfig["postReply"], ownerLastAt: undefined as NotifyConfig["ownerLastAt"], brakeOn: undefined as NotifyConfig["brakeOn"], muteFyi: process.env.TELEGRAM_FYI === "mute" };
 const postCfg = { botToken: cfg.botToken, allowed: new Set((process.env.SLACK_POST_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) };
 const ignored = new Set((process.env.IGNORE_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
 

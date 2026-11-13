@@ -18,16 +18,25 @@
 //   /c/<connection>/mcp       tool calls to a connection: X-Agent-Key must be a live run token; the service's bearer is added here
 //   POST /repo {repo, sha}    the box's `repo-checkout`: a snapshot (no .git, no credentials) of an agents-org repo at a commit,
 //                             from the runner's cache clone, into /workspace/repos/<name>; agents with the repo-checkout role
+//   POST /helper/<command>  a runner job box's `aidenhq` command (bearer = its run token), to the runner's helper bound to that job
 //   POST /board/internal/grades/<task>/gate   the tasks bridge's completion gate (graded done), passed to the board with
 //                             the run token as the caller and the internal token added here; no other board route
 //
+// Runner jobs (the runner calls these; bearer = secret computers_runner_key, which opens nothing else and which the plugin's
+// key can't open). A job's process runs in the box through the runner's own `docker exec`; the runner keeps workspace and git.
+//   POST /job {agentId, issueId, identifier, helperPort, helperToken, identity}   a box for one turn of a runner job: image
+//                             from the grants table, the task folder and Codex home the launcher derives, a lease, a run token
+//                             bound to the task → {container, envFile}
+//   POST /job/renew {container, issueId, helperPort, helperToken}   the runner still follows it (also on adoption): a new lease
+//   POST /job/release {container}   destroy and revoke; idempotent → {state} ("missing" once the box is gone)
+//
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, Tokens, admit, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -48,24 +57,33 @@ const CFG = {
   gateway: { host: env("AIDENHQ_GATEWAY_HOST", "10.231.2.1"), port: Number(env("AIDENHQ_GATEWAY_PORT", 8200)) },
   network: env("AIDENHQ_COMPUTERS_NETWORK", "aidenhq-computers"),
   prefix: env("AIDENHQ_COMPUTERS_PREFIX", "aidenhq-computer-"),
-  max: Number(env("AIDENHQ_COMPUTERS_MAX", 6)),
+  // 7: the 5 Paperclip computer agents' max_parallel plus the App Engineer's 2 (2026-11-13, a 15 GB host with no swap).
+  max: Number(env("AIDENHQ_COMPUTERS_MAX", 7)),
   idleMs: Number(env("AIDENHQ_COMPUTERS_IDLE_MIN", 10)) * 60_000,
   limits: { memory: env("AIDENHQ_COMPUTERS_MEMORY", "2g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "512m", pids: 1024 },
   grantsFile: path.join(configDir, "grants", "grants.json"),
   computersFile: env("AIDENHQ_COMPUTERS_FILE", path.join(configDir, "computers.json")),
   composeProject: env("COMPOSE_PROJECT_NAME", "aidenhq"),
-  // The runner's cache clones (services/runner/src/config.mjs: work_dir in config/runner.yaml, default ~/aidenhq-work).
-  runnerRepos: (() => {
-    let dir = "~/aidenhq-work";
-    try { dir = /^work_dir:\s*["']?([^"'#\n]+?)["']?\s*(#.*)?$/m.exec(readFileSync(path.join(configDir, "runner.yaml"), "utf8"))?.[1] ?? dir; } catch {}
-    return path.join(dir.startsWith("~/") ? path.join(os.homedir(), dir.slice(2)) : dir, "repos");
-  })(),
+  // The runner's work and state dirs (services/runner/src/config.mjs: work_dir and state_dir in config/runner.yaml): its cache
+  // clones, and for runner jobs the task folders, the clones' guard hooks and the per-task Codex homes.
+  runnerWork: runnerDir("work_dir", "~/aidenhq-work"),
+  runnerState: runnerDir("state_dir", "~/.local/state/aidenhq-runner"),
+  // A runner job's box: its own memory limit (the pool's RAM: docs/superpowers/plans/2026-11-13-app-engineer.md, design 9).
+  jobMemory: env("AIDENHQ_COMPUTERS_JOB_MEMORY", "1536m"),
 };
+CFG.runnerRepos = path.join(CFG.runnerWork, "repos");
+function runnerDir(key, fallback) {
+  let dir = fallback;
+  try { dir = new RegExp(`^${key}:\\s*["']?([^"'#\\n]+?)["']?\\s*(#.*)?$`, "m").exec(readFileSync(path.join(configDir, "runner.yaml"), "utf8"))?.[1] ?? dir; } catch {}
+  return dir.startsWith("~/") ? path.join(os.homedir(), dir.slice(2)) : dir;
+}
 const GATEWAY_URL = `http://${CFG.gateway.host}:${CFG.gateway.port}`;
 // The model gateway on host loopback (services/gateway): every box's model call goes on to it.
 const MODEL_GATEWAY_URL = env("AIDENHQ_MODEL_GATEWAY_URL", "http://127.0.0.1:8201");
 const TOKEN = secret("computer_launcher_token");
 const PROGRESS_TOKEN = secret("computer_progress_token");
+// The runner's key: the job routes only. Unset, runner jobs are off (every /job call is refused).
+const RUNNER_KEY = secret("computers_runner_key");
 if (!TOKEN) throw new Error("the secret computer_launcher_token is missing (scripts/compile.mjs creates it)");
 
 // Docker's embedded DNS (127.0.0.11) relies on iptables inside the netns, which gVisor's netstack never sees.
@@ -75,8 +93,9 @@ const resolvConf = path.join(stateDir, "resolv.conf");
 writeFileSync(resolvConf, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n");
 const MOUNTS = [
   `${resolvConf}:/etc/resolv.conf:ro`,
-  // The tasks bridge (stdio MCP, through Paperclip's own bridge) and the grants table it checks; no secrets.
-  `${path.join(repo, "services/paperclip-tasks-mcp")}:/opt/aidenhq:ro`,
+  // The tasks bridge (stdio MCP, through Paperclip's own bridge) and the grants table it checks; no secrets. File by file:
+  // a mount of the whole folder at /opt/aidenhq would hide the image's own /opt/aidenhq (app-starter, design-system).
+  ...readdirSync(path.join(repo, "services/paperclip-tasks-mcp")).map((f) => `${path.join(repo, "services/paperclip-tasks-mcp", f)}:/opt/aidenhq/${f}:ro`),
   `${path.dirname(CFG.grantsFile)}:/aidenhq-grants:ro`,
 ];
 
@@ -90,6 +109,14 @@ try { tokens.load(readJson(tokensFile)); } catch {}
 // Written whole then renamed, so a crash never leaves a half file.
 const saveTokens = () => { try { writeFileSync(`${tokensFile}.tmp`, JSON.stringify(tokens.dump()), { mode: 0o600 }); renameSync(`${tokensFile}.tmp`, tokensFile); } catch (e) { log("couldn't save run tokens:", e.message); } };
 const boxes = new Map(); // container → { agentId, lastUsed, busy, cred? } (cred: the current run's Paperclip credential, for /reply)
+// Runner jobs' records (lease, task, helper binding), saved the same way: a restart reloads them before it admits or reaps.
+const jobs = new Jobs();
+const jobsFile = path.join(stateDir, "jobs.json");
+try { jobs.load(readJson(jobsFile)); } catch {}
+const saveJobs = () => { try { writeFileSync(`${jobsFile}.tmp`, JSON.stringify(jobs.dump()), { mode: 0o600 }); renameSync(`${jobsFile}.tmp`, jobsFile); } catch (e) { log("couldn't save jobs:", e.message); } };
+const held = (name) => jobs.leased(name);
+const jobEnvDir = path.join(stateDir, "jobs");
+mkdirSync(jobEnvDir, { recursive: true, mode: 0o700 });
 
 function docker(args, opts = {}) {
   return new Promise((resolve) => {
@@ -103,12 +130,23 @@ function docker(args, opts = {}) {
   });
 }
 const state = async (name) => (await docker(["inspect", "-f", "{{.State.Status}}", name])).stdout.trim() || "missing";
+// "missing" only when Docker says so: a daemon that doesn't answer is not a box that is gone (a job's release waits on this).
+const jobState = async (name) => {
+  const r = await docker(["inspect", "-f", "{{.State.Status}}", name]);
+  if (r.exitCode === 0) return r.stdout.trim();
+  return /no such (object|container)/i.test(r.stderr) ? "missing" : "unknown";
+};
 const ours = (name) => typeof name === "string" && name.startsWith(CFG.prefix) && /^[a-z0-9-]+$/.test(name);
 const fail = (status, msg) => Object.assign(new Error(msg), { status });
+// The plugin's routes never touch a runner job's box.
+const pluginBox = (container) => { if (jobs.has(container)) throw fail(404, `not a computer of Paperclip's: ${container}`); };
 
 async function destroy(name, why) {
   tokens.revoke(name); saveTokens();
   boxes.delete(name);
+  if (jobs.delete(name)) saveJobs();
+  rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
+  rmSync(path.join(jobEnvDir, name), { recursive: true, force: true });
   await docker(["rm", "-f", name]);
   log("destroyed", name, why);
 }
@@ -139,18 +177,24 @@ function imageFor(agentId) {
 }
 const mcpFor = (agentId) => mcpBlock(readJson(CFG.grantsFile).agents?.[agentId]?.tools, readJson(CFG.computersFile).connections ?? {}, GATEWAY_URL);
 
+/** A free slot for a new box: the least recently used idle box goes (never a leased job's); all busy → wait up to 45 s. */
+async function makeRoom() {
+  for (let waited = 0; ; waited += 1000) {
+    const evict = admit(boxes, CFG.max, held);
+    if (evict === null) return;
+    if (evict !== "wait") return destroy(evict, "evicted (computers full)");
+    if (waited >= 45_000) throw fail(503, `all ${CFG.max} computers are busy; try again shortly`);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+const newName = () => CFG.prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
 const control = {
   async acquire({ agentId }) {
     if (typeof agentId !== "string" || !agentId) throw fail(400, "agentId required");
     const image = imageFor(agentId);
-    for (let waited = 0; ; waited += 1000) {
-      const evict = admit(boxes, CFG.max);
-      if (evict === null) break;
-      if (evict !== "wait") { await destroy(evict, "evicted (computers full)"); break; }
-      if (waited >= 45_000) throw fail(503, `all ${CFG.max} computers are busy; try again shortly`);
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-    const name = CFG.prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    await makeRoom();
+    const name = newName();
     boxes.set(name, { agentId, lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
     const r = await docker(dockerRunArgs({ name, image, agentId, network: CFG.network, limits: CFG.limits, mounts: MOUNTS }));
     if (r.exitCode !== 0) { boxes.delete(name); throw fail(500, `docker run failed: ${r.stderr.trim()}`); }
@@ -161,6 +205,7 @@ const control = {
   },
   async resume({ container }) {
     if (!ours(container)) throw fail(400, "not a computer");
+    pluginBox(container);
     const s = await state(container);
     if (s === "missing" || !boxes.has(container)) { if (s !== "missing") await destroy(container, "unknown to the launcher"); throw fail(404, `computer gone: ${container}`); }
     if (s !== "running" && (await docker(["start", container])).exitCode !== 0) throw fail(500, `could not restart ${container}`);
@@ -174,6 +219,7 @@ const control = {
   async exec({ container, command, args = [], cwd, env: e = {}, stdin, timeoutMs }) {
     const b = boxes.get(container);
     if (!ours(container) || !b) throw fail(404, `computer gone: ${container}`);
+    pluginBox(container);
     const token = tokens.current(container);
     if (token) await writeRunToken(container, token); // a launcher restart, or a box from before this code, still gets it
     const cred = token && runCredential(e);
@@ -199,6 +245,7 @@ const control = {
   },
   async release({ container, destroy: d }) {
     if (!ours(container)) throw fail(400, "not a computer");
+    pluginBox(container);
     tokens.revoke(container); saveTokens();
     if (!d) await clearRunToken(container);
     if (boxes.has(container)) delete boxes.get(container).cred;
@@ -214,7 +261,73 @@ const control = {
   },
   async inspect({ container }) {
     if (!ours(container)) throw fail(400, "not a computer");
+    pluginBox(container);
     return { state: boxes.has(container) ? await state(container) : "missing" };
+  },
+};
+
+// A runner job's box: the runner's uid (workspace files stay the runner's), a HOME outside every clone.
+const JOB_USER = `${process.getuid()}:${process.getgid()}`;
+const HOST_BROWSER = "/opt/aidenhq/browser";
+const HELPER_TOKEN = /^[0-9a-f]{16,128}$/;
+const IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
+
+/** The runner's job routes (computers_runner_key only). */
+const runnerControl = {
+  async "/job"({ agentId, issueId, identifier, workspace, codexHome, helperPort, helperToken, identity }) {
+    if (typeof agentId !== "string" || !agentId || typeof issueId !== "string" || !issueId) throw fail(400, "agentId and issueId required");
+    if (typeof identifier !== "string" || !IDENTIFIER.test(identifier)) throw fail(400, "identifier must be the task's, e.g. PEN-7");
+    if (!Number.isInteger(helperPort) || helperPort < 1 || helperPort > 65535 || !HELPER_TOKEN.test(String(helperToken))) throw fail(400, "helperPort and helperToken required");
+    const image = imageFor(agentId);
+    // Exactly this task's folder and Codex home, real directories with no symlink below the runner's dirs: never the cache
+    // clones, another task's folder or anything a path trick reaches.
+    jobFolder(workspace, path.join(CFG.runnerWork, "tasks"), identifier);
+    jobFolder(codexHome, path.join(CFG.runnerState, "codex-openrouter"), issueId.replace(/[^\w.-]/g, "_"));
+    // Two executions never share a workspace: the task's last box must be gone first (the runner releases it).
+    const before = jobs.byIssue(issueId);
+    if (before) throw fail(409, `the task's last box ${before.container} is still up: release it first`);
+    await makeRoom();
+    const name = newName();
+    boxes.set(name, { agentId, lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
+    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, helperPort, helperToken }); saveJobs();
+    const token = tokens.issue(name, agentId);
+    tokens.bind(name, { issueId }); // the model gateway bills and caps the job by its task
+    saveTokens();
+    const envFile = path.join(jobEnvDir, `${name}.env`);
+    // The job's last message lands here, outside the workspace: a folder of the launcher's, mounted at /aidenhq-out.
+    const outDir = path.join(jobEnvDir, name);
+    try {
+      mkdirSync(outDir, { mode: 0o700 });
+      const mounts = [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${path.join(CFG.runnerWork, ".guard-hooks")}:/opt/aidenhq/hooks:ro`, `${path.join(repo, "services/runner/bin")}:/opt/aidenhq/bin:ro`];
+      // aidenhq-browse's pinned headless browser (ops/vm/setup.sh), read-only, where the command looks for it.
+      if (existsSync(HOST_BROWSER)) mounts.push(`${HOST_BROWSER}:/opt/aidenhq/browser:ro`);
+      const r = await docker(dockerRunArgs({ name, image, agentId, network: CFG.network, limits: { ...CFG.limits, memory: CFG.jobMemory }, mounts, user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME }));
+      if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
+      writeFileSync(envFile, jobEnvFile({ token, mcp: mcpFor(agentId), gatewayUrl: GATEWAY_URL, identity }), { mode: 0o600 });
+    } catch (e) {
+      await destroy(name, "job box failed to start");
+      throw e;
+    }
+    boxes.get(name).busy = 0;
+    return { container: name, envFile, outDir };
+  },
+  async "/job/renew"({ container, issueId, helperPort, helperToken }) {
+    if (!ours(container)) throw fail(400, "not a computer");
+    if (helperPort != null && (!Number.isInteger(helperPort) || !HELPER_TOKEN.test(String(helperToken)))) throw fail(400, "bad helper binding");
+    if ((await jobState(container)) === "missing") {
+      if (jobs.has(container)) await destroy(container, "gone before its renewal");
+      throw fail(404, `box gone: ${container}`);
+    }
+    const r = jobs.renew(container, { issueId, helperPort, helperToken });
+    if (!r) throw fail(404, `no live job ${container} for that task (its lease lapsed, or it is another task's)`);
+    saveJobs();
+    return { container, issueId: r.issueId, identifier: r.identifier, workspace: r.workspace, leaseUntil: r.leaseUntil };
+  },
+  async "/job/release"({ container }) {
+    if (!ours(container)) throw fail(400, "not a computer");
+    if (!jobs.has(container) && boxes.has(container)) throw fail(403, `not a runner job's box: ${container}`);
+    if (jobs.has(container) || (await jobState(container)) !== "missing") await destroy(container, "released (runner job)");
+    return { state: await jobState(container) };
   },
 };
 
@@ -294,7 +407,7 @@ async function boardGate(req, res, route, deny) {
 const bearer = (req) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
 const send = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
-http.createServer((req, res) => {
+const controlServer = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") return send(res, 200, { ok: true, computers: boxes.size, max: CFG.max });
   if (req.method === "GET" && req.url === "/whoami") {
     const who = tokens.whoami(bearer(req));
@@ -304,10 +417,9 @@ http.createServer((req, res) => {
   req.on("data", (d) => (body += d));
   req.on("end", async () => {
     if (req.method === "POST" && req.url === "/reply") return reply(req, body).then((r) => send(res, r.status, r.body));
-    // The board's progress key opens /progress only; everything else needs the plugin's control key.
-    const progressOnly = PROGRESS_TOKEN && bearer(req) === PROGRESS_TOKEN && req.method === "POST" && req.url === "/progress";
-    if (bearer(req) !== TOKEN && !progressOnly) return send(res, 401, { error: "unauthorized" });
-    const fn = req.method === "POST" && Object.hasOwn(control, req.url.slice(1)) ? control[req.url.slice(1)] : null;
+    // The board's progress key opens /progress only, the runner's key the job routes only; the rest needs the plugin's key.
+    if (!controlAllowed(bearer(req), req.method, req.url, { plugin: TOKEN, runner: RUNNER_KEY, progress: PROGRESS_TOKEN })) return send(res, 401, { error: "unauthorized" });
+    const fn = JOB_ROUTES.includes(req.url) ? runnerControl[req.url] : req.method === "POST" && Object.hasOwn(control, req.url.slice(1)) ? control[req.url.slice(1)] : null;
     if (!fn) return send(res, 404, { error: "no such route" });
     const t0 = Date.now();
     if (req.url === "/exec") {
@@ -329,7 +441,7 @@ http.createServer((req, res) => {
       send(res, e.status ?? 500, { error: e.message });
     }
   });
-}).listen(CFG.control.port, CFG.control.host, () => log(`launcher on ${CFG.control.host}:${CFG.control.port}`));
+});
 
 // ------------------------------------------------------------------ gateway (boxes only)
 
@@ -346,9 +458,11 @@ async function upstream(urlStr) {
   return { ip: upstreamIps.get(u.hostname).ip, port: Number(u.port || 80), path: u.pathname };
 }
 
-http.createServer(async (req, res) => {
+const gatewayServer = http.createServer(async (req, res) => {
   const deny = (status, msg) => { log("gateway", req.method, req.url, status, msg); res.writeHead(status, { "content-type": "text/plain" }).end(`gateway: ${msg}`); };
   try {
+    // A runner job's `aidenhq` commands, to the helper its run token is bound to (lib.mjs serveHelper).
+    if (req.url?.startsWith("/helper/")) return await serveHelper(req, res, { tokens, jobs });
     if (req.method === "POST" && req.url === "/api/v1/responses") {
       // The model: the box's "API key" is its run token; the model gateway, not a box or the launcher, holds the real key.
       const token = bearer(req);
@@ -385,19 +499,37 @@ http.createServer(async (req, res) => {
   } catch (e) {
     if (!res.headersSent) deny(502, e.message); else res.destroy();
   }
-}).listen(CFG.gateway.port, CFG.gateway.host, () => log(`gateway on ${CFG.gateway.host}:${CFG.gateway.port}`));
+});
 
 // ------------------------------------------------------------------ boxes from before a restart, and idle reaping
 
-const existing = await docker(["ps", "-a", "--filter", "label=aidenhq.computer=1", "--format", '{{.Names}} {{.Label "aidenhq.agent"}}']);
+const existing = await docker(["ps", "-a", "--filter", "label=aidenhq.computer=1", "--format", '{{.Names}} {{.Label "aidenhq.agent"}} {{.Label "aidenhq.job"}}']);
+const orphans = [];
 for (const line of existing.stdout.trim().split("\n").filter(Boolean)) {
-  const [name, agentId] = line.split(" ");
-  if (ours(name) && agentId) boxes.set(name, { agentId, lastUsed: Date.now(), busy: 0 });
+  const [name, agentId, job] = line.split(" ");
+  if (!ours(name) || !agentId) continue;
+  boxes.set(name, { agentId, lastUsed: Date.now(), busy: 0 });
+  // A runner job's box without its record has lost its binding: nothing may run in it.
+  if (job && !jobs.has(name)) orphans.push(name);
 }
+// A job record whose box is gone never comes back; its lease and helper binding go with it.
+for (const name of jobs.containers()) if (!boxes.has(name)) jobs.delete(name);
+saveJobs();
 // A saved token whose computer is gone never comes back.
 for (const t of tokens.dump()) if (!boxes.has(t.container)) tokens.revoke(t.container);
 saveTokens();
-// A box from before the restart keeps its run: put the saved token back where its shell tools read it.
-for (const name of boxes.keys()) { const token = tokens.current(name); if (token) await writeRunToken(name, token).catch((e) => log("couldn't restore a run token:", name, e.message)); }
-if (boxes.size) log(`found ${boxes.size} computer(s) from before`);
-setInterval(() => { for (const n of stale(boxes, CFG.idleMs)) destroy(n, "idle"); }, 60_000).unref();
+for (const name of orphans) await destroy(name, "a runner job's box without its record");
+// A box from before the restart keeps its run: put the saved token back where its shell tools read it (Paperclip's boxes;
+// a runner job's token is in its env file).
+for (const name of boxes.keys()) { const token = tokens.current(name); if (token && !jobs.has(name)) await writeRunToken(name, token).catch((e) => log("couldn't restore a run token:", name, e.message)); }
+if (boxes.size) log(`found ${boxes.size} computer(s) from before (${jobs.containers().length} runner job(s))`);
+// Listen only now: an /exec answered before the boxes from before are known says "computer gone" to a live run (2026-11-13).
+controlServer.listen(CFG.control.port, CFG.control.host, () => log(`launcher on ${CFG.control.host}:${CFG.control.port}`));
+gatewayServer.listen(CFG.gateway.port, CFG.gateway.host, () => log(`gateway on ${CFG.gateway.host}:${CFG.gateway.port}`));
+// Idle boxes go; a leased job's never does. A lapsed lease (the runner gone 15 minutes) takes its box and token.
+setInterval(() => {
+  const lapsed = reapLapsed(jobs, tokens);
+  if (lapsed.length) { saveJobs(); saveTokens(); }
+  for (const n of lapsed) destroy(n, "lease lapsed");
+  for (const n of stale(boxes, CFG.idleMs, Date.now(), held)) destroy(n, "idle");
+}, 60_000).unref();

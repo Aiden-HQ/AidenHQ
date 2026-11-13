@@ -13,7 +13,7 @@ agents:
     department: intake
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
-    reasoning_effort: medium
+    reasoning_effort: high
     timeout_sec: 1200
     web_search: disabled
     connections:
@@ -26,7 +26,7 @@ agents:
     department: intake
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
-    reasoning_effort: medium
+    reasoning_effort: high
     timeout_sec: 1200
     web_search: disabled
     connections:
@@ -38,7 +38,7 @@ agents:
     department: outreach
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
-    reasoning_effort: medium
+    reasoning_effort: high
     timeout_sec: 1800
     connections:
       # Public web pages (web_view) and the apps' live pages (app_view): reads, like every agent.
@@ -53,7 +53,7 @@ agents:
     department: intake
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
-    reasoning_effort: medium
+    reasoning_effort: high
     timeout_sec: 300
     web_search: disabled
     connections:

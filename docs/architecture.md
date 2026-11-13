@@ -41,7 +41,18 @@ module and agent definitions; the check lives in `services/shared/agent-auth.ts`
 
 **Runner.** A host service that picks up Paperclip tasks labelled `engineer`, runs coding engines (Codex, OpenRouter
 models, Claude Code) in sandboxed per-task workspaces, and exposes a small `aidenhq` CLI to the Engineer
-([design](design/conversational-engineers.md)). Pushes, pull requests and merges are checked in code: allowed
+([design](design/conversational-engineers.md)). Each job runs under bwrap with an allowlist of the host's files (its
+task folder, the toolchains, its engine's state), in its own PID, IPC and network namespaces (pasta).
+
+| Engine | Harness | Model access | Effort |
+|---|---|---|---|
+| `codex-openrouter` (primary) | Codex CLI, its own sandbox, a runner-owned Codex home per task with the product's skills | OpenRouter through the model gateway, a per-job token, ZDR only | low to max (max: DeepSeek) |
+| `codex` | Codex CLI, its own sandbox | the host's Codex login | low to xhigh |
+| `claude` | Claude Code inside `codex sandbox` | a subscription token | low to max |
+| `openrouter` (fallback) | opencode inside `codex sandbox` | OpenRouter through the model gateway, a per-job token | low to high (model variants) |
+
+Every job gets Primer read-only. Private reads (Grafana, Slack, Glean, ClickHouse, gcloud, other tasks) go only to an
+Engineer whose definition sets `private_reads: true`, on any engine, and such a job has no web search. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed
 organizations only, branch and leak checks, a lease on rewritten branches, and a merge queue that requires approved,
 green, mergeable PRs. Each write is an approval record tiered by code from verified state (`services/runner/src/tiers.mjs`):
 Tier 0 runs at once, the AI reviewer decides Tier 1, the owner decides Tier 2; the tier is never taken from untrusted

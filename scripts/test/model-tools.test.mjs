@@ -1,5 +1,5 @@
-// advisor_ask and fanout_map (services/paperclip-tasks-mcp/models.mjs) against a fake gateway: the per-run limits (5 calls,
-// 1 Sol, Sol only when granted) and the fan-out bound refuse without calling the gateway; failed items come back not_covered.
+// advisor_ask and fanout_map (services/paperclip-tasks-mcp/models.mjs) against a fake gateway: the per-run limit (5 calls,
+// all on GPT Sol) and the fan-out bound refuse without calling the gateway; failed items come back not_covered.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -51,24 +51,15 @@ async function run(models) {
   return { call, calls, close: () => { child.kill(); server.close(); } };
 }
 
-test("advisor_ask: 5 calls per run, the 6th refused; Sol once and only when granted", async () => {
-  const r = await run(["~deepseek/deepseek-flash-latest", SOL]);
+test("advisor_ask: every call on GPT Sol, 5 per run, the 6th refused; a gateway error gives its slot back", async () => {
+  const r = await run(["~deepseek/deepseek-flash-latest"]);
   try {
-    const first = await r.call("advisor_ask", { question: "merge or wait?", context: "facts", escalate: true });
-    assert.equal(first.out.model, SOL);
-    assert.match((await r.call("advisor_ask", { question: "again?", escalate: true })).error, /advisor_limit.*Sol/);
-    for (let i = 0; i < 4; i++) assert.equal((await r.call("advisor_ask", { question: `q${i}` })).out.model, "moonshotai/kimi-k3.1-pro");
+    assert.match((await r.call("advisor_ask", { question: "BAD" })).error, /upstream broke/);
+    for (let i = 0; i < 5; i++) assert.equal((await r.call("advisor_ask", { question: `q${i}`, context: "facts" })).out.model, SOL);
     assert.match((await r.call("advisor_ask", { question: "sixth" })).error, /advisor_limit/);
-    assert.equal(r.calls.length, 5);
-    assert.ok(r.calls.every((c) => c.url === "/advisor/api/v1/chat/completions" && c.auth === "Bearer eyJrun"));
+    assert.equal(r.calls.length, 6);
+    assert.ok(r.calls.every((c) => c.model === SOL && c.url === "/advisor/api/v1/chat/completions" && c.auth === "Bearer eyJrun"));
   } finally { r.close(); }
-
-  const plain = await run(["~deepseek/deepseek-flash-latest"]);
-  try {
-    assert.match((await plain.call("advisor_ask", { question: "q", escalate: true })).error, /not granted/);
-    assert.equal(plain.calls.length, 0);
-    assert.ok((await plain.call("advisor_ask", { question: "q" })).out.advice); // the refused escalation used no slot
-  } finally { plain.close(); }
 });
 
 test("fanout_map: at most 25 items; a failed item comes back not_covered", async () => {

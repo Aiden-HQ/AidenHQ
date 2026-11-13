@@ -1,7 +1,9 @@
 // The computer launcher's logic, kept free of Docker so it can be tested: run tokens, the env an exec gets, the Codex
 // config the box gets, the `docker run` line and the model call's hand-off to the gateway. launcher.mjs wires it up.
 import { randomBytes } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
 import http from "node:http";
+import path from "node:path";
 
 const RUN_TOKEN_PREFIX = "ahqc_"; // services/shared/agent-auth.ts resolves these through /whoami
 const RUN_TOKEN_ENV = "AIDENHQ_RUN_TOKEN";
@@ -122,6 +124,7 @@ export function execEnv(env, { token, mcp }) {
 export const CODEX_CONFIG_SCRUB = [
   'f="$CODEX_HOME/config.toml"',
   'mkdir -p "$CODEX_HOME"',
+  '[ -n "$HOME" ] && mkdir -p "$HOME"', // a runner job's HOME (in its workspace) is made here, inside the box: the runner never writes there
   "if [ -f \"$f\" ]; then sed -e '/^# BEGIN PAPERCLIP MANAGED MCP/,/^# END PAPERCLIP MANAGED MCP/d' -e '/^# >>> aidenhq/,/^# <<< aidenhq/d' \"$f\" > \"$f.aidenhq\" && mv \"$f.aidenhq\" \"$f\" || exit 97; fi",
   `[ -n "$${MCP_BLOCK_ENV}" ] && printf '%s' "$${MCP_BLOCK_ENV}" | base64 -d >> "$f"`,
   `unset ${MCP_BLOCK_ENV}`,
@@ -135,10 +138,11 @@ export function wrapExec(command, args, env) {
 }
 
 /** `docker run` arguments: image, limits, network and mounts all come from the launcher's own config. */
-export function dockerRunArgs({ name, image, agentId, network, limits, mounts }) {
+export function dockerRunArgs({ name, image, agentId, network, limits, mounts, user, labels = [], home = "/root" }) {
   const args = ["run", "-d", "--name", name, "--runtime=runsc", "--network", network,
     "--memory", limits.memory, "--memory-swap", limits.memory, "--cpus", String(limits.cpus), "--shm-size", limits.shm, "--pids-limit", String(limits.pids),
-    "--label", "aidenhq.computer=1", "--label", `aidenhq.agent=${agentId}`, "-e", "HOME=/root", "-w", "/workspace"];
+    "--label", "aidenhq.computer=1", "--label", `aidenhq.agent=${agentId}`, ...labels.flatMap((l) => ["--label", l]),
+    ...(user ? ["--user", user] : []), "-e", `HOME=${home}`, "-w", "/workspace"];
   for (const m of mounts) args.push("-v", m);
   args.push(image, "sleep", "infinity");
   return args;
@@ -146,11 +150,12 @@ export function dockerRunArgs({ name, image, agentId, network, limits, mounts })
 
 /**
  * Admission: with `max` boxes already up, the least recently used idle one (no exec in flight) is evicted; none idle → wait.
+ * A box `held(name)` (a runner job's live lease) is never idle: its `docker exec` comes from the runner, not through here.
  * Returns the container to evict, or null when there is room, or "wait".
  */
-export function admit(boxes, max) {
+export function admit(boxes, max, held = () => false) {
   if (boxes.size < max) return null;
-  const idle = [...boxes].filter(([, b]) => !b.busy).sort(([, a], [, b]) => a.lastUsed - b.lastUsed);
+  const idle = [...boxes].filter(([n, b]) => !b.busy && !held(n)).sort(([, a], [, b]) => a.lastUsed - b.lastUsed);
   return idle.length ? idle[0][0] : "wait";
 }
 
@@ -162,8 +167,168 @@ export function boxOf(boxes, agentId) {
 /** Last lines of the newest Codex session log in a box (sh -c). */
 export const PROGRESS_SCRIPT = 'f=$(ls -t $(find /workspace/.paperclip-runtime/codex/home/sessions -name "rollout-*.jsonl" 2>/dev/null) 2>/dev/null | head -1); [ -n "$f" ] && tail -n 400 "$f"';
 
-/** Boxes idle longer than idleMs. */
-export const stale = (boxes, idleMs, now = Date.now()) => [...boxes].filter(([, b]) => !b.busy && now - b.lastUsed > idleMs).map(([n]) => n);
+/** Boxes idle longer than idleMs; a held one (a runner job's live lease) never is. */
+export const stale = (boxes, idleMs, now = Date.now(), held = () => false) => [...boxes].filter(([n, b]) => !b.busy && !held(n) && now - b.lastUsed > idleMs).map(([n]) => n);
+
+/** A runner job's lease: renewed by the runner while it follows the job. Lapsed (the runner gone this long), the box goes. */
+export const LEASE_MS = 15 * 60_000;
+
+/**
+ * Runner jobs' boxes (POST /job): one record per box, saved like the run tokens so a launcher restart keeps the lease and the
+ * helper binding. { container, agentId, issueId, identifier, workspace, codexHome, helperPort, helperToken, leaseUntil }.
+ */
+export class Jobs {
+  #by = new Map();
+  add(rec, now = Date.now()) {
+    this.#by.set(rec.container, { ...rec, leaseUntil: now + LEASE_MS });
+    return this.#by.get(rec.container);
+  }
+  get(container) { return this.#by.get(container); }
+  has(container) { return this.#by.has(container); }
+  delete(container) { return this.#by.delete(container); }
+  byIssue(issueId) { return [...this.#by.values()].find((r) => r.issueId === issueId); }
+  containers() { return [...this.#by.keys()]; }
+  /** A live lease: admission and idle reaping leave the box alone. */
+  leased(container, now = Date.now()) { return (this.#by.get(container)?.leaseUntil ?? 0) > now; }
+  /** The runner still follows the job (after its own restart too): a new lease and the helper binding. Undefined: no such job. */
+  renew(container, { issueId, helperPort, helperToken } = {}, now = Date.now()) {
+    const r = this.#by.get(container);
+    if (!r || r.issueId !== issueId || r.leaseUntil <= now) return undefined;
+    if (helperPort && helperToken) Object.assign(r, { helperPort, helperToken });
+    r.leaseUntil = now + LEASE_MS;
+    return r;
+  }
+  /** Jobs whose lease ran out: the runner has been gone too long. */
+  lapsed(now = Date.now()) { return [...this.#by.values()].filter((r) => r.leaseUntil <= now).map((r) => r.container); }
+  dump() { return [...this.#by.values()]; }
+  load(rows) { for (const r of rows ?? []) if (r?.container && r.issueId) this.#by.set(r.container, r); }
+}
+
+/**
+ * A folder the runner asks to mount into a job's box, checked: exactly `<root>/<name>` as given (no `..`, no other path),
+ * an existing directory, and no symlink anywhere below the root (its real path is the root's real path plus `name`).
+ * `name` is the task's own (its identifier for the task folder, its id for the Codex home), never the caller's choice.
+ */
+export function jobFolder(given, root, name) {
+  const fail = (msg) => { throw Object.assign(new Error(msg), { status: 403 }); };
+  if (typeof given !== "string" || !/^[\w.-]+$/.test(name) || name === "." || name === "..") fail("not a task folder");
+  if (given !== path.join(root, name)) fail(`${given} isn't this task's folder (${path.join(root, name)})`);
+  let real;
+  try { real = realpathSync(given); } catch { fail(`${given} doesn't exist`); }
+  if (real !== path.join(realpathSync(root), name)) fail(`${given} goes through a symlink`);
+  if (!statSync(real).isDirectory()) fail(`${given} isn't a directory`);
+  return real;
+}
+
+/** Where a job box's runner bits are: the guard hooks, the `aidenhq` commands, the HOME (outside every clone). */
+export const JOB_HOME = "/workspace/.aidenhq/home";
+const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/** Every name a job box's env may hold: the run's revocable capabilities and plain settings. Nothing of the runner's own env. */
+export const JOB_ENV_NAMES = [
+  "AIDENHQ_RUN_TOKEN", "AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "AIDENHQ_MCP_B64", "HOME", "CODEX_HOME", "PATH",
+  "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_TERMINAL_PROMPT",
+  "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2",
+];
+
+/**
+ * A job box's env file (docker exec --env-file), built here from the allowlist and never from the runner's env: the run token
+ * (model key, MCP key and the `aidenhq` commands' key, through the gateway's helper route), the agent's granted connections as
+ * Codex config, and the commit identity. Commits stay unsigned (the runner signs after the run); the clones' hooks are the
+ * runner's read-only guard hooks.
+ */
+export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }) {
+  const clean = (v) => String(v ?? "").replace(/[\r\n]/g, " ").trim();
+  const env = {
+    AIDENHQ_RUN_TOKEN: token,
+    AIDENHQ_REPO_URL: `${gatewayUrl}/helper`,
+    AIDENHQ_REPO_TOKEN: token,
+    AIDENHQ_MCP_B64: Buffer.from(mcp ?? "").toString("base64"),
+    HOME: JOB_HOME,
+    CODEX_HOME: "/codex-home",
+    PATH: JOB_PATH,
+    GIT_AUTHOR_NAME: clean(identity.name), GIT_AUTHOR_EMAIL: clean(identity.email),
+    GIT_COMMITTER_NAME: clean(identity.name), GIT_COMMITTER_EMAIL: clean(identity.email),
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "3",
+    GIT_CONFIG_KEY_0: "commit.gpgsign", GIT_CONFIG_VALUE_0: "false",
+    GIT_CONFIG_KEY_1: "tag.gpgsign", GIT_CONFIG_VALUE_1: "false",
+    GIT_CONFIG_KEY_2: "core.hooksPath", GIT_CONFIG_VALUE_2: "/opt/aidenhq/hooks",
+  };
+  return JOB_ENV_NAMES.filter((k) => env[k]).map((k) => `${k}=${env[k]}`).join("\n") + "\n";
+}
+
+/**
+ * POST /helper/<command> on the gateway: a job box's `aidenhq` command, passed to the runner's helper bound to that box's run
+ * token (its job record's port and helper token). Only the bearer run token is read from the request; the box never names a
+ * port, URL, identity or credential. The body goes on as it is (the runner checks it, and tiers every write). While the runner
+ * restarts its port refuses connections: retried for two minutes, with the binding read again (adoption may move it).
+ */
+export async function serveHelper(req, res, { tokens, jobs, retryForMs = 120_000, retryEveryMs = 2000 }) {
+  const reply = (status, text) => res.writeHead(status, { "content-type": "text/plain; charset=utf-8" }).end(text);
+  const m = /^\/helper\/([a-z]+)$/.exec(req.url ?? "");
+  if (req.method !== "POST" || !m || !HELPER_COMMANDS.includes(m[1])) return reply(404, "not found");
+  const token = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+  const binding = () => {
+    const who = tokens.whoami(token);
+    const r = who && jobs.get(who.container);
+    return r && { port: r.helperPort, token: r.helperToken };
+  };
+  if (!binding()) return reply(401, "this task run is over");
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) if ((size += c.length) <= 65_536) chunks.push(c);
+  const body = Buffer.concat(chunks);
+  for (const end = Date.now() + retryForMs; ; ) {
+    const to = binding();
+    if (!to) return reply(401, "this task run is over");
+    try {
+      const out = await postLocal(to.port, `/${m[1]}`, to.token, body);
+      return reply(out.status, out.text);
+    } catch (e) {
+      if (e.code !== "ECONNREFUSED" || Date.now() > end) return reply(502, `the runner didn't answer (${e.message})`);
+      await new Promise((r) => setTimeout(r, retryEveryMs));
+    }
+  }
+}
+
+// The runner's helper commands (services/runner/src/repohelper.mjs TOOLS; verify-security.sh checks that list).
+import { TOOLS as HELPER_COMMANDS } from "../runner/src/repohelper.mjs";
+
+/** POST to host loopback (http.request: an `aidenhq pr` can take many minutes, past fetch's silent-request limit). */
+function postLocal(port, urlPath, token, body) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ host: "127.0.0.1", port, path: urlPath, method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": body.length } }, (up) => {
+      const parts = [];
+      up.on("data", (d) => parts.push(d));
+      up.on("end", () => resolve({ status: up.statusCode ?? 502, text: Buffer.concat(parts).toString("utf8") }));
+      up.on("error", reject);
+    });
+    r.on("error", reject);
+    r.end(body);
+  });
+}
+
+/** Lapsed jobs, their run tokens revoked and records dropped at once; the caller then removes the boxes. */
+export function reapLapsed(jobs, tokens, now = Date.now()) {
+  const names = jobs.lapsed(now);
+  for (const n of names) { tokens.revoke(n); jobs.delete(n); }
+  return names;
+}
+
+/** The runner's control routes: only computers_runner_key opens them, and that key opens nothing else. */
+export const JOB_ROUTES = ["/job", "/job/renew", "/job/release"];
+
+/**
+ * Whether a control call's bearer opens its route: the runner's key only the job routes, the board's progress key only
+ * /progress, the plugin's key every other route. An empty secret is no key.
+ */
+export function controlAllowed(bearer, method, url, { plugin, runner, progress }) {
+  if (method !== "POST" || !bearer) return false;
+  if (JOB_ROUTES.includes(url)) return Boolean(runner) && bearer === runner;
+  if (url === "/progress" && progress && bearer === progress) return true;
+  return Boolean(plugin) && bearer === plugin;
+}
 
 /**
  * The run's own Paperclip credential, from an exec's env: the per-run bridge token and the box's bridge URL (127.0.0.1 inside the

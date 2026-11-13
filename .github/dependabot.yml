@@ -20,6 +20,7 @@ updates:
       - /modules/primer/connections/primer-mcp
       - /modules/slack/connections/slack-mcp
       - /modules/meetings/connections/ops-mcp
+      - /modules/core/templates/app
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
     open-pull-requests-limit: 5

@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Restore a backup made by scripts/backup.sh. Refuses to run while any AidenHQ
-# container is running, and moves existing state aside instead of deleting it.
+# Restore a backup made by scripts/backup.sh. Refuses to run while any AidenHQ container or the runner is running.
+# Existing state is moved aside, never deleted: each top-level entry the backup replaces goes to
+# <dir>/.pre-restore-<stamp>/ (in the data dir and in the runner's state dir). App volumes that already exist are left
+# alone (remove one with `docker volume rm` first to restore it). Files are written through a container, so their
+# owners come back as they were.
 #
-#   scripts/restore.sh backups/aidenhq-YYYYmmdd-HHMMSS.tar.gz
+#   scripts/restore.sh backups/aidenhq-YYYYmmdd-HHMMSS.tar.gz   (or .tar)
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,11 +15,16 @@ archive="${1:?usage: scripts/restore.sh <backup.tar.gz>}"
 archive="$(cd "$(dirname "$archive")" && pwd)/$(basename "$archive")"
 env_file="${AIDENHQ_ENV_FILE:-.env}"
 [ -f "$env_file" ] && { set -a; . "$env_file"; set +a; }
+IMG=postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f # as scripts/backup.sh
 
 running="$(docker compose --env-file "$env_file" ps --status running --services 2>/dev/null || true)"
 if [ -n "$running" ]; then
   echo "error: refusing to restore while containers are running: $(echo $running)" >&2
   echo "       stop them first: docker compose down" >&2
+  exit 1
+fi
+if systemctl --user is-active --quiet aidenhq-runner 2>/dev/null; then
+  echo "error: refusing to restore while the runner is running: systemctl --user stop aidenhq-runner" >&2
   exit 1
 fi
 
@@ -26,23 +34,55 @@ mkdir -p "$data"
 data="$(cd "$data" && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-tar -C "$work" -xzf "$archive"
-[ -f "$work/MANIFEST" ] || { echo "error: not a AidenHQ backup" >&2; exit 1; }
+tar -C "$work" -xf "$archive"
+[ -f "$work/MANIFEST" ] || { echo "error: not an AidenHQ backup" >&2; exit 1; }
+grep -q '^format=2$' "$work/MANIFEST" || {
+  echo "error: this backup was made by an older scripts/backup.sh; restore it with that version's restore.sh" >&2; exit 1; }
 cat "$work/MANIFEST"
-
 stamp="$(date +%Y%m%d-%H%M%S)"
-aside="$data/.pre-restore-$stamp"
-mkdir -p "$aside"
-for d in paperclip ops-mcp board; do
-  [ -e "$data/$d" ] && mv "$data/$d" "$aside/"
-done
-echo "Previous state moved to $aside"
 
-tar -C "$data" -xf "$work/paperclip.tar"
-mkdir -p "$data/ops-mcp"
-[ -f "$work/ops-mcp/state.sqlite" ] && cp "$work/ops-mcp/state.sqlite" "$data/ops-mcp/state.sqlite"
-[ -f "$work/board/board.sqlite" ] && mkdir -p "$data/board" && cp "$work/board/board.sqlite" "$data/board/board.sqlite"
+# <name>.tar into dir: move aside what it replaces, extract, then put each online SQLite copy over its file copy (with
+# the file copy's owner) and drop the file copy's -wal/-shm, which belong to the torn copy.
+restore_tree() { # name dir
+  local name="$1" dir="$2"
+  [ -f "$work/$name.tar" ] || return 0
+  mkdir -p "$dir"
+  docker run --rm -v "$dir:/d" -v "$work:/b:ro" -e NAME="$name" -e ASIDE="/d/.pre-restore-$stamp" "$IMG" sh -euc '
+    for top in $(tar -tf "/b/$NAME.tar" | sed -n "s|^\./\([^/][^/]*\).*|\1|p" | sort -u); do
+      [ -e "/d/$top" ] || continue
+      mkdir -p "$ASIDE"; mv "/d/$top" "$ASIDE/"
+    done
+    tar -C /d -xpf "/b/$NAME.tar"
+    [ -d "/b/$NAME.sqlite" ] || exit 0
+    cd "/b/$NAME.sqlite"
+    find . -type f | while read -r f; do
+      cp "$f" "/d/$f.restore"
+      [ -e "/d/$f" ] && chown --reference="/d/$f" "/d/$f.restore"
+      mv "/d/$f.restore" "/d/$f"
+      rm -f "/d/$f-wal" "/d/$f-shm"
+    done'
+  echo "Restored $name into $dir (anything it replaced is in $dir/.pre-restore-$stamp)"
+}
+
+restore_tree data "$data"
+state="$(sed -n 's/^runner_state=//p' "$work/MANIFEST")"
+[ -n "$state" ] && restore_tree runner "$state"
+
+for t in "$work"/volumes/*.tar; do
+  [ -f "$t" ] || continue
+  v="$(basename "$t" .tar)"
+  if docker volume inspect "$v" >/dev/null 2>&1; then
+    echo "Volume $v exists, left alone (docker volume rm $v, then restore again, to replace it)"; continue
+  fi
+  labels=()
+  while IFS= read -r l; do labels+=(--label "$l"); done < <(jq -r 'to_entries[]? | "\(.key)=\(.value)"' "$work/volumes/$v.labels.json")
+  docker volume create "${labels[@]}" "$v" >/dev/null
+  docker run --rm -i -v "$v:/v" "$IMG" tar -C /v -xpf - <"$t"
+  echo "Volume $v restored"
+done
+
 # The instance repo: recreated from the bundle only where there is none (a fresh VM). An existing one is left alone.
+aside="$data/.pre-restore-$stamp"
 if [ -f "$work/instance.bundle" ]; then
   inst="${AIDENHQ_INSTANCE_DIR:-}"
   if [ -n "$inst" ] && [ ! -e "$inst" ]; then
@@ -57,7 +97,7 @@ if [ -f "$work/instance.bundle" ]; then
     fi
     echo "Instance repo restored at $inst"
   else
-    cp "$work/instance.bundle" "$aside/instance.bundle"
+    mkdir -p "$aside" && cp "$work/instance.bundle" "$aside/instance.bundle"
     echo "Instance repo exists; the backup's copy is at $aside/instance.bundle"
   fi
 fi
@@ -65,7 +105,7 @@ for f in "$work"/config/*.yaml; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
   if [ -f "$config/$name" ] && ! cmp -s "$f" "$config/$name"; then
-    cp "$config/$name" "$aside/$name"
+    mkdir -p "$aside" && cp "$config/$name" "$aside/$name"
   fi
   cp "$f" "$config/$name"
 done
@@ -75,4 +115,5 @@ if grep -q '^paperclip_running=yes' "$work/MANIFEST"; then
   echo "      Restore Paperclip's DB from its dump under $data/paperclip/instances/*/data/backups/"
   echo "      (see Paperclip docs: database backups), or use a backup taken with the stack stopped."
 fi
-echo "Restored. Start with: docker compose up -d"
+echo "Restored. Start with: docker compose up -d (then systemctl --user start aidenhq-runner)"
+echo "A live Postgres cluster skipped by the backup (the warehouse) comes back from its app's dumps: see its AGENTS.md."

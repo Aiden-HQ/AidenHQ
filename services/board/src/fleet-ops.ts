@@ -42,6 +42,9 @@ type QualityRow = { name: string; state: "none" | "ok" | "unknown"; checks?: { n
  * group, never an app incident (bad data must not look like an outage or roll a deploy back). An app whose checks couldn't be
  * evaluated keeps its open findings open (`openKeys`: the detector's open keys): unknown is not recovered.
  */
+/** An app-supplied name reduced to a short slug (a-z, 0-9, - and _). */
+const slug = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "unnamed";
+
 export function qualityFindings(apps: QualityRow[], openKeys: string[]): Incident[] {
   const out: Incident[] = [];
   for (const a of apps) {
@@ -49,8 +52,12 @@ export function qualityFindings(apps: QualityRow[], openKeys: string[]): Inciden
       for (const k of openKeys.filter((k) => k.startsWith(`quality:${a.name}:`))) out.push({ key: k.slice("quality:".length), reason: "" });
       continue;
     }
-    for (const c of a.state === "ok" ? (a.checks ?? []).filter((c) => !c.ok) : [])
-      out.push({ key: `${a.name}:${c.name}`, reason: `app ${a.name}: quality check ${c.name} failing${c.count != null ? ` (${c.count})` : ""}; its owner reads the sample with app_status` });
+    for (const c of a.state === "ok" ? (a.checks ?? []).filter((c) => !c.ok) : []) {
+      // The check's name comes from the app: only a short slug of it reaches Fleet Ops' task, never free text.
+      const name = slug(c.name);
+      const count = Number.isFinite(Number(c.count)) ? ` (${Number(c.count)})` : "";
+      out.push({ key: `${a.name}:${name}`, reason: `app ${a.name}: quality check ${name} failing${c.count != null ? count : ""}; its owner reads the sample with app_status` });
+    }
   }
   return out;
 }

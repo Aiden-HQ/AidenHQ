@@ -179,6 +179,13 @@ if systemctl --user list-unit-files aidenhq-transcripts.path >/dev/null 2>&1; th
 else
   printf '  skip  transcript watcher (not installed)\n'
 fi
+# The off-host backup (installed while backup_repository is set): its last run must not have failed.
+if [ -e "$HOME/.config/systemd/user/aidenhq-backup.timer" ]; then
+  check "off-host backup timer active" systemctl --user is-active --quiet aidenhq-backup.timer
+  check "off-host backup last run ok" sh -c '! systemctl --user is-failed --quiet aidenhq-backup.service'
+else
+  printf '  skip  off-host backup (backup_repository not set)\n'
+fi
 
 echo
 [ "${#skipped[@]}" -eq 0 ] || printf 'Skipped (not configured): %s\n' "$(printf '%s; ' "${skipped[@]}" | sed 's/; $//')"

@@ -15,6 +15,11 @@ WORKDIR /workspace
 # repo-checkout: a commit of an agents-org repo, placed by the launcher (services/computer/launcher.mjs POST /repo); no credentials.
 COPY --chmod=755 repo-checkout /usr/local/bin/repo-checkout
 # ui-review: screenshots, axe (embedded in agent-browser), web vitals and layout checks for a running app; the design system
-# (synced from modules/core/design-system by scripts/sync-shared.mjs) for mockups and as the review reference.
+# (synced from modules/core/design-system by scripts/sync-shared.mjs) as the review reference; the app starter (synced from
+# modules/core/templates/app: shadcn/ui on Vite + React) to scaffold new apps and mockups from, and to serve /catalog.
 COPY --chmod=755 ui-review /usr/local/bin/ui-review
 COPY design-system /opt/aidenhq/design-system
+COPY app-starter /opt/aidenhq/app-starter
+# The starter's dependencies, installed once from its lockfile (exact pins, nothing new), so a mockup or a review's
+# `cp -r /opt/aidenhq/app-starter …` carries node_modules and can build at once, with no download.
+RUN cd /opt/aidenhq/app-starter && npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force

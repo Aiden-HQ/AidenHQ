@@ -52,6 +52,17 @@ if (step === "commit") {
   writeFileSync(join(repo, "third.txt"), "third\n");
   git("add", "third.txt");
   git("commit", "-qm", "feat: third change");
+} else if (step === "ui") {
+  git("switch", "-qc", "feat/ui", "origin/main");
+  mkdirSync(join(repo, "web"), { recursive: true });
+  writeFileSync(join(repo, "web/app.css"), "body { margin: 0 }\n");
+  git("add", "web/app.css");
+  git("commit", "-qm", "feat: restyle the page");
+} else if (step === "ui-more") {
+  git("switch", "-q", "feat/ui");
+  writeFileSync(join(repo, "web/app.css"), `body { margin: ${Date.now() % 7}px }\n`);
+  git("add", "web/app.css");
+  git("commit", "-qm", "feat: restyle the page, again");
 } else if (step === "more") {
   git("switch", "-q", "feat/third");
   writeFileSync(join(repo, "more.txt"), "more\n");

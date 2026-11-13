@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { classify } from "../src/tiers.mjs";
-import { addEach, advance, allowedWrite, closePrs, awaitChecks, eachDecision, findPrs, finishedStatus, newQueue, prDecision, startOrResume, WRITES } from "../src/merges.mjs";
+import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, eachDecision, findPrs, finishedStatus, newQueue, prDecision, startOrResume, touchesUi, WRITES } from "../src/merges.mjs";
 
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
 const red = { state: "FAILURE", contexts: { nodes: [{ __typename: "StatusContext", context: "buildkite/deploy", state: "FAILURE" }] } };
@@ -52,6 +52,20 @@ function fakeGithub(prs, commits = {}, bases = {}) {
       const n = Number(id.slice(3));
       prs[n] = { ...prs[n], isDraft: false };
     },
+    // Re-runs: kept outside any queue, as the runner keeps them in its state. `reviewComments`: the code-review gate's comment by PR.
+    reran: {},
+    reviewComments: {},
+    reruns(repo, number) {
+      return this.reran[number] ?? {};
+    },
+    async rerun(repo, number, { run, checks, head }) {
+      if (this.refuseRerun) throw new Error("gh: Resource not accessible by integration (HTTP 403)");
+      writes.push({ rerun: run, checks: checks.map((c) => c.name) });
+      this.reran[number] = { ...this.reran[number], ...Object.fromEntries(checks.map((c) => [c.name, { head, id: c.id }])) };
+    },
+    async codeReviewInfra(repo, number, head) {
+      return codeReviewInfra(this.reviewComments[number], head);
+    },
   };
 }
 
@@ -69,6 +83,18 @@ describe("merge queue: reading the PRs", () => {
     const replaced = startOrResume(q, findPrs("o/r#1 o/r#3"), {});
     assert.deepEqual(replaced.prs.map((p) => [p.number, p.status]), [[1, "merged"], [3, "pending"]]);
     assert.equal(startOrResume({ ...q, prs: [q.prs[0]] }, [], {}), undefined); // nothing left to resume
+  });
+
+  // roadmap-keeper#111 (2026-11-13): its first queue failed on a code-review timeout; asked again on an approved card, it
+  // got "merged already" while the PR was still open. Only a merged (or merged-by-someone-else) PR is done.
+  it("a PR that failed in an earlier queue is merged when asked for again", () => {
+    const q = newQueue(findPrs("o/r#1"), { gapMinutes: 15, now: at(0) });
+    q.prs[0].status = "failed";
+    q.state = "stopped";
+    const again = startOrResume(q, findPrs("o/r#1"), {});
+    assert.deepEqual(again.prs.map((p) => [p.number, p.status]), [[1, "pending"]]);
+    q.prs[0].status = "skipped"; // someone else merged it
+    assert.equal(startOrResume(q, findPrs("o/r#1"), {}), undefined);
   });
 });
 
@@ -101,8 +127,10 @@ describe("merge queue: deciding", () => {
     assert.equal(prDecision(pr(1, { mergeStateStatus: "BEHIND" }), { updatedHead: "head1" }).do, "wait");
   });
 
-  it("writes only merges, branch updates and closing a PR (comment, then state)", () => {
-    assert.deepEqual(WRITES.map((w) => w.method), ["PUT", "PUT", "POST", "PATCH", "DELETE"]);
+  it("writes only merges, branch updates, closing a PR (comment, then state) and re-running a job", () => {
+    assert.deepEqual(WRITES.map((w) => w.method), ["PUT", "PUT", "POST", "PATCH", "DELETE", "POST"]);
+    assert.ok(WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/rerun-failed-jobs")));
+    assert.ok(!WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/rerun")), "only the failed jobs, never a whole run");
     assert.ok(WRITES.some((w) => w.path.test("repos/o/r/pulls/1/merge")));
     assert.ok(!WRITES.some((w) => w.path.test("repos/o/r/pulls/1/reviews")));
     assert.ok(WRITES.some((w) => w.method === "DELETE" && w.path.test("repos/o/r/git/refs/heads/feat/x")));
@@ -112,7 +140,7 @@ describe("merge queue: deciding", () => {
   it("comments, PR edits and branch deletes only in the agents org; merges anywhere", () => {
     assert.ok(allowedWrite("PUT", "repos/acme/app/pulls/1/merge", "acme-agents"));
     assert.ok(allowedWrite("DELETE", "repos/Acme-Agents/app/git/refs/heads/feat/x", "acme-agents"));
-    for (const [m, p] of [["POST", "repos/acme/app/issues/1/comments"], ["PATCH", "repos/acme/app/pulls/1"], ["DELETE", "repos/acme/app/git/refs/heads/feat/x"]]) {
+    for (const [m, p] of [["POST", "repos/acme/app/issues/1/comments"], ["PATCH", "repos/acme/app/pulls/1"], ["DELETE", "repos/acme/app/git/refs/heads/feat/x"], ["POST", "repos/acme/app/actions/runs/7/rerun-failed-jobs"]]) {
       assert.ok(!allowedWrite(m, p, "acme-agents"), `${m} ${p}`);
       assert.ok(!allowedWrite(m, p.replace("acme/", "acme-agents/"), undefined), "no agents org: refused");
     }
@@ -449,6 +477,117 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     assert.equal(eachDecision(own(1, { mergeStateStatus: "CLEAN", ...rollup("PENDING", [build]) }), p).do, "wait", "the rollup itself must be green");
     const paged = own(1, { commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: true }, nodes: [build] } } } }] } });
     assert.equal(eachDecision(paged, p).do, "fail");
+  });
+
+  // roadmap-keeper#111 (2026-11-13): its merge failed on a code-review timeout and sat until someone re-ran the check.
+  it("a check that failed for infrastructure reasons is re-run once; a second failure, or a real reject, is final", async () => {
+    const H = "c0de".repeat(10);
+    const run = (name, conclusion, databaseId, wf = 100) => ({ __typename: "CheckRun", name, status: conclusion ? "COMPLETED" : "IN_PROGRESS", conclusion, databaseId, checkSuite: { workflowRun: { databaseId: wf } } });
+    const at1 = (n, nodes, mk = own) => {
+      const state = nodes.some((x) => x.conclusion && x.conclusion !== "SUCCESS") ? "FAILURE" : nodes.some((x) => !x.conclusion) ? "PENDING" : "SUCCESS";
+      return mk(n, { headRefOid: H, mergeStateStatus: state === "SUCCESS" ? "CLEAN" : "UNSTABLE", ...head({ state, contexts: { nodes } }) });
+    };
+    const tests = run("tests", "SUCCESS", 1);
+    const timedOut = `<!-- ci:code-review -->\n**Code review failed on \`${H.slice(0, 7)}\`** (codegenie exit 1: request timed out). See the job log, fix the cause and re-run the check.`;
+    const each = () => addEach(undefined, [{ repo: "o/r", number: 1, url: "u1", head: H }], { now: at(0) });
+
+    // Independent queue: code-review's own "failed" verdict is re-run; the poll that still sees the old job waits; failing again is final.
+    const gh = fakeGithub({ 1: at1(1, [tests, run("code-review", "FAILURE", 10)]) });
+    gh.reviewComments[1] = timedOut;
+    const q = each();
+    await advance(q, { github: gh, now: at(0) });
+    assert.deepEqual(gh.writes, [{ rerun: 100, checks: ["code-review"] }]);
+    await advance(q, { github: gh, now: at(1) });
+    assert.equal(q.prs[0].status, "pending", "the old job, its re-run not on GitHub yet");
+    gh.prs[1] = at1(1, [tests, run("code-review", null, 11)]);
+    await advance(q, { github: gh, now: at(2) });
+    gh.prs[1] = at1(1, [tests, run("code-review", "FAILURE", 11)]);
+    const step = await advance(q, { github: gh, now: at(9) });
+    assert.match(step.say[0], /Not merged:.*code-review failed/);
+    assert.equal(gh.writes.length, 1, "re-run once");
+
+    // A real reject (blocking findings) fails at once; so does a re-run GitHub refuses, and the next queue on that head tries again.
+    const real = fakeGithub({ 1: at1(1, [tests, run("code-review", "FAILURE", 10)]) });
+    real.reviewComments[1] = `<!-- ci:code-review -->\n\n**Code review: 1 blocking finding on \`${H.slice(0, 7)}\`.** Fix these before merging.`;
+    assert.match((await advance(each(), { github: real, now: at(0) })).say[0], /Not merged/);
+    assert.deepEqual(real.writes, []);
+    const refused = fakeGithub({ 1: at1(1, [tests, run("code-review", "FAILURE", 10)]) });
+    Object.assign(refused, { refuseRerun: true, reviewComments: { 1: timedOut } });
+    assert.match((await advance(each(), { github: refused, now: at(0) })).say[0], /Not merged:.*code-review failed/);
+    refused.refuseRerun = false;
+    await advance(each(), { github: refused, now: at(1) });
+    assert.deepEqual(refused.writes, [{ rerun: 100, checks: ["code-review"] }]);
+
+    // A card's queue: a cancelled workflow run (both its red jobs) is re-run in one call, and the PR merges once it's green.
+    const card = fakeGithub({ 2: at1(2, [tests, run("image-scan", "CANCELLED", 20, 200), run("lint", "CANCELLED", 22, 200)], pr) });
+    const cq = newQueue([{ repo: "o/r", number: 2, url: "u2", head: H }], { gapMinutes: 0, now: at(0) });
+    await advance(cq, { github: card, now: at(0) });
+    assert.equal(cq.state, "running");
+    assert.deepEqual(card.writes, [{ rerun: 200, checks: ["image-scan", "lint"] }]);
+    card.prs[2] = at1(2, [tests, run("image-scan", "SUCCESS", 21, 200), run("lint", "SUCCESS", 23, 200)], pr);
+    await advance(cq, { github: card, now: at(3) });
+    assert.deepEqual(card.writes.at(-1), { merge: 2, sha: H, method: "squash" });
+  });
+
+  // Owner, 2026-11-13 (roadmap-keeper#108 merged an unstyled page while its review was pending): on a UI PR the design review blocks.
+  describe("a UI PR waits for its design review", () => {
+    const build = { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" };
+    const review = (state) => ({ __typename: "StatusContext", context: "design-review", state, description: "2 blocking: dark mode text unreadable" });
+    const rolled = (nodes) => head({ state: nodes.some((n) => n.state && n.state !== "SUCCESS") ? "PENDING" : "SUCCESS", contexts: { nodes } });
+    const ui = (n) => ({ ...addEach(undefined, [{ repo: "o/r", number: n, url: `u${n}`, head: `head${n}`, ui: true }], { now: at(0) }) });
+
+    it("classifies UI files conservatively", () => {
+      for (const f of ["src/web/design-system/tokens.css", "src/web/render.ts", "public/app.js", "app/views/list.erb", "src/Button.tsx", "templates/base.njk", "src/styles.ts"]) assert.ok(touchesUi([f]), f);
+      for (const f of ["src/store/postgres.ts", "migrations/001.sql", "package.json", "src/api/agent-read.ts", "src/reviews.mjs"]) assert.ok(!touchesUi([f]), f);
+    });
+
+    it("a UI PR with design review pending (or not posted) isn't merged; one with it green is; a backend-only PR merges as before", async () => {
+      for (const nodes of [[build, review("PENDING")], [build]]) {
+        const gh = fakeGithub({ 1: own(1, { mergeStateStatus: nodes.length > 1 ? "UNSTABLE" : "CLEAN", ...rolled(nodes) }) });
+        const step = await advance(ui(1), { github: gh, now: at(0) });
+        assert.deepEqual(gh.writes, [], "not merged");
+        assert.deepEqual(step.wake.map((w) => w.head), ["head1"], "the reviewer is asked for this head");
+      }
+      const green = fakeGithub({ 1: own(1, { ...rolled([build, review("SUCCESS")]) }) });
+      assert.equal((await advance(ui(1), { github: green, now: at(0) })).done, "done");
+      // Backend-only (no ui flag): a pending design review is advisory, as before.
+      const backend = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("PENDING")]) }) });
+      assert.equal((await advance(queue(1), { github: backend, now: at(0) })).done, "done");
+      assert.deepEqual(backend.writes, [{ merge: 1, sha: "head1", method: "squash" }]);
+    });
+
+    it("a failed design review stops it with the reviewer's reason", async () => {
+      const gh = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("FAILURE")]) }) });
+      const step = await advance(ui(1), { github: gh, now: at(0) });
+      assert.deepEqual(gh.writes, []);
+      assert.match(step.say[0], /Not merged:.*design review failed on its head \("2 blocking: dark mode text unreadable"\)/);
+    });
+
+    it("no verdict 2 hours after the checks went green goes to the owner, whose card can then merge it", async () => {
+      const gh = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("PENDING")]) }) });
+      const q = ui(1);
+      assert.equal((await advance(q, { github: gh, now: at(0) })).wake.length, 1);
+      assert.equal((await advance(q, { github: gh, now: at(60) })).wake.length, 0, "asked once per head");
+      const step = await advance(q, { github: gh, now: at(121) });
+      assert.deepEqual(step.escalate, [{ repo: "o/r", number: 1, url: "u1", head: "head1" }]);
+      assert.equal(step.done, "stopped");
+      assert.deepEqual(gh.writes, []);
+      // The owner's approved card starts a card queue for it: not "merged already".
+      assert.equal(startOrResume(step.queue, [{ repo: "o/r", number: 1, url: "u1", head: "head1" }], { gapMinutes: 0, now: at(122) }).prs.filter((p) => p.status === "pending").length, 1);
+    });
+  });
+
+  it("a skipped image-scan is green only when the PR changes no image definition", () => {
+    const p = { head: "head1" };
+    const scan = { __typename: "CheckRun", name: "image-scan", status: "COMPLETED", conclusion: "SKIPPED" };
+    const build = { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" };
+    const at = (paths, more = false) => own(1, { ...head({ state: "SUCCESS", contexts: { nodes: [build, scan] } }), files: { pageInfo: { hasNextPage: more }, nodes: paths.map((path) => ({ path })) } });
+    assert.equal(eachDecision(at(["src/app.ts"]), p).do, "merge");
+    assert.equal(eachDecision(at(["src/app.ts", "Dockerfile"]), p).do, "fail");
+    assert.equal(eachDecision(at(["images/web/Containerfile.prod"]), p).do, "fail");
+    assert.equal(eachDecision(at(["src/app.ts"], true), p).do, "fail", "files past the first page could be an image");
+    assert.equal(prDecision(pr(1, { commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [build, scan] } } } }] }, files: { nodes: [{ path: "Dockerfile" }] } })).do, "stop");
+    assert.equal(prDecision(pr(1, { commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [build, scan] } } } }] }, files: { nodes: [{ path: "README.md" }] } })).do, "merge");
   });
 });
 

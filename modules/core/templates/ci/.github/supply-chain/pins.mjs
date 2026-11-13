@@ -9,7 +9,10 @@
 //   workflows     every `uses:` by a 40-character commit SHA with its tag in a comment (`# v1.2.3`), local ./ aside;
 //   commands      (Dockerfile RUN, *.sh, workflow lines) `npm i -g` and `npx -y` at an exact version, `pip install`
 //                 at `==`, no `curl | sh`, and after a script adds an apt repository (sources.list.d) every apt install
-//                 is `pkg=version`. Distro packages installed before that ride on the base image's digest.
+//                 is `pkg=version`. Distro packages installed before that ride on the base image's digest; a
+//                 distro package pinned anyway (`pkg=version`) is dated from the host's Ubuntu pockets. A host script
+//                 pins per Ubuntu release in the arms of `case "$codename" in <release>) …;; esac`: a pin in an arm is
+//                 dated for that release only, any other for every release the file names (noble when it names none).
 // Dated (only pins a change adds or alters, against the base; any lookup error fails): images, actions, npm, PyPI, apt
 // pins, GitHub release downloads, and digest-pinned image strings in code. Each must be 7+ days old or be a security
 // exception in .github/supply-chain-exceptions.yaml read from the base (`ecosystem` docker, github-action, npm, pypi,
@@ -25,7 +28,11 @@ const SHELL = /\.sh$/;
 const CODE = /\.(m?js|ts)$/;
 const SKIP = /(^|\/)(node_modules|test\/fixtures)\//;
 const DIGEST = /@sha256:[0-9a-f]{64}$/;
-const HOST_DEFAULTS = { codename: "noble", VERSION_CODENAME: "noble", arch: "amd64" }; // the supported host: Ubuntu 24.04 amd64
+const DEFAULT_RELEASE = "noble"; // a host file that names no release: Ubuntu 24.04 (hosts are amd64)
+// A repository line as the host reads it on that release ($codename, $(. /etc/os-release …), $arch).
+const onRelease = (s, release) => s.replace(/\$\{?(\w+)\}?/g, (x, k) => ({ codename: release, VERSION_CODENAME: release, arch: "amd64" })[k] ?? x).replace(/"?\$\(\.\s*\/etc\/os-release.*$/, release);
+// The release's own repositories, tried after any the file adds: where a pinned distro package (fail2ban=…) is dated.
+const distroSources = (r) => [`${r}-updates main`, `${r}-updates universe`, `${r}-security main`, `${r}-security universe`, `${r} main`, `${r} universe`].map((s) => `http://archive.ubuntu.com/ubuntu ${s}`);
 
 export const wanted = (path) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path));
 
@@ -81,26 +88,29 @@ function commands(text, at, state, pins, problems) {
     }
   }
   if (/sources\.list\.d\//.test(cmd) && /(>|tee\b)/.test(cmd)) state.repoAdded = true;
-  for (const m of cmd.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)) {
-    const sub = (s) => s.replace(/\$\{?(\w+)\}?/g, (x, k) => HOST_DEFAULTS[k] ?? x).replace(/"?\$\(\.\s*\/etc\/os-release.*$/, "noble");
-    state.sources.push(`${m[1]} ${sub(m[2])} ${sub(m[3])}`);
-  }
+  for (const m of cmd.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)) state.sources.push(`${m[1]} ${m[2]} ${m[3]}`);
+  // Per-release arms: `case "$codename" in`, a label (`noble)`, `noble|resolute)`) then the arm's commands, `;;`, `esac`.
+  if (/^\s*case\s+"?\$\{?(codename|VERSION_CODENAME)\b/.test(cmd)) state.releaseCase = true;
+  else if (/^\s*esac\b/.test(cmd)) state.releaseCase = false;
+  const label = state.releaseCase && /^\s*([a-z][a-z0-9]*(?:\|[a-z][a-z0-9]*)*)\)/.exec(cmd);
+  if (label) { state.arm = label[1].split("|"); state.arm.forEach((r) => state.releases.add(r)); }
   for (const m of cmd.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
     for (const a of words(m[1]).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
       const [pkg, ver] = a.split("=");
-      if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: state.sources, at });
+      if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: state.sources, releases: state.arm, at });
       else if (state.repoAdded) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
     }
   }
   for (const m of cmd.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/([^/\s"'$]+)\//g)) {
     pins.push({ kind: "github-release", name: m[1], package: m[1], version: m[2], at });
   }
+  if (/;;\s*$/.test(cmd)) state.arm = undefined;
 }
 
 /** One file's pins and its unpinned problems. */
 export function scanFile(path, text) {
   const pins = [], problems = [];
-  const state = { repoAdded: false, sources: [] };
+  const state = { repoAdded: false, sources: [], releases: new Set() };
   const at = (n) => `${path}:${n}`;
   if (DOCKERFILE.test(path)) {
     const stages = new Set(["scratch"]);
@@ -149,10 +159,12 @@ export function scanFile(path, text) {
       for (const m of l.matchAll(/([a-z0-9][\w.\/-]*:[\w.-]+@sha256:[0-9a-f]{64})/g)) pins.push(imagePin(m[1], at(i + 1)));
     });
   }
-  return { pins, problems };
+  // An apt pin once per release it is installed on.
+  const all = state.releases.size ? [...state.releases] : [DEFAULT_RELEASE];
+  return { pins: pins.flatMap(({ releases, ...p }) => (p.kind === "apt" ? (releases ?? all).map((release) => ({ ...p, release })) : [p])), problems };
 }
 
-const key = (p) => JSON.stringify([p.kind, p.name, p.version, p.digest, p.sha]);
+const key = (p) => JSON.stringify([p.kind, p.name, p.version, p.digest, p.sha, p.release]);
 const exceptionFor = (p, exceptions) => exceptions.find((e) => e.ecosystem === p.kind && e.package === p.package && e.version === p.version && e.advisory);
 
 /** Date each new or changed pin; the problems, one line each. `date(pin)` returns {published, via} or throws. */
@@ -163,7 +175,7 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
   for (const p of pins) {
     if (old.has(key(p)) || seen.has(key(p))) continue;
     seen.add(key(p));
-    const label = `${p.at}: ${p.name}${p.version && p.kind !== "docker" ? ` ${p.version}` : ""}${p.digest ? `@${p.digest.slice(0, 19)}…` : ""}`;
+    const label = `${p.at}: ${p.name}${p.version && p.kind !== "docker" ? ` ${p.version}` : ""}${p.digest ? `@${p.digest.slice(0, 19)}…` : ""}${p.release ? ` (${p.release})` : ""}`;
     try {
       const { published, via } = await date(p);
       const age = now - Date.parse(published);
@@ -179,14 +191,21 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
 
 async function datePin(p) {
   if (p.kind === "docker") return publishedAt("docker", p.name, { digest: p.digest });
-  if (p.kind === "apt") {
-    let last;
-    for (const source of p.sources) {
-      try { return await publishedAt("apt", p.name, { version: p.version, source }); } catch (e) { last = e; }
-    }
-    throw last || new Error("no apt repository in this file lists it");
-  }
+  if (p.kind === "apt") return dateApt(p);
   return publishedAt(p.kind, p.name, { version: p.version, sha: p.sha });
+}
+
+/**
+ * An apt pin, from the repositories its file adds, then the distro's pockets, as its release reads them. A source is
+ * passed over only when it was read and doesn't list the version; any other error (a repository that can't be read)
+ * fails, so a lookup failure on the file's own repository never falls through to dating the package from somewhere else.
+ */
+export async function dateApt(p, lookup = publishedAt) {
+  const release = p.release ?? DEFAULT_RELEASE;
+  for (const source of [...p.sources.map((s) => onRelease(s, release)), ...distroSources(release)]) {
+    try { return await lookup("apt", p.name, { version: p.version, source }); } catch (e) { if (!e.notListed) throw e; }
+  }
+  throw new Error(`${p.name}=${p.version}: no apt repository in this file, nor ${release}'s own, lists it`);
 }
 
 const git = (...a) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 1 << 28 });

@@ -382,8 +382,9 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
   }, [count, chat?.working?.said, chat?.state]);
   // At the end, stay there as the conversation grows under you: a failed send's Retry line, a card's outcome, rows
   // drawn at their real height after an estimate (content-visibility).
+  // Updated straight from the scroll handler (not on the next render), so a slow scroll up stops the sticking at once.
   const stick = useRef(atEnd);
-  stick.current = atEnd;
+  const lastTop = useRef(0);
   const shown = !!chat;
   useEffect(() => {
     const el = scroller.current;
@@ -426,7 +427,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
       }
     };
     setOutbox(refId, (p) => [...p, { id, text, files: files.map((f) => f.name), state: "sending", queued, retry: () => void inTurn(refId, attempt) }]);
-    setAtEnd(true);
+    (stick.current = true), setAtEnd(true);
     void inTurn(refId, attempt);
   }
   const sendRef = useRef(send);
@@ -592,7 +593,13 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
           ref={scroller}
           onScroll={(e) => {
             const el = e.currentTarget;
-            setAtEnd(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
+            // Any move up is the reader leaving the end, even within 80px of it: rows above drawn at their real height
+            // (content-visibility) resize the list, and sticking then would snap a slow scroll back down.
+            const up = el.scrollTop < lastTop.current;
+            lastTop.current = el.scrollTop;
+            const end = !up && el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+            stick.current = end;
+            setAtEnd(end);
           }}
         >
           <div className="conv-inner">

@@ -20,6 +20,8 @@ services:
       IGNORE_CHANNELS: "${SLACK_LIVE_IGNORE_CHANNELS:-}"
       # Channels agents may post to (slack_post), from the instance.
       SLACK_POST_CHANNELS: "${settings.slack_post_channels}"
+      # notify_owner kind fyi on Telegram: send, or mute (they still land on the chat).
+      TELEGRAM_FYI: "${settings.telegram_fyi}"
       URGENT_COOLDOWN_MIN: "60"
       MCP_BEARER_TOKEN_FILE: /run/secrets/slack_live_mcp_token
       SLACK_APP_TOKEN_FILE: /run/secrets/slack_live_app_token

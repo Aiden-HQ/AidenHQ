@@ -98,7 +98,7 @@ function AgentRow({ a, data }: { a: AgentSettings; data: SettingsData }) {
           </span>
           <span className="st-agent-model" title={a.model}>
             {modelShort(a.model) || "the runner's"}
-            {a.effort && <span className="st-effort">{a.effort}</span>}
+            {a.efforts.length > 0 && <span className="st-effort">{a.effort || "default"}</span>}
           </span>
           <span className="st-agent-wake" title={wake.full.join("\n") || undefined}>
             {wake.text}

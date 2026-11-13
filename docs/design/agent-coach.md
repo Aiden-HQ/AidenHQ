@@ -12,7 +12,7 @@ regress (the "no invented plans" rule broke again the same day).
 ## What
 A core agent, `coach` ("Agent Coach"), reviews other agents' outcomes and files fixes through the existing paths.
 
-- **Model:** DeepSeek Flash; `advisor_ask` with escalation to GPT Sol for hard calls.
+- **Model:** DeepSeek Flash; `advisor_ask` (GPT Sol) for hard calls.
 - **Schedule:** routine every 6 hours. Each run reviews the agents setup lists as due (at least one): an agent is due when
   it is new (every run for its first 2 days, then daily until day 9) or its last review is older than 7 days, oldest
   first; plus any agent with an open health flag or an owner correction since its last review. The due list is computed

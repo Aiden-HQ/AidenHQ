@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { ADAPTER_ENGINE, EFFORTS } from "./board.js";
+import { EFFORTS, compiledEngine } from "./board.js";
 
 /** The hours a heartbeat may run every (scripts/modules.mjs HEARTBEAT_HOURS), and the tools it needs (HEARTBEAT_TOOLS). */
 export const HEARTBEAT_HOURS = [1, 2, 3, 4, 6, 8, 12, 24];
@@ -50,6 +50,8 @@ interface CompiledAgent {
   name?: string;
   module?: string;
   adapter?: string;
+  /** A runner Engineer's engine, when not its adapter's (module.yaml `engine:`). */
+  engine?: string;
   model?: string;
   models?: string[];
   reasoning_effort?: string;
@@ -64,7 +66,7 @@ interface CompiledAgent {
 export interface Compiled {
   owner_name?: string;
   settings?: Record<string, { value: unknown; set: boolean }>;
-  mcp_servers?: Record<string, { url?: string; command?: string; setup?: string; tools?: { read?: string[]; write?: string[] } }>;
+  mcp_servers?: Record<string, { url?: string; command?: string; setup?: string; tools?: { read?: string[]; write?: string[]; destructive?: string[] } }>;
   agents?: Record<string, CompiledAgent>;
   routines?: Record<string, CompiledRoutine>;
 }
@@ -172,7 +174,8 @@ export function settingsView(s: Sources) {
       heartbeatHours: a.heartbeat === true ? hours : typeof a.heartbeat === "number" ? a.heartbeat : null,
       /** Whether a heartbeat may be turned on (compile refuses one for a runner agent, or one without the tools). */
       canHeartbeat: a.dispatch !== "runner" && HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t)),
-      efforts: EFFORTS[ADAPTER_ENGINE[a.adapter ?? ""] ?? "openrouter"] ?? [],
+      // Only an engine that takes an effort shows the setting: Paperclip's own agents run Codex; an engine without efforts, none.
+      efforts: EFFORTS[compiledEngine(a) ?? "codex"] ?? [],
       department: a.department ?? { id: "general", name: "General", order: 1_000 },
       routines,
       trial: Boolean(a.trial ?? g?.trial),
@@ -279,7 +282,7 @@ export function connectionsView(input: {
         return { key, value: typeof e?.value === "string" ? e.value : "", set: e?.set ?? false, ...(typeof d.default === "string" ? { default: d.default } : {}), ...(d.host ? { host: d.host } : {}), ...(d.doc ? { doc: d.doc } : {}) };
       });
   const rows: ConnectionRow[] = Object.entries(c.mcp_servers ?? {}).map(([name, m]) => {
-    const write = new Set(m.tools?.write ?? []);
+    const write = new Set([...(m.tools?.write ?? []), ...(m.tools?.destructive ?? [])]);
     const grants = Object.entries(c.agents ?? {})
       .filter(([, a]) => a.enabled_tools?.[name]?.length)
       .map(([key, a]) => {
@@ -291,7 +294,7 @@ export function connectionsView(input: {
       module: moduleOf.get(name) ?? "",
       kind: "connection",
       transport: m.url ? `http ${new URL(m.url).host}` : "built in",
-      tools: { read: m.tools?.read?.length ?? 0, write: m.tools?.write?.length ?? 0 },
+      tools: { read: m.tools?.read?.length ?? 0, write: (m.tools?.write?.length ?? 0) + (m.tools?.destructive?.length ?? 0) },
       grants,
       setup: m.setup ?? null,
       probe: m.url ? (input.probes[name] ?? null) : null,

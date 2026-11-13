@@ -65,9 +65,9 @@ test("instance agents are validated like module agents, and can't take roles or 
   // Webhooks and their secrets come from modules only (an instance routine could otherwise take another's secret).
   for (const f of ["webhook", "webhook_base", "secrets_prefix"]) assert.throws(() => compile(product, withAgents({ x: { yaml: { routines: { s: { title: "S", [f]: "apps_incident_webhook" } } } } })), new RegExp(`routine s: ${f} isn't allowed`));
 });
-test("the Architect: the stronger model, only its own role, no fleet tools, reads every source; it changes the fleet only by delegating", () => {
+test("the Architect: max effort, only its own role, no fleet tools, reads every source; it changes the fleet only by delegating", () => {
   const a = compile(product, withAgents({}, ["slack", "github"])).paperclip.agents.architect;
-  assert.equal(a.model, "moonshotai/kimi-k3.1-pro");
+  assert.deepEqual([a.model, a.reasoning_effort], ["~deepseek/deepseek-flash-latest", "max"]);
   assert.deepEqual(a.roles, ["architect"]);
   assert.deepEqual(a.enabled_tools.slack_live, ["notify_owner"]);
   assert.deepEqual(a.enabled_tools.apps, ["app_list", "app_status", "app_logs", "app_view", "web_view", "warehouse_query"]); // research reads only: no deploys, and the request and role reads would refuse it anyway
@@ -145,7 +145,9 @@ test("the web for every codex agent: live search by default (an agent may opt do
     assert.equal(r.paperclip.agents[k].web_search, "disabled", k);
     assert.ok(!r.paperclip.agents[k].enabled_tools.apps?.includes("web_view"), k);
   }
-  for (const [key, a] of Object.entries(r.paperclip.agents)) if (a.dispatch === "runner") assert.ok(!a.mcp_servers.includes("apps"), key);
+  // Runner agents get no tools added; one in a computer (the App Engineer) has exactly what it grants itself.
+  for (const [key, a] of Object.entries(r.paperclip.agents)) if (a.dispatch === "runner" && !a.image) assert.ok(!a.mcp_servers.includes("apps"), key);
+  assert.deepEqual(r.paperclip.agents["app-engineer"].enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });

@@ -10,7 +10,7 @@
 //   aidenhq close <PR link>... --reason "<one line>"  close superseded or duplicate PRs in the agents org
 //   aidenhq apply                                  (Platform Engineer) nothing to run: the runner files the approval card
 //   aidenhq repo <org/name>                          clone another repository into the workspace
-//   aidenhq engine <claude|codex|openrouter> [model] run this request again on another engine/model
+//   aidenhq engine <engine> [model]                   run this request again on another engine/model
 //   aidenhq primer [<Primer link>]                   publish .aidenhq/primer.md on Primer after runs (a new
 //                                                       document, or new versions of the one linked)
 //   aidenhq pass <name>                              pass the user's latest message on to another agent on the task

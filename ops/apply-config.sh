@@ -35,8 +35,11 @@ main() {
   [ -n "$product" ] || { echo "refusing: instance.yaml has no full-sha 'product:' line" >&2; exit 1; }
   git fetch --quiet origin main
   git merge-base --is-ancestor "$product" origin/main || { echo "refusing: product $product is not on origin/main" >&2; exit 1; }
-  # `before` is the product this host ran; a re-exec (below) carries it over, since HEAD has already moved by then.
-  local before; before="${AIDENHQ_APPLY_BEFORE:-$(git rev-parse HEAD)}"
+  # `before` is the product this host last applied in full (a failed apply has moved HEAD without restarting anything, so
+  # HEAD alone would hide the change from the retry); a re-exec (below) carries it over, since HEAD has already moved by then.
+  local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
+  local before; before="${AIDENHQ_APPLY_BEFORE:-$(cat "$applied" 2>/dev/null || git rev-parse HEAD)}"
+  git cat-file -e "$before^{commit}" 2>/dev/null || before="$(git rev-parse HEAD)"
   git checkout --quiet --detach "$product"
   # bash runs the script it started with: if the new product changes this script, hand over to the new one once (it sees
   # AIDENHQ_APPLY_BEFORE, so it never hands over again), so one apply is enough. Pinned to the instance commit just
@@ -92,6 +95,19 @@ main() {
      && systemctl --user is-enabled --quiet aidenhq-computers 2>/dev/null; then
     systemctl --user restart aidenhq-computers && echo "computer launcher restarted"
   fi
+  # The nightly off-host backup (ops/backup-offsite.sh): its timer is installed while the instance sets backup_repository,
+  # and removed once it doesn't.
+  local units="$HOME/.config/systemd/user"
+  if grep -Eq "^[[:space:]]+backup_repository:[[:space:]]*[\"']?[^[:space:]#\"']" "$inst/instance.yaml"; then
+    if ! cmp -s ops/units/aidenhq-backup.service "$units/aidenhq-backup.service" || ! cmp -s ops/units/aidenhq-backup.timer "$units/aidenhq-backup.timer"; then
+      cp ops/units/aidenhq-backup.service ops/units/aidenhq-backup.timer "$units/" && systemctl --user daemon-reload && echo "backup timer installed/updated"
+    fi
+    systemctl --user enable --now --quiet aidenhq-backup.timer
+  elif [ -e "$units/aidenhq-backup.timer" ]; then
+    systemctl --user disable --now --quiet aidenhq-backup.timer
+    rm -f "$units/aidenhq-backup.service" "$units/aidenhq-backup.timer" && systemctl --user daemon-reload && echo "backup timer removed (no backup_repository)"
+  fi
+  echo "$product" > "$applied"
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"
   # The live agent check, last (everything above is applied either way): each connection an agent is granted answers and is
   # signed in. Fails the apply only when a newly granted one doesn't (scripts/agent-check.mjs).

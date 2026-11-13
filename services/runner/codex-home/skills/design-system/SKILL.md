@@ -1,0 +1,60 @@
+---
+name: design-system
+description: Build or change the UI of an AidenHQ app (or the board) with the app starter (Vite + React + shadcn/ui + Tailwind) and the AidenHQ design system (theme, building blocks, guidelines, review checklist). Use for any page, component, style or new app in an AidenHQ app repo or the product.
+---
+
+# AidenHQ apps: the starter and the design system
+
+Two folders, copied from the product at the start of this run:
+
+- `$CODEX_HOME/skills/design-system/files/`: the design system. Read `files/guidelines.md` (the rules; §2 composition and
+  §17 anti-patterns are where generic-looking apps fail) and `files/review-checklist.md` (what blocks a UI PR).
+- `$CODEX_HOME/skills/design-system/starter/`: the app starter. Its `README.md` says what's where; its `AGENTS.md` is the
+  short version of how to build on it.
+
+**A new app:** copy the starter into the repo (`cp -r "$CODEX_HOME/skills/design-system/starter/." <repo>/`), then replace
+the sample data and the example page with the app's own. Never start from a blank Vite app, server-rendered HTML or another
+UI library.
+
+**Compose, don't invent.** Pages are built from `src/components/blocks/` (page header, stat strip, sortable headers,
+pagination, empty/loading/error states, detail list, form section, charts) and `src/components/ui/` (shadcn/ui), copying
+the example page (`src/pages/projects.tsx`) and `/catalog` (`src/pages/catalog.tsx`, every block and component in use).
+A table, not a grid of cards, for anything people compare; details in a `Sheet` at `?item=`; filters, sort and page in
+the URL (`useUrlState`). Colours only from the theme's names (`bg-background`, `text-muted-foreground`, `bg-primary`,
+`text-danger`, `bg-chart-1`…), never literal colours or Tailwind palette colours.
+
+**A mockup is the spec.** When the task comes with a mockup (a page's `.tsx` file and screenshots in `.aidenhq/files/`),
+build from it: its layout, components and states, wired to the real data. A new app or screen without a mockup: build it
+from the starter's patterns, and say in your reply that no mockup came with it.
+
+**It must render under the CSP.** The starter's server sends `script-src 'self'; style-src 'self' 'nonce-…'`: no inline
+`<script>`, no `style="…"` in HTML the server writes, no CDN, no `'unsafe-inline'`. A component that renders a `<style>`
+tag takes `nonce={cspNonce}` (`@/lib/csp`); a library that injects styles without a nonce isn't used. Keep `npm test`
+passing (it builds, serves and checks the CSP), and an existing app's server must serve `dist/` the way the starter's
+`server.mjs` does.
+
+**Before you finish:**
+
+- `npm ci && npm test && npm run build` pass; `tokens.css` and `shadcn.css` are unchanged (note their `design-system
+  version:` lines in the PR).
+- Look at what you changed, in a browser: `aidenhq-browse` serves the build, screenshots each page at 1440 wide and runs
+  a short click-through, reporting console errors, CSP violations and failed loads. One command, from the app's folder:
+
+  ```sh
+  aidenhq-browse http://127.0.0.1:4173 --start "PORT=4173 node server.mjs" --paths /,/items \
+    --steps steps.json --out "$AIDENHQ_TASK_WORKTREE/.aidenhq/out"
+  ```
+
+  `steps.json` clicks through the flow you changed (`[{"click": "role=button[name=\"New item\"]"}, {"fill": "#name",
+  "value": "Lamp"}, {"press": "Enter"}, {"wait": "text=Saved"}, {"shot": "saved"}]`). Open every screenshot and fix
+  what looks wrong (overlap, clipping, unstyled or empty areas, a misaligned table) and every reported problem, then run it
+  again until it prints `clean`. `--width 390` checks the phone layout. Files in `.aidenhq/out/` (at most 20) are
+  attached to the task after the run; name them in your report.
+- Go through the checklist's "Self-review" by reading your code: one surface per section, a table for data, one primary
+  button, every data view's empty, loading, error and no-match states, plain-word copy, phone layout (`max-md:`/`md:`
+  classes, nothing wider than the screen).
+- A seed or sample-data mode still runs the app locally (you and the reviewer screenshot it), and new states are reachable with
+  `?preview=loading|error|empty` or the seed.
+
+In the product repo the source is `modules/core/design-system/` and `modules/core/templates/app/`; after changing either
+run `node scripts/sync-shared.mjs` (the computers carry copies).

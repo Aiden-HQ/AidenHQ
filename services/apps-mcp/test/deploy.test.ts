@@ -1,14 +1,15 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { createEngine } from "../src/deploy.js";
+import { createEngine, type Deps } from "../src/deploy.js";
+import { probeResult } from "../src/checks.js";
 import { parseApp } from "../src/registry.js";
 import { openStore } from "../src/store.js";
 
 const app = (o: object = {}) => parseApp({ name: "demo", repo: "example-org/x", owner: "a", description: "d", ...o });
 
 // Fake docker: `config` returns a minimal compose file, `up` marks the checked-out sha as running. Health is true for "good" shas.
-function setup(good: string[]) {
+function setup(good: string[], check?: Deps["check"]) {
   const st = { out: "", running: "" };
   const t = { now: 0 };
   const src = mkdtempSync(`${tmpdir()}/src-`);
@@ -18,6 +19,7 @@ function setup(good: string[]) {
     appsData: mkdtempSync(`${tmpdir()}/apps-`),
     secretsDir: "/none",
     hostSecretsDir: "/none",
+    identityKeysHostFile: "/none/keys.json",
     exec: async (args) => {
       if (args.includes("config")) return '{"services":{"web":{"image":"x"}}}';
       if (args.includes("up")) st.running = st.out;
@@ -25,6 +27,7 @@ function setup(good: string[]) {
     },
     checkout: async (_a, sha) => ((st.out = sha ?? "newsha"), { sha: st.out, dir: src }),
     probe: async () => good.includes(st.running),
+    check,
     now: () => t.now,
     sleep: async (ms) => void (t.now += ms),
   });
@@ -36,6 +39,15 @@ describe("deploy engine", () => {
     const { engine, st } = setup(["v1"]);
     await engine.deploy(app(), { sha: "v1", by: "t" });
     expect(await engine.deploy(app(), { sha: "v2", by: "t" })).toMatchObject({ sha: "v2", status: "rolled_back", previous: "v1" });
+    expect(st.running).toBe("v1");
+  });
+  it("a healthy deploy whose page renders unstyled is rolled back, and says why", async () => {
+    // v2 is healthy, but its render check finds the incident's signals: the deploy rolls back to v1.
+    const { engine, st } = setup(["v1", "v2"], async () => [probeResult("render", "/", st.running === "v2" ? [{ hard: true, what: "no linked stylesheet applied (the page renders unstyled)" }] : [])]);
+    await engine.deploy(app(), { sha: "v1", by: "t" });
+    const r = await engine.deploy(app(), { sha: "v2", by: "t" });
+    expect(r).toMatchObject({ status: "rolled_back", previous: "v1" });
+    expect(r.checks?.find((c) => c.probe === "render")?.ok).toBe(false);
     expect(st.running).toBe("v1");
   });
   it("a first deploy that never gets healthy is stopped, not looped", async () => {

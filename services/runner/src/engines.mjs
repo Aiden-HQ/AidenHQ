@@ -1,11 +1,13 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { DEFAULT_IDENTITY, identityEnv } from "./github-app.mjs";
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { progressTracker } from "./progress.mjs";
 import { mintToken } from "../../gateway/token.mjs";
+import { CODEX_CONFIG_SCRUB } from "../../computer/lib.mjs";
+import { smallFile } from "./git.mjs";
 
 const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
@@ -47,16 +49,21 @@ function primer(cfg) {
 }
 
 /**
- * Grafana and Google Cloud reads go to Claude Code and Codex only: production logs and
- * metrics never go to OpenRouter's third-party model providers.
+ * Whether a job gets the private reads (Grafana, Slack, Glean, ClickHouse), its gcloud session and other tasks: only an
+ * Engineer whose definition opts in (`private_reads: true`, setup's metadata.privateReads; commands.mjs pickedEngine), on
+ * any engine. Such a job gets no web search, so private data can't leave through search queries. Light Engineers (the
+ * Software and Platform Engineers) don't: they get Primer and web search.
  */
-export const observes = (kind) => kind === "claude" || kind === "codex";
+export const observes = (engine) => engine?.reads === true;
+
+/** Engines whose model calls go through the model gateway with the job's own token: billed and capped there. */
+export const viaGateway = (kind) => kind === "openrouter" || kind === "codex-openrouter";
 
 /**
- * The private reads for Claude Code and Codex (observes): Grafana, Slack and Glean,
+ * The private reads for the engines that observe: Grafana, Slack and Glean,
  * the user's own messages and the company's documents, and ClickHouse, production data. Each is an MCP server on loopback that serves
  * reads only, with a token the job gets through the environment, never on the command line. Skipped
- * until set up. OpenRouter never gets them: its prompts go to third-party model providers.
+ * until set up.
  */
 const PRIVATE_READS = [
   { name: "grafana", url: "grafanaMcpUrl", tokenFile: "grafanaTokenFile", env: "GRAFANA_MCP_TOKEN" },
@@ -75,16 +82,53 @@ export function privateReads(cfg) {
   }));
 }
 
+// The host's toolchains, read-only in every job: the system (merged-/usr links are recreated as links) and /etc.
+const SYSTEM_RO = ["/usr", "/etc", "/opt", "/snap"];
+const SYSTEM_LINKS = ["/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"];
+// Toolchains people install in their home: read-only when present (sandbox.read_only_roots adds more).
+const HOME_RO = ["~/.local/bin", "~/.local/lib", "~/.local/share/claude", "~/.cargo", "~/.rustup", "~/go/bin", "~/.nvm", "~/.bun", "~/.deno", "~/.pyenv"];
+const inside = (p, root) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
+
 /**
- * The whole run under bwrap with what it must not read hidden (cfg.gcp.hidden): the sandbox limits writes, not reads.
- * A directory gets an empty tmpfs (the gcloud sign-ins, the secrets, the services' data); a file or socket gets /dev/null
- * (the Docker socket: the runner's user is in the docker group, which is root on the host).
+ * What a job sees of the host's files (bwrap): an allowlist, not the whole host. Read-only: the toolchains (/usr and its
+ * links, /etc, /opt, the home's toolchains, node's own prefix), the runner's wrappers (cfg.ghWrapperDir), the pinned
+ * headless browser (cfg.browserDir, for bin/aidenhq-browse) and `ro`. Read-write: `rw` (the task folder, the engine's state dirs, the build caches). A private /tmp and an empty home
+ * under them; the host's /dev and /sys, a procfs of the job's own. Nothing else exists in the job: other tasks' folders, the product
+ * checkout, the services' data, the secrets, the runner's state and logs, the sockets. What cfg.gcp.hidden names inside
+ * an allowed path is still masked: a directory gets an empty tmpfs, a file or socket /dev/null.
  */
-export function hiding(cfg, argv, loopback = []) {
-  const paths = (cfg.gcp?.hidden ?? []).filter((d) => existsSync(d));
-  const mask = (p) => (statSync(p).isDirectory() ? ["--tmpfs", p] : ["--ro-bind", "/dev/null", p]);
-  if (cfg.pasta) return jailed(cfg.pasta, paths.flatMap(mask), loopback, argv);
-  return paths.length ? ["bwrap", "--dev-bind", "/", "/", ...paths.flatMap(mask), "--die-with-parent", "--", ...argv] : argv;
+export function layout(cfg, { rw = [], ro = [] } = {}) {
+  const home = homedir();
+  const node = dirname(dirname(process.execPath));
+  const roPaths = [...SYSTEM_RO, ...HOME_RO.map(expand), ...(cfg.sandbox?.read_only_roots ?? []).map(expand), ...(node.startsWith(home + sep) ? [node] : []), cfg.ghWrapperDir, cfg.browserDir, ...ro];
+  // The host's /dev (a fresh --dev breaks the network jail's route setup), /proc and /sys.
+  // Its own PID and IPC namespaces with a fresh procfs: no other process (the runner's environ, /proc/1/root) is visible.
+  const args = ["--unshare-pid", "--unshare-ipc", "--dev-bind", "/dev", "/dev", "--proc", "/proc", "--ro-bind", "/sys", "/sys", "--tmpfs", "/tmp", "--tmpfs", home];
+  for (const l of SYSTEM_LINKS) {
+    const st = lstatSync(l, { throwIfNoEntry: false });
+    if (st?.isSymbolicLink()) args.push("--symlink", readlinkSync(l), l);
+    else if (st) args.push("--ro-bind", l, l);
+  }
+  // /run: only the host's resolver (the jail replaces it with its own tmpfs; without the jail it links into /run/systemd/resolve).
+  if (existsSync("/run/systemd/resolve")) args.push("--ro-bind", "/run/systemd/resolve", "/run/systemd/resolve");
+  // Shallower paths first, so a deeper bind lands on top of its parent's.
+  const mounts = [...roPaths.filter(Boolean).map((p) => ["--ro-bind", resolve(p)]), ...rw.filter(Boolean).map((p) => ["--bind", resolve(p)])]
+    .filter(([, p]) => existsSync(p))
+    .sort((a, b) => a[1].split(sep).length - b[1].split(sep).length);
+  for (const [how, p] of mounts) args.push(how, p, p);
+  const allowed = mounts.map(([, p]) => p);
+  for (const p of (cfg.gcp?.hidden ?? []).filter((d) => existsSync(d) && allowed.some((a) => inside(d, a)))) {
+    args.push(...(statSync(p).isDirectory() ? ["--tmpfs", p] : ["--ro-bind", "/dev/null", p]));
+  }
+  return args;
+}
+
+/** The whole run under bwrap with only the allowed paths (layout), in its own network when pasta is installed. */
+export function hiding(cfg, argv, loopback = [], paths = {}) {
+  if (!cfg.gcp) return argv; // no host layout (loadConfig always sets one): a unit test's fake engine, unconfined
+  const mounts = layout(cfg, paths);
+  if (cfg.pasta) return jailed(cfg, mounts, loopback, argv);
+  return [cfg.bwrap ?? "bwrap", ...mounts, "--die-with-parent", "--", ...argv];
 }
 
 /** Why jobs can't get their own network here (no pasta, or a trial job failed), or undefined when they can. */
@@ -124,7 +168,7 @@ const hostRoutes = () =>
  * service (the board, Paperclip, apps trusting loopback callers), the host's other addresses and the LAN are out of
  * reach. The job's first step sets the unreachable routes, then drops the capabilities it used (bounding set too).
  */
-function jailed(pasta, masks, loopback, argv) {
+function jailed({ pasta, bwrap = "bwrap" }, masks, loopback, argv) {
   const ports = loopbackPorts(loopback).join(",") || "none";
   const host = hostIPv4();
   const nets = [...host, ...hostRoutes()];
@@ -134,7 +178,10 @@ function jailed(pasta, masks, loopback, argv) {
   const inner = `for n in ${unreachable.join(" ")}; do PATH="/usr/sbin:/sbin:$PATH" ip route add unreachable "$n" || exit 1; done; exec setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all -- "$@"`;
   return [
     process.execPath, join(import.meta.dirname, "netjail.mjs"), pasta, ports, link,
-    "bwrap", "--dev-bind", "/", "/", ...masks, "--ro-bind-data", "5", "/etc/resolv.conf",
+    // The public resolvers go where /etc/resolv.conf leads (systemd-resolved's stub-resolv.conf), on a private tmpfs:
+    // bound onto the host's own file, the bind came off the first time resolved rewrote it (a rename over a mountpoint
+    // detaches it in every namespace), and the job was left with 127.0.0.53, unreachable in its network.
+    bwrap, ...masks, "--tmpfs", "/run/systemd/resolve", "--ro-bind-data", "5", "/etc/resolv.conf",
     "--unshare-net", "--cap-add", "CAP_NET_ADMIN", "--cap-add", "CAP_SETPCAP", "--info-fd", "3", "--block-fd", "4", "--die-with-parent",
     "--", "/bin/sh", "-c", inner, "aidenhq-jail", ...argv,
   ];
@@ -145,14 +192,84 @@ function jailed(pasta, masks, loopback, argv) {
  * inside `codex sandbox`. `gcp` is the job's gcloud session (src/gcp.mjs), for engines that observe.
  * `loopback`: further host URLs the job may reach (the run's helper), besides the MCP endpoints it is wired to.
  */
-export function buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, loopback = [], job = {} }) {
-  const built = engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp: observes(engine.kind) ? gcp : undefined, job });
-  // opencode's model calls go to the model gateway on host loopback (forwarded into the job's network jail).
-  const mcp = [primer(cfg)?.url, ...(observes(engine.kind) ? privateReads(cfg).map((r) => r.url) : []), ...(engine.kind === "openrouter" ? [gatewayUrl(cfg)] : [])];
-  return { ...built, argv: hiding(cfg, built.argv, [...mcp, ...loopback]) };
+export function buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, loopback = [], job = {}, box }) {
+  if (engine.box) return boxCommand({ cfg, engine, sessionId, job, box });
+  const built = engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp: observes(engine) ? gcp : undefined, job });
+  // OpenRouter engines' model calls go to the model gateway on host loopback (forwarded into the job's network jail).
+  const mcp = [primer(cfg)?.url, ...(observes(engine) ? privateReads(cfg).map((r) => r.url) : []), ...(viaGateway(engine.kind) ? [gatewayUrl(cfg)] : [])];
+  // The engine writes its last message there (-o): the file alone is bound, made beforehand (bwrap binds what exists).
+  if (lastMessageFile && !existsSync(lastMessageFile)) try { writeFileSync(lastMessageFile, ""); } catch {}
+  const rw = [worktree, ...(built.rw ?? []), ...(cfg.sandbox?.extra_writable_roots ?? []).map(expand), lastMessageFile];
+  // The clones' core.hooksPath (git.mjs ensureGuardHooks: a pre-push that refuses), read-only.
+  const ro = cfg.workDir ? [join(cfg.workDir, ".guard-hooks")] : [];
+  return { ...built, argv: hiding(cfg, built.argv, [...mcp, ...loopback], { rw, ro }) };
 }
 
 const gatewayUrl = (cfg) => cfg.gatewayUrl ?? "http://127.0.0.1:8201";
+
+// ------------------------------------------------------------------ box jobs (the App Engineer)
+/** A box job's last message: a folder of the launcher's mounted at /aidenhq-out (outDir on the host), never the workspace. */
+export const boxLastFile = (box) => join(box.outDir, "last.txt");
+
+/**
+ * A box job's command: Codex in the job's gVisor box (services/computer, POST /job), through `docker exec` with the env file
+ * the launcher wrote (run token, granted connections, identity; nothing of the runner's env). The box is the boundary, so
+ * Codex's own sandbox is off (it broke Chrome in computers); the model goes through the launcher's gateway with the run token
+ * as the key, and the launcher's scrub appends the agent's connections to the Codex home's config first. Web search is
+ * on unless the Engineer has private reads (its granted connections, checked at compile). The runner's Codex home for the task (AGENTS.md and skills reset here) is /codex-home.
+ */
+function boxCommand({ cfg, engine, sessionId, job, box }) {
+  if (!box?.container || !box.envFile) throw new Error("a box job needs its box (POST /job) before it starts");
+  codexHome(cfg, job.issueId);
+  const base = sessionId ? ["codex", "exec", "resume", sessionId] : ["codex", "exec"];
+  const args = [
+    ...base, "--json", "--skip-git-repo-check", "-o", "/aidenhq-out/last.txt",
+    "-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"',
+    ...(engine.model ? ["-m", engine.model] : []),
+    ...(engine.effort ? ["-c", `model_reasoning_effort="${engine.effort}"`] : []),
+    // Private reads (granted connections that read private data; setup's privateReads): no web search, as for every Engineer.
+    "-c", `web_search="${observes(engine) ? "disabled" : "live"}"`,
+    "-c", 'model_provider="or"',
+    "-c", 'model_providers.or.name="OpenRouter"',
+    "-c", `model_providers.or.base_url=${JSON.stringify(`${cfg.boxGatewayUrl ?? "http://10.231.2.1:8200"}/api/v1`)}`,
+    "-c", 'model_providers.or.env_key="AIDENHQ_RUN_TOKEN"',
+    "-c", 'model_providers.or.wire_api="responses"',
+    // The box's env holds only the run's own revocable token, which its shell tools need (aidenhq, MCP through the gateway).
+    "-c", "shell_environment_policy.ignore_default_excludes=true",
+    ...CODEX_OFF.flatMap((f) => ["-c", `features.${f}=false`]),
+    "-",
+  ];
+  const argv = ["docker", "exec", "-i", "--env-file", box.envFile, "-w", "/workspace", box.container, "sh", "-c", CODEX_CONFIG_SCRUB, "aidenhq-computer", ...args];
+  return { argv, env: {} };
+}
+
+/** The runner's client for the launcher's job routes (bearer computers_runner_key). Rejects with `status` on an error answer. */
+export function launcher(cfg) {
+  return async (route, body) => {
+    let key = "";
+    try { key = readFileSync(cfg.computersRunnerKeyFile, "utf8").trim(); } catch {}
+    const r = await fetch(`${cfg.launcherUrl}${route}`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(90_000) });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(`launcher ${route}: ${out.error ?? r.status}`), { status: r.status });
+    return out;
+  };
+}
+
+/**
+ * Destroy a job's box and wait until Docker says it is gone: killing the `docker exec` client stops nothing inside the box, so
+ * nothing may inspect, sign or clean the workspace before this resolves. Retried (launcher down, Docker slow); throws if the box
+ * can't be confirmed gone in time (the lease then reaps it within 15 minutes).
+ */
+export async function releaseBox(call, container, { everyMs = 2000, forMs = 20 * 60_000 } = {}) {
+  let last = "";
+  for (const end = Date.now() + forMs; ; ) {
+    const r = await call("/job/release", { container }).catch((e) => ({ error: e.message }));
+    if (r.state === "missing") return;
+    last = r.error ?? `state ${r.state}`;
+    if (Date.now() > end) throw new Error(`the job's box ${container} couldn't be confirmed gone (${last}); its workspace stays untouched until it is`);
+    await new Promise((res) => setTimeout(res, everyMs));
+  }
+}
 
 /**
  * A model credential for the gateway (services/gateway/token.mjs), signed with gateway_job_secret: a job's (kind agent, capped,
@@ -165,12 +282,43 @@ export function modelToken(cfg, claims) {
 }
 export const gatewayApi = (cfg) => `${gatewayUrl(cfg)}/api/v1`;
 
+/** The job's own credential to the model gateway, valid past its deadline (an adopted run keeps its env). */
+const jobToken = (cfg, job) => modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 });
+
+const GATEWAY_KEY_ENV = "AIDENHQ_GATEWAY_KEY";
+// Off for codex-openrouter, as for Paperclip's Codex agents: ChatGPT connectors, the desktop's browser and computer, OpenAI's
+// image tool, memories across runs, hooks, and plugins fetched from marketplaces (unpinned code).
+const CODEX_OFF = ["apps", "browser_use", "browser_use_external", "in_app_browser", "computer_use", "image_generation", "memories", "hooks", "plugins", "remote_plugin", "recommended_plugins", "plugin_discovery_prefetch", "tool_suggest"];
+const PRODUCT_CODEX_HOME = join(import.meta.dirname, "..", "codex-home");
+const PRODUCT_ROOT = join(import.meta.dirname, "..", "..", "..");
+
+/**
+ * codex-openrouter's CODEX_HOME: one per task under the runner's state dir (its sessions persist for `exec resume`; no task
+ * reads another's transcripts), outside the codex sandbox's writable roots. AGENTS.md and skills/ are copied from the
+ * product at every start and anything else but the sessions and Codex's own state is removed, so no run leaves
+ * instructions, config, hooks or skills for a later one. No config.toml or auth.json: everything is set on the command line.
+ */
+export function codexHome(cfg, issueId) {
+  const home = join(cfg.codexOpenrouterHome, String(issueId ?? "none").replace(/[^\w.-]/g, "_"));
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  for (const f of ["AGENTS.md", "AGENTS.override.md", "skills", "config.toml", "auth.json", "hooks.json", "rules", "plugins", ".agents"]) rmSync(join(home, f), { recursive: true, force: true });
+  cpSync(join(PRODUCT_CODEX_HOME, "AGENTS.md"), join(home, "AGENTS.md"));
+  cpSync(join(PRODUCT_CODEX_HOME, "skills"), join(home, "skills"), { recursive: true });
+  // The skills' resources, from the product (a job can't read the product checkout): the design system and the version picker.
+  cpSync(join(PRODUCT_ROOT, "modules/core/design-system"), join(home, "skills/design-system/files"), { recursive: true });
+  // The app starter new apps are copied from (a host checkout may hold its node_modules and dist: never copied).
+  cpSync(join(PRODUCT_ROOT, "modules/core/templates/app"), join(home, "skills/design-system/starter"), { recursive: true, filter: (src) => !/[\\/](node_modules|dist)$/.test(src) });
+  cpSync(join(PRODUCT_ROOT, "scripts/supply-chain/best-version.mjs"), join(home, "skills/supply-chain/best-version.mjs"));
+  return home;
+}
+
 function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, job = {} }) {
   const p = primer(cfg);
-  const reads = observes(engine.kind) ? privateReads(cfg) : [];
+  const reads = observes(engine) ? privateReads(cfg) : [];
+  const search = observes(engine) ? "disabled" : "live"; // no web search for a job holding private data
   const mcpEnv = { ...(p ? { PRIMER_MCP_TOKEN: p.token } : {}), ...Object.fromEntries(reads.map((r) => [r.env, r.token])), ...(gcp?.env ?? {}) };
   const gcpRoots = gcp ? [gcp.root] : [];
-  if (engine.kind === "codex") {
+  if (engine.kind === "codex" || engine.kind === "codex-openrouter") {
     const base = sessionId ? ["codex", "exec", "resume", sessionId] : ["codex", "exec"];
     // The workspace holds several clones and isn't a git repository itself.
     const args = [...base, "--json", "--skip-git-repo-check", "-o", lastMessageFile, ...sandboxConfig(cfg, worktree, gcpRoots)];
@@ -191,18 +339,38 @@ function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp,
     }
     if (engine.model) args.push("-m", engine.model);
     if (engine.effort) args.push("-c", `model_reasoning_effort="${engine.effort}"`);
-    args.push("-");
-    return { argv: args, env: mcpEnv };
+    args.push("-c", `web_search="${search}"`);
+    if (engine.kind === "codex") {
+      args.push("-");
+      return { argv: args, env: mcpEnv, rw: [...gcpRoots, join(homedir(), ".codex")] };
+    }
+    // codex-openrouter: OpenRouter through the model gateway with the job's own token (as for opencode), in a Codex home of
+    // the runner's with the product's instructions and skills (docs/design/codex-openrouter-engine.md).
+    const home = codexHome(cfg, job.issueId);
+    args.push(
+      "-c", 'model_provider="or"',
+      "-c", 'model_providers.or.name="OpenRouter"',
+      "-c", `model_providers.or.base_url=${JSON.stringify(gatewayApi(cfg))}`,
+      "-c", `model_providers.or.env_key="${GATEWAY_KEY_ENV}"`,
+      "-c", 'model_providers.or.wire_api="responses"',
+      // The model key and the read tokens stay with Codex and its MCP clients, out of every command it runs.
+      "-c", `shell_environment_policy.exclude=${JSON.stringify([GATEWAY_KEY_ENV, "*_MCP_TOKEN"])}`,
+      ...CODEX_OFF.flatMap((f) => ["-c", `features.${f}=false`]),
+      "-",
+    );
+    return { argv: args, env: { ...mcpEnv, [GATEWAY_KEY_ENV]: jobToken(cfg, job), CODEX_HOME: home }, rw: [...gcpRoots, home] };
   }
   if (engine.kind === "openrouter") {
-    // The job's own credential to the model gateway, valid past its deadline (an adopted run keeps its env).
-    const key = modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 });
+    const key = jobToken(cfg, job);
     const opencode = ["opencode", "run", "--format", "json", "--model", `openrouter/${engine.model}`];
+    // The reasoning effort (OpenRouter's reasoning.effort) as opencode's model variant.
+    if (engine.effort) opencode.push("--variant", engine.effort);
     if (sessionId) opencode.push("--session", sessionId);
     // OS-level confinement for opencode's tools: Codex's sandbox around the whole process.
     const stateRoots = ["~/.local/share/opencode", "~/.local/state/opencode", "~/.cache/opencode", "~/.config/opencode"].map(expand);
     return {
       argv: codexSandbox(cfg, worktree, stateRoots, opencode),
+      rw: stateRoots,
       env: {
         ...mcpEnv,
         OPENROUTER_API_KEY: key,
@@ -211,13 +379,16 @@ function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp,
         // fine: the codex sandbox around opencode still limits writes to the worktree. Its default asks
         // before reading `.env` files, which repositories track too (PEN-2421).
         OPENCODE_CONFIG_CONTENT: JSON.stringify({
-          permission: { read: "allow", edit: "allow", bash: "allow", webfetch: "allow", external_directory: "allow", doom_loop: "allow" },
+          permission: { read: "allow", edit: "allow", bash: "allow", webfetch: observes(engine) ? "deny" : "allow", websearch: observes(engine) ? "deny" : "allow", external_directory: "allow", doom_loop: "allow" },
           autoupdate: false,
           share: "disabled",
           // Through the model gateway; its title calls use the job's model, not opencode's default small model.
           provider: { openrouter: { options: { baseURL: gatewayApi(cfg) } } },
           small_model: `openrouter/${engine.model}`,
-          ...(p ? { mcp: { primer: { type: "remote", url: p.url, headers: { Authorization: "Bearer {env:PRIMER_MCP_TOKEN}" }, oauth: false, enabled: true } } } : {}),
+          mcp: {
+            ...(p ? { primer: { type: "remote", url: p.url, headers: { Authorization: "Bearer {env:PRIMER_MCP_TOKEN}" }, oauth: false, enabled: true } } : {}),
+            ...Object.fromEntries(reads.map((r) => [r.name, { type: "remote", url: r.url, headers: { Authorization: `Bearer {env:${r.env}}` }, oauth: false, enabled: true }])),
+          },
         }),
       },
       promptAsArg: true,
@@ -241,13 +412,14 @@ function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp,
       "--permission-mode", "bypassPermissions",
       "--setting-sources", "",
       "--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers }),
-      "--tools", CLAUDE_TOOLS,
+      "--tools", observes(engine) ? CLAUDE_TOOLS.replace(",WebFetch,WebSearch", "") : CLAUDE_TOOLS,
     ];
     if (engine.model) claude.push("--model", engine.model);
     if (engine.effort) claude.push("--effort", engine.effort === "minimal" ? "low" : engine.effort);
     if (sessionId) claude.push("--resume", sessionId);
     return {
       argv: codexSandbox(cfg, worktree, [cfg.claudeConfigDir, ...gcpRoots], claude),
+      rw: [cfg.claudeConfigDir, ...gcpRoots],
       env: {
         ...mcpEnv,
         CLAUDE_CODE_OAUTH_TOKEN: token,
@@ -283,17 +455,20 @@ const POLL_MS = 250;
  * The agent's environment: no SSH agent (fetch only via the runner), read-only gh first on PATH (reading with
  * `ghToken`, a read-only App token for the task's repos), and a git ssh wrapper that refuses pushes.
  */
-export function startAgent({ cfg, engine, worktree, prompt, sessionId, logPath, env: jobEnv = {}, gcp, channel, identity = DEFAULT_IDENTITY, ghToken, job }) {
+export function startAgent({ cfg, engine, worktree, prompt, sessionId, logPath, env: jobEnv = {}, gcp, channel, identity = DEFAULT_IDENTITY, ghToken, job, box }) {
   const lastMessageFile = `${logPath}.last.md`;
+  if (engine.box) return startBoxAgent({ cfg, engine, worktree, prompt, sessionId, logPath, job, box });
   const { argv, env, promptAsArg, streamInput } = buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, loopback: [jobEnv.AIDENHQ_REPO_URL], job });
   const full = promptAsArg ? [...argv, prompt] : argv;
   const agentEnv = {
     ...process.env,
     ...env,
-    PATH: `${cfg.ghWrapperDir}:${process.env.PATH}`,
+    // The private bwrap's folder too, so Codex's own sandbox in the job uses it (Codex takes the first bwrap on PATH).
+    PATH: [cfg.ghWrapperDir, ...(cfg.bwrap?.startsWith("/") ? [dirname(cfg.bwrap)] : []), process.env.PATH].join(":"),
     GIT_SSH_COMMAND: join(cfg.ghWrapperDir, "git-ssh-no-push"),
     GIT_TERMINAL_PROMPT: "0",
     AIDENHQ_TASK_WORKTREE: worktree,
+    AIDENHQ_BROWSER_DIR: cfg.browserDir,
     // The agent's commits are the App's bot (or AidenHQ agent), never the owner's identity.
     ...identityEnv(identity),
     // The agent commits unsigned (it has no SSH agent to sign with); the runner signs its commits
@@ -365,7 +540,28 @@ export function runAlive(pid, logPath) {
 }
 
 /** A run another runner process started (a restart): followed from its files, with no input channel. */
-export const adoptRun = ({ pid, logPath }) => ({ pid, logPath, adopted: true });
+export const adoptRun = ({ pid, logPath, boxLast }) => ({ pid, logPath, boxLast, adopted: true });
+
+/**
+ * A box job's run: the same detached wrapper (log, exit file, adoption by pid), around a `docker exec` client whose own env is
+ * only what Docker needs; the prompt goes in on stdin. Everything the job gets is in the launcher's env file.
+ */
+function startBoxAgent({ cfg, engine, worktree, prompt, sessionId, logPath, job, box }) {
+  const { argv } = buildCommand({ cfg, engine, worktree, sessionId, job, box });
+  // Nothing is written in the workspace here (the box's to write); its HOME is made inside the box.
+  const boxLast = boxLastFile(box);
+  const env = Object.fromEntries(["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"].filter((k) => process.env[k]).map((k) => [k, process.env[k]]));
+  appendFileSync(logPath, `# ${new Date().toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in box ${box.container} (${worktree})\n`);
+  const out = openSync(logPath, "a");
+  const child = spawn("/bin/sh", ["-c", WRAP, `${logPath}.exit`, ...argv], { cwd: "/", env, detached: true, stdio: ["pipe", out, out] });
+  closeSync(out);
+  const run = { pid: child.pid, logPath, program: argv[0], stdin: child.stdin, sent: 0, boxLast };
+  child.on("error", (e) => (run.spawnError = `couldn't start /bin/sh: ${e.code ?? e.message}`));
+  child.unref();
+  child.stdin.on("error", () => {});
+  child.stdin.end(prompt);
+  return run;
+}
 
 /**
  * Follow a run to its end: its log (the engine's event stream, read from the start, so an adopted run
@@ -478,8 +674,14 @@ export function watchAgent(run, { engine, sessionId, deadline, stallMs = 15 * 60
         finish();
         const status = exitStatus(exitFile);
         const code = status === "" ? null : Number(status);
+        // A box job's last message is in its workspace (the box's to write): copied out as a small regular file, never a link.
+        if (run.boxLast) {
+          const text = smallFile(run.boxLast, 256 * 1024);
+          if (text !== undefined) writeFileSync(lastMessageFile, text);
+          rmSync(run.boxLast, { force: true });
+        }
         let lastMessage = existsSync(lastMessageFile) ? readFileSync(lastMessageFile, "utf8").trim() : finalText.trim();
-        if (!lastMessage && engine.kind !== "codex") lastMessage = finalText.trim();
+        if (!lastMessage) lastMessage = finalText.trim();
         const startError = run.spawnError || (code === 127 && `couldn't start ${run.program ?? "the engine"}: ENOENT`);
         if (!lastMessage && startError) {
           appendFileSync(logPath, `# ${startError}\n`);

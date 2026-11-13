@@ -42,21 +42,26 @@ Accounts use Better Auth inside the board process, stored in its own SQLite file
 ## Shared apps: the gate
 
 `services/gate/gate.mjs` is unprivileged: no Docker socket, a read-only compiled config (`config/gate.json`) and the
-board's account map (`accounts.json`), and reach only to the apps' loopback ports. `scripts/edge.mjs` generates its
+board's account map (`accounts.json`), its signing key (the vault's `identity/gate.pem`), and reach only to the apps'
+loopback ports. `scripts/edge.mjs` generates its
 config and cloudflared's ingress (every `share.host` to the gate, then a 404), and apply refuses any ingress rule whose
 target is not the gate. Per request the gate:
 
 1. Maps `Host` to an app (unknown host: 404). The upstream comes only from the compiled config.
-2. Signs the visitor in (next section) and resolves their role.
+2. Signs the visitor in through its sign-in adapters (next section) and resolves their role.
 3. Strips every inbound `x-aidenhq-*`, `tailscale-*` and `cf-access-*` header, the Access token and cookie, and auth
    cookies, so one app cannot replay a visitor's identity at another.
 4. Requires a same-origin `Origin` on writes and WebSocket upgrades (sibling app hosts are same-site).
-5. Proxies with `X-AidenHQ-User` (verified email), `X-AidenHQ-Role`, `X-AidenHQ-Name` (display only), `X-AidenHQ-App` and
-   `X-AidenHQ-Gate`, the app's own secret, which the app should require. Streaming passes unbuffered.
+5. Proxies with `X-AidenHQ-Identity`, a token it mints for this request and this app (Ed25519, 5 minutes: `sub`, email,
+   name, role; [app-identity.md](app-identity.md)), which the app verifies with the shared middleware and requires on
+   every route but its health path. Streaming passes unbuffered.
 
 Anything the gate cannot read or verify (keys, accounts, sessions) refuses with a 503.
 
 ## App login modes
+
+Each mode is a sign-in adapter in the gate (`authenticate(req) → { email, idp }`; [app-identity.md](app-identity.md)); a
+new identity provider is one more adapter.
 
 `settings.app_login` chooses how people sign in (the "gate sign-in listener" is the board's auth listener on 3129):
 
@@ -131,9 +136,10 @@ People ask the app's maintaining agent for changes without any access to the boa
 
 ## Security notes
 
-- Header spoofing: the gate strips every inbound identity header, and apps should reject requests without
-  `X-AidenHQ-Gate`. A process on the host or a shared Docker network could still call an app port directly; apps sit
-  on loopback and their own networks.
+- Header spoofing: the gate strips every inbound identity header (a forged `X-AidenHQ-Identity` included), and apps
+  refuse any request without a valid token, so a process on the host or a Docker network that reaches an app port
+  directly gets nothing. Only tailnet-only apps take token-less callers, as anonymous (`AIDENHQ_ANONYMOUS=tailnet`, set by the
+  platform; [app-identity.md](app-identity.md)).
 - App JavaScript runs on the app's origin and can file a request as the signed-in admin. This is accepted: requests are
   limited to what that admin could ask, authorize changes only while open, and are logged.
 - Email squatting: only admins create accounts, and an Access policy must verify email.

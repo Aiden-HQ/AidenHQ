@@ -1,0 +1,9 @@
+[Unit]
+Description=AidenHQ off-host backup (ops/backup-offsite.sh)
+
+[Service]
+Type=oneshot
+ExecStart=%h/aidenhq/ops/backup-offsite.sh
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Nice=10
+IOSchedulingClass=idle

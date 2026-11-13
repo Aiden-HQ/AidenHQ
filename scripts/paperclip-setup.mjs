@@ -17,10 +17,11 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { heartbeatSection, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, memorySection, sourcesSection } from "./modules.mjs";
+import { heartbeatSection, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, memorySection, routineAutonomyDefault, sourcesSection } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
-import { checkLauncher, computerAdapterConfig, computerSection, ensureComputers } from "./computers.mjs";
+import { checkLauncher, computerAdapterConfig, computerSection, ensureComputers, runnerBox } from "./computers.mjs";
 import { assertNoShell } from "./no-shell.mjs";
+import { probeConfig } from "./agent-probe.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requireFromScripts = createRequire(join(repo, "scripts/package.json"));
@@ -202,6 +203,12 @@ async function ensureLabels(companyId) {
 // model override picks the model. Paperclip never runs them.
 const RUNNER_ADAPTERS = ["codex_local", "claude_local", "opencode_local"];
 const ADAPTER_ENGINE = { codex_local: "codex", claude_local: "claude", opencode_local: "openrouter" };
+// `engine:` on a runner agent picks another engine for its adapter: the OpenRouter models (opencode_local) run on opencode or
+// on Codex through the model gateway (docs/design/codex-openrouter-engine.md).
+const ADAPTER_ENGINES = { codex_local: ["codex"], claude_local: ["claude"], opencode_local: ["openrouter", "codex-openrouter"] };
+const engineOf = (a) => a.engine ?? ADAPTER_ENGINE[a.adapter];
+// Where the runner reads an Engineer's effort in its adapter config (services/runner/src/commands.mjs EFFORT_KEY).
+const EFFORT_KEY = { codex: "modelReasoningEffort", "codex-openrouter": "modelReasoningEffort", openrouter: "modelReasoningEffort", claude: "effort" };
 
 /** The crew member's board identity, stored in the agent's metadata for the board and the runner. */
 function personaOf(key, a) {
@@ -222,7 +229,7 @@ function personaSection(key, a) {
   if (!me || a.dispatch === "runner") return "";
   const crew = Object.entries(cfg.agents ?? {})
     .filter(([, x]) => x.dispatch === "runner" && x.persona)
-    .map(([k, x]) => `${personaOf(k, x).name} (engine \`${ADAPTER_ENGINE[x.adapter]}\`)`);
+    .map(([k, x]) => `${personaOf(k, x).name} (engine \`${engineOf(x)}\`)`);
   return `
 
 ## Your name and voice
@@ -260,7 +267,10 @@ function readInstructions(a) {
 
 function runnerAgentBody(key, a, existing) {
   if (!RUNNER_ADAPTERS.includes(a.adapter)) fail(`agent ${key}: dispatch: runner needs one of ${RUNNER_ADAPTERS.join(", ")}`);
-  if (a.mcp_servers?.length) fail(`agent ${key}: runner agents get no MCP servers`);
+  // A runner agent in a computer (image:) reaches its granted connections from its box, through the launcher's gateway.
+  if (a.mcp_servers?.length && !runnerBox(a)) fail(`agent ${key}: runner agents get no MCP servers unless they run in a computer (image: engineer)`);
+  if (a.private_reads !== undefined && typeof a.private_reads !== "boolean") fail(`agent ${key}: private_reads is true or false`);
+  if (a.engine !== undefined && !ADAPTER_ENGINES[a.adapter].includes(a.engine)) fail(`agent ${key}: engine for ${a.adapter} is one of ${ADAPTER_ENGINES[a.adapter].join(", ")}`);
   // A primary model chosen in the Paperclip UI survives re-running setup unless the YAML sets one.
   const model = a.model || existing?.adapterConfig?.model || "";
   if (a.adapter === "opencode_local" && !/^openrouter\/\S+$/.test(model)) fail(`agent ${key}: opencode_local needs model: openrouter/<model>`);
@@ -270,6 +280,7 @@ function runnerAgentBody(key, a, existing) {
   if (!Array.isArray(models) || models.some((m) => typeof m !== "string" || (a.adapter === "opencode_local" && !/^openrouter\/\S+$/.test(m)))) fail(`agent ${key}: models must be a list of model ids${a.adapter === "opencode_local" ? " (openrouter/<model>)" : ""}`);
   if (a.adapter === "codex_local") adapterConfig.dangerouslyBypassApprovalsAndSandbox = false;
   if (a.adapter === "claude_local") adapterConfig.dangerouslySkipPermissions = false;
+  if (a.reasoning_effort) adapterConfig[EFFORT_KEY[engineOf(a)]] = a.reasoning_effort;
   return {
     name: a.name,
     role: "general",
@@ -279,7 +290,7 @@ function runnerAgentBody(key, a, existing) {
     runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false, maxConcurrentRuns: 1 } },
     // `brief: true`: the handbook is the runner's prompt for jobs assigned to this agent (a specialised Engineer).
     // maxParallel: the runner's cap on this agent's parallel jobs (`max_parallel`); without it only the host's max_concurrent.
-    metadata: { setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, runnerEngine: true, ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a).trim() } : {}), ...persona(key, a) },
+    metadata: { setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, runnerEngine: true, ...(a.engine ? { engine: a.engine } : {}), ...(runnerBox(a) ? { box: true } : {}), ...(a.private_reads === true ? { privateReads: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a).trim() } : {}), ...persona(key, a) },
   };
 }
 
@@ -372,9 +383,6 @@ async function dropOldOpenRouterSecret() {
   }
 }
 
-/** Without the `-c mcp_servers.<x>.…` pairs (see ensureAgents). */
-const dropMcpScoping = (args = []) => args.filter((x, i) => !String(x).startsWith("mcp_servers.") && !(x === "-c" && String(args[i + 1]).startsWith("mcp_servers.")));
-
 async function awaitVerified(id, name) {
   for (let i = 0; i < 36; i++) {
     const a = (await api("GET", `/api/agents/${id}`)).json;
@@ -400,21 +408,21 @@ const PROGRESS_SECTION ="\n\n## Progress\n\nFor work with more than a couple of 
 const APPROVALS_SECTION = "\n\n## Approvals\n\nApprovals are the board's cards, which the owner sees on the board and Telegram: the runner and board file them (push, PR, merge, fleet apply, app deploy) when you use the matching tool or delegate. Never use Paperclip's own approvals (`request_confirmation`, `request_board_approval`, the /approvals API) or any other approval mechanism: the owner never sees them, and your work stalls. If what you need has no card (e.g. a one-off command inside an app), ask the owner in your chat what to do instead. Cards are tiered by code: Tier 0 runs at once, Tier 1 is decided by the AI reviewer, only Tier 2 waits for the owner. Tell the owner about a card only when it is Tier 2 (the card shows its tier); a Tier 1 card is not theirs to tap, and a reviewer rejection is fixed and refiled, not escalated as news. Never say a write happened until its task or card shows the outcome.\n";
 
 // An Engineer task named a repo as "roadmap-keeper"; the Engineer guessed two wrong repos (2026-11-11).
-const DELEGATING_SECTION = "\n\n## Handing work to an Engineer\n\nEngineers take code jobs from any agent (`task_delegate`; `task_team` lists them under `engineers`). They can't read other tasks or guess context: every task you give one names the full repository (`owner/name`, e.g. as `app_status` shows it), the branch to work on or start from, the exact change and how to verify it, all in the task itself, plus what to publish (`pr`). In agents-org repos the runner then merges the PR itself as soon as its checks are green on the head; elsewhere ask for `merge` once its checks are green. The runner tiers each write.\n\nAn app's pages use the design system by default (the product's `modules/core/design-system/`: vendor its `tokens.css`, `components.css` and `kit.js` unchanged and build from its catalog; a new app starts from `modules/core/templates/app/`), with filters that apply in place, and empty, loading and error states; say so in any UI task.\n\nShip what was asked, live: no feature flags, \"ship dark\" switches or off-by-default toggles unless the owner asked for one. A change is done when it is merged and, for an app, deployed and healthy; an open PR is not done. A delegated task reaching `done` is not evidence that its done condition was met: before treating a filed defect as fixed, and before concluding a task shipped nothing, check the task's own done condition against the deployed app or the current repository, and if it is unmet reopen that task with the exact unmet condition and the reproduction rather than filing a duplicate or recording the defect as fixed. Product code changes (the AidenHQ product repo) go to the Platform Engineer, never to another Engineer: only its own writes there go to the AI reviewer. Its `pr` is one card that pushes, opens the PR and merges it once its checks and `main` are green, with no second request; only a PR that changes gate code, a role holder's handbook or a module's grants, tools or models waits for the owner's tap on that card. Several product tasks may go to it at once: they run side by side. The `code-review` check fails only on critical or high findings; when an Engineer's report lists a PR's non-blocking findings, file them as one backlog task (`task_create` with `assignee` the app's owning agent per `fleet_catalog`, else yourself; marker `code-review:<owner/name>#<PR number>`, priority low; `deliverable` pr with that repo when the assignee's work is graded) for a later change, and never hold the PR for them.\n\n### Graded work\n\nWork delegated to the Engineers and the DevOps, Platform and UI/UX Engineers is graded: it closes only once a grader finds it meeting its rubric, and is otherwise reopened with the unmet criteria (after 3 tries it goes to the owner). This holds for every way you hand it work (`task_delegate`, `task_create` with an `assignee`; an Engineer sub-task is graded on its PRs). Name the `deliverable` (`pr` with the repo or PR link, `app` with the app name, `apply`, `file`, `report`; `none` when nothing ships, such as a question) and give a `rubric` of 3-8 criteria, each checkable from evidence: \"merged into main\", \"checks green on the merged head\", \"the deployed app's /health is ok\", \"the totals page shows the VAT line\", \"a test covers the empty cart\"; never \"high quality\" or \"well written\". Start from the standard ones and make them specific to the request: pr: merged into the default branch (in the AidenHQ product repo too, after the owner's tap when it changes gate code), checks green, the change does what was asked, tests cover it (when the change must be live in an app, a `pr` rubric may say so: the grader sees the app's deploy facts for an app repo); app: deployed at the merged commit, healthy, no open incident, the asked behaviour visible; apply: the apply card applied, the change is the asked one; file or report: attached or posted on the task, answers each question asked, sources linked. Without a rubric the standard criteria apply. A graded task you finish or close yourself waits for the grader; don't close an assignee's graded task for it.\n Never leave a task blocked on one you might cancel: if the blocker ends cancelled, closing the dependent releases it (the cancelled blocker is named on the task), but an active blocker still holds it.";
+const DELEGATING_SECTION = "\n\n## Handing work to an Engineer\n\nEngineers take code jobs from any agent (`task_delegate`; `task_team` lists them under `engineers`). They can't read other tasks or guess context: every task you give one names the full repository (`owner/name`, e.g. as `app_status` shows it), the branch to work on or start from, the exact change and how to verify it, all in the task itself, plus what to publish (`pr`). In agents-org repos the runner then merges the PR itself as soon as its checks are green on the head; elsewhere ask for `merge` once its checks are green. The runner tiers each write.\n\nAn app's pages use shadcn/ui + Tailwind with the design system's theme by default: a new app starts from the product's app starter (`modules/core/templates/app/`), and an existing app migrates to it when it is next touched for UI (`modules/core/design-system/README.md`, migration guide), with the rules in `modules/core/design-system/guidelines.md` (one surface per section, the block that fits each question: a table to compare, a board for stages, never a grid of look-alike cards; the lanes, groups and views people use kept when restyling; filters that apply in place and live in the URL, details in a sheet, empty, loading and error states); say so in any UI task. Pages are composed from the starter's building blocks (`src/components/blocks/`, shown on its `/catalog`), not invented per app; a UI task names the screen's purpose, its data and the states it must show, and its rubric includes \"the page renders styled under the app's CSP with no console errors\".\n\nShip what was asked, live: no feature flags, \"ship dark\" switches or off-by-default toggles unless the owner asked for one. A change is done when it is merged and, for an app, deployed and healthy; an open PR is not done. A delegated task reaching `done` is not evidence that its done condition was met: before treating a filed defect as fixed, and before concluding a task shipped nothing, check the task's own done condition against the deployed app or the current repository, and if it is unmet reopen that task with the exact unmet condition and the reproduction rather than filing a duplicate or recording the defect as fixed. Product code changes (the AidenHQ product repo) go to the Platform Engineer, never to another Engineer: only its own writes there go to the AI reviewer. Its `pr` is one card that pushes, opens the PR and merges it once its checks and `main` are green, with no second request; only a PR that changes gate code, a role holder's handbook or a module's grants, tools or models waits for the owner's tap on that card. Several product tasks may go to it at once: they run side by side. The `code-review` check fails only on critical or high findings; when an Engineer's report lists a PR's non-blocking findings, file them as one backlog task (`task_create` with `assignee` the app's owning agent per `fleet_catalog`, else yourself; marker `code-review:<owner/name>#<PR number>`, priority low; `deliverable` pr with that repo when the assignee's work is graded) for a later change, and never hold the PR for them.\n\n### Graded work\n\nWork delegated to the Engineers, the DevOps and Platform Engineers and the UI/UX Designer is graded: it closes only once a grader finds it meeting its rubric, and is otherwise reopened with the unmet criteria (after 3 tries it goes to the owner). This holds for every way you hand it work (`task_delegate`, `task_create` with an `assignee`; an Engineer sub-task is graded on its PRs). Name the `deliverable` (`pr` with the repo or PR link, `app` with the app name, `apply`, `file`, `report`; `none` when nothing ships, such as a question) and give a `rubric` of 3-8 criteria, each checkable from evidence: \"merged into main\", \"checks green on the merged head\", \"the deployed app's /health is ok\", \"the totals page shows the VAT line\", \"a test covers the empty cart\"; never \"high quality\" or \"well written\", and never a negative nothing can show (\"no code changed\", \"nothing else touched\"): the grader sees only what exists, so name what was delivered instead. Start from the standard ones and make them specific to the request: pr: merged into the default branch (in the AidenHQ product repo too, after the owner's tap when it changes gate code), checks green, the change does what was asked, tests cover it (when the change must be live in an app, a `pr` rubric may say so: the grader sees the app's deploy facts for an app repo); app: deployed at the merged commit, healthy, no open incident, the asked behaviour visible; apply: the apply card applied, the change is the asked one; file or report: attached or posted on the task, answers each question asked, sources linked. Without a rubric the standard criteria apply. A graded task you finish or close yourself waits for the grader; don't close an assignee's graded task for it.\n Never leave a task blocked on one you might cancel: if the blocker ends cancelled, closing the dependent releases it (the cancelled blocker is named on the task), but an active blocker still holds it.\n\n### What an Engineer can and can't do\n\nNever file a task just to open a PR, mark one ready, file a merge card, rebase or retarget: the runner does all of that from the Engineer's one `pr`. An Engineer (Software or Platform) has the repository, its tests and toolchains, package installs into the workspace (`npm ci`, `pip`), `gh` reads, the public Internet and a headless browser (`aidenhq-browse`) for the app it is building: for UI work it builds and serves the app in its job, screenshots the changed pages at 1440 wide, clicks through the changed flow and fixes what it sees before publishing, with the screenshots attached to its task (ask for this in a UI task's rubric: \"screenshots of the changed pages attached\"). It has no Docker, no system installs (apt, sudo), and no access to this instance's host, live apps or their logs. Work that needs those waits for a stronger Engineer tier that isn't there yet: say so in the task (\"don't try to view the deployed app: the grader captures its pages\") so it doesn't spend its run probing. Image and CVE rebuilds are proven by the PR's `image-scan` check (it builds each changed Dockerfile and fails on fixable high or critical CVEs), never by a local Docker build: put \"`image-scan` green on the merged head\" in the rubric.";
 
-// With the UI/UX engineer (modules/design): repos that opted in mark each UI PR head `design-review: pending` (their workflow),
+// With the design module (the UI/UX Designer and the UI Reviewer): repos that opted in mark each UI PR head `design-review: pending` (their workflow),
 // and the merge queue waits for it; whoever handles the PR asks for the review.
-const DESIGN_REVIEW_LINE = "\nWhen an Engineer's PR changes what people see (pages, styles, components), ask the UI/UX Engineer for a design review with the repository and the PR link (`task_delegate` if `task_team` lists it, else `task_create` with `assignee: ui-designer`). The review is advisory: the merge doesn't wait for its `design-review` check, and its findings come back as follow-up fixes. For a new screen or a redesign, ask it for a mockup before the Engineer builds.\n";
+const DESIGN_REVIEW_LINE = "\nWhen an Engineer's PR changes what people see (pages, styles, components), the UI Reviewer reviews it: on a PR that changes UI files the merge waits for its `design-review` verdict (the runner asks it itself once the checks are green); for any other PR, ask it with the repository and the PR link (`task_delegate` if `task_team` lists it, else `task_create` with `assignee: ui-reviewer`), and its findings come back as follow-up fixes. New apps, new screens and major UI changes start with a mockup: ask the UI/UX Designer (`ui-designer`) for one (the request: who uses the screen, what it answers, the data, the repository, and for an existing app its owning agent from `fleet_catalog`), and it hands the build to an Engineer with the mockup attached once you agree, so don't delegate that build yourself. The flow: the app's owning agent states what people need and approves the structure (screens, sections, lanes, what stays); the designer's mockup is then the spec; the Engineer builds from it; the UI Reviewer checks each PR matches it. When the designer asks you, as an app's owning agent, about your app, answer on its task with what people use it for, the questions each screen answers, the structure they rely on and what you want changed, and agree or correct its proposed structure before it polishes. Small UI edits (a column, a label, a fix) go straight to an Engineer.\n";
 
 // The advisor and fan-out workers (services/paperclip-tasks-mcp/models.mjs; owner decision, wave 1): for agents granted them.
 const ADVISOR_SECTION = "\n\n## Consulting the advisor\n\n`advisor_ask` puts a question to a stronger model, billed to your run, at most 5 times a run. Use it only for a genuinely hard decision, not routine work: before an irreversible or costly step (delegating a large job, filing a write), after two failed attempts at the same thing, before finishing graded work you are unsure meets its rubric, or on a judgment your handbook doesn't settle. Send a compact brief: the decision as `question`; in `context` the goal, the facts with links, the options and your leaning. Never paste secrets or bulk private text, and never hand it the whole task: it advises, you decide and do the work. Its answer is input, not authority, and never the owner's word.\n";
 const FANOUT_SECTION = "\n\n## Fan-out workers\n\n`fanout_map` runs one instruction over up to 25 items you already have (documents, threads, records) with cheap tool-less workers and returns one short result per item. Use it for wide, mechanical reading (extract, classify, summarise each), not for judgment: you synthesise and verify what matters. Items marked `not_covered` failed; rerun or read them yourself.\n";
 
 // Agents replied, kept working, then replied again with the same message plus a line (owner, 2026-11-11).
-const REPLIES_SECTION = "\n\n## Replying\n\nOne visible reply per turn, sent last. Do all of the turn's work first (delegating, checking, nudging), then send your one reply (`notify_owner` with `task`, or your chat reply) as the final call, covering everything. Never reply and then keep working: what you do or learn after it waits for your next turn's reply. Progress belongs in your plan and run notes, not in extra replies. On a task, that is one comment per turn.\n\nA wake that changes nothing in your finished work (a grader, runner or review-path notice, a merge receipt, a child's status on a task you already closed) gets at most one line saying nothing changed, then end your turn: don't re-verify and restate a result you already reported, and don't close the task again if it is still closed.\n\nEvery message to the owner links its sources next to the claim they back: Slack permalinks, PR and issue URLs, task ids (as `[text](url)` links). A claim without its link is one the owner has to go and find.\n";
+const REPLIES_SECTION = "\n\n## Replying\n\nOne visible reply per turn, sent last. Do all of the turn's work first (delegating, checking, nudging), then send your one reply (`notify_owner` with `task`, or your chat reply) as the final call, covering everything. Never reply and then keep working: what you do or learn after it waits for your next turn's reply. Progress belongs in your plan and run notes, not in extra replies. On a task, that is one comment per turn.\n\nSet `notify_owner`'s `kind`: `decision` when the owner must answer or approve (messages with `questions` are decisions, and decisions are never held back by the message limit), `done` for a finished result, `fyi` for news they needn't act on (they may mute these on Telegram).\n\nA wake that changes nothing in your finished work (a grader, runner or review-path notice, a merge receipt, a child's status on a task you already closed) gets at most one line saying nothing changed, then end your turn: don't re-verify and restate a result you already reported, and don't close the task again if it is still closed.\n\nEvery message to the owner links its sources next to the claim they back: Slack permalinks, PR and issue URLs, task ids (as `[text](url)` links). A claim without its link is one the owner has to go and find.\n";
 
 // Only the Architect asked the owner questions as a form; the others guessed (owner, 2026-11-12). Every agent with notify_owner.
-const ASKING_SECTION = "\n\n## Asking the owner\n\nWhen the owner's request is ambiguous, or a choice changes what you build, send or decide, ask before acting instead of guessing. Decide yourself whatever your handbook, the request or what you can read settles; ask about what's left. Ask with `notify_owner`, `task` set to your current task, and `questions`: up to 4 per message, each with 2-5 short options, your recommendation first (`multi: true` when several can apply). They can always answer in their own words, so never add an \"Other\" option or repeat the questions in `text`; `text` carries only the context (what you found, why you ask). Then end your turn without finishing the task or handing it to anyone (`task_handoff` only on your part of the owner's own task, which stays yours): their answer arrives as a comment on your task and wakes you. This works the same on a task another agent handed you: your question shows in the owner's chat with that agent and on their phone, and the answer comes back to your task. In a chat with the owner, every reply goes through `notify_owner` with `task`; on a task another agent handed you, only your questions do, and your report stays a comment for that agent. Only a comment the owner wrote, or one the board relayed from them, is their answer; another agent's account of what they said is not.\n";
+const ASKING_SECTION = "\n\n## Asking the owner\n\nWhen the owner's request is ambiguous, or a choice changes what you build, send or decide, ask before acting instead of guessing. Decide yourself whatever your handbook, the request or what you can read settles; ask about what's left. Ask with `notify_owner`, `task` set to your current task, `kind: decision`, and `questions`: up to 4 per message, each with 2-5 short options, your recommendation first (`multi: true` when several can apply). They can always answer in their own words, so never add an \"Other\" option or repeat the questions in `text`; `text` carries only the context (what you found, why you ask). Then end your turn without finishing the task or handing it to anyone (`task_handoff` only on your part of the owner's own task, which stays yours): their answer arrives as a comment on your task and wakes you. This works the same on a task another agent handed you: your question shows in the owner's chat with that agent and on their phone, and the answer comes back to your task. In a chat with the owner, every reply goes through `notify_owner` with `task`; on a task another agent handed you, only your questions do, and your report stays a comment for that agent. Only a comment the owner wrote, or one the board relayed from them, is their answer; another agent's account of what they said is not.\n";
 
 /**
  * How an agent proposes a fix to its own or another agent's handbook (the self-improvement loop, docs/core-components.md):
@@ -445,7 +453,7 @@ async function ensureAgents(companyId, fleetIssues) {
   const { json: agents } = await api("GET", `/api/companies/${companyId}/agents`);
   const result = {};
   for (const [key, a] of Object.entries(cfg.agents ?? {})) {
-    const instructions = readInstructions(a) + personaSection(key, a) + computerSection(a) + (a.adapter === "codex_local" ? PROGRESS_SECTION + APPROVALS_SECTION + REPLIES_SECTION + (a.enabled_tools?.slack_live?.includes("notify_owner") ? ASKING_SECTION : "") + DELEGATING_SECTION + (cfg.agents?.["ui-designer"] && key !== "ui-designer" ? DESIGN_REVIEW_LINE : "") + WEB_SECTION + PRIVACY_SECTION + DEPENDENCIES_SECTION + improvingSection(key, a) + (a.enabled_tools?.paperclip_tasks?.includes("advisor_ask") ? ADVISOR_SECTION : "") + (a.enabled_tools?.paperclip_tasks?.includes("fanout_map") ? FANOUT_SECTION : "") : "") + memorySection(a) + sourcesSection(a, cfg.mcp_servers ?? {}) + heartbeatSection(a, fleetIssues, repo);
+    const instructions = readInstructions(a) + personaSection(key, a) + computerSection(a) + (a.adapter === "codex_local" ? PROGRESS_SECTION + APPROVALS_SECTION + REPLIES_SECTION + (a.enabled_tools?.slack_live?.includes("notify_owner") ? ASKING_SECTION : "") + DELEGATING_SECTION + (cfg.agents?.["ui-designer"] && !["ui-designer", "ui-reviewer"].includes(key) ? DESIGN_REVIEW_LINE : "") + WEB_SECTION + PRIVACY_SECTION + DEPENDENCIES_SECTION + improvingSection(key, a) + (a.enabled_tools?.paperclip_tasks?.includes("advisor_ask") ? ADVISOR_SECTION : "") + (a.enabled_tools?.paperclip_tasks?.includes("fanout_map") ? FANOUT_SECTION : "") : "") + memorySection(a) + sourcesSection(a, cfg.mcp_servers ?? {}) + heartbeatSection(a, fleetIssues, repo);
     const keys = [key, PREVIOUS_KEYS[key]].filter(Boolean).map((k) => `aidenhq:${k}`);
     let agent = agents.find((x) => keys.includes(x.metadata?.setupKey) && x.status !== "terminated") ?? agents.find((x) => x.name === a.name && x.status !== "terminated");
     const body = agentBody(key, a, agent);
@@ -457,9 +465,10 @@ async function ensureAgents(companyId, fleetIssues) {
     // `mcp_servers.<x>.enabled=false` scoping is invalid (no such server). Verify without it, then scope.
     // A computer agent is verified in its tool-only form: the probe runs outside any computer.
     // The probe also runs only for command `codex` (the codex-model launcher skips it, and an unprobed agent never
-    // leaves verifying), so verify with plain codex; the real command goes in with the scoped config below.
-    const probeBody = a.image ? agentBody(key, { ...a, image: undefined }, agent) : body;
-    const unscoped = { ...probeBody.adapterConfig, command: "codex", extraArgs: dropMcpScoping(probeBody.adapterConfig.extraArgs) };
+    // leaves verifying), so verify with plain codex; the real command goes in with the scoped config below. An OpenCode runner
+    // agent verifies with opencode on the model gateway (agent-probe.mjs), and the update below drops that env again.
+    const probeBody = a.image && !runnerBox(a) ? agentBody(key, { ...a, image: undefined }, agent) : body;
+    const unscoped = probeConfig(body.adapterType, probeBody.adapterConfig, { codexArgs: cfg.codex_args, harnessSecretId });
     // Configured again (a module re-enabled): resume what setup paused. An agent the owner paused by hand has no pausedBy.
     if (agent?.status === "paused" && agent.metadata?.pausedBy === "setup") {
       await api("POST", `/api/agents/${agent.id}/resume`, {});
@@ -474,7 +483,9 @@ async function ensureAgents(companyId, fleetIssues) {
       await awaitVerified(agent.id, a.name);
     }
     {
-      await api("PATCH", `/api/agents/${agent.id}`, { name: body.name, title: body.title, runner: "legacy", adapterConfig: body.adapterConfig, runtimeConfig: body.runtimeConfig, metadata: body.metadata, budgetMonthlyCents: body.budgetMonthlyCents });
+      // Paperclip merges adapterConfig: an OpenCode runner agent's probe env (the harness key) is cleared here.
+      const adapterConfig = body.adapterType === "opencode_local" ? { ...body.adapterConfig, env: {} } : body.adapterConfig;
+      await api("PATCH", `/api/agents/${agent.id}`, { name: body.name, title: body.title, runner: "legacy", adapterConfig, runtimeConfig: body.runtimeConfig, metadata: body.metadata, budgetMonthlyCents: body.budgetMonthlyCents });
       // Instructions are revisioned (2026.1106): write against the current revision, and only when changed.
       const cur = (await api("GET", `/api/agents/${agent.id}/instructions-bundle/file?path=AGENTS.md`, undefined, { allow: [404] })).json;
       if (cur.content !== instructions) await api("PUT", `/api/agents/${agent.id}/instructions-bundle/file`, { path: "AGENTS.md", content: instructions, baseRevisionId: cur.revision?.id ?? null });
@@ -600,6 +611,9 @@ async function ensureRoutines(companyId, agents) {
     } else {
       await api("PATCH", `/api/routines/${routine.id}`, body);
     }
+    // Its cap is in the grants table before any trigger can fire it (the runner treats an unknown routine as off).
+    routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
+    writeGrants(agents, memoryInboxes, reviewLogs);
     const { json: detail } = await api("GET", `/api/routines/${routine.id}`);
     const triggers = detail.triggers ?? [];
 
@@ -763,12 +777,26 @@ function productRepo() {
   }
 }
 
+/**
+ * Each routine's `autonomy` by Paperclip routine id (the runner caps the tasks its runs start; tiers.mjs routineCap). Starts
+ * as the last table's, so the first write of an apply keeps it; ensureRoutines adds each routine's and writes the grants
+ * again before that routine's triggers are added (the runner treats a routine it doesn't find here as off).
+ */
+const routineAutonomy = (() => {
+  try {
+    return JSON.parse(readFileSync(join(configDir, "grants", "grants.json"), "utf8")).routines ?? {};
+  } catch {
+    return {};
+  }
+})();
+
 function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}) {
   if (!isWork) return;
   // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use; grading: graded done's kill switch.
   // agents_org, product_repo: the repos a graded PR deliverable may name (the board refuses others; the runner agrees).
   const table = { autonomy: cfg.autonomy ?? "off", grading: cfg.grading ?? "on", dup_guard: cfg.dup_guard ?? "on", coach: cfg.coach ?? "on", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
   Object.assign(table, { live_updates: cfg.live_updates ?? "on", batch_approvals: cfg.batch_approvals ?? "on", wake_ups: cfg.wake_ups ?? "on", loop_brake: cfg.loop_brake ?? "on" }); // the board's kill switches, read per use
+  table.routines = { ...routineAutonomy };
   // Each agent's memory inbox issue id (ensureMemoryInboxes): memory_note posts there, the tasks bridge guards it.
   for (const [key, a] of Object.entries(agents)) if (memoryInboxes[key]) table.agents[a.id].memory_inbox = memoryInboxes[key];
   // Each fleet-audit agent's review log issue id (ensureReviewLogs): the tasks bridge's coach_record writes there, coach_due reads it.
@@ -824,7 +852,7 @@ const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
 if (librarian && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
 ensureCodexConfig();
 writeCatalog();
-await ensureRoutines(company.id, agents);
+await ensureRoutines(company.id, agents); // writes each routine's autonomy into the grants table before its triggers
 await reconcileOwned(company.id);
 
 const codexAuth = execFileSafe(["compose", "exec", "-T", "-u", "node", "paperclip", "test", "-s", "/paperclip/.codex/auth.json"]);

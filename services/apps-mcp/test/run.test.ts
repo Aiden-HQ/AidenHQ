@@ -37,6 +37,7 @@ describe("engine.run", () => {
       appsData: mkdtempSync(`${tmpdir()}/apps-`),
       secretsDir: "/none",
       hostSecretsDir: "/none",
+      identityKeysHostFile: "/none/keys.json",
       exec: async (args, o) => {
         calls.push({ args, o });
         if (args.includes("config")) return '{"services":{"app":{"image":"x"}}}';

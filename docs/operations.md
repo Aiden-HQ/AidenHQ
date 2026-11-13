@@ -22,7 +22,7 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
 
 - **The model gateway** (`services/gateway`, user unit `aidenhq-gateway`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `services/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (runner jobs through their jail, the AI reviewer, the intake, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull). Ledger: `data/gateway/usage.db`. Kill switch for caps: `settings.spend_caps: off`. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
 - **Agent memory** (`agent_memory`): `memory_note` writes to the agent's own inbox task; the Librarian's daily pass curates it into `agents/<key>/memory.md`, landed by an apply card. To clear one agent's memory, apply a change that empties its file. Kill switch: `agent_memory: off`.
-- **Advisor and fan-out** (`services/paperclip-tasks-mcp/models.mjs`): `advisor_ask` (every Codex agent; Kimi, or GPT Sol once per run for an agent whose `models` list `~openai/gpt-sol-latest`; 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Not yet in agent computers. Kill switch: `settings.model_tools: off`, then apply.
+- **Advisor and fan-out** (`services/paperclip-tasks-mcp/models.mjs`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Not yet in agent computers. Kill switch: `settings.model_tools: off`, then apply.
 
 ## Health
 
@@ -40,13 +40,20 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
 
 ## Backups
 
-`scripts/backup.sh [output-dir]` writes `aidenhq-<timestamp>.tar.gz` with Paperclip's data directory, the ops-mcp and
-board SQLite databases, non-secret configuration and the instance repo as a git bundle. For a complete Paperclip
-database, stop the stack first. Secrets and the notes vault are not included: secrets are sealed to the host and
-logins are reconnected after a restore. A whole-host snapshot also works.
+`scripts/backup.sh [output-dir] [--plain]` writes `aidenhq-<timestamp>.tar.gz` (`.tar` with `--plain`) with the whole
+data directory (Paperclip, the board with its accounts and `auth.secret`, the gateway ledger, apps-mcp, ops-mcp,
+slack-live, the apps node's state), the runner's state dir, every `app-*` volume with its labels, the YAML config and
+the instance repo as a git bundle. Every SQLite database is also copied online through SQLite's backup API, and
+restore puts that copy over the file copy. Files are read through a container, so no sudo is needed. While Paperclip
+runs, its live database is left out and its hourly dumps carry it; for a complete Paperclip database, stop the stack
+first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
+vault and the notes vault are not included. The archive holds `auth.secret`, so it is mode 0600.
 
-`scripts/restore.sh <backup.tar.gz>` refuses to run while containers are up and moves existing state aside rather
-than deleting it. A new host can be built from a backup with `ops/setup.sh --restore`.
+`scripts/restore.sh <backup>` refuses to run while containers or the runner are up, and moves existing state aside
+(`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be
+built from a backup with `ops/setup.sh --restore`. Off-host, nightly: [operations/migrate-host.md](operations/migrate-host.md#10-backups-off-host).
+
+Moving a running instance to another host (drain, cold copy, tailnet names, rollback): [operations/migrate-host.md](operations/migrate-host.md).
 
 ## Run-history pruning
 
@@ -116,8 +123,12 @@ without the owner reaches Telegram once a day from 21:00.
   queue that finishes during the run sets the task's status only after the run ends. A fork's or anyone else's head
   goes to the AI reviewer; `.github/` changes, sensitive apps and missing checks are cards and red checks a comment, as
   before, once the run is over. Card-approved merges, and everything in the product and instance repos, still use the
-  one-at-a-time queue with the base branch green before and after each merge. The `design-review` status is advisory:
-  merges ignore it.
+  one-at-a-time queue with the base branch green before and after each merge. The `design-review` status is advisory
+  except on a Tier 0 merge of a UI PR: there it must be `success`, and with no verdict 2 hours after the other checks went
+  green the merge goes to the owner's card. In either queue a red check whose Actions job never judged the commit
+  (cancelled, timed out, failed to start, or `code-review`'s own "failed"/"incomplete" comment on that head) is re-run
+  once per check and head before the merge fails; a second failure, or any real failure beside it, is final. The re-run
+  needs the GitHub App's Actions: write permission (`ops/github-app-setup.mjs`); without it the failure stands as before.
 
 - Keys (generated by compile, in the vault): `reviewer_key` (the runner's: files Tier 1, records Tier 0, posts verdicts;
   board and runner only) and `watcher_decide_key` (the owner's Claude watcher: same endpoint and header as the owner
@@ -204,9 +215,11 @@ mounted and restarts on failure. Other units: `aidenhq-computers` (the agent com
 
 App repos' CI (`modules/core/templates/ci`: jobs `tests` and `code-review`; `code-review` skips codegenie and passes on a
 change under 20 lines with no sensitive path) runs on our own GitHub Actions runners,
-`runs-on: [self-hosted, aidenhq]`, registered to the agents org. Each `aidenhq-ci-runner@<n>` user unit runs
+`runs-on: [self-hosted, aidenhq]`, registered to the agents org. The product repo's CI (`.github/workflows/`) runs on
+the same kind of runner, registered to the product repo's org (below). Each `aidenhq-ci-runner@<n>` user unit (agents
+org) or `aidenhq-ci-runner@<org>-<n>` unit (another org the App is installed on) runs
 `ops/ci-runner.sh`: it mints a one-hour registration token on the host from the GitHub App
-(`ops/ci-runner-token.mjs`, installation token narrowed to `organization_self_hosted_runners`), then
+(`ops/ci-runner-token.mjs [org]`, installation token narrowed to `organization_self_hosted_runners`), then
 `docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
 the unit then starts the next. Nothing carries between jobs. The container has no host mounts, no docker socket and none
 of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: public Internet only, no LAN, tailnet,
@@ -229,10 +242,28 @@ host or other containers). Limits per runner: 2 CPUs, 4 GB.
    systemctl --user enable --now aidenhq-ci-runner@1 aidenhq-ci-runner@2`. Check: the org's Settings → Actions →
    Runners lists `aidenhq-<container id>` idle; `journalctl --user -u aidenhq-ci-runner@1`.
 
+**The product repo's org.** The product workflows (`ci.yml`, `secrets.yml`) run every job but `image-scan` on
+`[self-hosted, aidenhq]`; `image-scan` builds images, which needs a Docker daemon the runner doesn't have (a daemonless
+builder needs user namespaces the hardened container refuses), so it stays on `ubuntu-latest` and runs only when a change
+could alter an image. A PR from a fork is routed to `ubuntu-latest` instead of our runners. That routing lives in the
+workflow file the PR itself carries, so it is not the boundary: the org's runner group is. To serve the product org:
+1. The App's installation on that org accepts *Self-hosted runners: Read and write* (GitHub → the org → Settings →
+   GitHub Apps → the App → Configure; a pending permission request shows there).
+2. The org → Settings → Actions → Runner groups → Default: private repositories only. Never allow public repositories
+   here: a public repo's fork PRs could then reach the runners. Settings → Actions → General: leave *Run workflows from
+   fork pull requests* (private repositories) off; if the repo ever goes public, require approval for all outside
+   contributors.
+3. On the VM: `systemctl --user enable --now aidenhq-ci-runner@<org>-1 aidenhq-ci-runner@<org>-2` (the org's login as
+   in its URL, e.g. `aidenhq-ci-runner@acme-1`). Check: the org's Settings → Actions → Runners lists them idle.
+
+A push runs about 21 jobs (the test matrix is 18), each in a fresh container that installs Node and its packages: roughly
+10 minutes on two runners. Jobs for one org never take another org's runners.
+
 **Rotate.** Nothing long-lived to rotate: each job's token is minted fresh from the App key (to rotate the App key, generate a new private key in the App's settings and replace
 `github-app/key.pem` in the vault). Upgrade the runner by bumping the image tag in `modules/ci/compose.yaml`; GitHub stops accepting
 runners some weeks after a newer release, so bump when the org's runners page warns.
 
 **Scale.** One unit per concurrent job: `systemctl --user enable --now aidenhq-ci-runner@3`, or `disable --now` one to
-shrink. Keep it at 1-2 on a VM of the size SETUP.md suggests. Stop all: `systemctl --user stop 'aidenhq-ci-runner@*'` (a running job
+shrink. Every unit is up to 2 CPUs and 4 GB while it runs a job, whichever org it serves: keep the total at 2-4 on a VM of
+the size SETUP.md suggests (e.g. 2 for the product org, 1-2 for the agents org). Stop all: `systemctl --user stop 'aidenhq-ci-runner@*'` (a running job
 is cancelled; GitHub retries nothing, so re-run it).

@@ -1,18 +1,35 @@
-import { mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { apiTarget, authorize, callApi, ensureApiToken, targetContainer, type ApiRequest, type Resolve } from "../src/api.js";
+import { apiTarget, authorize, callApi, targetContainer, type ApiRequest, type Resolve } from "../src/api.js";
+import { agentSigner } from "../src/identity.js";
 import { isSensitive, parseApp } from "../src/registry.js";
 
-const api = { token: "ROADMAP_AGENT_TOKEN", callers: ["roadmap-keeper"], paths: ["/api/agent/roadmap"] };
+const api = { callers: ["roadmap-keeper"], paths: ["/api/agent/roadmap"] };
 const app = (o: object = {}) => parseApp({ name: "roadmap-keeper", repo: "example-org/roadmap-keeper", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api, ...o });
 
+/** apps-mcp's key and the public keys.json an app mounts (as scripts/identity.mjs writes them), plus the app's middleware. */
+export async function identityFixture() {
+  const dir = mkdtempSync(`${tmpdir()}/identity-`);
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  writeFileSync(`${dir}/apps.pem`, privateKey.export({ format: "pem", type: "pkcs8" }));
+  const sign = agentSigner(`${dir}/apps.pem`);
+  const kid = JSON.parse(Buffer.from(sign("x", "y", { role: "member", methods: ["GET"] }).split(".")[0]!, "base64url").toString()).kid;
+  writeFileSync(`${dir}/keys.json`, JSON.stringify({ keys: [{ ...publicKey.export({ format: "jwk" }), kid, iss: "aidenhq-apps" }] }));
+  const middleware = new URL("../../shared/aidenhq-identity.mjs", import.meta.url).href; // the file every app copies
+  const { createIdentity } = await import(middleware);
+  const identify = (appName: string, req: { method: string; url: string; headers: Record<string, string> }) => createIdentity({ app: appName, keysFile: `${dir}/keys.json` }).identify(req);
+  return { sign, identify };
+}
+
 describe("registry: api", () => {
-  it("mounts the token secret and validates the block", () => {
-    expect(app().secrets).toEqual(["ROADMAP_AGENT_TOKEN"]);
-    expect(app({ database: "warehouse", secrets: ["ROADMAP_DATABASE_URL"] }).secrets).toEqual(["ROADMAP_DATABASE_URL", "DATABASE_URL", "ROADMAP_AGENT_TOKEN"]);
+  it("validates the block; a static token is gone", () => {
+    expect(app().secrets).toEqual([]);
+    expect(app({ database: "warehouse", secrets: ["ROADMAP_DATABASE_URL"] }).secrets).toEqual(["ROADMAP_DATABASE_URL", "DATABASE_URL"]);
     expect(isSensitive(app(), [])).toBe(false);
-    expect(() => app({ api: { ...api, token: "bad-name" } })).toThrow();
+    expect(() => app({ api: { ...api, token: "ROADMAP_AGENT_TOKEN" } })).toThrow(/api.token is gone/);
+    expect(() => app({ secrets: ["AIDENHQ_IDENTITY_KEYS"] })).toThrow(/platform/);
     expect(() => app({ api: { ...api, callers: [] } })).toThrow();
     expect(() => app({ api: { ...api, paths: ["api/x"] } })).toThrow();
     expect(() => app({ health: {} })).toThrow(/health.url/);
@@ -36,21 +53,6 @@ describe("authorize", () => {
   });
 });
 
-describe("token", () => {
-  it("is generated once, 0644, and never rotated", () => {
-    const dir = mkdtempSync(`${tmpdir()}/api-`);
-    ensureApiToken(app(), dir);
-    const f = `${dir}/roadmap-keeper/ROADMAP_AGENT_TOKEN`;
-    const t = readFileSync(f, "utf8");
-    expect(t).toMatch(/^[0-9a-f]{64}$/);
-    expect(statSync(f).mode & 0o777).toBe(0o644);
-    ensureApiToken(app(), dir);
-    expect(readFileSync(f, "utf8")).toBe(t);
-    writeFileSync(f, "set-by-hand");
-    ensureApiToken(app(), dir);
-    expect(readFileSync(f, "utf8")).toBe("set-by-hand");
-  });
-});
 
 // Fake Docker: containers with compose labels and network IPs; resolve answers like `docker ps -q --filter label=...` + inspect.
 const ctr = (id: string, project: string, service: string, ip: string) => ({ Id: id.padEnd(64, "0"), Config: { Labels: { "com.docker.compose.project": project, "com.docker.compose.service": service } }, NetworkSettings: { Networks: { [project]: { IPAddress: ip } } } });
@@ -78,51 +80,45 @@ describe("target", () => {
 });
 
 describe("callApi", () => {
-  const TOKEN = "f".repeat(64);
-  const setup = (reply: (r: ApiRequest) => { status: number; body: string } | Promise<never>) => {
-    const dir = mkdtempSync(`${tmpdir()}/api-`);
-    mkdirSync(`${dir}/roadmap-keeper`);
-    writeFileSync(`${dir}/roadmap-keeper/ROADMAP_AGENT_TOKEN`, TOKEN);
+  const setup = async (reply: (r: ApiRequest) => { status: number; body: string } | Promise<never>) => {
+    const id = await identityFixture();
     const sent: ApiRequest[] = [];
     const into: string[] = [];
-    return { sent, into, d: { secretsDir: dir, resolve: fakeDocker([ctr("c1", "app-roadmap-keeper", "app", "172.22.0.5")]), send: async (_a: unknown, r: ApiRequest, c: string) => (sent.push(r), into.push(c), reply(r)) } };
+    return { id, sent, into, d: { sign: id.sign, resolve: fakeDocker([ctr("c1", "app-roadmap-keeper", "app", "172.22.0.5")]), send: async (_a: unknown, r: ApiRequest, c: string) => (sent.push(r), into.push(c), reply(r)) } };
   };
-  it("sends the bearer to the app's origin and never echoes it", async () => {
-    const { sent, into, d } = setup((r) => ({ status: 200, body: JSON.stringify({ ok: true, echo: r.headers.authorization }) }));
-    const res = await callApi(app(), "roadmap-keeper", { method: "POST", path: "/api/agent/roadmap", body: { title: "x" } }, d);
+  it("sends a signed agent identity the app's middleware accepts, for this method and path only, and never echoes it", async () => {
+    const { id, sent, into, d } = await setup((r) => ({ status: 200, body: JSON.stringify({ ok: true, echo: r.headers["x-aidenhq-identity"] }) }));
+    const res = await callApi(app(), "roadmap-keeper", { method: "POST", path: "/api/agent/roadmap?x=1", body: { title: "x" } }, d);
     expect(into).toEqual(["c1".padEnd(64, "0")]); // sent from inside the verified container's network namespace
-    expect(sent[0]).toMatchObject({ url: "http://127.0.0.1:8080/api/agent/roadmap", method: "POST", body: '{"title":"x"}', headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" } });
-    expect(res).toEqual({ status: 200, body: { ok: true, echo: "Bearer ***" } });
-    expect(JSON.stringify(res)).not.toContain(TOKEN);
+    expect(sent[0]).toMatchObject({ url: "http://127.0.0.1:8080/api/agent/roadmap?x=1", method: "POST", body: '{"title":"x"}', headers: { "content-type": "application/json" } });
+    const token = sent[0]!.headers["x-aidenhq-identity"]!;
+    expect(Object.keys(sent[0]!.headers).filter((k) => k.startsWith("x-aidenhq") || k === "authorization")).toEqual(["x-aidenhq-identity"]);
+    const req = (method: string, url: string) => ({ method, url, headers: { "x-aidenhq-identity": token } });
+    expect(id.identify("roadmap-keeper", req("POST", "/api/agent/roadmap?x=1"))).toEqual({ sub: "agent:roadmap-keeper", email: "", name: "roadmap-keeper", role: "admin", kind: "agent" });
+    expect(() => id.identify("roadmap-keeper", req("DELETE", "/api/agent/roadmap"))).toThrow(/not for this request/);
+    expect(() => id.identify("roadmap-keeper", req("POST", "/api/admin"))).toThrow(/not for this request/);
+    expect(() => id.identify("other-app", req("POST", "/api/agent/roadmap"))).toThrow(/not for this app/);
+    expect(res).toEqual({ status: 200, body: { ok: true, echo: "***" } });
+    expect(JSON.stringify(res)).not.toContain(token);
   });
-  it("sends the gate secret and admin role to a shared app, and nothing of the sort to a non-shared one", async () => {
-    const shared = setup(() => ({ status: 200, body: "{}" }));
-    writeFileSync(`${shared.d.secretsDir}/roadmap-keeper/AIDENHQ_GATE_SECRET`, "g".repeat(64));
-    await callApi(app({ port: 8080, share: { host: "r.example.com", aud: "aud-12345678" } }), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, shared.d);
-    expect(shared.sent[0]!.headers).toMatchObject({ "x-aidenhq-gate": "g".repeat(64), "x-aidenhq-user": "agent:roadmap-keeper", "x-aidenhq-role": "admin" });
-    const leaky = setup((r) => ({ status: 200, body: JSON.stringify({ echo: r.headers["x-aidenhq-gate"] }) }));
-    writeFileSync(`${leaky.d.secretsDir}/roadmap-keeper/AIDENHQ_GATE_SECRET`, "g".repeat(64));
-    const res = await callApi(app({ port: 8080, share: { host: "r.example.com", aud: "aud-12345678" } }), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, leaky.d);
-    expect(JSON.stringify(res)).not.toContain("g".repeat(64));
-    const plain = setup(() => ({ status: 200, body: "{}" }));
-    await callApi(app(), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, plain.d);
-    expect(Object.keys(plain.sent[0]!.headers).filter((k) => k.startsWith("x-aidenhq"))).toEqual([]);
-  });
-  it("audits caller, app, path and status, and asks for a deploy when there is no token yet", async () => {
-    const { d } = setup(() => ({ status: 201, body: "{}" }));
+  it("audits caller, app, path and status; says so when apps-mcp has no key", async () => {
+    const { d } = await setup(() => ({ status: 201, body: "{}" }));
     const log: object[] = [];
     await callApi(app(), "roadmap-keeper", { method: "POST", path: "/api/agent/roadmap", body: '{"a":1}' }, { ...d, audit: (o) => log.push(o) });
     expect(log).toEqual([{ caller: "roadmap-keeper", app: "roadmap-keeper", method: "POST", path: "/api/agent/roadmap", status: 201 }]);
-    await expect(callApi(app(), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, { ...d, secretsDir: `${d.secretsDir}/none` })).rejects.toThrow(/deploy it once/);
+    await expect(callApi(app(), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, { ...d, sign: agentSigner("/nonexistent/apps.pem") })).rejects.toThrow(/no identity key/);
   });
   it("hides the token in errors, refuses before sending, caps text bodies", async () => {
-    const bad = setup(() => Promise.reject(new Error(`connect failed Bearer ${TOKEN}`)));
-    await expect(callApi(app(), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, bad.d)).rejects.toThrow(/Bearer \*\*\*/);
-    await expect(callApi(app(), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, bad.d)).rejects.not.toThrow(TOKEN);
-    const big = setup(() => ({ status: 200, body: "x".repeat(60_000) }));
+    let seen = "";
+    const bad = await setup((r) => ((seen = r.headers["x-aidenhq-identity"]!), Promise.reject(new Error(`connect failed ${r.headers["x-aidenhq-identity"]}`))));
+    const err = await callApi(app(), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, bad.d).catch((e: Error) => e.message);
+    expect(err).toMatch(/connect failed \*\*\*/);
+    expect(err).not.toContain(seen);
+    const big = await setup(() => ({ status: 200, body: "x".repeat(60_000) }));
     await expect(callApi(app(), "intruder", { method: "GET", path: "/api/agent/roadmap" }, big.d)).rejects.toThrow(/may not call/);
     expect(big.sent).toEqual([]);
     const r = await callApi(app(), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, big.d);
     expect((r.body as string).length).toBe(50_000);
   });
 });
+

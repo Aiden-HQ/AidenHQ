@@ -7,7 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
-import { computerAdapterConfig, computersConfig, ensureComputers, validateImages, GATEWAY_URL } from "../computers.mjs";
+import { computerAdapterConfig, computerSection, computersConfig, ensureComputers, runnerBox, validateImages, GATEWAY_URL } from "../computers.mjs";
 import { assertNoShell } from "../no-shell.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -37,23 +37,57 @@ test("not yet in a computer: an agent in trial (its limits run inside the box); 
   assert.ok(r.paperclip.agents["app-maintainer"].enabled_tools.slack_live.includes("notify_owner"));
 });
 
-test("the design module: the UI/UX engineer runs in a computer with repo-checkout; only it may post design-review", () => {
+test("the design module: designer and reviewer run in computers with repo-checkout; only the reviewer may post design-review", () => {
   const dir = inst();
   writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["design"], settings: { timezone: "Europe/London", owner_name: "Sam", instance_name: "acme", owner_email: "o@x" } }));
   const r = compile(product, dir);
-  const d = r.paperclip.agents["ui-designer"];
+  const d = r.paperclip.agents["ui-designer"], v = r.paperclip.agents["ui-reviewer"];
   assert.equal(d.image, "agent-base");
-  assert.deepEqual(d.roles, ["repo-checkout", "design-review"]);
-  assert.ok(d.enabled_tools.github.includes("commit_status_set"));
+  assert.equal(v.image, "agent-base");
+  assert.deepEqual(d.roles, ["repo-checkout"]);
+  assert.deepEqual(v.roles, ["repo-checkout", "design-review"]);
+  assert.ok(v.enabled_tools.github.includes("commit_status_set"));
+  assert.ok(!d.enabled_tools.github.includes("commit_status_set"));
   // The tool is in github's write list, so a `github: write` grant lists it too: github-mcp checks the role.
   assert.ok(!r.paperclip.agents.assistant.roles.includes("design-review"));
   assert.equal(computersConfig(r.paperclip, product).agents_org, "aidenhq-acme");
   assert.equal(r.compose.services["github-mcp"].environment.GITHUB_AGENTS_ORG, "aidenhq-acme");
 });
 
-test("an unknown image, or a runner agent, fails compile", () => {
+test("an unknown image fails compile; a runner agent gets a computer only as a Codex-on-OpenRouter Engineer in the engineer image", () => {
   assert.throws(() => compile(product, inst({ agents: { "app-maintainer": { image: "kali" } } })), /image must be one of agent-base, engineer/);
-  assert.throws(() => compile(product, inst({ agents: { "fleet-engineer": { image: "engineer" } } })), /runner agents don't get a computer yet/);
+  assert.throws(() => compile(product, inst({ agents: { "fleet-engineer": { image: "agent-base" } } })), /only with engine: codex-openrouter and image: engineer/);
+  assert.throws(() => compile(product, inst({ agents: { "fleet-engineer": { image: "engineer", engine: "openrouter" } } })), /only with engine: codex-openrouter and image: engineer/);
+  validateImages({ e: { dispatch: "runner", engine: "codex-openrouter", image: "engineer" } });
+});
+
+test("a box Engineer never holds private data, untrusted input and a way out at once: private reads mean no web", () => {
+  const box = (enabled_tools, extra = {}) => ({ e: { dispatch: "runner", engine: "codex-openrouter", image: "engineer", enabled_tools, ...extra } });
+  // App UI work: apps' public views, the web, GitHub reads.
+  validateImages(box({ apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_issue_read"] }));
+  // Data work: the warehouse (or any private source) only with private_reads (its jobs: no web search), and then no web_view.
+  assert.throws(() => validateImages(box({ apps: ["app_list", "warehouse_query"] })), /apps\.warehouse_query read private data: set private_reads: true/);
+  assert.throws(() => validateImages(box({ slack: ["slack_search"] })), /slack\.slack_search read private data/);
+  assert.throws(() => validateImages(box({ apps: ["warehouse_query", "web_view"] }, { private_reads: true })), /no web_view/);
+  validateImages(box({ apps: ["app_list", "app_view", "warehouse_query"] }, { private_reads: true }));
+});
+
+test("a runner agent in a computer: its grants and image reach the grants table, box: true reaches the runner, and Paperclip gives it no environment", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "inst-"));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ modules: ["boxeng"], settings: { timezone: "UTC", owner_email: "o@example.com" } }));
+  const r = compile(join(dirname(fileURLToPath(import.meta.url)), "fixtures/mods"), dir);
+  const a = r.paperclip.agents.appeng;
+  // What setup's writeGrants puts in the table (tools, image) and its runner metadata reads (runnerBox → metadata.box).
+  assert.deepEqual(a.enabled_tools, { aconn: ["a_get"] });
+  assert.equal(a.image, "engineer");
+  assert.equal(runnerBox(a), true);
+  assert.equal(runnerBox(r.paperclip.agents.boss), false);
+  assert.equal(computerSection(a), "", "its handbook isn't a Paperclip computer agent's");
+  // The launcher needs it (setup checks it answers), but it gets no Paperclip environment.
+  const calls = [];
+  const api = async (method, path, body) => (calls.push([method, path, body]), { json: path.endsWith("/environments") ? [] : {} });
+  await ensureComputers({ api, companyId: "c", cfg: { agents: { appeng: a } }, agents: { appeng: { id: "a-1", defaultEnvironmentId: null } }, step: () => {} });
+  assert.deepEqual(calls, []);
 });
 
 test("a computer agent: shell on, Codex's sandbox off, the model via the gateway on the run token, no real key, no scoping args", () => {

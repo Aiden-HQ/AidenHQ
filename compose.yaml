@@ -107,6 +107,9 @@ services:
     environment:
       # App secrets: files in the vault, mounted into apps by the Docker daemon from this host path.
       APPS_HOST_SECRETS_DIR: "${AIDENHQ_SECRETS_DIR}/apps"
+      # App identity (docs/design/app-identity.md): the public keys every app mounts (a host path), and its own signing key.
+      IDENTITY_KEYS_HOST_FILE: "${AIDENHQ_SECRETS_DIR}/identity/keys.json"
+      IDENTITY_KEY_FILE: /secrets/identity_key
       REPO_DIR: "${PWD}"
       INSTANCE_DIR: "${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env}"
       # Default: https://github.com/<agents org>/aidenhq-instance.git with an App token when the GitHub App is configured, else the instance checkout's origin remote.
@@ -139,6 +142,8 @@ services:
       - ${AIDENHQ_SECRETS_DIR}/apps:/secrets/apps
       # The instance's GitHub App: app_id + key.pem, to read private agents-org app repos with a repo-narrowed token.
       - ${AIDENHQ_SECRETS_DIR}/github-app:/secrets/github-app:ro
+      # Its agent-signing key (compile creates it), never the gate's: agents' identity at apps (app_api, app_view).
+      - ${AIDENHQ_SECRETS_DIR}/identity/apps.pem:/secrets/identity_key:ro
       - ${HOME}/.ssh/aidenhq_instance_deploy:/secrets/deploy_key:ro
       - ${AIDENHQ_CONFIG_DIR:-./config}/grants:/grants:ro
     secrets:

@@ -43,7 +43,7 @@ const manifest = {
   hook_attributes: { url: "https://example.invalid", active: false },
   redirect_url: `${base}/callback`,
   public: true, // other orgs (e.g. your company's) install it on selected repos; it acts only where installed
-  default_permissions: { repository_creation: "write", contents: "write", pull_requests: "write", workflows: "write", metadata: "read", checks: "read", statuses: "write", issues: "read", organization_projects: "read", organization_self_hosted_runners: "write" },
+  default_permissions: { repository_creation: "write", contents: "write", pull_requests: "write", workflows: "write", actions: "write", metadata: "read", checks: "read", statuses: "write", issues: "read", organization_projects: "read", organization_self_hosted_runners: "write" },
   default_events: [],
 };
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -54,7 +54,7 @@ const server = createServer(async (req, res) => {
   const send = (status, body) => res.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(page(body));
   if (url.pathname === `/${secret}/` || url.pathname === `/${secret}`) {
     return send(200, `<h2>Create the AidenHQ runner's GitHub App for <code>${esc(org)}</code></h2>
-<p>Permissions: creating repositories, contents, pull requests, workflows and commit statuses (write; statuses carry the design-review check), org self-hosted runners (write, for CI registration), checks (read). Owned by <code>${esc(org)}</code>.</p>
+<p>Permissions: creating repositories, contents, pull requests, workflows, actions (write: the merge queue re-runs a check that failed for infrastructure reasons) and commit statuses (write; statuses carry the design-review check), org self-hosted runners (write, for CI registration), checks (read). Owned by <code>${esc(org)}</code>.</p>
 <form method="post" action="https://github.com/organizations/${encodeURIComponent(org)}/settings/apps/new?state=${state}">
 <input type="hidden" name="manifest" value="${esc(JSON.stringify(manifest))}"><button type="submit">Create on GitHub</button></form>`);
   }

@@ -47,7 +47,7 @@ and `node services/runner/scripts/reviewer-eval.mjs` must stay at 100%.
 
 Gaps: corrections are not yet turned into replayable eval cases for agents (only the reviewer has an eval set), and
 instance additions that prove general have no automatic path back into the module handbooks (the Architect proposes a
-product PR by hand). Agents without `task_create` (the Follow-up Tracker, the Meeting Librarian, the UI/UX Engineer) can't propose a fix
+product PR by hand). Agents without `task_create` (the Follow-up Tracker, the Meeting Librarian, the UI/UX Designer) can't propose a fix
 themselves; the Librarian's lint covers them.
 
 ## Paperclip gives us

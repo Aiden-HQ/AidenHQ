@@ -129,7 +129,7 @@ fi
 # ---------------------------------------------------------------- 1. the machine (root)
 say "System packages, Docker, gVisor, Tailscale"
 run env AIDENHQ_USER="$U" bash "$REPO/ops/vm/setup.sh"
-# The runner's engines on the host: the Platform Engineer is opencode inside Codex's sandbox (engines.mjs).
+# The runner's engines on the host: Codex (the primary engine, codex-openrouter) and opencode (the fallback) (engines.mjs).
 command -v codex >/dev/null || run npm install -g --silent @openai/codex@0.166.0
 command -v opencode >/dev/null || run npm install -g --silent opencode-ai@1.19.5
 # The machine step just added the user to the docker group, but their systemd user manager (kept alive by linger, so
@@ -214,7 +214,7 @@ as_user TZ_="$TIMEZONE" NAME_="$OWNER_NAME" EMAIL_="$OWNER_EMAIL" node -e '
 
 # ---------------------------------------------------------------- 4. restore (a new VM from a backup)
 if [ -n "$RESTORE" ]; then
-  say "Restoring $RESTORE (Paperclip, the board, the instance repo)"
+  say "Restoring $RESTORE (the data dir, runner state, app volumes, the instance repo)"
   as_user bash "$REPO/scripts/restore.sh" "$(cd "$(dirname "$RESTORE")" && pwd)/$(basename "$RESTORE")"
 fi
 

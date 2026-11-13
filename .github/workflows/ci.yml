@@ -1,4 +1,7 @@
 # Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used.
+# Every job but image-scan runs on our self-hosted runners (modules/ci; docs/operations.md, "CI runners"): one fresh
+# container per job, no Docker. A PR from a fork goes to a GitHub-hosted runner instead, never ours (the runner group,
+# which allows private repositories only, is the real boundary: a PR can edit this file).
 # The AI reviewer's exit test (services/runner/scripts/reviewer-eval.mjs) needs a paid OpenRouter key, so the
 # maintainer runs it by hand for changes to the reviewer, its policy or its cases.
 name: ci
@@ -20,7 +23,7 @@ jobs:
   # be 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the
   # base) covers them; and every one of them is pinned (scripts/supply-chain/pins.mjs).
   supply-chain:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -54,18 +57,21 @@ jobs:
 
   test:
     name: ${{ matrix.dir }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
+      # --ignore-scripts: better-sqlite3 ships a linux prebuild, which it loads, but npm's implicit node-gyp step for it
+      # still needs make, which the runner image hasn't (no package here needs an install script).
       matrix:
         include:
           - { dir: scripts, run: "npm ci && npm test" }
           - { dir: services/runner, run: "npm ci && npm test" }
           - { dir: services/computer, run: "node --test test/*.test.mjs" }
+          - { dir: modules/core/templates/app, run: "npm ci && npm test && npm run build" }
           - { dir: services/gate, run: "npm test && npm run typecheck" }
           - { dir: services/board, run: "npm ci && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build" }
-          - { dir: services/apps-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: services/apps-mcp, run: "npm ci --ignore-scripts && npm test && npm run typecheck" }
           - { dir: modules/clickhouse/connections/clickhouse-mcp, run: "npm ci && npm test && npm run typecheck" }
           - { dir: modules/github/connections/github-mcp, run: "npm ci && npm test && npm run typecheck" }
           - { dir: modules/glean/connections/glean-mcp, run: "npm ci && npm test && npm run typecheck" }
@@ -73,7 +79,7 @@ jobs:
           - { dir: modules/grafana/connections/grafana-mcp, run: "npm ci && npm test && npm run typecheck" }
           - { dir: modules/jira/connections/jira-mcp, run: "npm ci && npm test && npm run typecheck" }
           - { dir: modules/meetings/connections/ops-mcp, run: "npm ci && npm test && npm run typecheck" }
-          - { dir: modules/owner-channel/connections/slack-live-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: modules/owner-channel/connections/slack-live-mcp, run: "npm ci --ignore-scripts && npm test && npm run typecheck" }
           - { dir: modules/primer/connections/primer-mcp, run: "npm ci && npm test && npm run typecheck" }
           - { dir: modules/slack/connections/slack-mcp, run: "npm ci && npm test && npm run typecheck" }
           - { dir: modules/security/scanner, run: "npm ci && npm test && npm run typecheck" }
@@ -89,3 +95,76 @@ jobs:
       - name: Test
         working-directory: ${{ matrix.dir }}
         run: ${{ matrix.run }}
+
+  # Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed dependency manifest
+  # or lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the scan, never skips it.
+  image-changes:
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    timeout-minutes: 5
+    outputs:
+      dockerfiles: ${{ steps.find.outputs.dockerfiles }}
+    env:
+      PR_BASE: ${{ github.event.pull_request.base.sha }}
+      PUSH_BEFORE: ${{ github.event.before }}
+      HEAD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: find
+        run: |
+          base="${PR_BASE:-$PUSH_BEFORE}"
+          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
+          fi
+          changed=$(git diff --name-only "$base" "$HEAD_SHA")
+          found=""
+          for df in $(git ls-files | grep -iE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$'); do
+            d=$(dirname "$df"); prefix=""; [ "$d" = . ] || prefix="$d/"
+            while IFS= read -r f; do
+              case "$f" in "$prefix"*) ;; *) continue ;; esac
+              case "${f##*/}" in
+                [Dd]ockerfile*|[Cc]ontainerfile*|*.dockerfile|.dockerignore|package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|requirements*.txt|poetry.lock|Pipfile.lock|uv.lock|go.mod|go.sum|Cargo.lock|Gemfile.lock)
+                  found="$found $df"; break ;;
+              esac
+            done <<< "$changed"
+          done
+          echo "Images to scan:${found:- none}"
+          echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
+
+  # The `image-scan` check: builds each image this change could alter and fails on a high or critical vulnerability that
+  # has a fix. It is the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change.
+  # The scanner is the security module's grype pin (modules/security/scanner/Dockerfile), by digest.
+  image-scan:
+    needs: image-changes
+    if: needs.image-changes.outputs.dockerfiles != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DOCKERFILES: ${{ needs.image-changes.outputs.dockerfiles }}
+      GRYPE_IMAGE: anchore/grype:v0.121.3@sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887 # released 2026-11-09 (security exception GHSA-c9gr-gmg4-2vqv)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and scan
+        run: |
+          mkdir -p "$RUNNER_TEMP/grype-db" && chmod 777 "$RUNNER_TEMP/grype-db"
+          # Images others build FROM by an ARG default (the engineer image's BASE): built here first under that name, so
+          # the FROM resolves to this repo's image, never to a registry image of the same name.
+          case " $DOCKERFILES " in *" services/computer/images/engineer/Dockerfile "*) docker build -q -t aidenhq/computer-agent-base services/computer/images/agent-base ;; esac
+          status=0; n=0
+          for df in $DOCKERFILES; do
+            n=$((n + 1)); tag="image-scan:$n"
+            echo "::group::$df"
+            if docker build -f "$df" -t "$tag" "$(dirname "$df")" && docker save "$tag" -o "$RUNNER_TEMP/image.tar"; then
+              # The scanner reads the saved image: no Docker socket inside it.
+              docker run --rm -v "$RUNNER_TEMP/grype-db:/db" -e GRYPE_DB_CACHE_DIR=/db -v "$RUNNER_TEMP/image.tar:/image.tar:ro" \
+                "$GRYPE_IMAGE" docker-archive:/image.tar --only-fixed --fail-on high || { echo "::error file=$df::fixable high or critical vulnerabilities"; status=1; }
+            else
+              echo "::error file=$df::the image did not build"; status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $status

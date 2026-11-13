@@ -12,7 +12,7 @@ export interface Assignee {
   key: string;
   kind: "me" | "assistant" | "engineer" | "agent";
   name: string;
-  engine?: "codex" | "claude" | "openrouter";
+  engine?: "codex" | "codex-openrouter" | "claude" | "openrouter";
   defaultModel?: string;
   efforts?: string[];
   /** The crew member's name, voice and portrait. */

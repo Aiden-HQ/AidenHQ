@@ -22,10 +22,13 @@ max_concurrent: 2
 timeout_minutes: 60
 
 engines:
-  default: openrouter                # a job with no engine named runs here; needs an Engineer agent for it (codex if unset)
+  default: codex-openrouter          # a job with no engine named runs here; needs an Engineer agent for it (codex if unset)
   codex:
     model: ""                         # empty = your Codex default
-  openrouter:                         # Engineer · OpenRouter; models it offers are listed in config/paperclip.yaml
+  codex-openrouter:                   # the primary engine: Codex on OpenRouter models through the model gateway
+    # model: unset = openrouter.model below
+    home: ~/.local/state/aidenhq-runner/codex-openrouter   # its Codex homes, one per task (sessions, product skills)
+  openrouter:                         # opencode on OpenRouter (the fallback); models are listed in config/paperclip.yaml
     model: ~deepseek/deepseek-flash-latest
     key_file: ~/.config/aidenhq/openrouter_key
   claude:                             # "engine: claude" / "use Claude": Claude Code, headless, inside codex sandbox
@@ -66,7 +69,10 @@ intake:
 
 sandbox:
   network: true                       # gh, gcloud, Grafana and package registries need it
-  # Writable besides the task worktree (build caches); everything else is read-only to the agent.
+  # A job sees only its task folder, the toolchains (/usr, /etc, /opt, the home's ~/.local, ~/.cargo, ~/go/bin…) and its
+  # engine's state; read_only_roots adds more toolchain paths (e.g. ~/.sdkman).
+  # read_only_roots: []
+  # Writable besides the task worktree (build caches), shared by every job.
   extra_writable_roots:
     - ~/.cache
     - ~/go/pkg/mod

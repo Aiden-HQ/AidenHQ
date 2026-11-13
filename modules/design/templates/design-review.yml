@@ -1,8 +1,9 @@
-# Opt a repo with UI into design review: copy to .github/workflows/design-review.yml (a .github change: the owner's tap,
-# once per repo). On every pull request head that touches UI files it sets the `design-review` commit status to pending,
-# which asks the UI/UX Engineer for a review; it posts its verdict with commit_status_set. The status is advisory: the
-# merge queue ignores it (never make it a required check), and findings come back as follow-up fixes.
-# Adjust `paths` to where the repo keeps its UI.
+# Optional: shows a repo's UI PRs as waiting for design review from the moment they open. Copy to
+# .github/workflows/design-review.yml (a .github change: the owner's tap, once per repo). On every pull request head that
+# touches UI files it sets the `design-review` commit status to pending; the UI Reviewer posts its verdict with
+# commit_status_set. Without it the runner still treats a UI PR's missing verdict as pending: a Tier 0 merge of a UI PR
+# waits for `success` (and asks the UI Reviewer itself), and goes to the owner's card after 2 hours without one. Never
+# make it a required check in branch protection (the owner's card must be able to merge). Adjust `paths` to the repo's UI.
 name: design-review
 on:
   pull_request:
@@ -33,4 +34,4 @@ jobs:
           have=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$API/commits/$SHA/statuses" | jq -r '[.[] | select(.context == "design-review")] | length' || true)
           [ "${have:-0}" = 0 ] || exit 0  # a failed lookup still marks it pending (fail closed)
           curl -fsS -X POST -H "Authorization: Bearer $TOKEN" "$API/statuses/$SHA" \
-            -d '{"state":"pending","context":"design-review","description":"Waiting for the UI/UX Engineer"}' >/dev/null
+            -d '{"state":"pending","context":"design-review","description":"Waiting for the UI Reviewer"}' >/dev/null

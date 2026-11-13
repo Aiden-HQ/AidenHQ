@@ -15,7 +15,10 @@ export interface NotifyArgs {
   actions?: string[] | undefined; // Telegram one-tap buttons; a press sends the label as the owner's message
   questions?: Question[] | undefined; // multiple choice: the board shows a form; Telegram/Slack get them spelled out
   task?: string | undefined; // the chat (task identifier) this message belongs to: its agent's name heads it; replies continue it
+  kind?: NotifyKind | undefined; // decision: needs the owner (never braked); done: a finished result (the default); fyi: may be muted on Telegram
 }
+/** What a normal message is for: `decision` needs the owner (messages with questions are decisions), `done` a result, `fyi` news. */
+export type NotifyKind = "decision" | "done" | "fyi";
 export interface NotifyConfig {
   botToken: string;
   ownerId: string;
@@ -31,10 +34,15 @@ export interface NotifyConfig {
   ownerLastAt?: (identifier: string) => Promise<number | undefined>;
   /** The instance setting `loop_brake` (on unless "off"). */
   brakeOn?: () => boolean;
+  /** The owner-channel setting `telegram_fyi: mute`: `fyi` messages skip Telegram (they still land on the chat and Slack). */
+  muteFyi?: boolean;
 }
-export type NotifyResult = { sent: boolean; reason?: "cooldown" | "error" | "duplicate" | "limit"; onChat?: boolean; note?: string };
+export type NotifyResult = { sent: boolean; reason?: "cooldown" | "error" | "duplicate" | "limit" | "muted"; onChat?: boolean; note?: string };
 
-/** The loop brake: notify_owner(task) messages one agent may send about a task since the owner last wrote there (and UTC midnight). */
+/**
+ * The loop brake: notify_owner(task) messages one agent may send about a task since the owner last wrote there (and UTC
+ * midnight). A `decision` (or any message with questions) is never held back: it is what the owner must answer.
+ */
 export const NOTIFY_LIMIT = 5;
 /** Who called notify_owner: the agent behind the run key (agent-auth), and that key. */
 export interface NotifyCaller {
@@ -215,10 +223,12 @@ export async function notifyOwner(store: Store, cfg: NotifyConfig, a: NotifyArgs
       const dupKey = `notify:${createHash("sha256").update(`${a.channel ?? "both"}\n${a.task ?? ""}\n${a.text}\n${JSON.stringify(a.questions ?? [])}`).digest("hex").slice(0, 32)}`;
       const last = Number(store.getKv(dupKey) ?? 0);
       if (last && now - last < DUPLICATE_MS) return { sent: true, reason: "duplicate" };
+      const kind: NotifyKind = a.questions?.length ? "decision" : (a.kind ?? "done");
       // The loop brake: a few messages about one task between the owner's own words, so a looping agent can't flood them.
+      // Decisions pass (they still count): dropping a question the owner must answer is worse than one message too many.
       const agent = caller?.id ?? "";
       // Fails open: without the owner's last message (no Paperclip, or it didn't answer) nothing is limited.
-      const owner = a.task && cfg.ownerLastAt && (cfg.brakeOn?.() ?? true) ? await cfg.ownerLastAt(a.task).then((at) => ({ at }), () => undefined) : undefined;
+      const owner = a.task && kind !== "decision" && cfg.ownerLastAt && (cfg.brakeOn?.() ?? true) ? await cfg.ownerLastAt(a.task).then((at) => ({ at }), () => undefined) : undefined;
       if (a.task && owner) {
         const since = Math.max(Date.parse(new Date(now).toISOString().slice(0, 10)), owner.at ?? 0);
         if (store.notifiesSince(a.task, agent, since) >= NOTIFY_LIMIT)
@@ -237,12 +247,15 @@ export async function notifyOwner(store: Store, cfg: NotifyConfig, a: NotifyArgs
       // One channel: Slack, or Telegram when Slack isn't set up or fails ("both" means "reach them", not "ping twice").
       const onChatP = mirror ? cfg.postReply!(found.issueId, replyBody(a.text, a.actions, a.questions), caller.key).catch(() => false) : Promise.resolve(false);
       const slack = where === "telegram" || where === "board" ? false : await postSlack(cfg, { text });
-      const tg = where === "board" || where === "slack" || slack ? false : await postTelegram(cfg, a.text + spelled + (link ? `\n${link}` : ""), markup, store, now, chat, undefined, Boolean(a.questions?.length));
+      // Muted fyi: no Telegram ping (buttons are an open choice, never muted).
+      const muted = kind === "fyi" && cfg.muteFyi === true && !a.actions?.length;
+      const tg = where === "board" || where === "slack" || slack || muted ? false : await postTelegram(cfg, a.text + spelled + (link ? `\n${link}` : ""), markup, store, now, chat, undefined, Boolean(a.questions?.length));
       const onChat = await onChatP;
       // A web-only owner has no Telegram or Slack: the reply on the chat counts as sent.
       if (slack || tg || onChat) store.setKv(dupKey, String(now));
       if ((slack || tg || onChat) && a.task) store.recordNotify(a.task, agent, now);
       const on = onChat ? { onChat } : {};
+      if (!slack && !tg && !onChat && muted) return { sent: false, reason: "muted", note: "The owner muted fyi messages on Telegram, so nothing was sent. That is expected: don't resend it; put it in your next result instead." };
       return slack || tg || onChat ? { sent: true, ...on } : { sent: false, reason: "error", ...on };
     }
     const threadKey = a.thread_ts ?? a.ts;

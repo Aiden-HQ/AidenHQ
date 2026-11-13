@@ -231,7 +231,7 @@ export class GitHub {
     if (isPr) {
       const pr = await this.request<GhPull>("GET", `${base}/pulls/${ref.number}`);
       const reviews = await this.request<GhReview[]>("GET", `${base}/pulls/${ref.number}/reviews`, { query: { per_page: 100 } });
-      // The changed files' names (first 100), e.g. for the UI/UX Engineer to find the screens a PR touches.
+      // The changed files' names (first 100), e.g. for the UI Reviewer to find the screens a PR touches.
       const files = await this.request<{ filename: string }[]>("GET", `${base}/pulls/${ref.number}/files`, { query: { per_page: 100 } }).catch(() => []);
       // Commit statuses on the head (e.g. design-review pending); check runs (CI) aren't listed here.
       const sha = /^[0-9a-f]{40}$/.test(String(pr.head?.sha)) ? pr.head!.sha! : undefined;

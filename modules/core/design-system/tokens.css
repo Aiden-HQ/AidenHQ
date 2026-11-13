@@ -3,7 +3,7 @@
    <html data-theme="light|dark">. Colour values are Radix Colors 3.0.0 steps (MIT, (c) 2021 Radix; github.com/radix-ui/colors):
    1-2 app backgrounds, 3-5 component backgrounds, 6-8 borders, 9-10 solid fills, 11-12 text.
    Apps vendor this file unchanged (keep the version line); brand or instance overrides go in a theme.css loaded after it. */
-/* design-system version: 2.0.0 */
+/* design-system version: 3.0.0 */
 
 :root {
   color-scheme: light dark;
@@ -44,18 +44,19 @@
   --cell-px: var(--space-4);
   --card-pad: var(--space-4);
 
-  /* Shape: inputs 4, buttons and chips 8, cards 12, dialogs 16. A child's radius is never larger than its parent's. */
+  /* Shape: moderate and crisp. Small bits 4, buttons and inputs 6, menus and cards 8, tables, panels and dialogs 10.
+     Never pill-shaped buttons (only tiny badges, avatars and switches are round). A child's radius never exceeds its parent's. */
   --radius-sm: 4px;
-  --radius: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
   --radius-full: 999px;
   --border: 1px;
   --focus-width: 2px;
 
-  /* Motion: only to explain a change. Enter decelerates, exit accelerates and is shorter. */
-  --duration-fast: 100ms;
-  --duration: 160ms;
+  /* Motion: smooth and fast, 150-250ms, never bouncy. Enter decelerates, exit accelerates. */
+  --duration-fast: 150ms;
+  --duration: 180ms;
   --duration-slow: 240ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --ease-enter: cubic-bezier(0.05, 0.7, 0.1, 1);
@@ -98,8 +99,8 @@
   --cell-py: var(--space-2);
   --cell-px: var(--space-3);
   --card-pad: var(--space-3);
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
   --content-max: none;
 }
 @media (pointer: coarse) {
@@ -108,7 +109,9 @@
 /* High-contrast theme: thicker focus ring, every border visible. */
 :root[data-palette="contrast"] { --focus-width: 3px; --border: 1px; }
 
-/* neutral: slate + indigo */
+/* neutral (the default): slate + indigo, a deep sidebar and a violet-to-indigo gradient on the primary action, the
+   current navigation item and the hero figure. Only neutral sets --sidebar-* and --accent-2/--accent-grad (below); the
+   other palettes fall back to their page colours and a plain primary (shadcn.css). */
 
 :root {
   --bg: #f9f9fb;
@@ -120,13 +123,13 @@
   --line-strong: #8b8d98;
   --text: #1c2024;
   --text-muted: #60646c;
-  --accent: #3e63dd;
-  --accent-hover: #3358d4;
+  --accent: #3b3be8;
+  --accent-hover: #2c2cd6;
   --accent-text: #ffffff;
-  --accent-soft: #edf2fe;
-  --accent-line: #abbdf9;
-  --accent-ink: #3a5bc7;
-  --focus: #3e63dd;
+  --accent-soft: #eeeefe;
+  --accent-line: #c9cbf7;
+  --accent-ink: #3b3be8;
+  --focus: #3b3be8;
   --ok: #203c25;
   --ok-soft: #e9f6e9;
   --ok-line: #94ce9a;
@@ -147,7 +150,7 @@
   --info-line: #8ec8f6;
   --info-solid: #0d74ce;
   --info-solid-text: #ffffff;
-  --chart-1: #3e63dd;
+  --chart-1: #6d4cff;
   --chart-2: #12a594;
   --chart-3: #ef5f00;
   --chart-4: #e93d82;
@@ -170,13 +173,13 @@
     --line-strong: #696e77;
     --text: #edeef0;
     --text-muted: #b0b4ba;
-    --accent: #3e63dd;
-    --accent-hover: #5472e4;
+    --accent: #4f4ff0;
+    --accent-hover: #6363f5;
     --accent-text: #ffffff;
-    --accent-soft: #182449;
-    --accent-line: #3a4f97;
-    --accent-ink: #9eb1ff;
-    --focus: #3e63dd;
+    --accent-soft: #1c1c4a;
+    --accent-line: #3d3d9e;
+    --accent-ink: #a9abff;
+    --focus: #6b6bff;
     --ok: #71d083;
     --ok-soft: #1b2a1e;
     --ok-line: #366740;
@@ -197,7 +200,7 @@
     --info-line: #205d9e;
     --info-solid: #0090ff;
     --info-solid-text: #111113;
-    --chart-1: #3e63dd;
+    --chart-1: #8b7bff;
     --chart-2: #12a594;
     --chart-3: #f76b15;
     --chart-4: #e93d82;
@@ -220,13 +223,13 @@
   --line-strong: #696e77;
   --text: #edeef0;
   --text-muted: #b0b4ba;
-  --accent: #3e63dd;
-  --accent-hover: #5472e4;
+  --accent: #4f4ff0;
+  --accent-hover: #6363f5;
   --accent-text: #ffffff;
-  --accent-soft: #182449;
-  --accent-line: #3a4f97;
-  --accent-ink: #9eb1ff;
-  --focus: #3e63dd;
+  --accent-soft: #1c1c4a;
+  --accent-line: #3d3d9e;
+  --accent-ink: #a9abff;
+  --focus: #6b6bff;
   --ok: #71d083;
   --ok-soft: #1b2a1e;
   --ok-line: #366740;
@@ -247,7 +250,7 @@
   --info-line: #205d9e;
   --info-solid: #0090ff;
   --info-solid-text: #111113;
-  --chart-1: #3e63dd;
+  --chart-1: #8b7bff;
   --chart-2: #12a594;
   --chart-3: #f76b15;
   --chart-4: #e93d82;
@@ -710,4 +713,31 @@
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.5);
   --shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 4px 12px rgb(0 0 0 / 0.4);
   --shadow-lg: 0 8px 32px rgb(0 0 0 / 0.6);
+}
+
+/* neutral only: the deep sidebar and the primary gradient (violet to indigo). White text on both ends is AA. */
+:root:not([data-palette]),
+:root[data-palette="neutral"] {
+  --accent-2: #7c3aed;
+  --accent-grad: linear-gradient(135deg, var(--accent-2) 0%, var(--accent) 100%);
+  --sidebar-bg: #0b1020;
+  --sidebar-text: #c3c8da;
+  --sidebar-text-strong: #ffffff;
+  --sidebar-muted: #8a90a8;
+  --sidebar-hover: #1a2034;
+  --sidebar-line: #1a2034;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-palette]):not([data-theme="light"]),
+  :root[data-palette="neutral"]:not([data-theme="light"]) {
+    --sidebar-bg: #0b0d14;
+    --sidebar-hover: #1a1d2b;
+    --sidebar-line: #23263a;
+  }
+}
+:root:not([data-palette])[data-theme="dark"],
+:root[data-palette="neutral"][data-theme="dark"] {
+  --sidebar-bg: #0b0d14;
+  --sidebar-hover: #1a1d2b;
+  --sidebar-line: #23263a;
 }

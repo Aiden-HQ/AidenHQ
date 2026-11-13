@@ -12,7 +12,7 @@ import { liveActivity, type SessionSources } from "./live-activity.js";
 import { makeRuns } from "./runs.js";
 import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunContext, type RunnerReport, type TaskRef, type Working } from "./activity.js";
 import { RecurringSchema, RunStateSchema, ScheduleSchema, changeRecurring, claimDue, recurringView, scheduleMove } from "./automation.js";
-import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, RUNNER_MARKER, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
+import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, RUNNER_MARKER, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type Accounts, type AccountSession, type Role } from "./accounts.js";
 import { AccessError, assertNamesApp } from "./app-access.js";
@@ -1156,6 +1156,17 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
+      // The grader's live view of one page of a deployed app (apps-mcp graderView): rendered text plus the running commit
+      // before and after. A POST for the long timeout: one render can take up to 45 s.
+      method: "POST",
+      path: /^\/internal\/grades\/view$/,
+      handle: async (_m, body, _u, req) => {
+        requireRunner(req, "captures live app views");
+        const v = parse(z.object({ name: z.string().regex(/^[a-z0-9-]{1,63}$/), path: z.string().max(500) }).strict(), body);
+        return appsApi("/internal/view", v, { timeoutMs: 55_000 });
+      },
+    },
+    {
       // Escalated grades for the owner's Telegram, each handed over once (the owner channel, decide key).
       method: "GET",
       path: /^\/internal\/owner\/grades$/,
@@ -1882,7 +1893,7 @@ export function createApp(opts: AppOptions): Server {
         const a = ctx.assignees.find((x) => x.key === m[1] && x.kind === "engineer");
         if (!a?.adapterType) throw new HttpError(404, "not an Engineer");
         let listed = (await pc.models(a.adapterType).catch(() => [])).map((x) => x.id);
-        if (a.engine === "openrouter") listed = listed.filter((x) => x.startsWith("openrouter/"));
+        if (openrouterEngine(a.engine)) listed = listed.filter((x) => x.startsWith("openrouter/"));
         const models = [...new Set([...(a.defaultModel ? [a.defaultModel] : []), ...(a.models ?? []), ...listed])];
         return { default: a.defaultModel ?? null, models, efforts: a.efforts ?? [] };
       },

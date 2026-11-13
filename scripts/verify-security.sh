@@ -199,9 +199,25 @@ PROBES
       binds="$(ss -Hltn 'sport = :3130' 2>/dev/null | awk '{print $4}' | sort -u | tr '\n' ' ')"
       [ -n "$binds" ] && ! echo "$binds" | tr ' ' '\n' | grep -v '^$' | grep -qv '^127\.0\.0\.1:3130$' \
         && pass "gate: listens on 127.0.0.1:3130 only" || fail "gate: port 3130 is not loopback-only: ${binds:-not listening}"
+      # Its one secret is its own signing key (identity/gate.pem), never apps-mcp's agent key or app secrets.
+      echo "$mounts" | tr ';' '\n' | grep -q '/identity/gate.pem|/secrets/identity_key|false' && ! echo "$mounts" | grep -q 'apps.pem\|/apps/' \
+        && pass "gate: only its own identity key mounted (read-only)" || fail "gate: unexpected key mounts: $mounts"
       ;;
   esac
 done
+
+# App identity (docs/design/app-identity.md): a shared app answers nothing without a valid token, and the gate never
+# passes a client's own X-AidenHQ-Identity on (a request with a forged one and no sign-in is refused).
+if [ -f config/gate.json ]; then
+  echo "Shared apps"
+  while read -r host port; do
+    [ -n "$host" ] || continue
+    code="$(curl -s -o /dev/null -w '%{http_code}' -H 'X-AidenHQ-Identity: forged.token.here' "http://127.0.0.1:$port/")"
+    [ "$code" = "401" ] || [ "$code" = "403" ] && pass "$host: the app refuses a request without a valid identity ($code)" || fail "$host: the app on 127.0.0.1:$port answered without a valid identity ($code)"
+    code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $host" -H 'X-AidenHQ-Identity: forged.token.here' http://127.0.0.1:3130/)"
+    [ "$code" != "200" ] && pass "$host: the gate refuses a forged identity without sign-in ($code)" || fail "$host: the gate let a forged identity through"
+  done < <(node -e 'const g=JSON.parse(require("fs").readFileSync("config/gate.json","utf8"));for(const[h,s]of Object.entries(g.hosts??{}))console.log(h,s.port)')
+fi
 
 # One host port, one owner (compile checks the config; this checks what actually runs).
 dups="$(for c in $containers; do docker port "$c" 2>/dev/null | sed -E 's/.*:([0-9]+)$/\1/' | sort -u; done | sort | uniq -d)"
@@ -266,8 +282,9 @@ bad_ch="$(echo "$ch_tools" | grep -Ev '^(get_organizations|get_services_list|get
 grep -q '\*\*Read only:\*\* describe, list, get, read and get-iam-policy commands' services/runner/src/prompt.mjs \
   && ! grep -q 'refresh_token' services/runner/src/engines.mjs \
   && pass "runner: Google Cloud jobs get a one-hour token and the read-only rule (services/runner/src/gcp.mjs, prompt.mjs)" || fail "runner: Google Cloud jobs lost the read-only rule, or got the refresh token"
-grep -q '"bwrap", "--dev-bind", "/", "/"' services/runner/src/engines.mjs && grep -q 'join(homedir(), ".config/gcloud")' services/runner/src/config.mjs \
-  && pass "runner: jobs can't read the gcloud sign-ins (bwrap tmpfs)" || fail "runner: the gcloud sign-ins aren't hidden from jobs"
+grep -q '^export function layout(cfg' services/runner/src/engines.mjs && ! grep -q '"--dev-bind", "/", "/"' services/runner/src/engines.mjs && grep -q '"--tmpfs", "/tmp", "--tmpfs", home' services/runner/src/engines.mjs \
+  && grep -q '"--unshare-pid", "--unshare-ipc",' services/runner/src/engines.mjs && grep -q '"--proc", "/proc"' services/runner/src/engines.mjs \
+  && pass "runner: jobs see an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "runner: jobs bind the host's whole filesystem again"
 grep -q 'join(homedir(), ".config/gh")' services/runner/src/config.mjs && grep -q 'if (ghToken) Object.assign(agentEnv, { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken });' services/runner/src/engines.mjs \
   && grep -q 'permissions: READ, fresh: true' services/runner/src/main.mjs \
   && pass "runner: jobs can't read the user's gh sign-in; their gh reads with a read-only App token for the task's repos" || fail "runner: the user's gh sign-in isn't hidden from jobs, or their gh token changed"
@@ -288,13 +305,17 @@ if job_probe="$(node --input-type=module -e '
   if (!data || run(`ls -A "${data}" | grep -q .`).status === 0) leaks.push("data dir");
   // The gh sign-in of the user acts as the owner on GitHub; a job gets only the App read token (GH_TOKEN).
   if (run("test -e \"$HOME/.config/gh/hosts.yml\" || env -u GH_TOKEN -u GITHUB_TOKEN -u AIDENHQ_GH_AUTH gh auth token >/dev/null 2>&1").status === 0) leaks.push("the gh sign-in");
-  // The runner state db holds the helper token of every run; the state dir stays readable (the gcloud session of a job is under it).
+  // The runner state db holds the helper token of every run; the product checkout and other tasks are not the jobs to read.
   if (run(`test -s "${cfg.stateDir}/state.sqlite"`).status === 0) leaks.push("the runner state db");
-  if (run(`ls "${cfg.stateDir}" >/dev/null`).status !== 0) leaks.push("(the state dir was masked: jobs lose their gcloud session)");
+  if (run(`test -e "${process.cwd()}/CLAUDE.md"`).status === 0) leaks.push("the product checkout");
+  if (run(`ls "${cfg.workDir}" >/dev/null 2>&1`).status === 0) leaks.push("the task folders");
+  // Its own PID namespace: no other process (the runner and its environment, the host root through /proc/1/root).
+  if (run(`cat /proc/${process.pid}/environ >/dev/null 2>&1`).status === 0) leaks.push("another process environment");
+  if (run(`test -e "/proc/1/root${process.cwd()}/CLAUDE.md"`).status === 0) leaks.push("the host root through /proc/1/root");
   process.stdout.write(leaks.join(", "));
   process.exit(leaks.length ? 1 : 0);
 ' 2>&1)"; then
-  pass "runner: a job can't reach Docker, tailscaled or systemd --user, nor read the services' data dir, the user's gh sign-in or the runner's state db (live, under the jobs' mask)"
+  pass "runner: a job can't reach Docker, tailscaled or systemd --user, nor read the services' data dir, the user's gh sign-in, the runner's state db, the product checkout or other tasks (live, under the jobs' allowlist)"
 else
   fail "runner: jobs reach: ${job_probe:-the probe failed to run}"
 fi
@@ -431,8 +452,11 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && ! grep -q primerPublishTokenFile services/runner/src/engines.mjs \
   && grep -q 'slackTokenFile: join(secrets, "slack_mcp_read_token")' services/runner/src/config.mjs \
   && grep -q 'gleanTokenFile: join(secrets, "glean_mcp_read_token")' services/runner/src/config.mjs \
-  && grep -q 'const reads = observes(engine.kind) ? privateReads(cfg) : \[\];' services/runner/src/engines.mjs \
-  && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed, apply only files a card at the turn's end, and Primer publishing is checked against the user's words (services/runner/src/authorize.mjs); jobs hold only read tokens, and Slack, Glean and other tasks go to Claude Code and Codex only" || fail "runner: the Engineer's tools or their check changed: $tools"
+  && grep -q 'const reads = observes(engine) ? privateReads(cfg) : \[\];' services/runner/src/engines.mjs \
+  && grep -q 'export const observes = (engine) => engine?.reads === true;' services/runner/src/engines.mjs \
+  && grep -q 'agent.metadata?.privateReads === true ? { reads: true }' services/runner/src/commands.mjs \
+  && grep -q 'const search = observes(engine) ? "disabled" : "live";' services/runner/src/engines.mjs \
+  && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed, apply only files a card at the turn's end, and Primer publishing is checked against the user's words (services/runner/src/authorize.mjs); jobs hold only read tokens, and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
 pass "no email/Slack/Telegram send or calendar write tool is configured for any agent"
 
 echo

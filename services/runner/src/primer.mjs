@@ -3,8 +3,9 @@
 // document the first time, then a new version of that same document whenever the file changed.
 // The agent never gets a publishing tool.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { join } from "node:path";
+import { readOwn } from "./files.mjs";
 
 export const PRIMER_FILE = join(".aidenhq", "primer.md");
 /** A designed page instead (colours, sections, filtering): Primer serves HTML with its scripts, sandboxed. */
@@ -19,13 +20,14 @@ const decode = (s) => s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&g
  * written last is the document. A Markdown title is its first `# ` heading; an HTML one its <title> or <h1>.
  */
 export function readDocument(workspace, fallbackTitle) {
+  // Read safely (readOwn: no link, a regular file, checked on the open descriptor): the workspace is the agent's, and a link
+  // could publish a host file.
   const found = [PRIMER_FILE, PRIMER_HTML]
-    .map((f) => join(workspace, f))
-    .filter((path) => existsSync(path) && readFileSync(path, "utf8").trim())
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-  const path = found[0];
-  if (!path) return undefined;
-  const content = readFileSync(path, "utf8").trim();
+    .map((rel) => ({ rel, path: join(workspace, rel), text: readOwn(workspace, rel)?.toString("utf8").trim() }))
+    .filter((d) => d.text)
+    .sort((a, b) => lstatSync(b.path).mtimeMs - lstatSync(a.path).mtimeMs);
+  if (!found.length) return undefined;
+  const { path, text: content } = found[0];
   const format = path.endsWith(".html") ? "html" : "markdown";
   const heading =
     format === "html"

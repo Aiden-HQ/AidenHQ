@@ -1,6 +1,7 @@
-/* AidenHQ design system: kit.js. Small, dependency-free progressive enhancement for server-rendered pages: every behaviour
+/* DEPRECATED: kept only for apps that still vendor it. New apps use shadcn/ui from the app starter (README.md).
+   AidenHQ design system: kit.js. Small, dependency-free progressive enhancement for server-rendered pages: every behaviour
    below is opt-in by a data attribute, and the page still works without JavaScript. Load it with <script src defer>.
-   Apps vendor this file unchanged (keep the version line). Examples of each are in catalog.html.
+   Apps vendor this file unchanged (keep the version line). (Its catalog was removed with the move to shadcn/ui.)
 
    data-autoapply on a <form method="get">   filters apply on change (text after a short pause): the URL updates in place and
                                               only the regions in data-target are refreshed; focus and typing are kept.

@@ -18,7 +18,7 @@ A module is a folder with a `module.yaml` and any of `agents/<key>/AGENTS.md`, `
 | `settings` | Values the instance supplies: `required`, `default`, `values` (allowed choices). |
 | `agents` | Agent definitions: `adapter`, `model`, `reasoning_effort`, `timeout_sec`, `connections` (grants), `roles`, `persona`, `heartbeat`, `image`, `isolation`. |
 | `routines` | Scheduled or webhook-triggered runs for an agent: `title`, `agent`, `description`, `concurrency`, `schedules`, `status`, and `model` (see below). |
-| `connections` | MCP servers: `url` (or `command`/`args`), `bearer_token_env_var`, `guide` (shown to agents), `setup` (how to set it up, shown on the board's Settings, Connections), and `tools: { read: [...], write: [...] }`. |
+| `connections` | MCP servers: `url` (or `command`/`args`), `bearer_token_env_var`, `guide` (shown to agents), `setup` (how to set it up, shown on the board's Settings, Connections), and `tools: { read: [...], write: [...], destructive: [...] }` (`destructive`, optional: tools that delete; compile refuses a tool named like delete, trash, remove or purge under `read` or `write`). |
 | `apps` | Apps for `apps-mcp`: `name`, `owner`, `port`, `stateful`, `expose`, `caps`, `secrets`, `repo`, `path`. |
 | `compose` | A compose file for the module's services, merged into `compose.modules.yaml`. |
 | `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
@@ -26,8 +26,8 @@ A module is a folder with a `module.yaml` and any of `agents/<key>/AGENTS.md`, `
 
 Any string may use `${settings.<name>}`, replaced with the instance's value (or the default).
 
-An agent's `connections` map names a connection and a grant: `read`, `write` (read plus write tools) or an explicit
-tool list. A trailing `?` (`github?: read`) grants it only when that module is enabled. A handbook is the agent's
+An agent's `connections` map names a connection and a grant: `read`, `write` (read plus write tools, never `destructive` ones) or an explicit
+tool list, the only way to grant a destructive tool. A trailing `?` (`github?: read`) grants it only when that module is enabled. A handbook is the agent's
 `AGENTS.md`; keep it generic and put workflow in prose, not core code.
 
 ## The instance repo
@@ -56,7 +56,7 @@ overrides:
 ```
 
 - **Overrides** change a fixed set of fields on things that exist: agents (`model`, `reasoning_effort`, `timeout_sec`,
-  `image`) and routines (`schedules`, `status`, `model`). Anything else is refused.
+  `image`) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.
 - **A model per routine:** `model: <id>` on a routine runs its tasks on that model instead of the agent's (e.g. a cheap
   model for a frequent sweep, the agent's stronger one for everything else). Setup puts it in the routine's env
   (`AIDENHQ_MODEL`), Paperclip passes that env to the routine's runs, and the agent's Codex is started through
@@ -64,10 +64,27 @@ overrides:
   `reasoning_effort:` on a routine works the same way (`AIDENHQ_REASONING_EFFORT`; generated heartbeats use both). For an
   agent in a computer (`image:`) the computer launcher applies them to the exec in the box (`routineArgs`). Only for
   `codex_local` agents (not `dispatch: runner`); compile refuses others. Removing them clears the env on the next apply.
+- **Autonomy per routine:** `autonomy: off | tier0 | full` on a routine (module, instance agent, or
+  `overrides.routines.<key>.autonomy`) caps the approval cards of the tasks its runs start: the run task itself and every
+  task traced back to it, through parents and through Paperclip's `originRunId` (the run that created an issue, which no
+  agent sets), so an unparented `task_create` from a routine's run keeps the cap. The strictest of the routines found and
+  the instance's `autonomy` applies, in code (`services/runner/src/tiers.mjs` `routineCap`, `paperclip.mjs` `origins`):
+  `tier0` makes Tier 1 the owner's (Tier 0 still runs),
+  `off` makes Tier 0 the owner's too, `full` adds no cap. The default is `full` for scheduled and owner-started
+  routines (today's behaviour: the AI reviewer decides Tier 1 when the instance runs `full`) and `tier0` for a
+  `webhook: true` routine, which something outside fires, often with untrusted text (`app-incident` and `app-request`
+  also set it explicitly). Set `tier0` on any other unattended routine to have its risky writes drafted for the owner.
+  Agents-org app merges are Tier 0, so a `tier0` cap mostly holds product and fleet cards. It fails closed: setup writes
+  each routine's autonomy into the grants table before adding its triggers, and the runner treats a routine it doesn't
+  find there, an invalid value, or a trace past 24 issues as `off`. It caps cards only (push, PR, merge, apply, deploy, app_run): direct tools such as `slack_post` and
+  `app_api` are governed by grants. Setting or changing a routine's autonomy is always a Tier 2 change.
 - **Instance agents** (`agents/<key>/`) take `name`, `description` (the routing contract), `reports_to`, `model`,
-  `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules and `model` only), `budget` (USD, required), `max_parallel`,
+  `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules, `model` and `autonomy` only), `budget` (USD, required), `max_parallel`,
   `image`, `trial` and `heartbeat`. They cannot have roles. `trial: true` keeps writes to reporting on the agent's own
   tasks. The Agent Architect designs these and the Platform Engineer commits them after the owner approves.
+- `private_reads: true` on a `dispatch: runner` agent: its jobs get the private reads (Grafana, Slack, Glean, ClickHouse,
+  the job's gcloud session, other tasks) and no web search. Without it (the Software and Platform Engineers), Primer and
+  web search only. `engine:` on a runner agent picks its engine (`codex-openrouter` or `openrouter` for `opencode_local`).
 - `max_parallel` on an agent: how many of its runs go at once (Paperclip's `maxConcurrentRuns`). For a `dispatch: runner`
   agent (the Engineers, the Platform Engineer) it caps that agent's parallel runner jobs, each in its own task workspace,
   within the host's `max_concurrent` (config/runner.yaml); unset, only the host's cap applies.
@@ -115,11 +132,10 @@ run `node scripts/sync-shared.mjs`.
   from the runner's cache clone (`<work_dir>/repos/<org>/<name>`) into `/workspace/repos/<name>` of the caller's box. Agents
   org only, full SHA (none: the default branch), files only; no token enters the box, and a commit the cache hasn't
   fetched is refused rather than fetched.
-- `design-review` (module `design`): repos with UI opt in with `modules/design/templates/design-review.yml`, which sets
-  the `design-review` commit status to pending on each PR head that touches UI files. The UI/UX Engineer reviews in its
-  computer and sets it with github-mcp's `commit_status_set` (role `design-review`, agents org only, as the GitHub App,
-  which needs Commit statuses: write). The status is advisory: the merge queue ignores it, so a PR
-  can merge before the review; its findings become follow-up fixes. Don't make it a required check in branch protection.
+- `design-review` (module `design`): the UI Reviewer reviews in its computer and sets the `design-review` commit
+  status with github-mcp's `commit_status_set` (role `design-review`, agents org only, as the GitHub App, which needs
+  Commit statuses: write). On a Tier 0 merge of a PR that changes UI files (styles, markup, components, UI folders, server-rendered page files; `services/runner/src/merges.mjs` isUiFile) it blocks: the runner files the UI/UX Engineer a "Design review: <repo>#<n>" task for the head once its other checks are green, merges only on `success`, stops on `failure` with its reason, and with no verdict 2 hours later puts the merge on the owner's card (rule `design-review-missing`). Elsewhere it stays advisory: a merge card the owner approves merges without waiting, but the runner files the same task for a UI PR without a verdict (once per head, whichever path asks first) and the card's outcome says where each UI PR's review stands (pending, passed or changes requested). Repos may also add `modules/design/templates/design-review.yml`, which marks
+  each UI head pending at once. Don't make it a required check in branch protection (the owner's card must be able to merge).
 
 ### Quality checks
 
@@ -144,17 +160,19 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `github_agents_org` | core | no | derived | The GitHub org where the runner creates repositories; overrides the derived name. |
 | `github_orgs` | core | no | `[]` | GitHub orgs or users, besides the agents org, whose repos apps may be deployed from. |
 | `autonomy` | core | no | `off` | Tiered approvals: `off` = every write is the owner's card (also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. Move to `full` only after `services/runner/scripts/reviewer-eval.mjs` prints 100%. Changing it is itself a Tier 2 apply. |
-| `grading` | core | no | `on` | Graded done: a delegated deliverable (graded agents: the Engineers, the DevOps, Platform and UI/UX Engineers, or `graded: true`; or a `task_delegate` rubric) closes only once the runner's grader finds it meeting its rubric; 3 rejected versions go to the owner. `off` is the kill switch: every completion path closes as before, and the runner lets each task still held for grading go where it would have ended ungraded (an agent's finished task closes, an Engineer's stays in review) and drops its rubric. Evidence still missing a day after a close (a PR nobody merges) goes to the owner. A PR deliverable's ref must be in the agents org or the product repo. Per agent: `overrides.agents.<key>.graded: false`. |
+| `grading` | core | no | `on` | Graded done: a delegated deliverable (graded agents: the Engineers, the DevOps and Platform Engineers and the UI/UX Designer, or `graded: true`; or a `task_delegate` rubric) closes only once the runner's grader finds it meeting its rubric; 3 rejected versions go to the owner. `off` is the kill switch: every completion path closes as before, and the runner lets each task still held for grading go where it would have ended ungraded (an agent's finished task closes, an Engineer's stays in review) and drops its rubric. Evidence still missing a day after a close (a PR nobody merges) goes to the owner. A PR deliverable's ref must be in the agents org or the product repo. Per agent: `overrides.agents.<key>.graded: false`. |
 | `live_updates` | core | no | `on` | Live board updates: open boards get a server-sent event (`/api/events`, behind sign-in; names and ids only) when the board files, decides or applies an approval, posts or opens a task, changes a grade, or runs a Fleet Ops check, and refetch that view; polling stays as the fallback (slower while the stream is live). `off` is the kill switch: the stream is refused and the board polls as before (read per connection, no restart). |
 | `heartbeat_hours` | core | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. The old `catch_up` key is refused; setup archives the old "Catch up:" routines. |
 | `wake_ups` | core | no | `on` | Event wake-ups (board `wake.ts`, every 2 minutes): a heartbeat agent is woken on its open task, with a board notice naming what changed, when a sub-task it delegated is done or cancelled (or reopened from one; intermediate statuses are not news), an approval card on the task or a sub-task is rejected, applied or failed, a sub-task's grade becomes satisfied, needs revision or escalated, or a PR the task or a sub-task names (a link in its description, a merge card, a PR deliverable) merges or closes (warehouse `src_github`, up to 15 minutes behind; check runs are not covered). Only when no run of the agent on that task is going or succeeded since (the existing notes and comment wakes come first, 3 minutes' grace), at most 4 wakes per agent per hour; app-incident runs are not watched. A blocked or recovery-held task's agent is also woken directly. A paused "Heartbeat:" routine stops that agent's wake-ups too. `off` is the kill switch (read per tick, no restart). |
-| `loop_brake` | core | no | `on` | Calm agent loops (board `brake.ts`, slack-live-mcp `notify_owner`). Wakes: per task, per commenter (an agent, the runner, or the board's wake-up notices) per UTC day, at most 12 of its comments wake the task's agent. Paperclip wakes on every comment and can't post a quiet one, so the runner and the tasks bridge (`task_comment`, the note on a parent) post as always under their own identity, then report the comment to the board (`/internal/wake-check`), which cancels the run it queued once that commenter's 12 are used; the comment stays and the agent reads it on its next run (`task_comment` says so). Nothing is held or reposted. Messages: at most 5 `notify_owner(task)` messages per agent and task since the owner last wrote on it (and since UTC midnight); the next returns reason `limit` and sends nothing; it fails open when Paperclip doesn't answer. Owner comments are never limited or cancelled. Not counted: Paperclip's own wakes (status changes, blockers resolved, recovery), status-change comments, agent computers' comments and direct API posts. `off` is the kill switch (read per use, no restart). |
+| `loop_brake` | core | no | `on` | Calm agent loops (board `brake.ts`, slack-live-mcp `notify_owner`). Wakes: per task, per commenter (an agent, the runner, or the board's wake-up notices) per UTC day, at most 12 of its comments wake the task's agent. Paperclip wakes on every comment and can't post a quiet one, so the runner and the tasks bridge (`task_comment`, the note on a parent) post as always under their own identity, then report the comment to the board (`/internal/wake-check`), which cancels the run it queued once that commenter's 12 are used; the comment stays and the agent reads it on its next run (`task_comment` says so). Nothing is held or reposted. Messages: at most 5 `notify_owner(task)` messages per agent and task since the owner last wrote on it (and since UTC midnight); the next returns reason `limit` and sends nothing; it fails open when Paperclip doesn't answer. A message of `kind: decision` (any message with `questions` is one) is never held back, though it counts. Owner comments are never limited or cancelled. Not counted: Paperclip's own wakes (status changes, blockers resolved, recovery), status-change comments, agent computers' comments and direct API posts. `off` is the kill switch (read per use, no restart). |
 | `batch_approvals` | core | no | `on` | Batch approvals: tick up to 10 of your pending cards on the board's Approvals view and approve or reject them together, or use the Approve all / Reject all message the owner channel sends in Telegram when 2 or more cards wait. All or nothing: if any card was decided, expired or re-filed since the list was shown, nothing is decided and each such card is named. Each card is still its own record (claimed, applied and reported alone). `off` is the kill switch: each card on its own (read per use). |
 | `dup_guard` | core | no | `on` | The duplicate-card guard: a push or PR whose branches are already on (or file-identical to) the repo's current default branch, a merge of PRs all already merged, a fleet apply whose files already match the instance's main, or a deploy of the commit an app already runs healthy files no card; the task (or, for a deploy, the asking agent) gets the evidence, reason `already_applied`. `off` is the kill switch: every request is carded as before (grants table, read fresh). |
-| `coach` | core | no | `on` | The Agent Coach (`coach`, DeepSeek Flash with `advisor_ask` to GPT Sol): every 6 hours it reviews up to 3 agents that `coach_due` lists (computed in the board, `services/board/src/coach.ts`: a new agent every run for 2 days, then daily until day 9; otherwise weekly, oldest first, in a reserved slot; sooner after an owner correction or a health-flag change; never itself), from one bounded `coach_evidence` packet per agent, and files at most 2 fixes a run through the usual paths (proposals to the Platform Engineer, product bugs as PRs, app rules and checks to the app's owner, memory evidence to the Librarian); each review is a record on its setup-made `Agent reviews: coach` task. Mondays it files one digest for the owner. `off` is the kill switch: nothing is due and no evidence is read (grants table, read fresh), so its routines close at once. |
+| `coach` | core | no | `on` | The Agent Coach (`coach`, DeepSeek Flash with `advisor_ask` on GPT Sol): every 6 hours it reviews up to 3 agents that `coach_due` lists (computed in the board, `services/board/src/coach.ts`: a new agent every run for 2 days, then daily until day 9; otherwise weekly, oldest first, in a reserved slot; sooner after an owner correction or a health-flag change; never itself), from one bounded `coach_evidence` packet per agent, and files at most 2 fixes a run through the usual paths (proposals to the Platform Engineer, product bugs as PRs, app rules and checks to the app's owner, memory evidence to the Librarian); each review is a record on its setup-made `Agent reviews: coach` task. Mondays it files one digest for the owner. `off` is the kill switch: nothing is due and no evidence is read (grants table, read fresh), so its routines close at once. |
 | `agent_memory` | core | no | `on` | Agent memory: every Codex agent has `memory_note` (a fact and its source, to its own `Memory inbox: <key>` task, 10 a run); the Librarian curates the inboxes daily against run history and proposes `agents/<key>/memory.md` (max 4 KB, cut at a line end past that) through the Platform Engineer and an apply (Tier 1 for an agent without a role, Tier 2 for one with); compile adds it to the handbook as "What you've learned". `off` is the kill switch: no tool, no section (the files stay in git). |
 | `spend_caps` | core | no | `on` | The model gateway's spend caps (`services/gateway`): `on` = a call past its run, task or agent-day cap (grants `caps`, default $2 / $10 / $30; a `chat` or routine task counts its task cap per UTC day) gets HTTP 402 and the owner a `raise_cap` card; `off` = the kill switch: every call is still billed and logged, none is refused (written to `config/gateway.json`, read per call, no restart). Changing it is a Tier 2 apply. |
+| `backup_repository` | core | no | | Off-host backup: a restic repository URL, for example a Hetzner Storage Box at `sftp://u12345@u12345.your-storagebox.de:23/aidenhq`. Set, `ops/apply-config.sh` installs `aidenhq-backup.timer` (nightly at 03:00 UTC, after the warehouse dump), which runs `ops/backup-offsite.sh`: `scripts/backup.sh --plain`, then restic with the vault ciphertext, `.env`, `compose.override.yaml`, `config/` and the notes vault; it keeps 7 daily, 4 weekly and 6 monthly snapshots. The password is the vault secret `restic_password` (keep a copy off the host); the host user's SSH key must be authorised on the target. Unset, the timer is removed. |
 | `slack_post_channels` | owner-channel | no | `[]` | Slack channel ids agents may post to with `slack_post` (the tool must also be granted). |
+| `telegram_fyi` | owner-channel | no | `send` | `notify_owner` messages of `kind: fyi` on Telegram: `send`, or `mute` (they still land on the board's chat and in Slack; returns reason `muted` when nothing else got them). `decision` and `done` messages are never muted. Set on the board's Notifications page. |
 | `owner_slack_user_id` | open-loops | yes | | The owner's Slack user id: decides whose words count and who is paged. |
 | `owner_email` | core | yes | | The owner's email address: the only board account `ops/setup.sh` can make the owner's ([setup](setup.md#board-accounts)). With `edge`, the owner's account (like every admin account) is an admin of every shared app; the email alone grants nothing at the gate. |
 | `edge` | core | no | off | Shared access ([setup](setup.md#shared-access-apps-for-people-beyond-the-tailnet)): `{ team_domain: <team>.cloudflareaccess.com, tunnel_id: <tunnel UUID>, my_apps: { host, aud } }`. Turns on the gate and cloudflared. `my_apps` is the gate's page listing the apps a visitor may open (optional with `access`; required with `password`, where it is also the one sign-in host); `aud` is its Access application's tag. `team_domain` and every `aud` may be left out only with `app_login: password`. Changing it is a Tier 2 apply. |
@@ -176,8 +194,8 @@ Design: [design/access.md](design/access.md).
   assigned by email. Someone with no assignment gets the app's default: set by its admins, else `share.default_role` in
   `apps.yaml`, else the manifest's `default_role`, else `blocked` (never `admin`). A role the running manifest no longer
   declares counts as `blocked`; the assignment is kept for an admin to fix.
-- **Enforced:** only `blocked` (403, and the app is off their My apps list). The app gets `X-AidenHQ-User` (email),
-  `X-AidenHQ-Role`, `X-AidenHQ-Name` and `X-AidenHQ-App` and decides the rest.
+- **Enforced:** only `blocked` (403, and the app is off their My apps list). The app gets a signed identity token
+  (`X-AidenHQ-Identity`: `sub`, email, name, role; [app identity](design/app-identity.md)) and decides the rest.
 - **Admins.** AidenHQ admins are admins of every app and can't be blocked. The owner names each app's admins on the
   board (Accounts, App admins); an app admin can name other admins of that app and change any role there except an
   AidenHQ admin's. App admins have no board access and can't create accounts.
@@ -210,13 +228,26 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
   `jira_url`): set them on the board (Settings, Connections), which files the change as an apply card
   (docs/design/settings-changes.md).
 - Board: `BOARD_ALLOWED_HOSTS`, and the second listener's (3121: the tailnet https address, LAN phones; signed-in
-  admins only) `BOARD_LAN_BIND`, `BOARD_LAN_PORT`, `BOARD_LAN_HOSTS`, `BOARD_LAN_URL`.
+  admins only) `BOARD_LAN_BIND`, `BOARD_LAN_PORT`, `BOARD_LAN_HOSTS`, `BOARD_LAN_URL`. Publishing on the LAN also
+  needs `AIDENHQ_PUBLIC_IF=none` (a LAN-only VM): otherwise `ops/vm/setup.sh`'s public firewall drops it. Never on a host
+  with a public address.
+- Host firewall: `AIDENHQ_PUBLIC_IF`, read by `ops/vm/setup.sh` (default: the default-route interface; see
+  [operations/migrate-host.md](operations/migrate-host.md#2-the-new-host-what-reaches-it-from-the-internet)).
 - `PAPERCLIP_DISABLE_SIGN_UP`, `OWNER_SLACK_USER_ID`, `TELEGRAM_TASK_URL`, `COMPOSE_FILE`.
 
 ## Runner config
 
 `config/runner.yaml` (from `config/runner.example.yaml`) configures the host runner: the `engineer` label it polls,
 `allowed_orgs` (the organizations it may implement, push and open PRs in; public repositories elsewhere are read-only),
-optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, and the engines
-(`codex`, `openrouter`, `claude`). Other example files in `config/` (`routing`, `authorize-cases`, `busy-cases`,
+optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, the engines
+(`codex-openrouter`, `codex`, `claude`, `openrouter`) and the job sandbox (`sandbox.extra_writable_roots` for shared
+build caches, `sandbox.read_only_roots` for toolchains outside the defaults).
+
+An Engineer agent picks its engine with `engine:` in its `module.yaml` (default: its adapter's). The Software and Platform
+Engineers run `codex-openrouter` (Codex on OpenRouter models through the model gateway, DeepSeek at medium effort, no
+private reads); to fall back to opencode, set `overrides.agents.<key>.engine: openrouter` in `instance.yaml` (an
+owner-tier change) and `engines.default: opencode` in runner.yaml. Effort is
+`reasoning_effort:` (low, medium, high, xhigh, max; `max` is DeepSeek's top effort on OpenRouter, which Codex passes
+through as is; `openrouter` takes low, medium, high as opencode's model variant).
+Design: [codex-openrouter engine](design/codex-openrouter-engine.md). Other example files in `config/` (`routing`, `authorize-cases`, `busy-cases`,
 `intake-cases`, `system`) configure the runner's evals and ops-mcp.

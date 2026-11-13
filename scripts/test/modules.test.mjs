@@ -168,3 +168,14 @@ test("two modules extending the same service merge environment and secrets", () 
   assert.deepEqual(board.environment, { A: "1", B: "2" });
   assert.deepEqual(board.secrets, ["s1", "s2"]);
 });
+test("destructive tools: `write` never grants them, a list must name them; compile refuses a delete-looking tool tagged write", () => {
+  const { agents } = compile(mods, inst(["wiper"])).paperclip;
+  assert.deepEqual(agents.w.enabled_tools.wconn, ["w_get", "w_set"]);
+  assert.deepEqual(agents.wd.enabled_tools.wconn, ["w_get", "w_delete"]);
+  assert.throws(() => compile(mods, inst(["sloppy"])), /deleteIssue looks destructive/);
+});
+test("routine autonomy: full by default, tier0 for a webhook routine unless it says otherwise; an override must be a known value", () => {
+  const { routines } = compile(mods, inst(["wiper"])).paperclip;
+  assert.deepEqual([routines.sweep.autonomy, routines.hook.autonomy, routines.hookfull.autonomy], ["full", "tier0", "full"]);
+  assert.throws(() => compile(mods, inst(["wiper"], base, { overrides: { routines: { sweep: { autonomy: "yes" } } } })), /routine sweep: autonomy is off, tier0, full/);
+});

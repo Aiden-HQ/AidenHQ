@@ -5,7 +5,7 @@ import { stringify as yamlStringify } from "yaml";
 import { z } from "zod";
 import type { Approval } from "./approvals.js";
 import { HEARTBEAT_HOURS, HEARTBEAT_TOOLS, type Compiled } from "./settings.js";
-import { ADAPTER_ENGINE, EFFORTS } from "./board.js";
+import { EFFORTS, compiledEngine } from "./board.js";
 import { urlSettingProblem } from "./url-setting.js";
 
 const KEY = z.string().regex(/^[a-z][a-z0-9_]{0,60}$/);
@@ -78,7 +78,7 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
   if (ch.field === "model") {
     if (typeof ch.value !== "string" || !/^[A-Za-z0-9~][\w.\/~:@-]{0,119}$/.test(ch.value)) throw new ChangeRefused("a model is its id, like openrouter/~deepseek/deepseek-flash-latest");
   } else if (ch.field === "reasoning_effort") {
-    const efforts = EFFORTS[ADAPTER_ENGINE[a.adapter ?? ""] ?? "openrouter"] ?? [];
+    const efforts = EFFORTS[compiledEngine(a) ?? "codex"] ?? [];
     if (!efforts.includes(String(ch.value))) throw new ChangeRefused(efforts.length ? `effort is one of ${efforts.join(", ")}` : `${a.name ?? ch.agent} has no effort setting`);
   } else {
     if (ch.value !== false && !HEARTBEAT_HOURS.includes(Number(ch.value))) throw new ChangeRefused(`a heartbeat is off or every ${HEARTBEAT_HOURS.join(", ")} hours`);

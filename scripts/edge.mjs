@@ -1,7 +1,7 @@
 // Shared access (docs/design/access.md): from the instance setting `edge` and the
 // instance apps' `share`, compile makes the gate's config (config/gate.json), cloudflared's locally managed config
-// (config/cloudflared.yml: every share.host → the gate, then a 404 catch-all), the two host-networked services, and
-// the vault paths of each shared app's gate secret (compile.mjs creates them).
+// (config/cloudflared.yml: every share.host → the gate, then a 404 catch-all) and the two host-networked services. The gate
+// signs each app's identity token with the vault's identity/gate.pem (scripts/identity.mjs; docs/design/app-identity.md).
 // Off (nothing generated) unless `edge` is set. `node scripts/edge.mjs check [file]` is apply's refusal of any ingress
 // rule whose target isn't the gate.
 // settings.app_login (docs/design/access.md, App login modes): `access` (default) = every gate host needs
@@ -22,7 +22,7 @@ export const AUTH_URL = `http://127.0.0.1:${AUTH_PORT}`;
 export const ACCOUNTS_FILE = "/accounts/accounts.json"; // the board's account map (email, role, disabled), mounted read-only
 export const AUTH_SECRET_FILE = "/secrets/auth_listener"; // gate_board_secret in the gate: X-AidenHQ-Gate to 3129 (sign-in, app access)
 export const LOGINS = ["access", "password"];
-export const GATE_SECRET = "AIDENHQ_GATE_SECRET"; // apps-mcp mounts it into the app as /run/secrets/AIDENHQ_GATE_SECRET
+export const IDENTITY_KEY_FILE = "/secrets/identity_key"; // the vault's identity/gate.pem in the gate: it mints app identity tokens
 // cloudflared 2026.10.7 (multi-arch index), pinned by digest.
 const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba";
 const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -36,7 +36,7 @@ const emails = (l, where) => (Array.isArray(l ?? []) ? l ?? [] : fail(`${where} 
 export function edgeConfig(settings, instanceApps, moduleApps) {
   for (const a of moduleApps) if (a.share) fail(`app ${a.name}: share is set only in the instance apps.yaml, never by a module`);
   const shared = instanceApps.filter((a) => a.share?.host);
-  // An app on a shared app's network could call it directly and forge X-AidenHQ-User (apps-mcp refuses it too).
+  // A shared app is reached only through the gate: no other app may join its network (apps-mcp refuses it too).
   for (const a of [...instanceApps, ...moduleApps]) {
     const t = (a.connects ?? []).find((c) => shared.some((x) => x.name === c));
     if (t) fail(`app ${a.name} connects to ${t}, a shared app: shared apps are reached only through the gate`);
@@ -70,7 +70,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
     for (const k of ["viewers", "admins"]) if (s[k] !== undefined) fail(`app ${a.name}: share.${k} is gone: app admins are named on the board (Accounts, App admins) and set roles on the app's Access page`);
     const def = s.default_role;
     if (def !== undefined && (!/^[a-z][a-z0-9-]{1,30}$/.test(String(def)) || def === "admin")) fail(`app ${a.name}: share.default_role must be a role name, never admin`);
-    hosts[s.host] = { app: a.name, port: a.port, ...(audOf(s.aud, `app ${a.name}: share.host`) ? { aud: s.aud } : {}), ...(def ? { default_role: def } : {}), secret_file: `/secrets/${a.name}` };
+    hosts[s.host] = { app: a.name, port: a.port, ...(audOf(s.aud, `app ${a.name}: share.host`) ? { aud: s.aud } : {}), ...(def ? { default_role: def } : {}) };
   }
   // My apps: the gate's own page listing the shared apps the visitor may open (and, in password mode, where invites land).
   let myApps;
@@ -90,7 +90,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
   const issuer = team && `https://${team}.cloudflareaccess.com`;
   const gate = {
     port: GATE_PORT, login, ...(issuer ? { issuer, certs_url: `${issuer}/cdn-cgi/access/certs` } : {}),
-    auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, owner_email: owner,
+    auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE, owner_email: owner,
     ...(myApps ? { my_apps: myApps } : {}), hosts,
   };
   const cloudflared = {
@@ -107,13 +107,13 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
   const compose = {
     services: {
       // Host networking: it listens on 127.0.0.1:<GATE_PORT> and reaches the apps' loopback ports. No secrets, no sockets.
-      // Each shared app's AIDENHQ_GATE_SECRET (vault, read-only; compile creates it) is sent as X-AidenHQ-Gate.
+      // Its signing key (vault identity/gate.pem, read-only; compile creates it) and nothing else of the identity dir.
       // The board's account map is the one file of data/ it sees (never data/board: no sessions, hashes or TOTP secrets).
       gate: {
         ...hardening, build: "./services/gate", image: "aidenhq/gate:local", network_mode: "host", environment: { GATE_CONFIG: "/config/gate.json" },
         volumes: [
           "./config/gate.json:/config/gate.json:ro", `\${AIDENHQ_DATA_DIR:-./data}/gate/accounts.json:${ACCOUNTS_FILE}:ro`,
-          ...Object.values(hosts).map((h) => `\${AIDENHQ_SECRETS_DIR}/apps/${h.app}/${GATE_SECRET}:/secrets/${h.app}:ro`),
+          `\${AIDENHQ_SECRETS_DIR}/identity/gate.pem:${IDENTITY_KEY_FILE}:ro`,
           // Its proof to the board's auth listener (core's generated gate_board_secret): sign-in and app access.
           `\${AIDENHQ_SECRETS_DIR}/gate_board_secret:${AUTH_SECRET_FILE}:ro`,
         ],
@@ -127,7 +127,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
     },
     secrets: { cloudflared_credentials: { file: "${AIDENHQ_SECRETS_DIR}/cloudflared_credentials.json" } },
   };
-  return { gate, cloudflared, compose, gateSecrets: Object.values(hosts).map((h) => `apps/${h.app}/${GATE_SECRET}`) };
+  return { gate, cloudflared, compose };
 }
 
 /**

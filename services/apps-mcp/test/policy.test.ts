@@ -117,15 +117,22 @@ describe("app secrets are files, never values", () => {
   it("mounts each declared secret from the vault into every service", async () => {
     const { withSecrets } = await import("../src/policy.js");
     const a = app({ secrets: ["DB_PASSWORD"] });
-    const out = withSecrets({ services: { web: { image: "x" }, worker: { image: "y", secrets: ["OTHER"] } } }, a, "/home/u/.config/aidenhq/apps");
-    expect(out.secrets).toEqual({ DB_PASSWORD: { file: "/home/u/.config/aidenhq/apps/demo/DB_PASSWORD" } });
-    expect(out.services!.web.secrets).toEqual(["DB_PASSWORD"]);
-    expect(out.services!.worker.secrets).toEqual(["DB_PASSWORD"]); // app-authored entries never survive
-    expect(JSON.stringify(out)).not.toContain("environment");
+    const out = withSecrets({ services: { web: { image: "x" }, worker: { image: "y", secrets: ["OTHER"] } } }, a, "/home/u/.config/aidenhq/apps", "/home/u/.config/aidenhq/identity/keys.json");
+    expect(out.secrets).toEqual({ DB_PASSWORD: { file: "/home/u/.config/aidenhq/apps/demo/DB_PASSWORD" }, AIDENHQ_IDENTITY_KEYS: { file: "/home/u/.config/aidenhq/identity/keys.json" } });
+    expect(out.services!.web.secrets).toEqual(["DB_PASSWORD", "AIDENHQ_IDENTITY_KEYS"]);
+    expect(out.services!.worker.secrets).toEqual(["DB_PASSWORD", "AIDENHQ_IDENTITY_KEYS"]); // app-authored entries never survive
   });
   it("strips app-authored secrets and configs even when the app declares none", async () => {
     const { withSecrets } = await import("../src/policy.js");
-    const out = withSecrets({ services: { web: { image: "x", secrets: ["S"], configs: ["C"] } }, secrets: { S: { file: "/etc/shadow" } }, configs: { C: { file: "/x" } } }, app(), "/h");
-    expect(out).toEqual({ services: { web: { image: "x" } } });
+    const out = withSecrets({ services: { web: { image: "x", secrets: ["S"], configs: ["C"] } }, secrets: { S: { file: "/etc/shadow" } }, configs: { C: { file: "/x" } } }, app(), "/h", "/k.json");
+    expect(out).toEqual({ services: { web: { image: "x", environment: { AIDENHQ_APP: "demo", AIDENHQ_ANONYMOUS: "tailnet" }, secrets: ["AIDENHQ_IDENTITY_KEYS"] } }, secrets: { AIDENHQ_IDENTITY_KEYS: { file: "/k.json" } } });
+  });
+  it("sets the identity environment itself: the app's name, and anonymous tailnet reads only for an exposed, unshared app", async () => {
+    const { withSecrets } = await import("../src/policy.js");
+    const forged = { services: { web: { image: "x", environment: { AIDENHQ_APP: "other", AIDENHQ_ANONYMOUS: "tailnet", KEEP: "1" } } } };
+    const env = (o: object) => withSecrets(structuredClone(forged), app(o), "/h", "/k.json").services!.web.environment;
+    expect(env({ port: 8080 })).toEqual({ KEEP: "1", AIDENHQ_APP: "demo", AIDENHQ_ANONYMOUS: "tailnet" });
+    expect(env({ port: 8080, expose: false })).toEqual({ KEEP: "1", AIDENHQ_APP: "demo" });
+    expect(env({ port: 8080, share: { host: "demo.example.com", aud: "aud-12345678" } })).toEqual({ KEEP: "1", AIDENHQ_APP: "demo" });
   });
 });

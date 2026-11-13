@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { DEFAULT_IDENTITY, appRemoteUrl, appSlugOf, identityEnv, withGitToken } from "./github-app.mjs";
 
@@ -15,11 +15,117 @@ const run = promisify(execFile);
 let gitAuth;
 export const setGitAuth = (a) => (gitAuth = a);
 const NETWORK = new Set(["fetch", "push", "ls-remote", "clone", "remote"]);
-const ENV = () => ({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
+// No external diff program and no repository named from outside, whatever the runner's own environment says.
+const ENV = () => {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  for (const k of ["GIT_EXTERNAL_DIFF", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"]) delete env[k];
+  return env;
+};
+
+/**
+ * Every host git command runs with these: an agent writes its clones' `.git` (in the jail as the runner's uid, in a box
+ * through a read-write mount), so a clone's own config must never make the runner run something. Hooks, fsmonitor and ext::
+ * transports are off whatever the clone says; every other key that runs a program (ssh and proxy commands, filters, signing
+ * programs, drivers, includes) the clone's config loses before the runner touches it (`scrubFor`). (An empty core.sshCommand or
+ * diff.external isn't "off": git tries to run the empty command, checked 2026-11-13, so those aren't overridden here.) In a
+ * task folder, every local command also runs without the user's global and system config (`TASK_ENV`: no filters or drivers
+ * from anywhere); network commands keep the global config (the host's push routes and credential helpers, not the agent's).
+ */
+// safe.bareRepository=explicit: a bare repository an agent planted in a clone (a parser differential with our checks) is
+// never discovered; only one named explicitly is used.
+export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.ext.allow=never", "-c", "safe.bareRepository=explicit"];
+// The task folders are a ceiling too: git never looks for a repository above one. A checked clone is named outright
+// (GIT_DIR, GIT_WORK_TREE): git uses the repository scrubFor validated, never one it discovers.
+const TASK_ENV = (global, repo) => ({ ...ENV(), GIT_CEILING_DIRECTORIES: untrusted.tasksDir, ...(global ? {} : { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }), ...(repo ? { GIT_DIR: repo.gitDir, GIT_WORK_TREE: repo.workTree } : {}) });
+// Commands that can print a diff: never through an external program or a textconv driver.
+const DIFFS = new Set(["diff", "log", "show"]);
 
 async function plain(cwd, args) {
-  const { stdout } = await run("git", args, { cwd, maxBuffer: 32 * 1024 * 1024, env: ENV() });
+  const task = await scrubFor(cwd);
+  const env = task ? TASK_ENV(NETWORK.has(args[0]), task.gitDir ? task : undefined) : ENV();
+  let at = 0;
+  while (args[at] === "-c") at += 2;
+  const full = DIFFS.has(args[at]) ? [...args.slice(0, at + 1), "--no-ext-diff", "--no-textconv", ...args.slice(at + 1)] : args;
+  const { stdout } = await run("git", [...SAFE_GIT_ARGS, ...full], { cwd, maxBuffer: 32 * 1024 * 1024, env });
   return stdout.trim();
+}
+
+// Agent-writable clones: under `tasksDir` (the task folders). `hooksDir`: the guard hooks, the one core.hooksPath kept.
+let untrusted;
+export function setUntrusted(u) {
+  if (!u) return (untrusted = undefined);
+  mkdirSync(u.tasksDir, { recursive: true });
+  untrusted = { tasksDir: resolve(u.tasksDir), realTasks: realpathSync(u.tasksDir), hooksDir: u.hooksDir };
+}
+const scrubbed = new Map(); // config file → its stat when last scrubbed
+// A path under the task folders with no symlink below them (the work dir itself may sit behind one).
+const noLinkBelow = (p) => realpathSync(p) === untrusted.realTasks + p.slice(untrusted.tasksDir.length);
+
+// Repo-local keys that run a program, load other config or redirect where git reads from or talks to.
+const HOSTILE = /^(core\.(fsmonitor|sshcommand|gitproxy|askpass|editor|pager|hookspath|worktree|attributesfile|excludesfile|alternaterefscommand|alternaterefsprefixes)|filter\.|diff\.[^.]+\.(command|textconv)|diff\.(external|tool|guitool)$|difftool\.|mergetool\.|merge\.(tool|guitool)$|merge\.[^.]+\.driver|gpg\.|credential\.|include\.|includeif\.|url\.|protocol\.|http\.|remote\.[^.]+\.(uploadpack|receivepack|proxy|vcs)|sequence\.editor|uploadpack\.|receive\.|submodule\.|safe\.|extensions\.worktreeconfig)/i;
+
+/**
+ * Before the runner's git touches a task clone (cwd anywhere in one): its `.git` must be a real directory at `<clone>/.git`
+ * (not a symlink, not a file pointing elsewhere, except a worktree of a clone in the same task folder), and every hostile
+ * key is removed from its config, read with `--file` (no includes, nothing run). Throws when the clone is not what it should
+ * be. Cheap: a config file is read again only when it changed. True when cwd is in a task folder.
+ */
+export async function scrubFor(cwd) {
+  if (!untrusted) return false;
+  let dir = resolve(cwd);
+  if (!(dir + "/").startsWith(untrusted.tasksDir + "/") || dir === untrusted.tasksDir) return false;
+  const task = join(untrusted.tasksDir, dir.slice(untrusted.tasksDir.length + 1).split("/")[0]);
+  for (; dir.length >= task.length; dir = dirname(dir)) {
+    const st = lstatSync(join(dir, ".git"), { throwIfNoEntry: false });
+    if (!st) continue;
+    if (st.isSymbolicLink()) throw new Error(`${dir}/.git is a symlink; refusing to run git there`);
+    // A clone's own .git has no commondir: one would move the config git reads to wherever it points (checked 2026-11-13).
+    if (st.isDirectory()) {
+      if (lstatSync(join(dir, ".git", "commondir"), { throwIfNoEntry: false })) throw new Error(`${dir}/.git has a commondir; refusing to run git there`);
+      gitdirShape(join(dir, ".git"), true);
+      await scrubDir(join(dir, ".git"));
+      return { gitDir: join(dir, ".git"), workTree: dir };
+    }
+    // A worktree's `.git` file: its gitdir must be <clone>/.git/worktrees/<name> of a clone in this task folder.
+    const m = /^gitdir: (.+)\n?$/.exec(smallFile(join(dir, ".git")) ?? "");
+    const gitdir = m && resolve(dir, m[1]);
+    const common = gitdir && /^(.*\/\.git)\/worktrees\/[^/]+$/.exec(gitdir)?.[1];
+    // ...and that gitdir's commondir must lead back to exactly that clone's .git.
+    const back = gitdir && smallFile(join(gitdir, "commondir"))?.trim();
+    if (!common || !(common + "/").startsWith(task + "/") || !lstatSync(common, { throwIfNoEntry: false })?.isDirectory() || !noLinkBelow(common) || !back || resolve(gitdir, back) !== common) throw new Error(`${dir}/.git doesn't point at a clone in this task's folder; refusing to run git there`);
+    gitdirShape(common, true);
+    gitdirShape(gitdir, false);
+    await scrubDir(common);
+    await scrubDir(gitdir);
+    return { gitDir: gitdir, workTree: dir };
+  }
+  return true;
+}
+
+/** A real gitdir: HEAD a regular file; a clone's own also has objects/ and refs/ directories. Throws otherwise. */
+function gitdirShape(gitDir, own) {
+  const is = (n, dir) => { const s = lstatSync(join(gitDir, n), { throwIfNoEntry: false }); return dir ? s?.isDirectory() : s?.isFile(); };
+  if (!is("HEAD") || (own && !(is("objects", true) && is("refs", true)))) throw new Error(`${gitDir} isn't a valid git directory; refusing to run git there`);
+}
+
+async function scrubDir(gitDir) {
+  if (!noLinkBelow(gitDir)) throw new Error(`${gitDir} goes through a symlink; refusing to run git there`);
+  for (const name of ["config", "config.worktree"]) {
+    const file = join(gitDir, name);
+    const st = lstatSync(file, { throwIfNoEntry: false });
+    if (!st) continue;
+    if (!st.isFile()) throw new Error(`${file} isn't a regular file; refusing to run git there`);
+    const stamp = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+    if (scrubbed.get(file) === stamp) continue;
+    const cfg = ["-c", "core.hooksPath=/dev/null", "config", "--file", file];
+    const list = (await run("git", [...cfg, "--null", "--list"], { env: ENV() })).stdout.split("\0").filter(Boolean).map((e) => [e.split("\n")[0], e.slice(e.indexOf("\n") + 1)]);
+    for (const [key, value] of list) {
+      if (!HOSTILE.test(key) || (key.toLowerCase() === "core.hookspath" && untrusted.hooksDir && value === untrusted.hooksDir)) continue;
+      await run("git", [...cfg, "--unset-all", key], { env: ENV() }).catch(() => {});
+    }
+    const after = lstatSync(file);
+    scrubbed.set(file, `${after.ino}:${after.size}:${after.mtimeMs}:${after.ctimeMs}`);
+  }
 }
 
 /** Where a workspace remote-tracking fetch reads from in the cache: refs/heads/x and x → refs/remotes/origin/x. */
@@ -92,7 +198,7 @@ export function smallFile(path, max = 4096) {
 }
 
 /** The isolated git env used for every diff the user is shown (no user/system config, no attributes file). */
-export const ISOLATED_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+export const ISOLATED_ENV = { ...ENV(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 
 /** Hooks dir whose pre-push always refuses: agents cannot push from task worktrees. */
 export function ensureGuardHooks(workDir) {
@@ -177,7 +283,7 @@ export async function changeBase(path, mainRef, sha, deployed) {
  */
 export async function landOnMain(path, base, shown, note, { guard, identity = DEFAULT_IDENTITY } = {}) {
   const id = identityEnv(identity);
-  const iso = (...args) => run("git", args, { cwd: path, env: { ...ISOLATED_ENV, ...id } }).then((o) => o.stdout.trim());
+  const iso = (...args) => scrubFor(path).then(() => run("git", [...SAFE_GIT_ARGS, ...args], { cwd: path, env: { ...ISOLATED_ENV, ...id } })).then((o) => o.stdout.trim());
   const url = await git(path, "remote", "get-url", "origin");
   for (let attempt = 0; ; attempt++) {
     await git(path, "fetch", "--quiet", "origin");

@@ -57,14 +57,18 @@ override them):
 
 | Role | Default model |
 |---|---|
-| Aiden and most agents | `~deepseek/deepseek-flash-latest` |
-| Agent Architect, UI/UX Engineer (handbooks and design need the stronger model) | `moonshotai/kimi-k3.1-pro` |
+| Aiden and most agents | `~deepseek/deepseek-flash-latest` (high effort) |
+| Agent Architect (its handbooks are what the other agents run on) | `~deepseek/deepseek-flash-latest` at `max` effort |
+| UI/UX Designer (mockups) | `~deepseek/deepseek-flash-latest` at high effort |
+| UI Reviewer (screenshot reviews of UI PRs) | `~openai/gpt-luna-latest` at medium effort |
+| Red Teamer (fewer refusals on offensive security work) | `~z-ai/glm-flash-latest` (high effort) |
+| Advisor (`advisor_ask`, a second opinion at a hard decision) | `~openai/gpt-sol-latest` |
 | Engineers (coding jobs on the runner) | `~deepseek/deepseek-flash-latest`, with a picker of others in `modules/engineering/module.yaml` |
-| AI reviewer (Tier 1 approvals) | `moonshotai/kimi-k3.1-pro` or `~z-ai/glm-latest`, never the requesting model's family |
+| AI reviewer (Tier 1 approvals) and grader | `~openai/gpt-luna-latest` (medium effort), or `~deepseek/deepseek-flash-latest` (high) for an OpenAI-family requester: never the requesting model's family |
 
 `ops/setup.sh` creates one OpenRouter key per instance with a monthly limit (`OPENROUTER_LIMIT_USD`, default 50 USD).
 Typical daily spend: one owner's full fleet ran about $30-50 a day before cost tuning. Most agents run on DeepSeek
-Flash; the expensive part is Kimi on design work (the Agent Architect designing agents, the UI/UX Engineer). Raise
+Flash; the expensive parts are GPT Sol advisor calls and the Agent Architect's max-effort reasoning. Raise
 `OPENROUTER_LIMIT_USD` accordingly: the 50 USD default suits a small trial, not a full fleet. The board's Costs page shows the real
 figures. Paperclip shows OpenRouter runs as unpriced, so Paperclip budgets stay at 0 (any budget pauses the agent at
 $0); use the OpenRouter key limit instead.

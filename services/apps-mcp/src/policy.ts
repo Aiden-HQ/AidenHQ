@@ -161,17 +161,23 @@ export function sandbox(resolved: ComposeJson, app: App, env: { APPS_DATA: strin
  * (<hostDir>/<app>/<KEY>, a host path for the Docker daemon) mounted at /run/secrets/<KEY> in every service. Applied
  * after sandbox(), so the app's own compose can't declare secrets; the sandboxed compose and Docker's metadata hold
  * only paths. Apps use *_FILE conventions or read the file.
+ * Identity (docs/design/app-identity.md): every service also gets the public keys (AIDENHQ_IDENTITY_KEYS, from
+ * identityKeysFile) and AIDENHQ_APP, and AIDENHQ_ANONYMOUS=tailnet only for an exposed app that isn't shared; whatever the
+ * app's compose said for these is overwritten.
  */
-export function withSecrets(c: ComposeJson, app: App, hostDir: string): ComposeJson {
+export const IDENTITY_KEYS = "AIDENHQ_IDENTITY_KEYS";
+export function withSecrets(c: ComposeJson, app: App, hostDir: string, identityKeysFile: string): ComposeJson {
   // App-authored secrets and configs never survive (defense in depth: checkSources already refuses the top-level ones);
   // only the registry's declared secrets are granted.
   const { secrets: _s, configs: _c, ...rest } = c;
+  const anonymous = !!app.port && app.expose && !app.share?.host; // tailnet.ts exposes(): token-less reads may be anonymous
   const services = Object.fromEntries(Object.entries<any>(c.services ?? {}).map(([n, s]) => {
     const { secrets: _ss, configs: _sc, ...svc } = s;
-    return [n, app.secrets.length ? { ...svc, secrets: [...app.secrets] } : svc];
+    if (Array.isArray(svc.environment)) throw new PolicyError(`service ${n}: environment must be a map`);
+    const { AIDENHQ_APP: _a, AIDENHQ_ANONYMOUS: _n, ...env } = svc.environment ?? {};
+    return [n, { ...svc, environment: { ...env, AIDENHQ_APP: app.name, ...(anonymous ? { AIDENHQ_ANONYMOUS: "tailnet" } : {}) }, secrets: [...app.secrets, IDENTITY_KEYS] }];
   }));
-  if (!app.secrets.length) return { ...rest, services };
-  return { ...rest, services, secrets: Object.fromEntries(app.secrets.map((k) => [k, { file: `${hostDir}/${app.name}/${k}` }])) };
+  return { ...rest, services, secrets: { ...Object.fromEntries(app.secrets.map((k) => [k, { file: `${hostDir}/${app.name}/${k}` }])), [IDENTITY_KEYS]: { file: identityKeysFile } } };
 }
 
 /**

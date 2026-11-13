@@ -1,17 +1,18 @@
 // app_view and web_view: look at a page the way a person would, through one renderer. A one-shot, hardened headless-Chrome
 // container per call (GET only: no clicks, forms, cookies or credentials) returns the page's accessibility snapshot and,
-// on request, a viewport screenshot. app_view runs it inside the app's own network namespace (like app_api, without the
-// token); web_view runs it on the agent computers' network, whose host firewall (ops/vm/computer-net.sh) keeps it off the
+// on request, a viewport screenshot. app_view runs it inside the app's own network namespace (like app_api, with a read-only
+// identity token); web_view runs it on the agent computers' network, whose host firewall (ops/vm/computer-net.sh) keeps it off the
 // LAN, the tailnet, the host and other containers. The address check here is a second, thinner layer.
 import { isIP } from "node:net";
-import { apiTarget, gateHeaders, plainPath, targetContainer, type Resolve } from "./api.js";
+import { apiTarget, plainPath, targetContainer, type Resolve } from "./api.js";
+import { IDENTITY_HEADER, type Sign } from "./identity.js";
 import type { App } from "./registry.js";
 
 /** Puppeteer's official image (Node, the library and its Chrome; amd64), pinned by digest. The Playwright images ship browsers
  * but not the library. Pulled once on first use, then `--pull never`. */
 export const VIEW_IMAGE = "ghcr.io/puppeteer/puppeteer:25.15.0@sha256:6fe165bf38791ad7bec3a276e29c2e167dd0a9b1c02bb4c8e8ac269bdf274b03";
 export const WEB_NETWORK = "aidenhq-computers";
-/** Replace the gate secret wherever the page could have echoed it back (or an error quoted it). */
+/** Replace the identity token wherever the page could have echoed it back (or an error quoted it). */
 const redact = (s: string, secret?: string) => (secret ? s.replaceAll(secret, "***") : s);
 export const SNAPSHOT_CAP = 20_000;
 export const RENDER_TIMEOUT_MS = 45_000; // the script exits itself at 40 s; docker run gets a little more
@@ -33,7 +34,7 @@ export function canView(app: App, roles: string[]): boolean {
   return !app.access || app.access.roles.some((r) => roles.includes(r));
 }
 
-export async function viewApp(app: App, caller: { key: string; roles: string[] }, req: { path?: string; width?: number; screenshot?: boolean }, d: { resolve: Resolve; render: Render; secretsDir: string; audit?: (o: object) => void }): Promise<ViewResult> {
+export async function viewApp(app: App, caller: { key: string; roles: string[] }, req: { path?: string; width?: number; screenshot?: boolean }, d: { resolve: Resolve; render: Render; sign: Sign; audit?: (o: object) => void }): Promise<ViewResult> {
   if (!canView(app, caller.roles)) throw new Error(`no access to ${app.name}`);
   const path = req.path ?? "/";
   plainPath(path);
@@ -42,17 +43,34 @@ export async function viewApp(app: App, caller: { key: string; roles: string[] }
   const w = width(req.width);
   const t = apiTarget(app);
   const container = await targetContainer(app, t.service, d.resolve);
-  const headers = gateHeaders(app, d.secretsDir, caller.key, "member"); // an agent looking is a member; shared apps only; the renderer attaches them to the app's own origin alone
-  const secret = headers["x-aidenhq-gate"];
+  // An agent looking is a member that may only read; the renderer attaches the token to the app's own origin alone.
+  const secret = d.sign(app.name, caller.key, { role: "member", methods: ["GET", "HEAD"] });
   let r: ViewResult;
   try {
-    r = await d.render(`container:${container}`, { url: `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}${path}`, width: w, screenshot: !!req.screenshot, web: false, ...(secret ? { headers } : {}) });
+    r = await d.render(`container:${container}`, { url: `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}${path}`, width: w, screenshot: !!req.screenshot, web: false, headers: { [IDENTITY_HEADER]: secret } });
   } catch (e) {
     throw new Error(redact(String((e as Error).message ?? e), secret));
   }
-  if (secret) r = { ...r, url: redact(r.url, secret), title: redact(r.title, secret), snapshot: redact(r.snapshot, secret), ...(r.error ? { error: redact(r.error, secret) } : {}) };
+  r = { ...r, url: redact(r.url, secret), title: redact(r.title, secret), snapshot: redact(r.snapshot, secret), ...(r.error ? { error: redact(r.error, secret) } : {}) };
   d.audit?.({ caller: caller.key, app: app.name, path, status: r.status });
   return r;
+}
+
+export type GraderView = { unavailable: string } | (ViewResult & { sha_before: string; sha_after: string });
+
+/**
+ * The runner's grader looking at a deployed app (through the board, never an agent): app_view as a member, with the running
+ * commit read before and after the render, so the runner can tell a redeploy mid-capture from a verdict. An app it can't
+ * view for good (role-restricted, no health.url, not local) is `unavailable` with the reason, not an error to retry.
+ */
+export async function graderView(app: App, req: { path?: string; width?: number }, d: { resolve: Resolve; render: Render; sign: Sign; running: (name: string) => string | undefined; audit?: (o: object) => void }): Promise<GraderView> {
+  // Restricted apps' pages stay with the agents holding their roles: the grader's notes are posted on the task.
+  if (app.access) return { unavailable: `${app.name} is restricted to roles, so the grader doesn't capture its pages` };
+  if (!app.health.url) return { unavailable: `${app.name} has no health.url, so there's no page to view` };
+  if (app.host !== "local") return { unavailable: `${app.name} runs on docker context ${app.host}; only local apps can be viewed` };
+  const sha_before = d.running(app.name) ?? "";
+  const r = await viewApp(app, { key: "grader", roles: [] }, { path: req.path, width: req.width }, d);
+  return { ...r, sha_before, sha_after: d.running(app.name) ?? "" };
 }
 
 // Not public: this host, the LAN, Docker networks, the tailnet (CGNAT), link-local and cloud metadata, multicast, reserved,
@@ -103,13 +121,13 @@ export async function webView(url: string, caller: { key: string }, req: { width
 }
 
 /** `docker run` argv for one render: no mounts, env or secrets beyond HOME; non-root, no capabilities, read-only, limited. */
-export function renderArgs(network: string, image: string): string[] {
+export function renderArgs(network: string, image: string, script = VIEW_SCRIPT): string[] {
   if (!/^container:[0-9a-f]{64}$/.test(network) && network !== WEB_NETWORK) throw new Error(`bad render network ${network}`);
   return [
     "run", "--rm", "-i", "--init", "--pull", "never", "--network", network,
     "--user", "pptruser", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m", "-e", "HOME=/tmp", "-e", "PUPPETEER_CACHE_DIR=/home/pptruser/.cache/puppeteer",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "512", "--shm-size", "256m",
-    image, "node", "-e", VIEW_SCRIPT,
+    image, "node", "-e", script,
   ];
 }
 

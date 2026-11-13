@@ -113,6 +113,45 @@ describe("flow-autonomy", () => {
       await waitFor("the reply", () => reviews().length > n);
     });
 
+    // Owner, 2026-11-13: with a design reviewer in the fleet, a green UI PR's Tier 0 merge waits for design-review, and the
+    // reviewer gets a task for that head.
+    it("a green UI PR isn't merged without its design review; the UI Reviewer is asked for it", async () => {
+      const { waitFor, fakeLog, step, turn, toolRuns } = t;
+      writeFileSync(join(t.dir, "config/grants/grants.json"), JSON.stringify({ autonomy: "tier0", agents: { "designer-1": { key: "ui-designer", roles: ["design-review"] } } }));
+      step("ui\naidenhq push acme/app feat/ui");
+      await turn("Restyle the page and push it.");
+      assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
+      // Its PR is open now, with every named check green on the head.
+      const state = new State(join(t.dir, "state"));
+      state.updateBranch("part", "acme/app", "feat/ui", { pr_url: "https://github.com/acme/app/pull/9" });
+      state.db.close();
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 9: { branch: "feat/ui", files: ["web/app.css"], checks: "SUCCESS" } }));
+      step("ui-more\naidenhq push acme/app feat/ui");
+      await turn("Tweak it and push.");
+      assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
+      await waitFor("the design review task", () => t.paperclip.created.some((c) => c.title === "Design review: acme/app#9" && c.assigneeAgentId === "designer-1"));
+      assert.ok(!fakeLog().some((e) => e.kind === "gh" && e.data.includes("repos/acme/app/pulls/9/merge")), "not merged");
+      assert.equal(t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9").length, 1, "one task per head");
+    });
+
+    // A UI PR merged on the owner's tap never got its review: the card's path asks for it too, and its outcome says where it stands.
+    it("an approved merge card of a UI PR asks the UI/UX Engineer for its review and says it's pending", async () => {
+      const { waitFor, step, turn, toolRuns } = t;
+      writeFileSync(join(t.dir, "config/grants/grants.json"), JSON.stringify({ autonomy: "off", agents: { "designer-1": { key: "ui-designer", roles: ["design-review"] } } }));
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 9: { branch: "feat/ui", files: ["web/app.css"], checks: "SUCCESS" }, 10: { branch: "feat/ui", files: ["web/page.html"], checks: "SUCCESS" } }));
+      step("none\naidenhq merge https://github.com/acme/app/pull/9 https://github.com/acme/app/pull/10");
+      await turn("Merge it.");
+      assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
+      const card = t.paperclip.decide("merge", "approved");
+      await waitFor("the card's outcome", () => t.paperclip.approvals.get(card.id).outcome);
+      assert.match(t.paperclip.approvals.get(card.id).outcome.text, /Design review \(the merge doesn't wait for it\): https:\/\/github.com\/acme\/app\/pull\/9 pending; https:\/\/github.com\/acme\/app\/pull\/10 pending\./);
+      const asked = t.paperclip.created.filter((c) => c.title === "Design review: acme/app#10");
+      assert.equal(asked.length, 1);
+      assert.equal(asked[0].assigneeAgentId, "designer-1");
+      assert.match(asked[0].description, /approved its merge at head `[0-9a-f]{40}`, which doesn't wait for you/);
+      assert.equal(t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9").length, 1, "#9's head was asked for on the Tier 0 path already");
+    });
+
     it("never errors or asks for a repository along the way", () => t.noErrors());
   });
 

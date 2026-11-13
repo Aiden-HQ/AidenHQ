@@ -15,7 +15,8 @@ import type { Manifest } from "../src/app-access.js";
 import { createSigninServer } from "../src/signin.js";
 
 const GATE_SECRET = "b".repeat(64);
-const APP_SECRET = "a".repeat(64);
+/** The identity token's claims as the app sees them (the gate's tests verify signatures with the app middleware). */
+const who = (h: Record<string, unknown>) => JSON.parse(Buffer.from(String(h["x-aidenhq-identity"]).split(".")[1] ?? "", "base64url").toString());
 const PASSWORD = "correct horse battery staple";
 const MY = "apps.example.com";
 
@@ -31,11 +32,12 @@ describe("the gate, the sign-in listener and app access", () => {
   let signin: Server, gate: Server, app: Server;
   let gatePort = 0, authPort = 0;
   const seen: Record<string, unknown>[] = [];
-  const hostsConfig = () => Object.fromEntries(Object.entries(apps).map(([name, a]) => [a.host, { app: name, port: (app.address() as AddressInfo).port, secret_file: join(dir, "app-secret") }]));
+  const hostsConfig = () => Object.fromEntries(Object.entries(apps).map(([name, a]) => [a.host, { app: name, port: (app.address() as AddressInfo).port }]));
 
   beforeAll(async () => {
     writeFileSync(join(dir, "board-secret"), GATE_SECRET);
-    writeFileSync(join(dir, "app-secret"), APP_SECRET);
+    const { ensureIdentityKeys } = (await import("../../../scripts/identity.mjs" as string)) as { ensureIdentityKeys: (d: string) => string[] };
+    ensureIdentityKeys(dir);
     writeFileSync(accountsFile, JSON.stringify({ accounts: [] }));
     accounts = await createAccounts({ dbPath: ":memory:", hosts: ["127.0.0.1:0"], boardUrl: "http://localhost:3120", gate: gateInfo, gateAccountsFile: accountsFile, gateSecret: GATE_SECRET, manifest: async (a) => manifests[a] ?? { roles: [] }, log });
     app = createServer((req, res) => (seen.push({ ...req.headers }), res.end("app")));
@@ -46,7 +48,7 @@ describe("the gate, the sign-in listener and app access", () => {
     await new Promise<void>((r) => signin.listen(0, "127.0.0.1", r));
     authPort = (signin.address() as AddressInfo).port;
     hosts.push(`127.0.0.1:${authPort}`);
-    const config = { port: 0, login: "password", auth_url: `http://127.0.0.1:${authPort}`, auth_secret_file: join(dir, "board-secret"), accounts_file: accountsFile, owner_email: "owner@example.com", my_apps: { host: MY }, hosts: hostsConfig() };
+    const config = { port: 0, login: "password", auth_url: `http://127.0.0.1:${authPort}`, auth_secret_file: join(dir, "board-secret"), accounts_file: accountsFile, identity_key_file: join(dir, "identity", "gate.pem"), owner_email: "owner@example.com", my_apps: { host: MY }, hosts: hostsConfig() };
     gate = await startGate(config);
     gatePort = (gate.address() as AddressInfo).port;
   });
@@ -115,7 +117,8 @@ describe("the gate, the sign-in listener and app access", () => {
 
     // The app sees who it is, with the app's own gate secret; never an auth cookie or the board's secret.
     expect((await through("crm.example.com", "GET", "/deals", { cookie: appSession, headers: { "x-aidenhq-role": "admin" } })).body).toBe("app");
-    expect(seen.at(-1)).toMatchObject({ "x-aidenhq-user": "uma@example.com", "x-aidenhq-role": "member", "x-aidenhq-app": "crm", "x-aidenhq-name": encodeURIComponent("Uma Ö"), "x-aidenhq-gate": APP_SECRET });
+    expect(who(seen.at(-1)!)).toMatchObject({ email: "uma@example.com", role: "member", aud: "crm", name: "Uma Ö", kind: "person", idp: "password" });
+    expect(Object.keys(seen.at(-1)!).filter((k) => k.startsWith("x-aidenhq-"))).toEqual(["x-aidenhq-identity"]);
     expect(String(seen.at(-1)!.cookie ?? "")).not.toContain("better-auth");
 
     // Signing out on the app host ends that session.
@@ -149,7 +152,7 @@ describe("the gate, the sign-in listener and app access", () => {
     expect((await set({ action: "role", email: "uma@example.com", role: "editor" })).status).toBe(303);
     expect(exported().apps.wiki!.roles).toMatchObject({ "bob@example.com": "admin", "uma@example.com": "editor" }); // on the gate when it returns
     expect((await through("wiki.example.com", "GET", "/", { cookie: umaWiki })).status).toBe(200);
-    expect(seen.at(-1)).toMatchObject({ "x-aidenhq-user": "uma@example.com", "x-aidenhq-role": "editor" });
+    expect(who(seen.at(-1)!)).toMatchObject({ email: "uma@example.com", role: "editor", aud: "wiki" });
     // Not from another site, never an AidenHQ admin, never admin as the default.
     expect((await set({ action: "role", email: "eve@example.com", role: "member" }, "https://wiki.example.com")).status).toBe(403);
     expect((await set({ action: "role", email: "owner@example.com", role: "blocked" })).status).toBe(400);
@@ -219,12 +222,12 @@ describe("the gate, the sign-in listener and app access", () => {
     password = false;
     await accounts.syncGate();
     const hosts = Object.fromEntries(Object.entries(hostsConfig()).map(([h, c]) => [h, { ...c, aud: `aud-${c.app}` }]));
-    const g = await startGate({ port: 0, login: "access", issuer, certs_url: "http://jwks.invalid/certs", auth_url: `http://127.0.0.1:${authPort}`, auth_secret_file: join(dir, "board-secret"), accounts_file: accountsFile, owner_email: "owner@example.com", my_apps: { host: MY, aud: "aud-my" }, hosts }, ((url: string | URL, init?: RequestInit) => (String(url).startsWith("http://jwks.invalid/") ? Promise.resolve(new Response(JSON.stringify(jwks))) : fetch(url, init))) as typeof fetch);
+    const g = await startGate({ port: 0, login: "access", issuer, certs_url: "http://jwks.invalid/certs", auth_url: `http://127.0.0.1:${authPort}`, auth_secret_file: join(dir, "board-secret"), accounts_file: accountsFile, identity_key_file: join(dir, "identity", "gate.pem"), owner_email: "owner@example.com", my_apps: { host: MY, aud: "aud-my" }, hosts }, ((url: string | URL, init?: RequestInit) => (String(url).startsWith("http://jwks.invalid/") ? Promise.resolve(new Response(JSON.stringify(jwks))) : fetch(url, init))) as typeof fetch);
     const port = (g.address() as AddressInfo).port;
     try {
       const as = (host: string, aud: string, path = "/") => through(host, "GET", path, { port, headers: { "cf-access-jwt-assertion": token("zed@example.com", aud) } });
       expect((await as("crm.example.com", "aud-crm")).status).toBe(200); // crm's default is member
-      expect(seen.at(-1)).toMatchObject({ "x-aidenhq-user": "zed@example.com", "x-aidenhq-role": "member", "x-aidenhq-name": "" });
+      expect(who(seen.at(-1)!)).toMatchObject({ email: "zed@example.com", role: "member", name: "", idp: "access" });
       expect((await as("wiki.example.com", "aud-wiki")).status).toBe(403); // wiki's is blocked
       const home = (await as(MY, "aud-my")).body;
       expect(home).toContain("crm.example.com");

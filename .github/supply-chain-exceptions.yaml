@@ -12,6 +12,8 @@
 exceptions:
   - { ecosystem: apt, package: containerd.io, version: 2.4.2-4~ubuntu.24.04~noble, advisory: CVE-2026-119101, reason: "bundles runc 1.5.3 (released 2026-11-12) with the high-severity runc fix; installed on the host 2026-11-12" }
   - { ecosystem: apt, package: docker-buildx-plugin, version: 0.39.0-1~ubuntu.24.04~noble, advisory: GHSA-rghq-x9hf-hc3r, reason: "Bake entitlement bypasses (also GHSA-xg6v-cv2h-2w5h) fixed in 0.38.2, which Docker's repo does not carry; 0.39.0 (2026-11-11) is the lowest packaged fix" }
+  - { ecosystem: apt, package: containerd.io, version: 2.4.2-4~ubuntu.26.04~resolute, advisory: CVE-2026-119101, reason: "the same runc 1.5.3 fix, built for Ubuntu 26.04 (the new host)" }
+  - { ecosystem: apt, package: docker-buildx-plugin, version: 0.39.0-1~ubuntu.26.04~resolute, advisory: GHSA-rghq-x9hf-hc3r, reason: "the same Bake fix, built for Ubuntu 26.04 (the new host)" }
   - { ecosystem: apt, package: nodejs, version: 24.22.3-1nodesource1, advisory: CVE-2026-123863, reason: "Node 24.22.3 (2026-11-10) is a security release with several high fixes in http2 and tls (also CVE-2026-123864/65/66/72)" }
   - { ecosystem: docker, package: anchore/grype, version: v0.121.3, advisory: GHSA-c9gr-gmg4-2vqv, reason: "grype v0.121.3 (2026-11-09) is a security release (also GHSA-pxq6-2prw-chj9, GHSA-rg2x-37c3-w2rh, GHSA-vp62-88p7-qqf5, GHSA-x744-4wpc-v9h2, GHSA-x86f-5xw2-fm2r)" }
   - { ecosystem: docker, package: anchore/syft, version: v1.57.1, advisory: GHSA-c9gr-gmg4-2vqv, reason: "syft v1.57.1 (2026-11-09) is a security release" }

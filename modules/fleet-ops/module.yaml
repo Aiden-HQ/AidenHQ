@@ -15,7 +15,7 @@ agents:
     department: platform
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
-    reasoning_effort: medium
+    reasoning_effort: high
     timeout_sec: 1200
     connections:
       # Reads only: apps, their logs, and the warehouse (src_meta.ingest_run).
@@ -38,6 +38,7 @@ routines:
     webhook: true # fired by the board's detector
     webhook_base: http://paperclip:3100 # the board calls it from inside the compose network
     secrets_prefix: fleet_ops_webhook # setup saves <prefix>_url / _secret; the module's compose mounts them into the board
+    autonomy: full # fired by our own detector over fleet state, not outside text: its fixes stay the AI reviewer's
   fleet-ops-digest:
     title: "Fleet Ops: daily digest"
     agent: fleet-ops

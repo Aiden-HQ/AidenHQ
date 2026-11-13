@@ -2,7 +2,27 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { bestVersion, publishedAt } from "../supply-chain/best-version.mjs";
-import { checkAges, scanFile } from "../supply-chain/pins.mjs";
+import { checkAges, dateApt, scanFile } from "../supply-chain/pins.mjs";
+
+test("pins: an apt pin falls back to the distro only when the file's own repository cleanly doesn't list it", async () => {
+  const pin = { name: "tool", version: "1.2.3", sources: ["https://repo.example/apt noble main"] };
+  const notListed = () => Object.assign(new Error("not in"), { notListed: true });
+  const ok = { published: "2020-01-01T00:00:00Z", via: "test" };
+  const tried = [];
+  const lookup = (behaviour) => async (_kind, _name, { source }) => {
+    tried.push(source);
+    const b = behaviour(source);
+    if (b instanceof Error) throw b;
+    return b;
+  };
+  // The file's repository can't be read: fail, never date the package from Ubuntu.
+  await assert.rejects(dateApt(pin, lookup((s) => (s.includes("repo.example") ? new Error("fetch failed") : ok))), /fetch failed/);
+  assert.deepEqual(tried, ["https://repo.example/apt noble main"]);
+  // Read fine and not there: the distro's pockets date it.
+  assert.equal(await dateApt(pin, lookup((s) => (s.includes("repo.example") ? notListed() : ok))), ok);
+  // Listed nowhere.
+  await assert.rejects(dateApt(pin, lookup(() => notListed())), /no apt repository/);
+});
 
 const now = Date.parse("2026-11-13T00:00:00Z");
 const day = (n) => new Date(now - n * 86400000).toISOString();
@@ -51,7 +71,22 @@ test("pins: unpinned images, actions, installs and apt after a repo fail; new pi
   assert.equal(wf.pins[0].version, "v7.0.1");
   const sh = scanFile("ops/setup.sh", "apt-get install -y jq\necho \"deb [arch=$arch] https://repo.example/apt $codename main\" >/etc/apt/sources.list.d/r.list\napt-get install -y \\\n  tool=1.2.3 other\n");
   assert.equal(sh.problems.length, 1);
-  assert.deepEqual(sh.pins[0].sources, ["https://repo.example/apt noble main"]);
+  assert.equal(sh.pins[0].release, "noble");
+  const tried = [];
+  await dateApt(sh.pins[0], async (_k, _n, { source }) => { tried.push(source); return { published: day(30), via: "test" }; });
+  assert.deepEqual(tried, ["https://repo.example/apt noble main"]);
+  // Pinned per release: an arm's pins are that release's; a shared pin is dated for every release the file names.
+  const rel = scanFile("ops/setup.sh", [
+    "echo \"deb https://repo.example/apt $codename main\" >/etc/apt/sources.list.d/r.list",
+    "case \"$codename\" in",
+    "  noble) apt-get -y install tool=1.0~noble ;;",
+    "  resolute)",
+    "    apt-get -y install tool=1.0~resolute",
+    "    ;;",
+    "esac",
+    "apt-get -y install shared=2.0",
+  ].join("\n")).pins.map((p) => `${p.name}=${p.version} ${p.release}`);
+  assert.deepEqual(rel, ["tool=1.0~noble noble", "tool=1.0~resolute resolute", "shared=2.0 noble", "shared=2.0 resolute"]);
 
   const pins = scanFile("ops/setup.sh", "npm install -g a@1.0.0 b@2.0.0 c@3.0.0\n").pins;
   const dates = { a: day(30), b: day(2), c: day(1) };

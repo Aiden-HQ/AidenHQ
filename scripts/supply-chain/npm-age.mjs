@@ -30,6 +30,23 @@ export function changedEntries(prev, next) {
       if (typeof e.resolved !== "string" || e.resolved.startsWith("/") || e.resolved.split("/").includes("..")) bad("link outside the repo");
       continue;
     }
+    // A bundled dependency ships inside its parent's tarball, so the parent's age and integrity cover it. The lockfile's
+    // `inBundle` flag alone proves nothing: skip the entry only when the parent is a registry tarball that names this
+    // child in its bundle list, the child has no source of its own, and the parent is either checked here (changed) or
+    // carries the same bundle list as in the base. Anything else falls through and is checked like any entry.
+    // A top-level entry (no parent package in its key) is never bundled.
+    const cut = key.lastIndexOf("/node_modules/");
+    if (e.inBundle && keyName && cut > 0 && !e.resolved && !e.integrity) {
+      const at = key.slice(0, cut);
+      const parentName = at.slice(at.lastIndexOf("node_modules/") + "node_modules/".length);
+      const parent = next.packages[at], before = prev?.packages?.[at];
+      const list = (p) => p?.bundleDependencies ?? p?.bundledDependencies;
+      const url = REGISTRY_URL.exec(String(parent?.resolved || ""));
+      const registry = at.includes("node_modules/") && parent && !parent.inBundle && parent.integrity && url && url[1] === parentName
+        && (!parent.name || parent.name === parentName);
+      const changed = JSON.stringify(before) !== JSON.stringify(parent);
+      if (registry && Array.isArray(list(parent)) && list(parent).includes(keyName) && (changed || JSON.stringify(list(before)) === JSON.stringify(list(parent)))) continue;
+    }
     if (!keyName && !e.resolved) continue; // a workspace package's own entry
     const m = REGISTRY_URL.exec(String(e.resolved || ""));
     if (!m) { bad(`resolved is not a registry tarball URL (${String(e.resolved).slice(0, 80)})`); continue; }

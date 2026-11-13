@@ -5,15 +5,18 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { provisionDatabase, WAREHOUSE } from "./database.js";
 import { createEngine, type Engine } from "./deploy.js";
-import { SEND_SCRIPT, TIMEOUT_MS, type Resolve, type Send } from "./api.js";
+import { apiTarget, checkPath, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, type Resolve, type Send } from "./api.js";
+import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, forCaller, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type ProbeResult } from "./checks.js";
+import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { RENDER_TIMEOUT_MS, renderArgs, VIEW_IMAGE, type Lookup, type Render, type ViewResult } from "./view.js";
+import { RENDER_TIMEOUT_MS, renderArgs, VIEW_IMAGE, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
 import { checkout, diffSince, resolveCommit, show, type GitEnv } from "./git.js";
 import { loadRegistry, type App } from "./registry.js";
 import { pickService, scriptCommand } from "./run.js";
 import { posix } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { EDGE_CONTAINER, edgeTarget, exposes, writeServeConfig, type EdgeTarget } from "./tailnet.js";
+import { agentSigner, IDENTITY_HEADER } from "./identity.js";
 import { readonlyPool, type WarehouseDeps } from "./sources.js";
 import { parseChecks, PROBE, withoutSamples, type Quality } from "./quality.js";
 
@@ -25,6 +28,8 @@ export interface PlatformConfig {
   appsData: string;
   secretsDir: string;
   hostSecretsDir: string;
+  identityKeyFile: string; // apps-mcp's Ed25519 key (vault identity/apps.pem): agents' identity at apps (identity.ts)
+  identityKeysHostFile: string; // the public keys.json as the Docker daemon sees it: mounted into every app
   dbPath: string;
   urlBase: string; // https://aidenhq-apps.<tailnet>.ts.net: the apps' own tailnet node, never the board's host
   edgeDir: string; // the apps node's serve config dir (tailnet.ts)
@@ -34,6 +39,7 @@ export interface PlatformConfig {
 }
 
 export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: string) => void; info: (o: object, m: string) => void }) {
+  const sign = agentSigner(cfg.identityKeyFile);
   const store = openStore(cfg.dbPath);
   const apps = (): App[] => loadRegistry(cfg.registryPath, cfg.modulesRegistryPath);
   const find = (name: string): App => apps().find((a) => a.name === name) ?? (() => { throw new Error(`unknown app ${name}`); })();
@@ -73,8 +79,10 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     appsData: cfg.appsData,
     secretsDir: cfg.secretsDir,
     hostSecretsDir: cfg.hostSecretsDir,
+    identityKeysHostFile: cfg.identityKeysHostFile,
     checkout: (app, sha) => checkout(cfg.git, app, sha),
     probe: (app) => probe(app),
+    check: (app, declared) => checkApp(app, declared),
     expose: () => syncEdge().catch((err) => log.warn({ err: String(err) }, "apps node sync failed")),
     // Over the Docker socket as the superuser (local socket auth inside the container): no network path or password needed.
     provisionDb: (app) => provisionDatabase(app, { secretsDir: cfg.secretsDir, sql: (q) => exec(["exec", "-i", WAREHOUSE.container, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", "warehouse", "-d", WAREHOUSE.db], { input: q }).then(() => undefined) }),
@@ -163,10 +171,14 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     return { sha: last.sha, service: svc, command };
   }
   /** app_api's transport: a one-shot container on the app's network (like the probe); the request, bearer included, goes on stdin, never argv. */
-  const sendApi: Send = async (app, req, container) => {
+  /** status 0: the request got no answer (body: why). Throws only when the container couldn't run. */
+  const sendRaw = async (req: ApiRequest, container: string): Promise<{ status: number; body: string }> => {
     if (!/^[0-9a-f]{64}$/.test(container)) throw new Error("bad container id");
-    const out = await exec(["run", "--rm", "-i", "--pull", "never", "--network", `container:${container}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "128m", cfg.healthImage, "node", "-e", SEND_SCRIPT], { input: JSON.stringify(req), timeout: TIMEOUT_MS + 15_000 });
-    const r = JSON.parse(out) as { status: number; body: string };
+    const out = await exec(["run", "--rm", "-i", "--pull", "never", "--network", `container:${container}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "128m", cfg.healthImage, "node", "-e", SEND_SCRIPT], { input: JSON.stringify(req), timeout: (req.timeout ?? TIMEOUT_MS) + 15_000 });
+    return JSON.parse(out) as { status: number; body: string };
+  };
+  const sendApi: Send = async (_app, req, container) => {
+    const r = await sendRaw(req, container);
     if (!r.status) throw new Error(r.body);
     return r;
   };
@@ -182,17 +194,16 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   const queue: (() => void)[] = [];
   let pulled: Promise<unknown> | undefined;
   const ensureImage = () => (pulled ??= exec(["image", "inspect", VIEW_IMAGE]).catch(() => exec(["pull", "-q", VIEW_IMAGE], { timeout: 600_000 })).catch((e) => { pulled = undefined; throw e; }));
-  const render: Render = async (network, req) => {
+  /** One run of a renderer script (view.ts's image and hardening) on a docker network: its stdout. */
+  const renderWith = async (network: string, script: string, input: object, timeout: number): Promise<string> => {
     await ensureImage();
     if (renders >= 2) await new Promise<void>((ok) => queue.push(ok));
     renders++;
     const name = `aidenhq-view-${randomBytes(6).toString("hex")}`;
     try {
-      const args = renderArgs(network, VIEW_IMAGE);
+      const args = renderArgs(network, VIEW_IMAGE, script);
       args.splice(1, 0, "--name", name);
-      const r = JSON.parse(await exec(args, { input: JSON.stringify(req), timeout: RENDER_TIMEOUT_MS })) as ViewResult;
-      if (r.error) throw new Error(r.error);
-      return r;
+      return await exec(args, { input: JSON.stringify(input), timeout });
     } catch (e) {
       await exec(["rm", "-f", name]).catch(() => undefined); // a killed `docker run` leaves its container running
       throw e;
@@ -201,6 +212,79 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       queue.shift()?.();
     }
   };
+  const render: Render = async (network, req) => {
+    const r = JSON.parse(await renderWith(network, VIEW_SCRIPT, req, RENDER_TIMEOUT_MS)) as ViewResult;
+    if (r.error) throw new Error(r.error);
+    return r;
+  };
+
+  /**
+   * The render and agent probes (checks.ts) on a deployed local app, from inside its own container's network namespace like
+   * app_view and app_api. A probe that can't run (remote host, renderer or Docker trouble) is a warning, never a failure.
+   */
+  async function checkApp(app: App, declared: Declared): Promise<ProbeResult[]> {
+    const p = plan(app, declared);
+    const all: [Kind, string][] = [...p.render.map((x): [Kind, string] => ["render", x.path]), ...p.agent.map((x): [Kind, string] => ["agent", x.path])];
+    const skip = (why: string) => all.map(([k, path]) => probeResult(k, path, [{ hard: false, what: `not checked: ${why}` }]));
+    if (!all.length) return [];
+    if (app.host !== "local") return skip(`${app.name} runs on docker context ${app.host}`);
+    if (!app.health.url) return skip("no health.url names the service and port");
+    const t = apiTarget(app);
+    const container = await targetContainer(app, t.service, resolveApi);
+    const base = `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}`;
+    const out: ProbeResult[] = [];
+    // The renderer image (~1 GB) is never pulled inside a deploy: absent, the render probes are skipped and it is pulled
+    // in the background for next time.
+    const haveImage = p.render.length ? await exec(["image", "inspect", VIEW_IMAGE]).then(() => true, () => false) : false;
+    if (p.render.length && !haveImage) {
+      void ensureImage().catch(() => undefined);
+      out.push(...p.render.map((x) => probeResult("render", x.path, [{ hard: false, what: "not checked: the renderer image is being pulled (try app_check in a few minutes)" }])));
+    }
+    if (p.render.length && haveImage) {
+      const secret = sign(app.name, "deploy-check", { role: "member", methods: ["GET", "HEAD"] });
+      const headers = { [IDENTITY_HEADER]: secret };
+      let facts: { pages: PageFacts[]; error?: string } = { pages: [] };
+      try {
+        const raw = await renderWith(`container:${container}`, CHECK_SCRIPT, { pages: p.render.map((x) => ({ path: x.path, url: base + x.path })), headers }, CHECK_TIMEOUT_MS + 10_000);
+        facts = JSON.parse(raw.replaceAll(secret, "***"));
+      } catch (e) {
+        facts = { pages: [], error: String((e as Error).message ?? e) };
+      }
+      for (const x of p.render) {
+        const f = facts.pages.find((g) => g.path === x.path);
+        out.push(probeResult("render", x.path, f ? judgePage(f, x.declared) : [{ hard: false, what: `not checked: the renderer didn't finish${facts.error ? ` (${facts.error.slice(0, 120)})` : ""}` }]));
+      }
+    }
+    for (const x of p.agent) {
+      if (!app.api) {
+        out.push(probeResult("agent", x.path, [{ hard: true, what: "checks.agent is declared but the app has no agent API (api: in the registry)" }]));
+        continue;
+      }
+      try {
+        checkPath(app, x.path); // the bearer goes only under the app's agent API paths
+      } catch (e) {
+        out.push(probeResult("agent", x.path, [{ hard: true, what: String((e as Error).message) }]));
+        continue;
+      }
+      const token = sign(app.name, "deploy-check", { role: "admin", methods: ["GET"], path: x.path.split("?")[0] });
+      const req: ApiRequest = { url: base + x.path, method: "GET", headers: { [IDENTITY_HEADER]: token, accept: "application/json" }, timeout: AGENT_TIMEOUT_MS };
+      const r = await sendRaw(req, container).catch(() => ({ status: -1, body: "" }));
+      out.push(probeResult("agent", x.path, r.status < 0 ? [{ hard: false, what: "not checked: the probe container didn't run" }] : judgeAgent(r, x.declared)));
+    }
+    return out;
+  }
+
+  /** app_check: the probes now, with the running commit's declared paths (its manifest; unreadable: the inferred ones). */
+  async function checkNow(app: App, callerKey: string): Promise<ProbeResult[]> {
+    const sha = store.running(app.name);
+    const text = sha ? await show(cfg.git, app, sha, posix.join(app.path, MANIFEST_FILE)).catch(() => undefined) : undefined;
+    let declared: Declared = {};
+    try {
+      declared = parseManifest(text).checks ?? {};
+    } catch {}
+    const c = forCaller(app, declared, callerKey); // the signed-identity agent probe only for the app's api.callers
+    return [...(await engine.check(app, c.declared)), ...c.skipped];
+  }
   const lookup: Lookup = (host) => dnsLookup(host, { all: true });
   const auditView = (o: object) => log.info(o, "view");
   // Agents' warehouse reads (sources.ts): the readonly login, opened on first use (the warehouse may deploy after us).
@@ -217,6 +301,6 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   const qualityFor = (a: App): Quality => quality.get(a.name) ?? { state: "unknown", why: "not probed yet" };
   /** Every probed app's checks without samples (the board's detector raises the failing ones; samples never leave here). */
   const qualityOf = () => apps().filter((a) => a.health.url).map((a) => ({ name: a.name, ...withoutSamples(qualityFor(a)) }));
-  return { qualityOf, qualityFor, syncEdge, warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
+  return { sign, checkNow, qualityOf, qualityFor, syncEdge, warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;

@@ -26,8 +26,8 @@ describe("flow-graded: fail, re-dispatch, pass", () => {
     assert.deepEqual(paperclip.gradeLog.map((v) => v.outcome), ["needs_revision", "satisfied"]);
     assert.notEqual(paperclip.gradeLog[0].version, paperclip.gradeLog[1].version, "each verdict bound to its own version");
     assert.ok(/From the grader, not Dana's own words/.test(JSON.stringify(t.fakeLog())), "the re-dispatch says who is asking");
-    // Cross-family: an Anthropic-engine author gets GLM first.
-    assert.match(paperclip.graderCalls[0].model, /glm/);
+    // Cross-family: an Anthropic-engine author gets Luna first.
+    assert.match(paperclip.graderCalls[0].model, /luna/);
     await waitFor("the parent is told", () => (paperclip.comments.get("parent") ?? []).some((c) => /PEN-2 .* is done, graded against its rubric/.test(c.body)));
   });
 });

@@ -1,5 +1,6 @@
-/* AidenHQ design system: components. Plain CSS classes on top of tokens.css (load that first, then this, then kit.js).
-   Phone first: everything works at 390px and widens from there. Every example is in catalog.html.
+/* DEPRECATED: kept only for apps that still vendor it. New apps use shadcn/ui from the app starter (README.md).
+   AidenHQ design system: components. Plain CSS classes on top of tokens.css (load that first, then this, then kit.js).
+   Phone first: everything works at 390px and widens from there. (Its catalog was removed with the move to shadcn/ui.)
    Apps vendor this file unchanged (keep the version line); app CSS only adds what the kit doesn't have. */
 /* design-system version: 2.0.0 */
 

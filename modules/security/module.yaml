@@ -12,7 +12,7 @@ agents:
     department: security
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
-    reasoning_effort: medium
+    reasoning_effort: high
     timeout_sec: 1800
     connections:
       # src_security (findings) through the warehouse tools; web reads (web search is on for every agent).
@@ -23,8 +23,9 @@ agents:
   red-teamer:
     department: security
     adapter: codex_local
-    # GLM: a lower refusal rate for offensive security work (owner, 2026-11-11).
-    model: ~z-ai/glm-latest
+    # GLM: a lower refusal rate for offensive security work (owner, 2026-11-11). GLM Flash at high since 2026-11-13 (the
+    # owner's pick after a blind bake-off).
+    model: ~z-ai/glm-flash-latest
     reasoning_effort: high
     timeout_sec: 2400
     # No computer in v1: it attacks through apps-mcp's existing paths (app_view, app_api), so it adds no new network
@@ -46,6 +47,7 @@ routines:
     webhook: true # fired by security-scanner after a pass that wrote anything
     webhook_base: http://paperclip:3100 # the scanner calls it from inside the compose network
     secrets_prefix: security_scan_webhook # setup saves <prefix>_url / _secret for the scanner
+    autonomy: full # fired by our own scanner over advisories, not outside text: CVE fixes stay the AI reviewer's
     schedules:
       - { cron: "0 10 * * *", timezone: "${settings.timezone}", label: "daily" }
   security-weekly:
@@ -61,8 +63,9 @@ routines:
     title: Red team new apps and agents
     agent: red-teamer
     description: |
-      Today is {{date}}. Follow "New targets" in your handbook: compare the apps and agents against your Red team log;
-      attack each new one under the rules of engagement. If nothing is new, close this task at once with "nothing new".
+      Today is {{date}}. Follow "Daily pass" in your handbook: diff each app and agent against its last Red team log line
+      and test at the depth the change calls for, under the rules of engagement. Post one log comment with the exact tested
+      shas, then close this task with one line (or "nothing new").
     concurrency: skip_if_active
     schedules:
       - { cron: "0 11 * * *", timezone: "${settings.timezone}", label: "daily" }

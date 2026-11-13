@@ -11,6 +11,10 @@ import YAML from "yaml";
 const PRODUCT_GATES = [
   // The approval path: tiers, the reviewer and its policy, the owner's-words check, the merge queue's writes, apply; the job jail.
   /^services\/runner\/src\/(tiers|review|authorize|merges|apply|netjail|state|config|github-app|engines)\.mjs$/,
+  // What the runner trusts in an agent-writable workspace: host git on its clones (config scrub, .git checks), the files it
+  // reads and writes there (outputs, Primer, attachments), the box/jail choice per Engineer, and the computer box rules.
+  /^services\/runner\/src\/(git|files|workspace|commands|primer)\.mjs$/,
+  /^scripts\/computers\.mjs$/,
   // The runner's main: it builds the verified state classify() trusts (requester, chain, repos) and holds the GitHub write paths.
   /^services\/runner\/src\/main\.mjs$/,
   /^modules\/core\/security\//,
@@ -47,11 +51,13 @@ export function highest(parts) {
 
 /**
  * The tier of one request. `s` is the verified state:
- * - every action: { agentsOrg, productRepo, instanceRepo, requester: { platform }, sticky }
+ * - every action: { agentsOrg, productRepo, instanceRepo, requester: { platform }, sticky, routineAutonomy }
+ * - routineAutonomy: the cap of the routine whose run the task chain started from (routineCap); absent when none
+ * - connections: each connection's tool tags from the compiled config ({ name: { tools: { read, write, destructive } } })
  * - every action's requester.platform: the Platform Engineer's line (the Platform Engineer itself, a task the Agent
  *   Architect made, or the owner's own task), the only one that writes to the product repo below Tier 2
  * - push/pr: branches [{ repo, branch, defaultBranch, deployBranch?, empty, files, texts? }]
- * - merge: prs [{ repo, files, texts?, checks: [{ name, ok, pending }] (advisory checks such as design-review left out), headMatches, ownHead (a commit the runner pushed to a same-repo branch), sensitive, dependabot? }]
+ * - merge: prs [{ repo, files, texts?, checks: [{ name, ok, pending }] (advisory checks such as design-review left out), headMatches, ownHead (a commit the runner pushed to a same-repo branch), sensitive, dependabot?, designReviewOverdue? (a UI PR whose design review never came) }]
  *   (texts, product repo only: { path: { base, head } } for each changed module.yaml and compose file, and for every changed
  *   file of a PR the runner verified as Dependabot's from the API: its author and every commit; then `dependabot: true`)
  * - close: prs [{ repo, dependabot? }] (`dependabot`: a product PR whose author the runner read from the API as dependabot[bot])
@@ -67,7 +73,27 @@ export function classify(action, s) {
   const t = highest(action === "push" || action === "pr" ? publishParts(action, s) : action === "merge" ? mergeParts(s) : action === "close" ? closeParts(s) : action === "apply" ? applyParts(s) : []);
   // Sticky: after the owner or the reviewer rejected this action on this task, it is the owner's from then on.
   if (s.sticky && !t.reject && t.tier < 2) return T(2, "sticky", `rejected before on this task (was: ${t.reason})`);
+  // A routine's cap (its `autonomy`): the stricter of it and the instance's wins. tier0: Tier 1 is the owner's; off: Tier 0 too.
+  if (!t.reject && ((s.routineAutonomy === "off" && t.tier < 2) || (s.routineAutonomy === "tier0" && t.tier === 1)))
+    return T(2, "routine-autonomy", `a routine's run started this task and that routine's autonomy is ${s.routineAutonomy} (was: ${t.reason})`);
   return t;
+}
+
+/** A routine's `autonomy` values, strictest first (the instance setting's names). */
+export const AUTONOMY = ["off", "tier0", "full"];
+/**
+ * The cap on a task from the routines its work came from. `origins`: the task and every issue it traces back to, as
+ * Paperclip returns them: its parents, and through each one's `originRunId` (Paperclip's record of the run that created it,
+ * which no agent sets) the issue that run worked on, and so on. So an unparented task a routine's run created keeps the
+ * cap. `complete`: the trace finished; `routines`: the grants table's {<Paperclip routine id>: autonomy}. The strictest
+ * routine found wins. Fails closed: a routine the table doesn't know, or an invalid value, is "off" (setup writes each
+ * routine's autonomy into the table before it adds the routine's triggers), and so is a trace too long to finish. None
+ * found is no cap.
+ */
+export function routineCap(origins, complete, routines = {}) {
+  const caps = origins.filter((i) => i?.originKind === "routine_execution").map((run) => (AUTONOMY.includes((routines ?? {})[run.originId]) ? routines[run.originId] : "off"));
+  if (!complete) caps.push("off");
+  return caps.length ? AUTONOMY[Math.min(...caps.map((c) => AUTONOMY.indexOf(c)))] : undefined;
 }
 
 /**
@@ -137,6 +163,8 @@ function mergeParts(s) {
     if (!(p.checks ?? []).length) return T(2, "no-checks", `${ref} has no named checks`);
     const red = p.checks.filter((c) => !c.ok && !c.pending);
     if (red.length) return T(2, "checks-not-green", `${ref}: ${red.map((c) => c.name).join(", ")} failed on the head`);
+    // A UI PR whose design review never came within its time after the checks went green (merges.mjs DESIGN_REVIEW).
+    if (p.designReviewOverdue) return T(2, "design-review-missing", `${ref} changes UI files and the UI/UX Designer's design review never came within 2 hours of its checks going green`);
     // A head the runner didn't push (a fork, someone else's push): the reviewer reads the diff first.
     if (!p.ownHead) return T(1, "agents-org-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo}`);
     // Merged at once when CI is green (owner, 2026-11-12): the PR merges on its own (an independent queue), strict and bound to
@@ -355,7 +383,7 @@ function productFileParts(files, texts = {}, s) {
     else if (/^modules\/[^/]+\/module\.yaml$/.test(f) || COMPOSE.test(f)) {
       const t = texts?.[f];
       if (!t) parts.push(T(2, "unknown-content", `couldn't read ${f} on both sides`));
-      else parts.push(...(COMPOSE.test(f) ? composeParts(f, t.base, t.head) : moduleParts(f, t.base, t.head)));
+      else parts.push(...(COMPOSE.test(f) ? composeParts(f, t.base, t.head) : moduleParts(f, t.base, t.head, s.connections)));
     }
   }
   return parts;
@@ -389,7 +417,7 @@ const MODULE_SAFE = new Set(["name", "description", "requires", "labels", "compa
  * A module.yaml change, by content (the instance apply's rules, applied to the product): new or wider grants, new tools,
  * models, roles, images, new agents, credentials, the tool-only sandbox (codex_args) and sensitive apps stay the owner's.
  */
-function moduleParts(f, baseText, headText) {
+function moduleParts(f, baseText, headText, connections = {}) {
   const b = baseText === undefined ? {} : parse(baseText);
   const h = headText === undefined ? undefined : parse(headText);
   if (b === null || h === null) return [T(2, "unparseable", `${f} doesn't parse`)];
@@ -404,7 +432,8 @@ function moduleParts(f, baseText, headText) {
         if (!ha) continue; // an agent removed: the reviewer's
         if (!ba) why("module-new-agent", `adds agent ${key}`);
         else {
-          const wider = newGrants(ba.connections, ha.connections);
+          // Tags as compiled, with this module's own connections as the change leaves them (a retag here counts).
+          const wider = newGrants(ba.connections, ha.connections, { ...connections, ...(h.connections ?? {}) });
           if (wider.length) why("new-grants", `${key} gets new grants: ${wider.join(", ")}`);
           const roles = [ha.roles ?? []].flat().filter((r) => ![ba.roles ?? []].flat().includes(r));
           if (roles.length) why("module-roles", `${key} gets roles ${roles.join(", ")}`);
@@ -415,12 +444,16 @@ function moduleParts(f, baseText, headText) {
     } else if (k === "routines") {
       const models = changedKeys(b.routines, h.routines).filter((r) => h.routines?.[r] && !eq(b.routines?.[r]?.model, h.routines[r].model));
       if (models.length) why("module-routine-model", `routine model changes (${models.join(", ")})`);
+      const caps = routineAutonomyChanges(b.routines, h.routines);
+      if (caps.length) why("routine-autonomy", `routine autonomy changes (${caps.join(", ")})`);
     } else if (k === "connections") {
       for (const c of changedKeys(b.connections, h.connections)) {
         const [bc, hc] = [b.connections?.[c], h.connections?.[c]];
         if (!hc) continue;
         const tools = (x) => Object.values(x?.tools ?? {}).flat();
-        const added = !bc ? ["(new connection)"] : tools(hc).filter((t) => !tools(bc).includes(t) || ((hc.tools?.write ?? []).includes(t) && !(bc.tools?.write ?? []).includes(t)));
+        // A tool newly under write or read (a destructive one retagged) widens what the `write` or `read` shorthand grants.
+        const moved = (tag) => (t) => (hc.tools?.[tag] ?? []).includes(t) && !(bc.tools?.[tag] ?? []).includes(t);
+        const added = !bc ? ["(new connection)"] : tools(hc).filter((t) => !tools(bc).includes(t) || moved("write")(t) || moved("read")(t));
         const fields = changedKeys(bc ?? {}, hc).filter((x) => x !== "guide" && x !== "tools");
         if (added.length || fields.length) why("module-tools", `connection ${c}: ${[...added, ...fields].join(", ")}`);
       }
@@ -442,17 +475,28 @@ const parse = (text) => {
 const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const changedKeys = (a = {}, b = {}) => [...new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])].filter((k) => !eq(a?.[k], b?.[k]));
 
-/** Grants `head` gives that `base` didn't: a connection added, or a wider grant (read → write, more tools). */
-export function newGrants(base = {}, head = {}) {
+/**
+ * Grants `head` gives that `base` didn't: a connection added, or a wider grant (read → write, more tools). `conns` is each
+ * connection's tags ({ name: { tools: { read, write, destructive } } }, from the compiled config): where `write` was, a list
+ * is wider when it names any tool outside the connection's read and write tags (a destructive one: `write` never covers it),
+ * and wider whenever the connection's tags aren't known (fail closed).
+ */
+export function newGrants(base = {}, head = {}, conns = {}) {
   const out = [];
   for (const [conn, g] of Object.entries(head ?? {})) {
     const was = (base ?? {})[conn];
-    if (eq(was, g) || was === "write" || (was === "read" && g === "read")) continue;
+    if (eq(was, g) || (was === "read" && g === "read")) continue;
+    if (was === "write" && g === "read") continue;
+    const tags = conns?.[String(conn).replace(/\?$/, "")]?.tools;
+    if (was === "write" && Array.isArray(g) && tags && g.every((t) => [...(tags.read ?? []), ...(tags.write ?? [])].includes(t))) continue;
     if (Array.isArray(g) && Array.isArray(was) && g.every((t) => was.includes(t))) continue;
     out.push(conn);
   }
   return out;
 }
+
+/** Routines whose `autonomy` (their cap on approvals) is set, changed or dropped: always the owner's. */
+const routineAutonomyChanges = (b = {}, h = {}) => [...new Set([...Object.keys(b ?? {}), ...Object.keys(h ?? {})])].filter((r) => (b?.[r]?.autonomy != null || h?.[r]?.autonomy != null) && !eq(b?.[r]?.autonomy, h?.[r]?.autonomy) && h?.[r]);
 
 const AGENT_SAFE = new Set(["name", "description", "model", "reasoning_effort", "timeout_sec", "routines", "budget", "max_parallel", "heartbeat"]);
 const OVERRIDE_SAFE = { agents: new Set(["model", "reasoning_effort", "timeout_sec", "heartbeat"]), routines: new Set(["schedules", "status", "model"]) };
@@ -492,6 +536,8 @@ function applyParts(s) {
 function agentDefPart(key, base, head, s) {
   if (base === null || head === null) return T(2, "unparseable", `agents/${key}/agent.yaml doesn't parse`);
   if (head === undefined) return T(2, "agent-removed", `removes agent ${key}`);
+  const caps = routineAutonomyChanges(base?.routines, head.routines);
+  if (caps.length) return T(2, "routine-autonomy", `${key}: routine autonomy changes (${caps.join(", ")})`);
   if (base === undefined) {
     if (head.trial !== true) return T(2, "untrialed-agent", `new agent ${key} isn't in trial`);
     // Only the safe fields (no roles, image or other privileges); any write grant goes to the reviewer at least.
@@ -501,7 +547,7 @@ function agentDefPart(key, base, head, s) {
     return s.ownerStarted ? T(0, "trial-agent-new", `adds ${key} in trial, on a task the owner started`) : T(1, "trial-agent-new-agent-task", `adds ${key} in trial, on an agent-origin task`);
   }
   const keys = changedKeys(base, head);
-  const wider = newGrants(base.connections, head.connections);
+  const wider = newGrants(base.connections, head.connections, s.connections);
   if (wider.length) return T(2, "new-grants", `${key} gets new grants: ${wider.join(", ")}`);
   const other = keys.filter((k) => k !== "connections" && k !== "trial" && !AGENT_SAFE.has(k));
   if (other.length) return T(2, "agent-fields", `${key} changes ${other.join(", ")}`);
@@ -545,7 +591,7 @@ function instanceParts(s) {
 export function normalizeApp(raw) {
   const a = { caps: [], connects: [], secrets: [], stateful: false, untrusted: false, ...(raw ?? {}) };
   if (a.database) a.connects = [...new Set([...a.connects, a.database])];
-  a.secrets = [...new Set([...a.secrets, ...(a.database ? ["DATABASE_URL"] : []), ...(a.api ? [a.api.token] : []), ...(a.share?.host ? ["AIDENHQ_GATE_SECRET"] : [])])];
+  a.secrets = [...new Set([...a.secrets, ...(a.database ? ["DATABASE_URL"] : [])])];
   return a;
 }
 

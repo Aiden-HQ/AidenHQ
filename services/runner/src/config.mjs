@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const PRIVATE_BWRAP = "/opt/aidenhq/bwrap/bwrap";
 
 const expand = (p) => (typeof p === "string" && p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
@@ -87,7 +88,14 @@ export function loadConfig() {
     // tokens the runner signs with gateway_job_secret; only the gateway holds the OpenRouter key.
     gatewayUrl: cfg.gateway?.url ?? "http://127.0.0.1:8201",
     gatewayJobSecretFile: join(secrets, "gateway_job_secret"),
+    // Box jobs (an Engineer with a computer, the App Engineer): the computer launcher's job routes and the key that opens only
+    // them; the box reaches the model and its connections through the launcher's gateway.
+    launcherUrl: env.AIDENHQ_LAUNCHER_URL ?? "http://10.231.0.1:8199",
+    computersRunnerKeyFile: join(secrets, "computers_runner_key"),
+    boxGatewayUrl: "http://10.231.2.1:8200",
     claudeTokenFile: expand(cfg.engines?.claude?.token_file ?? join(secrets, "claude_oauth_token")),
+    // codex-openrouter's Codex homes, one per task (engines.mjs codexHome): never the host's ~/.codex.
+    codexOpenrouterHome: expand(cfg.engines?.["codex-openrouter"]?.home ?? join(cfg.state_dir ?? "~/.local/state/aidenhq-runner", "codex-openrouter")),
     claudeConfigDir: expand(cfg.engines?.claude?.config_dir ?? join(cfg.state_dir ?? "~/.local/state/aidenhq-runner", "claude")),
     // Primer for every Engineer job, read-only: primer-mcp's loopback port.
     primerMcpUrl: env.PRIMER_RUNNER_URL ?? cfg.primer?.url ?? "http://127.0.0.1:3123/mcp/read",
@@ -132,9 +140,14 @@ export function loadConfig() {
       ],
     },
     // Engineer jobs get a network namespace of their own through pasta (engines.mjs jailed); without it, the host's.
+    // The private bwrap ops/vm/setup.sh installs with its own AppArmor profile (/usr/bin/bwrap keeps the release's
+    // policy); a host set up before it has only the system's.
+    bwrap: existsSync(PRIVATE_BWRAP) ? PRIVATE_BWRAP : "bwrap",
     pasta: (env.PATH ?? "").split(":").filter((d) => d.startsWith("/")).map((d) => join(d, "pasta")).find((p) => existsSync(p)),
     workDir: expand(cfg.work_dir ?? "~/aidenhq-work"),
     stateDir,
     ghWrapperDir: join(REPO_ROOT, "services/runner/bin"),
+    // The pinned Chromium headless shell and playwright-core (ops/vm/setup.sh), read-only in jobs (bin/aidenhq-browse).
+    browserDir: "/opt/aidenhq/browser",
   };
 }

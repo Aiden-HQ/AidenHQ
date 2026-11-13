@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import YAML from "yaml";
-import { classify, dependabotCommits, stickyFrom } from "../src/tiers.mjs";
+import { classify, dependabotCommits, newGrants, routineCap, stickyFrom } from "../src/tiers.mjs";
+import { origins } from "../src/paperclip.mjs";
 
 test("sticky: a rejected product PR card that carried the merge and a rejected merge count for each other", () => {
   const rejected = (action, args = {}) => [{ action, args, state: "rejected" }];
@@ -42,6 +43,53 @@ test("push and draft pr", () => {
 
 test("raise_cap is always the owner's", () => assert.equal(tierOf(classify("raise_cap", { ...base, sticky: false })), 2));
 
+test("grants: a destructive tool named where `write` was is wider, by its tag, not its name", () => {
+  const conns = { files: { tools: { read: ["f_get"], write: ["f_put"], destructive: ["f_wipe"] } } };
+  assert.deepEqual(newGrants({ files: "write" }, { files: ["f_get", "f_wipe"] }, conns), ["files"], "f_wipe is tagged destructive");
+  assert.deepEqual(newGrants({ files: "write" }, { files: ["f_get", "f_put"] }, conns), [], "a narrower list");
+  assert.deepEqual(newGrants({ files: "write" }, { files: ["f_get"] }, {}), ["files"], "tags unknown: fail closed");
+  const agent = (g) => def({ name: "K", description: "d", model: "m", budget: 5, connections: { files: g } });
+  assert.equal(tierOf(apply(["agents/k/agent.yaml"], { "agents/k/agent.yaml": agent("write") }, { "agents/k/agent.yaml": agent(["f_wipe"]) }, { connections: conns })), 2, "on an apply");
+});
+
+test("a routine run's unparented task keeps the cap: traced through Paperclip's originRunId, not the parent", async () => {
+  // r1's run worked on RUN-1 (the routine's run task) and created T-2 with no parent; T-2's Engineer delegation is T-3.
+  const issues = {
+    // A routine run task's originRunId is the routine run, not a heartbeat run: looking it up 404s.
+    "run-1": { id: "run-1", originKind: "routine_execution", originId: "r1", originRunId: "routine-run-1" },
+    "t-2": { id: "t-2", parentId: null, originRunId: "hb-1" },
+    "t-3": { id: "t-3", parentId: "t-2", originRunId: "hb-2" },
+  };
+  const runs = { "hb-1": { issueId: "run-1" }, "hb-2": { issueId: "t-2" } };
+  const pc = { issue: async (id) => issues[id], run: async (id) => runs[id] ?? Promise.reject(new Error("404 Heartbeat run not found")) };
+  for (const t of ["t-2", "t-3"]) {
+    const { issues: found, complete } = await origins(pc, issues[t]);
+    assert.equal(routineCap(found, complete, { r1: "tier0" }), "tier0", `${t} keeps r1's cap`);
+  }
+  const own = await origins(pc, { id: "o-1", parentId: null });
+  assert.equal(routineCap(own.issues, own.complete, { r1: "tier0" }), undefined, "the owner's own task: no cap");
+});
+
+test("a routine's autonomy caps the tasks its run started; changing it is the owner's", () => {
+  const run = { originKind: "routine_execution", originId: "r1" };
+  assert.equal(routineCap([{}, run], true, { r1: "tier0" }), "tier0", "a delegation under the run task");
+  assert.equal(routineCap([run], true, {}), "off", "a routine the table doesn't know: fails closed");
+  assert.equal(routineCap([run], true, { r1: "yes" }), "off", "an invalid value: fails closed");
+  assert.equal(routineCap([run], true, { r1: "full" }), "full", "full: no cap");
+  assert.equal(routineCap([{}, {}], true, {}), undefined, "no routine run: no cap");
+  assert.equal(routineCap([{}], false, {}), "off", "a trace too long to finish: strictest");
+  assert.equal(routineCap([{}, run, { originKind: "routine_execution", originId: "r2" }], true, { r1: "full", r2: "tier0" }), "tier0", "the strictest routine found");
+  assert.equal(tierOf(pub("pr", { repo: "acme/bor" }, { routineAutonomy: "tier0" })), 2, "tier0: Tier 1 is the owner's");
+  assert.equal(tierOf(pub("push", {}, { routineAutonomy: "tier0" })), 0, "tier0: Tier 0 still runs");
+  assert.equal(tierOf(pub("push", {}, { routineAutonomy: "off" })), 2, "off: Tier 0 is the owner's too");
+  assert.equal(tierOf(pub("pr", { repo: "acme/bor" }, { routineAutonomy: "full" })), 1, "full: no cap");
+  const agent = (r) => def({ name: "K", description: "d", model: "m", budget: 5, routines: r });
+  const r0 = { scan: { title: "S", schedules: [] } };
+  assert.equal(tierOf(apply(["agents/k/agent.yaml"], { "agents/k/agent.yaml": agent(r0) }, { "agents/k/agent.yaml": agent({ scan: { ...r0.scan, autonomy: "full" } }) })), 2, "an instance routine raising its own cap");
+  assert.equal(tierOf(apply(["agents/k/agent.yaml"], { "agents/k/agent.yaml": agent(r0) }, { "agents/k/agent.yaml": agent({ scan: { ...r0.scan, schedules: [{ cron: "0 9 * * *" }] } }) })), 1, "a schedule change stays the reviewer's");
+  assert.equal(tierOf(apply(["instance.yaml"], { "instance.yaml": inst() }, { "instance.yaml": inst({}, "overrides:\n  routines:\n    scan: { autonomy: full }\n") })), 2, "an override of a routine's autonomy");
+});
+
 test("product repo PRs: platform only, gate files are the owner's", () => {
   assert.equal(tierOf(pub("pr", { repo: base.productRepo }, { requester: { platform: true } })), 1);
   assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["services/runner/src/merges.mjs"] }, { requester: { platform: true } })), 2);
@@ -59,7 +107,7 @@ test("product repo: branch push, PR and merge are Tier 1 for the Platform Engine
   assert.equal(tierOf(prod("push")), 1, "a branch push");
   assert.equal(tierOf(prod("push", { branch: "main" })), 2, "the default branch");
   assert.equal(tierOf(prod("push", {}, { requester: { platform: false } })), 2, "another agent's push stays the owner's");
-  assert.equal(tierOf(prod("pr", { files: ["services/board/src/tasks.ts", "package-lock.json", "scripts/computers.mjs", "services/runner/src/prompt.mjs"] })), 1, "general code and computers.mjs are not gate code");
+  assert.equal(tierOf(prod("pr", { files: ["services/board/src/tasks.ts", "package-lock.json", "services/runner/src/prompt.mjs"] })), 1, "general code is not gate code");
   for (const g of ["services/runner/src/tiers.mjs", "modules/core/security/policy.md", "scripts/no-shell.mjs", "services/computer/launcher.mjs", "services/computer/plugin/worker.js", "services/computer/images/engineer/Dockerfile", "services/runner/src/main.mjs", "services/runner/src/engines.mjs", "services/runner/src/state.mjs", "services/runner/src/config.mjs", "services/runner/src/github-app.mjs", "scripts/paperclip-setup.mjs", "scripts/modules.mjs", "services/gateway/lib.mjs", "scripts/verify-security.sh", "scripts/supply-chain/npm-age.mjs", ".github/workflows/ci.yml", "services/board/src/approvals.ts", "modules/glean/connections/glean-mcp/src/agent-auth.ts"])
     assert.equal(tierOf(prod("pr", { files: ["package.json", g] })), 2, g);
   assert.equal(tierOf(prod("pr", { files: ["modules/fleet-ops/agents/fleet-ops/AGENTS.md"] })), 2, "a role holder's handbook");
@@ -81,6 +129,8 @@ test("product repo: a bump that quietly edits a gate file is the owner's", () =>
   assert.equal(tierOf(t), 2);
   assert.equal(t.rule, "product-gate");
   assert.match(t.reason, /review\.mjs/);
+  // What the runner trusts in an agent's workspace (host git, its files) and the box rules are gate code too.
+  for (const f of ["git", "files", "workspace", "commands", "primer"].map((n) => `services/runner/src/${n}.mjs`).concat("scripts/computers.mjs")) assert.equal(prod("pr", { files: [f] }).rule, "product-gate", f);
 });
 
 test("product repo: module.yaml and compose.yaml by content", () => {
@@ -190,6 +240,7 @@ test("close", () => {
 test("merge in the agents org", () => {
   assert.equal(tierOf(merge()), 0, "named checks, all green on the exact head: merged at once (owner, 2026-11-12)");
   assert.equal(tierOf(merge({ checks: [] })), 2, "no checks");
+  assert.equal(merge({ files: ["src/web/app.css"], designReviewOverdue: true }).rule, "design-review-missing", "a UI PR whose design review never came: the owner's card");
   assert.equal(tierOf(merge({ checks: [{ name: "test", ok: true }, { name: "lint", ok: false }] })), 2, "a check not green");
   assert.equal(tierOf(merge({ checks: [{ name: "test", ok: false, pending: true }] })), 0, "checks still running: the queue merges only once green on the exact head");
   assert.equal(tierOf(merge({ checks: [{ name: "test", ok: false, pending: false }] })), 2, "a failed check");

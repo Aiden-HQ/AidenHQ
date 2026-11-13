@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,10 +57,12 @@ describe("repositories", () => {
 describe("engines and modes", () => {
   it("defaults to codex and supports glm / openrouter models", () => {
     assert.deepEqual(resolveEngine({}, cfg), { kind: "codex", model: undefined });
-    assert.deepEqual(resolveEngine({}, { ...cfg, engines: { ...cfg.engines, default: "openrouter" } }), { kind: "openrouter", model: cfg.engines.openrouter.model });
-    assert.deepEqual(resolveEngine({ engine: "glm" }, cfg), { kind: "openrouter", model: "z-ai/glm-5.3-flash" });
-    assert.deepEqual(resolveEngine({ engine: "openrouter:z-ai/glm-5.3" }, cfg), { kind: "openrouter", model: "z-ai/glm-5.3" });
-    assert.deepEqual(resolveEngine({ engine: "z-ai/glm-5.3" }, cfg), { kind: "openrouter", model: "z-ai/glm-5.3" });
+    assert.deepEqual(resolveEngine({}, { ...cfg, engines: { ...cfg.engines, default: "openrouter" } }), { kind: "codex-openrouter", model: cfg.engines.openrouter.model });
+    // OpenRouter models run on Codex through the gateway; `opencode` names the fallback.
+    assert.deepEqual(resolveEngine({ engine: "glm" }, cfg), { kind: "codex-openrouter", model: "z-ai/glm-5.3-flash" });
+    assert.deepEqual(resolveEngine({ engine: "openrouter:z-ai/glm-5.3" }, cfg), { kind: "codex-openrouter", model: "z-ai/glm-5.3" });
+    assert.deepEqual(resolveEngine({ engine: "z-ai/glm-5.3" }, cfg), { kind: "codex-openrouter", model: "z-ai/glm-5.3" });
+    assert.deepEqual(resolveEngine({ engine: "opencode" }, cfg), { kind: "openrouter", model: "z-ai/glm-5.3-flash" });
     assert.throws(() => resolveEngine({ engine: "gpt-banana" }, cfg), /unknown engine/);
   });
 
@@ -119,19 +121,48 @@ describe("engines and modes", () => {
     assert.equal(none.env.PRIMER_MCP_TOKEN, undefined);
   });
 
-  // The user's Slack and the company's Glean, read-only, for Claude Code and Codex only.
-  it("gives Claude Code and Codex the Slack and Glean read endpoints, never OpenRouter", () => {
+  it("runs codex-openrouter as Codex through the model gateway, with the job's token, effort, every read and its own Codex home", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cor-"));
+    for (const f of ["or", "secret", "primer", "slack", "glean", "grafana", "clickhouse"]) writeFileSync(join(dir, f), f === "or" ? "sk-or-realkey" : `${f}-token\n`);
+    const c = { ...cfg, openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "secret"), codexOpenrouterHome: join(dir, "homes"), primerMcpUrl: "http://127.0.0.1:3123/mcp/read", primerTokenFile: join(dir, "primer"), slackMcpUrl: "http://127.0.0.1:3125/mcp/read", slackTokenFile: join(dir, "slack"), gleanMcpUrl: "http://127.0.0.1:3126/mcp/read", gleanTokenFile: join(dir, "glean"), grafanaMcpUrl: "http://127.0.0.1:3124/mcp", grafanaTokenFile: join(dir, "grafana"), clickhouseMcpUrl: "http://127.0.0.1:3127/mcp", clickhouseTokenFile: join(dir, "clickhouse"), sandbox: { extra_writable_roots: [] } };
+    const built = buildCommand({ cfg: c, engine: { kind: "codex-openrouter", model: "~deepseek/deepseek-flash-latest", effort: "medium", reads: true }, worktree: "/w", lastMessageFile: "/x", sessionId: "s1", job: { agentId: "eng1", issueId: "i1" } });
+    const { argv, env } = built;
+    assert.deepEqual(argv.slice(0, 4), ["codex", "exec", "resume", "s1"]);
+    for (const a of ['model_provider="or"', 'model_providers.or.base_url="http://127.0.0.1:8201/api/v1"', 'model_providers.or.env_key="AIDENHQ_GATEWAY_KEY"', 'model_providers.or.wire_api="responses"', 'model_reasoning_effort="medium"', 'sandbox_mode="workspace-write"', "features.apps=false", "features.hooks=false"]) assert.ok(argv.includes(a), a);
+    assert.equal(argv[argv.indexOf("-m") + 1], "~deepseek/deepseek-flash-latest");
+    for (const r of ["primer", "slack", "glean", "grafana", "clickhouse"]) assert.ok(argv.some((a) => a.startsWith(`mcp_servers.${r}.url=`)), r);
+    // The job's own gateway token (kind agent, its Engineer and task), never the OpenRouter key; read tokens only in the env.
+    const claims = JSON.parse(Buffer.from(env.AIDENHQ_GATEWAY_KEY.slice(5).split(".")[0], "base64url"));
+    assert.deepEqual([claims.k, claims.a, claims.i], ["agent", "eng1", "i1"]);
+    assert.ok(!JSON.stringify(built).includes("sk-or-realkey"), "the OpenRouter key is nowhere in the job");
+    assert.ok(!argv.some((a) => /-token|ahqj_/.test(a)), "no token on the command line");
+    assert.equal(env.SLACK_MCP_TOKEN, "slack-token");
+    // A Codex home per task, the product's instructions and skills in it, nothing of the host's.
+    assert.equal(env.CODEX_HOME, join(dir, "homes", "i1"));
+    for (const f of ["AGENTS.md", "skills/supply-chain/SKILL.md", "skills/supply-chain/best-version.mjs", "skills/design-system/files/tokens.css"]) assert.ok(existsSync(join(env.CODEX_HOME, f)), f);
+    assert.ok(!existsSync(join(env.CODEX_HOME, "config.toml")));
+    // With private reads, no web search (private data can't leave in a query); a light Engineer gets Primer and the web.
+    assert.ok(argv.includes('web_search="disabled"'));
+    const light = buildCommand({ cfg: c, engine: { kind: "codex-openrouter", model: "m" }, worktree: "/w", lastMessageFile: "/x", job: { issueId: "i2" } });
+    assert.ok(light.argv.includes('web_search="live"'));
+    assert.ok(light.argv.some((a) => a.startsWith("mcp_servers.primer.url=")));
+    assert.ok(!light.argv.some((a) => /mcp_servers\.(slack|glean|grafana|clickhouse)\./.test(a)));
+    assert.equal(light.env.SLACK_MCP_TOKEN, undefined);
+  });
+
+  // The user's Slack and the company's Glean, read-only, for an Engineer with private reads only.
+  it("gives an Engineer with private reads the Slack and Glean read endpoints, a light one never", () => {
     const dir = mkdtempSync(join(tmpdir(), "reads-"));
     for (const f of ["claude", "or", "slack", "glean"]) writeFileSync(join(dir, f), `${f}-token\n`);
     const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), primerTokenFile: join(dir, "missing"), grafanaTokenFile: join(dir, "missing"), slackMcpUrl: "http://127.0.0.1:3125/mcp/read", slackTokenFile: join(dir, "slack"), gleanMcpUrl: "http://127.0.0.1:3126/mcp/read", gleanTokenFile: join(dir, "glean"), sandbox: { extra_writable_roots: [] } };
-    const claude = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w" });
+    const claude = buildCommand({ cfg: c, engine: { kind: "claude", reads: true }, worktree: "/w" });
     const servers = JSON.parse(claude.argv[claude.argv.indexOf("--mcp-config") + 1]).mcpServers;
     assert.deepEqual(Object.keys(servers), ["slack", "glean"]);
     assert.equal(servers.slack.url, "http://127.0.0.1:3125/mcp/read");
     assert.equal(servers.glean.headers.Authorization, "Bearer ${GLEAN_MCP_TOKEN}");
     assert.equal(claude.env.SLACK_MCP_TOKEN, "slack-token");
     assert.ok(!claude.argv.join(" ").includes("slack-token"), "tokens only in the environment");
-    const codex = buildCommand({ cfg: c, engine: { kind: "codex" }, worktree: "/w", lastMessageFile: "/x" }).argv;
+    const codex = buildCommand({ cfg: c, engine: { kind: "codex", reads: true }, worktree: "/w", lastMessageFile: "/x" }).argv;
     assert.ok(codex.includes('mcp_servers.slack.url="http://127.0.0.1:3125/mcp/read"'));
     assert.ok(codex.includes('mcp_servers.glean.bearer_token_env_var="GLEAN_MCP_TOKEN"'));
     const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "z-ai/glm" }, worktree: "/w" });
@@ -141,16 +172,16 @@ describe("engines and modes", () => {
   });
 
   // ClickHouse, read-only, for Claude Code and Codex only; queries outlast Codex's default tool timeout.
-  it("gives Claude Code and Codex ClickHouse with a longer tool timeout, never OpenRouter", () => {
+  it("gives an Engineer with private reads ClickHouse with a longer tool timeout, a light one never", () => {
     const dir = mkdtempSync(join(tmpdir(), "reads-"));
     for (const f of ["claude", "or", "clickhouse"]) writeFileSync(join(dir, f), `${f}-token\n`);
     const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), primerTokenFile: join(dir, "missing"), clickhouseMcpUrl: "http://127.0.0.1:3127/mcp", clickhouseTokenFile: join(dir, "clickhouse"), sandbox: { extra_writable_roots: [] } };
-    const claude = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w" });
+    const claude = buildCommand({ cfg: c, engine: { kind: "claude", reads: true }, worktree: "/w" });
     const servers = JSON.parse(claude.argv[claude.argv.indexOf("--mcp-config") + 1]).mcpServers;
     assert.deepEqual(servers, { clickhouse: { type: "http", url: "http://127.0.0.1:3127/mcp", headers: { Authorization: "Bearer ${CLICKHOUSE_MCP_TOKEN}" } } });
     assert.equal(claude.env.CLICKHOUSE_MCP_TOKEN, "clickhouse-token");
     assert.ok(!claude.argv.join(" ").includes("clickhouse-token"), "tokens only in the environment");
-    const codex = buildCommand({ cfg: c, engine: { kind: "codex" }, worktree: "/w", lastMessageFile: "/x" }).argv;
+    const codex = buildCommand({ cfg: c, engine: { kind: "codex", reads: true }, worktree: "/w", lastMessageFile: "/x" }).argv;
     assert.ok(codex.includes('mcp_servers.clickhouse.url="http://127.0.0.1:3127/mcp"'));
     assert.ok(codex.includes("mcp_servers.clickhouse.tool_timeout_sec=180"));
     const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "z-ai/glm" }, worktree: "/w" });
@@ -679,11 +710,17 @@ describe("task workspaces", async () => {
     assert.match(c.stat, /^1 file changed/);
   });
 
-  it("signs the agent's unsigned commits, keeping trees and moving branches and worktrees", async () => {
+  it("signs the agent's unsigned commits, keeping trees and moving branches and worktrees", async (t) => {
     const { dir, path, commit } = await setup();
     const key = join(dir, "key");
     execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key]);
-    for (const [k, v] of [["gpg.format", "ssh"], ["user.signingkey", key], ["commit.gpgsign", "true"]]) await git(path, "config", k, v);
+    // Whether to sign is the host user's global setting (the clone's own config is the agent's): a global of its own here, so
+    // the test doesn't depend on the machine's.
+    const globalCfg = join(dir, "gitconfig");
+    const prevGlobal = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = globalCfg;
+    t.after(() => (prevGlobal === undefined ? delete process.env.GIT_CONFIG_GLOBAL : (process.env.GIT_CONFIG_GLOBAL = prevGlobal)));
+    for (const [k, v] of [["gpg.format", "ssh"], ["user.signingkey", key], ["commit.gpgsign", "true"]]) execFileSync("git", ["config", "--file", globalCfg, k, v]);
     await git(path, "switch", "-q", "-c", "feat/a");
     await commit(path, "feat: a", "a.txt");
     const before = await commit(path, "feat: a2", "a2.txt");
@@ -918,17 +955,17 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     return { dir, c, gcp };
   };
 
-  it("gives Grafana and gcloud to Claude Code and Codex, never to OpenRouter", () => {
+  it("gives Grafana and gcloud to an Engineer with private reads, never to a light one", () => {
     const { c, gcp } = setup();
     for (const kind of ["codex", "claude"]) {
-      const { argv, env } = buildCommand({ cfg: c, engine: { kind }, worktree: "/w", lastMessageFile: "/x", gcp });
+      const { argv, env } = buildCommand({ cfg: c, engine: { kind, reads: true }, worktree: "/w", lastMessageFile: "/x", gcp });
       assert.equal(env.GRAFANA_MCP_TOKEN, "gtok", kind);
       assert.equal(env.CLOUDSDK_CONFIG, gcp.env.CLOUDSDK_CONFIG, kind);
       assert.ok(!argv.some((a) => a.includes("gtok")), `${kind}: token on the command line`);
       assert.ok(argv.join(" ").includes("http://127.0.0.1:3124/mcp"), kind);
       assert.ok(argv.some((a) => a.startsWith("sandbox_workspace_write.writable_roots=") && a.includes(gcp.root)), `${kind}: gcloud dir writable`);
     }
-    const claude = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w", gcp }).argv;
+    const claude = buildCommand({ cfg: c, engine: { kind: "claude", reads: true }, worktree: "/w", gcp }).argv;
     assert.deepEqual(Object.keys(JSON.parse(claude[claude.indexOf("--mcp-config") + 1]).mcpServers), ["grafana"]);
     const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "m" }, worktree: "/w", gcp });
     assert.equal(or.env.GRAFANA_MCP_TOKEN, undefined);
@@ -937,20 +974,97 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     assert.ok(!or.argv.some((a) => a.includes(gcp.root)));
   });
 
-  it("hides the gcloud sign-ins from every engine with bwrap", () => {
+  // The job's filesystem is an allowlist: its task folder, the toolchains, its engine's state; nothing else of the host.
+  it("binds only the job's task folder and toolchains: no sibling task, no product checkout", () => {
     const { dir, c } = setup();
-    for (const kind of ["codex", "claude", "openrouter"]) {
-      const { argv } = buildCommand({ cfg: c, engine: { kind, model: "m" }, worktree: "/w", lastMessageFile: "/x" });
-      assert.deepEqual(argv.slice(0, 7), ["bwrap", "--dev-bind", "/", "/", "--tmpfs", join(dir, "gcloud-user"), "--die-with-parent"], kind);
-      assert.ok(!argv.includes(join(dir, "not-there")), kind);
+    const tasks = join(dir, "tasks");
+    for (const t of ["WOR-1", "WOR-2"]) mkdirSync(join(tasks, t), { recursive: true });
+    mkdirSync(join(tasks, "WOR-1", "gcloud-in-task"));
+    const repo = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
+    const jc = { ...c, ghWrapperDir: join(repo, "services/runner/bin"), codexOpenrouterHome: join(dir, "cor"), gcp: { hidden: [join(dir, "gcloud-user"), join(tasks, "WOR-1", "gcloud-in-task")] } };
+    for (const kind of ["codex", "claude", "openrouter", "codex-openrouter"]) {
+      const { argv } = buildCommand({ cfg: jc, engine: { kind, model: "m" }, worktree: join(tasks, "WOR-1"), lastMessageFile: "/x", job: { issueId: "i1" } });
+      const sep = argv.indexOf("--die-with-parent");
+      const mounts = argv.slice(0, sep);
+      assert.equal(mounts[0], "bwrap", kind);
+      assert.ok(!mounts.includes("/") , `${kind}: the host's root is not bound`);
+      assert.ok(mounts.join(" ").includes(`--bind ${join(tasks, "WOR-1")} ${join(tasks, "WOR-1")}`), `${kind}: its task folder, read-write`);
+      assert.ok(!mounts.some((m) => m.startsWith(join(tasks, "WOR-2")) || m === tasks), `${kind}: no sibling task`);
+      assert.ok(!mounts.some((m) => m === repo || (m.startsWith(repo + "/") && !m.startsWith(jc.ghWrapperDir))), `${kind}: of the product checkout only the wrappers`);
+      assert.ok(mounts.join(" ").includes(`--tmpfs ${join(tasks, "WOR-1", "gcloud-in-task")}`), `${kind}: a hidden path inside an allowed one stays masked`);
+      assert.ok(!mounts.includes(join(dir, "gcloud-user")), `${kind}: a hidden path outside the allowlist is simply absent`);
     }
   });
 
-  it("hides a file (the Docker socket) under /dev/null", () => {
+  // The private bwrap (ops/vm/setup.sh) carries the AppArmor exemption; /usr/bin/bwrap keeps the release's policy.
+  it("runs jobs with the configured bwrap, with and without the network jail", () => {
     const { dir, c } = setup();
-    writeFileSync(join(dir, "docker.sock"), "");
-    const { argv } = buildCommand({ cfg: { ...c, gcp: { hidden: [join(dir, "gcloud-user"), join(dir, "docker.sock")] } }, engine: { kind: "codex" }, worktree: "/w", lastMessageFile: "/x" });
-    assert.deepEqual(argv.slice(0, 10), ["bwrap", "--dev-bind", "/", "/", "--tmpfs", join(dir, "gcloud-user"), "--ro-bind", "/dev/null", join(dir, "docker.sock"), "--die-with-parent"]);
+    const jc = { ...c, bwrap: "/opt/aidenhq/bwrap/bwrap", codexOpenrouterHome: join(dir, "cor") };
+    const plain = buildCommand({ cfg: jc, engine: { kind: "codex", model: "m" }, worktree: join(dir, "WOR-1"), lastMessageFile: "/x", job: { issueId: "i1" } }).argv;
+    assert.equal(plain[0], "/opt/aidenhq/bwrap/bwrap");
+    mkdirSync(join(dir, "bin"));
+    writeFileSync(join(dir, "bin/ip"), "#!/bin/sh\necho '1: lo    inet 127.0.0.1/8 scope host lo'\n");
+    chmodSync(join(dir, "bin/ip"), 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${join(dir, "bin")}:${path}`;
+    try {
+      const jailed = buildCommand({ cfg: { ...jc, pasta: "/usr/bin/pasta" }, engine: { kind: "codex", model: "m" }, worktree: join(dir, "WOR-1"), lastMessageFile: "/x", job: { issueId: "i1" } }).argv;
+      assert.equal(jailed[5], "/opt/aidenhq/bwrap/bwrap"); // netjail.mjs <pasta> <ports> <link> <bwrap> …
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  // bin/aidenhq-browse drives the host's pinned browser (ops/vm/setup.sh): every job sees it, none can change it.
+  it("binds the host's browser read-only into every job", () => {
+    const { dir, c } = setup();
+    const browserDir = join(dir, "browser");
+    mkdirSync(browserDir);
+    const jc = { ...c, browserDir, codexOpenrouterHome: join(dir, "cor") };
+    for (const kind of ["codex", "claude", "openrouter", "codex-openrouter"]) {
+      const { argv } = buildCommand({ cfg: jc, engine: { kind, model: "m" }, worktree: join(dir, "WOR-1"), lastMessageFile: "/x", job: { issueId: "i1" } });
+      const mounts = argv.slice(0, argv.indexOf("--die-with-parent")).join(" ");
+      assert.ok(mounts.includes(`--ro-bind ${browserDir} ${browserDir}`), kind);
+      assert.ok(!mounts.includes(`--bind ${browserDir}`), `${kind}: never writable`);
+    }
+  });
+
+  it("aidenhq-browse refuses to browse anywhere but the app's own origin", () => {
+    const browse = fileURLToPath(new URL("../bin/aidenhq-browse", import.meta.url));
+    for (const a of [["--paths", "/,https://example.com/"], ["--paths", "//example.com/x"]]) {
+      const r = spawnSync(process.execPath, [browse, "http://127.0.0.1:4173", ...a, "--out", tmpdir()], { encoding: "utf8", env: { ...process.env, AIDENHQ_BROWSER_DIR: "/nonexistent" } });
+      assert.equal(r.status, 2, r.stderr);
+      assert.match(r.stderr, /only the app itself is browsed/);
+    }
+  });
+
+  // Run for real where bwrap works (the host, CI on Linux): a job can't read a sibling task or the product checkout.
+  it("a real job can read its own task folder but not a sibling's or the product checkout", { skip: spawnSync("bwrap", ["--ro-bind", "/", "/", "true"]).status !== 0 && "bwrap unavailable" }, () => {
+    const { dir, c } = setup();
+    const tasks = join(dir, "tasks");
+    for (const t of ["WOR-1", "WOR-2"]) {
+      mkdirSync(join(tasks, t), { recursive: true });
+      writeFileSync(join(tasks, t, "f"), t);
+    }
+    const repo = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
+    const { argv } = buildCommand({ cfg: { ...c, ghWrapperDir: join(repo, "services/runner/bin") }, engine: { kind: "codex" }, worktree: join(tasks, "WOR-1"), lastMessageFile: "/x" });
+    const inner = argv.indexOf("--") + 1;
+    const run = (path) => spawnSync(argv[0], [...argv.slice(1, inner), "cat", path], { encoding: "utf8" });
+    assert.equal(run(join(tasks, "WOR-1", "f")).stdout, "WOR-1");
+    assert.notEqual(run(join(tasks, "WOR-2", "f")).status, 0);
+    assert.notEqual(run(join(repo, "CLAUDE.md")).status, 0);
+    assert.equal(run(join(repo, "services/runner/bin/git-ssh-no-push")).status, 0);
+    // Its own PID namespace and procfs: another process's environment (the runner's) and the host's root through
+    // /proc/1/root are out of reach.
+    const other = spawn("sleep", ["30"], { env: { ...process.env, AIDENHQ_TEST_MARKER: "host-secret" } });
+    try {
+      const sh = (cmd) => spawnSync(argv[0], [...argv.slice(1, inner), "sh", "-c", cmd], { encoding: "utf8" });
+      assert.notEqual(sh(`cat /proc/${other.pid}/environ`).status, 0);
+      assert.doesNotMatch(sh("cat /proc/[0-9]*/environ 2>/dev/null | tr '\\0' '\\n'").stdout, /host-secret/);
+      assert.notEqual(sh(`cat /proc/1/root${repo}/CLAUDE.md`).status, 0);
+    } finally {
+      other.kill();
+    }
   });
 
   it("with pasta, a job gets its own network: of the host's loopback only its helper and the MCP endpoints it is wired to", () => {
@@ -965,14 +1079,17 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     chmodSync(join(dir, "bin/ip"), 0o755);
     const path = process.env.PATH;
     process.env.PATH = `${join(dir, "bin")}:${path}`;
-    const claude = buildCommand({ cfg: jc, engine: { kind: "claude" }, worktree: "/w", loopback }).argv;
+    const claude = buildCommand({ cfg: jc, engine: { kind: "claude", reads: true }, worktree: "/w", loopback }).argv;
     const or = buildCommand({ cfg: jc, engine: { kind: "openrouter", model: "m" }, worktree: "/w", loopback }).argv;
     process.env.PATH = path;
     assert.equal(claude[0], process.execPath);
     assert.ok(claude[1].endsWith("/netjail.mjs"));
-    assert.deepEqual([...claude.slice(2, 4), ...claude.slice(5, 10)], ["/usr/bin/pasta", "3123,3124,41000", "bwrap", "--dev-bind", "/", "/", "--tmpfs"]);
+    assert.deepEqual([...claude.slice(2, 4), ...claude.slice(5, 8)], ["/usr/bin/pasta", "3123,3124,41000", "bwrap", "--unshare-pid", "--unshare-ipc"]);
     assert.equal(claude[4], "192.168.254"); // pasta's link: apart from the host's 10.0.2.0/24 and the routed 172.31.254.0/24
     assert.ok(claude.includes("--unshare-net") && claude.includes("--die-with-parent"));
+    // The public resolvers sit on the job's own tmpfs, not on the host's resolver file (whose rewrites detach a bind).
+    const rc = claude.indexOf("/etc/resolv.conf");
+    assert.deepEqual(claude.slice(rc - 4, rc), ["--tmpfs", "/run/systemd/resolve", "--ro-bind-data", "5"]);
     const jail = claude.indexOf("aidenhq-jail");
     assert.equal(claude[jail + 1], "codex"); // the engine in codex sandbox, after the jail's own setup
     // The job's first step: private and reserved ranges, and each of the host's own addresses (a public one too), are unreachable.

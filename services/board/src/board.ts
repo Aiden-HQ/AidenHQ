@@ -11,10 +11,24 @@ export const RUNNER_MARKER = "<!-- aidenhq-runner -->";
 export const hasMarker = (body: string, marker: string) => body.includes(marker);
 export const BRIEF_LABEL = "daily-brief";
 
-export type Engine = "codex" | "claude" | "openrouter";
+export type Engine = "codex" | "codex-openrouter" | "claude" | "openrouter";
 export const ADAPTER_ENGINE: Record<string, Engine> = { codex_local: "codex", claude_local: "claude", opencode_local: "openrouter" };
-const EFFORT_KEY: Partial<Record<Engine, string>> = { codex: "modelReasoningEffort", claude: "effort" };
-export const EFFORTS: Record<Engine, string[]> = { codex: ["low", "medium", "high", "xhigh"], claude: ["low", "medium", "high", "xhigh", "max"], openrouter: [] };
+const ENGINES: Engine[] = ["codex", "codex-openrouter", "claude", "openrouter"];
+/** A runner Engineer's engine: the one setup recorded (module.yaml `engine:`), else its adapter's. */
+export const engineOf = (a: { adapterType?: string; metadata?: { engine?: unknown } | null }): Engine | undefined =>
+  ENGINES.includes(a.metadata?.engine as Engine) ? (a.metadata!.engine as Engine) : ADAPTER_ENGINE[a.adapterType ?? ""];
+/** The same for an agent in the compiled config (module.yaml fields). */
+export const compiledEngine = (a: { adapter?: string; engine?: string }): Engine | undefined => engineOf({ adapterType: a.adapter, metadata: { engine: a.engine } });
+export const openrouterEngine = (e: Engine | undefined) => e === "openrouter" || e === "codex-openrouter";
+// Where the runner reads the task's effort override (services/runner/src/commands.mjs EFFORT_KEY).
+const EFFORT_KEY: Record<Engine, string> = { codex: "modelReasoningEffort", "codex-openrouter": "modelReasoningEffort", openrouter: "modelReasoningEffort", claude: "effort" };
+// The efforts each engine takes. opencode's are its model variants: a model without them ignores the setting.
+export const EFFORTS: Record<Engine, string[]> = {
+  codex: ["low", "medium", "high", "xhigh"],
+  "codex-openrouter": ["low", "medium", "high", "xhigh"],
+  claude: ["low", "medium", "high", "xhigh", "max"],
+  openrouter: ["low", "medium", "high"],
+};
 
 /** Someone a task can be assigned to from the board: the user, the Executive Assistant, an Engineer, or any other agent. */
 export interface Assignee {
@@ -53,12 +67,11 @@ export function assignees(agents: Agent[]): Assignee[] {
   const assistant = live.find((a) => a.metadata?.setupKey === "aidenhq:assistant");
   if (assistant) out.push({ key: assistant.id, kind: "assistant", name: assistant.name, ...withPersona(assistant) });
   // Engineers: the runner's agents, which the setup marks `runnerEngine` (the Platform Engineer too).
-  const isEngineer = (a: Agent) => (/^aidenhq:engineer(-|$)/.test(a.metadata?.setupKey ?? "") || a.metadata?.runnerEngine === true) && ADAPTER_ENGINE[a.adapterType];
+  const isEngineer = (a: Agent) => (/^aidenhq:engineer(-|$)/.test(a.metadata?.setupKey ?? "") || a.metadata?.runnerEngine === true) && engineOf(a);
   const engineers = live.filter(isEngineer);
-  const order: Engine[] = ["codex", "claude", "openrouter"];
-  engineers.sort((a, b) => order.indexOf(ADAPTER_ENGINE[a.adapterType]!) - order.indexOf(ADAPTER_ENGINE[b.adapterType]!));
+  engineers.sort((a, b) => ENGINES.indexOf(engineOf(a)!) - ENGINES.indexOf(engineOf(b)!));
   for (const a of engineers) {
-    const engine = ADAPTER_ENGINE[a.adapterType]!;
+    const engine = engineOf(a)!;
     const model = typeof a.adapterConfig?.model === "string" ? a.adapterConfig.model : "";
     const models = Array.isArray(a.metadata?.models) ? a.metadata.models.filter((m): m is string => typeof m === "string") : [];
     out.push({ key: a.id, kind: "engineer", name: a.name, engine, adapterType: a.adapterType, defaultModel: model || undefined, ...(models.length ? { models } : {}), efforts: EFFORTS[engine], ...withPersona(a) });
@@ -290,12 +303,12 @@ export function paperclipUpdate(issue: Issue, u: Update, ctx: { me: string; assi
     if (target?.kind !== "engineer" || !target.engine) throw new BadRequest("model and effort only apply to an Engineer");
     const current = u.assignee !== undefined ? {} : executorOf(issue, ctx.assignees) ?? {};
     let model = u.model !== undefined ? u.model : current.model ?? "";
-    if (model && target.engine === "openrouter" && !model.startsWith("openrouter/")) model = `openrouter/${model}`;
+    if (model && openrouterEngine(target.engine) && !model.startsWith("openrouter/")) model = `openrouter/${model}`;
     const effort = u.effort !== undefined ? u.effort : current.effort ?? "";
     if (effort && !target.efforts?.includes(effort)) throw new BadRequest(`effort must be one of ${target.efforts?.join(", ") || "(none)"}`);
     const config: Record<string, string> = {};
     if (model && model !== target.defaultModel) config.model = model;
-    if (effort) config[EFFORT_KEY[target.engine]!] = effort;
+    if (effort) config[EFFORT_KEY[target.engine]] = effort;
     body.assigneeAdapterOverrides = Object.keys(config).length ? { adapterConfig: config } : null;
   }
   return body;

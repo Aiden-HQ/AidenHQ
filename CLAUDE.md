@@ -45,8 +45,12 @@ npm test && npm run typecheck
 ```
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
-editing `services/shared/agent-auth.ts` or `services/shared/source-store.ts`, run `node scripts/sync-shared.mjs` (a
+editing `services/shared/agent-auth.ts`, `services/shared/source-store.ts`, `modules/core/design-system/` or the app starter (`modules/core/templates/app/`), run `node scripts/sync-shared.mjs` (a
 test fails on drift). CI (`.github/workflows/ci.yml`) runs all of the above on every PR.
+
+The app starter (`modules/core/templates/app/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
+render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
+the reviewer eval's case loader).
 
 The AI reviewer's exit test, `node services/runner/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and
 must stay at 100%. It applies to changes to `services/runner/src/tiers.mjs`, `services/runner/src/review.mjs`, the
@@ -129,6 +133,13 @@ the board key (it writes as the owner). Agents never claim something is done unt
 
 ## Paperclip quirks
 
+- A user-authored comment (board key, runner) on a done, cancelled or blocked task with an agent assignee reopens it and
+  wakes the agent; `reopen: false` doesn't stop it. Never post notices on finished tasks (runner `tellOpenParent`).
+- Cancelling a run that has just started leaves a recovery hold (`executionBlocker`, legacy_execution_requires_reconciliation)
+  that parks every later wake on the task; clear it with `POST /api/issues/:id/recovery-actions/resolve` (outcome `restored`,
+  actionOutcome `not_performed`). A direct agent wake's `reason` never reaches the Codex prompt.
+- Runner (Engineer) tasks: after the first run, only the owner's comments, the delegator's follow-ups, or (on a task that runs
+  unasked) any agent's comment while it reopens the task to `todo` start a job; other agent comments are ignored.
 - OpenRouter runs are unpriced, so any `budgetMonthlyCents` pauses the agent at $0. Keep budgets at 0; cap spend with
   the OpenRouter key limit.
 - Agents in computers cannot share a folder: delegated tasks need `agent_default` (`paperclip-tasks-mcp` sets this on
@@ -136,7 +147,8 @@ the board key (it writes as the owner). Agents never claim something is done unt
 - A routine may set its own `model:` (routine env + the `codex-model` launcher; docs/configuration.md).
 - Debug a run from its Codex session log: `**/sessions/**/*.jsonl` under the Paperclip container's codex home, or
   `/workspace/.paperclip-runtime/codex/home/sessions` in a computer. Tool calls are `function_call` lines.
-- The host needs bubblewrap plus the `bwrap` AppArmor profile (userns), or runner jobs die on start, and `passt`, or
+- The host needs the private bwrap copy `/opt/aidenhq/bwrap/bwrap` and its `aidenhq-bwrap` AppArmor profile
+  (userns), or runner jobs die on start, and `passt`, or
   jobs share the host network (runner logs a WARNING); `ops/vm/setup.sh` installs them.
 - UI edits to Paperclip config are overwritten by the next apply unless copied into git.
 - For a second opinion from the Codex CLI: `codex exec --skip-git-repo-check -s read-only -C <dir> -o <answer.md>

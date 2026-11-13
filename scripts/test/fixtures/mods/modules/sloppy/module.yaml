@@ -1,0 +1,4 @@
+name: sloppy
+description: A delete tool tagged plain write
+connections:
+  sconn: { url: "http://s-mcp:1/mcp", tools: { read: [s_get], write: [deleteIssue] } }

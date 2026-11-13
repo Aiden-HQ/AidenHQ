@@ -95,18 +95,24 @@ export function resolveEngine(directives, cfg, previous) {
   if (!raw && !model) return previous ?? resolveEngine({ engine: cfg.engines.default ?? "codex" }, cfg); // engines.default: the engine with an Engineer
   if (raw === "codex") return { kind: "codex", model: model || cfg.engines.codex.model || undefined };
   if (["claude", "claude-code", "claude code", "anthropic"].includes(raw)) return { kind: "claude", model: model || cfg.engines.claude?.model || undefined };
-  if (raw === "glm" || raw === "openrouter" || raw === "opencode") return { kind: "openrouter", model: model || cfg.engines.openrouter.model };
-  if (raw.startsWith("openrouter:")) return { kind: "openrouter", model: directives.engine.trim().slice("openrouter:".length) };
-  if (raw.includes("/")) return { kind: "openrouter", model: directives.engine.trim() };
+  // OpenRouter models run on Codex through the gateway (codex-openrouter); `opencode` names the fallback engine.
+  if (raw === "opencode") return { kind: "openrouter", model: model || cfg.engines.openrouter.model };
+  if (raw === "glm" || raw === "openrouter" || raw === "codex-openrouter") return { kind: "codex-openrouter", model: model || cfg.engines["codex-openrouter"]?.model || cfg.engines.openrouter.model };
+  if (raw.startsWith("openrouter:")) return { kind: "codex-openrouter", model: directives.engine.trim().slice("openrouter:".length) };
+  if (raw.includes("/")) return { kind: "codex-openrouter", model: directives.engine.trim() };
   if (!raw && isClaudeModel(model)) return { kind: "claude", model };
   if (!raw && model) return { kind: previous?.kind === "claude" ? "codex" : previous?.kind ?? "codex", model };
-  throw new Error(`unknown engine "${directives.engine}" (use codex, claude, openrouter, or openrouter:<model>)`);
+  throw new Error(`unknown engine "${directives.engine}" (use codex, codex-openrouter, claude, openrouter, or openrouter:<model>)`);
 }
 
-// The Engineer agents: Paperclip adapter type ↔ runner engine.
+// The Engineer agents' engine: the one setup recorded (module.yaml `engine:`), else its Paperclip adapter's.
 const ADAPTER_ENGINE = { codex_local: "codex", claude_local: "claude", opencode_local: "openrouter" };
-const ENGINE_ADAPTER = Object.fromEntries(Object.entries(ADAPTER_ENGINE).map(([a, e]) => [e, a]));
-const EFFORT_KEY = { codex: "modelReasoningEffort", claude: "effort" }; // where Paperclip's picker stores it
+export const ENGINES = ["codex", "codex-openrouter", "claude", "openrouter"];
+export const engineOf = (agent) => (ENGINES.includes(agent?.metadata?.engine) ? agent.metadata.engine : ADAPTER_ENGINE[agent?.adapterType]);
+/** The OpenRouter engines: their Paperclip model ids are openrouter/<model>. */
+export const openrouterKind = (kind) => kind === "openrouter" || kind === "codex-openrouter";
+// Where the task's effort override is stored in the adapter config.
+const EFFORT_KEY = { codex: "modelReasoningEffort", "codex-openrouter": "modelReasoningEffort", openrouter: "modelReasoningEffort", claude: "effort" };
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 
 /**
@@ -116,52 +122,58 @@ const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
  */
 export function pickedEngine(issue, engineers, cfg) {
   const agent = engineers.find((a) => a.id === issue?.assigneeAgentId);
-  const kind = ADAPTER_ENGINE[agent?.adapterType];
+  const kind = engineOf(agent);
   if (!kind) return undefined;
   const override = issue.assigneeAdapterOverrides?.adapterConfig ?? {};
   const primary = agent.adapterConfig ?? {};
   // opencode ids are provider/model; only OpenRouter models are runnable here.
   const usable = (m) => {
     const v = typeof m === "string" ? m.trim() : "";
-    if (kind !== "openrouter") return v;
+    if (!openrouterKind(kind)) return v;
     return v.startsWith("openrouter/") ? v.slice("openrouter/".length) : "";
   };
-  const fallback = kind === "codex" ? cfg.engines.codex.model : kind === "claude" ? cfg.engines.claude?.model : cfg.engines.openrouter.model;
+  const fallback = kind === "codex" ? cfg.engines.codex.model : kind === "claude" ? cfg.engines.claude?.model : cfg.engines[kind]?.model || cfg.engines.openrouter.model;
   const model = usable(override.model) || usable(primary.model) || fallback || undefined;
   const key = EFFORT_KEY[kind];
   const effort = key ? String(override[key] ?? primary[key] ?? "").trim().toLowerCase() : "";
-  return { kind, model, ...(EFFORTS.has(effort) ? { effort } : {}) };
+  // Private reads come with the Engineer (module.yaml `private_reads: true`), never with an engine or a task.
+  // A box Engineer (module.yaml `image:` on a runner agent, setup's metadata.box) runs its jobs in an agent computer (engines.mjs boxCommand).
+  return { kind, model, ...(EFFORTS.has(effort) ? { effort } : {}), ...(agent.metadata?.privateReads === true ? { reads: true } : {}), ...(agent.metadata?.box === true && kind === "codex-openrouter" ? { box: true } : {}) };
 }
 
 /**
  * The Paperclip fields that show `engine` as the task's picker: the matching Engineer as assignee,
  * and a model override unless the model is that Engineer's primary model. Undefined if no Engineer runs it.
  */
+// A box Engineer (metadata.box, the App Engineer) runs only what is assigned to it: never picked by its engine kind.
+const byKind = (engineers) => engineers.filter((a) => a.metadata?.box !== true);
+
 export function pickerFor(engine, engineers) {
-  const agent = engineers.find((a) => a.adapterType === ENGINE_ADAPTER[engine.kind]);
+  const agent = byKind(engineers).find((a) => engineOf(a) === engine.kind);
   if (!agent) return undefined;
-  const model = engine.model && engine.kind === "openrouter" ? `openrouter/${engine.model}` : engine.model;
+  const model = engine.model && openrouterKind(engine.kind) ? `openrouter/${engine.model}` : engine.model;
   const config = { ...(model && model !== agent.adapterConfig?.model ? { model } : {}), ...(engine.effort && EFFORT_KEY[engine.kind] ? { [EFFORT_KEY[engine.kind]]: engine.effort } : {}) };
   return { assigneeAgentId: agent.id, assigneeAdapterOverrides: Object.keys(config).length ? { adapterConfig: config } : null };
 }
 
 /** OpenRouter models offered for the OpenRouter Engineer (config/paperclip.yaml `models`), primary first. */
 export function openrouterModels(engineers) {
-  const agent = engineers.find((a) => a.adapterType === "opencode_local");
+  const agent = byKind(engineers).find((a) => a.adapterType === "opencode_local");
   const ids = [agent?.adapterConfig?.model, ...(Array.isArray(agent?.metadata?.models) ? agent.metadata.models : [])];
   return [...new Set(ids.filter((m) => typeof m === "string" && m.startsWith("openrouter/")).map((m) => m.slice("openrouter/".length)))];
 }
 
 /** The Engineer's board identity for an engine: name and voice, when setup gave it one. */
-export function personaFor(kind, engineers) {
-  const p = engineers.find((a) => ADAPTER_ENGINE[a.adapterType] === kind)?.metadata?.persona;
+export function personaFor(kind, engineers, assigned) {
+  // A box Engineer is its own persona; the others share one per engine.
+  const p = (assigned?.metadata?.box === true ? assigned : byKind(engineers).find((a) => engineOf(a) === kind))?.metadata?.persona;
   return typeof p?.name === "string" && p.name ? { name: p.name, voice: typeof p.voice === "string" ? p.voice : "" } : undefined;
 }
 
 /** The Engineers' names and the engines they stand for ("Ada" → claude), for the intake. */
 export function crewNames(engineers) {
   return engineers.flatMap((a) => {
-    const engine = ADAPTER_ENGINE[a.adapterType];
+    const engine = engineOf(a);
     const name = a.metadata?.persona?.name;
     return engine && typeof name === "string" && name ? [{ name, engine }] : [];
   });

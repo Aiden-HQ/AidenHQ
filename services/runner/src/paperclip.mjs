@@ -49,7 +49,8 @@ export class Paperclip {
   async engineerAgents() {
     const agents = await this.agents();
     // Paused Engineers (pruned, or their module disabled) are never assignment targets.
-    const list = agents.filter((x) => x.status !== "paused" && /^aidenhq:(fleet-)?engineer(-|$)/.test(x.metadata?.setupKey ?? ""));
+    // Runner-dispatched agents (setup marks them runnerEngine), and the older engineer-* keys.
+    const list = agents.filter((x) => x.status !== "paused" && (x.metadata?.runnerEngine === true || /^aidenhq:(fleet-)?engineer(-|$)/.test(x.metadata?.setupKey ?? "")));
     return list.length ? list : agents.filter((x) => x.name === "Engineer");
   }
 
@@ -98,6 +99,11 @@ export class Paperclip {
 
   issue(id) {
     return this.api("GET", `/api/issues/${encodeURIComponent(id)}`);
+  }
+
+  /** One heartbeat run (its agentId and the issueId it worked on): an issue's originRunId is the run that created it (origins). */
+  run(id) {
+    return this.api("GET", `/api/heartbeat-runs/${encodeURIComponent(id)}`);
   }
 
   /** Files on a task. */
@@ -176,4 +182,30 @@ export class Paperclip {
     if (comment) body.comment = `${comment}\n\n${RUNNER_MARKER}`;
     return this.api("PATCH", `/api/issues/${encodeURIComponent(issueId)}`, body);
   }
+}
+
+const ORIGIN_MAX = 24;
+/**
+ * Every issue a task traces back to, for its routine cap (tiers.mjs routineCap): its parents, and through each one's
+ * originRunId (Paperclip records the run that created an issue; agents never set it) the issue that run worked on, then
+ * theirs. So a parent the agent picked, or none, can't shed a routine's cap. `runIssue` caches run id → issueId (a run's
+ * issue never changes). Past ORIGIN_MAX issues the trace is incomplete (the cap is then the strictest).
+ */
+export async function origins(pc, full, runIssue = new Map()) {
+  const seen = new Map();
+  const queue = [full];
+  while (queue.length) {
+    const i = queue.shift();
+    if (!i || seen.has(i.id)) continue;
+    if (seen.size >= ORIGIN_MAX) return { issues: [...seen.values()], complete: false };
+    seen.set(i.id, i);
+    if (i.parentId) queue.push(await pc.issue(i.parentId));
+    // A routine run task is the root: its originRunId is the routine run (not a heartbeat run) and nothing created it.
+    if (i.originRunId && i.originKind !== "routine_execution") {
+      if (!runIssue.has(i.originRunId)) runIssue.set(i.originRunId, (await pc.run(i.originRunId))?.issueId ?? null);
+      const from = runIssue.get(i.originRunId);
+      if (from && !seen.has(from)) queue.push(await pc.issue(from));
+    }
+  }
+  return { issues: [...seen.values()], complete: true };
 }

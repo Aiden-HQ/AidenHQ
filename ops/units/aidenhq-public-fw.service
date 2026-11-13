@@ -1,0 +1,18 @@
+[Unit]
+Description=AidenHQ: drop inbound on the public interface except SSH and Tailscale (ops/vm/public-fw.sh)
+# A system unit, installed by ops/vm/setup.sh on a host with a public interface. It runs before the network, Docker,
+# Tailscale and sshd come up, so nothing is reachable before the rule is in place.
+DefaultDependencies=no
+Wants=network-pre.target
+After=nftables.service
+Before=network-pre.target docker.service tailscaled.service ssh.service ssh.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/default/aidenhq-public-fw
+ExecStart=/usr/local/sbin/aidenhq-public-fw
+ExecStop=/usr/local/sbin/aidenhq-public-fw --remove
+
+[Install]
+WantedBy=sysinit.target

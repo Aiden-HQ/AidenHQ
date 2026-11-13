@@ -30,6 +30,7 @@ export const REVIEW_CODES = [
   "no_independent_model",
   "no_diff",
   "too_large",
+  "files_not_shown",
   "check_failed",
   "tier_raised",
   "autonomy_off",

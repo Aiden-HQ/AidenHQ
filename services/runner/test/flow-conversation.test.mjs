@@ -28,11 +28,10 @@ describe("flow-conversation", () => {
       assert.match(prompt, /The engineering agents, by name: Ada \(claude\), Grace \(codex\)/);
       assert.doesNotMatch(prompt, /Mode: \*\*|## Summary/, "no modes, no report template");
       assert.ok(argv.includes("--strict-mcp-config"), "Claude Code keeps away from the user's own setup");
-      // Engines run with the gcloud sign-ins hidden.
+      // Engines run on an allowlist of the host's files: an empty home, so no gcloud sign-ins, and no secrets dir.
       const bwrap = fakeLog().find((e) => e.kind === "bwrap")?.data ?? [];
-      assert.ok(bwrap.includes("--tmpfs") && bwrap.some((a) => a.endsWith(".config/gcloud")));
-      // And the secrets dir: a job can't read the keys that file or decide approvals.
-      assert.ok(bwrap.includes(join(t.dir, "secrets")), "the secrets dir is hidden from the job");
+      assert.ok(bwrap.includes("--tmpfs") && !bwrap.includes("/"), "the host's root is not bound");
+      assert.ok(!bwrap.some((a) => a.endsWith(".config/gcloud") || a.startsWith(join(t.dir, "secrets"))), "the gcloud sign-ins and the secrets dir aren't in the job");
     });
 
     it("posts the agent's reply as its own, with no start notes around it", () => {

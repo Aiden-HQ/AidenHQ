@@ -41,8 +41,9 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
     pullRequest(number: $number) {
       id number title url state isDraft reviewDecision mergeStateStatus headRefOid headRefName isCrossRepository baseRefName
       mergedAt mergedBy { login } mergeCommit { oid }
+      files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       latestOpinionatedReviews(first: 30) { nodes { state } }
-      commits(last: 1) { nodes { commit { parents(first: 2) { nodes { oid } } signature { wasSignedByGitHub } statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
+      commits(last: 1) { nodes { commit { parents(first: 2) { nodes { oid } } signature { wasSignedByGitHub } statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion databaseId checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state description } } } } } } }
       baseRef { target { oid ... on Commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
     }
   }
@@ -76,11 +77,13 @@ export const WRITES = [
   { method: "PATCH", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+$/ },
   // A merged agents-org PR's head branch is deleted, so PRs stacked on it retarget and stale branches don't pile up.
   { method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ },
+  // A workflow run whose red jobs all ended on an infrastructure failure: its failed jobs re-run once (infraRetry).
+  { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun-failed-jobs$/ },
 ];
 
 /**
- * A write in WRITES; comments, PR edits and branch deletes in the agents org only (outside it the host's gh login writes),
- * plus comments and PR edits on the product repo (`aidenhq close` of its Dependabot PRs; never a branch delete there).
+ * A write in WRITES; comments, PR edits, job re-runs and branch deletes in the agents org only (outside it the host's gh login
+ * writes), plus comments, PR edits and job re-runs on the product repo (`aidenhq close` of its Dependabot PRs; never a branch delete there).
  */
 export function allowedWrite(method, path, agentsOrg, productRepo) {
   if (!WRITES.some((w) => w.method === method && w.path.test(path))) return false;
@@ -132,10 +135,35 @@ export async function closePrs(prs, reason, github) {
 }
 
 /**
- * Advisory checks: shown on the PR, never holding or stopping a merge. The UI/UX Engineer's design review (owner, 2026-11-12):
- * its findings become follow-up fixes.
+ * Advisory checks: left out of the named checks and the rollup's state. The UI Reviewer's design review (owner, 2026-11-12)
+ * stays advisory everywhere except a Tier 0 merge of a PR that changes UI files (owner, 2026-11-13: roadmap-keeper#108 shipped
+ * an unstyled page while its review was still pending). There eachDecision waits for it (DESIGN_REVIEW, below).
  */
 const ADVISORY = new Set(["design-review"]);
+
+/**
+ * Files that change what people see: styles, markup and component files, the usual UI folders, the vendored design system,
+ * and server-rendered page code by its name (render, styles, layout, view, page, template). Conservative: a false match
+ * costs a design review, a miss ships an unreviewed page.
+ */
+const UI_EXT = /\.(css|scss|sass|less|html?|tsx|jsx|vue|svelte|astro|hbs|handlebars|ejs|njk|pug|erb|liquid|mustache)$/i;
+const UI_DIR = /(^|\/)(web|public|templates|views|static|pages|components|layouts|design-system)\//i;
+const UI_PAGE_CODE = /(^|\/)([^/]*[-_.])?(render|styles?|layouts?|views?|pages?|templates?)\.(m?[jt]s|cjs)$/i;
+export const isUiFile = (f) => UI_EXT.test(f) || UI_DIR.test(f) || UI_PAGE_CODE.test(f);
+/** A PR's changed files touch UI (an unknown file list never counts here: tiering sends that to the owner anyway). */
+export const touchesUi = (files) => Array.isArray(files) && files.some(isUiFile);
+
+/** On a UI PR's Tier 0 merge: the design review's check, and how long after the other checks went green it may take. */
+export const DESIGN_REVIEW = { name: "design-review", minutes: 120 };
+
+/** The design-review check on a rollup: "success", "failure", "pending" or "missing", and its description when it has one. */
+export function designReview(rollup) {
+  const n = (rollup?.contexts?.nodes ?? []).find((x) => (x.name ?? x.context) === DESIGN_REVIEW.name);
+  if (!n) return { state: "missing" };
+  const v = n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state;
+  const state = ["SUCCESS"].includes(v) ? "success" : FAILING.has(v) ? "failure" : "pending";
+  return { state, ...(n.description ? { description: String(n.description).replace(/[\p{Cc}`]/gu, " ").slice(0, 160) } : {}) };
+}
 const advisory = (n) => ADVISORY.has(n.name ?? n.context);
 
 /** The rollup without its advisory checks, its state recomputed from the rest; the rollup itself when it has none. */
@@ -148,12 +176,100 @@ export function required(rollup) {
   return { ...rollup, ...rest, state };
 }
 
+const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
+
+/**
+ * The `image-scan` check skipped on a PR that changes an image definition: nothing was scanned, so it isn't green (CI
+ * decides what to scan; this keeps a PR from passing by dodging it). Files unread or past the first page count as changed.
+ */
+export function skippedImageScan(pr) {
+  const nodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  if (!nodes.some((n) => n.name === "image-scan" && n.status === "COMPLETED" && n.conclusion === "SKIPPED")) return false;
+  return !pr.files || pr.files.pageInfo?.hasNextPage || (pr.files.nodes ?? []).some((f) => IMAGE_FILE.test(f.path ?? ""));
+}
+
 const FAILING = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 
 /** Names of the checks that failed in a status rollup (advisory ones left out). */
 export function failedChecks(rollup) {
   return (rollup?.contexts?.nodes ?? []).filter((n) => !advisory(n) && FAILING.has(n.conclusion ?? n.state)).map((n) => n.name ?? n.context);
 }
+
+/** Conclusions that say a check never judged the commit: its job was cancelled, ran out of time or never started. */
+const INFRA = new Set(["CANCELLED", "TIMED_OUT", "STARTUP_FAILURE"]);
+/** The app CI's AI code review (modules/core/templates/ci): its gate keeps one PR comment, starting with MARKER, per head. */
+export const CODE_REVIEW = { name: "code-review", marker: "<!-- ci:code-review -->" };
+
+/**
+ * The code-review gate's comment says its review never finished on `head` (codegenie-gate.mjs: "Code review failed" when
+ * codegenie errored or timed out, "Code review incomplete" with no coverage), and lists no blocking finding. Its check fails
+ * the same way on a real reject, so this comment is the only way to tell them apart.
+ */
+export function codeReviewInfra(body, head) {
+  const s = String(body ?? "");
+  if (!s.startsWith(CODE_REVIEW.marker) || !/^[0-9a-f]{40}$/.test(head ?? "") || /blocking finding/.test(s)) return false;
+  const at = ` on \`${head.slice(0, 7)}\``;
+  return s.includes(`**Code review failed${at}`) || s.includes(`**Code review incomplete${at}`);
+}
+
+/**
+ * Red checks on the PR's head worth one automatic re-run (roadmap-keeper#111, 2026-11-13: its merge failed on a code-review
+ * timeout and waited for someone to re-run it). Only when every red check is an Actions job that never judged the commit
+ * (INFRA, or code-review's own "didn't finish") and none was re-run on this head already: one real failure fails the merge as
+ * before. `reruns` is what was re-run ({ name: { head, id } }). Returns { rerun: [check nodes] }, { wait: "stale" } (a re-run's
+ * new job isn't on GitHub yet), { wait: "running" } (other checks still run: a workflow run re-runs only once it's over), or
+ * undefined: the failure stands.
+ */
+export async function infraRetry(github, repo, number, pr, reruns = {}) {
+  const head = pr.headRefOid;
+  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+  const red = (rollup?.contexts?.nodes ?? []).filter((n) => !advisory(n) && FAILING.has(n.conclusion ?? n.state));
+  if (!red.length || rollup?.contexts?.pageInfo?.hasNextPage) return undefined;
+  const rerun = [];
+  let stale = false;
+  for (const n of red) {
+    if (n.__typename !== "CheckRun" || !n.databaseId || !n.checkSuite?.workflowRun?.databaseId) return undefined;
+    const was = reruns[n.name];
+    if (was?.head === head) {
+      // The job re-run already: still the old one is GitHub catching up; a new one red is the second failure, final.
+      if (was.id !== n.databaseId) return undefined;
+      stale = true;
+      continue;
+    }
+    if (INFRA.has(n.conclusion) || (n.name === CODE_REVIEW.name && n.conclusion === "FAILURE" && (await github.codeReviewInfra(repo, number, head)))) rerun.push(n);
+    else return undefined;
+  }
+  if (stale) return { wait: "stale" };
+  if (namedChecks(rollup).some((c) => c.pending)) return { wait: "running" };
+  return { rerun };
+}
+
+/** How long a re-run's new job may take to show on GitHub before the failure stands. */
+const RERUN_SHOWS_MINUTES = 10;
+/**
+ * The merge's answer to red checks: { key, limit } for its wait while they are re-run once (infraRetry), each workflow run's
+ * failed jobs in one call; undefined when the failure stands, also when GitHub refuses the re-run (no permission).
+ */
+async function retryInfra(github, repo, number, pr) {
+  const r = await infraRetry(github, repo, number, pr, (await github.reruns(repo, number)) ?? {});
+  if (!r) return undefined;
+  if (r.wait === "running") return { key: "running" };
+  if (r.wait) return { key: "rerun", limit: RERUN_SHOWS_MINUTES };
+  const runs = new Map();
+  for (const n of r.rerun) {
+    const run = n.checkSuite.workflowRun.databaseId;
+    runs.set(run, [...(runs.get(run) ?? []), { name: n.name, id: n.databaseId }]);
+  }
+  for (const [run, checks] of runs) {
+    try {
+      await github.rerun(repo, number, { run, checks, head: pr.headRefOid });
+    } catch {
+      return undefined;
+    }
+  }
+  return { key: "rerun", limit: RERUN_SHOWS_MINUTES };
+}
+const RERUN_WAIT = { rerun: "a check that failed for infrastructure reasons is being re-run once", running: "checks are running (one that failed for infrastructure reasons is re-run once they're done)" };
 
 /**
  * The rollup is red only because its runs were cancelled: a newer push superseded them and GitHub ended them with no
@@ -174,7 +290,7 @@ export function namedChecks(rollup) {
     .filter((n) => !advisory(n))
     .map((n) => ({ name: n.name ?? n.context, status: n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state }))
     .filter((c) => c.name)
-    .map((c) => ({ name: c.name, ok: pass.has(c.status), pending: ["PENDING", "EXPECTED", null, undefined].includes(c.status) }));
+    .map((c) => ({ name: c.name, ok: pass.has(c.status), pending: ["PENDING", "EXPECTED", null, undefined].includes(c.status), ...(c.status === "SKIPPED" ? { skipped: true } : {}) }));
 }
 
 /**
@@ -233,7 +349,7 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
   if (pr.isDraft) return { do: "ready", why: `${ref} is an approved draft` };
   const checks = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
   const ci = ciState(checks);
-  if (ci === "red") return { do: "stop", why: `${ref} has failing checks: ${failedChecks(checks).join(", ") || "see the PR"}` };
+  if (ci === "red") return { do: "stop", why: `${ref} has failing checks: ${failedChecks(checks).join(", ") || "see the PR"}`, red: true };
   switch (pr.mergeStateStatus) {
     case "DIRTY":
       return { do: "stop", why: `${ref} has conflicts with \`${pr.baseRefName}\`` };
@@ -242,7 +358,7 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
     case "UNSTABLE":
       if (ci === "pending") return { do: "wait", why: `${ref}'s checks are running` };
       // GitHub counts an advisory check that isn't green; with every other check green, that's no reason to wait.
-      if (required(checks) === checks) return { do: "stop", why: `${ref} has failing checks` };
+      if (required(checks) === checks) return { do: "stop", why: `${ref} has failing checks`, red: true };
       break;
     case "BLOCKED":
       return ci === "pending" ? { do: "wait", why: `${ref}'s checks are running` } : { do: "stop", why: `GitHub won't merge ${ref} yet (blocked by a branch rule)` };
@@ -253,13 +369,14 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
       return { do: "wait", why: `GitHub is still checking whether ${ref} can merge` };
   }
   if (ci === "pending") return { do: "wait", why: `${ref}'s checks are running` };
+  if (skippedImageScan(pr)) return { do: "stop", why: `${ref} changes an image but its image-scan check was skipped` };
   // A merge the AI reviewer approved: no checks is not green; every named check must have passed on this head.
   if (strictChecks) {
     const named = namedChecks(checks);
     // CI starts a little after a push (a card's merge is stepped seconds after it): no checks yet waits, ten minutes at most.
     if (!named.length) return { do: "wait", why: `${ref} has no checks yet, and a merge without the owner's tap needs green checks`, limit: 10 };
     if (named.some((c) => c.pending)) return { do: "wait", why: `${ref}'s checks are running` };
-    if (named.some((c) => !c.ok)) return { do: "stop", why: `${ref}: ${named.filter((c) => !c.ok).map((c) => c.name).join(", ")} not green` };
+    if (named.some((c) => !c.ok)) return { do: "stop", why: `${ref}: ${named.filter((c) => !c.ok).map((c) => c.name).join(", ")} not green`, red: true };
   }
   const base = ciState(pr.baseRef?.target?.statusCheckRollup);
   if (base === "red") return { do: "stop", why: `\`${pr.baseRefName}\` is red before merging ${ref}: ${failedChecks(pr.baseRef.target.statusCheckRollup).join(", ")}` };
@@ -348,6 +465,8 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
       say.push(`Skipped ${next.url}: ${d.why}.`);
       continue;
     }
+    const retry = d.do === "stop" && d.red ? await retryInfra(github, next.repo, next.number, pr) : undefined;
+    if (retry) return waiting(`pr:${next.number}:${pr.headRefOid}:${retry.key}`, `#${next.number}: ${RERUN_WAIT[retry.key]}`, retry.limit);
     if (d.do === "stop") return stop(d.why);
     if (d.do === "wait") return waiting(`pr:${next.number}:${pr.headRefOid}:${d.why}`, d.why, d.limit);
     if (d.do === "ready") {
@@ -413,11 +532,20 @@ export function eachDecision(pr, p) {
   const named = namedChecks(rollup);
   if (!named.length) return { do: "wait", why: "no checks on its head yet", limit: 10 };
   const red = named.filter((c) => !c.ok && !c.pending);
-  if (red.length) return { do: "fail", why: `${red.map((c) => c.name).join(", ")} failed` };
+  if (red.length) return { do: "fail", why: `${red.map((c) => c.name).join(", ")} failed`, red: true };
   if (named.some((c) => c.pending)) return { do: "wait", why: "checks are running" };
+  if (skippedImageScan(pr)) return { do: "fail", why: "it changes an image but its image-scan check was skipped" };
   const ci = ciState(rollup);
-  if (ci === "red") return { do: "fail", why: "GitHub reports failing checks" };
+  if (ci === "red") return { do: "fail", why: "GitHub reports failing checks", red: true };
   if (ci !== "green") return { do: "wait", why: "checks are running" };
+  // A UI PR (p.ui, from its files when it was tiered) merges at Tier 0 only once the UI Reviewer's design review passed on
+  // this head. Missing counts as pending (the reviewer is woken for it); still none 2 hours after the checks went green: the
+  // owner's card (`escalate`), never a silent merge and never an endless wait.
+  if (p.ui) {
+    const dr = designReview(rollup);
+    if (dr.state === "failure") return { do: "fail", why: `the UI Reviewer's design review failed on its head${dr.description ? ` ("${dr.description}")` : ""}` };
+    if (dr.state !== "success") return { do: "wait", why: "waiting for the UI Reviewer's design review", limit: DESIGN_REVIEW.minutes, escalate: true };
+  }
   if (pr.mergeStateStatus === "BLOCKED") return { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
   // UNSTABLE: some context isn't green. Fine only when every such context is advisory (design-review).
   if (pr.mergeStateStatus === "UNSTABLE") return required(rollup) !== rollup ? { do: "merge" } : { do: "fail", why: "GitHub reports a check that isn't green" };
@@ -435,6 +563,8 @@ const githubSays = (err) => String(err.stderr || err.message || err).trim().spli
 async function advanceEach(queue, { github, now, timeoutMinutes }) {
   const say = [];
   const retier = [];
+  const escalate = [];
+  const wake = [];
   const t = now.getTime();
   for (const p of queue.prs.filter((x) => x.status === "pending")) {
     const fail = (why) => {
@@ -442,9 +572,14 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
       delete p.wait;
       say.push(`**Not merged:** ${p.url}: ${why}.`);
     };
-    const wait = (key, why, limit = timeoutMinutes) => {
+    // escalate: past the limit the PR goes to the owner (the caller files the card) instead of failing.
+    const wait = (key, why, limit = timeoutMinutes, up = false) => {
       if (p.wait?.key !== key) p.wait = { key, since: now.toISOString() };
-      if (t - Date.parse(p.wait.since) > limit * 60_000) fail(`stuck for ${limit} minutes: ${why}`);
+      if (t - Date.parse(p.wait.since) <= limit * 60_000) return;
+      if (!up) return fail(`stuck for ${limit} minutes: ${why}`);
+      Object.assign(p, { status: "escalated", note: `no design review ${limit / 60} hours after its checks went green: the owner decides` });
+      delete p.wait;
+      escalate.push({ repo: p.repo, number: p.number, url: p.url, head: p.head });
     };
     try {
       const data = await github.pr(p.repo, p.number);
@@ -478,8 +613,18 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
         queue.prs.splice(queue.prs.indexOf(p), 1);
         retier.push({ repo: p.repo, number: p.number, url: p.url });
       } else if (d.do === "skip") Object.assign(p, { status: "skipped", note: d.why });
-      else if (d.do === "fail") fail(d.why);
-      else if (d.do === "wait") wait(`${pr.headRefOid}:${d.why}`, d.why, d.limit);
+      else if (d.do === "fail") {
+        const retry = d.red ? await retryInfra(github, p.repo, p.number, pr) : undefined;
+        if (retry) wait(`${pr.headRefOid}:${retry.key}`, RERUN_WAIT[retry.key], retry.limit);
+        else fail(d.why);
+      } else if (d.do === "wait") {
+        wait(`${pr.headRefOid}:${d.why}`, d.why, d.limit, d.escalate);
+        // The design reviewer is asked once per head, when the merge starts waiting on it (the caller files its task).
+        if (d.escalate && p.status === "pending" && p.reviewAsked !== pr.headRefOid) {
+          p.reviewAsked = pr.headRefOid;
+          wake.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid });
+        }
+      }
       else if (d.do === "ready") {
         await github.markReady(pr.id, p.repo);
         p.readied = true;
@@ -515,12 +660,12 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
     }
   }
   const out = say.length ? [say.join("\n")] : [];
-  if (queue.prs.some((x) => x.status === "pending")) return { queue, say: out, retier };
+  if (queue.prs.some((x) => x.status === "pending")) return { queue, say: out, retier, escalate, wake };
   const merged = queue.prs.filter((x) => x.status === "merged").length;
-  const failed = queue.prs.filter((x) => x.status === "failed").length;
+  const failed = queue.prs.filter((x) => x.status === "failed" || x.status === "escalated").length;
   Object.assign(queue, { state: failed ? "stopped" : "done", finishedAt: now.toISOString(), ...(failed ? { reason: `${failed} not merged` } : {}) });
   const headline = failed ? `**Merges finished:** ${merged} merged, ${failed} not.` : `**Done:** ${merged} merged, ${minutes(t - Date.parse(queue.startedAt))} minutes in all.`;
-  return { queue, say: [...out, summary(queue, headline)], done: queue.state, retier };
+  return { queue, say: [...out, summary(queue, headline)], done: queue.state, retier, escalate, wake };
 }
 
 /**
@@ -540,7 +685,7 @@ export function addEach(existing, prs, { now = new Date() } = {}) {
 
 /** The table of the queue's PRs. */
 export function summary(queue, headline) {
-  const STATUS = { merged: "✅ merged", skipped: "↷ skipped", pending: "waiting", failed: "✗ not merged" };
+  const STATUS = { merged: "✅ merged", skipped: "↷ skipped", pending: "waiting", failed: "✗ not merged", escalated: "→ the owner's card" };
   const rows = queue.prs.map((p) => `| ${p.url} | ${STATUS[p.status] ?? p.status}${p.mergedAt ? ` at ${clock(p.mergedAt)}` : ""}${p.note ? ` (${p.note})` : ""} |`);
   return [headline, "", "| PR | |", "|---|---|", ...rows].join("\n");
 }
@@ -559,7 +704,8 @@ export function startOrResume(existing, prs, { gapMinutes, now = new Date() }) {
     if (!existing || !existing.prs.some((p) => p.status === "pending")) return undefined;
     return { ...existing, state: "running", gapMinutes: gapMinutes ?? existing.gapMinutes, reason: undefined, wait: undefined };
   }
-  const done = (existing?.prs ?? []).filter((p) => p.status !== "pending");
+  // Only a merged PR (or one someone else merged: skipped) is done. A failed or escalated one asked for again is merged now.
+  const done = (existing?.prs ?? []).filter((p) => p.status === "merged" || p.status === "skipped");
   const fresh = prs.filter((p) => !done.some((d) => d.repo.toLowerCase() === p.repo.toLowerCase() && d.number === p.number));
   if (!fresh.length) return undefined;
   const q = newQueue(fresh, { gapMinutes: gapMinutes ?? existing?.gapMinutes ?? 15, now });

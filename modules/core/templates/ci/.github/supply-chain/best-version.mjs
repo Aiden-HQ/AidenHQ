@@ -338,7 +338,7 @@ export async function publishedAt(kind, name, { version, digest, sha, source } =
   if (kind === "apt" || kind === "apt-gvisor") {
     const src = kind === "apt-gvisor" ? gvisorSource(version) : source;
     const p = (await aptIndex(src)).find((x) => x.Package === name && x.Version === version);
-    if (!p) throw new Error(`${name}=${version}: not in ${src}`);
+    if (!p) throw Object.assign(new Error(`${name}=${version}: not in ${src}`), { notListed: true }); // read fine, not there
     return { published: await debPublished(p), via: "the .deb's Last-Modified" };
   }
   throw new Error(`unknown kind ${kind}`);

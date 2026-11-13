@@ -1,4 +1,4 @@
-# The app as the apps platform runs it. Health: GET /health answers {"ok": true, "checks": []}.
+# The app as the apps platform runs it. Health: GET /api/health answers {"ok": true, "checks": []}.
 services:
   app:
     build: .
@@ -8,3 +8,5 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]

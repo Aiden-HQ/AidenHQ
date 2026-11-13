@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+
+
 import { describe, expect, it } from "vitest";
 import type { Resolve } from "../src/api.js";
+import type { Scope, Sign } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
-import { isPublicIp, renderArgs, viewApp, viewContent, VIEW_IMAGE, VIEW_SCRIPT, webView, WEB_NETWORK, type Render, type ViewResult } from "../src/view.js";
+import { graderView, isPublicIp, renderArgs, viewApp, viewContent, VIEW_IMAGE, VIEW_SCRIPT, webView, WEB_NETWORK, type Render, type ViewResult } from "../src/view.js";
 
 const app = (o: object = {}) => parseApp({ name: "roadmap-keeper", repo: "example-org/roadmap-keeper", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, ...o });
 const ID = "c".padEnd(64, "0");
@@ -15,22 +16,25 @@ const fake = () => {
   return { calls, render };
 };
 const agent = (key: string, roles: string[] = []) => ({ key, roles });
+const TOKEN = "t".repeat(80);
+const signed: { app: string; agent: string; scope: Scope }[] = [];
+const sign: Sign = (app, agent, scope) => (signed.push({ app, agent, scope }), TOKEN);
 
 describe("app_view", () => {
   it("renders an open app inside its verified container's namespace at 127.0.0.1; role-gated apps need the role", async () => {
     const { calls, render } = fake();
     const audit: object[] = [];
-    await viewApp(app(), agent("roadmap-keeper"), { path: "/roadmap?tab=q1", screenshot: true }, { resolve, render, secretsDir: "/nonexistent", audit: (o) => audit.push(o) });
-    await viewApp(app({ access: { roles: ["finance"] } }), agent("cfo-agent", ["finance"]), { width: 390 }, { resolve, render, secretsDir: "/nonexistent" });
+    await viewApp(app(), agent("roadmap-keeper"), { path: "/roadmap?tab=q1", screenshot: true }, { resolve, render, sign, audit: (o) => audit.push(o) });
+    await viewApp(app({ access: { roles: ["finance"] } }), agent("cfo-agent", ["finance"]), { width: 390 }, { resolve, render, sign });
     expect(calls).toEqual([
-      { network: `container:${ID}`, req: { url: "http://127.0.0.1:8080/roadmap?tab=q1", width: 1280, screenshot: true, web: false } },
-      { network: `container:${ID}`, req: { url: "http://127.0.0.1:8080/", width: 390, screenshot: false, web: false } },
+      { network: `container:${ID}`, req: { url: "http://127.0.0.1:8080/roadmap?tab=q1", width: 1280, screenshot: true, web: false, headers: { "x-aidenhq-identity": TOKEN } } },
+      { network: `container:${ID}`, req: { url: "http://127.0.0.1:8080/", width: 390, screenshot: false, web: false, headers: { "x-aidenhq-identity": TOKEN } } },
     ]);
     expect(audit).toEqual([{ caller: "roadmap-keeper", app: "roadmap-keeper", path: "/roadmap?tab=q1", status: 200 }]);
   });
   it("refuses before rendering: no role, traversal, no health.url, a remote host, a bad width", async () => {
     const { calls, render } = fake();
-    const d = { resolve, render, secretsDir: "/nonexistent" };
+    const d = { resolve, render, sign };
     await expect(viewApp(app({ access: { roles: ["finance"] } }), agent("intruder"), {}, d)).rejects.toThrow(/no access/);
     for (const p of ["/a/../admin", "//evil.example/", "http://evil/", "/a#x", "/%2e%2e/x", "a"]) await expect(viewApp(app(), agent("x"), { path: p }, d), p).rejects.toThrow(/bad/);
     await expect(viewApp(app({ health: {} }), agent("x"), {}, d)).rejects.toThrow(/health.url/);
@@ -40,23 +44,19 @@ describe("app_view", () => {
   });
 });
 
-describe("app_view on a shared app", () => {
-  it("passes the gate secret and the agent's identity as headers for the renderer to scope to the app's origin; none for a non-shared app", async () => {
-    const dir = mkdtempSync(`${tmpdir()}/view-`);
-    mkdirSync(`${dir}/roadmap-keeper`);
-    writeFileSync(`${dir}/roadmap-keeper/AIDENHQ_GATE_SECRET`, "g".repeat(64));
-    const { calls, render } = fake();
-    await viewApp(app({ port: 8080, share: { host: "r.example.com", aud: "aud-12345678" } }), agent("scout"), {}, { resolve, render, secretsDir: dir });
-    await viewApp(app(), agent("scout"), {}, { resolve, render, secretsDir: dir });
-    expect((calls[0]!.req as any).headers).toEqual({ "x-aidenhq-gate": "g".repeat(64), "x-aidenhq-user": "agent:scout", "x-aidenhq-role": "member", "x-aidenhq-name": "", "x-aidenhq-app": "roadmap-keeper" });
-    expect(calls[1]!.req).not.toHaveProperty("headers");
+describe("app_view identity", () => {
+  it("signs a read-only member token for the agent, scoped by the renderer to the app's origin, and never shows it", async () => {
+    signed.length = 0;
+    const { render } = fake();
+    await viewApp(app({ port: 8080, share: { host: "r.example.com", aud: "aud-12345678" } }), agent("scout"), {}, { resolve, render, sign });
+    expect(signed).toEqual([{ app: "roadmap-keeper", agent: "scout", scope: { role: "member", methods: ["GET", "HEAD"] } }]);
     expect(VIEW_SCRIPT).toContain("new URL(q.url()).origin === own"); // per-request origin check
     expect(VIEW_SCRIPT).toMatch(/q\.method\(\) !== "GET" && q\.method\(\) !== "HEAD"\) return q\.abort\(\)/); // a POST from the page is aborted
-    const echo: Render = async () => ({ ...PAGE, url: `http://127.0.0.1:8080/?k=${"g".repeat(64)}`, title: "g".repeat(64), snapshot: `- text "${"g".repeat(64)}"` });
-    const r = await viewApp(app({ port: 8080, share: { host: "r.example.com", aud: "aud-12345678" } }), agent("scout"), {}, { resolve, render: echo, secretsDir: dir });
-    expect(JSON.stringify(r)).not.toContain("g".repeat(64));
-    const boom: Render = async () => { throw new Error(`failed at ${"g".repeat(64)}`); };
-    await expect(viewApp(app({ port: 8080, share: { host: "r.example.com", aud: "aud-12345678" } }), agent("scout"), {}, { resolve, render: boom, secretsDir: dir })).rejects.not.toThrow("g".repeat(64));
+    const echo: Render = async () => ({ ...PAGE, url: `http://127.0.0.1:8080/?k=${TOKEN}`, title: TOKEN, snapshot: `- text "${TOKEN}"` });
+    const r = await viewApp(app(), agent("scout"), {}, { resolve, render: echo, sign });
+    expect(JSON.stringify(r)).not.toContain(TOKEN);
+    const boom: Render = async () => { throw new Error(`failed at ${TOKEN}`); };
+    await expect(viewApp(app(), agent("scout"), {}, { resolve, render: boom, sign })).rejects.not.toThrow(TOKEN);
   });
 });
 
@@ -100,5 +100,19 @@ describe("renderer", () => {
     expect(JSON.parse(text.split("\n")[0]!)).toEqual({ status: 200, url: PAGE.url, title: "Roadmap", timed_out: false, truncated: false });
     expect(c.content[1]).toEqual({ type: "image", data: PAGE.png, mimeType: "image/png" });
     expect(viewContent({ ...PAGE, png: undefined }).content).toHaveLength(1);
+  });
+});
+
+describe("the grader's live view", () => {
+  it("reads the running commit before and after the render; restricted or unreachable apps are unavailable, not errors", async () => {
+    const { calls, render } = fake();
+    let sha = "a".repeat(40);
+    const d = { resolve, render, sign, running: () => sha };
+    expect(await graderView(app(), { path: "/roadmap" }, d)).toMatchObject({ status: 200, sha_before: sha, sha_after: sha });
+    const redeploy: Render = async (n, r) => ((sha = "b".repeat(40)), render(n, r));
+    expect(await graderView(app(), {}, { ...d, render: redeploy })).toMatchObject({ sha_before: "a".repeat(40), sha_after: "b".repeat(40) });
+    expect(await graderView(app({ access: { roles: ["finance"] } }), {}, d)).toEqual({ unavailable: expect.stringMatching(/restricted/) });
+    expect(await graderView(app({ health: {} }), {}, d)).toEqual({ unavailable: expect.stringMatching(/health.url/) });
+    expect(calls.length).toBe(2);
   });
 });

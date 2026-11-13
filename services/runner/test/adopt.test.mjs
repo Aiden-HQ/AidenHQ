@@ -74,7 +74,7 @@ test("a runner restart leaves a running job alone; the next runner adopts it and
   for (const [f, v] of [["paperclip_board_key", "board-key"], ["claude_oauth_token", "claude-token"], ["board_internal_token", "board-token"]]) writeFileSync(join(secrets, f), `${v}\n`, { mode: 0o600 });
   writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n");
 
-  const engineers = [{ id: "engineer-claude", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", persona: { name: "Ada" } } }];
+  const engineers = [{ id: "engineer-claude", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", persona: { name: "Ada" }, privateReads: true } }];
   const issue = { id: "task", identifier: "PEN-7", title: "Look into the flaky test", status: "todo", assigneeAgentId: "engineer-claude", assigneeUserId: null, createdByUserId: USER, labels: [], description: "Ada, look into why the login test is flaky" };
   const paperclip = fakePaperclip(issue, engineers);
   await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));

@@ -1,8 +1,8 @@
-// The design system's colour tokens meet WCAG AA in every palette, light and dark, and the catalog uses only classes
-// components.css defines. (The catalog's rendering is checked in a browser with ui-review; see the README.)
+// The design system's colour tokens meet WCAG AA in every palette, light and dark,
+// and the shadcn theme maps onto tokens that exist. (Rendering is checked in a browser with ui-review.)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 const dir = new URL("../../modules/core/design-system/", import.meta.url);
 const tokens = readFileSync(new URL("tokens.css", dir), "utf8");
@@ -42,14 +42,29 @@ test("every palette in light and dark passes AA for text, controls and focus", (
   assert.equal(checked, 492);
 });
 
-test("the catalog and the app starter use only classes the kit defines", () => {
-  const css = readFileSync(new URL("components.css", dir), "utf8");
-  const defined = new Set([...css.matchAll(/\.([a-z][\w-]*)/g)].map((m) => m[1]));
-  const catalogOnly = new Set(["swatches", "swatch", "spacing", "demo-frame", "toc", "optional", "count", "spacer", "actions", "pages", "when", "current", "ok", "warn", "danger", "up", "down", "summary-value"]);
-  for (const f of [new URL("catalog.html", dir), new URL("../templates/app/server.mjs", dir)]) {
-    const html = readFileSync(f, "utf8");
-    for (const m of html.matchAll(/class="([^"$]+)"/g))
-      for (const c of m[1].split(/\s+/).filter((c) => c && !c.includes("{")))
-        assert.ok(defined.has(c) || catalogOnly.has(c), `${f.pathname.split("/").pop()}: class "${c}" isn't in components.css`);
+test("the default palette's deep sidebar and primary gradient are AA in light and dark", () => {
+  const b = blocks();
+  const light = { ...b[":root"], ...b[':root[data-palette="neutral"]'] };
+  for (const [mode, t] of [["light", light], ["dark (system)", { ...light, ...b[':root[data-palette="neutral"]:not([data-theme="light"])'] }], ["dark", { ...light, ...b[':root[data-palette="neutral"][data-theme="dark"]'] }]]) {
+    for (const [fg, bg] of [["--sidebar-text", "--sidebar-bg"], ["--sidebar-muted", "--sidebar-bg"], ["--sidebar-text-strong", "--sidebar-hover"], ["--accent-text", "--accent-2"], ["--accent-text", "--accent"]]) {
+      assert.ok(t[fg] && t[bg], `${mode}: ${fg} or ${bg} missing`);
+      assert.ok(ratio(t[fg], t[bg]) >= 4.5, `${mode}: ${fg} on ${bg} is ${ratio(t[fg], t[bg]).toFixed(2)}:1`);
+    }
+  }
+});
+
+test("the shadcn theme reads only variables that tokens.css or the theme itself defines", () => {
+  const theme = readFileSync(new URL("shadcn.css", dir), "utf8");
+  const defined = new Set([...`${tokens}\n${theme}`.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]));
+  const read = [...theme.matchAll(/var\((--[\w-]+)\)/g)].map((m) => m[1]);
+  assert.ok(read.length > 40);
+  for (const v of read) assert.ok(defined.has(v), `shadcn.css reads ${v}, which nothing defines`);
+  // Every shadcn colour the starter's components use has a Tailwind colour.
+  const ui = new URL("../templates/app/src/components/ui/", dir);
+  const colours = new Set([...theme.matchAll(/--color-([\w-]+):/g)].map((m) => m[1]));
+  for (const f of readdirSync(ui)) {
+    const src = readFileSync(new URL(f, ui), "utf8");
+    for (const m of src.matchAll(/\b(?:bg|text|border|ring|outline|fill|stroke)-((?:sidebar-)?(?:background|foreground|card|popover|primary|secondary|muted|accent|destructive|border|input|ring|sidebar)(?:-foreground|-accent|-border|-ring|-primary)*)\b/g))
+      assert.ok(colours.has(m[1]), `${f} uses ${m[0]}, which has no --color-${m[1]} in shadcn.css`);
   }
 });

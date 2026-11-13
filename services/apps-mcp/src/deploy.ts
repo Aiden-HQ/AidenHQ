@@ -2,8 +2,8 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { checkSources, sandbox, serializeCompose, withSecrets, type ComposeJson } from "./policy.js";
 import { pickService, runArgv } from "./run.js";
-import { ensureApiToken } from "./api.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
+import { failed, probeResult, summary, type Declared, type ProbeResult } from "./checks.js";
 import type { App } from "./registry.js";
 import type { Store } from "./store.js";
 
@@ -13,10 +13,13 @@ export interface Deps {
   checkout: (app: App, sha?: string) => Promise<{ sha: string; dir: string }>;
   /** Is the app serving right now? */
   probe: (app: App) => Promise<boolean>;
+  /** The light post-deploy probes beyond health (checks.ts: render, agent) on the running app. */
+  check?: (app: App, declared: Declared) => Promise<ProbeResult[]>;
   store: Store;
   appsData: string;
   secretsDir: string; // the vault's apps/ dir as this container sees it
   hostSecretsDir: string; // the same dir as the Docker daemon (host) sees it
+  identityKeysHostFile: string; // the identity public keys (vault identity/keys.json) as the Docker daemon sees it
   /** Exposes the deployed app on the apps' tailnet node (platform.ts syncEdge). */
   expose?: (app: App) => Promise<void>;
   /** database: warehouse — the app's login and its DATABASE_URL secret (database.ts). */
@@ -24,7 +27,7 @@ export interface Deps {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
-export interface Result { sha: string; status: "healthy" | "rolled_back" | "failed"; images: string[]; previous?: string }
+export interface Result { sha: string; status: "healthy" | "rolled_back" | "failed"; images: string[]; previous?: string; checks?: ProbeResult[] }
 
 export const NOTE = "code only was redeployed; volumes and data were not restored";
 
@@ -50,9 +53,8 @@ export function createEngine(d: Deps) {
   }
 
   /** Checks out sha, resolves and sandboxes its compose file, writes it for deploying. Nothing is running yet. */
-  async function prepare(app: App, sha?: string): Promise<{ sha: string; images: string[] }> {
+  async function prepare(app: App, sha?: string): Promise<{ sha: string; images: string[]; declared: Declared }> {
     if (app.database) await d.provisionDb?.(app);
-    ensureApiToken(app, d.secretsDir); // api: the bearer app_api sends, generated once
     // Each declared secret is a file in the vault (apps/<app>/<KEY>), mounted into the app as /run/secrets/<KEY>.
     const missing = app.secrets.filter((k) => !existsSync(`${d.secretsDir}/${app.name}/${k}`));
     if (missing.length) throw new Error(`missing secrets for ${app.name} in the vault (apps/${app.name}/<KEY>): ${missing.join(", ")}`);
@@ -61,15 +63,15 @@ export function createEngine(d: Deps) {
     checkSources(`${base}/${app.compose}`, co.dir, base);
     // The app's manifest (custom roles, default role) is checked before anything starts: an invalid one refuses the deploy.
     const manifestFile = `${base}/${MANIFEST_FILE}`;
-    parseManifest(existsSync(manifestFile) ? readFileSync(manifestFile, "utf8") : undefined);
+    const manifest = parseManifest(existsSync(manifestFile) ? readFileSync(manifestFile, "utf8") : undefined);
     // --env-file /dev/null, so no stray .env in the repo is read and no secret value is interpolated; the process env is
     // clean (see platform.ts exec). Secrets are added as file mounts after the sandbox (withSecrets).
     const out = await docker(app, ["compose", "--project-directory", base, "-f", `${base}/${app.compose}`, "--env-file", "/dev/null", "-p", project(app), "config", "--format", "json"]);
-    const sb = withSecrets(sandbox(JSON.parse(out) as ComposeJson, app, { APPS_DATA: d.appsData }).compose, app, d.hostSecretsDir);
+    const sb = withSecrets(sandbox(JSON.parse(out) as ComposeJson, app, { APPS_DATA: d.appsData }).compose, app, d.hostSecretsDir, d.identityKeysHostFile);
     mkdirSync(dir(app), { recursive: true });
     // Already escaped by `docker compose config` (serializeCompose). Holds no secret values (secrets are file mounts).
     writeFileSync(sandboxed(app), serializeCompose(sb), { mode: 0o600 });
-    return { sha: co.sha, images: Object.entries<any>(sb.services ?? {}).map(([n, s]) => s.image ?? `${project(app)}-${n}`) };
+    return { sha: co.sha, images: Object.entries<any>(sb.services ?? {}).map(([n, s]) => s.image ?? `${project(app)}-${n}`), declared: manifest.checks ?? {} };
   }
 
   async function waitHealthy(app: App): Promise<boolean> {
@@ -81,11 +83,22 @@ export function createEngine(d: Deps) {
     }
   }
 
+  /**
+   * The post-deploy checks (checks.ts) after the health wait: health's own result, then render and agent on a healthy app.
+   * One attempt each. A probe that couldn't run is a warning, never a failure.
+   */
+  async function verify(app: App, healthy: boolean, declared: Declared): Promise<ProbeResult[]> {
+    const where = app.health.url ? new URL(app.health.url).pathname : "containers";
+    if (!healthy) return [probeResult("health", where, [{ hard: true, what: `not healthy within ${app.health.grace_sec}s` }])];
+    const rest = await (d.check?.(app, declared) ?? Promise.resolve([])).catch((e) => [probeResult("render", "*", [{ hard: false, what: `the checks couldn't run (${String((e as Error).message ?? e).slice(0, 120)})` }])]);
+    return [probeResult("health", where, []), ...rest];
+  }
+
   const up = (app: App) => compose(app, ["up", "-d", "--build", "--remove-orphans"]);
   const record = (app: App, r: Result, by: string, detail = "") => d.store.addDeploy({ app: app.name, sha: r.sha, images_json: JSON.stringify(r.images), by, at: now(), status: r.status, detail });
 
   /** prepare + up + health. Resolves with the outcome (a failed `up`, e.g. a build error, counts as not ok); prepare errors propagate (nothing changed). */
-  async function apply(app: App, sha?: string): Promise<{ sha: string; images: string[]; ok: boolean; err?: string }> {
+  async function apply(app: App, sha?: string): Promise<{ sha: string; images: string[]; declared: Declared; ok: boolean; err?: string }> {
     const p = await prepare(app, sha);
     try {
       await up(app);
@@ -101,9 +114,12 @@ export function createEngine(d: Deps) {
     return exclusive(app, async () => {
       const prev = d.store.goodDeploys(app.name)[0];
       const next = await apply(app, o.sha);
+      // Healthy is not enough: the light checks (a page that renders styled, an agent API that answers) must pass too.
+      const checks = next.ok ? await verify(app, true, next.declared) : undefined;
+      if (checks && failed(checks).length) Object.assign(next, { ok: false, err: summary(checks) });
       if (next.ok) {
-        const r: Result = { sha: next.sha, status: "healthy", images: next.images };
-        record(app, r, o.by);
+        const r: Result = { sha: next.sha, status: "healthy", images: next.images, checks };
+        record(app, r, o.by, summary(checks!));
         d.store.closeIncident(app.name);
         await d.expose?.(app);
         return r;
@@ -112,12 +128,13 @@ export function createEngine(d: Deps) {
         // First deploy: nothing to roll back to. Stop it, don't loop.
         await compose(app, ["down", "--remove-orphans"]).catch(() => "");
         d.store.clearRunning(app.name);
-        const r: Result = { sha: next.sha, status: "failed", images: next.images };
+        const r: Result = { sha: next.sha, status: "failed", images: next.images, ...(checks ? { checks } : {}) };
         record(app, r, o.by, `${next.err ?? `health check failed within ${app.health.grace_sec}s`}; stopped (no previous good deploy)`);
         return r;
       }
       const back = await apply(app, prev.sha);
-      const r: Result = { sha: next.sha, status: back.ok ? "rolled_back" : "failed", images: next.images, previous: prev.sha };
+      // The rollback target was healthy before: health alone decides it (its pages may predate a newer check).
+      const r: Result = { sha: next.sha, status: back.ok ? "rolled_back" : "failed", images: next.images, previous: prev.sha, ...(checks ? { checks } : {}) };
       record(app, r, o.by, `${next.err ?? "health check failed"}; ${back.ok ? `rolled back to ${prev.sha.slice(0, 8)}` : `rollback to ${prev.sha.slice(0, 8)} also unhealthy`}; ${NOTE}`);
       if (back.ok) record(app, { sha: back.sha, status: "healthy", images: back.images }, "auto-rollback");
       return r;
@@ -132,8 +149,11 @@ export function createEngine(d: Deps) {
       const prev = good.find((g) => g.sha !== good[0]?.sha);
       if (!prev) throw new Error(`no previous good deploy of ${app.name} to roll back to`);
       const back = await apply(app, prev.sha);
-      const r: Result = { sha: back.sha, status: back.ok ? "healthy" : "failed", images: back.images, previous: good[0]!.sha };
-      record(app, r, o.by, `rollback; ${NOTE}`);
+      // Health alone sets its status, as for the auto-rollback: the previous good commit may predate a newer check. The
+      // checks' findings are reported with it.
+      const checks = await verify(app, back.ok, back.declared);
+      const r: Result = { sha: back.sha, status: back.ok ? "healthy" : "failed", images: back.images, previous: good[0]!.sha, checks };
+      record(app, r, o.by, `rollback; ${[summary(checks), NOTE].filter(Boolean).join("; ")}`);
       return r;
     });
   }
@@ -204,6 +224,13 @@ export function createEngine(d: Deps) {
     });
   }
 
-  return { run, services, deployed, compose: composeOf, deploy, rollback, reap, restart, logs, stats, containersHealthy, exitedContainer, locked: (app: App) => locks.has(app.name) };
+  /** app_check: the same probes on the running app now, with the running commit's declared paths. */
+  async function check(app: App, declared: Declared): Promise<ProbeResult[]> {
+    if (!deployed(app)) throw new Error(`${app.name} is not deployed`);
+    if (locks.has(app.name)) throw new Error(`deploy in progress for ${app.name}`);
+    return verify(app, await d.probe(app).catch(() => false), declared);
+  }
+
+  return { check, run, services, deployed, compose: composeOf, deploy, rollback, reap, restart, logs, stats, containersHealthy, exitedContainer, locked: (app: App) => locks.has(app.name) };
 }
 export type Engine = ReturnType<typeof createEngine>;

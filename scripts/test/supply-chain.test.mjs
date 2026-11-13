@@ -53,4 +53,20 @@ test("fail closed: non-registry, mismatched or integrity-less entries are proble
   const ws = { packages: { "node_modules/lib": { resolved: "packages/lib", link: true }, "packages/lib": { version: "1.0.0" } } };
   assert.deepEqual(await probs(ws), []);
   assert.equal((await probs({ packages: { "node_modules/lib": { resolved: "../../elsewhere", link: true } } })).length, 1);
+  // a bundled dependency ships inside its parent's tarball: covered by the parent only when the parent lists it
+  const parent = { version: "2.0.0", resolved: reg, integrity: "sha512-x", bundleDependencies: ["tslib"] };
+  const child = { version: "2.8.1", inBundle: true };
+  const bundled = (p, c = child, name = "tslib") => ({ packages: { "node_modules/old-dep": p, [`node_modules/old-dep/node_modules/${name}`]: c } });
+  assert.deepEqual(await probs(bundled(parent)), []);
+  assert.equal((await probs(bundled({ ...parent, resolved: git }))).length, 2, "a parent outside the registry");
+  assert.equal((await probs(bundled({ ...parent, bundleDependencies: undefined }))).length, 1, "a parent with no bundle list");
+  assert.equal((await probs(bundled(parent, { ...child, resolved: "https://evil.example/t.tgz", integrity: "sha512-y" }))).length, 1, "a child with its own source");
+  // a forged inBundle child under an unchanged parent that doesn't bundle it
+  const unchanged = (p) => check({ changes: changedEntries({ packages: { "node_modules/old-dep": parent } }, p), exceptions: [], getJson, now });
+  assert.equal((await unchanged(bundled(parent, child, "evil"))).length, 1);
+  assert.deepEqual(await unchanged(bundled(parent)), []);
+  // a top-level inBundle entry has no parent package (its lookup would land on the root project)
+  assert.equal((await probs({ packages: { "": { name: "app", bundleDependencies: ["tslib"] }, "node_modules/tslib": child } })).length, 1);
+  // a parent whose name field overrides the name in its key
+  assert.equal((await probs(bundled({ ...parent, name: "other-dep" }))).length, 2, "the renamed parent and its child");
 });

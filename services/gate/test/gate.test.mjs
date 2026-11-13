@@ -7,7 +7,9 @@ import { connect } from "node:net";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accessPage, authHeaders, createGate, myAppsPage, requestsPage } from "../gate.mjs";
+import { accessPage, authHeaders, createGate, mint, myAppsPage, requestsPage, signingKey, subOf } from "../gate.mjs";
+import { createIdentity } from "../../shared/aidenhq-identity.mjs";
+import { ensureIdentityKeys } from "../../../scripts/identity.mjs";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const ISSUER = "https://team.cloudflareaccess.com";
@@ -19,8 +21,13 @@ const token = (claims, { kid = "k1", alg = "RS256" } = {}) => {
 };
 
 const secrets = mkdtempSync(join(tmpdir(), "gate-"));
-const SECRET = "s3cret-roadmap";
-writeFileSync(join(secrets, "roadmap"), `${SECRET}\n`);
+// The app-identity keys as compile makes them; the app's side is the shared middleware, as an app copies it.
+ensureIdentityKeys(secrets);
+const KEY = join(secrets, "identity", "gate.pem");
+const identities = {};
+const identify = (h, app = "roadmap") => (identities[app] ??= createIdentity({ app, keysFile: join(secrets, "identity", "keys.json") })).identify({ method: "GET", url: "/", headers: h });
+/** The person the app sees, from the echoed headers (verified as the app verifies them). */
+const who = (body, app) => identify(JSON.parse(body), app);
 // The board's account map and app roles: boss is an admin account (no role rows), gone is disabled; admin@ and editor@
 // have no account (access mode: an Access-verified email is a member).
 const ACCOUNTS = join(secrets, "accounts.json");
@@ -52,10 +59,10 @@ before(async () => {
   const appPort = await listen(app);
   const cfg = {
     login: "access", issuer: ISSUER, certs_url: `http://127.0.0.1:${jwksPort}/cdn-cgi/access/certs`, owner_email: "Squat@Example.com",
-    accounts_file: ACCOUNTS, my_apps: { host: "apps.example.com", aud: "aud-apps" },
+    accounts_file: ACCOUNTS, identity_key_file: KEY, my_apps: { host: "apps.example.com", aud: "aud-apps" },
     hosts: {
-      "roadmap.example.com": { app: "roadmap", port: appPort, aud: AUD, secret_file: join(secrets, "roadmap") },
-      "other.example.com": { app: "other", port: appPort, aud: "aud-other", secret_file: join(secrets, "absent") },
+      "roadmap.example.com": { app: "roadmap", port: appPort, aud: AUD },
+      "other.example.com": { app: "other", port: appPort, aud: "aud-other" },
     },
   };
   gate = createGate({ config: () => cfg, log: () => {} });
@@ -87,21 +94,43 @@ test("a member is proxied as itself; no Access token, cookie or forged identity 
     "tailscale-user-login": "owner@example.com",
     "cf-access-authenticated-user-email": "owner@example.com",
     "x-aidenhq-gate": "forged",
+    "x-aidenhq-identity": "forged.token.here",
   });
   assert.equal(r.status, 200);
   const h = JSON.parse(r.body);
-  assert.equal(h["x-aidenhq-user"], "viewer@example.com");
-  assert.equal(h["x-aidenhq-role"], "member");
-  assert.equal(h["x-aidenhq-app"], "roadmap");
-  assert.equal(h["x-aidenhq-name"], "");
+  // the Access adapter → the gate's token → the app's middleware: one person, for this app only
+  assert.deepEqual(who(r.body), { sub: subOf("viewer@example.com"), email: "viewer@example.com", name: "", role: "member", kind: "person" });
+  assert.match(subOf("viewer@example.com"), /^u_[A-Za-z0-9_-]{22}$/);
+  assert.throws(() => who(r.body, "other"), /not for this app/);
   assert.equal(h.cookie, "theme=dark");
-  assert.equal(h["x-aidenhq-gate"], SECRET);
-  for (const k of Object.keys(h)) assert.ok(!/^(cf-access-|tailscale-)/.test(k), `${k} reached the app`);
+  for (const k of Object.keys(h)) assert.ok(!/^(cf-access-|tailscale-)/.test(k) && (!k.startsWith("x-aidenhq-") || k === "x-aidenhq-identity"), `${k} reached the app`);
+});
+
+test("the app's middleware refuses a missing, forged, expired or agent-claiming token; tailnet reads may be anonymous", () => {
+  const keysFile = join(secrets, "identity", "keys.json");
+  const app = createIdentity({ app: "roadmap", keysFile });
+  const key = signingKey(KEY)();
+  const t = Math.floor(Date.now() / 1000);
+  const good = { iss: "aidenhq-gate", aud: "roadmap", sub: subOf("a@example.com"), kind: "person", email: "a@example.com", role: "member", iat: t, exp: t + 300 };
+  const req = (token, method = "GET") => ({ method, url: "/", headers: token ? { "x-aidenhq-identity": token } : {} });
+  assert.equal(app.identify(req(mint(key, good))).sub, good.sub);
+  assert.throws(() => app.identify(req()), /no identity/);
+  assert.throws(() => app.identify(req(mint(key, { ...good, exp: t - 1, iat: t - 301 }))), /expired/);
+  assert.throws(() => app.identify(req(mint(key, { ...good, exp: t + 3600 }))), /expired/); // longer than 5 minutes
+  assert.throws(() => app.identify(req(mint(key, { ...good, aud: "other" }))), /not for this app/);
+  assert.throws(() => app.identify(req(mint(key, { ...good, kind: "agent", sub: "agent:x" }))), /not for this app/); // the gate's key can't make an agent
+  assert.throws(() => app.identify(req(mint(key, { ...good, role: "blocked" }))), /bad identity/);
+  const forged = mint({ key: generateKeyPairSync("ed25519").privateKey, kid: key.kid }, good);
+  assert.throws(() => app.identify(req(forged)), /bad identity/);
+  const tailnet = createIdentity({ app: "roadmap", keysFile, anonymous: true });
+  assert.equal(tailnet.identify(req()), null);
+  assert.equal(tailnet.identify(req(undefined, "POST")), null); // the app decides what anyone may do
+  assert.throws(() => tailnet.identify(req("x.y.z")), /bad identity/);
 });
 
 test("the owner's admin account is an admin of every shared app; matching owner_email without one is nothing", async () => {
   const r = await call({ "cf-access-jwt-assertion": token({ email: "owner@EXAMPLE.com" }) });
-  assert.equal(JSON.parse(r.body)["x-aidenhq-role"], "admin");
+  assert.equal(who(r.body).role, "admin");
   assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "squat@example.com" }) })).status, 403);
 });
 
@@ -133,7 +162,7 @@ test("anyone not blocked may write, same-origin only; a custom role passes throu
   assert.equal((await call({ "cf-access-jwt-assertion": a, origin: "https://roadmap.example.com" }, { method: "POST" })).status, 200);
   assert.equal(seen.method, "POST");
   assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "viewer@example.com" }), origin: "https://roadmap.example.com" }, { method: "POST" })).status, 200);
-  assert.equal(JSON.parse((await call({ "cf-access-jwt-assertion": token({ email: "editor@example.com" }) })).body)["x-aidenhq-role"], "editor");
+  assert.equal(who((await call({ "cf-access-jwt-assertion": token({ email: "editor@example.com" }) })).body).role, "editor");
   assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "stranger@example.com" }) })).status, 403); // default blocked
 });
 
@@ -151,7 +180,7 @@ test("stale keys fail closed: a JWKS outage past 2 h refuses every request with 
   let clock = Date.now(), up = true;
   const jwk = { ...publicKey.export({ format: "jwk" }), kid: "k1" };
   const fetchJwks = async () => (up ? new Response(JSON.stringify({ keys: [jwk] })) : new Response("down", { status: 500 }));
-  const g = createGate({ config: () => ({ issuer: ISSUER, certs_url: "http://jwks.invalid/certs", owner_email: "owner@example.com", accounts_file: ACCOUNTS, hosts: { "roadmap.example.com": { app: "roadmap", port: app.address().port, aud: AUD, secret_file: join(secrets, "roadmap") } } }), fetch: fetchJwks, now: () => clock, log: () => {} });
+  const g = createGate({ config: () => ({ issuer: ISSUER, certs_url: "http://jwks.invalid/certs", owner_email: "owner@example.com", accounts_file: ACCOUNTS, identity_key_file: KEY, hosts: { "roadmap.example.com": { app: "roadmap", port: app.address().port, aud: AUD } } }), fetch: fetchJwks, now: () => clock, log: () => {} });
   const port = await listen(g);
   const get = () => new Promise((resolve) => request({ host: "127.0.0.1", port, headers: { host: "roadmap.example.com", "cf-access-jwt-assertion": token({ email: "owner@example.com" }) } }, (r) => (r.resume(), resolve(r.statusCode))).end());
   try {
@@ -170,9 +199,18 @@ test("stale keys fail closed: a JWKS outage past 2 h refuses every request with 
   }
 });
 
-test("without the app's gate secret the gate refuses (503) rather than proxy", async () => {
-  assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "viewer@example.com", aud: ["aud-other"] }) }, { host: "other.example.com" })).status, 503);
-  assert.equal(seen, undefined);
+test("without its signing key the gate refuses (503) rather than proxy", async () => {
+  const g = createGate({ config: () => ({ issuer: ISSUER, certs_url: `http://127.0.0.1:${jwksSrv.address().port}/cdn-cgi/access/certs`, owner_email: "owner@example.com", accounts_file: ACCOUNTS, identity_key_file: join(secrets, "absent.pem"), hosts: { "roadmap.example.com": { app: "roadmap", port: app.address().port, aud: AUD } } }), log: () => {} });
+  const port = await listen(g);
+  try {
+    seen = undefined;
+    const status = await new Promise((resolve) => request({ host: "127.0.0.1", port, headers: { host: "roadmap.example.com", "cf-access-jwt-assertion": token({ email: "viewer@example.com" }) } }, (r) => (r.resume(), resolve(r.statusCode))).end());
+    assert.equal(status, 503);
+    assert.equal(seen, undefined);
+  } finally {
+    g.close();
+    g.closeAllConnections();
+  }
 });
 
 test("an unknown host is a 404", async () => {
@@ -212,8 +250,8 @@ test("a WebSocket upgrade needs the same origin, then passes through", async () 
 test("access mode: a disabled account is refused even with a role; an admin account is an admin of every app", async () => {
   assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "gone@example.com" }) })).status, 403);
   assert.equal(seen, undefined);
-  assert.equal(JSON.parse((await call({ "cf-access-jwt-assertion": token({ email: "boss@example.com" }) })).body)["x-aidenhq-role"], "admin");
-  assert.equal(JSON.parse((await call({ "cf-access-jwt-assertion": token({ email: "viewer@example.com" }) })).body)["x-aidenhq-role"], "member");
+  assert.equal(who((await call({ "cf-access-jwt-assertion": token({ email: "boss@example.com" }) })).body).role, "admin");
+  assert.equal(who((await call({ "cf-access-jwt-assertion": token({ email: "viewer@example.com" }) })).body).role, "member");
 });
 
 test("my apps lists only the apps the visitor isn't blocked from (all of them for an admin), behind its own Access aud", async () => {
@@ -270,10 +308,10 @@ test("password mode: sign-in only on the my-apps host; app hosts get a host-only
   });
   const authPort = await listen(auth);
   writeFileSync(join(secrets, "accounts-pw.json"), JSON.stringify({ accounts: [{ email: "ann@example.com", name: "Ann Ö", role: "user", disabled: false }, { email: "gone@example.com", role: "user", disabled: true }], apps: { roadmap: { default: "member", roles: {} }, other: { default: "member", roles: {} } } }));
-  const site = (app) => ({ app, port: app_port(), secret_file: join(secrets, "roadmap") });
+  const site = (app) => ({ app, port: app_port() });
   const app_port = () => app.address().port;
   const cfg = {
-    login: "password", auth_url: `http://127.0.0.1:${authPort}`, owner_email: "owner@example.com", accounts_file: join(secrets, "accounts-pw.json"),
+    login: "password", auth_url: `http://127.0.0.1:${authPort}`, owner_email: "owner@example.com", accounts_file: join(secrets, "accounts-pw.json"), identity_key_file: KEY,
     my_apps: { host: "apps.example.com" }, hosts: { "roadmap.example.com": site("roadmap"), "other.example.com": site("other") },
   };
   const g = createGate({ config: () => cfg, now: () => clock, log: () => {} });
@@ -349,9 +387,9 @@ test("password mode: sign-in only on the my-apps host; app hosts get a host-only
     const ok = await send("/", { cookie: `theme=dark; ${appCookie}` });
     assert.equal(ok.status, 200);
     const h = JSON.parse(ok.body);
-    assert.equal(h["x-aidenhq-user"], "ann@example.com");
-    assert.equal(h["x-aidenhq-role"], "member");
-    assert.equal(decodeURIComponent(h["x-aidenhq-name"]), "Ann Ö");
+    const atClock = createIdentity({ app: "roadmap", keysFile: join(secrets, "identity", "keys.json"), now: () => clock / 1000 }); // this gate's clock moved on
+    assert.deepEqual(atClock.identify({ method: "GET", url: "/", headers: JSON.parse(ok.body) }), { sub: subOf("ann@example.com"), email: "ann@example.com", name: "Ann Ö", role: "member", kind: "person" });
+    assert.equal(h["x-aidenhq-user"], undefined); // the forged header the client sent
     assert.equal(h.cookie, "theme=dark");
     assert.deepEqual(ok.headers["set-cookie"], ["theme=dark"]);
     assert.equal((await send("/", { cookie: `${SC}=s-gone` })).status, 403);
@@ -402,7 +440,7 @@ test("password mode: sign-in only on the my-apps host; app hosts get a host-only
 });
 
 test("fails closed: unreadable accounts or a failing session check refuse with a 503", async () => {
-  const cfg = { login: "access", issuer: ISSUER, certs_url: `http://127.0.0.1:${jwksSrv.address().port}/cdn-cgi/access/certs`, owner_email: "owner@example.com", accounts_file: join(secrets, "missing.json"), hosts: { "roadmap.example.com": { app: "roadmap", port: app.address().port, aud: AUD, secret_file: join(secrets, "roadmap") } } };
+  const cfg = { login: "access", issuer: ISSUER, certs_url: `http://127.0.0.1:${jwksSrv.address().port}/cdn-cgi/access/certs`, owner_email: "owner@example.com", accounts_file: join(secrets, "missing.json"), identity_key_file: KEY, hosts: { "roadmap.example.com": { app: "roadmap", port: app.address().port, aud: AUD } } };
   const g = createGate({ config: () => cfg, log: () => {} });
   const port = await listen(g);
   const get = (headers) => new Promise((resolve) => request({ host: "127.0.0.1", port, headers: { host: "roadmap.example.com", ...headers } }, (r) => (r.resume(), resolve(r.statusCode))).end());

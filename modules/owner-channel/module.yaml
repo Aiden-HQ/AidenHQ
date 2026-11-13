@@ -13,6 +13,11 @@ settings:
   # Slack channel ids agents may post to with slack_post (an agent still needs the tool granted).
   slack_post_channels:
     default: []
+  # notify_owner messages of kind fyi (news to read later) on Telegram: send, or mute (they still show on the board's chat
+  # and in Slack). Decisions and results are never muted.
+  telegram_fyi:
+    default: send
+    values: [ send, mute ]
 compose: compose.yaml
 # Channels the owner may not use: created empty when missing, so compose starts; an empty token means "not configured".
 optional_secrets:

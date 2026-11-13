@@ -5,6 +5,7 @@ import { z } from "zod";
 
 export const MANIFEST_FILE = "aidenhq-app.yaml";
 const CORE = ["blocked", "member", "admin"];
+const PATH = z.string().max(200).regex(/^\/[A-Za-z0-9._~\/-]*$/, "a plain absolute path").refine((p) => !p.includes("//") && !p.split("/").some((x) => x === "." || x === ".."), "no //, . or ..");
 
 const Schema = z
   .object({
@@ -18,6 +19,12 @@ const Schema = z
       .max(10)
       .default([]),
     default_role: z.string().optional(),
+    // Post-deploy checks (checks.ts): the pages to render and the agent-API paths to read, instead of the inferred ones
+    // (`/`, and <first api path>/schema). [] turns a kind off. Declared paths are checked strictly.
+    checks: z
+      .object({ render: z.array(PATH).max(5).optional(), agent: z.array(PATH).max(5).optional() })
+      .strict()
+      .optional(),
   })
   .strict()
   .refine((m) => new Set(m.roles.map((r) => r.name)).size === m.roles.length, "role names must be unique")

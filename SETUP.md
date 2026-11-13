@@ -48,7 +48,7 @@ to that account. If your data policy needs zero-data-retention routing, turn it 
 
 ## 1. Create the VM
 
-You need Ubuntu 24.04 (amd64), 4 vCPUs, 8 GB RAM and a 100 GB disk (the container images alone take about 25 GB, the
+You need Ubuntu 24.04 or 26.04 (amd64), 4 vCPUs, 8 GB RAM and a 100 GB disk (the container images alone take about 25 GB, the
 Paperclip image 17 GB of it; a 40 GB disk runs out during the first build), plus a non-root user with `sudo` and your SSH
 key. A **virtual TPM** is strongly recommended: the secret vault (step 3) seals its password to the TPM. Without one
 the vault still works, but its password is sealed with a key stored on the same disk, which protects a copied vault
@@ -78,7 +78,7 @@ defaults, and `VMID` picks the VM id (default: the next free one).
 
 Find the VM's address in your router's DHCP table, or from the MAC address the script prints.
 
-**Check** (on the VM): `ssh <you>@<host> 'lsb_release -rs; ls /dev/tpmrm0'` prints `24.04` and `/dev/tpmrm0`. Without
+**Check** (on the VM): `ssh <you>@<host> 'lsb_release -rs; ls /dev/tpmrm0'` prints `24.04` (or `26.04`) and `/dev/tpmrm0`. Without
 that device there is no usable TPM and the vault falls back to a host key (the vault step prints a loud warning at the
 end). (`systemd-creds has-tpm2` prints `partial` on a fresh image, missing only `libraries`: step 3 installs them, and it
 prints `yes` after that.)
@@ -118,7 +118,7 @@ both fail; that is expected, and step 3 makes the local mirror.)
 
 One run sets up the whole machine. It is idempotent: if it stops partway, fix the cause and run it again. It:
 
-1. installs system packages, Docker, Node 24, gVisor, bubblewrap and its AppArmor profile, passt, gocryptfs and
+1. installs system packages, Docker, Node 24, gVisor, bubblewrap (a private copy with its own AppArmor profile), passt, gocryptfs and
    Tailscale (`ops/vm/setup.sh`), plus the Codex and opencode CLIs the runner uses;
 2. joins the tailnet with `TS_AUTHKEY` as `aidenhq-<you>` (unless the VM is already on it, or `BOARD_HOST` is set);
 3. writes `.env` and `config/runner.yaml`, and runs `scripts/bootstrap.sh` (secrets folder, generated tokens, data

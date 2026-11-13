@@ -21,7 +21,7 @@ export type State = "pending" | "approved" | "rejected" | "expired" | "used" | "
  */
 export type Tier = 0 | 1 | 2;
 /** The reviewer models a verdict may name (decided_by `reviewer:<model>`). */
-export const REVIEWER_MODELS = ["moonshotai/kimi-k3.1-pro", "~z-ai/glm-latest"] as const;
+export const REVIEWER_MODELS = ["~openai/gpt-luna-latest", "~deepseek/deepseek-flash-latest"] as const;
 const TTL_MS = 7 * 86_400_000;
 /** A record used this long ago with no outcome: the applier died mid-way. Shown as unknown, never retried. */
 const UNKNOWN_AFTER_MS = 2 * 3_600_000;

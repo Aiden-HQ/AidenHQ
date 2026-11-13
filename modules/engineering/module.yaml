@@ -1,5 +1,5 @@
 name: engineering
-description: Engineer agents for coding jobs, run by the host runner (OpenRouter via opencode).
+description: Engineer agents for coding jobs, run by the host runner (OpenRouter models on Codex through the model gateway).
 requires:
   - github
 isolation: code-exec
@@ -8,7 +8,11 @@ agents:
     department: engineering
     # was engineer-glm; setup renames the existing agent
     persona: { name: Linus, voice: "Scrappy; tries the cheap route first and says plainly when it isn't good enough.", avatar: linus }
+    # Paperclip never runs runner agents: opencode_local only holds the openrouter/<model> ids. The runner's engine is Codex
+    # through the model gateway (codex-openrouter); `engine: openrouter` (an instance override) falls back to opencode.
     adapter: opencode_local
+    engine: codex-openrouter
+    reasoning_effort: high
     # Graded done: deliverables delegated to it are checked against their rubric before they close (the runner's grader).
     graded: true
     model: openrouter/~deepseek/deepseek-flash-latest
@@ -24,3 +28,21 @@ agents:
       - openrouter/moonshotai/kimi-k3
       - openrouter/qwen/qwen3-coder-next
     dispatch: runner
+  app-engineer:
+    department: engineering
+    # TEST only (owner, 2026-11-13): not for routing until the live checks pass (docs/superpowers/plans/2026-11-13-app-engineer.md).
+    # The strong tier: its runner jobs run in an `engineer` agent computer (gVisor) with app and data reads and a browser.
+    brief: true
+    graded: true
+    adapter: opencode_local
+    engine: codex-openrouter
+    dispatch: runner
+    image: engineer
+    model: openrouter/~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    max_parallel: 2
+    # Public reads only (App UI work: web search and web_view on). Data work needs private_reads: true and drops the web
+    # (scripts/computers.mjs privateGrants, checked at compile): a separate mode, not this agent's yet.
+    connections:
+      apps: [ app_list, app_status, app_view, app_check, web_view ]
+      github: read

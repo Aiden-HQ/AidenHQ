@@ -1,5 +1,5 @@
 [Unit]
-Description=AidenHQ CI runner %i: one fresh container per GitHub Actions job (ops/ci-runner.sh, modules/ci)
+Description=AidenHQ CI runner %i ([<org>-]<n>): one fresh container per GitHub Actions job (ops/ci-runner.sh, modules/ci)
 After=network-online.target
 
 [Service]

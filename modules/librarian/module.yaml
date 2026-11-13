@@ -8,7 +8,7 @@ agents:
     department: intake
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
-    reasoning_effort: medium
+    reasoning_effort: high
     timeout_sec: 1800
     connections:
       # Reads only, plus the vault's one existing correction tool. No knowledge-page edit tool exists (see the handbook).

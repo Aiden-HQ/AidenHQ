@@ -1,5 +1,7 @@
-# CI: tests and an automated code review, on the org's self-hosted runners (one fresh container per job).
-# The job names `tests` and `code-review` are the required check names: don't rename them, don't add a matrix.
+# CI: tests and an automated code review, on the org's self-hosted runners (one fresh container per job), plus an image
+# build-and-scan on a GitHub-hosted runner when a PR could change the image (the self-hosted containers have no Docker).
+# The job names `tests`, `code-review` and `image-scan` are the check names graders and rubrics cite: don't rename them,
+# don't add a matrix.
 # Secret OPENROUTER_API_KEY (code-review only); optional variable CODEGENIE_MODEL (default below).
 name: ci
 
@@ -71,6 +73,73 @@ jobs:
           # The config comes from the base, so a PR cannot allowlist its own findings (defaults if the base has none).
           git show "${BASE_SHA}:.gitleaks.toml" > "$RUNNER_TEMP/gl.toml" 2>/dev/null || printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gl.toml"
           ./gitleaks git --redact --exit-code 1 --config "$RUNNER_TEMP/gl.toml" --log-opts "${BASE_SHA}..${HEAD_SHA}" .
+
+  # Which images the PR could change: each Dockerfile it changes, or whose directory gets a changed dependency manifest or
+  # lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the scan, never skips it. No build
+  # here, so self-hosted.
+  image-changes:
+    runs-on: [self-hosted, aidenhq]
+    timeout-minutes: 5
+    outputs:
+      dockerfiles: ${{ steps.find.outputs.dockerfiles }}
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: find
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          found=""
+          for df in $(git ls-files | grep -iE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$'); do
+            d=$(dirname "$df"); prefix=""; [ "$d" = . ] || prefix="$d/"
+            while IFS= read -r f; do
+              case "$f" in "$prefix"*) ;; *) continue ;; esac
+              case "${f##*/}" in
+                [Dd]ockerfile*|[Cc]ontainerfile*|*.dockerfile|.dockerignore|package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|requirements*.txt|poetry.lock|Pipfile.lock|uv.lock|go.mod|go.sum|Cargo.lock|Gemfile.lock)
+                  found="$found $df"; break ;;
+              esac
+            done <<< "$changed"
+          done
+          echo "Images to scan:${found:- none}"
+          echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
+
+  # The `image-scan` check: builds each image the PR could change and fails on a high or critical vulnerability that has
+  # a fix. It is the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change.
+  # Runs the PR's code (the build), so it gets no secrets. GitHub-hosted, because it needs a Docker daemon.
+  # The scanner is AidenHQ's security scanner's grype pin, by digest.
+  image-scan:
+    needs: image-changes
+    if: needs.image-changes.outputs.dockerfiles != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DOCKERFILES: ${{ needs.image-changes.outputs.dockerfiles }}
+      GRYPE_IMAGE: anchore/grype:v0.121.3@sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887 # released 2026-11-09 (a security fix, GHSA-c9gr-gmg4-2vqv)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and scan
+        run: |
+          mkdir -p "$RUNNER_TEMP/grype-db" && chmod 777 "$RUNNER_TEMP/grype-db"
+          status=0; n=0
+          for df in $DOCKERFILES; do
+            n=$((n + 1)); tag="image-scan:$n"
+            echo "::group::$df"
+            if docker build -f "$df" -t "$tag" "$(dirname "$df")" && docker save "$tag" -o "$RUNNER_TEMP/image.tar"; then
+              # The scanner reads the saved image: no Docker socket inside it.
+              docker run --rm -v "$RUNNER_TEMP/grype-db:/db" -e GRYPE_DB_CACHE_DIR=/db -v "$RUNNER_TEMP/image.tar:/image.tar:ro" \
+                "$GRYPE_IMAGE" docker-archive:/image.tar --only-fixed --fail-on high || { echo "::error file=$df::fixable high or critical vulnerabilities"; status=1; }
+            else
+              echo "::error file=$df::the image did not build"; status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $status
 
   # Never runs the PR's code: codegenie only reads it from git objects. Its config and rules come from the base commit
   # (reviewed code), so a PR can't loosen its own review; the gate comes from the default branch's current tip, so a

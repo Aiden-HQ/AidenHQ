@@ -6,8 +6,8 @@ shared access for colleagues.
 
 ## By hand
 
-The route `ops/setup.sh` automates, for a host you prepare yourself (Ubuntu 24.04 with Docker and Compose, Node.js 24,
-git, `bubblewrap` plus the `bwrap` AppArmor profile, `passt`; `sudo bash ops/vm/setup.sh` installs these). Use it only
+The route `ops/setup.sh` automates, for a host you prepare yourself (Ubuntu 24.04 or 26.04 with Docker and Compose, Node.js 24,
+git, `bubblewrap` plus the private copy and `aidenhq-bwrap` AppArmor profile, `passt`; `sudo bash ops/vm/setup.sh` installs these). Use it only
 if `ops/setup.sh` doesn't fit.
 
 ```sh
@@ -122,11 +122,11 @@ If your organisation wants change control on Access policies, agree the process 
   and they assign roles on the app's Access page (see [App access](configuration.md#app-access)).
 
 Then apply. Compile writes `config/gate.json` and `config/cloudflared.yml` (every `share.host` → the gate, then a 404),
-creates the app's gate secret in the vault (`apps/<app>/AIDENHQ_GATE_SECRET`) and adds the `gate` and `cloudflared`
-services; apply refuses any ingress rule that targets anything but the gate. A shared app loses its `tailscale serve`
-route: the owner opens it through Access like everyone else. No app may `connects` to a shared app. Adding `share` to an
-app that is already running doesn't redeploy it (only a new commit does): run `app_deploy <app>` once after the apply so
-its gate secret is mounted. A changed ingress recreates `cloudflared` on apply (a hash label on the service).
+mounts the gate's signing key (the vault's `identity/gate.pem`, made on every apply when missing) and adds the `gate`
+and `cloudflared` services; apply refuses any ingress rule that targets anything but the gate. A shared app loses its
+`tailscale serve` route: the owner opens it through Access like everyone else. No app may `connects` to a shared app.
+Adding `share` to an app that is already running doesn't redeploy it (only a new commit does): run `app_deploy <app>`
+once after the apply, so it stops taking anonymous tailnet callers (`AIDENHQ_ANONYMOUS`) before people reach it. A changed ingress recreates `cloudflared` on apply (a hash label on the service).
 
 ### Accounts and sign-in mode
 
@@ -155,16 +155,24 @@ lives there.
 
 ### What a shared app must do
 
-The gate sends `X-AidenHQ-User` (the email), `X-AidenHQ-Role` (`member`, `admin` or one of the app's own roles),
-`X-AidenHQ-Name` (display only, percent-encoded), `X-AidenHQ-App` (the app's name) and `X-AidenHQ-Gate` (the app's
-secret, mounted at `/run/secrets/AIDENHQ_GATE_SECRET`). The app rejects every request without the right
-`X-AidenHQ-Gate`, then trusts the others. The gate refuses only `blocked` people and requires same-origin writes; the app
-decides everything else per role (a `member` can write unless the app says no), and treats a role it doesn't know as no
-more than `member`. Agents arrive as `agent:<key>` (`admin` through `app_api`, `member` through `app_view`).
+Every request carries `X-AidenHQ-Identity`, a 5-minute Ed25519 token for this app ([app identity](design/app-identity.md)):
+the gate signs it for people, apps-mcp for agents. The app verifies it with the shared middleware, the product's
+`modules/core/templates/app/aidenhq-identity.mjs` copied unchanged, which reads the public keys the platform mounts
+(`/run/secrets/AIDENHQ_IDENTITY_KEYS`) and the app's name (`AIDENHQ_APP`), and refuses anything without a valid token.
+`req.user` is `{ sub, email, name, role, kind }`: `sub` is a stable opaque id (`u_…` for people, `agent:<key>` for
+agents); `role` is `member`, `admin` or one of the app's own roles. The gate refuses only `blocked` people and requires
+same-origin writes; the app decides everything else per role (a `member` can write unless the app says no), keys per-user
+data on `sub`, and treats a role it doesn't know as no more than `member`. Agents arrive as `kind: agent` (`admin` through
+`app_api`, for that one method and path; `member`, reads only, through `app_view`).
 
 - **Custom roles:** `aidenhq-app.yaml` at the app's path declares them (`roles: [{ name, meaning }]`, at most 10, and an
   optional `default_role`). apps-mcp checks it on deploy (an invalid one refuses the deploy) and the board reads it at
   the running commit. A role the manifest drops makes its holders `blocked` until an admin picks another.
+- **Post-deploy checks:** every deploy (and `app_rollback`, and `app_check` on demand) runs light probes after health:
+  `render` loads a web app's `/` in a headless browser and fails on a CSP block, a failed stylesheet or script, a console
+  error or no stylesheet applied; `agent` GETs `<first api path>/schema` on an app with `api:` and expects 200 with JSON.
+  A failure rolls the deploy back. `checks: { render: [/, /audit], agent: [/api/agent/x/schema] }` in `aidenhq-app.yaml`
+  sets the paths (declared paths are strict; `[]` turns a kind off).
 - **Admin screens:** link to `/.aidenhq/access` (the app's Access page). Settings the app has are its own screen, shown
   to `admin`.
 - **Requests to the app's agent:** `fetch("/.aidenhq/request", { method: "POST", headers: { "content-type":
@@ -175,23 +183,21 @@ more than `member`. Agents arrive as `agent:<key>` (`admin` through `app_api`, `
 In Node:
 
 ```js
-import { readFileSync } from "node:fs";
-import { timingSafeEqual } from "node:crypto";
-const GATE = Buffer.from(readFileSync("/run/secrets/AIDENHQ_GATE_SECRET", "utf8").trim());
-export function visitor(req) { // → { email, role, name }, or null: answer 403
-  const got = Buffer.from(String(req.headers["x-aidenhq-gate"] ?? ""));
-  if (got.length !== GATE.length || !timingSafeEqual(got, GATE)) return null;
-  return { email: req.headers["x-aidenhq-user"], role: req.headers["x-aidenhq-role"], name: decodeURIComponent(req.headers["x-aidenhq-name"] ?? "") };
-}
+import { createServer } from "node:http";
+import { createIdentity } from "./aidenhq-identity.mjs";
+const { protect } = createIdentity();
+const server = createServer(protect((req, res) => { /* req.user: { sub, email, name, role, kind } */ }, { health: "/api/health" }));
+server.on("upgrade", protect((req, socket, head) => { /* WebSocket, checked once here */ }, { health: "/api/health" }));
 ```
 
 ### Verify
 
 - `docker compose ps gate cloudflared`: both up; `docker compose logs cloudflared` shows registered connections.
 - From a browser, `https://<app>.<domain>`: the identity provider's login, then the app. A `blocked` person gets 403.
-- Forged headers are ignored: `curl -H 'X-AidenHQ-User: owner@…' https://<app>.<domain>` stops at Access; on the host,
-  `curl -H 'Host: <app>.<domain>' -H 'X-AidenHQ-User: x' http://127.0.0.1:3130/` is a 403 (no token).
-- Going around the gate fails: on the host, `curl http://127.0.0.1:<app port>/` gets the app's 403 (no `X-AidenHQ-Gate`).
+- Forged headers are ignored: `curl -H 'X-AidenHQ-Identity: x' https://<app>.<domain>` stops at Access; on the host,
+  `curl -H 'Host: <app>.<domain>' -H 'X-AidenHQ-Identity: x' http://127.0.0.1:3130/` is a 403 (no Access token).
+- Going around the gate fails: on the host, `curl http://127.0.0.1:<app port>/` gets the app's 401 (no identity);
+  `scripts/verify-security.sh` checks this for every shared app.
 - A cross-site write (a form post from another host) is a 403; a streaming page (SSE) updates live; after the Access session expires the
   next request goes back to the login.
 

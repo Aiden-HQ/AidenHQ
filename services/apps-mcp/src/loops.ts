@@ -1,3 +1,4 @@
+import { failed, summary } from "./checks.js";
 import { NOTE } from "./deploy.js";
 import { remoteHead } from "./git.js";
 import type { Platform } from "./platform.js";
@@ -44,7 +45,9 @@ export async function reconcileTick(p: Platform, log: Log): Promise<void> {
       if (p.store.seen(app.name, head)) continue;
       const r = await p.engine.deploy(app, { sha: head, by: last ? "auto-deploy" : "reconcile" });
       p.errors.delete(app.name);
-      if (r.status !== "healthy") await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} ${r.status}${r.previous ? `, rolled back to ${r.previous.slice(0, 8)}` : ""}; ${NOTE}`);
+      // The failed checks' generated reasons (never page text): the maintainer sees why it rolled back.
+      const why = r.checks && failed(r.checks).length ? `: ${summary(r.checks)}` : "";
+      if (r.status !== "healthy") await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} ${r.status}${r.previous ? `, rolled back to ${r.previous.slice(0, 8)}` : ""}${why}; ${NOTE}`);
     } catch (err) {
       // Nothing started (fetch, checkout, policy, secrets): retried next tick, not recorded as a deploy, paged once per commit.
       p.errors.set(app.name, String((err as Error).message ?? err).slice(0, 300));

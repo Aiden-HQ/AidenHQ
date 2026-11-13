@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Prints a one-hour registration token for a self-hosted Actions runner on the agents org (modules/ci), minted from the
+// Prints a one-hour registration token for a self-hosted Actions runner on an org (modules/ci): the agents org, or the
+// org named as the argument (one the App is installed on, with the runners permission accepted). Minted from the
 // instance's GitHub App with an installation token narrowed to organization_self_hosted_runners. The App's key stays
 // on the host: the runner container gets only this token. Used by ops/ci-runner.sh before each job's container.
+//   node ops/ci-runner-token.mjs [org]
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -17,7 +19,7 @@ const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 const instYaml = env.AIDENHQ_INSTANCE_DIR && join(expand(env.AIDENHQ_INSTANCE_DIR), "instance.yaml");
 const setting = (k) => (instYaml && existsSync(instYaml) ? new RegExp(`^\\s+${k}:\\s*["']?([A-Za-z0-9_.-]+)`, "m").exec(readFileSync(instYaml, "utf8"))?.[1] : undefined);
 const name = setting("instance_name") ?? env.AIDENHQ_INSTANCE_NAME;
-const org = env.AIDENHQ_GITHUB_AGENTS_ORG || setting("github_agents_org") || (name ? `aidenhq-${name}` : "");
+const org = process.argv[2] || env.AIDENHQ_GITHUB_AGENTS_ORG || setting("github_agents_org") || (name ? `aidenhq-${name}` : "");
 if (!org) throw new Error("no agents org: set settings.instance_name (or github_agents_org) in instance.yaml");
 
 const dir = join(expand(env.AIDENHQ_SECRETS_DIR ?? "~/.config/aidenhq"), "github-app");

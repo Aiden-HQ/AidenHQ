@@ -29,12 +29,12 @@ const AppSchema = z
     limits: z.object({ memory: z.string(), cpus: z.number(), pids: z.number() }).optional(),
     access: z.object({ roles: z.array(z.string()) }).optional(),
     auto_deploy: z.boolean().optional(),
-    secrets: z.array(z.string().regex(/^[A-Z][A-Z0-9_]*$/, "secret names are env-style (A-Z, 0-9, _)")).default([]), // files in the vault: <app>/<KEY>
+    secrets: z.array(z.string().regex(/^[A-Z][A-Z0-9_]*$/, "secret names are env-style (A-Z, 0-9, _)").refine((k) => !k.startsWith("AIDENHQ_"), "AIDENHQ_* names are the platform's")).default([]), // files in the vault: <app>/<KEY>
     sources: z.array(z.string()).default([]),
     // An agent's narrow write path into the app's own API (app_api, api.ts): only these agent keys, only under these path
-    // prefixes; apps-mcp adds `Authorization: Bearer <the vault file apps/<app>/<token>>` (generated on first deploy, mounted like any secret).
+    // prefixes; apps-mcp signs each call's X-AidenHQ-Identity (identity.ts; docs/design/app-identity.md).
     api: z.object({
-      token: z.string().regex(/^[A-Z][A-Z0-9_]*$/, "the token is an env-style secret name"),
+      token: z.never({ error: "api.token is gone: app_api signs each call's identity (docs/design/app-identity.md); remove it and its secret" }).optional(),
       callers: z.array(z.string().min(1)).min(1),
       paths: z.array(z.string().regex(/^\/[A-Za-z0-9._~\/-]*$/, "paths are plain absolute path prefixes")).min(1),
     }).strict().optional(),
@@ -64,11 +64,9 @@ const AppSchema = z
     auto_deploy: a.auto_deploy ?? !a.stateful,
     // database: the app gets /run/secrets/DATABASE_URL and the warehouse network
     ...(a.database ? { connects: [...new Set([...a.connects, a.database])] } : {}),
-    // api: the app gets /run/secrets/<api.token>. share.host: /run/secrets/AIDENHQ_GATE_SECRET, which the gate sends as
-    // X-AidenHQ-Gate on every request (compile generates it); the app rejects requests without it.
-    secrets: [...new Set([...a.secrets, ...(a.database ? ["DATABASE_URL"] : []), ...(a.api ? [a.api.token] : []), ...(a.share?.host ? [GATE_SECRET] : [])])],
+    // Every app also gets the identity keys (AIDENHQ_IDENTITY_KEYS) and AIDENHQ_APP from the platform (policy.ts withSecrets).
+    secrets: [...new Set([...a.secrets, ...(a.database ? ["DATABASE_URL"] : [])])],
   }));
-export const GATE_SECRET = "AIDENHQ_GATE_SECRET";
 export const parseApp = (raw: unknown): App => AppSchema.parse(raw);
 export type App = z.output<typeof AppSchema>;
 
@@ -84,7 +82,7 @@ export function loadRegistry(path: string, modulesPath?: string): App[] {
   return apps;
 }
 
-/** No app may join a shared app's network: it could call the app directly and forge X-AidenHQ-User. The gate is its only caller. */
+/** No app may join a shared app's network: the gate is its only caller. */
 export function checkConnects(apps: App[]): void {
   for (const a of apps) {
     const t = a.connects.find((c) => apps.find((b) => b.name === c)?.share?.host);

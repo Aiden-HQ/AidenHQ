@@ -72,8 +72,13 @@ Actions the board itself applies after approval are tiered by the board (`servic
 `services/runner/src/review.mjs` makes one schema-bound call per Tier 1 card, host-side, with no tools and no harness
 (the diff is attacker-written). It returns `{decision: approve | reject | escalate, reason}`.
 
-- **Model.** Kimi on OpenRouter with zero data retention, falling back to GLM if it refuses. Whichever model family the
-  requester ran on is excluded, and the requester can never choose the reviewer.
+- **Model.** GPT Luna (`~openai/gpt-luna-latest`) at reasoning effort medium on OpenRouter with zero data retention,
+  falling back to DeepSeek Flash at high if it refuses (the owner's pick, 2026-11-13; it was Kimi, then GLM). Whichever
+  model family the requester ran on is excluded (an OpenAI-family requester gets DeepSeek only, a DeepSeek one Luna
+  only), and the requester can never choose the reviewer.
+- **Files it can't see.** Images, fonts, audio, video and PDFs are named with type and size. A changed text file left
+  out (over the budget or past the 300-file read cap) or an executable or opaque binary (by extension, or an ELF or PE
+  header) escalates the card to the owner in code (`files_not_shown`) without a model call.
 - **Input.** The policy (`modules/core/security/policy.md`, from the product repo only, so instances cannot loosen it);
   the card; the full diff at the exact head; the full text of changed files at that commit (within a budget); and the
   request chain. Everything an agent or stranger wrote is fenced as data. The author's self-description comes after the

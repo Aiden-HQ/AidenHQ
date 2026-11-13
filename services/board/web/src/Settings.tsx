@@ -187,9 +187,9 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
       </Page>
     );
   }
-  if (cat === "notifications") return <NotificationsPage rows={rows(["channels", "slack_post_channels", "owner_slack_user_id"])} conns={conns} />;
+  if (cat === "notifications") return <NotificationsPage rows={rows(["channels", "telegram_fyi", "slack_post_channels", "owner_slack_user_id"])} conns={conns} />;
   if (cat === "general") {
-    const elsewhere = new Set(["autonomy", "batch_approvals", "dup_guard", "grading", "channels", "slack_post_channels", "owner_slack_user_id", "spend_caps"]);
+    const elsewhere = new Set(["autonomy", "batch_approvals", "dup_guard", "grading", "channels", "telegram_fyi", "slack_post_channels", "owner_slack_user_id", "spend_caps"]);
     const general = data.settings.filter((s) => !s.switch && !elsewhere.has(s.key) && s.type !== "url");
     return (
       <Page title="General" sub={data.owner.name ? `This AidenHQ belongs to ${data.owner.name}. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.` : `Who this AidenHQ belongs to, and how it is named. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.`}>

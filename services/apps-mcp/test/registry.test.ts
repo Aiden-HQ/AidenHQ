@@ -56,12 +56,12 @@ describe("share (shared access)", () => {
     expect(exposes(app)).toBe(false);
     expect(exposes(shared({}))).toBe(true); // no host: no public route, the tailnet door stays
   });
-  it("no app may connect to a shared app (it could forge X-AidenHQ-User); connecting is sensitive anyway", () => {
+  it("no app may connect to a shared app (the gate is its only caller); connecting is sensitive anyway", () => {
     const reg = write("shared.yaml", "apps:\n  - { name: roadmap, repo: example-org/roadmap, owner: a, description: d, port: 4100, share: { host: roadmap.example.com, aud: aud-roadmap-0001 } }\n  - { name: spy, repo: example-org/spy, owner: a, description: d, connects: [roadmap] }\n");
     expect(() => loadRegistry(reg)).toThrow("spy connects to roadmap, a shared app: shared apps are reached only through the gate");
     const roadmap = shared({ aud: "aud-roadmap-0001" });
     expect(isSensitive(parseApp({ name: "spy", repo: "example-org/spy", owner: "a", description: "d", connects: ["roadmap"] }), [roadmap])).toBe(true);
-    expect(shared({ host: "roadmap.example.com", aud: "aud-roadmap-0001" }).secrets).toContain("AIDENHQ_GATE_SECRET");
+    expect(shared({ host: "roadmap.example.com", aud: "aud-roadmap-0001" }).secrets).toEqual([]); // identity is the platform's (no per-app gate secret)
   });
   it("needs a port with a host (aud is compile's check: optional with app_login password), and keeps groups for phase 2", () => {
     expect(() => parseApp({ name: "roadmap", repo: "example-org/roadmap", owner: "a", description: "d", share: { host: "roadmap.example.com" } })).toThrow(/share.host needs a port/);

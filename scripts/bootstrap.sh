@@ -69,6 +69,7 @@ gen_secret apps_internal_token   # apps-mcp POST /internal/deploy: the board and
 gen_secret paperclip_master_key  # Paperclip's secret-store key (PAPERCLIP_SECRETS_MASTER_KEY_FILE)
 gen_secret computer_launcher_token  # the computer plugin (in paperclip) → the launcher on the host (services/computer)
 gen_secret computer_progress_token  # the board → the launcher's /progress only (live view)
+gen_secret computers_runner_key     # the runner → the launcher's job routes only (/job, /job/renew, /job/release)
 placeholder paperclip_ops_key ""
 placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.mjs (the board restarts to read it)
 placeholder google_oauth.json "{}"
@@ -82,7 +83,7 @@ placeholder apps_incident_webhook_url ""       # the app-incident routine's webh
 placeholder apps_incident_webhook_secret ""
 placeholder app_request_webhook_url ""         # the app-request routine's webhook (the board fires it); empty = no wake
 placeholder app_request_webhook_secret ""
-chmod 0600 "$AIDENHQ_SECRETS_DIR"/*
+find "$AIDENHQ_SECRETS_DIR" -maxdepth 1 -type f -exec chmod 0600 {} + # files only: a folder without x (apps/, identity/) can no longer be opened
 mkdir -p "$AIDENHQ_SECRETS_DIR/slack" && chmod 0700 "$AIDENHQ_SECRETS_DIR/slack"
 mkdir -p "$AIDENHQ_SECRETS_DIR/primer" && chmod 0700 "$AIDENHQ_SECRETS_DIR/primer"
 mkdir -p "$AIDENHQ_SECRETS_DIR/glean" && chmod 0700 "$AIDENHQ_SECRETS_DIR/glean"

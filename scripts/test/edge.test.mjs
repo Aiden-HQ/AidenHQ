@@ -25,7 +25,8 @@ function inst(settings, apps) {
 
 test("edge on: every share.host goes to the gate with its own aud, then a 404; the gate and cloudflared run", () => {
   const out = compile(mods, inst({ edge }, [roadmap, { name: "notes", repo: "acme/notes", owner: "a", description: "d", port: 4200 }]));
-  assert.deepEqual(out.edge.gate.hosts, { "roadmap.acme.com": { app: "roadmap", port: 4100, aud: "aud-roadmap-0001", default_role: "member", secret_file: "/secrets/roadmap" } });
+  assert.deepEqual(out.edge.gate.hosts, { "roadmap.acme.com": { app: "roadmap", port: 4100, aud: "aud-roadmap-0001", default_role: "member" } });
+  assert.equal(out.edge.gate.identity_key_file, "/secrets/identity_key");
   assert.equal(out.edge.gate.issuer, "https://acme.cloudflareaccess.com");
   assert.equal(out.edge.gate.owner_email, "owner@acme.com");
   assert.deepEqual(out.edge.cloudflared.ingress, [
@@ -36,9 +37,9 @@ test("edge on: every share.host goes to the gate with its own aud, then a 404; t
   assert.equal(out.edge.cloudflared.tunnel, TUNNEL);
   checkIngress(out.edge.cloudflared);
   assert.equal(out.compose.services.gate.network_mode, "host");
-  assert.ok(out.compose.services.gate.volumes.includes("${AIDENHQ_SECRETS_DIR}/apps/roadmap/AIDENHQ_GATE_SECRET:/secrets/roadmap:ro"));
+  assert.ok(out.compose.services.gate.volumes.includes("${AIDENHQ_SECRETS_DIR}/identity/gate.pem:/secrets/identity_key:ro"));
+  assert.ok(!out.compose.services.gate.volumes.some((v) => v.includes("/apps/") || v.includes("apps.pem"))); // no app secrets, no agent key
   assert.deepEqual(out.compose.services.cloudflared.secrets, ["cloudflared_credentials"]);
-  assert.deepEqual(out.edge.gateSecrets, ["apps/roadmap/AIDENHQ_GATE_SECRET"]);
   // cloudflared reads its config once: a changed ingress must change the service so compose recreates it
   const hash = (o) => o.compose.services.cloudflared.labels["aidenhq.ingress-sha256"];
   const wider = compile(mods, inst({ edge }, [{ ...roadmap, share: { ...roadmap.share, host: "plan.acme.com" } }]));
@@ -112,4 +113,24 @@ test("two services can't claim one host port", () => {
   assert.throws(() => compile(mods, inst({}, [app("a"), app("b")])), /port 4300 is claimed by both app a and app b/);
   assert.throws(() => checkPorts([{ services: { primer: { ports: ["127.0.0.1:3129:8084"] } } }], [[3129, "board"]]), /3129 is claimed by both board and primer/);
   checkPorts([{ services: { board: { ports: ["127.0.0.1:3129:3129", "${BOARD_LAN_BIND:-127.0.0.1}:${BOARD_LAN_PORT:-3121}:3121"] } } }], [[3129, "board"]]);
+});
+
+test("identity keys: both signers' keys made once, keys.json lists every gate*/apps* key, rewritten in place", async () => {
+  const { ensureIdentityKeys } = await import("../identity.mjs");
+  const { readFileSync, renameSync, statSync, rmSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "identity-"));
+  assert.deepEqual(ensureIdentityKeys(dir), ["identity/gate.pem", "identity/apps.pem"]);
+  assert.deepEqual(ensureIdentityKeys(dir), []);
+  const file = join(dir, "identity", "keys.json");
+  const keys = () => JSON.parse(readFileSync(file, "utf8")).keys;
+  assert.deepEqual(keys().map((k) => k.iss).sort(), ["aidenhq-apps", "aidenhq-gate"]);
+  assert.equal(statSync(join(dir, "identity", "gate.pem")).mode & 0o777, 0o600);
+  const inode = statSync(file).ino;
+  renameSync(join(dir, "identity", "gate.pem"), join(dir, "identity", "gate.old.pem")); // ordinary rotation: both trusted
+  assert.deepEqual(ensureIdentityKeys(dir), ["identity/gate.pem"]);
+  assert.deepEqual(keys().map((k) => k.iss).sort(), ["aidenhq-apps", "aidenhq-gate", "aidenhq-gate"]);
+  assert.equal(statSync(file).ino, inode); // apps bind this one file: the same inode
+  rmSync(join(dir, "identity", "gate.old.pem"));
+  ensureIdentityKeys(dir);
+  assert.equal(keys().length, 2);
 });

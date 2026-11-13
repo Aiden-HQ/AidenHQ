@@ -49,12 +49,30 @@ export function imageTags(productDir, names) {
  * config/computers.json for the launcher: image tags, and each connection a computer may reach through the gateway (the
  * service's URL and the secret file holding its bearer, which stays on the host). Only images some agent names are listed.
  */
+/**
+ * A runner box agent's grants that read private data: every connection but apps and GitHub's (each a private source: Slack,
+ * Glean, mail, …) and, in apps, the warehouse and the apps' own data (logs, requests, roles, sources). What stays public is
+ * looking at apps and the web, and GitHub reads (as every Engineer has).
+ */
+const PUBLIC_APPS = new Set(["app_list", "app_status", "app_view", "app_check", "web_view"]);
+export const privateGrants = (tools = {}) =>
+  Object.entries(tools).flatMap(([conn, list]) => (conn === "github" ? [] : conn === "apps" ? list.filter((t) => !PUBLIC_APPS.has(t)).map((t) => `apps.${t}`) : list.map((t) => `${conn}.${t}`)));
+
 /** Compile fails on an unknown image, or one given to an agent that can't run in a computer yet. */
 export function validateImages(agents) {
   for (const [key, a] of Object.entries(agents)) {
     if (a.image == null) continue;
     if (!(a.image in IMAGES)) throw new Error(`${key}: image must be one of ${Object.keys(IMAGES).join(", ")} (got ${a.image})`);
-    if (a.dispatch === "runner") throw new Error(`${key}: runner agents don't get a computer yet (engineers move last)`);
+    // A runner agent with a computer (the App Engineer): its runner jobs run in an `engineer` box, Codex through the gateway.
+    if (a.dispatch === "runner") {
+      if (a.engine !== "codex-openrouter" || a.image !== "engineer") throw new Error(`${key}: a runner agent gets a computer only with engine: codex-openrouter and image: engineer`);
+      // Private data, untrusted input and a way out never meet unchecked in one job (as for every Engineer): a grant that reads
+      // private data needs `private_reads: true`, whose jobs get no web search, and then no web_view either.
+      const priv = privateGrants(a.enabled_tools);
+      if (priv.length && a.private_reads !== true) throw new Error(`${key}: ${priv.join(", ")} read private data: set private_reads: true (its jobs then get no web search and no web_view), or drop them`);
+      if (a.private_reads === true && a.enabled_tools?.apps?.includes("web_view")) throw new Error(`${key}: an agent with private reads gets no web_view (its jobs have no way out to the web)`);
+      continue;
+    }
     if ((a.adapter ?? "codex_local") !== "codex_local") throw new Error(`${key}: only codex_local agents get a computer`);
     // Until the tasks bridge runs on the host, a trial agent's limits would run inside a box it controls.
     if (a.trial) throw new Error(`${key}: an agent in trial doesn't get a computer yet (its limits would run inside the box)`);
@@ -132,7 +150,14 @@ const CHECKOUT_LINE = `- Code: \`repo-checkout <org/name> [full commit sha]\` pu
   no SHA: its default branch) at /workspace/repos/<name>: files only, no .git and no credentials, so nothing there can be pushed. Changes go to an Engineer.
 `;
 
-export const computerSection = (agent) => (agent.image ? COMPUTER_SECTION + ((agent.roles ?? []).includes("repo-checkout") ? CHECKOUT_LINE : "") : "");
+/**
+ * A runner agent with `image:` (the App Engineer): Paperclip never runs it, so it gets no Paperclip environment or computer
+ * section; its runner jobs run in a box (setup's metadata.box, read by the runner; services/computer POST /job).
+ */
+export const runnerBox = (agent) => Boolean(agent.image) && agent.dispatch === "runner";
+const paperclipComputer = (agent) => Boolean(agent.image) && agent.dispatch !== "runner";
+
+export const computerSection = (agent) => (paperclipComputer(agent) ? COMPUTER_SECTION + ((agent.roles ?? []).includes("repo-checkout") ? CHECKOUT_LINE : "") : "");
 
 /**
  * The Paperclip side, run by setup after the agents exist: with any computer agent, the launcher must answer, the environments
@@ -148,7 +173,7 @@ export async function checkLauncher(cfg, launcherUrl = LAUNCHER_URL) {
 }
 
 export async function ensureComputers({ api, companyId, cfg, agents, step, launcherUrl = LAUNCHER_URL, pluginVersion }) {
-  const wanted = Object.entries(cfg.agents ?? {}).filter(([, a]) => a.image).map(([k]) => k);
+  const wanted = Object.entries(cfg.agents ?? {}).filter(([, a]) => paperclipComputer(a)).map(([k]) => k);
   // Nothing to do (and the environments API may be off) when no agent has, or had, an environment.
   if (!wanted.length && !Object.values(agents).some((a) => a?.defaultEnvironmentId)) return;
   const envs = (await api("GET", `/api/companies/${companyId}/environments`, undefined, { allow: [403, 404] })).json;
@@ -185,6 +210,7 @@ export async function ensureComputers({ api, companyId, cfg, agents, step, launc
   for (const [key, a] of Object.entries(cfg.agents ?? {})) {
     const agent = agents[key];
     if (!agent) continue;
+    if (runnerBox(a)) continue; // the runner's, not Paperclip's
     const want = a.image && env ? env.id : null;
     const have = agent.defaultEnvironmentId ?? null;
     if (want === have || (!want && (!env || have !== env.id))) continue; // only ever clear our own environment

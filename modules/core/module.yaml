@@ -44,7 +44,8 @@ settings:
     values: ["on", "off"]
   # Loop brake (board brake.ts, slack-live-mcp notify_owner): per task, per commenter (an agent, the runner, the board's
   # notices) per UTC day, at most 12 of its comments wake the task's agent (later ones post but their wake is cancelled),
-  # and at most 5 notify_owner messages about one task since the owner last wrote on it. Owner comments are never limited.
+  # and at most 5 notify_owner messages about one task since the owner last wrote on it (a `decision` is never held back).
+  # Owner comments are never limited.
   # "off" = the kill switch.
   loop_brake:
     default: "on"
@@ -69,6 +70,9 @@ settings:
   spend_caps:
     default: "on"
     values: ["on", "off"]
+  # Off-host backup (ops/backup-offsite.sh): a restic repository, e.g. sftp://u12345@u12345.your-storagebox.de:23/aidenhq.
+  # Set, apply installs a nightly timer (03:00 UTC); its password is the vault's restic_password. Unset = no off-host backup.
+  backup_repository:
   # Model tools (services/paperclip-tasks-mcp/models.mjs): advisor_ask for every agent, fanout_map where granted. "off" =
   # the kill switch: compile drops both from every agent's grants.
   model_tools:
@@ -97,9 +101,7 @@ agents:
     department: leadership
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
-    # Sol in its models = advisor_ask may escalate to GPT Sol (once per run) for serious decisions.
-    models: [ ~openai/gpt-sol-latest ]
-    reasoning_effort: medium
+    reasoning_effort: high
     timeout_sec: 1200
     # Grants: `connection: read | write | [tools]`; `name?` = only when that module is installed.
     connections:
@@ -119,7 +121,7 @@ agents:
     adapter: codex_local
     max_parallel: 2 # research asks are independent
     model: ~deepseek/deepseek-flash-latest
-    reasoning_effort: medium
+    reasoning_effort: high
     # Recurring runs read many channels, docs and notes.
     timeout_sec: 3600
     connections:
@@ -150,10 +152,11 @@ agents:
     # Graded done: deliverables delegated to it are checked against their rubric before they close (the runner's grader).
     graded: true
     model: ~deepseek/deepseek-flash-latest
-    reasoning_effort: medium
+    reasoning_effort: high
     timeout_sec: 1200
     connections:
-      apps: write
+      # write plus app_remove (destructive: granted only by name).
+      apps: [ app_list, app_status, app_logs, app_view, app_check, web_view, warehouse_query, source_new, app_requests, app_roles, app_deploy, app_restart, app_rollback, app_create, app_remove, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
       slack_live: [ notify_owner ]
       # fleet_catalog: who owns an app, and which modules are on (the ci module, before adding CI to a repo).
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_comment, task_set_status, task_finish, task_team, task_delegate, fleet_catalog ]
@@ -163,11 +166,14 @@ agents:
     roles: [ app-incidents, app-requests ]
   architect:
     department: agents
-    # Designs and onboards new agents. The stronger model: its handbooks are what the other agents run on.
+    # Designs and onboards new agents. DeepSeek Flash at max effort (the owner's pick after a blind bake-off, 2026-11-13): its
+    # handbooks are what the other agents run on. Max can reason 60-90k tokens a turn: nothing in its path sets an output cap
+    # (Codex and the gateway send none), and the longer timeout covers slow turns. A 90k-token turn costs about $0.05, so
+    # the default $2 run cap allows about 40 of them.
     adapter: codex_local
-    model: moonshotai/kimi-k3.1-pro
-    reasoning_effort: high
-    timeout_sec: 1800
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: max
+    timeout_sec: 3600
     # No fleet tools or other roles: it changes the fleet only by delegating to the Platform Engineer, whose change waits for the
     # owner's tap (an approval record). It can't grant itself anything: its own grants live here, in the product.
     # Research (read access to every source, and the web): reads only, so it still changes nothing itself.
@@ -189,11 +195,10 @@ agents:
   coach:
     department: agents
     # Reviews other agents' outcomes (output quality, misses, inputs, behaviour, feedback) and files fixes through the usual
-    # tiers. Sol in its models = advisor_ask may escalate to GPT Sol (once per run) for a hard call.
+    # tiers. advisor_ask (GPT Sol) for a hard call.
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
-    models: [ ~openai/gpt-sol-latest ]
-    reasoning_effort: medium
+    reasoning_effort: high
     timeout_sec: 1800
     # It reads every agent's private data and untrusted output and needs nothing from the web: no web search, no web_view.
     web_search: disabled
@@ -216,6 +221,8 @@ agents:
     brief: true
     graded: true
     adapter: opencode_local
+    engine: codex-openrouter # Codex through the model gateway; `engine: openrouter` falls back to opencode
+    reasoning_effort: high
     model: openrouter/~deepseek/deepseek-flash-latest
     dispatch: runner
     isolation: code-exec
@@ -287,6 +294,7 @@ routines:
     webhook: true # fired by apps-mcp
     webhook_base: http://paperclip:3100 # apps-mcp calls it from inside the compose network
     secrets_prefix: apps_incident_webhook # setup saves <prefix>_url / _secret for apps-mcp
+    autonomy: tier0 # app logs are untrusted: Tier 1 work from an incident is the owner's (restarts and rollbacks are direct tools)
   app-request:
     title: App requests
     agent: app-maintainer
@@ -298,8 +306,10 @@ routines:
     webhook: true # fired by the board when a request arrives
     webhook_base: http://paperclip:3100 # the board calls it from inside the compose network
     secrets_prefix: app_request_webhook # setup saves <prefix>_url / _secret for the board
-# Connections: every tool tagged read (changes nothing) or write. Agents grant `read`, `write` or a tool list (compile
-# resolves them); each HTTP call carries the agent's run key and the service checks it against the grants table.
+    autonomy: tier0 # app users' text drives it: Tier 1 work from a request is the owner's
+# Connections: every tool tagged read (changes nothing), write, or destructive (deletes: delete, trash, remove, purge;
+# compile refuses such a name under read or write). Agents grant `read`, `write` (never destructive) or a tool list, the only
+# way to grant a destructive tool (compile resolves them); each HTTP call carries the agent's run key and the service checks it against the grants table.
 connections:
   apps:
     setup: "Built in (apps-mcp). If it is down, run `docker compose up -d apps-mcp` on the host, then read `docker compose logs apps-mcp`."
@@ -308,8 +318,10 @@ connections:
     tools:
       # warehouse_query, source_new, source_ack: the shared warehouse's sources (services/apps-mcp/src/sources.ts).
       # source_ack only moves the caller's own cursor. finding_verdict needs the security-verdict role (Security Watch).
-      read: [ app_list, app_status, app_logs, app_view, web_view, warehouse_query, source_new, app_requests, app_roles ]
-      write: [ app_deploy, app_restart, app_rollback, app_create, app_remove, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
+      read: [ app_list, app_status, app_logs, app_view, app_check, web_view, warehouse_query, source_new, app_requests, app_roles ]
+      write: [ app_deploy, app_restart, app_rollback, app_create, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
+      # Granted only by name (the `write` shorthand never includes it): it stops an app and drops its registry entry.
+      destructive: [ app_remove ]
   paperclip_tasks:
     setup: "Built in: the tasks bridge runs inside Paperclip for each agent run. Nothing to set up."
     command: node
