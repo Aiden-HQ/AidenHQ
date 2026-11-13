@@ -17,7 +17,7 @@ import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedC
 import { AccountError, forwardedProto, type Accounts, type AccountSession, type Role } from "./accounts.js";
 import { AccessError, assertNamesApp } from "./app-access.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, Refused, appsApi, appsToken, assertMeantTask, deployApproved, fleetControl, fleetCosts, fleetStatus, relayableWords, requestRun, requireAgent, requireFleetRole, runApproved } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, Refused, appsApi, appsToken, assertMeantTask, boundedFleetStatus, deployApproved, fleetControl, fleetCosts, fleetStatus, relayableWords, requestRun, requireAgent, requireFleetRole, runApproved } from "./fleet.js";
 import { detectorState, staleSources, takeOwnerLines } from "./fleet-ops.js";
 import { ARGS, BOARD_ACTIONS, BatchItemsSchema, REVIEWER_MODELS, RaiseCapSchema, RunRequestSchema, autonomy, batchesOn, card, digestText, parseReply, raiseCapRequest, shown, type Approval, type BatchResult, type RaiseCap, type RunnerAction } from "./approvals.js";
 import { liveUpdatesOn } from "./events.js";
@@ -811,7 +811,9 @@ export function createApp(opts: AppOptions): Server {
       const window = (body as { window?: string } | null)?.window === "7d" ? "7d" : "24h";
       const status = await fleetStatus(pc, store);
       const summary = await statusSummary(pc, store, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
-      return { ...status, detector: detectorState(store), summary };
+      // `detector` first and a bounded reply: the lists are what get long, and a cut-off payload leaves its open and
+      // recovered keys (the block Fleet Ops acts on) unreadable.
+      return boundedFleetStatus({ detector: detectorState(store), ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
     // The Agent Coach's reads (coach.ts), for the fleet-audit role: who is due a review (never the caller) and one agent's bounded evidence.
     { method: "POST", path: /^\/internal\/coach\/due$/, handle: async (_m, _b, _u, req) => fleetCall(req, (pc, caller) => coachDue(pc, store, caller), ["fleet-audit"]) },

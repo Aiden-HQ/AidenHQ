@@ -202,6 +202,48 @@ export async function fleetStatus(pc: Paperclip, store: Pick<Store, "approvals">
   };
 }
 
+/** A fleet_status reply's size limit: one tool result, small enough that no client cuts it part-way (the tasks bridge then pretty-prints it). */
+const STATUS_MAX = 24_000;
+/** The lists that make a reply long, biggest first; each loses its tail while the reply is over the limit. */
+const STATUS_LISTS = [["routines"], ["stuck"], ["summary", "shipped", "tasks"], ["summary", "shipped", "landed"], ["summary", "failed", "outcomes"], ["summary", "waiting", "blocked"], ["agents"]];
+/** The reply's field order: the detector and the cut notice first, whatever a client does with a long answer. */
+const STATUS_FIELDS = ["detector", "truncated", "runs", "approvals", "agents", "routines", "stuck", "summary"];
+
+/**
+ * The reply as fleet_status returns it: `detector` first (the block Fleet Ops acts on), then the rest. Over `max`, the long
+ * lists lose their tails and `truncated` names each one cut as `path: kept of total`. A reader gets whole JSON and knows
+ * what it did not get, instead of a document cut off part-way (which left `detector.open` unreadable).
+ */
+export function boundedFleetStatus<T extends Record<string, unknown>>(reply: T & { detector: unknown }, max = STATUS_MAX): T & { detector: unknown; truncated?: string[] } {
+  const { detector, ...rest } = reply;
+  const out: Record<string, unknown> = { detector, ...rest };
+  const at = (path: string[]) => path.slice(0, -1).reduce<Record<string, unknown> | undefined>((o, k) => (o?.[k] as Record<string, unknown> | undefined), out)?.[path.at(-1)!];
+  const cut: string[] = [];
+  const lists = STATUS_LISTS.map((path) => ({ path, list: at(path) as unknown[] | undefined })).filter((x): x is { path: string[]; list: unknown[] } => Array.isArray(x.list) && x.list.length > 0);
+  // The longest list first: it is the one making the reply too big, and this way the smaller ones stay whole.
+  lists.sort((a, b) => JSON.stringify(b.list).length - JSON.stringify(a.list).length);
+  for (const { path, list } of lists) {
+    if (JSON.stringify(out).length <= max) break;
+    const parent = path.slice(0, -1).reduce<Record<string, unknown>>((o, k) => o[k] as Record<string, unknown>, out);
+    const field = path.at(-1)!;
+    let keep = list.length;
+    while (JSON.stringify(out).length > max && keep > 0) {
+      keep = Math.floor(keep / 2);
+      parent[field] = list.slice(0, keep);
+    }
+    if (keep < list.length) cut.push(`${path.join(".")}: ${keep} of ${list.length}`);
+  }
+  // Still too long (one very long entry): the summary is the extra, so it goes and the notice says so.
+  if (JSON.stringify(out).length > max && "summary" in out) {
+    delete out.summary;
+    cut.push("summary: dropped");
+  }
+  const ordered: Record<string, unknown> = { detector, ...(cut.length ? { truncated: cut } : {}) };
+  for (const k of STATUS_FIELDS) if (k in out && k !== "detector" && k !== "truncated") ordered[k] = out[k];
+  for (const k of Object.keys(out)) if (!(k in ordered)) ordered[k] = out[k];
+  return ordered as T & { detector: unknown; truncated?: string[] };
+}
+
 export async function fleetCosts(pc: Paperclip, days?: number) {
   const n = Math.min(Math.max(Math.floor(days ?? 7) || 7, 1), 31);
   const today = Date.parse(new Date().toISOString().slice(0, 10));

@@ -71,7 +71,10 @@ interface State { open: Record<string, Open>; recovered: { key: string; reason: 
 /** What is open and what recovered lately (fleet_status shows it to Fleet Ops). */
 export function detectorState(store: Pick<Store, "meta">): State {
   try {
-    return { open: {}, recovered: [], ...JSON.parse(store.meta(STATE_KEY) ?? "{}") };
+    const s = JSON.parse(store.meta(STATE_KEY) ?? "{}");
+    // Only what fleet_status documents: state written by an older detector (an ever-growing `failed` history) stays
+    // out of the reply, which is otherwise cut before `open` and `recovered` reach Fleet Ops.
+    return { open: s.open ?? {}, recovered: s.recovered ?? [] };
   } catch {
     return { open: {}, recovered: [] };
   }

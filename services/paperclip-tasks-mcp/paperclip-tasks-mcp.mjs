@@ -1231,7 +1231,7 @@ const CATALOG_FILE = process.env.AIDENHQ_CATALOG_FILE || "/paperclip/catalog.sta
 
 Object.assign(TOOLS, {
   fleet_status: {
-    description: "Read-only fleet overview: every agent (status, last run, open tasks), every routine (status, next/last run) and stuck tasks (in_progress/blocked and untouched for over 24h, with assignee). `summary` is the compact fleet report for the window: shipped (tasks done, changes landed), failed (failed outcomes, failed runs), waiting (owner cards, blocked tasks) and spend (yesterday against the 7-day average, top 3 agents), each entry with its board link.",
+    description: "Read-only fleet overview: `detector` first (what is open and what recovered lately, each with its reason), then every agent (status, last run, open tasks), every routine (status, next/last run) and stuck tasks (in_progress/blocked and untouched for over 24h, with assignee). `summary` is the compact fleet report for the window: shipped (tasks done, changes landed), failed (failed outcomes, failed runs), waiting (owner cards, blocked tasks) and spend (yesterday against the 7-day average, top 3 agents), each entry with its board link. The reply is always whole JSON: when it is long, the lists are cut from their tails and `truncated` names each cut (`path: kept of total`).",
     inputSchema: { type: "object", properties: { window: { type: "string", enum: ["24h", "7d"], description: "the summary's window; default 24h" } }, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: ({ window } = {}) => fleet("status", window ? { window } : {}),
