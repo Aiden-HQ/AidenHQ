@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.28@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 
 # Rebuild of the upstream v1.10.0 image on patched bases: current python:3.12 (3.12.16),
-# Debian bookworm security updates, static ffmpeg 8.1 and refreshed Python dependencies.
-FROM mwader/static-ffmpeg:8.1.2@sha256:33f770f812cbfc3de96c547157fc9faf8bd95a36481753439ffa761045167585 AS ffmpeg
+# Debian bookworm security updates, static ffmpeg 9.0.2 and refreshed Python dependencies.
+FROM mwader/static-ffmpeg:9.0.2-1@sha256:f5d100184884eb3e82b0eb14bb5ebf98da99826ac824989720297fb9ef21c822 AS ffmpeg
 
 FROM swaggerapi/swagger-ui:v5.9.1@sha256:fb6a252ed453401fda31654112120e3381b5c4998f0059a4e2122d8add293185 AS swagger-ui
 
@@ -34,7 +34,8 @@ COPY --from=swagger-ui /usr/share/nginx/html/swagger-ui-bundle.js swagger-ui-ass
 RUN poetry config virtualenvs.in-project true \
  && poetry install --extras cpu \
  && "$POETRY_VENV/bin/pip" install pillow==13.0.0 certifi==2026.10.23 nltk==3.10.4 \
- && "$POETRY_VENV/bin/pip" install --no-deps av==19.0.2
+ && "$POETRY_VENV/bin/pip" install --no-deps av==19.0.2 \
+ && "$POETRY_VENV/bin/pip" install --no-deps -U "aiohttp==3.14.5" "black==26.10.1" "urllib3==2.8.0" "lightning==2.6.6" "yarl==1.25.1" "dulwich==1.2.21" "poetry==2.5.1" "poetry-core==2.5.0" "virtualenv==21.15.5" "pymdown-extensions==12.3" "filelock==4.2.9" "python-discovery==1.9.4" "pbs-installer==2026.10.25" "distlib==0.4.4"
 
 EXPOSE 9000
 
