@@ -12,6 +12,7 @@ it("source_new / source_ack: per-agent, per-filter cursor, filters as parameters
       connect: async () => { throw new Error("unused"); },
       query: (async (text: string, values?: unknown[]) => {
         sent.push({ text, values });
+        if (text.includes("max(seq) AS seq FROM")) return { rows: [{ seq: "42" }] };
         if (text.includes("src_meta.cursor")) return { rows: ["", values![2]].filter((k) => at(values!, k)).map((k) => ({ filter_key: k, seq: at(values!, k) })) };
         // As Postgres sends them: n = seq, r = the row's JSON text (null once the byte cap is reached).
         return { rows: [{ n: "41", r: JSON.stringify({ channel_id: "C1", text: "ship it", seq: 41 }) }, { n: "42", r: JSON.stringify({ channel_id: "C1", text: "shipped", seq: 42 }) }] };
@@ -21,28 +22,28 @@ it("source_new / source_ack: per-agent, per-filter cursor, filters as parameters
   };
 
   const first = await sourceNew(d, "agent-a", "src_slack.messages", { q: "ship" }, 2);
-  expect(sent[1]!.text).toContain("ingested_at > now() - interval '1 day'");
-  expect(sent[1]!.text).toContain("NOT baseline");
-  expect(sent[1]!.values).toEqual(["ship", 2]);
+  expect(sent[2]!.text).toContain("ingested_at > now() - interval '1 day'");
+  expect(sent[2]!.text).toContain("NOT baseline");
+  expect(sent[2]!.values).toEqual(["ship", 2]);
   expect(first).toMatchObject({ cursor: expect.stringMatching(/^42\.[0-9a-f]{16}$/), more: true, rows: [{ seq: 41 }, { seq: 42 }] });
 
   await sourceAck(d, "agent-a", "src_slack.messages", first.cursor!);
   sent.length = 0;
   await sourceNew(d, "agent-a", "src_slack.messages", { q: " ship " }, 100); // the same filter resumes after its ack
-  expect(sent[1]!.text).toContain("seq > $1");
-  expect(sent[1]!.values).toEqual([42, " ship ", 100]);
+  expect(sent[2]!.text).toContain("seq > $1");
+  expect(sent[2]!.values).toEqual([42, " ship ", 100]);
 
   sent.length = 0;
   await sourceNew(d, "agent-a", "src_slack.messages", {}, 100); // the filtered ack didn't move the unfiltered cursor
-  expect(sent[1]!.text).toContain("interval '1 day'");
+  expect(sent[2]!.text).toContain("interval '1 day'");
   await sourceAck(d, "agent-a", "src_slack.messages", "40");
   sent.length = 0;
   await sourceNew(d, "agent-a", "src_slack.messages", { q: "other" }, 100); // a new filter starts at the unfiltered cursor
-  expect(sent[1]!.values).toEqual([40, "other", 100]);
+  expect(sent[2]!.values).toEqual([40, "other", 100]);
 
   sent.length = 0;
   await sourceNew(d, "agent-b", "src_slack.messages", {}, 100); // another agent has its own cursor
-  expect(sent[1]!.text).toContain("interval '1 day'");
+  expect(sent[2]!.text).toContain("interval '1 day'");
 
   expect(newRowsSql("src_slack.messages", { channels: ["C1"], q: "ship" }, null, 2).values).toEqual([["C1"], "ship", 2]);
   expect(() => newRowsSql("src_slack.message", {}, null, 10)).toThrow(/unknown view/); // base tables aren't served
@@ -65,6 +66,7 @@ it("source_new: a filtered ack never skips other scopes' rows, and an unknown sc
     pool: {
       connect: async () => { throw new Error("unused"); },
       query: (async (text: string, values: unknown[] = []) => {
+        if (text.includes("max(seq) AS seq FROM")) return { rows: [{ seq: String(Math.max(...table.map((r) => r.seq))) }] };
         if (text.includes("src_meta.cursor")) return { rows: ["", values[2]].flatMap((k) => (cursors.has(`${values[0]}|${values[1]}|${k}`) ? [{ filter_key: k, seq: cursors.get(`${values[0]}|${values[1]}|${k}`) }] : [])) };
         if (text.includes("unnest")) return { rows: (values[0] as string[]).filter((u) => !known.has(u)).map((u) => ({ u })) };
         if (text.includes("ILIKE")) return { rows: [...known].filter((s) => s.includes(String(values[0]).replaceAll("%", ""))).map((s) => ({ s })) };
@@ -88,6 +90,37 @@ it("source_new: a filtered ack never skips other scopes' rows, and an unknown sc
   expect(all.rows.map((r) => r.seq)).toEqual([10, 11, 12, 13]);
   expect(all.cursor).toBe("13");
   expect((await sourceNew(d, "rk", view, { repos: ["acme/ledger"] }, 100)).rows).toEqual([]);
+});
+
+// A stored cursor past the newest seq is not a read position in the view (a seq reset, or a timestamp acked as a cursor):
+// `seq > cursor` would never be true. The read starts over from the day window, and the next ack replaces the bad cursor.
+it("source_new: a cursor ahead of the view's newest seq is ignored, and source_ack replaces it", async () => {
+  const cursors = new Map<string, string>([["rk|src_slack.messages|", "1794505378775662"]]);
+  const sent: { text: string; values?: unknown[] }[] = [];
+  const scripts: string[] = [];
+  const d: WarehouseDeps = {
+    pool: {
+      connect: async () => { throw new Error("unused"); },
+      query: (async (text: string, values: unknown[] = []) => {
+        sent.push({ text, values });
+        if (text.includes("max(seq) AS seq FROM")) return { rows: [{ seq: "2394" }] };
+        if (text.includes("src_meta.cursor")) return { rows: [{ filter_key: "", seq: cursors.get("rk|src_slack.messages|") }] };
+        return { rows: [{ n: "2394", r: JSON.stringify({ seq: 2394 }) }] };
+      }) as any,
+    },
+    sql: async (script, vars) => (scripts.push(script), cursors.set(`${vars.agent}|${vars.view}|${vars.key}`, vars.seq!), ""),
+  };
+
+  const read = await sourceNew(d, "rk", "src_slack.messages", {}, 100);
+  expect(sent.some((q) => q.text.includes("ingested_at > now() - interval '1 day'"))).toBe(true); // the stored 1.79e15 cursor was ignored
+  expect(sent.some((q) => q.text.includes("seq > $1"))).toBe(false);
+  expect(read.rows).toEqual([{ seq: 2394 }]);
+  expect(read.cursor).toBe("2394");
+  await expect(sourceAck(d, "rk", "src_slack.messages", "9999999999999999")).rejects.toThrow(/past the newest row/);
+
+  await sourceAck(d, "rk", "src_slack.messages", read.cursor!);
+  expect(scripts[0]).toContain("WHEN src_meta.cursor.seq > (SELECT COALESCE(max(seq), 0) FROM src_slack.messages) THEN EXCLUDED.seq");
+  expect(cursors.get("rk|src_slack.messages|")).toBe("2394");
 });
 
 it("finding_verdict: copies the finding's current state in SQL, and source_new skips current not-affected findings", async () => {

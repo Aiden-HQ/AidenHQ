@@ -170,7 +170,12 @@ export async function sourceNew(d: WarehouseDeps, agentId: string, view: string,
   // A filtered read starts after the later of its own cursor and the unfiltered one (whose reads covered every scope), or a
   // day back.
   const cur = await d.pool.query("SELECT filter_key, seq FROM src_meta.cursor WHERE agent_id = $1 AND view = $2 AND filter_key IN ('', $3)", [agentId, view, key]);
-  const cursor = cur.rows.length ? Math.max(...cur.rows.map((r) => Number(r.seq))) : null;
+  // A view's rows are never deleted, so its seq only grows: a stored cursor past the newest seq cannot be a read position
+  // in this view (a cursor from before a seq reset, or from another column), and would keep `seq > cursor` false forever.
+  const top = await d.pool.query(`SELECT max(seq) AS seq FROM ${view}`);
+  const newest = top.rows[0]?.seq == null ? null : Number(top.rows[0].seq);
+  const stored = cur.rows.length ? Math.max(...cur.rows.map((r) => Number(r.seq))) : null;
+  const cursor = stored != null && (newest == null || stored > newest) ? null : stored;
   const q = newRowsSql(view, f, cursor, limit);
   const r = await d.pool.query(q.text, q.values);
   const got = parseRows(r.rows);
@@ -188,9 +193,18 @@ export async function sourceAck(d: WarehouseDeps, agentId: string, view: string,
   if (!VIEWS[view]) throw new Error(`unknown view ${view}`);
   const m = TOKEN.exec(cursor);
   if (!m) throw new Error("cursor must be the cursor source_new returned");
+  // A cursor past the view's newest row is not a position in it (a seq reset, or a timestamp acked as a cursor): refuse it,
+  // so a bad ack can't wedge the read again.
+  const top = await d.pool.query(`SELECT max(seq) AS seq FROM ${view}`);
+  const newest = top.rows[0]?.seq == null ? null : Number(top.rows[0].seq);
+  if (newest == null || Number(m[1]) > newest) throw new Error(`cursor is past the newest row in ${view}; pass the cursor source_new returned`);
   await d.sql(
+    // Move forward, but never store a position past the view's newest row: a cursor that is already past it (a seq reset
+    // or a foreign value) is replaced by this ack, so the next read resumes from real rows instead of staying stuck.
     `INSERT INTO src_meta.cursor (agent_id, view, filter_key, seq) VALUES (:'agent', :'view', :'key', :'seq'::bigint)
-     ON CONFLICT (agent_id, view, filter_key) DO UPDATE SET seq = GREATEST(src_meta.cursor.seq, EXCLUDED.seq), updated_at = now();`,
+     ON CONFLICT (agent_id, view, filter_key) DO UPDATE SET seq = CASE
+       WHEN src_meta.cursor.seq > (SELECT COALESCE(max(seq), 0) FROM ${view}) THEN EXCLUDED.seq
+       ELSE GREATEST(src_meta.cursor.seq, EXCLUDED.seq) END, updated_at = now();`,
     { agent: agentId, view, key: m[2] ?? "", seq: m[1]! },
   );
   return { view, cursor };
