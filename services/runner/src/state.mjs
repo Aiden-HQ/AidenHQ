@@ -8,6 +8,7 @@ export class State {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(dir, "state.sqlite"));
     this.db.exec(`
+      PRAGMA busy_timeout = 5000;
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS tasks (
         issue_id    TEXT PRIMARY KEY,
