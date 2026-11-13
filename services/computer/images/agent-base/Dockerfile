@@ -2,7 +2,7 @@
 # by the host launcher (services/computer/launcher.mjs). No logins, keys or tokens are ever baked in or mounted.
 # node: Paperclip's sandbox runner needs sh, node, nohup. Codex pinned to the paperclip image's (0.166.0); agent-browser pinned to
 # the release the spike proved, with its Chrome baked in.
-FROM node:24.22.2-bookworm-slim
+FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq ripgrep ffmpeg python3 python3-venv procps less unzip \
     && rm -rf /var/lib/apt/lists/*

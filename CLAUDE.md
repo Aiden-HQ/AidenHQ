@@ -81,9 +81,11 @@ merging those.
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
 - **Supply chain:** unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version
-  published less than 7 days ago. Pin versions, and state the release date of any image or action you bump. Dependabot
-  (cooldown 7), `scripts/supply-chain/npm-age.mjs` (CI, exceptions in `.github/supply-chain-exceptions.yaml`) and gitleaks
-  (`.gitleaks.toml`) enforce it.
+  published less than 7 days ago. Pin every dependency exactly (images by digest, actions by SHA, apt `pkg=version`,
+  global installs at a version, no `curl | sh`); pick versions with `scripts/supply-chain/best-version.mjs`, and state the
+  release date of any pin you bump. Dependabot (cooldown 7), `scripts/supply-chain/npm-age.mjs` and `pins.mjs` (CI,
+  exceptions in `.github/supply-chain-exceptions.yaml`, read from the base) and gitleaks (`.gitleaks.toml`) enforce it.
+  The app CI template carries copies in `.github/supply-chain/` (kept identical by `scripts/sync-shared.mjs`).
 - **Minimal tests.** A few that prove the thing works end to end; no tests for obvious code.
 - **Simple.** Less code, fewer moving parts. No speculative abstractions, knobs or compatibility shims. Handle the
   common path and let rare cases fail loudly.

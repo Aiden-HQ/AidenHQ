@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
@@ -16,20 +16,24 @@ const tools = { paperclip_tasks: ["task_finish", "task_set_status", "task_delega
 const agents = [
   { id: "eng", name: "Engineer", companyId: "co" },
   { id: "cos", name: "Aiden", companyId: "co" },
+  { id: "ra", name: "Alfred", companyId: "co" },
 ];
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grades-")), "grants.json");
-const grantsTable = { agents_org: "acme", product_repo: "own/aidenhq", agents: { eng: { key: "engineer-openrouter", roles: [], tools }, cos: { key: "chief-of-staff", roles: [], tools } } };
+const grantsTable = { agents_org: "acme", product_repo: "own/aidenhq", agents: { eng: { key: "engineer-openrouter", roles: [], tools }, cos: { key: "chief-of-staff", roles: [], tools }, ra: { key: "research-assistant", roles: ["engineer-dispatch"], tools: { paperclip_tasks: ["task_create_engineer_task"] } } } };
 writeFileSync(grantsFile, JSON.stringify(grantsTable));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 const task = { id: "33333333-3333-3333-3333-333333333333", identifier: "WOR-7", title: "T", status: "in_progress", assigneeAgentId: "eng", createdByAgentId: "cos", labels: [] as { id: string }[] };
+// An Engineer sub-task the Research Assistant created (task_create_engineer_task): it has no task_delegate.
+const engineerTask = { ...task, id: "44444444-4444-4444-4444-444444444444", identifier: "WOR-8", createdByAgentId: "ra" };
 const patches: Record<string, unknown>[] = [];
 const pc = {
   companyId: "co",
   agentMe: async (key: string) => agents.find((a) => a.id === key) ?? Promise.reject(new Error("401")),
-  issue: async () => task,
+  issue: async (ref: string) => (ref === engineerTask.identifier || ref === engineerTask.id ? engineerTask : task),
   labels: async () => [{ id: "lbl-grading", name: "grading" }],
-  updateIssue: async (_id: string, body: Record<string, unknown>) => (patches.push(body), Object.assign(task, body)),
+  agents: async () => agents,
+  updateIssue: async (id: string, body: Record<string, unknown>) => (patches.push(body), Object.assign(id === engineerTask.id ? engineerTask : task, body)),
 } as unknown as Paperclip;
 
 describe("grade routes", () => {
@@ -67,6 +71,29 @@ describe("grade routes", () => {
     expect(store.grades.get(task.id)!.state).toBe("open");
     expect((await gate(as("eng"))).json).toEqual({ pass: false, state: "pending", label: "grading" });
     expect(patches.at(-1)).toEqual({ status: "in_review", labelIds: ["lbl-grading"] });
+  });
+
+  it("an Engineer sub-task's creator files its rubric without task_delegate; an ungranted caller can't", async () => {
+    const grade = { issue: "WOR-8", rubric: [], deliverable: { kind: "pr", ref: "" } };
+    expect((await post("/internal/grades", grade, as("forged"))).status).toBe(403);
+    expect((await post("/internal/grades", grade, as("ra"))).json).toEqual({ created: true, state: "open" });
+  });
+
+  it("an assignee in its own computer finishes with its run token: held for grading; a dead token is refused", async () => {
+    // The launcher's /whoami (through its gateway, the box's only way to the board): live run tokens name their agent.
+    process.env.AIDENHQ_LAUNCHER_URL = "http://launcher.test:8199";
+    const whoami = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const auth = new Headers(init?.headers).get("authorization");
+      return auth === "Bearer ahqc_live" ? Response.json({ agentId: "eng" }) : new Response("unknown run token", { status: 401 });
+    });
+    try {
+      const boxGate = (key: string) => post("/internal/grades/WOR-8/gate", { via: "task_finish" }, as(key));
+      expect((await boxGate("ahqc_dead")).status).toBe(403);
+      expect((await boxGate("ahqc_live")).json).toEqual({ pass: false, state: "pending", label: "grading" });
+      expect(engineerTask.status).toBe("in_review");
+    } finally {
+      whoami.mockRestore();
+    }
   });
 
   it("satisfied is not sticky: a reopened task finished again is graded again", async () => {

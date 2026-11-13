@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { syncBoards, syncJira } from "../src/sources.js";
+import { syncBoards, syncHistory, syncJira } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
 
 // The writer side against a fake store: what lands, and with which baseline flag (the SQL itself was smoke-run on postgres:17).
@@ -81,4 +81,34 @@ it("src_jira boards: a kanban board is stored without asking for its sprints, an
   expect(asked).toEqual([4, 5]);
   expect(writes.filter((w) => w.table === "board").length).toBe(3);
   expect(writes.find((w) => w.table === "board_sprint")).toMatchObject({ row: { board_id: 5, sprint_id: 9 } });
+});
+
+it("src_jira history: each listed project is read once as baseline rows, resumes after a budget stop, one failing project doesn't stop the others, a new project is picked up", async () => {
+  const { store, writes, scopes } = fakeStore();
+  const issue = (key: string, updated: string) => ({ key, fields: { summary: "Old", project: { key: key.split("-")[0] }, updated } });
+  const jql: string[] = [];
+  let boom = true;
+  const call = async (_tool: string, args: Record<string, any>) => {
+    jql.push(args.jql);
+    if (args.jql.includes('"BAD"') && boom) return { isError: true, content: [{ type: "text", text: "nope" }] };
+    const key = /project = "(\w+)"/.exec(args.jql)![1];
+    return { content: [{ type: "text", text: JSON.stringify({ issues: [issue(`${key}-1`, "2026-03-01T10:00:00.000+0000")], isLast: true }) }] };
+  };
+  const now = Date.parse("2026-11-11T00:00:00Z");
+  await syncHistory(store, call, "https://acme.atlassian.net", ["AGR", "BAD", "TRM"], 365, now);
+  expect(jql[0]).toBe(`project = "AGR" AND updated >= -${365 * 24 * 60 + 5}m ORDER BY updated ASC`);
+  expect(writes.filter((w) => w.table === "issue").map((w) => [w.row.key, w.baseline])).toEqual([["AGR-1", true], ["TRM-1", true]]); // BAD failed, TRM still ran
+  expect(scopes.get("history:AGR")?.baselined).toBe(true);
+  expect(scopes.get("history:BAD")?.baselined).toBe(false);
+
+  writes.length = 0;
+  jql.length = 0;
+  boom = false;
+  await syncHistory(store, call, "https://acme.atlassian.net", ["AGR", "BAD", "TRM", "POS"], 365, now + 1000);
+  expect(jql.map((q) => /"(\w+)"/.exec(q)![1])).toEqual(["BAD", "POS"]); // finished projects are never re-read
+  expect(scopes.get("history:BAD")?.baselined).toBe(true);
+
+  jql.length = 0;
+  await syncHistory(store, call, "https://acme.atlassian.net", ["QQQ"], 365, now, 0); // zero budget: stops before starting
+  expect(jql).toEqual([]);
 });

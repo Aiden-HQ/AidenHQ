@@ -29,7 +29,7 @@ Shared Postgres for curated fleet data. Compose: `compose.yaml`. Roles: `init/01
 - Nightly at 02:00 UTC `pg_dump -Fc` to the Docker volume `app-warehouse_backups` as `warehouse-YYYY-MM-DD.dump`.
   After a restart it dumps promptly when there is no dump for the current UTC day, waits for Postgres to accept
   connections, and retries a failed dump instead of exiting. Keeps about 7 days (a successful dump removes files older
-  than 6 days). Fetch one on the host: `docker run --rm -v app-warehouse_backups:/b:ro -v "$PWD":/out postgres:17 cp /b/warehouse-YYYY-MM-DD.dump /out/` (list them with `ls /b` the same way).
+  than 6 days). Fetch one on the host: `docker run --rm -v app-warehouse_backups:/b:ro -v "$PWD":/out postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f cp /b/warehouse-YYYY-MM-DD.dump /out/` (list them with `ls /b` the same way).
 - Restore (stateful; needs the owner's "apply"). Dump first, then:
   `docker compose -f modules/warehouse/apps/warehouse/compose.yaml exec backup pg_restore -h postgres -U warehouse -d warehouse --clean --if-exists /backups/<file>.dump`
 

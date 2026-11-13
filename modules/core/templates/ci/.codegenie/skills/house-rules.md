@@ -18,6 +18,10 @@ would hurt a user or the system; leave taste to the author.
 - Security: injection, missing authorization, secrets in code or logs, untrusted input treated as trusted.
 - Real architectural risk: a change that will clearly break under expected use, or that makes the next obvious change
   hard.
+- Dependencies: every one added or bumped is pinned exactly (lockfile; image by digest; action by commit SHA with its
+  tag in a comment; `npm i -g name@1.2.3`, `pip install name==1.2.3`, apt `name=version`; no `curl … | sh`). An
+  unpinned one, outside what CI's supply-chain step reads (e.g. a version range in a script or a download without a
+  checksum), is `high`. Publish dates are CI's check, not yours (versions are 7+ days old unless a listed security fix).
 - Severity: `critical` or `high` only for a defect that will happen on a normal path, or a real security hole. These
   block the merge, so don't inflate.
 

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { landOnMain } from "../src/git.mjs";
+import { changeBase, landOnMain } from "../src/git.mjs";
 
 const sh = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd, encoding: "utf8" }).trim();
 
@@ -53,5 +53,24 @@ describe("landing the shown commit on main", () => {
     sh(w, "push", "-q", "origin", "main");
     assert.equal(await landOnMain(w, "main", shown, "x"), null);
     assert.equal(readFileSync(join(w, "a.md"), "utf8"), "theirs\ntwo\nthree\n");
+  });
+});
+
+describe("a fleet change retried after a failed apply", () => {
+  it("is shown again until it is live, and lands as nothing on a main that has it", async () => {
+    const w = repo();
+    const applied = sh(w, "rev-parse", "HEAD"); // what this host last applied
+    sh(w, "checkout", "-q", "-b", "task");
+    writeFileSync(join(w, "a.md"), "ONE\ntwo\nthree\n");
+    sh(w, "commit", "-qam", "feat: shout");
+    const tip = sh(w, "rev-parse", "HEAD");
+    sh(w, "push", "-q", "origin", "task:main"); // on main, but the apply that followed failed
+    sh(w, "fetch", "-q", "origin");
+    const changed = async (deployed) => sh(w, "diff", "--name-only", await changeBase(w, "refs/remotes/origin/main", tip, deployed), tip);
+    assert.equal(await changed(applied), "a.md", "not live: the change is still there to approve");
+    assert.equal(await changed(undefined), "a.md", "unknown: shown, never skipped");
+    assert.equal(await changed(tip), "", "live: nothing to apply");
+    assert.equal(await landOnMain(w, "main", tip, "retry"), tip, "main already has it: no new commit");
+    assert.equal(sh(w, "--git-dir=../origin.git", "rev-parse", "main"), tip);
   });
 });

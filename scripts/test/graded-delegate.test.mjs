@@ -12,8 +12,8 @@ import { fileURLToPath } from "node:url";
 
 const bridge = join(dirname(fileURLToPath(import.meta.url)), "../../services/paperclip-tasks-mcp/paperclip-tasks-mcp.mjs");
 
-async function call(name, args, { gate = { pass: true }, boardDown = false, assignee = "cos" } = {}) {
-  const seen = { created: [], filed: [], patches: [], comments: [], gates: [] };
+async function call(name, args, { gate = { pass: true }, boardDown = false, assignee = "cos", grading = "on", box = false } = {}) {
+  const seen = { created: [], filed: [], patches: [], comments: [], gates: [], gateAuth: [] };
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (d) => (body += d));
@@ -22,7 +22,9 @@ async function call(name, args, { gate = { pass: true }, boardDown = false, assi
       const send = (x, code = 200) => ((res.statusCode = code), res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
       const json = body ? JSON.parse(body) : {};
       if (url === "/internal/grades") return (seen.filed.push({ ...json, key: req.headers["x-agent-key"] }), send({ created: true, state: "open" }));
-      if (/\/internal\/grades\/.+\/gate$/.test(url)) return (seen.gates.push(json), send(gate));
+      // In a computer: the launcher's gateway (box "down": the board behind it unreachable).
+      if (box === "down" && url.startsWith("/board/")) return ((res.statusCode = 502), res.end("gateway: connect ECONNREFUSED 127.0.0.1:3122"));
+      if (/\/internal\/grades\/.+\/gate$/.test(url)) return (seen.gates.push(json), seen.gateAuth.push({ path: url.replace(/\/internal.*/, ""), key: req.headers["x-agent-key"], auth: req.headers.authorization }), send(gate));
       if (url === "/api/agents/me") return send({ id: "cos", name: "Aiden" });
       if (url.endsWith("/agents")) return send([{ id: "eng", name: "Engineer", metadata: { setupKey: "aidenhq:engineer-openrouter", persona: { name: "Linus" } }, status: "idle", runtimeConfig: { heartbeat: { wakeOnDemand: false, enabled: false } } }]);
       if (req.method === "POST" && url.endsWith("/issues")) return (seen.created.push(json), send({ id: "new", identifier: "WOR-9", title: "t", status: "todo" }));
@@ -35,9 +37,9 @@ async function call(name, args, { gate = { pass: true }, boardDown = false, assi
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${server.address().port}`;
   const grants = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-  const tools = { paperclip_tasks: ["task_delegate", "task_finish"] };
-  writeFileSync(grants, JSON.stringify({ agents: { cos: { key: "chief-of-staff", roles: [], tools }, eng: { key: "engineer-openrouter", roles: [], tools: {}, graded: true } } }));
-  const child = spawn(process.execPath, [bridge], { env: { ...process.env, PAPERCLIP_API_URL: url, PAPERCLIP_API_KEY: "k", PAPERCLIP_COMPANY_ID: "co", PAPERCLIP_TASK_ID: "cur", AIDENHQ_GRANTS_FILE: grants, AIDENHQ_BOARD_URL: boardDown ? "http://127.0.0.1:9" : url, AIDENHQ_BOARD_TOKEN: "t" } });
+  const tools = { paperclip_tasks: ["task_delegate", "task_create", "task_finish"] };
+  writeFileSync(grants, JSON.stringify({ grading, agents: { cos: { key: "chief-of-staff", roles: [], tools }, eng: { key: "engineer-openrouter", roles: [], tools: {}, graded: true } } }));
+  const child = spawn(process.execPath, [bridge], { env: { ...process.env, PAPERCLIP_API_URL: url, PAPERCLIP_API_KEY: "k", PAPERCLIP_COMPANY_ID: "co", PAPERCLIP_TASK_ID: "cur", AIDENHQ_GRANTS_FILE: grants, AIDENHQ_BOARD_URL: boardDown ? "http://127.0.0.1:9" : url, AIDENHQ_BOARD_TOKEN: box ? "" : "t", ...(box ? { AIDENHQ_RUN_TOKEN: "ahqc_run", AIDENHQ_BOX_BOARD_URL: `${url}/board` } : {}) } });
   let out = "";
   const reply = new Promise((resolve) => child.stdout.on("data", (d) => { out += d; const line = out.split("\n").find((l) => l.includes('"id":1')); if (line) resolve(JSON.parse(line)); }));
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) + "\n");
@@ -90,6 +92,36 @@ test("the board unreachable: an ungraded assignee's close goes ahead, a graded o
   const plain = await call("task_finish", { comment: "Done." }, { boardDown: true });
   assert.equal(plain.patches[0]?.status, "done", plain.text);
   const graded = await call("task_finish", { comment: "Done." }, { boardDown: true, assignee: "eng" });
+  assert.equal(graded.r.result?.isError, true);
+  assert.deepEqual(graded.patches, []);
+});
+
+test("task_create handing work to a graded agent is graded as a delegation is; grading off files and requires nothing", async () => {
+  const create = { title: "Fix the total", description: "Show VAT on the totals page of acme/app.", marker: "fix:vat", assignee: "Linus" };
+  const missing = await call("task_create", create);
+  assert.equal(missing.r.result?.isError, true);
+  assert.match(missing.text, /graded: name the deliverable/);
+  assert.equal(missing.created.length, 0);
+
+  const ok = await call("task_create", { ...create, deliverable: { kind: "pr", ref: "acme/app" } });
+  assert.equal(ok.r.result?.isError, undefined, ok.text);
+  assert.deepEqual(ok.filed, [{ issue: "new", rubric: [], deliverable: { kind: "pr", ref: "acme/app" }, key: "k" }]);
+  assert.match(ok.created[0].description, /Graded before done \(pr: acme\/app\): the standard pr criteria\./);
+
+  const off = await call("task_create", create, { grading: "off" });
+  assert.equal(off.r.result?.isError, undefined, off.text);
+  assert.equal(off.created.length, 1);
+  assert.equal(off.filed.length, 0);
+});
+
+test("in a computer the gate goes through the launcher with the run token; the launcher's failure is an outage, not an answer", async () => {
+  const held = await call("task_finish", { comment: "Mockup attached." }, { box: true, assignee: "eng", gate: { pass: false, state: "pending", label: "grading" } });
+  assert.equal(held.r.result?.isError, undefined, held.text);
+  assert.deepEqual(held.gateAuth, [{ path: "/board", key: "ahqc_run", auth: undefined }]);
+  assert.deepEqual(held.patches, []);
+  const plain = await call("task_finish", { comment: "Done." }, { box: "down" });
+  assert.equal(plain.patches[0]?.status, "done", plain.text);
+  const graded = await call("task_finish", { comment: "Done." }, { box: "down", assignee: "eng" });
   assert.equal(graded.r.result?.isError, true);
   assert.deepEqual(graded.patches, []);
 });

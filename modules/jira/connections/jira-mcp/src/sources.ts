@@ -6,6 +6,7 @@
 // same read scope). Every 15 minutes:
 // issues updated since the cursor (the first pass, the last BASELINE_DAYS days, is the baseline). Weekly, issues updated in
 // the last 30 days that Jira no longer returns are marked deleted (Jira sends no delete signal). No LLM.
+// Optional one-time history backfill per listed project (history_projects, history_days; syncHistory).
 // Confluence pages (src_jira.confluence_page) share this schema, DDL and sign-in; their passes are in src/confluence.ts.
 import type { Logger } from "pino";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
@@ -156,6 +157,16 @@ async function* search(call: CallJira, jql: string, fields: string[]): AsyncGene
   } while (next);
 }
 
+/** One issue with its sprints and people. */
+async function putIssue(put: (t: Table, row: Row, baseline: boolean) => Promise<void>, i: any, site: string, baseline: boolean): Promise<void> {
+  const f = i.fields ?? {};
+  await put(ISSUE, issueRow(i, site), baseline);
+  for (const s of sprintsOf(f))
+    await put(SPRINT, { sprint_id: Number(s.id), board_id: Number(s.boardId) || null, name: s.name ?? null, state: s.state ?? null, start_date: s.startDate ?? null, end_date: s.endDate ?? null, complete_date: s.completeDate ?? null, goal: s.goal || null }, baseline);
+  for (const u of [f.assignee, f.reporter, f.creator].filter((u: any) => u?.accountId))
+    await put(USERS, { user_id: u.accountId, display_name: u.displayName ?? null, ...(u.emailAddress ? { email: u.emailAddress } : {}), is_bot: u.accountType === "app" }, false);
+}
+
 /** One pass: issues updated since the cursor (minute-relative JQL, so Jira's timezone never matters), and the weekly delete check. */
 export async function syncJira(store: SourceStore, call: CallJira, site: string, now = Date.now()): Promise<number> {
   await store.migrate(DDL);
@@ -167,13 +178,9 @@ export async function syncJira(store: SourceStore, call: CallJira, site: string,
   const minutes = Math.ceil((now - since) / 60_000) + 5; // overlap: unchanged rows are no-ops
   let newest = st.cursor ?? new Date(since).toISOString();
   for await (const i of search(call, `updated >= -${minutes}m ORDER BY updated ASC`, ["*navigable"])) {
-    const f = i.fields ?? {};
-    await put(ISSUE, issueRow(i, site), baseline);
-    for (const s of sprintsOf(f))
-      await put(SPRINT, { sprint_id: Number(s.id), board_id: Number(s.boardId) || null, name: s.name ?? null, state: s.state ?? null, start_date: s.startDate ?? null, end_date: s.endDate ?? null, complete_date: s.completeDate ?? null, goal: s.goal || null }, baseline);
-    for (const u of [f.assignee, f.reporter, f.creator].filter((u: any) => u?.accountId))
-      await put(USERS, { user_id: u.accountId, display_name: u.displayName ?? null, ...(u.emailAddress ? { email: u.emailAddress } : {}), is_bot: u.accountType === "app" }, false);
-    if (f.updated && Date.parse(f.updated) > Date.parse(newest)) newest = new Date(Date.parse(f.updated)).toISOString();
+    await putIssue(put, i, site, baseline);
+    const u = i.fields?.updated;
+    if (u && Date.parse(u) > Date.parse(newest)) newest = new Date(Date.parse(u)).toISOString();
   }
   await store.saveScope("issues", newest, true);
 
@@ -195,6 +202,53 @@ export async function syncJira(store: SourceStore, call: CallJira, site: string,
       .catch(() => undefined);
   }
   await store.saveScope("reconcile", new Date(now).toISOString(), true);
+  return written;
+}
+
+/** A history pass stops starting new work after this long; the next pass resumes from the project's cursor. */
+export const HISTORY_BUDGET_MS = 5 * 60_000;
+
+/**
+ * One-time backfill of quiet projects' history (the live pass only goes back BASELINE_DAYS site-wide): per listed project,
+ * its issues updated in the last `days`, oldest first, stored as baseline rows. Resumable and time-bounded: the project's
+ * cursor (newest updated seen) is saved as it goes and the project is marked done (scope baselined) only when its search
+ * ended; a project that errors is logged and skipped, the others go on. Finished projects are never re-read, so a newly
+ * listed project is picked up on the next pass. Returns rows written with a difference.
+ */
+export async function syncHistory(store: SourceStore, call: CallJira, site: string, projects: string[], days: number, now = Date.now(), budgetMs = HISTORY_BUDGET_MS, log?: Pick<Logger, "warn">): Promise<number> {
+  await store.migrate(DDL);
+  let written = 0;
+  const started = Date.now();
+  const put = async (t: Table, row: Row, baseline: boolean) => void ((await store.upsert(t, row, { baseline })) !== "same" && written++);
+  for (const project of projects) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(project)) {
+      log?.warn({ project }, "src_jira history: not a project key, skipped");
+      continue;
+    }
+    const scope = `history:${project}`;
+    const st = await store.scope(scope);
+    if (st.baselined) continue;
+    if (Date.now() - started >= budgetMs) break;
+    let newest = st.cursor ?? new Date(now - days * DAY).toISOString();
+    let done = false;
+    try {
+      const minutes = Math.ceil((now - Date.parse(newest)) / 60_000) + 5; // overlap: unchanged rows are no-ops
+      done = true;
+      for await (const i of search(call, `project = "${project}" AND updated >= -${minutes}m ORDER BY updated ASC`, ["*navigable"])) {
+        await putIssue(put, i, site, true);
+        const u = Date.parse(i.fields?.updated);
+        if (u > Date.parse(newest)) newest = new Date(u).toISOString();
+        if (Date.now() - started >= budgetMs) {
+          done = false;
+          break;
+        }
+      }
+    } catch (err) {
+      done = false;
+      log?.warn({ project, err: String(err).slice(0, 200) }, "src_jira history: project failed, will resume");
+    }
+    await store.saveScope(scope, newest, done);
+  }
   return written;
 }
 
@@ -253,7 +307,7 @@ export async function syncBoards(store: SourceStore, call: CallJira, now = Date.
 }
 
 /** Every 15 minutes, each pass recorded in src_meta.ingest_run (not signed in: the run records that error). */
-export function startSync(store: SourceStore, call: CallJira, site: string, log: Logger, everyMs = 15 * 60_000, boardsEveryMs = 60 * 60_000): void {
+export function startSync(store: SourceStore, call: CallJira, site: string, log: Logger, history: { projects: string[]; days: number } = { projects: [], days: 365 }, everyMs = 15 * 60_000, boardsEveryMs = 60 * 60_000): void {
   const tick = async () => {
     try {
       const rows = await store.run("jira", "issues", () => syncJira(store, call, site));
@@ -261,6 +315,9 @@ export function startSync(store: SourceStore, call: CallJira, site: string, log:
     } catch (err) {
       log.warn({ err: String(err).slice(0, 300) }, "src_jira sync failed");
     }
+    // The listed projects' history, once each (resumes across passes); its own ingest_run, and never fails the live pass.
+    if (history.projects.length)
+      await store.run("jira", "history", () => syncHistory(store, call, site, history.projects, history.days, Date.now(), HISTORY_BUDGET_MS, log)).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_jira history failed"));
     setTimeout(tick, everyMs).unref();
   };
   setTimeout(tick, 60_000).unref();

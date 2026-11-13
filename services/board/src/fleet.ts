@@ -1,7 +1,7 @@
 /** Fleet tools for the Chief of Staff (read status and costs; run/pause/resume with the owner's own words). The board holds the board key; agents never do. */
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { grantsTable, type Grant } from "./agent-auth.js";
+import { RUN_TOKEN_PREFIX, grantsTable, type Grant } from "./agent-auth.js";
 import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./paperclip.js";
 import type { Store } from "./store.js";
 import { ALREADY_APPLIED, autonomy, runCard, touchesMigrations, type RunRequest } from "./approvals.js";
@@ -41,13 +41,28 @@ export async function requireFleetRole(pc: Paperclip, agentKey: string | undefin
  */
 export async function requireAgent(pc: Paperclip, agentKey: string | undefined, ok: (g: Grant) => boolean, refusal: string): Promise<Agent> {
   if (!agentKey) throw new Refused("missing agent credential");
-  const me = await pc.agentMe(agentKey).catch(() => undefined);
+  const me = agentKey.startsWith(RUN_TOKEN_PREFIX) ? await computerAgent(pc, agentKey) : await pc.agentMe(agentKey).catch(() => undefined);
   let g: Grant | undefined;
   try {
     g = me && grantsTable(process.env.AIDENHQ_GRANTS_FILE)()[me.id];
   } catch {}
   if (!me || !g || me.companyId !== pc.companyId || !ok(g)) throw new Refused(refusal);
   return me;
+}
+
+/**
+ * The agent behind an agent computer's run token (its tasks bridge's completion gate, through the launcher's gateway): the
+ * launcher says whose run it is, asked every time so a revoked token stops at once, as services/shared/agent-auth.ts does.
+ */
+async function computerAgent(pc: Paperclip, token: string): Promise<Agent | undefined> {
+  const launcher = process.env.AIDENHQ_LAUNCHER_URL;
+  if (!launcher) return undefined;
+  const res = await fetch(new URL("/whoami", launcher), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
+  if (!res?.ok) return undefined;
+  const id = String(((await res.json()) as { agentId?: unknown }).agentId ?? "");
+  // This company's agents only (the list is the company's own).
+  const a = id ? (await pc.agents()).find((x) => x.id === id) : undefined;
+  return a && { ...a, companyId: pc.companyId };
 }
 
 /** A transcribed voice note ("[telegram voice] …"): may be misheard, so it never authorizes anything; a button tap does. */

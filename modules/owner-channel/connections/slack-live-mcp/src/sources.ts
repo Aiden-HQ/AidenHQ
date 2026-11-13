@@ -220,6 +220,22 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
     await put(CHANNEL, { channel_id: String(c.id), name: c.name ?? c.user ?? null, channel_type: type }, false);
     convs.push({ id: String(c.id), type });
   }
+  // users.conversations lists only conversations the owner is in; messages also arrive (events) from public channels they
+  // aren't in, which then have no channel row and so no name. Look those up (and backfill existing rows) by channel id.
+  const orphans = await store.pool.query(`SELECT DISTINCT channel_id FROM src_slack.message WHERE channel_id NOT IN (SELECT channel_id FROM src_slack.channel)`);
+  const unnamed: string[] = [];
+  for (const { channel_id: id } of orphans.rows as { channel_id: string }[]) {
+    if (Date.now() - started >= budgetMs) break; // the rest next pass
+    try {
+      const c = (await api("conversations.info", { channel: id })).channel ?? {};
+      await put(CHANNEL, { channel_id: id, name: c.name ?? c.user ?? null, channel_type: conversationType(c) }, false);
+    } catch (err) {
+      unnamed.push(`${id}: ${String((err as Error)?.message ?? err).slice(0, 80)}`);
+      // A channel Slack won't describe gets a nameless row, so it isn't asked again every pass; transient errors retry.
+      if (PERMANENT.test(String(err))) await put(CHANNEL, { channel_id: id, name: null, channel_type: null }, false);
+    }
+  }
+  if (unnamed.length) log?.warn({ unnamed: unnamed.slice(0, 20), count: unnamed.length }, "src_slack couldn't name some channels");
   const synced = await store.scopesByPrefix("channel:");
   const at = (id: string) => synced.get(`channel:${id}`)?.syncedAt ?? -1; // never synced sorts first
   const todo = convs.filter((c) => cycleStart === null || at(c.id) < cycleStart).sort((a, b) => at(a.id) - at(b.id));

@@ -20,13 +20,31 @@ jobs:
   tests:
     runs-on: [self-hosted, aidenhq]
     timeout-minutes: 20
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22.x
+      # The 7-day rule: everything is pinned, and what this PR adds or bumps (lockfile entries, images, actions, global
+      # installs) is 7+ days old or a security exception in .github/supply-chain-exceptions.yaml. Before any install.
+      # The checks and the exceptions come from the base commit, so a PR can't loosen its own check (the PR that adds
+      # them runs its own copies).
+      - name: Supply chain
+        run: |
+          d="$RUNNER_TEMP/supply-chain"; mkdir -p "$d"
+          for f in best-version pins npm-age; do
+            git show "$BASE_SHA:.github/supply-chain/$f.mjs" > "$d/$f.mjs" 2>/dev/null || cp ".github/supply-chain/$f.mjs" "$d/$f.mjs"
+          done
+          status=0
+          node "$d/npm-age.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
+          node "$d/pins.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
+          exit $status
       - name: Test
         run: npm ci && npm test
 

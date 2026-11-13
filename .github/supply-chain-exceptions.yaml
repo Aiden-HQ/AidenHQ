@@ -1,7 +1,17 @@
-# Security-fix exceptions to the 7-day rule (CONTRIBUTING.md, "Supply chain"). The owner's review of a change to this
-# file is the approval. scripts/supply-chain/npm-age.mjs checks each entry against the GitHub Advisory Database: the
-# advisory must name the package and have a first_patched_version at or below the version.
+# Security-fix exceptions to the 7-day rule (CONTRIBUTING.md, "Supply chain"): a version under 7 days old that fixes a
+# vulnerability. The owner's review of a change to this file is the approval; Security Watch adds entries (through its
+# normal PR and approval path) when an advisory needs a fresh version, and the CI checks read this file from the base
+# commit, so an entry lands in its own PR before the change that uses it.
 #
-# exceptions:
-#   - { package: fast-uri, version: 3.1.1, advisory: GHSA-xxxx-xxxx-xxxx, reason: why this fix cannot wait }
-exceptions: []
+# One entry per line, in this flow style (other YAML shapes are not read):
+#   - { ecosystem: npm, package: fast-uri, version: 3.1.1, advisory: GHSA-xxxx-xxxx-xxxx, reason: "why it cannot wait" }
+# ecosystem: npm (lockfiles and global installs), pypi, docker (package = the image without its tag, version = the
+# tag), github-action, github-release or apt. npm entries are checked against the GitHub Advisory Database
+# (scripts/supply-chain/npm-age.mjs); the others rest on review. scripts/supply-chain/best-version.mjs returns a listed
+# version for its package.
+exceptions:
+  - { ecosystem: apt, package: containerd.io, version: 2.4.2-4~ubuntu.24.04~noble, advisory: CVE-2026-119101, reason: "bundles runc 1.5.3 (released 2026-11-12) with the high-severity runc fix; installed on the host 2026-11-12" }
+  - { ecosystem: apt, package: docker-buildx-plugin, version: 0.39.0-1~ubuntu.24.04~noble, advisory: GHSA-rghq-x9hf-hc3r, reason: "Bake entitlement bypasses (also GHSA-xg6v-cv2h-2w5h) fixed in 0.38.2, which Docker's repo does not carry; 0.39.0 (2026-11-11) is the lowest packaged fix" }
+  - { ecosystem: apt, package: nodejs, version: 24.22.3-1nodesource1, advisory: CVE-2026-123863, reason: "Node 24.22.3 (2026-11-10) is a security release with several high fixes in http2 and tls (also CVE-2026-123864/65/66/72)" }
+  - { ecosystem: docker, package: anchore/grype, version: v0.121.3, advisory: GHSA-c9gr-gmg4-2vqv, reason: "grype v0.121.3 (2026-11-09) is a security release (also GHSA-pxq6-2prw-chj9, GHSA-rg2x-37c3-w2rh, GHSA-vp62-88p7-qqf5, GHSA-x744-4wpc-v9h2, GHSA-x86f-5xw2-fm2r)" }
+  - { ecosystem: docker, package: anchore/syft, version: v1.57.1, advisory: GHSA-c9gr-gmg4-2vqv, reason: "syft v1.57.1 (2026-11-09) is a security release" }

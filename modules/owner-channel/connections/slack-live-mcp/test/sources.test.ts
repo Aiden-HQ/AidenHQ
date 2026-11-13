@@ -70,6 +70,24 @@ describe("src_slack", () => {
     await expect(gapSync(fakeStore().store, flaky, 200_000)).rejects.toThrow(/ratelimited/); // transient: the pass fails and retries
   });
 
+  it("gap sync: channels the owner isn't in (messages from events, no channel row) get their name from conversations.info; one that fails doesn't fail the pass", async () => {
+    const { store, writes } = fakeStore();
+    (store as any).pool.query = async (q: string) => ({ rows: /NOT IN \(SELECT channel_id FROM src_slack.channel\)/.test(q) ? [{ channel_id: "CPUB" }, { channel_id: "CGONE" }, { channel_id: "CSLOW" }] : [] });
+    const api: Api = async (method, p) => {
+      if (method === "users.list") return { ok: true, members: [] };
+      if (method === "users.conversations") return { ok: true, channels: [] };
+      if (method === "conversations.info" && p.channel === "CPUB") return { ok: true, channel: { id: "CPUB", name: "announcements", is_channel: true } };
+      if (method === "conversations.info" && p.channel === "CGONE") throw new Error("slack conversations.info: channel_not_found");
+      if (method === "conversations.info") throw new Error("slack conversations.info: ratelimited");
+      return { ok: true, messages: [] };
+    };
+    await gapSync(store, api, 200_000);
+    expect(writes.filter((w) => w.table === "channel")).toEqual([
+      { table: "channel", row: { channel_id: "CPUB", name: "announcements", channel_type: "public" }, baseline: false },
+      { table: "channel", row: { channel_id: "CGONE", name: null, channel_type: null }, baseline: false }, // permanent: not asked again
+    ]);
+  });
+
   it("gap sync: a pass stops when its time budget is spent, oldest-synced first, and a reconcile is done only once every conversation is covered", async () => {
     const { store, writes, scopes, clock } = fakeStore();
     const api: Api = async (method, p) => {

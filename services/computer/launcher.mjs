@@ -18,6 +18,8 @@
 //   /c/<connection>/mcp       tool calls to a connection: X-Agent-Key must be a live run token; the service's bearer is added here
 //   POST /repo {repo, sha}    the box's `repo-checkout`: a snapshot (no .git, no credentials) of an agents-org repo at a commit,
 //                             from the runner's cache clone, into /workspace/repos/<name>; agents with the repo-checkout role
+//   POST /board/internal/grades/<task>/gate   the tasks bridge's completion gate (graded done), passed to the board with
+//                             the run token as the caller and the internal token added here; no other board route
 //
 import http from "node:http";
 import { spawn } from "node:child_process";
@@ -274,6 +276,21 @@ async function checkout(who, raw) {
   return { path: dest, repo: p.repo, sha, note: "a snapshot of that commit: no .git, no credentials; nothing here can be pushed" };
 }
 
+/**
+ * POST /board/internal/grades/<task>/gate from a box: graded done's completion gate, the only board route a box reaches. The
+ * run token (X-Agent-Key) must be live; it goes on as the caller's identity (the board asks /whoami), with the board's internal
+ * token added here. Nothing else from the request is forwarded.
+ */
+const BOARD_INTERNAL_URL = env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122");
+async function boardGate(req, res, route, deny) {
+  const token = String(req.headers["x-agent-key"] ?? "");
+  if (!tokens.whoami(token)) return deny(401, "not a live computer");
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const up = await fetch(`${BOARD_INTERNAL_URL}${route}`, { method: "POST", headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-agent-key": token, "content-type": "application/json" }, body: Buffer.concat(chunks).toString("utf8").slice(0, 4096), signal: AbortSignal.timeout(30_000) });
+  res.writeHead(up.status, { "content-type": "application/json" }).end(await up.text());
+}
+
 const bearer = (req) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
 const send = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
@@ -350,6 +367,8 @@ http.createServer(async (req, res) => {
         (e) => deny(e.status ?? 500, e.message),
       );
     }
+    const g = req.method === "POST" ? /^\/board(\/internal\/grades\/[A-Za-z0-9-]{1,64}\/gate)$/.exec(req.url) : null;
+    if (g) return await boardGate(req, res, g[1], deny);
     const m = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(req.url.split("?")[0]);
     if (!m) return deny(403, "refused");
     const conn = readJson(CFG.computersFile).connections?.[m[1]];

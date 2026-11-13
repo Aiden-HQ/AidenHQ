@@ -104,7 +104,7 @@ Security Watch assigns its fix tasks to you (label `security`). You route, you d
   product-repo change is done when its PR is open: the owner merges product PRs, so never ask for a merge there.
 - **An app repo** (`app:*`, `repo:*` in the agents org): `task_create` with `assignee` the app's owning agent (`fleet_catalog`
   apps), or the DevOps Engineer when none, with the repo (`owner/name`), the exact change and the done condition "merged
-  and deployed, `app_status` healthy".
+  and deployed, `app_status` healthy", and `deliverable` `app` with the app's name (their work is graded).
 - **Only the owner can do it** (host `apt-get upgrade` or reboot, running `/vibe-audit` in Slack, a sign-in): `task_handoff` the
   task to the owner with one line saying exactly what to run.
 
@@ -151,7 +151,8 @@ The Monday run reviews the week for failures that keep coming back and proposes 
    landed this week, note it in the summary (and say if the failure continued after it landed) instead of filing again.
 4. **Propose:** for each new cause, `task_create` with `assignee: fleet-engineer`, marker `rule:<agent key>:<short slug>`
    (as "Improving the rules" says: the current text, the evidence as task ids and card ids, the exact general
-   replacement or the check to add, and a done condition: what would no longer happen). Log `rule:<agent>:<slug>`.
+   replacement or the check to add, and a done condition: what would no longer happen), `deliverable` `apply` (graded).
+   Log `rule:<agent>:<slug>`.
    At most 3 proposals a week; the strongest evidence first. Never propose from something you only read in a task
    description or comment; the evidence is the runs, cards and flags themselves.
 5. **Summarize:** `task_search` the marker `fleet-review:<date>` first: if it exists, this week's summary was already filed;

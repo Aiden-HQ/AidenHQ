@@ -28,7 +28,7 @@ const http = createApp({
 // password (WAREHOUSE_PASSWORD_FILE) is there.
 const sources = SourceStore.fromEnv("jira");
 if (sources) {
-  startSync(sources, http.callJira, siteUrl, log);
+  startSync(sources, http.callJira, siteUrl, log, { projects: (process.env.HISTORY_PROJECTS ?? "").split(",").map((p) => p.trim()).filter(Boolean), days: Number(process.env.HISTORY_DAYS) || 365 });
   startConfluenceSync(sources, http.callJira, siteUrl, log);
 }
 else log.warn("warehouse not configured; src_jira is off");

@@ -16,11 +16,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The 7-day rule for npm: lockfile entries this change adds or alters must be 7+ days old, unless an owner-approved
-  # security exception in .github/supply-chain-exceptions.yaml holds up against the advisory (wave 3 item 17).
+  # The 7-day rule: lockfile entries, images, actions, apt packages and global installs this change adds or alters must
+  # be 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the
+  # base) covers them; and every one of them is pinned (scripts/supply-chain/pins.mjs).
   supply-chain:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read # ghcr.io images are dated by the GitHub Packages API
     env:
       PR_BASE: ${{ github.event.pull_request.base.sha }}
       PUSH_BEFORE: ${{ github.event.before }}
@@ -33,10 +37,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      - name: Install (no lifecycle scripts: the lockfile is not vetted yet)
-        working-directory: scripts
-        run: npm ci --ignore-scripts
-      - name: Age check
+      # Both checks have no dependencies: nothing is installed before the lockfiles are vetted.
+      - name: Age check (lockfiles) and pins (images, actions, apt, global installs)
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -45,7 +47,10 @@ jobs:
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
           fi
-          node scripts/supply-chain/npm-age.mjs "$base" "$HEAD_SHA"
+          status=0
+          node scripts/supply-chain/npm-age.mjs "$base" "$HEAD_SHA" || status=1
+          node scripts/supply-chain/pins.mjs "$base" "$HEAD_SHA" || status=1
+          exit $status
 
   test:
     name: ${{ matrix.dir }}

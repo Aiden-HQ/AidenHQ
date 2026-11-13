@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, repoAllowed, resolveEngine, stripHidden } from "./commands.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
@@ -12,7 +12,7 @@ import { architectFollowUps, bumpTitle, definitionsOf, productPin, strayFiles, t
 import { adoptRun, gatewayApi, jailProblem, modelToken, observes, runAlive, startAgent, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.mjs";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
-import { ISOLATED_ENV, defaultBranch, ensureClone, ensureGuardHooks, git, landOnMain, remoteIsEmpty, setGitAuth } from "./git.mjs";
+import { ISOLATED_ENV, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, landOnMain, remoteIsEmpty, setGitAuth } from "./git.mjs";
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg } from "./github-app.mjs";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.mjs";
 import { ALL_STATUSES, Paperclip } from "./paperclip.mjs";
@@ -1442,9 +1442,11 @@ function landFleet(issue, r, approvedSha, files, why, message, guard) {
     const sha = await landOnMain(r.path, r.defaultBase, approvedSha, message, { guard, identity: await botIdentity() });
     if (!sha) throw new UserError(`the change conflicts with ${r.defaultBase}; the Platform Engineer must rebase${why.startsWith("approval") ? ", and the new diff needs a new approval" : ""}`);
     await git(r.path, "fetch", "--quiet", "origin");
-    state.updateBranch(issue.id, r.repo, r.branch, { pushed: 1, merged: 1 });
+    state.updateBranch(issue.id, r.repo, r.branch, { pushed: 1 });
     log("fleet config applied: pushed", { issue: issue.identifier, sha, why, files });
     const out = await execFileP("bash", [join(REPO_ROOT, "ops/apply-config.sh"), sha], { maxBuffer: 8 * 1024 * 1024, timeout: 30 * 60_000 }).then((o) => ({ ok: true, text: o.stdout + o.stderr }), (e) => ({ ok: false, text: `${e.stdout ?? ""}${e.stderr ?? e.message}` }));
+    // Done with the branch only once it is live: after a failed apply the next turn shows it again, for a retry.
+    if (out.ok) state.updateBranch(issue.id, r.repo, r.branch, { merged: 1 });
     const tail = out.text.replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(-40).join("\n");
     const said = `${out.ok ? "Applied" : "**Pushed to main, but the apply script failed**"} (${why}): \`${r.defaultBase}\` is now \`${sha.slice(0, 9)}\`.\n\n\`\`\`\n${tail}\n\`\`\``;
     await pc.comment(issue.id, said);
@@ -1469,7 +1471,16 @@ async function textsAt(c, rev) {
 /** The host's grants table (scripts/paperclip-setup.mjs), or undefined: the trial exception then fails closed. */
 function readGrants() {
   try {
-    return JSON.parse(readFileSync(cfg.grants_file ?? join(process.env.AIDENHQ_CONFIG_DIR ?? join(REPO_ROOT, "config"), "grants", "grants.json"), "utf8"));
+    return JSON.parse(readFileSync(grantsPath(), "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+const grantsPath = () => cfg.grants_file ?? join(process.env.AIDENHQ_CONFIG_DIR ?? join(REPO_ROOT, "config"), "grants", "grants.json");
+/** The instance commit this host last applied: the latest `instance_sha` setup recorded in revs.jsonl, beside the grants. */
+function deployedInstance() {
+  try {
+    return JSON.parse(readFileSync(join(dirname(grantsPath()), "revs.jsonl"), "utf8").trim().split("\n").at(-1)).instance_sha ?? undefined;
   } catch {
     return undefined;
   }
@@ -1478,7 +1489,8 @@ function readGrants() {
 /**
  * Handbook edits to agents in trial: showFleetDiff queues them instead of filing a card; here, once
  * the run is over, the same commit is checked again from git (only those handbooks, the agents still in trial on main)
- * and landed. The diff and the outcome are comments on the task, which is how they show in Activity. Never retried.
+ * and landed. The diff and the outcome are comments on the task, which is how they show in Activity. Never retried here;
+ * after a failed apply-config the branch stays open, so the agent's next turn shows it again (landing it again is a no-op).
  */
 async function runTrialEdits() {
   const box = JSON.parse(state.get("trial_edits") || "{}");
@@ -1686,7 +1698,7 @@ async function fleetBranch(issue, workspace) {
 }
 
 async function fleetChange(r, sha) {
-  const base = await git(r.path, "merge-base", `refs/remotes/origin/${r.defaultBase}`, sha);
+  const base = await changeBase(r.path, `refs/remotes/origin/${r.defaultBase}`, sha, deployedInstance());
   const files = (await git(r.path, "diff", "--no-renames", "--name-only", base, sha)).split("\n").filter(Boolean);
   const pin = (rev) => git(r.path, "show", `${rev}:instance.yaml`).then(productPin, () => undefined);
   return { r, sha, base, files, pins: async () => ({ from: await pin(base), to: await pin(sha) }), diff: () => execFileP("git", ["-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", base, sha], { cwd: r.path, maxBuffer: 32 * 1024 * 1024, env: ISOLATED_ENV }).then((o) => o.stdout), log: () => git(r.path, "log", "--format=%s", `${base}..${sha}`) };

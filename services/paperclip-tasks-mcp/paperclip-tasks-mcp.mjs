@@ -278,13 +278,17 @@ const idempotencyKey = (marker) => `pw-${createHash("sha256").update(marker).dig
 // listener (the agent's shell has it too); the agent's own credential (x-agent-key) says who calls, and the board checks its grants.
 const BOARD = (process.env.AIDENHQ_BOARD_URL || "http://board:3122").replace(/\/$/, "");
 const BOARD_TOKEN = process.env.AIDENHQ_BOARD_TOKEN || "";
+// In an agent computer there is no board token: the run's own token (the launcher's) is the identity, and the launcher's
+// gateway adds the internal token. It lets through only the completion gate (graded done); nothing else reaches the board.
+const RUN_TOKEN = BOARD_TOKEN ? "" : process.env.AIDENHQ_RUN_TOKEN || "";
+const BOX_BOARD = (process.env.AIDENHQ_BOX_BOARD_URL || "http://10.231.2.1:8200/board").replace(/\/$/, "");
 
 /** POST with a body; GET when body is undefined. */
 async function boardApi(path, body, extraHeaders = {}, timeoutMs = 20_000) {
-  if (!BOARD_TOKEN) throw new Error("AIDENHQ_BOARD_TOKEN is not set (see compose.yaml)");
-  const res = await fetch(`${BOARD}${path}`, {
+  if (!BOARD_TOKEN && !RUN_TOKEN) throw new Error("AIDENHQ_BOARD_TOKEN is not set (see compose.yaml)");
+  const res = await fetch(`${RUN_TOKEN ? BOX_BOARD : BOARD}${path}`, {
     method: body === undefined ? "GET" : "POST",
-    headers: { authorization: `Bearer ${BOARD_TOKEN}`, "x-agent-key": KEY, "content-type": "application/json", accept: "application/json", ...extraHeaders },
+    headers: { ...(RUN_TOKEN ? { "x-agent-key": RUN_TOKEN } : { authorization: `Bearer ${BOARD_TOKEN}`, "x-agent-key": KEY }), "content-type": "application/json", accept: "application/json", ...extraHeaders },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -293,6 +297,8 @@ async function boardApi(path, body, extraHeaders = {}, timeoutMs = 20_000) {
   try {
     data = text ? JSON.parse(text) : {};
   } catch {}
+  // From a computer, the launcher's own refusal or a board it can't reach is no answer from the board (the gate's outage rule).
+  if (!res.ok && RUN_TOKEN && (res.status >= 500 || text.startsWith("gateway:"))) throw new Error(`the board is unreachable from this computer (${res.status} ${text.slice(0, 200)})`);
   if (!res.ok) throw new Error(`board: ${data.error ?? text.slice(0, 300)}`);
   return data;
 }
@@ -383,7 +389,8 @@ async function describe(a) {
   return a.title;
 }
 // Graded done: a delegated deliverable is checked against its rubric before it may close. The board keeps the rubric (never
-// the description, which only shows a copy) and the gate. In a computer there is no board route: nothing is graded there.
+// the description, which only shows a copy) and the gate. From a computer only the gate reaches the board (the launcher's
+// gateway): work done in a box is graded, a delegation made from one isn't.
 const DELIVERABLES = ["pr", "app", "apply", "file", "report", "none"];
 const GRADING_NOTE = "Held for grading: the grader checks this task against its rubric, then closes it or reopens it with the unmet criteria. Nothing more to do now: end your turn.";
 function gradedAgent(id) {
@@ -393,9 +400,17 @@ function gradedAgent(id) {
     return false;
   }
 }
+/** Graded done's kill switch (instance setting `grading`, in the grants table): off, nothing is filed or required. */
+function gradingOff() {
+  try {
+    return JSON.parse(readFileSync(GRANTS_FILE, "utf8")).grading === "off";
+  } catch {
+    return false;
+  }
+}
 /** The rubric to file for a delegation to `target`, or undefined (not graded); throws when a graded assignee gets no deliverable. */
 function gradeFor(target, rubric, deliverable) {
-  if (!BOARD_TOKEN) return undefined;
+  if (!BOARD_TOKEN || gradingOff()) return undefined;
   const kind = deliverable?.kind;
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
   const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
@@ -413,13 +428,25 @@ function gradeFor(target, rubric, deliverable) {
 // The ref lands in the description the runner reads: one token of a strict shape, never a hidden <!-- … --> marker.
 const DELIVERABLE_REF = /^(?:https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[A-Za-z0-9._~%/#?=&+-]*)?|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#\d+)?|[a-z0-9][a-z0-9-]{0,62})$/;
 const noMarkers = (s) => String(s).replace(/<!--|-->/g, "").slice(0, 500);
+/** The description's copy of a filed rubric (the board keeps the one the grader uses). */
+const gradedText = (grade) => (grade ? `\n\nGraded before done (${grade.deliverable.kind}${grade.deliverable.ref ? `: ${grade.deliverable.ref}` : ""}):${grade.rubric.length ? grade.rubric.map((c, n) => `\n${n + 1}. ${c.replace(/<!--|-->/g, "")}`).join("") : ` the standard ${grade.deliverable.kind} criteria.`}` : "");
+/** Files the rubric with this run's own key; the task exists either way, so a failure is reported, not thrown. */
+const fileGrade = (issueId, grade) => (grade ? boardApi("/internal/grades", { issue: issueId, ...grade }).then(() => ({ graded: true }), (err) => ({ graded: false, grade_error: String(err.message ?? err).slice(0, 200) })) : Promise.resolve({}));
+const DELIVERABLE_INPUT = {
+  type: "object",
+  description: "what the task ships, graded before it may close: pr (ref: the repo or PR link), app (ref: the app name), apply, file, report; none when nothing ships (a question, research). Required for an assignee whose work is graded (Engineers, the DevOps, Platform and UI/UX Engineers)",
+  properties: { kind: { type: "string", enum: DELIVERABLES }, ref: { type: "string" } },
+  required: ["kind"],
+  additionalProperties: false,
+};
+const RUBRIC_INPUT = { type: "array", items: { type: "string" }, description: "3-8 criteria the grader checks from evidence (each observable: merged, checks green, the page shows X, the test covers Y; never \"high quality\"). Omit for the standard criteria of the deliverable's kind" };
 /**
  * The completion gate: whether closing this task (the fetched issue) may go ahead, or it waits for the grader (the board
  * moves it to in_review). The board unreachable passes unless the assignee's work is graded: an outage never blocks
  * ungraded closes. An answer (a hold, a 403) stands.
  */
 async function gate(issue, via) {
-  if (!BOARD_TOKEN) return { pass: true };
+  if (!BOARD_TOKEN && !RUN_TOKEN) return { pass: true };
   try {
     return await boardApi(`/internal/grades/${issueRef(issue.id)}/gate`, { via });
   } catch (err) {
@@ -447,7 +474,7 @@ async function assignTask(me, target, { title, description, parent, marker, prio
   }
   const body = {
     title: String(title).slice(0, 200),
-    description: `${origin}\n\n${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${grade ? `\n\nGraded before done (${grade.deliverable.kind}${grade.deliverable.ref ? `: ${grade.deliverable.ref}` : ""}):${grade.rubric.length ? grade.rubric.map((c, n) => `\n${n + 1}. ${c.replace(/<!--|-->/g, "")}`).join("") : ` the standard ${grade.deliverable.kind} criteria.`}` : ""}\n\nWhen done: comment your result, then call task_finish.${src ? `\n\n<!-- source:${src} -->` : ""}`,
+    description: `${origin}\n\n${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${gradedText(grade)}\n\nWhen done: comment your result, then call task_finish.${src ? `\n\n<!-- source:${src} -->` : ""}`,
     status: "todo",
     priority: PRIORITIES.includes(priority) ? priority : PRIORITIES.includes(p?.priority) ? p.priority : "medium",
     ...(p ? { parentId: p.id } : {}),
@@ -457,8 +484,7 @@ async function assignTask(me, target, { title, description, parent, marker, prio
     ...(src ? { idempotencyKey: idempotencyKey(src) } : {}),
   };
   const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY)}/issues`, body);
-  // The rubric goes to trusted storage with this run's own key; the task exists either way, so a failure is reported, not thrown.
-  const graded = grade ? await boardApi("/internal/grades", { issue: i.id, ...grade }).then(() => ({ graded: true }), (err) => ({ graded: false, grade_error: String(err.message ?? err).slice(0, 200) })) : {};
+  const graded = await fileGrade(i.id, grade);
   return { identifier: i.identifier, created: true, assignee: target.metadata?.persona?.name || target.name, ...graded };
 }
 const keyOf = (a) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, "") || a.name;
@@ -574,7 +600,7 @@ const TOOLS = {
   },
   task_create: {
     description:
-      "Create a Paperclip task, idempotent per marker (the same marker returns the same task, deduplicated: true). Put the source and reason in the description. Without `assignee` it goes to the owner's board: only for what the owner must read or do. Work for an agent (a fix, a follow-up, your own log) always names its `assignee`, yourself included; `status: backlog` parks it.",
+      "Create a Paperclip task, idempotent per marker (the same marker returns the same task, deduplicated: true). Put the source and reason in the description. Without `assignee` it goes to the owner's board: only for what the owner must read or do. Work for an agent (a fix, a follow-up, your own log) always names its `assignee`, yourself included; `status: backlog` parks it. Work for a graded agent names its `deliverable` (kind none for a log or a question).",
     inputSchema: {
       type: "object",
       properties: {
@@ -587,19 +613,21 @@ const TOOLS = {
         status: { type: "string", enum: ["todo", "backlog"], description: "default todo (wakes the assignee); backlog parks it" },
         dedupe_closed: { type: "boolean", description: "also match a done or cancelled task (never recreate what the user closed)" },
         related_markers: { type: "array", items: { type: "string" }, description: "markers of other tasks for the same item; an existing one is returned instead (closed ones too with dedupe_closed)" },
+        deliverable: { ...DELIVERABLE_INPUT, description: `with an assignee: ${DELIVERABLE_INPUT.description}` },
+        rubric: RUBRIC_INPUT,
       },
       required: ["title", "description", "marker"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ title, description, marker, labels, priority, assignee, status, dedupe_closed, related_markers }) => {
+    run: async ({ title, description, marker, labels, priority, assignee, status, dedupe_closed, related_markers, deliverable, rubric }) => {
       if (!COMPANY) throw new Error("PAPERCLIP_COMPANY_ID not set");
       refuseReservedMarker(marker, ...(related_markers ?? []));
       const m = String(marker).trim().replace(/^(source:)+/, ""); // agents sometimes include the prefix
       if (!/^[A-Za-z0-9:._\/-]{3,200}$/.test(m)) throw new Error("invalid marker");
       // A pinned Slack message is the same item as the needs-response or todo task for it:
       // closing either must not bring it back under the other marker.
-      let assigneeAgent, origin = "";
+      let assigneeAgent, target, origin = "";
       if (assignee) {
         // Assigning work to another agent is a delegation: never from an agent on trial,
         // and the task says which agent asked (an agent request, not the owner's words), as task_delegate does.
@@ -608,7 +636,8 @@ const TOOLS = {
         const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY)}/agents`);
         const hits = all.filter((a) => a.status !== "terminated" && [keyOf(a), a.name, a.metadata?.persona?.name].some((n) => String(n ?? "").toLowerCase() === want));
         if (hits.length !== 1) throw new Error(hits.length ? `"${assignee}" is ambiguous: use the key from fleet_catalog` : `"${assignee}" is not an agent here (see fleet_catalog)`);
-        assigneeAgent = hits[0].id;
+        [target] = hits;
+        assigneeAgent = target.id;
         const me = await api("GET", "/api/agents/me");
         origin = `Filed by ${me.metadata?.persona?.name || me.name} (agent). This is an agent request, not the owner's words.\n\n`;
       }
@@ -629,9 +658,11 @@ const TOOLS = {
         const existing = await findByMarker(k, statuses);
         if (existing) return { ...brief(existing), deduplicated: true };
       }
+      // Work handed to a graded agent is graded as a delegation is (refused here, before it is created, without a deliverable).
+      const grade = target ? gradeFor(target, rubric, deliverable) : undefined;
       const body = {
         title: String(title).slice(0, 200),
-        description: `${origin}${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}\n\n<!-- source:${m} -->`,
+        description: `${origin}${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${gradedText(grade)}\n\n<!-- source:${m} -->`,
         status: status === "backlog" && assigneeAgent ? "backlog" : "todo",
         priority: PRIORITIES.includes(priority) ? priority : "medium",
         labelIds: await labelIds(labels ?? []),
@@ -645,7 +676,7 @@ const TOOLS = {
         if (owner) body.assigneeUserId = owner;
       }
       const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY)}/issues`, body);
-      return { ...brief(i), deduplicated: Boolean(i.deduplicated) };
+      return { ...brief(i), deduplicated: Boolean(i.deduplicated), ...(i.deduplicated ? {} : await fileGrade(i.id, grade)) };
     },
   },
   task_create_engineer_task: {
@@ -687,6 +718,8 @@ const TOOLS = {
       const agents = await api("GET", `/api/companies/${encodeURIComponent(COMPANY)}/agents`);
       const agent = agents.find((a) => a.adapterType === ADAPTERS[engine] && /^aidenhq:engineer(-|$)/.test(a.metadata?.setupKey ?? "") && a.status !== "terminated");
       if (!agent) throw new Error(`no Engineer for ${engine}`);
+      // A graded Engineer's sub-task is graded on its own PRs (the standard pr criteria), as a delegation is.
+      const grade = gradedAgent(agent.id) ? gradeFor(agent, [], { kind: "pr" }) : undefined;
       const m2 = String(model ?? "").trim();
       if (m2 && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(m2)) throw new Error("invalid model");
       // opencode model ids are openrouter/<provider>/<model>. A name like "deepseek" or "glm-5.3-flash"
@@ -696,7 +729,7 @@ const TOOLS = {
       const modelId = engine === "openrouter" ? (orModel ? `openrouter/${orModel}` : "") : m2;
       const body = {
         title: String(title).slice(0, 200),
-        description: `${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}\n\n<!-- source:${m} -->`,
+        description: `${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${gradedText(grade)}\n\n<!-- source:${m} -->`,
         status: "todo",
         priority: PRIORITIES.includes(p.priority) ? p.priority : "medium",
         parentId: p.id,
@@ -707,7 +740,7 @@ const TOOLS = {
         ...OWN_FOLDER,
       };
       const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY)}/issues`, body);
-      return { ...brief(i), parent: p.identifier, engine, model: modelId || null, deduplicated: Boolean(i.deduplicated) };
+      return { ...brief(i), parent: p.identifier, engine, model: modelId || null, deduplicated: Boolean(i.deduplicated), ...(i.deduplicated ? {} : await fileGrade(i.id, grade)) };
     },
   },
   task_team: {
@@ -734,14 +767,8 @@ const TOOLS = {
         parent: { type: "string", description: "default: the current task" },
         marker: { type: "string", description: "optional stable key within the parent, to avoid duplicates on re-runs" },
         priority: { type: "string", enum: PRIORITIES },
-        deliverable: {
-          type: "object",
-          description: "what the task ships, graded before it may close: pr (ref: the repo or PR link), app (ref: the app name), apply, file, report; none when nothing ships (a question, research). Required for an assignee whose work is graded (Engineers, the DevOps, Platform and UI/UX Engineers)",
-          properties: { kind: { type: "string", enum: DELIVERABLES }, ref: { type: "string" } },
-          required: ["kind"],
-          additionalProperties: false,
-        },
-        rubric: { type: "array", items: { type: "string" }, description: "3-8 criteria the grader checks from evidence (each observable: merged, checks green, the page shows X, the test covers Y; never \"high quality\"). Omit for the standard criteria of the deliverable's kind" },
+        deliverable: DELIVERABLE_INPUT,
+        rubric: RUBRIC_INPUT,
       },
       required: ["agent", "title", "description"],
       additionalProperties: false,
@@ -902,6 +929,8 @@ const TOOLS = {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     run: async ({ issue, into }) => {
       await requireAssistant();
+      await refuseMemoryInbox(issue);
+      await refuseMemoryInbox(into);
       return boardApi(`/internal/issues/${issueRef(issue)}/merge`, { into: decodeURIComponent(issueRef(into)) });
     },
   },

@@ -158,9 +158,22 @@ export async function remoteIsEmpty(clone) {
 }
 
 /**
+ * The commit a fleet change is shown and checked against: its merge base with main. A commit main already has is shown
+ * against what this host last applied (`deployed`, an instance commit), so a retry after a failed apply still has a diff
+ * to approve, and a live one has none. Unknown `deployed`: the commit's own change, shown again rather than skipped.
+ */
+export async function changeBase(path, mainRef, sha, deployed) {
+  const base = await git(path, "merge-base", mainRef, sha);
+  if (base !== sha) return base;
+  const known = deployed && (await git(path, "cat-file", "-e", `${deployed}^{commit}`).then(() => true, () => false));
+  return known ? git(path, "merge-base", deployed, sha) : git(path, "rev-parse", `${sha}~1`);
+}
+
+/**
  * Lands exactly the commit `shown` on origin/<base>: its change (against its merge base with main) merged onto the
  * current main as one new commit with main as its parent, pushed as a fast-forward. If main moves during the push the
- * merge is redone once on the new main. Returns the new sha, or null when the change conflicts with main.
+ * merge is redone once on the new main. A change main already has (a retried apply) lands as nothing: main's sha, no push.
+ * Returns the sha main is at, or null when the change conflicts with main.
  */
 export async function landOnMain(path, base, shown, note, { guard, identity = DEFAULT_IDENTITY } = {}) {
   const id = identityEnv(identity);
@@ -173,6 +186,7 @@ export async function landOnMain(path, base, shown, note, { guard, identity = DE
     if (guard && !(await guard(main))) throw new Error(`the change no longer qualifies on ${base} as it is now (${main.slice(0, 9)}); nothing landed`);
     const tree = await iso("merge-tree", "--write-tree", `--merge-base=${await git(path, "merge-base", main, shown)}`, main, shown).catch((e) => (e.code === 1 ? null : Promise.reject(e)));
     if (!tree) return null;
+    if (tree.split("\n")[0] === (await git(path, "rev-parse", `${main}^{tree}`))) return main;
     const message = `${await git(path, "log", "-1", "--format=%B", shown)}\n\n${note}`;
     const sha = await iso("commit-tree", tree.split("\n")[0], "-p", main, "-m", message);
     try {

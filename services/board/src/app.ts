@@ -325,6 +325,26 @@ export function createApp(opts: AppOptions): Server {
     }
   }
 
+  /**
+   * Memory inboxes (memory_note): the grants table names each agent's inbox task, and only the tasks bridge's memory_note
+   * writes there. Every board tool an agent calls on a named task refuses one, before any other check. Read fresh.
+   */
+  async function refuseMemoryInbox(...refs: string[]) {
+    let inboxes: Set<string>;
+    try {
+      const agents = JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8"))?.agents ?? {};
+      inboxes = new Set(Object.values(agents as Record<string, { memory_inbox?: string }>).flatMap((g) => (g.memory_inbox ? [g.memory_inbox] : [])));
+    } catch {
+      return;
+    }
+    if (!inboxes.size) return;
+    // A malformed reference is left to the route's own check.
+    for (const ref of refs.filter((r) => REF.test(r))) {
+      const id = /^[0-9a-f-]{36}$/i.test(ref) ? ref : (await pc.issue(ref)).id;
+      if (inboxes.has(id)) throw new HttpError(403, "that task is a memory inbox; only memory_note writes there");
+    }
+  }
+
   /** A decision taken: board-applied actions run now (in the background); the runner claims its own on its next poll. */
   async function decided(r: ReturnType<Store["approvals"]["decide"]>, via: string) {
     if (!r.ok) throw new HttpError(409, r.reason);
@@ -801,6 +821,7 @@ export function createApp(opts: AppOptions): Server {
           if (!source) throw new Refused("refused: that comment is not on your open `chat` task");
           const words = relayableWords(source.comment, ctx.me);
           if (!REF.test(target)) throw new Refused("refused: target must be a task identifier");
+          await refuseMemoryInbox(target);
           const dest = await pc.issue(target).catch(() => undefined);
           const agent = dest && ctx.assignees.find((a) => a.key === dest.assigneeAgentId);
           if (!dest || !agent || dest.assigneeAgentId === cos.id) throw new Refused("refused: target must be a task assigned to an engineer");
@@ -990,7 +1011,11 @@ export function createApp(opts: AppOptions): Server {
       method: "POST",
       path: /^\/internal\/grades$/,
       handle: async (_m, body, _u, req) => {
-        const agent = await requireAgentTool(req, "task_delegate").catch(() => requireAgentTool(req, "task_propose_rule"));
+        // Any tool that hands a task to an agent files its rubric: task_delegate, task_create with an assignee, Engineer sub-tasks.
+        const filers = ["task_delegate", "task_propose_rule", "task_create", "task_create_engineer_task"];
+        const agent = await requireAgent(pc, String(req.headers["x-agent-key"] ?? ""), (g) => (g.tools?.paperclip_tasks ?? []).some((t) => filers.includes(t)), `only an agent granted one of ${filers.join(", ")} may file a rubric`).catch((err) => {
+          throw err instanceof Refused ? new HttpError(403, err.message) : err;
+        });
         const b = parse(FileGradeSchema, body);
         // The grader reads only the task's own PRs; a ref naming another org's repo is refused here too.
         if (b.deliverable.kind === "pr" && !prRefAllowed(b.deliverable.ref)) throw new HttpError(400, "deliverable.ref: a repo or PR in the agents org or the product repo, or empty for the task's own PRs");
@@ -1192,9 +1217,9 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     // Board changes are the Research Assistant's (board-writer), through the tasks bridge with its own credential.
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), schedule(decodeURIComponent(m[1]!), body)) },
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), recurringChange(decodeURIComponent(m[1]!), body)) },
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), merge(decodeURIComponent(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), schedule(decodeURIComponent(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), recurringChange(decodeURIComponent(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!), parse(MergeSchema, body).into), merge(decodeURIComponent(m[1]!), body)) },
     {
       method: "POST",
       path: /^\/internal\/recurring\/claim$/,
@@ -1224,6 +1249,7 @@ export function createApp(opts: AppOptions): Server {
       // The runner (an Engineer's `aidenhq pass`) or the Research Assistant through the tasks bridge.
       handle: async (m, body, _u, req) => {
         if (!runnerKeyed(req)) await requireAgentTool(req, "task_pass_on", "board-writer");
+        await refuseMemoryInbox(decodeURIComponent(m[1]!));
         const { comment, to, by } = parse(PassSchema, body);
         const { ctx, issue } = await ownIssue(decodeURIComponent(m[1]!));
         const task = await userTaskOf(issue, ctx);

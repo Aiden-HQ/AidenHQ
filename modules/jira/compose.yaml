@@ -13,6 +13,8 @@ services:
       JIRA_URL: "${settings.jira_url}"
       ATLASSIAN_MCP_URL: "${settings.atlassian_mcp_url}"
       JIRA_STATE_DIR: /state
+      HISTORY_PROJECTS: "${settings.history_projects}"
+      HISTORY_DAYS: "${settings.history_days}"
       MCP_TOKEN_FILE: /run/secrets/jira_mcp_token
       # The board's sign-in endpoints: state, and starting or finishing a sign-in.
       JIRA_AUTH_TOKEN_FILE: /run/secrets/jira_auth_token

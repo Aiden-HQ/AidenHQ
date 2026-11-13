@@ -2,10 +2,11 @@
 // The 7-day rule for npm (wave 3 item 17): every package-lock.json entry a change adds or alters, transitive ones
 // included, must have been published at least 7 days ago, unless it is an owner-approved security fix listed in
 // .github/supply-chain-exceptions.yaml, read from the base ref. Unchanged entries are never checked. Any lookup error fails: never pass on error.
+// No dependencies (a byte-identical copy runs in app repos' CI, from the app CI template); everything else is pins.mjs's.
 // Usage: node scripts/supply-chain/npm-age.mjs <base-ref> <head-ref>   (GITHUB_TOKEN for the advisory lookups)
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import YAML from "yaml";
+import { readExceptions } from "./best-version.mjs";
 
 export const MIN_AGE_MS = 7 * 24 * 3600 * 1000;
 
@@ -123,7 +124,8 @@ async function main() {
   // Exceptions come from the base commit: a change cannot approve its own exception; it lands in a PR of its own first.
   let exText = "";
   try { exText = git("show", `${base}:.github/supply-chain-exceptions.yaml`); } catch { /* none yet */ }
-  const exceptions = YAML.parse(exText)?.exceptions || [];
+  // npm's own entries only: a docker or apt entry named like an npm package must not clear it.
+  const exceptions = readExceptions(exText).filter((e) => (e.ecosystem || "npm") === "npm");
   const problems = await check({ changes, exceptions, getJson: getJsonWithRetry });
   console.log(`checked ${new Set(changes.map((c) => `${c.name}@${c.version}`)).size} changed lockfile entries in ${files.length} lockfiles`);
   if (problems.length) { console.error(problems.join("\n")); process.exit(1); }

@@ -69,8 +69,9 @@ export function computersConfig(paperclip, productDir) {
   for (const [name, c] of Object.entries(paperclip.mcp_servers)) {
     connections[name] = c.url
       ? { url: c.url, tool_timeout_sec: c.tool_timeout_sec ?? 300, ...(c.bearer_token_env_var ? { bearer_secret: c.bearer_token_env_var.replace(/^AIDENHQ_/, "").toLowerCase() } : {}) }
-      // stdio servers run inside the box (paperclip_tasks, through Paperclip's bridge); host-only tokens never go in.
-      : { command: c.command, args: c.args ?? [], env_vars: (c.env_vars ?? []).filter((v) => !/^AIDENHQ_/.test(v)), tool_timeout_sec: c.tool_timeout_sec ?? 300 };
+      // stdio servers run inside the box (paperclip_tasks, through Paperclip's bridge); host-only tokens never go in. The run's
+      // own token does: the tasks bridge's completion gate reaches the board through the launcher's gateway with it.
+      : { command: c.command, args: c.args ?? [], env_vars: [...(c.env_vars ?? []).filter((v) => !/^AIDENHQ_/.test(v)), RUN_TOKEN_ENV], tool_timeout_sec: c.tool_timeout_sec ?? 300 };
   }
   // agents_org: the only org a box's repo-checkout may name (the launcher's POST /repo).
   return { images: imageTags(productDir, used), connections, ...(paperclip.github_agents_org ? { agents_org: paperclip.github_agents_org } : {}) };

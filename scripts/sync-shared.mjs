@@ -32,6 +32,10 @@ export const SHARED = {
     "modules/security/scanner/src/source-store.ts",
   ],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
+  // The supply-chain checks and version picker, for app repos (the app CI template is copied into each as it is).
+  "scripts/supply-chain/best-version.mjs": ["modules/core/templates/ci/.github/supply-chain/best-version.mjs"],
+  "scripts/supply-chain/pins.mjs": ["modules/core/templates/ci/.github/supply-chain/pins.mjs"],
+  "scripts/supply-chain/npm-age.mjs": ["modules/core/templates/ci/.github/supply-chain/npm-age.mjs"],
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

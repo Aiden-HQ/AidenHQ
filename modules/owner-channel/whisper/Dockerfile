@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.28@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 
 # Rebuild of the upstream v1.10.0 image on patched bases: current python:3.12 (3.12.16),
 # Debian bookworm security updates, static ffmpeg 8.1 and refreshed Python dependencies.
@@ -18,7 +18,7 @@ RUN apt-get update \
 
 ENV POETRY_VENV=/app/.venv
 RUN python3 -m venv "$POETRY_VENV" \
- && "$POETRY_VENV/bin/pip" install -U pip setuptools \
+ && "$POETRY_VENV/bin/pip" install pip==26.3 setuptools==84.0.0 \
  && "$POETRY_VENV/bin/pip" install poetry==2.1.3
 ENV PATH="${PATH}:${POETRY_VENV}/bin"
 
@@ -33,8 +33,8 @@ COPY --from=swagger-ui /usr/share/nginx/html/swagger-ui-bundle.js swagger-ui-ass
 
 RUN poetry config virtualenvs.in-project true \
  && poetry install --extras cpu \
- && "$POETRY_VENV/bin/pip" install -U "pillow>=13.0.0" "certifi>=2026.10.18" "nltk>=3.10.3" \
- && "$POETRY_VENV/bin/pip" install --no-deps -U "av>=19.0.2"
+ && "$POETRY_VENV/bin/pip" install pillow==13.0.0 certifi==2026.10.23 nltk==3.10.4 \
+ && "$POETRY_VENV/bin/pip" install --no-deps av==19.0.2
 
 EXPOSE 9000
 

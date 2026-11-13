@@ -73,10 +73,18 @@ docs use neutral examples (`acme`, `acme-agents`, `alice`, `example.com`, `<tail
 ## Supply chain
 
 Supply chain: unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version published less than 7 days ago. Pin versions, and state the release date of any image or action you bump.
-Dependabot waits 7 days before proposing a version, and CI fails a `package-lock.json` change that adds or alters an entry
-under 7 days old. A security fix is the one exception: add `{package, version, advisory, reason}` to
-`.github/supply-chain-exceptions.yaml`; CI checks the advisory patches that version, and the owner's review of the file
-is the approval. CI also scans new commits for secrets (gitleaks); fake values in tests go in `.gitleaks.toml` by exact
+Pin everything: lockfiles, images by digest (`name:tag@sha256:…`, the tag kept for reading), GitHub Actions by commit
+SHA with the tag in a comment, apt packages from vendor repos as `name=version` (held), `npm i -g name@1.2.3`,
+`pip install name==1.2.3`, downloads by checksum, never `curl … | sh`. Pick a version with
+`node scripts/supply-chain/best-version.mjs <npm|pypi|docker|github-action|github-release|apt|apt-gvisor> <name>`: the
+newest one 7+ days old (or the security fix, below), with the digest or SHA to pin.
+Dependabot waits 7 days before proposing a version. CI (`scripts/supply-chain/npm-age.mjs` and `pins.mjs`) fails anything
+unpinned, and any lockfile entry, image, action, apt or global package a change adds or alters that is under 7 days old.
+Images are dated by the registry's own record (Docker Hub's push time, ghcr.io's GitHub Packages publish time), never by
+the image's `created` field, which its author sets; an image no record dates fails. A security
+fix is the one exception: add `{ecosystem, package, version, advisory, reason}` to `.github/supply-chain-exceptions.yaml`
+in a PR of its own (CI reads it from the base); for npm, CI checks the advisory patches that version; the owner's review
+of the file is the approval. CI also scans new commits for secrets (gitleaks); fake values in tests go in `.gitleaks.toml` by exact
 value.
 
 ## Questions and bugs
