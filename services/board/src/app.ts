@@ -1180,7 +1180,7 @@ export function createApp(opts: AppOptions): Server {
         const owner = Boolean(opts.decideKey && keyMatches(req.headers["x-owner-key"], opts.decideKey));
         const watcher = !owner && Boolean(opts.watcherKey && keyMatches(req.headers["x-owner-key"], opts.watcherKey));
         if (!owner && !watcher) throw new HttpError(403, "only the owner's channel decides");
-        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/).optional(), task: z.string().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/).optional(), batch: z.string().regex(/^B[0-9a-f]{8}$/).optional(), decision: z.enum(["approve", "reject"]), via: z.enum(["telegram", "slack"]).optional() }).strict(), body);
+        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/).optional(), task: z.string().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/).optional(), target: z.string().trim().min(1).max(500).optional(), batch: z.string().regex(/^B[0-9a-f]{8}$/).optional(), decision: z.enum(["approve", "reject"]), via: z.enum(["telegram", "slack"]).optional() }).strict(), body);
         if ([b.id, b.task, b.batch].filter(Boolean).length !== 1) throw new HttpError(400, "id, task or batch");
         const by = watcher ? "watcher" : b.id || b.batch ? "owner:telegram" : "owner:reply";
         if (b.batch) {
@@ -1190,7 +1190,7 @@ export function createApp(opts: AppOptions): Server {
           if (!items) throw new HttpError(409, "this list was already used or is over a day old; tap the cards one by one");
           return decidedMany(store.approvals.decideMany(items, b.decision, by), by);
         }
-        return decided(b.id ? store.approvals.decide(b.id, b.decision, by) : store.approvals.decideByReply(b.task!, b.decision, by), by);
+        return decided(b.id ? store.approvals.decide(b.id, b.decision, by) : store.approvals.decideByReply(b.task!, b.decision, by, new Date(), b.target), by);
       },
     },
     {
@@ -1623,11 +1623,12 @@ export function createApp(opts: AppOptions): Server {
         const { ctx, issue } = await editableIssue(decodeURIComponent(m[1]!));
         const { body: text, answer } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional() }).strict(), body);
         // A tapped answer button (agent-written label) is only ever a message, never a decision.
-        // An exact typed reply ("apply WOR-184") decides the one open approval on that task; it isn't posted (no agent wakes).
+        // An exact typed reply decides an open approval on its task (or the one its card id or target names); it isn't posted.
         const reply = parseReply(text);
-        const replyBy = reply && !answer && store.approvals.pendingOn(reply.ref).length ? replyStamp() : null;
+        const replyRef = reply ? reply.ref ?? issue.identifier : "";
+        const replyBy = reply && !answer && (reply.ref || reply.target || store.approvals.pendingOn(replyRef).length) ? replyStamp() : null;
         if (reply && replyBy) {
-          const a = await decided(store.approvals.decideByReply(reply.ref, reply.decision, replyBy), replyBy);
+          const a = await decided(store.approvals.decideByReply(replyRef, reply.decision, replyBy, new Date(), reply.target), replyBy);
           return { ...(await issueView(issue.id)), approval: a };
         }
         // @-mentions: the agents named, other than the one this chat is with, get the message on their part.

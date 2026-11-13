@@ -55,6 +55,25 @@ export interface Request {
 /** A tier rule as a reason code: kebab-case words only (classifier output, never agent text); anything else is dropped. */
 const ruleCode = (rule: string | null | undefined) => (rule && TIER_RULE.test(rule) ? rule : null);
 
+/**
+ * The target a request acts on, apart from the commit or diff it carries: a merge's PR URLs, a push's or PR's repos and
+ * branches, an apply's repo and branch. Two requests replace each other only when the action and this target are both
+ * equal, so a card for one PR never expires a card for another. A card naming several targets replaces only a card naming
+ * exactly the same set (order aside): there is no partial-overlap rule. Anything without a known target shape falls back
+ * to its stored target text.
+ */
+function targetKey(action: Action, target: string, args: unknown): string {
+  const a = (args ?? {}) as any;
+  if (action === "merge" && Array.isArray(a.prs) && a.prs.length) {
+    return `${action}:${a.prs.map((p: any) => String(p?.url ?? "").toLowerCase()).sort().join(" ")}`;
+  }
+  if ((action === "push" || action === "pr") && Array.isArray(a.only) && a.only.length) {
+    return `${action}:${a.only.map((b: any) => `${String(b?.repo ?? "").toLowerCase()} ${String(b?.branch ?? "")}`).sort().join(" ")}`;
+  }
+  if (action === "apply" && a.repo && a.branch) return `${action}:${String(a.repo).toLowerCase()} ${a.branch}`;
+  return `${action}:${target}`;
+}
+
 /** The stable reason for a request whose change is already satisfied: no card is filed, the task gets the evidence. */
 export const ALREADY_APPLIED = "already_applied";
 
@@ -79,7 +98,7 @@ export interface Approval extends Omit<Request, "tier" | "reason" | "requesterId
   outcomeText: string | null;
   createdAt: string;
   expiresAt: string;
-  /** It replaced an open request on the same task and action: a typed reply can't approve it, only a tap on its card. */
+  /** It replaced an open request on the same task, action and target: a typed reply can't approve it, only a tap on its card. */
   replaced: boolean;
 }
 
@@ -243,10 +262,42 @@ export function shown(a: Approval, now = Date.now()): ShownState {
   return a.state;
 }
 
-/** An exact typed reply: "apply WOR-184", "approve WOR-184" or "reject WOR-184" (any case, one trailing . or !). */
-export function parseReply(text: string): { decision: "approve" | "reject"; ref: string } | undefined {
-  const m = /^\s*(apply|approve|reject)\s+([A-Za-z][A-Za-z0-9]*-\d+)\s*[.!]?\s*$/i.exec(text);
-  return m ? { decision: m[1]!.toLowerCase() === "reject" ? "reject" : "approve", ref: m[2]!.toUpperCase() } : undefined;
+/** A typed reply: a decision, optionally followed by the task, a card id, or a target (PR link/number, repo+branch). */
+export interface ParsedReply {
+  decision: "approve" | "reject";
+  /** The task the reply names, when it names one. */
+  ref?: string;
+  /** The card id or target the reply names, when it names one. */
+  target?: string;
+}
+
+/** A target a reply may name instead of a task: a card id, a PR link or number, or a repo+branch. */
+const replyTarget = (text: string): string | undefined => {
+  const t = text.trim();
+  if (/^A[0-9a-f]{8}$/i.test(t)) return t;
+  if (/^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/i.test(t)) return t;
+  if (/^(?:pr\s*)?#?\d+$/i.test(t)) return t;
+  if (/^[\w.-]+\/[\w.-]+#\d+$/i.test(t)) return t;
+  if (/^[\w.-]+\/[\w.-]+(?:\s+\S.*)?$/i.test(t)) return t;
+  return undefined;
+};
+
+/** An exact typed reply: "approve", "approve WOR-184", "approve A1b2c3d4", "approve PR #10" or a PR link (any case, one trailing . or !). */
+export function parseReply(text: string): ParsedReply | undefined {
+  const m = /^\s*(apply|approve|reject)\b(.*?)[.!]?\s*$/i.exec(text);
+  if (!m) return undefined;
+  const decision = m[1]!.toLowerCase() === "reject" ? "reject" : "approve";
+  const rest = m[2]!.trim();
+  if (!rest) return { decision };
+  const task = /^([A-Za-z][A-Za-z0-9]*-\d+)\b(.*)$/.exec(rest);
+  if (task) {
+    const after = task[2]!.trim();
+    if (!after) return { decision, ref: task[1]!.toUpperCase() };
+    const target = replyTarget(after);
+    return target ? { decision, ref: task[1]!.toUpperCase(), target } : undefined;
+  }
+  const target = replyTarget(rest);
+  return target ? { decision, target } : undefined;
 }
 
 interface Row {
@@ -337,6 +388,33 @@ export function batchesOn(grantsFile = process.env.AIDENHQ_GRANTS_FILE): boolean
   }
 }
 
+/** How a candidate card is named in a reply: its id, action and distinguishing target. */
+const describeCard = (a: Approval) => `${a.id} (${a.action}) ${a.target || "no target"}`;
+
+/**
+ * Whether a typed selector names this card: its id, one of a merge's PR URLs or numbers, or its target (repo and branch).
+ * A PR selector only matches a merge card, so "#10" can't match an unrelated target.
+ */
+function selectedBy(a: Approval, selector: string): boolean {
+  const s = selector.trim().toLowerCase();
+  if (!s) return false;
+  if (/^a[0-9a-f]{8}$/i.test(s)) return a.id.toLowerCase() === s;
+  const url = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)$/i.exec(s);
+  const repoPr = /^([\w.-]+\/[\w.-]+)#(\d+)$/i.exec(s);
+  const pr = /^(?:pr\s*)?#?\s*(\d+)$/i.exec(s);
+  if (url || repoPr || pr) {
+    if (a.action !== "merge") return false;
+    const prs = (a.args as any)?.prs;
+    if (Array.isArray(prs) && prs.length) {
+      const repo = url ? `${url[1]}/${url[2]}`.toLowerCase() : repoPr?.[1]?.toLowerCase();
+      const number = Number(url?.[3] ?? repoPr?.[2] ?? pr?.[1]);
+      return prs.some((p: any) => Number(p?.number) === number && (!repo || String(p?.repo ?? "").toLowerCase() === repo) && (!url || String(p?.url ?? "").toLowerCase() === s));
+    }
+  }
+  const target = a.target.toLowerCase();
+  return target === s || target.includes(s);
+}
+
 export class Approvals {
   constructor(
     private db: DatabaseSync,
@@ -377,7 +455,9 @@ export class Approvals {
 
   /**
    * File a request. The same request (task, action, digest) still open returns the existing record; a changed one replaces
-   * the open record for that task and action (a changed request needs a new approval), so a typed reply is never ambiguous.
+   * the open record for that task, action and target (a changed request needs a new approval), so a typed reply is never
+   * ambiguous. A request for a different target (another PR or branch) is a separate card and never expires one for that
+   * target. A card naming several targets replaces only a card naming exactly the same set.
    */
   request(req: Request, now = new Date()): Approval {
     const iso = now.toISOString();
@@ -389,7 +469,9 @@ export class Approvals {
         this.db.exec("COMMIT");
         return same;
       }
-      for (const a of open) this.db.prepare("UPDATE approvals SET state = 'expired', outcome_text = 'replaced by a newer request' WHERE id = ?").run(a.id);
+      const key = targetKey(req.action, req.target, req.args);
+      const replacing = open.filter((a) => targetKey(a.action, a.target, a.args) === key);
+      for (const a of replacing) this.db.prepare("UPDATE approvals SET state = 'expired', outcome_text = 'replaced by a newer request' WHERE id = ?").run(a.id);
       const id = `A${randomBytes(4).toString("hex")}`;
       const sticky = req.tier === 1 && this.rejectedBefore(req.issueId, req.action);
       const tier = sticky ? 2 : (req.tier ?? 2);
@@ -397,7 +479,7 @@ export class Approvals {
       const code = sticky ? "sticky" : ruleCode(req.reasonCode);
       this.db
         .prepare("INSERT INTO approvals (id, issue_id, identifier, action, target, digest, args, sentence, reads, changes, cost, details, requested_by, state, created_at, expires_at, replaced, tier, reason, requester_id, base_tier, reason_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, req.issueId, req.identifier, req.action, req.target, req.digest, JSON.stringify(req.args ?? null), req.sentence, req.reads, req.changes, req.cost, req.details, req.requestedBy, iso, new Date(now.getTime() + TTL_MS).toISOString(), open.length ? 1 : 0, tier, reason.slice(0, 1000), req.requesterId ?? null, req.baseTier ?? null, code);
+        .run(id, req.issueId, req.identifier, req.action, req.target, req.digest, JSON.stringify(req.args ?? null), req.sentence, req.reads, req.changes, req.cost, req.details, req.requestedBy, iso, new Date(now.getTime() + TTL_MS).toISOString(), replacing.length ? 1 : 0, tier, reason.slice(0, 1000), req.requesterId ?? null, req.baseTier ?? null, code);
       this.db.exec("COMMIT");
       this.changed(req.issueId);
       return this.get(id)!;
@@ -543,15 +625,28 @@ export class Approvals {
   }
 
   /**
-   * An exact typed reply ("apply WOR-184") decides the one pending record on that task. It approves only a request the owner
-   * could have seen as it is: one that replaced an earlier request on the task (the agent changed it after a card went out)
-   * needs a tap on its own card, which carries its id. Rejecting is always allowed.
+   * A typed reply decides an open record on a task. Without a target it acts only when exactly one is open; with a card id
+   * or target (PR link/number, repo+branch) it acts on the one that matches, even when several are open. Several without a
+   * target, or a selector that matches none or several, decides nothing and says which cards are open. It approves only a
+   * request the owner could have seen as it is: one that replaced an earlier request on the task (the agent changed it
+   * after a card went out) needs a tap on its own card, which carries its id. Rejecting is always allowed.
    */
-  decideByReply(ref: string, decision: "approve" | "reject", by: string, now = new Date()): { ok: true; approval: Approval } | { ok: false; reason: string } {
-    const open = this.pendingOn(ref, now.getTime());
-    if (!open.length) return { ok: false, reason: `nothing on ${ref.toUpperCase()} is waiting for approval` };
-    if (open.length > 1) return { ok: false, reason: `several approvals wait on ${ref.toUpperCase()}; tap the one you mean on the board` };
-    const a = open[0]!;
+  decideByReply(ref: string, decision: "approve" | "reject", by: string, nowOrTarget: Date | string = new Date(), target?: string): { ok: true; approval: Approval } | { ok: false; reason: string } {
+    const now = nowOrTarget instanceof Date ? nowOrTarget : new Date();
+    const pick = (typeof nowOrTarget === "string" ? nowOrTarget : target)?.trim();
+    const asCard = /^A[0-9a-f]{8}$/i.test(ref);
+    const only = asCard ? this.get(ref) : undefined;
+    const open = asCard
+      ? only && only.state === "pending" && Date.parse(only.expiresAt) > now.getTime()
+        ? [only]
+        : []
+      : this.pendingOn(ref, now.getTime());
+    const label = asCard ? only?.identifier ?? ref : ref.toUpperCase();
+    if (!open.length) return { ok: false, reason: asCard ? `no open approval ${ref}` : `nothing on ${label} is waiting for approval` };
+    const candidates = pick ? open.filter((a) => selectedBy(a, pick)) : open;
+    if (!candidates.length) return { ok: false, reason: `no open approval on ${label} matches "${pick}"; open: ${open.map(describeCard).join("; ")}` };
+    if (candidates.length > 1) return { ok: false, reason: `several approvals wait on ${label}; name one by card id or target: ${candidates.map(describeCard).join("; ")}` };
+    const a = candidates[0]!;
     if (decision === "approve" && a.replaced) return { ok: false, reason: `the request on ${a.identifier} changed after it was first shown; look at the new card and tap Approve there` };
     return this.decide(a.id, decision, by, now);
   }

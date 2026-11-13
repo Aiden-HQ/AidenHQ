@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { completionGate } from "../src/grades.js";
+import { GRADE_RETRY_MS, completionGate } from "../src/grades.js";
 import { Store } from "../src/store.js";
 
 describe("graded done", () => {
@@ -27,6 +27,28 @@ describe("graded done", () => {
     expect(grades.resubmit("t", "sha4")!.state).toBe("pending");
     expect(grades.record("t", { version: "sha4", outcome: "satisfied", model: "glm", criteria: [] }).state).toBe("satisfied");
     expect(completionGate(grades, "t", "finish_merges", { done: true })).toEqual({ pass: true });
+  });
+
+  it("a needs revision grade is never closed done, and its unmet criteria stay on the task", () => {
+    const { grades } = new Store(":memory:");
+    grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
+    completionGate(grades, "t", "task_finish");
+    const rejected = grades.record("t", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "still a draft" }] });
+    expect(rejected.state).toBe("needs_revision");
+    expect(completionGate(grades, "t", "finish_turn")).toEqual({ pass: false, state: "needs_revision", label: "grading" });
+    expect(grades.get("t")!.verdicts.at(-1)).toMatchObject({ verdict: "needs_revision", criteria: [{ id: "1", met: "no", evidence: "still a draft" }] });
+  });
+
+  it("a grader pass with no usable criteria is retried, not escalated and never a verdict", () => {
+    const { grades } = new Store(":memory:");
+    grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
+    completionGate(grades, "t", "task_finish");
+    const failed = grades.record("t", { version: "sha1", outcome: "grading_failed", model: "glm", criteria: [] });
+    expect(failed.state).toBe("grading_failed");
+    expect(grades.escalated()).toEqual([]);
+    expect(grades.due()).toEqual([]);
+    expect(grades.due(Date.now() + GRADE_RETRY_MS + 1).map((g) => g.issueId)).toEqual(["t"]);
+    expect(completionGate(grades, "t", "finish_turn")).toEqual({ pass: false, state: "grading_failed", label: "grading" });
   });
 
   it("escalates a rejected version handed in again unchanged, and passes everything with grading off", () => {

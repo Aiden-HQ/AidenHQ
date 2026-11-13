@@ -4,6 +4,11 @@ import { Store } from "../src/store.js";
 
 const req = (over: Partial<Request> = {}): Request => ({ issueId: "i1", identifier: "WOR-184", action: "apply", target: "acme/instance", digest: "a".repeat(40), args: { sha: "a".repeat(40) }, sentence: "Apply", reads: "", changes: "instance.yaml", cost: "none", details: "diff", requestedBy: "runner", ...over });
 
+const mergeCard = (numbers: number[], over: Partial<Request> = {}): Request => {
+  const prs = numbers.map((number) => ({ repo: "acme/app", number, url: `https://github.com/acme/app/pull/${number}` }));
+  return { issueId: "i1", identifier: "WOR-184", action: "merge", args: { prs }, requestedBy: "runner", ...card("merge", { prs }), ...over };
+};
+
 describe("raise_cap", () => {
   it("is the owner's, doubles only, and is never the runner's to claim", () => {
     const { approvals } = new Store(":memory:");
@@ -47,6 +52,35 @@ describe("approval records", () => {
     expect(approvals.pendingOn("wor-184").map((x) => x.id)).toEqual([c.id]);
   });
 
+  it("a merge request for another PR never expires an approved card for a different PR", () => {
+    const { approvals } = new Store(":memory:");
+    const pr10 = approvals.request(mergeCard([10], { tier: 1, reason: "product-merge" }));
+    expect(approvals.decide(pr10.id, "approve", "reviewer:model").ok).toBe(true);
+    const pr9 = approvals.request(mergeCard([9], { tier: 1, reason: "product-merge" }));
+    expect(approvals.get(pr10.id)).toMatchObject({ state: "approved" }); // not expired by the other PR's card
+    expect(approvals.get(pr9.id)).toMatchObject({ state: "pending", replaced: false });
+    expect(approvals.claim(pr10.id)).toBeDefined(); // still claimable and runs on its own
+  });
+
+  it("a merge request for the same PR still replaces the earlier card", () => {
+    const { approvals } = new Store(":memory:");
+    const first = approvals.request(mergeCard([9]));
+    const second = approvals.request(mergeCard([9], { digest: "b".repeat(40) }));
+    expect(approvals.get(first.id)).toMatchObject({ state: "expired", outcomeText: "replaced by a newer request" });
+    expect(approvals.get(second.id)).toMatchObject({ state: "pending", replaced: true });
+  });
+
+  it("a card naming several targets replaces only a card naming exactly the same set", () => {
+    const { approvals } = new Store(":memory:");
+    const both = approvals.request(mergeCard([9, 10]));
+    const nine = approvals.request(mergeCard([9]));
+    expect(approvals.get(both.id)).toMatchObject({ state: "pending" });
+    expect(approvals.get(nine.id)).toMatchObject({ state: "pending", replaced: false });
+    const again = approvals.request(mergeCard([10, 9], { digest: "d".repeat(40) }));
+    expect(approvals.get(both.id)).toMatchObject({ state: "expired", outcomeText: "replaced by a newer request" });
+    expect(approvals.get(again.id)).toMatchObject({ state: "pending", replaced: true });
+  });
+
   it("a typed reply approves only the request the owner was shown: never one that replaced it since (tap the new card)", () => {
     const { approvals } = new Store(":memory:");
     const seen = approvals.request(req());
@@ -59,6 +93,45 @@ describe("approval records", () => {
     const fresh = approvals.request(req({ issueId: "i9", identifier: "WOR-9" }));
     expect(approvals.decideByReply("wor-9", "approve", "telegram")).toMatchObject({ ok: true, approval: { id: fresh.id, state: "approved" } });
     expect(approvals.decideByReply("WOR-9", "approve", "telegram").ok).toBe(false); // nothing pending any more
+  });
+
+  it("a bare typed reply asks which card when two merge cards for different PRs are open", () => {
+    const { approvals } = new Store(":memory:");
+    const pr10 = approvals.request(mergeCard([10]));
+    const pr9 = approvals.request(mergeCard([9]));
+    const r = approvals.decideByReply("WOR-184", "approve", "telegram");
+    expect(r.ok).toBe(false);
+    const reason = r.ok ? "" : r.reason;
+    expect(reason).toContain(pr10.id);
+    expect(reason).toContain(pr9.id);
+    expect(reason).toContain("https://github.com/acme/app/pull/10");
+    expect(reason).toContain("https://github.com/acme/app/pull/9");
+    expect(approvals.get(pr10.id)!.state).toBe("pending");
+    expect(approvals.get(pr9.id)!.state).toBe("pending");
+  });
+
+  it("a reply naming one PR decides only that card when several are open", () => {
+    const { approvals } = new Store(":memory:");
+    const pr10 = approvals.request(mergeCard([10]));
+    const pr9 = approvals.request(mergeCard([9]));
+    expect(approvals.decideByReply("WOR-184", "approve", "telegram", "PR #10")).toMatchObject({ ok: true, approval: { id: pr10.id, state: "approved" } });
+    expect(approvals.get(pr9.id)!.state).toBe("pending");
+    expect(approvals.decideByReply("WOR-184", "reject", "telegram", "https://github.com/acme/app/pull/9")).toMatchObject({ ok: true, approval: { id: pr9.id, state: "rejected" } });
+  });
+
+  it("a bare reply still decides the only open card", () => {
+    const { approvals } = new Store(":memory:");
+    const pr10 = approvals.request(mergeCard([10]));
+    expect(approvals.decideByReply("WOR-184", "approve", "telegram")).toMatchObject({ ok: true, approval: { id: pr10.id, state: "approved" } });
+  });
+
+  it("a reply naming a card id that doesn't exist changes nothing and says so", () => {
+    const { approvals } = new Store(":memory:");
+    const pr10 = approvals.request(mergeCard([10]));
+    const r = approvals.decideByReply("WOR-184", "approve", "telegram", "Adeadbeef");
+    expect(r.ok).toBe(false);
+    expect(r.ok ? "" : r.reason).toContain("Adeadbeef");
+    expect(approvals.get(pr10.id)!.state).toBe("pending");
   });
 
   it("expires after 7 days; used with no outcome shows as unknown", () => {
@@ -75,10 +148,15 @@ describe("approval records", () => {
   });
 
 
-  it("parses only an exact typed reply", () => {
+  it("parses a task, card id or target, never a sentence", () => {
     expect(parseReply("apply WOR-184")).toEqual({ decision: "approve", ref: "WOR-184" });
     expect(parseReply(" Approve wor-7. ")).toEqual({ decision: "approve", ref: "WOR-7" });
     expect(parseReply("reject WOR-9")).toEqual({ decision: "reject", ref: "WOR-9" });
+    expect(parseReply("approve")).toEqual({ decision: "approve" });
+    expect(parseReply("approve A1b2c3d4e")).toEqual({ decision: "approve", target: "A1b2c3d4e" });
+    expect(parseReply("approve PR #10")).toEqual({ decision: "approve", target: "PR #10" });
+    expect(parseReply("approve https://github.com/acme/app/pull/10")).toEqual({ decision: "approve", target: "https://github.com/acme/app/pull/10" });
+    expect(parseReply("approve WOR-184 PR #10")).toEqual({ decision: "approve", ref: "WOR-184", target: "PR #10" });
     expect(parseReply("please apply WOR-184")).toBeUndefined();
     expect(parseReply("apply WOR-184 and WOR-185")).toBeUndefined();
   });

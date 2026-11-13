@@ -9,9 +9,10 @@ import type { Events } from "./events.js";
 /**
  * open: filed with the delegation, the task not finished yet. pending: a completion path hit the gate, waiting for the
  * runner. awaiting_evidence: checks, a deploy or an approval still running. Then satisfied, needs_revision (back to the
- * assignee) or escalated (3 rejected versions, cannot_judge, or a grader error).
+ * assignee), grading_failed (the grader returned no usable criteria: retried in place, never the owner's) or escalated
+ * (3 rejected versions or cannot_judge).
  */
-export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "escalated";
+export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "escalated";
 export interface Deliverable {
   kind: "pr" | "app" | "apply" | "file" | "report";
   ref: string;
@@ -50,6 +51,8 @@ interface Row {
 
 /** Rejected versions before the owner decides (owner decision, wave 1). */
 export const MAX_LOOPS = 3;
+/** A grader pass that produced no usable verdict is retried this long after it, in place. */
+export const GRADE_RETRY_MS = 60_000;
 
 export const DeliverableSchema = z.object({ kind: z.enum(["pr", "app", "apply", "file", "report"]), ref: z.string().max(500).default("") }).strict();
 /** A delegation's rubric: 3-8 checkable criteria, or none (the grader then uses modules/core/rubrics/<kind>.md). */
@@ -65,7 +68,7 @@ export const GateSchema = z.object({ via: z.enum(["task_finish", "task_set_statu
 export const VerdictSchema = z
   .object({
     version: z.string().max(200),
-    outcome: z.enum(["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "error"]),
+    outcome: z.enum(["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "grading_failed", "error"]),
     model: z.string().max(100).default(""),
     criteria: z.array(z.object({ id: z.string().max(20), met: z.enum(["yes", "no", "unknown"]), evidence: z.string().max(1000) }).strict()).max(8).default([]),
   })
@@ -125,9 +128,12 @@ export class Grades {
     return { created: Number(r.changes) > 0, grade: this.get(issueId)! };
   }
 
-  /** The rows the runner grades: a completion path hit the gate, or the evidence was still coming. */
-  due(): Grade[] {
-    return (this.db.prepare("SELECT * FROM grades WHERE state IN ('pending', 'awaiting_evidence') ORDER BY updated_at").all() as unknown as Row[]).map(fromRow);
+  /** The rows the runner grades: a completion path hit the gate, the evidence was still coming, or the grader failed and is due a retry. */
+  due(now = Date.now()): Grade[] {
+    const retryBefore = new Date(now - GRADE_RETRY_MS).toISOString();
+    return (
+      this.db.prepare("SELECT * FROM grades WHERE state IN ('pending', 'awaiting_evidence') OR (state = 'grading_failed' AND updated_at <= ?) ORDER BY updated_at").all(retryBefore) as unknown as Row[]
+    ).map(fromRow);
   }
 
   /** Escalated rows, newest first: the owner channel tells the owner of each once. */
@@ -179,14 +185,16 @@ export class Grades {
   /**
    * One grading pass's outcome. A rejected version counts once (loops are distinct versions). A version rejected before and
    * handed in again unchanged, the MAX_LOOPS-th rejected version, cannot_judge and a grader error all escalate to the owner.
+   * A grader pass with no usable criteria (grading_failed) is retried, never counted as a verdict on the work.
    */
   record(issueId: string, v: z.infer<typeof VerdictSchema>): Grade {
     const g = this.get(issueId);
     if (!g) throw new Error("no grade for this task");
     if (v.outcome === "awaiting_evidence") return this.set(issueId, "awaiting_evidence", g.attempts, g.verdicts);
-    const verdict: Verdict = { at: new Date().toISOString(), version: v.version, model: v.model, verdict: v.outcome === "error" ? "cannot_judge" : v.outcome, criteria: v.criteria };
+    const verdict: Verdict = { at: new Date().toISOString(), version: v.version, model: v.model, verdict: ["error", "grading_failed"].includes(v.outcome) ? "cannot_judge" : (v.outcome as Verdict["verdict"]), criteria: v.criteria };
     const verdicts = [...g.verdicts, verdict].slice(-20);
     if (v.outcome === "satisfied") return this.set(issueId, "satisfied", g.attempts, verdicts);
+    if (v.outcome === "grading_failed") return this.set(issueId, "grading_failed", g.attempts, verdicts);
     if (v.outcome !== "needs_revision") return this.set(issueId, "escalated", g.attempts, verdicts);
     if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return this.set(issueId, "escalated", g.attempts, verdicts);
     const attempts = g.attempts + 1;
@@ -198,9 +206,9 @@ export class Grades {
 export type CompletionPath = z.infer<typeof GateSchema>["via"];
 /**
  * pass: the path may close the task as it would have. Otherwise the task goes to in_review with the `grading` label and the
- * row has this state (escalated: it waits for the owner).
+ * row has this state (escalated: it waits for the owner; grading_failed: the runner retries it).
  */
-export type GateResult = { pass: true } | { pass: false; state: "pending" | "awaiting_evidence" | "escalated"; label: "grading" };
+export type GateResult = { pass: true } | { pass: false; state: "pending" | "awaiting_evidence" | "needs_revision" | "grading_failed" | "escalated"; label: "grading" };
 
 /**
  * The completion gate, idempotent. A task without a rubric or with grading switched off passes, and so does a satisfied one
@@ -211,7 +219,12 @@ export type GateResult = { pass: true } | { pass: false; state: "pending" | "awa
 export function completionGate(grades: Grades, issueId: string, _via: CompletionPath, { done = false, on = gradingOn() }: { done?: boolean; on?: boolean } = {}): GateResult {
   const g = on ? grades.get(issueId) : undefined;
   if (!g || (g.state === "satisfied" && done)) return { pass: true };
-  if (g.state === "pending" || g.state === "awaiting_evidence") return { pass: false, state: g.state, label: "grading" };
+  if (g.state === "pending" || g.state === "awaiting_evidence" || g.state === "grading_failed") return { pass: false, state: g.state, label: "grading" };
+  if (g.state === "needs_revision") {
+    // Unmet criteria are never a close: wait for the runner to grade a new deliverable version.
+    grades.pend(issueId);
+    return { pass: false, state: "needs_revision", label: "grading" };
+  }
   if (g.state === "escalated") {
     grades.markResubmitted(issueId);
     return { pass: false, state: "escalated", label: "grading" };

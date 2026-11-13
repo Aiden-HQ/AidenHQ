@@ -87,7 +87,11 @@ ${Object.entries(data)
   return { system, user };
 }
 
-/** A usable answer, or undefined (a refusal, prose, a bad schema, or criteria that don't match the rubric). */
+/**
+ * A usable answer, or undefined (a refusal, prose, a bad schema, or criteria that don't match the rubric).
+ * Every rubric criterion must come back once, numbered 1..n, with its own non-empty evidence: a verdict built from
+ * corrupt ids or fragments has no assessable requirement, so it is not an answer at all.
+ */
 function answerOf(raw, n) {
   if (!raw || raw.refusal || !String(raw.content ?? "").trim()) return undefined;
   let v;
@@ -97,25 +101,37 @@ function answerOf(raw, n) {
     return undefined;
   }
   if (!v || !["satisfied", "needs_revision", "cannot_judge"].includes(v.verdict) || !Array.isArray(v.criteria)) return undefined;
-  const criteria = v.criteria
-    .filter((c) => c && ["yes", "no", "unknown"].includes(c.met))
-    .map((c) => ({ id: String(c.id ?? "").slice(0, 20), met: c.met, evidence: String(c.evidence ?? "").slice(0, 1000) }))
-    .slice(0, 8);
-  if (criteria.length !== n) return undefined;
+  if (v.criteria.length !== n) return undefined;
+  const seen = new Set();
+  const criteria = [];
+  for (const c of v.criteria) {
+    if (!c || !["yes", "no", "unknown"].includes(c.met)) return undefined;
+    const id = String(c.id ?? "").trim();
+    if (!/^\d+$/.test(id) || Number(id) < 1 || Number(id) > n || seen.has(id)) return undefined;
+    seen.add(id);
+    const evidence = String(c.evidence ?? "").trim();
+    if (!evidence) return undefined;
+    criteria.push({ id, met: c.met, evidence: evidence.slice(0, 1000) });
+  }
+  criteria.sort((a, b) => Number(a.id) - Number(b.id));
   // Satisfied means every criterion met, whatever the model concluded.
   const verdict = v.verdict === "satisfied" && criteria.some((c) => c.met !== "yes") ? "needs_revision" : v.verdict;
   return { verdict, criteria };
 }
 
 /**
- * The verdict on one deliverable version: { outcome: satisfied | needs_revision | cannot_judge | error, model, criteria }.
- * A refused or malformed answer is retried on the next model; a call error, or every model refusing, is an error (the board
- * escalates it to the owner).
+ * The verdict on one deliverable version: { outcome: satisfied | needs_revision | cannot_judge | grading_failed | error,
+ * model, criteria }. A refused or malformed answer is retried on the next model; a call error, or every model refusing, is
+ * an error (the board escalates it to the owner). An answer that came back but cannot be parsed into the rubric's criteria
+ * is a grading failure the board retries, never a verdict assembled from its fragments.
  */
 export async function grade({ rubric, deliverable, facts, data, request, authorModel = "", ask }) {
   const models = graderModels(authorModel);
   if (!models.length) return { outcome: "error", model: "", criteria: [], reason: "no grader model independent of the author's" };
+  if (!rubric.length) return { outcome: "grading_failed", model: "", criteria: [], reason: "the rubric has no criteria to grade" };
   const prompt = gradePrompt({ rubric, deliverable, facts, data, request });
+  let corrupt = false;
+  let corruptModel = "";
   for (const model of models) {
     let raw;
     try {
@@ -125,7 +141,12 @@ export async function grade({ rubric, deliverable, facts, data, request, authorM
     }
     const a = answerOf(raw, rubric.length);
     if (a) return { outcome: a.verdict, model, criteria: a.criteria };
+    if (raw && !raw.refusal && String(raw.content ?? "").trim()) {
+      corrupt = true;
+      corruptModel = model;
+    }
   }
+  if (corrupt) return { outcome: "grading_failed", model: corruptModel, criteria: [], reason: "the grader returned no usable criteria" };
   return { outcome: "error", model: models.at(-1), criteria: [], reason: "every grader model refused" };
 }
 
@@ -137,6 +158,8 @@ export function gradeNote(g, rubric, outcome, { version, reason } = {}) {
       ? "**Graded: done.** The work meets its rubric."
       : outcome === "needs_revision"
         ? "**Graded: needs revision.** Fix the criteria below, then finish the task again; the grader checks the new version."
-        : `**Graded: escalated to the owner** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). It waits for their decision: they close it to accept, or reopen it with what to change.`;
+        : outcome === "grading_failed"
+          ? `**Grading failed; retrying.** (${reason ?? g.reason ?? "the grader returned no usable criteria"}). No rubric verdict yet: the grader runs again shortly.`
+          : `**Graded: escalated to the owner** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). It waits for their decision: they close it to accept, or reopen it with what to change.`;
   return [head, lines.join("\n"), `_Grader: ${g.model || "none"}; version ${String(version ?? "").slice(0, 80) || "(none)"}. The grader's words, not the owner's._`, GRADER_MARKER].filter(Boolean).join("\n\n");
 }
