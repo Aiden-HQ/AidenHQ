@@ -60,6 +60,8 @@ apps-mcp (`services/apps-mcp/src/sources.ts`) gives agents three tools:
   real control. Rows are untrusted data.
 - `source_new(view, filter, limit)`: rows of a view newer than the caller's cursor, oldest first. Filters are code:
   channel ids, repos, projects (the column each view maps them to) and a full-text `q`. Baseline rows are skipped.
+  A page is at most `limit` rows (max 500) and at most 1 MB of row JSON, each row cut to 20 KB; a page ended early by
+  the size guard returns fewer rows with `capped: true`, and `more` stays true while rows remain.
   Rows younger than five seconds wait, so a transaction that took a lower `seq` but committed later is not missed.
 - `source_ack(view, cursor)`: advances the cursor to what `source_new` returned, after the rows were handled.
 

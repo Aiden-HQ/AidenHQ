@@ -51,6 +51,39 @@ it("source_new / source_ack: per-agent, per-filter cursor, filters as parameters
   await expect(sourceAck(d, "agent-a", "src_slack.messages", "1; DROP")).rejects.toThrow(/cursor/);
 });
 
+// Slack rows are large, so the old 200 KB result guard ended a limit=500 page after ~145 rows. source_new has its own
+// 1 MB budget now (still a guard), and a page it cuts reports `capped` so callers can tell it apart from a short view.
+it("source_new: honours limit up to 500 under its own size guard, and reports a page the guard cut", async () => {
+  let cut = false;
+  const sent: { text: string; values?: unknown[] }[] = [];
+  const d: WarehouseDeps = {
+    pool: {
+      connect: async () => { throw new Error("unused"); },
+      query: (async (text: string, values: unknown[] = []) => {
+        sent.push({ text, values });
+        if (text.includes("max(seq) AS seq FROM")) return { rows: [{ seq: "500" }] };
+        if (text.includes("src_meta.cursor")) return { rows: [] };
+        const limit = Number(values[values.length - 1]);
+        const rows: { n: string; r: string | null }[] = Array.from({ length: limit }, (_, i) => ({ n: String(i + 1), r: JSON.stringify({ seq: i + 1, text: "x".repeat(1400) }) }));
+        if (cut) rows[rows.length - 1] = { n: String(limit), r: null }; // Postgres withholds the rest past the cap
+        return { rows };
+      }) as any,
+    },
+    sql: async () => "",
+  };
+
+  const full = await sourceNew(d, "agent-a", "src_slack.messages", {}, 500);
+  expect(sent.find((q) => q.text.includes("LIMIT $"))!.text).toContain("total <= 1000000");
+  expect(sent.find((q) => q.text.includes("LIMIT $"))!.values).toEqual([500]);
+  expect(full.rows).toHaveLength(500);
+  expect(full).toMatchObject({ capped: false, byte_cap: 1_000_000, more: true });
+
+  cut = true;
+  const short = await sourceNew(d, "agent-a", "src_slack.messages", {}, 500);
+  expect(short.rows).toHaveLength(499);
+  expect(short).toMatchObject({ capped: true, byte_cap: 1_000_000, more: true });
+});
+
 // Roadmap Keeper read src_github.changes filtered to some repos (some made up), acked, and its next unfiltered scan began
 // past 71 rows of the real repos. Now a filtered read keeps its own cursor and an unknown repo is refused.
 it("source_new: a filtered ack never skips other scopes' rows, and an unknown scope is refused with real ones", async () => {

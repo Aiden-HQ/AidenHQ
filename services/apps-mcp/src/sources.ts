@@ -34,16 +34,19 @@ export const VIEWS: Record<string, { time: string; channel?: string; repo?: stri
 export interface Filter { channels?: string[]; repos?: string[]; projects?: string[]; q?: string; include_baseline?: boolean }
 
 const ROWS = 200; // warehouse_query row cap
-const BYTES = 200_000; // result cap for either tool, enforced in SQL (capped below)
+const BYTES = 200_000; // warehouse_query result cap, enforced in SQL (capped below)
+// source_new may ask for up to 500 rows, so its page gets a larger byte budget that the documented limit can reach. It
+// is still a cap: a page ended by it returns fewer rows and says so (`capped`).
+export const SOURCE_BYTES = 1_000_000;
 const ROW_CHARS = 20_000; // one row's JSON at most (a longer row comes back as {_truncated_row: <its first ROW_CHARS characters>})
 
 /**
  * Wraps a query whose rows are (n, r): r a row's JSON text cut to ROW_CHARS, n its order. Postgres keeps a running byte
- * total and sends r only while it stays within BYTES (later rows come back with r null), so no large row or result
+ * total and sends r only while it stays within the cap (later rows come back with r null), so no large row or result
  * ever reaches apps-mcp.
  */
-const capped = (inner: string) =>
-  `SELECT n, CASE WHEN total <= ${BYTES} THEN r END AS r FROM (
+const capped = (inner: string, bytes: number) =>
+  `SELECT n, CASE WHEN total <= ${bytes} THEN r END AS r FROM (
      SELECT n, r, sum(octet_length(r)) OVER (ORDER BY n ROWS UNBOUNDED PRECEDING) AS total FROM (${inner}) a
    ) b ORDER BY n`;
 const rowText = (alias: string) => `left((to_jsonb(${alias}) - 'tsv')::text, ${ROW_CHARS})`;
@@ -85,7 +88,7 @@ export function newRowsSql(view: string, f: Filter, cursor: number | null, limit
     if (!v.tsv) throw new Error(`${view} has no full-text column; q works on ${Object.keys(VIEWS).filter((k) => VIEWS[k]!.tsv).join(", ")}`);
     where.push(`tsv @@ websearch_to_tsquery('simple', ${p(f.q)})`);
   }
-  return { text: capped(`SELECT seq AS n, ${rowText("v")} AS r FROM ${view} v WHERE ${where.join(" AND ")} ORDER BY seq LIMIT ${p(limit)}`), values };
+  return { text: capped(`SELECT seq AS n, ${rowText("v")} AS r FROM ${view} v WHERE ${where.join(" AND ")} ORDER BY seq LIMIT ${p(limit)}`, SOURCE_BYTES), values };
 }
 
 export interface WarehouseDeps {
@@ -116,7 +119,7 @@ export async function warehouseQuery(d: WarehouseDeps, sql: string): Promise<{ r
     await c.query("BEGIN READ ONLY");
     await c.query("SET LOCAL statement_timeout = '15s'");
     const inner = `SELECT row_number() OVER () AS n, ${rowText("_q")} AS r FROM (${body}\n) _q LIMIT ${ROWS + 1}`;
-    const r = await c.query({ text: capped(inner), queryMode: "extended" } as pg.QueryConfig);
+    const r = await c.query({ text: capped(inner, BYTES), queryMode: "extended" } as pg.QueryConfig);
     const got = parseRows(r.rows.slice(0, ROWS));
     return { rows: got.rows, truncated: got.cut || r.rows.length > ROWS || got.rows.some((x) => "_truncated_row" in x) };
   } finally {
@@ -185,6 +188,9 @@ export async function sourceNew(d: WarehouseDeps, agentId: string, view: string,
     rows: got.rows,
     // Ack this once the rows are handled; the next call with the same filter starts after it.
     cursor: seq != null && key ? `${seq}.${key}` : seq,
+    // True when the page is smaller than `limit` because the size guard withheld its remaining rows.
+    capped: got.cut,
+    byte_cap: SOURCE_BYTES,
     more: got.cut || r.rows.length === limit,
   };
 }
