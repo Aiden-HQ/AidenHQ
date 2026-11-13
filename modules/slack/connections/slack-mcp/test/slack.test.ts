@@ -33,6 +33,30 @@ describe("slack-mcp policy", () => {
   });
 });
 
+describe("slack-mcp search arguments", () => {
+  it("repeats emoji-reaction filters in the query, where Slack honours them", () => {
+    expect(upstreamArgs("slack_search_public_and_private", { filters: "hasmy::pushpin: in:<#C0123456>", natural_language_query: "" })).toEqual({
+      filters: "hasmy::pushpin: in:<#C0123456>",
+      query: "hasmy::pushpin:",
+      natural_language_query: "hasmy::pushpin:",
+    });
+    expect(upstreamArgs("slack_search_public", { filters: "has::pushpin:" })).toEqual({ filters: "has::pushpin:", query: "has::pushpin:" });
+  });
+
+  it("keeps ordinary filters, and leaves other tools alone", () => {
+    expect(upstreamArgs("slack_search_public_and_private", { filters: "in:<#C0123456> after:2026-11-08" })).toEqual({ filters: "in:<#C0123456> after:2026-11-08" });
+    expect(upstreamArgs("slack_search_public_and_private", { filters: "has:pin" })).toEqual({ filters: "has:pin" });
+    expect(upstreamArgs("slack_read_thread", { channel_id: "C0123456", ts: "1794214411.703719", filters: "hasmy::pushpin:" })).toMatchObject({ filters: "hasmy::pushpin:" });
+  });
+
+  it("does not repeat a modifier already in the query", () => {
+    expect(upstreamArgs("slack_search_public_and_private", { query: "hasmy::pushpin:", filters: "hasmy::pushpin: in:<#C0123456>" })).toEqual({
+      query: "hasmy::pushpin:",
+      filters: "hasmy::pushpin: in:<#C0123456>",
+    });
+  });
+});
+
 describe("the Engineer jobs' read endpoint", () => {
   it("serves the reads without the draft tool, whatever the allowlist says", () => {
     const read = readOnly(new Set([...DEFAULT_ALLOWLIST, "slack_send_message", "slack_schedule_message"]));
