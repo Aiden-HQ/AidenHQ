@@ -6,6 +6,7 @@ import { addEach, advance, allowedWrite, closePrs, awaitChecks, eachDecision, fi
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
 const red = { state: "FAILURE", contexts: { nodes: [{ __typename: "StatusContext", context: "buildkite/deploy", state: "FAILURE" }] } };
 const pending = { state: "PENDING", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "IN_PROGRESS", conclusion: null }] } };
+const cancelled = { state: "FAILURE", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }, { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "CANCELLED" }] } };
 
 function pr(number, over = {}) {
   return {
@@ -162,6 +163,29 @@ describe("merge queue: a run through", () => {
     assert.match(step.say[0], /continue from #2/);
     assert.equal(gh.writes.length, 1);
     assert.deepEqual(await advance(q, { github: gh, now: at(30) }), { queue: q, say: [] }); // stays stopped
+  });
+
+  it("judges the base's current tip when a newer push cancelled the merge commit's run", async () => {
+    // The owner pushed to master while the merge commit's run was going, so GitHub cancelled it: no result on merge1,
+    // but master's tip has the merge in it too, and it is green.
+    const gh = fakeGithub({ 1: pr(1), 2: pr(2) }, { merge1: cancelled, tip: green }, { master: { tip: "tip" } });
+    const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 15, now: at(0) });
+    await advance(q, { github: gh, now: at(0) });
+    let step = await advance(q, { github: gh, now: at(3) });
+    assert.equal(step.done, undefined);
+    assert.equal(step.say.length, 0); // still settling, and the tip's checks count
+    step = await advance(q, { github: gh, now: at(6) });
+    assert.equal(step.done, undefined);
+    assert.match(step.say[0], /Merged https:\/\/github.com\/o\/r\/pull\/1 \(1 of 2\) and `master` is green/);
+  });
+
+  it("still stops on a real failure on the merge commit when the base moved on", async () => {
+    const gh = fakeGithub({ 1: pr(1), 2: pr(2) }, { merge1: red, tip: green }, { master: { tip: "tip" } });
+    const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 0, now: at(0) });
+    await advance(q, { github: gh, now: at(0) });
+    const step = await advance(q, { github: gh, now: at(2) });
+    assert.equal(step.done, "stopped");
+    assert.match(step.say[0], /CI failed on `master` after merging #1: buildkite\/deploy/);
   });
 
   it("skips a PR someone else merged and stops on one that isn't approved", async () => {

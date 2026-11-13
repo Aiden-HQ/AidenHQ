@@ -148,10 +148,20 @@ export function required(rollup) {
   return { ...rollup, ...rest, state };
 }
 
+const FAILING = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
+
 /** Names of the checks that failed in a status rollup (advisory ones left out). */
 export function failedChecks(rollup) {
-  const bad = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
-  return (rollup?.contexts?.nodes ?? []).filter((n) => !advisory(n) && bad.has(n.conclusion ?? n.state)).map((n) => n.name ?? n.context);
+  return (rollup?.contexts?.nodes ?? []).filter((n) => !advisory(n) && FAILING.has(n.conclusion ?? n.state)).map((n) => n.name ?? n.context);
+}
+
+/**
+ * The rollup is red only because its runs were cancelled: a newer push superseded them and GitHub ended them with no
+ * result. That is unknown, not failed, so it says nothing about the commit.
+ */
+function cancelledOnly(rollup) {
+  const bad = (rollup?.contexts?.nodes ?? []).filter((n) => !advisory(n) && FAILING.has(n.conclusion ?? n.state));
+  return bad.length > 0 && bad.every((n) => (n.conclusion ?? n.state) === "CANCELLED");
 }
 
 /**
@@ -289,13 +299,24 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
   // 1. The last merge: its CI on the base branch must finish green.
   const last = queue.prs.filter((p) => p.status === "merged" && p.sha).at(-1);
   if (last && !last.ciAt) {
-    const commit = await github.commit(last.repo, last.sha);
-    const rollup = commit?.statusCheckRollup;
-    const ci = ciState(rollup);
+    let head = last.sha;
+    let rollup = (await github.commit(last.repo, head))?.statusCheckRollup;
+    let ci = ciState(rollup);
+    // A newer push to the base supersedes the merge commit's run and cancels it: the merge commit has no result, but
+    // the base's current tip includes it, so judge that instead of calling the base red.
+    if (ci === "red" && cancelledOnly(rollup)) {
+      const tip = (await github.baseStatus(last.repo, last.base)).tip;
+      if (tip && tip !== head) {
+        head = tip;
+        rollup = (await github.commit(last.repo, head))?.statusCheckRollup;
+        ci = ciState(rollup);
+      }
+    }
     // Checks show up a little after the merge: no checks yet is only green after a short settle.
     const settled = t - Date.parse(last.mergedAt) >= settleMinutes * 60_000;
     if (ci === "red") return stop(`CI failed on \`${last.base}\` after merging #${last.number}: ${failedChecks(rollup).join(", ") || "see the commit"}`);
-    if (ci === "pending" || !settled) return waiting(`ci:${last.sha}`, `CI is running on \`${last.base}\` after #${last.number}`);
+    // A tip we moved to has no grace: without a check of its own it is still starting up.
+    if (ci === "pending" || !settled || (head !== last.sha && !namedChecks(rollup).length)) return waiting(`ci:${head}`, `CI is running on \`${last.base}\` after #${last.number}`);
     last.ciAt = now.toISOString();
     last.checks = rollup?.contexts?.nodes?.length ?? 0;
     const merged = queue.prs.filter((p) => p.status === "merged").length;
