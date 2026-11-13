@@ -15,3 +15,4 @@ exceptions:
   - { ecosystem: apt, package: nodejs, version: 24.22.3-1nodesource1, advisory: CVE-2026-123863, reason: "Node 24.22.3 (2026-11-10) is a security release with several high fixes in http2 and tls (also CVE-2026-123864/65/66/72)" }
   - { ecosystem: docker, package: anchore/grype, version: v0.121.3, advisory: GHSA-c9gr-gmg4-2vqv, reason: "grype v0.121.3 (2026-11-09) is a security release (also GHSA-pxq6-2prw-chj9, GHSA-rg2x-37c3-w2rh, GHSA-vp62-88p7-qqf5, GHSA-x744-4wpc-v9h2, GHSA-x86f-5xw2-fm2r)" }
   - { ecosystem: docker, package: anchore/syft, version: v1.57.1, advisory: GHSA-c9gr-gmg4-2vqv, reason: "syft v1.57.1 (2026-11-09) is a security release" }
+  - { ecosystem: docker, package: tailscale/tailscale, version: v1.104.7, advisory: GO-2026-6859, reason: "v1.104.7 (2026-11-12) ships go1.27.4 which fixes the Go stdlib HTTP/1 server crash (GO-2026-6859); the release is under 7 days old" }
