@@ -132,7 +132,10 @@ export interface RosterAgent {
   id: string;
   name: string;
   title: string | null;
-  group: "coordinators" | "scouts" | "engineers" | "instance";
+  system: boolean;
+  department: { id: string; name: string; description?: string; order: number };
+  key?: string;
+  avatar?: string;
   model: string | null;
   status: string;
   trial: boolean;
@@ -345,6 +348,52 @@ export interface Costs {
   /** Per model, OpenRouter's billed cost over the list price for the same calls (last 7 days): applied to estimated tokens. */
   ratios: Record<string, number>;
   check: { period: string; from: string; itemised: number; real: number | null; error?: string };
+}
+/** The Costs tab's ledger views (src/cost-ledger.ts): billed spend from the model gateway's ledger, aggregated on the board. */
+export interface LedgerMetrics {
+  usd: number;
+  calls: number;
+  input: number;
+  cached: number;
+  output: number;
+  errors: number;
+  /** Mean latency of ok calls that timed themselves. */
+  ms: number | null;
+}
+export interface LedgerPeriod {
+  usd: number;
+  calls: number;
+  /** The same span just before; null when the ledger doesn't reach back that far. */
+  prev: number | null;
+}
+export interface CostLedger {
+  from: string;
+  to: string;
+  bucket: "hour" | "day";
+  earliest: string | null;
+  overview: {
+    today: LedgerPeriod;
+    week: LedgerPeriod;
+    month: LedgerPeriod;
+    key: { error: string } | { today: number; month: number; limit: number | null; remaining: number | null; reset: string | null };
+    caps: { agentId: string; name: string; usd: number; cap: number }[];
+  };
+  totals: LedgerMetrics & { prevUsd: number | null };
+  modelOrder: string[];
+  models: (LedgerMetrics & { model: string })[];
+  lanes: (LedgerMetrics & { lane: string })[];
+  agents: (LedgerMetrics & { agentId: string; name: string; model: string | null; today: number; dayCap: number })[];
+  series: { t: string; model: string; usd: number; calls: number }[];
+}
+export interface CostTop {
+  filter: { agentId?: string; model?: string };
+  total: LedgerMetrics;
+  split: (LedgerMetrics & { name: string })[];
+  runs: (LedgerMetrics & { runId: string; agent: string | null; first: string | null; last: string | null })[];
+  tasks: (LedgerMetrics & { issueId: string; identifier: string | null; title: string | null; agent: string | null })[];
+  /** Spend on calls that name no task / no Paperclip run. */
+  noTask: number;
+  noRun: number;
 }
 
 /** One app from apps-mcp's /internal/status. */

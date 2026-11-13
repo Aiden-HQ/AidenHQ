@@ -32,6 +32,10 @@ updates:
     open-pull-requests-limit: 5
     groups:
       docker: { patterns: ["*"] }
+    # A major runtime/base-image jump (e.g. Node 24 -> 26) is a planned migration, not a routine bump.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: docker-compose
     directories: ["/**/*"]
     schedule: { interval: weekly }
@@ -39,6 +43,9 @@ updates:
     open-pull-requests-limit: 5
     groups:
       docker-compose: { patterns: ["*"] }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }

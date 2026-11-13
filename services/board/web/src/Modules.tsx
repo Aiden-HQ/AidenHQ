@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { SignInRequired, api } from "./api";
+import { QUERIES, useQuery } from "./queries";
+import { CardGridSkeleton, Updating } from "./Skeleton";
 import type { ModuleRow } from "./types";
 
 const STATE: Record<ModuleRow["state"], { label: string; pill: string }> = {
@@ -11,19 +11,8 @@ const STATE: Record<ModuleRow["state"], { label: string; pill: string }> = {
 
 /** The module catalog, read-only. Turning one on is a message to Aiden that you send yourself. */
 export function ModulesView({ onSignIn }: { onSignIn: () => void }) {
-  const [modules, setModules] = useState<ModuleRow[] | null>(null);
-  const [error, setError] = useState("");
-
-  const load = useCallback(async () => {
-    try {
-      setModules((await api.modules()).modules);
-      setError("");
-    } catch (e) {
-      if (e instanceof SignInRequired) onSignIn();
-      else setError((e as Error).message);
-    }
-  }, [onSignIn]);
-  useEffect(() => void load(), [load]);
+  const { data, stale, error } = useQuery(QUERIES.modules, onSignIn);
+  const modules = data?.modules;
 
   const on = modules?.filter((m) => m.state !== "off").length ?? 0;
   return (
@@ -31,12 +20,15 @@ export function ModulesView({ onSignIn }: { onSignIn: () => void }) {
       <header className="page-head">
         <div>
           <h1>Modules</h1>
-          <p className="page-sub">{modules ? `${on} of ${modules.length} on` : "Loading…"}</p>
+          <p className="page-sub">
+            {modules ? `${on} of ${modules.length} on` : "Loading modules…"}
+            <Updating on={stale} />
+          </p>
         </div>
       </header>
       {error && <div className="offline">Couldn't load modules: {error}</div>}
       {!modules ? (
-        !error && <span className="spinner" />
+        !error && <CardGridSkeleton count={6} />
       ) : (
         <div className="app-grid">
           {modules.map((m) => (

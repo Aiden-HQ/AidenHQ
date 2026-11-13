@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { SignInRequired, api } from "./api";
+import { SkeletonLines } from "./Skeleton";
 import type { RunTrace } from "./types";
 import { ago } from "./util";
 
@@ -35,7 +36,7 @@ export function RunPage({ id, onClose, onSignIn }: { id: string; onClose: () => 
         </header>
         <div className="drawer-scroll">
           {error && <p className="run-note">{error}</p>}
-          {!run && !error && <p className="run-note">Loading…</p>}
+          {!run && !error && <SkeletonLines lines={6} />}
           {run && (
             <>
               <dl className="run-facts">

@@ -1,30 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
-import { SignInRequired, api } from "./api";
-import type { AppRow } from "./types";
+import { useEffect } from "react";
+import { QUERIES, useQuery } from "./queries";
+import { CardGridSkeleton, Updating } from "./Skeleton";
 import { ago } from "./util";
 
 const mb = (n: number) => `${Math.round(n / 1048576)} MB`;
 
 /** The apps platform, read-only: what runs, whether it's healthy, who owns it, and any open incident. */
 export function AppsView({ onSignIn }: { onSignIn: () => void }) {
-  const [data, setData] = useState<{ apps: AppRow[]; error?: string } | null>(null);
-  const [error, setError] = useState("");
-
-  const load = useCallback(async () => {
-    try {
-      setData(await api.apps());
-      setError("");
-    } catch (e) {
-      if (e instanceof SignInRequired) onSignIn();
-      else setError((e as Error).message);
-    }
-  }, [onSignIn]);
+  const { data, stale, error, reload } = useQuery(QUERIES.apps, onSignIn);
 
   useEffect(() => {
-    void load();
-    const poll = setInterval(() => document.visibilityState === "visible" && void load(), 10_000);
+    const poll = setInterval(() => document.visibilityState === "visible" && void reload(), 10_000);
     return () => clearInterval(poll);
-  }, [load]);
+  }, [reload]);
 
   const sick = data?.apps.filter((a) => !a.healthy).length ?? 0;
   return (
@@ -32,13 +20,16 @@ export function AppsView({ onSignIn }: { onSignIn: () => void }) {
       <header className="page-head">
         <div>
           <h1>Apps</h1>
-          <p className="page-sub">{!data ? "Loading…" : !data.apps.length ? "Nothing deployed yet" : `${data.apps.length} running${sick ? ` · ${sick} need${sick > 1 ? "" : "s"} attention` : " · all healthy"}`}</p>
+          <p className="page-sub">
+            {!data ? "Checking your apps…" : !data.apps.length ? "Nothing deployed yet" : `${data.apps.length} running${sick ? ` · ${sick} need${sick > 1 ? "" : "s"} attention` : " · all healthy"}`}
+            <Updating on={stale} />
+          </p>
         </div>
       </header>
       {error && <div className="offline">Couldn't load apps: {error}</div>}
       {data?.error && <div className="offline">Apps service: {data.error}</div>}
       {!data ? (
-        !error && <span className="spinner" />
+        !error && <CardGridSkeleton count={3} />
       ) : !data.apps.length ? (
         !data.error && <p className="empty-state">No apps yet. Ask the Architect for one in Chat; it shows here once deployed.</p>
       ) : (

@@ -1,5 +1,5 @@
 name: core
-description: Aiden (chief of staff), the Research Assistant, the apps platform's DevOps Engineer, the Agent Architect (designs new agents), the Agent Coach (reviews agents' outcomes) and the Platform Engineer. Always installed.
+description: Aiden (chief of staff), the Executive Assistant, the apps platform's DevOps Engineer, the Agent Architect (designs new agents), the Agent Coach (reviews agents' outcomes) and the Platform Engineer. Always installed.
 requires:
   - owner-channel
 settings:
@@ -94,6 +94,7 @@ settings:
 compose: compose.yaml
 agents:
   chief-of-staff:
+    department: leadership
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     # Sol in its models = advisor_ask may escalate to GPT Sol (once per run) for serious decisions.
@@ -111,6 +112,7 @@ agents:
     # fleet-admin: the board's fleet tools and relaying the owner's words (services/board/src/fleet.ts).
     roles: [ fleet-admin ]
   assistant:
+    department: leadership
     # The crew member's board identity: name, a one-line voice for tone only, and the
     # avatar bundled with the board (services/board/web/public/crew/<avatar>.svg).
     persona: { name: Alfred, voice: "Measured and dry; leads with the answer, then the sources.", avatar: alfred }
@@ -142,6 +144,7 @@ agents:
     # board-writer: board moves and recurring tasks; engineer-dispatch: Engineer sub-tasks (paperclip-tasks-mcp).
     roles: [ board-writer, engineer-dispatch ]
   app-maintainer:
+    department: platform
     adapter: codex_local
     max_parallel: 2 # independent app jobs; a backlog also made a 30-minute routine pile up duplicates
     # Graded done: deliverables delegated to it are checked against their rubric before they close (the runner's grader).
@@ -159,6 +162,7 @@ agents:
     # app-requests: handles every shared app's in-app requests and people roles (app_requests, app_role_set; apps-mcp).
     roles: [ app-incidents, app-requests ]
   architect:
+    department: agents
     # Designs and onboards new agents. The stronger model: its handbooks are what the other agents run on.
     adapter: codex_local
     model: moonshotai/kimi-k3.1-pro
@@ -183,6 +187,7 @@ agents:
     # architect: handbook-only edits to agents in trial on its Platform Engineer tasks land without a tap (the runner checks).
     roles: [ architect ]
   coach:
+    department: agents
     # Reviews other agents' outcomes (output quality, misses, inputs, behaviour, feedback) and files fixes through the usual
     # tiers. Sol in its models = advisor_ask may escalate to GPT Sol (once per run) for a hard call.
     adapter: codex_local
@@ -207,6 +212,7 @@ agents:
     # fleet-read: fleet_status. fleet-audit: any agent's evidence packet and its own review log (board coach.ts, tasks bridge).
     roles: [ fleet-read, fleet-audit ]
   fleet-engineer:
+    department: platform
     brief: true
     graded: true
     adapter: opencode_local
@@ -343,6 +349,19 @@ generated_secrets:
   - gateway_board_key
   - gateway_source_key
   - gateway_harness_key
+# The department registry: where the board's Agents page lists each agent, in this order. An agent's `department:` must be
+# one of these ids (or one instance.yaml adds under `departments:`); without one it is `general`. Compile checks it.
+departments:
+  - { id: leadership, name: Leadership, description: "Coordinates work and prepares research, drafts and reports for you" }
+  - { id: intake, name: Intake, description: "Watches your sources and keeps knowledge" }
+  - { id: outreach, name: Outreach, description: "Works with people other than you" }
+  - { id: engineering, name: Engineering, description: "Builds software and design" }
+  - { id: agents, name: Agents, description: "Builds and improves agents" }
+  - { id: platform, name: Platform, description: "Keeps the system running" }
+  - { id: security, name: Security, description: "Finds and verifies security weaknesses in your applications and agents" }
+  # For the instance's own agents (none ship in it).
+  - { id: product, name: Product, description: "Roadmaps, priorities and what ships" }
+  - { id: general, name: General, description: "Agents without a department" }
 labels:
   - { name: needs-review, color: "#d97706" }
   - { name: system-error, color: "#dc2626" }

@@ -9,6 +9,7 @@ settings:
     default: https://auditor.example.com/mcp
 agents:
   security-watch:
+    department: security
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: medium
@@ -20,6 +21,7 @@ agents:
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_set_status, task_finish, fleet_catalog ]
     roles: [ security-verdict ]
   red-teamer:
+    department: security
     adapter: codex_local
     # GLM: a lower refusal rate for offensive security work (owner, 2026-11-11).
     model: ~z-ai/glm-latest

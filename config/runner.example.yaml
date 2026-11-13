@@ -92,7 +92,7 @@ merges:
 apply:
   repo: your-org/aidenhq-instance
 
-# Your comments on your own open tasks → the Research Assistant ("Process task replies" routine).
+# Your comments on your own open tasks → the Executive Assistant ("Process task replies" routine).
 replies:
   enabled: true
   routine: Process task replies
@@ -101,7 +101,7 @@ replies:
   first_run_lookback_hours: 24
 
 # Recurring tasks: the board keeps the schedules; the runner claims due runs every minute,
-# adds the period's GitHub activity (read-only GraphQL with your gh login) and starts the Research Assistant.
+# adds the period's GitHub activity (read-only GraphQL with your gh login) and starts the Executive Assistant.
 recurring:
   enabled: true
   routine: Run recurring task

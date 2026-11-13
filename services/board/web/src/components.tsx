@@ -2,21 +2,19 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { AgentAvatar } from "./AgentAvatar";
 import { api } from "./api";
 import { BUCKETS, BUCKET_NAMES, type Assignee, type Board, type Bucket, type Card, type CrewMember, type CrewState, type PlanItem, type SignInStatus, type Working } from "./types";
 import { SOURCE_NAMES, STATUS_BADGE, addDays, agentShort, ago, dayDate, elapsed, matches, shortDate, shortName, snoozeOptions, todayIn } from "./util";
 
-/** A crew member's portrait, or a coloured letter for you and agents without one. */
+/** A crew member's portrait (or its monogram, AgentAvatar), or a letter for you. */
 export function Avatar({ assignee, size }: { assignee: Assignee | undefined; size?: number }) {
   if (!assignee) return null;
-  const style = size ? { width: size, height: size } : undefined;
-  const portrait = assignee.persona?.avatar ?? assignee.avatar;
-  if (portrait) return <img className="avatar portrait" src={`/crew/${portrait}.svg`} alt="" title={assignee.name} style={style} draggable={false} />;
-  const tone = assignee.kind === "me" ? "me" : assignee.kind === "assistant" ? "assistant" : assignee.engine ?? "agent";
-  const letter = assignee.kind === "me" ? "Y" : shortName(assignee).slice(0, 1).toUpperCase();
+  if (assignee.kind !== "me") return <AgentAvatar className="avatar" name={shortName(assignee)} portrait={assignee.persona?.avatar ?? assignee.avatar} size={size} title={assignee.name} />;
+  const style = size ? { width: size, height: size, fontSize: Math.round(size * 0.5) } : undefined;
   return (
-    <span className={`avatar avatar-${tone}`} title={assignee.name}>
-      {letter}
+    <span className="avatar avatar-me" title={assignee.name} style={style}>
+      Y
     </span>
   );
 }
@@ -528,7 +526,7 @@ function SignInBanner({ name, path, status, canConnect, missing, stopped }: { na
 export function SignInBanners({ board, canConnect }: { board: Board; canConnect: boolean }) {
   return (
     <>
-      <SignInBanner name="Glean" path="glean" status={board.glean} canConnect={canConnect} missing="The Research Assistant can't search company knowledge until it is." stopped="The Research Assistant's company search is paused." />
+      <SignInBanner name="Glean" path="glean" status={board.glean} canConnect={canConnect} missing="The Executive Assistant can't search company knowledge until it is." stopped="The Executive Assistant's company search is paused." />
       <SignInBanner name="Grafana" path="grafana" status={board.grafana} canConnect={canConnect} missing="The Engineers can't read logs and metrics until it is." stopped="The Engineers can't read logs and metrics." />
       <SignInBanner name="ClickHouse" path="clickhouse" status={board.clickhouse} canConnect={canConnect} missing="The Engineers can't query it until it is." stopped="The Engineers can't query it." />
       <SignInBanner name="Jira" path="jira" status={board.jira} canConnect={canConnect} missing="The agents can't read it until it is." stopped="The agents can't read it." />

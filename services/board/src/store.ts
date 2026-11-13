@@ -57,6 +57,53 @@ export interface UsageTotal {
   priced: number;
 }
 
+/** What a call was for: its kind (the gateway's) or, for records from before kinds, its component. Engineer jobs are their own lane. */
+const LANE = `CASE WHEN component = 'Engineer jobs' THEN 'engineer' WHEN kind IS NOT NULL THEN kind WHEN component = 'AI reviewer' THEN 'reviewer'
+  WHEN component = 'Grader' THEN 'grader' WHEN component IN ('Source writers', 'Runner intake') THEN 'source' ELSE 'agent' END`;
+/** The drill-down's fixed groupings (never caller text in SQL); a and b are the group's key columns (b may be an aggregate). */
+export const LEDGER_GROUPS = {
+  total: { a: "NULL" },
+  model: { a: "model" },
+  agent: { a: "agent_id", notNull: true },
+  // Per agent, with system calls (no agent) as one group of their own.
+  caller: { a: "agent_id" },
+  // Paperclip's run id (the run page), when the credential named it.
+  run: { a: "run_id", b: "MAX(agent_id)", notNull: true, bAgg: true },
+  issue: { a: "issue_id", b: "MAX(agent_id)", notNull: true, bAgg: true },
+  // Whether calls name their task / their Paperclip run (1) or not (0): what the drill-down's lists can't account for.
+  hasIssue: { a: "issue_id IS NOT NULL" },
+  hasRun: { a: "run_id IS NOT NULL" },
+} as const satisfies Record<string, { a: string; b?: string; notNull?: boolean; bAgg?: boolean }>;
+export type LedgerGroup = keyof typeof LEDGER_GROUPS;
+export type LedgerFilter = { agentId?: string; model?: string };
+/** Per group: spend, calls, tokens, failed calls, and latency summed over the ok calls that timed themselves (msN of them). */
+const METRICS = `COALESCE(SUM(cost_usd), 0) AS usd, COUNT(*) AS calls, COALESCE(SUM(input), 0) AS input, COALESCE(SUM(cached), 0) AS cached,
+  COALESCE(SUM(output), 0) AS output, COALESCE(SUM(status IS NOT NULL AND status <> 'ok'), 0) AS errors,
+  COALESCE(SUM(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END), 0) AS msSum, COUNT(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END) AS msN`;
+export interface LedgerMetrics {
+  usd: number;
+  calls: number;
+  input: number;
+  cached: number;
+  output: number;
+  errors: number;
+  msSum: number;
+  msN: number;
+}
+export interface LedgerGroupRow extends LedgerMetrics {
+  a: string | null;
+  b: string | null;
+  first: string | null;
+  last: string | null;
+}
+/** One cell of the range's cube: a time bucket (UTC day or hour prefix of `at`), model, lane and agent (null: a system call). */
+export interface LedgerCell extends LedgerMetrics {
+  t: string;
+  model: string;
+  lane: string;
+  agentId: string | null;
+}
+
 export interface Placement {
   bucket: Bucket;
   rank: number;
@@ -167,7 +214,7 @@ export class Store {
     if (!usageColumns.includes("agent_id")) this.db.exec("ALTER TABLE usage ADD COLUMN agent_id TEXT");
     // Run attribution (wave 1): which run, task, config revision and caller kind each call was for, and how it went.
     for (const [c, type] of [["run_key", "TEXT"], ["run_id", "TEXT"], ["issue_id", "TEXT"], ["rev", "TEXT"], ["kind", "TEXT"], ["ms", "INTEGER"], ["status", "TEXT"]]) if (!usageColumns.includes(c!)) this.db.exec(`ALTER TABLE usage ADD COLUMN ${c} ${type}`);
-    this.db.exec("CREATE INDEX IF NOT EXISTS usage_run ON usage (run_key); CREATE INDEX IF NOT EXISTS usage_issue ON usage (issue_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS usage_run ON usage (run_key); CREATE INDEX IF NOT EXISTS usage_issue ON usage (issue_id); CREATE INDEX IF NOT EXISTS usage_at_cost ON usage (at, cost_usd)");
     if (!this.meta("installed_at")) this.setMeta("installed_at", new Date().toISOString());
     this.approvals = new Approvals(this.db, this.events);
     this.grades = new Grades(this.db, this.events);
@@ -192,7 +239,7 @@ export class Store {
       .run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.costUsd ?? null, u.agentId ?? null, u.runKey ?? null, u.runId ?? null, u.issueId ?? null, u.rev ?? null, u.kind ?? null, u.ms ?? null, u.status ?? null);
   }
 
-  /** Usage records older than `before` go (the Costs tab looks back 30 days). */
+  /** Usage records older than `before` go (the Costs tab compares 30 days with the 30 before). */
   pruneUsage(before: string): void {
     this.db.prepare("DELETE FROM usage WHERE at < ?").run(before);
   }
@@ -216,6 +263,48 @@ export class Store {
     return (this.db
       .prepare("SELECT key, at, component, model, input, cached, output, cost_usd AS costUsd, agent_id AS agentId, run_key AS runKey, run_id AS runId, issue_id AS issueId, rev, kind, ms, status FROM usage WHERE agent_id = ? AND at >= ? AND at <= ? ORDER BY at")
       .all(agentId, from, to) as unknown as UsageRecord[]);
+  }
+
+  /**
+   * The Costs tab's range in one pass over [from, to): spend and the rest per time bucket, model, lane and agent. The tab rolls it up
+   * (by model, lane, agent, over time); a 30-day range is a few thousand cells, never raw rows.
+   */
+  ledgerCube(from: string, to: string, bucket: "day" | "hour"): LedgerCell[] {
+    return this.db
+      .prepare(`SELECT substr(at, 1, ${bucket === "hour" ? 13 : 10}) AS t, model, ${LANE} AS lane, agent_id AS agentId, ${METRICS} FROM usage WHERE at >= ? AND at < ? GROUP BY 1, 2, 3, 4`)
+      .all(from, to) as unknown as LedgerCell[];
+  }
+
+  /** The drill-down's aggregates over [from, to), grouped by `by` (LEDGER_GROUPS) for one agent or model; most spend first. */
+  ledgerBy(by: LedgerGroup, from: string, to: string, filter: LedgerFilter = {}, limit = 5000): LedgerGroupRow[] {
+    const g: { a: string; b?: string; notNull?: boolean; bAgg?: boolean } = LEDGER_GROUPS[by];
+    const where = ["at >= ?", "at < ?"];
+    const args: string[] = [from, to];
+    if (filter.agentId) (where.push("agent_id = ?"), args.push(filter.agentId));
+    if (filter.model) (where.push("model = ?"), args.push(filter.model));
+    if (g.notNull) where.push(`(${g.a}) IS NOT NULL`);
+    return this.db
+      .prepare(
+        `SELECT ${g.a} AS a, ${g.b ?? "NULL"} AS b, ${METRICS}, MIN(at) AS first, MAX(at) AS last
+         FROM usage WHERE ${where.join(" AND ")} GROUP BY ${g.b && !g.bAgg ? "1, 2" : "1"} ORDER BY usd DESC LIMIT ${Math.max(1, Math.floor(limit))}`,
+      )
+      .all(...args) as unknown as LedgerGroupRow[];
+  }
+
+  /** Each agent's spend in [from, to) (the day caps): agent calls only. */
+  spendByAgent(from: string, to: string): Map<string, number> {
+    const rows = this.db.prepare("SELECT agent_id AS id, COALESCE(SUM(cost_usd), 0) AS usd FROM usage WHERE at >= ? AND at < ? AND agent_id IS NOT NULL GROUP BY 1").all(from, to) as { id: string; usd: number }[];
+    return new Map(rows.map((r) => [r.id, r.usd]));
+  }
+
+  /** Spend and calls in [from, to), read off the (at, cost_usd) index alone: the overview's periods. */
+  usageSpend(from: string, to: string): { usd: number; calls: number } {
+    return this.db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS usd, COUNT(*) AS calls FROM usage WHERE at >= ? AND at < ?").get(from, to) as { usd: number; calls: number };
+  }
+
+  /** The oldest usage record kept: a previous period that starts before it has nothing to compare with. */
+  usageEarliest(): string | null {
+    return (this.db.prepare("SELECT MIN(at) AS at FROM usage").get() as { at: string | null }).at;
   }
 
   /** Gateway refusals and upstream failures since `from`: the run each belonged to (when known) and when. Not the agent's fault. */

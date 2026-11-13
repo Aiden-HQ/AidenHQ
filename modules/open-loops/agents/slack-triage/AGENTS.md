@@ -1,6 +1,6 @@
 ---
 name: Slack Triage
-title: "Sorts what the scout found."
+title: "Triages the live Slack feed; pages you only for urgent asks."
 avatar: slack-triage
 reportsTo: open-loops
 ---

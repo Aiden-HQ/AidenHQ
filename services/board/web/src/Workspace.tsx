@@ -2,7 +2,9 @@
 // as the front door), the conversation in the middle, and a panel with Progress, Files and Context on the right. On a
 // phone: the list, then the conversation full screen. Lives at #/c/ (a new chat) and #/c/<chat>.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
+import { ChatListSkeleton, SkeletonLines } from "./Skeleton";
 import { ApprovalCard, StateChip } from "./Chat";
 import { useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
@@ -26,23 +28,15 @@ interface Props {
 
 const QUIET_MS = 2 * 60_000;
 const PANEL_KEY = "aidenhq.panel";
-const initial = (name: string) => name.trim().charAt(0).toUpperCase() || "?";
-/** A steady hue per agent name, so each agent keeps its colour everywhere it shows. */
-const hue = (name: string) => [...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
-
 /** An agent's portrait (/crew/<avatar>.svg), by its key or name, when it has one. */
 export const portraitOf = (crew: Assignee[], keyOrName: string) => {
   const a = crew.find((c) => c.key === keyOrName) ?? crew.find((c) => c.name === keyOrName);
   return a?.persona?.avatar ?? a?.avatar;
 };
 
-export function Monogram({ name, size: px = 28, front, avatar }: { name: string; size?: number; front?: boolean; avatar?: string }) {
-  if (avatar) return <img className="monogram portrait" src={`/crew/${avatar}.svg`} alt="" style={{ width: px, height: px }} draggable={false} />;
-  return (
-    <span className={`monogram${front ? " front" : ""}`} style={{ width: px, height: px, fontSize: Math.round(px * 0.45), ["--hue" as string]: hue(name) }} aria-hidden>
-      {initial(name)}
-    </span>
-  );
+/** An agent's face in the chat workspace (AgentAvatar: its portrait, else its monogram). */
+export function Monogram({ name, size = 28, front, avatar }: { name: string; size?: number; front?: boolean; avatar?: string }) {
+  return <AgentAvatar className="monogram" name={name} portrait={avatar} size={size} front={front} />;
 }
 
 function usePoll(load: () => Promise<unknown>, fast: boolean, idleMs: number) {
@@ -129,7 +123,7 @@ function Sidebar({ rows, agents, crew, selected, go, error, retry }: { rows: Cha
         </div>
       )}
       {!rows ? (
-        <span className="spinner" />
+        <ChatListSkeleton />
       ) : (
         <nav className="side-scroll">
           {groups.front && <Group g={filter(groups.front)} crew={crew} selected={selected} go={go} front searching={!!q} />}
@@ -407,7 +401,11 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
             </button>
           </div>
         ) : (
-          <span className="spinner center" />
+          <div className="sk-conv" role="status" aria-label="Opening the chat">
+            <SkeletonLines lines={2} />
+            <SkeletonLines lines={4} />
+            <SkeletonLines lines={3} />
+          </div>
         )}
       </section>
     );

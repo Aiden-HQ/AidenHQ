@@ -268,10 +268,11 @@ async function prices(): Promise<Prices> {
   return priceCache!.prices;
 }
 
-type KeyUsage = { usage_daily: number; usage_weekly: number; usage_monthly: number };
+/** limit: the key's spend limit (null: none), limit_remaining what is left of it, limit_reset how often it resets (monthly, ...). */
+export type KeyUsage = { usage_daily: number; usage_weekly: number; usage_monthly: number; limit: number | null; limit_remaining: number | null; limit_reset: string | null };
 let keyCache: { at: number; usage: KeyUsage } | undefined;
 /** What OpenRouter itself says the key spent (it is shared by every caller: agents, the runner, computers, source writers). */
-async function keyUsage(): Promise<KeyUsage | string> {
+export async function keyUsage(): Promise<KeyUsage | string> {
   if (keyCache && Date.now() - keyCache.at < 60_000) return keyCache.usage;
   let key = "";
   try {
@@ -281,8 +282,8 @@ async function keyUsage(): Promise<KeyUsage | string> {
   try {
     const res = await fetch(`${OPENROUTER}/key`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
     if (!res.ok) return `OpenRouter answered ${res.status}`;
-    const d = ((await res.json()) as { data: KeyUsage }).data;
-    keyCache = { at: Date.now(), usage: { usage_daily: d.usage_daily, usage_weekly: d.usage_weekly, usage_monthly: d.usage_monthly } };
+    const d = ((await res.json()) as { data: Partial<KeyUsage> }).data;
+    keyCache = { at: Date.now(), usage: { usage_daily: d.usage_daily ?? 0, usage_weekly: d.usage_weekly ?? 0, usage_monthly: d.usage_monthly ?? 0, limit: d.limit ?? null, limit_remaining: d.limit_remaining ?? null, limit_reset: d.limit_reset ?? null } };
     return keyCache.usage;
   } catch (e) {
     return `OpenRouter unreachable (${(e as Error).message})`;
@@ -394,7 +395,7 @@ export function asConfiguredModel(usage: UsageTotal[], modelOf: Map<string, stri
 
 /**
  * Every minute: model calls from the model gateway's ledger, with what OpenRouter billed, deduped by generation id; usage
- * older than 40 days goes. The gateway keeps 40 days of calls, so a board down for less than that loses none.
+ * older than 62 days goes. The gateway keeps 40 days of calls, so a board down for less than that loses none.
  */
 export function pullUsage(gateway: { url: string; token: string } | undefined, store: Pick<Store, "addUsage" | "pruneUsage" | "meta" | "setMeta">, log: Logger, everyMs = 60_000, metaKey = "usage_pulled_at") {
   if (!gateway) return;
@@ -408,7 +409,8 @@ export function pullUsage(gateway: { url: string; token: string } | undefined, s
       if (!res.ok) throw new Error(`the gateway answered ${res.status}`);
       for (const r of pulledRecords(await res.json())) store.addUsage({ ...r, component: r.component ?? "agent", model: r.model || "unknown" });
       store.setMeta(metaKey, now);
-      store.pruneUsage(new Date(Date.now() - 40 * DAY).toISOString());
+      // Kept 62 days, so the Costs tab can set the last 30 days against the 30 before.
+      store.pruneUsage(new Date(Date.now() - 62 * DAY).toISOString());
     } catch (err) {
       log.warn({ err: String(err).slice(0, 200), from: gateway.url }, "usage pull failed");
     }

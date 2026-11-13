@@ -25,7 +25,9 @@ import { SettingsView, isCategory, type Category } from "./Settings";
 import { CostsView } from "./Costs";
 import { ActivityView } from "./Activity";
 import { ApprovalsView } from "./Chat";
+import { clearCache, peek, put, setAccount } from "./cache";
 import { subscribe } from "./events";
+import { prefetchView } from "./queries";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
 import { CardView, GearIcon, GoogleBanner, PlusIcon, SignInBanners, SortableCard, memberIssue } from "./components";
@@ -97,7 +99,8 @@ function parseRoute(): Route {
   }
   if (h === "connections" || h === "modules" || h === "accounts") return { kind: "settings", cat: h };
   // #/approvals, #/activity, ...: deep links to a tab.
-  if ((VIEWS as string[]).includes(h)) return { kind: "view", view: h as View };
+  // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
+  if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
   if (h === "brief") return { kind: "brief" };
   if (h === "help") return { kind: "help" };
   // A setup, invite or reset link.
@@ -201,12 +204,24 @@ export function App() {
       setError("");
       setNeedsSignIn(false);
       if (force || Date.now() > holdUntil.current) setItems(b.buckets);
+      put("board", b);
     } catch (e) {
       if (n !== seq.current) return;
-      if (e instanceof SignInRequired) setNeedsSignIn(true);
+      if (e instanceof SignInRequired) (clearCache(), setNeedsSignIn(true));
       else setError((e as Error).message);
     }
   }, []);
+  // The cache (cache.ts) belongs to the signed-in account; with one, the last board paints at once while /api/board loads.
+  useEffect(() => {
+    if (!session) return;
+    const admin = session.account?.role === "admin" && !session.needsTotp;
+    setAccount(admin ? session.account!.id : null);
+    const cached = admin ? peek<Board>("board")?.data : undefined;
+    if (!cached) return;
+    setSlackTeams(cached.slackTeams ?? {});
+    setBoard((b) => b ?? cached);
+    setItems((i) => i ?? cached.buckets);
+  }, [session]);
 
   useEffect(() => {
     // Also slide the session cookie's expiry forward (Better Auth refreshes it on get-session).
@@ -563,7 +578,7 @@ export function App() {
         {!mobile && (
           <nav className="main-tabs" aria-label="Sections">
             {tabs.map(([v, name]) => (
-              <button key={v} className={`btn${view === v ? " on" : ""}`} aria-current={view === v ? "page" : undefined} onClick={() => setView(v)}>
+              <button key={v} className={`btn${view === v ? " on" : ""}`} aria-current={view === v ? "page" : undefined} onClick={() => setView(v)} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
                 {v === "agents" && board.agentsActive > 0 && <span className="live-dot" title={`${board.agentsActive} working`} />}
                 {name}
                 {v === "approvals" && approvalsOpen > 0 && <span className="btn-count needs">{approvalsOpen}</span>}
@@ -623,7 +638,7 @@ export function App() {
       {mobile && !chatFull && (
         <nav className="tabs">
           {tabs.filter(([v]) => v !== "board").map(([v, name]) => (
-            <button key={v} className={view === v ? "on" : ""} onClick={() => setView(v)}>
+            <button key={v} className={view === v ? "on" : ""} onClick={() => setView(v)} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
               {name}
               {v === "approvals" && approvalsOpen > 0 && <span className="count">{approvalsOpen}</span>}
             </button>

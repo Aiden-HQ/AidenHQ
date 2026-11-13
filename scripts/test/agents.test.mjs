@@ -162,3 +162,15 @@ test("every template in modules/core/templates compiles as an instance agent in 
     assert.equal(a.model, "~deepseek/deepseek-flash-latest", key);
   }
 });
+
+test("departments: shipped agents name one from core's registry; an instance adds its own; an unknown one fails compile", () => {
+  const r = compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"]));
+  assert.deepEqual(r.paperclip.agents["chief-of-staff"].department, { id: "leadership", name: "Leadership", description: "Coordinates work and prepares research, drafts and reports for you", order: 0 });
+  assert.equal(r.paperclip.agents["review-chaser"].department.id, "outreach");
+  assert.equal(compile(product, withAgents({ "review-chaser": { yaml: { department: undefined } } }, ["github", "slack"])).paperclip.agents["review-chaser"].department.id, "general");
+  const dir = withAgents({ "review-chaser": { yaml: { department: "growth" } } }, ["github", "slack"]);
+  assert.throws(() => compile(product, dir), /review-chaser: department growth is not in the registry/);
+  const file = join(dir, "instance.yaml");
+  writeFileSync(file, YAML.stringify({ ...YAML.parse(readFileSync(file, "utf8")), departments: [{ id: "growth", name: "Growth" }] }));
+  assert.equal(compile(product, dir).paperclip.agents["review-chaser"].department.name, "Growth");
+});

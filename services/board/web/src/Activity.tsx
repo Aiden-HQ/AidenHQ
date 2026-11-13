@@ -1,29 +1,30 @@
 // Activity: what each agent did, by day, with a link to the chat.
-import { useEffect, useState } from "react";
-import { SignInRequired, api } from "./api";
-import type { ActivityItem } from "./types";
+import { useEffect } from "react";
+import { QUERIES, useQuery } from "./queries";
+import { DaysSkeleton, Updating } from "./Skeleton";
 
 export function ActivityView({ onSignIn }: { onSignIn: () => void }) {
-  const [days, setDays] = useState<{ day: string; items: ActivityItem[] }[] | null>(null);
-  const [error, setError] = useState("");
+  const { data, stale, error, reload } = useQuery(QUERIES.activity, onSignIn);
   useEffect(() => {
-    const load = () => api.activity(7).then((r) => setDays(r.days), (e: Error) => (e instanceof SignInRequired ? onSignIn() : setError(e.message)));
-    void load();
-    const t = setInterval(load, 60_000);
+    const t = setInterval(() => void reload(), 60_000);
     return () => clearInterval(t);
-  }, [onSignIn]);
+  }, [reload]);
+  const days = data?.days;
   const label = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" });
   return (
     <main className="page">
       <header className="page-head">
         <div>
           <h1>Activity</h1>
-          <p className="page-sub">What your agents finished in the last 7 days</p>
+          <p className="page-sub">
+            What your agents finished in the last 7 days
+            <Updating on={stale} />
+          </p>
         </div>
       </header>
       {error && <div className="alert">{error}</div>}
       {!days ? (
-        <span className="spinner" />
+        !error && <DaysSkeleton />
       ) : !days.length ? (
         <p className="empty-state">Nothing finished in the last week yet.</p>
       ) : (

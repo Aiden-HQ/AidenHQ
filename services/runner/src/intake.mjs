@@ -113,14 +113,14 @@ export const APPROVAL_SCHEMA = {
 };
 
 export function approvalPrompt({ user, title, waiting, comment }) {
-  return `${user} asked the Research Assistant to split the task "${title}" into Engineer tasks. These are created and waiting for ${user}'s go-ahead before any of them starts:
+  return `${user} asked the Executive Assistant to split the task "${title}" into Engineer tasks. These are created and waiting for ${user}'s go-ahead before any of them starts:
 
 ${waiting.map((w) => `- ${w.identifier}: ${String(w.title).replace(/[\r\n]+/g, " ").slice(0, 160)}`).join("\n")}
 
 Read ${user}'s newest comment on that task and answer with JSON:
 - "start": a clear go-ahead to start ALL of the waiting tasks as they are ("go", "go ahead", "start them", "looks good, run them", "👍").
 - "hold": explicitly not yet ("wait", "don't start yet", "hold off").
-- "other": anything else, including a go-ahead with changes or exceptions ("go, but skip X", "use opus instead", "add repo Y first"), questions and edits. Those go to the Research Assistant.
+- "other": anything else, including a go-ahead with changes or exceptions ("go, but skip X", "use opus instead", "add repo Y first"), questions and edits. Those go to the Executive Assistant.
 When in doubt, "other". Do not run any tools.
 
 <<<COMMENT

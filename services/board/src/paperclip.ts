@@ -15,7 +15,7 @@ export interface Agent {
   status: string;
   adapterType: string;
   adapterConfig?: Record<string, unknown>;
-  metadata?: { setupKey?: string; module?: unknown; trial?: unknown; models?: unknown; persona?: unknown; avatar?: unknown; runnerEngine?: unknown } | null;
+  metadata?: { setupKey?: string; module?: unknown; trial?: unknown; models?: unknown; persona?: unknown; avatar?: unknown; runnerEngine?: unknown; department?: unknown } | null;
 }
 
 export interface Issue {

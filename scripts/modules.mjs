@@ -33,7 +33,7 @@ const ROLES = {
 };
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
-const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "heartbeat", "web_search", "graded"];
+const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "heartbeat", "web_search", "graded", "department"];
 const INSTANCE_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedules", "status", "agent", "model"];
 // paperclip-tasks-mcp limits these to the trial agent's own tasks (the grants table marks it in trial); source_ack moves only
 // the caller's own source cursor.
@@ -274,6 +274,25 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "board"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
 
   instanceAgents(instanceDir, settings, paperclip, routineTitles);
+
+  // Departments: where the board's Agents page lists each agent. One registry, core's `departments:` then the instance's
+  // own (instance.yaml `departments:`); an agent's `department:` must name one, and without one it is `general`. Setup
+  // stores the resolved entry (id, name, description, order) in the agent's metadata for the board.
+  const departments = [...(core.departments ?? []), ...(instance.departments ?? [])];
+  if (!departments.some((d) => d?.id === "general")) departments.push({ id: "general", name: "General" });
+  const deptIds = new Set();
+  for (const d of departments) {
+    if (!/^[a-z][a-z0-9-]{0,39}$/.test(d?.id ?? "") || typeof d.name !== "string" || !d.name.trim()) fail(`departments: each needs an id (a-z, 0-9, -) and a name`);
+    if (deptIds.has(d.id)) fail(`departments: ${d.id} is listed twice`);
+    deptIds.add(d.id);
+  }
+  for (const [key, a] of Object.entries(paperclip.agents)) {
+    const id = a.department ?? "general";
+    const order = departments.findIndex((d) => d.id === id);
+    if (order < 0) fail(`agent ${key}: department ${id} is not in the registry (one of ${[...deptIds].join(", ")}; an instance adds its own under departments: in instance.yaml)`);
+    const d = departments[order];
+    a.department = { id, name: d.name.trim(), ...(d.description ? { description: String(d.description).trim() } : {}), order };
+  }
 
   // Grants: `connection: read | write | [tools]` resolve to tool lists (Codex scoping and the grants table setup writes).
   // A grant to a connection that isn't enabled fails, unless marked optional as `name?`.

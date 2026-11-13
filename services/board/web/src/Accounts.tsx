@@ -3,6 +3,7 @@
 import QRCode from "qrcode";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { SignInRequired, accountsApi, type Account, type AppAdmins, type AuthSession, type Session } from "./api";
+import { SkeletonLines } from "./Skeleton";
 import { ago } from "./util";
 
 function Screen({ title, sub, children }: { title: string; sub?: ReactNode; children: ReactNode }) {
@@ -275,7 +276,7 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
       <section className="accounts-section">
         <h2>People</h2>
         {!accounts ? (
-          !error && <span className="spinner" />
+          !error && <SkeletonLines lines={4} />
         ) : (
           <div className="account-list">
             {accounts.map((a) => {

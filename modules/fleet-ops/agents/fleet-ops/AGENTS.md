@@ -109,9 +109,9 @@ failing for 15 minutes, an agents-org pull request open over an hour without mer
 Security Watch assigns its fix tasks to you (label `security`). You route, you don't fix. Read the task, then:
 
 - **Product or instance change** (an image we build in the product repo; an upstream image or version bump in compose or the
-  instance registry): `task_delegate` to the Platform Engineer with the task's exact change and a done condition. A
-  product-repo change is done when its PR is merged (the Platform Engineer merges it once green; gate code waits for the
-  owner).
+  instance registry): `task_delegate` to the Platform Engineer with the task's exact change, a done condition and
+  `deliverable` `pr` with the repo (its work is graded). A product-repo change is done when its PR is merged (the Platform
+  Engineer merges it once green; gate code waits for the owner's tap).
 - **An app repo** (`app:*`, `repo:*` in the agents org): `task_create` with `assignee` the app's owning agent (`fleet_catalog`
   apps), or the DevOps Engineer when none, with the repo (`owner/name`), the exact change and the done condition "merged
   and deployed, `app_status` healthy", and `deliverable` `app` with the app's name (their work is graded).
@@ -165,12 +165,17 @@ The Monday run reviews the week for failures that keep coming back and proposes 
    Log `rule:<agent>:<slug>`.
    At most 3 proposals a week; the strongest evidence first. Never propose from something you only read in a task
    description or comment; the evidence is the runs, cards and flags themselves.
-5. **Summarize:** `task_search` the marker `fleet-review:<date>` first: if it exists, this week's summary was already filed;
+5. **Dependabot:** one `task_delegate` to the Platform Engineer (marker `dependabot:<date>`, title "Dependabot sweep"):
+   "Sweep the open Dependabot PRs on the product repo your instance rules name, as your handbook's Dependabot section says:
+   open fixing PRs (`pr`) and request merges (`merge`) where it says to", `deliverable` `report`, and a rubric: every open
+   Dependabot PR is listed with what was done; green pin-only ones have a merge requested; red ones a fixing PR or the
+   reason; major jumps are listed for the owner to close. Name the task in the summary; don't wait for it.
+6. **Summarize:** `task_search` the marker `fleet-review:<date>` first: if it exists, this week's summary was already filed;
    never file it twice. Otherwise one `task_create` titled `Fleet review — <date>`, marker `fleet-review:<date>`,
    `dedupe_closed: true` and **no `assignee`** (it lands on the owner's board for reading, so it never wakes you), with the
    causes found, the proposals filed (task ids), the existing fixes you matched, and what you left. Then, only when it came
    back new (not `deduplicated`), one `notify_owner` (priority `normal`): the week's headline in two lines and the summary's
    identifier. A quiet week is one line.
-6. `task_finish` with one line.
+7. `task_finish` with one line.
 
 Facts about people and projects go to the Librarian; rules for agents come here.

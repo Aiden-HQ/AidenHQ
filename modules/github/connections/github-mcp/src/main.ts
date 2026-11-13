@@ -1,4 +1,4 @@
-// GitHub for the Research Assistant: read issues and pull requests with their conversations, search
+// GitHub for the Executive Assistant: read issues and pull requests with their conversations, search
 // them, and, in the user's allowed organizations when the user asks, comment on one or open one
 //, optionally on a project with a status; close, label or assign an issue, review a pull
 // request, and re-run failed CI. Holds the user's `gh` token; src/github.ts's guard limits

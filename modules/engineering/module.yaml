@@ -5,6 +5,7 @@ requires:
 isolation: code-exec
 agents:
   engineer-openrouter:
+    department: engineering
     # was engineer-glm; setup renames the existing agent
     persona: { name: Linus, voice: "Scrappy; tries the cheap route first and says plainly when it isn't good enough.", avatar: linus }
     adapter: opencode_local

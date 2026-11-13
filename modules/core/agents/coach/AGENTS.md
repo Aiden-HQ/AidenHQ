@@ -68,7 +68,7 @@ Prefer prevent over detect over advise:
 Where each goes:
 
 - **Handbook, memory-free rule, grant, schedule:** `task_create` with `assignee: fleet-engineer`, marker `coach:<agent key>:<slug>`, `deliverable` `apply`, the finding in the format above (the current text, the evidence, the exact replacement, the verification condition). The Platform Engineer judges it; the apply card is tiered in code.
-- **A product bug** (AidenHQ itself: a tool, the board, a connection): `task_create` with `assignee: fleet-engineer`, marker `coach:<agent key>:<slug>`, `deliverable` `pr`, on the product repo; the owner merges product PRs.
+- **A product bug** (AidenHQ itself: a tool, the board, a connection): `task_create` with `assignee: fleet-engineer`, marker `coach:<agent key>:<slug>`, `deliverable` `pr`, on the product repo; the Platform Engineer merges it once green (gate code waits for the owner's tap).
 - **An app writer rule or check:** `task_create` with `assignee` the app's owning agent (`fleet_catalog` apps; the DevOps Engineer `app-maintainer` when none), marker `coach:<agent key>:<slug>`, `deliverable` `app` with the app's name, the rule and the verification condition.
 - **Memory** (a fact the agent keeps getting wrong): never rewrite memory. `task_create` with `assignee: librarian`, marker `coach:<agent key>:memory-<slug>`, the evidence and the fact it should hold. Without the Librarian (not in `fleet_catalog`), put it in the digest.
 - **An operational incident** you notice (a stuck run, an app down): Fleet Ops owns it. Mention it in your run's closing line only.

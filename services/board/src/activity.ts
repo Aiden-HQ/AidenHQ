@@ -98,15 +98,19 @@ export interface AgentsView {
   roster?: RosterAgent[];
 }
 
-/** Where an agent sits on the Agents page, from what setup wrote (never from its name). */
-export type RosterGroup = "coordinators" | "scouts" | "engineers" | "instance";
-
 export interface RosterAgent {
   id: string;
   name: string;
+  /** Its definition key (module.yaml / agents/<key>), when setup made it. */
+  key?: string;
+  /** A bundled portrait: /crew/<avatar>.svg. */
+  avatar?: string;
   /** Its one-line routing description. */
   title: string | null;
-  group: RosterGroup;
+  /** Where it sits on the Agents page, from what setup wrote (never from its name): a module's agent or the instance's own. */
+  system: boolean;
+  /** Its definition's `department:`, resolved from the one registry. */
+  department: Department;
   model: string | null;
   /** Paperclip's status: active, idle, running, paused, error… */
   status: string;
@@ -125,12 +129,30 @@ export function shortModel(a: Pick<Agent, "adapterType" | "adapterConfig" | "met
   return a.metadata?.runnerEngine ? (ENGINE_LABEL[a.adapterType] ?? null) : null;
 }
 
-export function rosterGroup(a: Pick<Agent, "metadata">): RosterGroup {
+export interface Department {
+  id: string;
+  name: string;
+  description?: string;
+  /** Its place in the registry (modules/core/module.yaml `departments:`, then the instance's). */
+  order: number;
+}
+const GENERAL: Department = { id: "general", name: "General", order: 1_000 };
+
+/** The agent's department as setup wrote it (compile resolves it from the registry); General without one. */
+export function departmentOf(a: Pick<Agent, "metadata">): Department {
+  const d = a.metadata?.department as Partial<Department> | undefined;
+  if (typeof d?.id !== "string" || typeof d.name !== "string" || typeof d.order !== "number") return GENERAL;
+  return { id: d.id, name: d.name, ...(typeof d.description === "string" ? { description: d.description } : {}), order: d.order };
+}
+
+/** The agent's definition key ("aidenhq:fleet-ops" → "fleet-ops") and bundled portrait, for its avatar on the board. */
+function identity(a: Pick<Agent, "metadata">): { key?: string; avatar?: string } {
   const m = a.metadata ?? {};
-  if (m.runnerEngine === true) return "engineers";
-  if (m.module === "core") return "coordinators";
-  if (m.module && m.module !== "instance") return "scouts";
-  return "instance";
+  const key = typeof m.setupKey === "string" && m.setupKey.startsWith("aidenhq:") ? m.setupKey.slice(8) : undefined;
+  const p = m.persona as { avatar?: unknown } | undefined;
+  const pic = typeof p?.avatar === "string" ? p.avatar : m.avatar;
+  const avatar = typeof pic === "string" && /^[a-z0-9-]{1,40}$/.test(pic) ? pic : undefined;
+  return { ...(key ? { key } : {}), ...(avatar ? { avatar } : {}) };
 }
 
 /** The live agents (terminated ones never show) with their schedules and newest run. */
@@ -140,8 +162,10 @@ export function roster(agents: Agent[], routines: Routine[], last: Map<string, {
     .map((a) => ({
       id: a.id,
       name: a.name,
+      ...identity(a),
       title: a.title?.trim() || null,
-      group: rosterGroup(a),
+      system: Boolean(a.metadata?.module) && a.metadata?.module !== "instance",
+      department: departmentOf(a),
       model: shortModel(a),
       status: a.status,
       trial: a.metadata?.trial === true,
@@ -181,9 +205,17 @@ export async function agentsView(input: {
 }): Promise<AgentsView> {
   const now = input.now ?? Date.now();
   const name = (id: string, fallback?: string) => input.agents.find((a) => a.id === id)?.name ?? fallback ?? "Agent";
+  // Every run's task is looked up at once (each is a Paperclip round trip), then read back in order.
+  const looked = new Map<string | null, Promise<RunContext>>();
+  const resolve = (id: string | null) => {
+    if (!looked.has(id)) looked.set(id, input.resolve(id));
+    return looked.get(id)!;
+  };
+  const shown = (r: PastRun) => !isLive(r.status) && !!r.finishedAt && now - Date.parse(r.finishedAt) <= FINISHED_WINDOW_MS;
+  for (const id of [...input.live.map((r) => r.issueId), ...(input.runner?.queued ?? []).map((j) => j.issueId), ...input.past.filter(shown).map((r) => r.issueId)]) void resolve(id);
   const sessions: Session[] = [];
   for (const r of input.live) {
-    const { run, tasks } = await input.resolve(r.issueId);
+    const { run, tasks } = await resolve(r.issueId);
     sessions.push({
       id: r.id,
       source: "agent",
@@ -206,14 +238,14 @@ export async function agentsView(input: {
     sessions.push({ id: `runner:${j.issueId}`, source: "runner", agent: engineerName(j, input.agents), agentId: engineerOf(j.engine, input.agents), state: "working", startedAt: j.startedAt, doing: jobDoing(j), said: j.said, saidAt: j.saidAt, plan: j.plan, steps: j.steps, ...ref(j) });
   }
   for (const j of fresh?.queued ?? []) {
-    const agentId = (await input.resolve(j.issueId)).assigneeAgentId ?? null;
+    const agentId = (await resolve(j.issueId)).assigneeAgentId ?? null;
     sessions.push({ id: `runner:queued:${j.issueId}`, source: "runner", agent: (agentId && name(agentId, "Engineer")) || "Engineer", agentId, state: "queued", startedAt: null, doing: "Waiting for a free slot", ...ref(j) });
   }
 
   const finished: Finished[] = [];
   for (const r of input.past) {
-    if (isLive(r.status) || !r.finishedAt || now - Date.parse(r.finishedAt) > FINISHED_WINDOW_MS) continue;
-    const { run, tasks } = await input.resolve(r.issueId);
+    if (!shown(r) || !r.finishedAt) continue;
+    const { run, tasks } = await resolve(r.issueId);
     finished.push({ id: r.id, source: "agent", agent: name(r.agentId), agentId: r.agentId, status: r.status, startedAt: r.startedAt, finishedAt: r.finishedAt, detail: r.error ?? undefined, run, tasks });
   }
   for (const j of runner?.recent ?? []) {

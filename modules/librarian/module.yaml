@@ -5,6 +5,7 @@ requires:
   - warehouse
 agents:
   librarian:
+    department: intake
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: medium

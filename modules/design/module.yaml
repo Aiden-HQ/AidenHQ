@@ -4,6 +4,7 @@ requires:
   - github
 agents:
   ui-designer:
+    department: engineering
     adapter: codex_local
     max_parallel: 2 # design reviews per PR are independent; each run gets its own box
     # Graded done: mockups and design work delegated to it are checked against their rubric before they close.

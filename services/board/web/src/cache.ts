@@ -1,0 +1,191 @@
+// Stale-while-revalidate for the board's pages: a view shows the last good response at once (from memory, or from
+// localStorage after a reload), marks it as updating, then swaps in the fresh one. Keyed per route (with its params).
+// Persisted entries belong to the signed-in account (`setAccount`); signing out, or any 401, clears them. Only display
+// data is persisted: callers pass `persist: false` for anything a decision is made on (approvals) or private chat text.
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+// A 401 from api.ts (its SignInRequired, message "sign in"); matched by message so this module needs no app imports.
+const signedOut = (e: unknown) => e instanceof Error && e.message === "sign in";
+
+const PREFIX = "aidenhq.cache.";
+const ACCOUNT_KEY = `${PREFIX}account`;
+/** Per entry: a larger response just isn't persisted (memory still holds it). */
+const MAX_BYTES = 1_500_000;
+
+interface Entry {
+  data: unknown;
+  /** When it was fetched (read back from storage, it keeps that time). */
+  at: number;
+}
+
+const mem = new Map<string, Entry>();
+const listeners = new Map<string, Set<() => void>>();
+const inflight = new Map<string, Promise<unknown>>();
+/** What was last written to storage per key (its data as JSON), so an unchanged poll writes nothing. */
+const written = new Map<string, string>();
+const noop = () => {};
+const followUps = new Map<string, Promise<unknown>>();
+let account: string | null = null;
+
+const storage = (): Storage | null => {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+};
+const notify = (key: string) => listeners.get(key)?.forEach((l) => l());
+
+/** Whose cache this is: the signed-in account's id (null signs out: everything cached is dropped). */
+export function setAccount(id: string | null) {
+  const s = storage();
+  let before: string | null = null;
+  try {
+    before = s?.getItem(ACCOUNT_KEY) ?? null;
+  } catch {}
+  if (id === null || (before && before !== id)) clearCache();
+  account = id;
+  try {
+    if (id) s?.setItem(ACCOUNT_KEY, id);
+  } catch {}
+}
+
+/** Drop every cached response, in memory and in storage. */
+export function clearCache() {
+  const keys = [...mem.keys()];
+  mem.clear();
+  written.clear();
+  inflight.clear();
+  followUps.clear();
+  account = null;
+  const s = storage();
+  try {
+    if (s) for (let i = s.length - 1; i >= 0; i--) if (s.key(i)?.startsWith(PREFIX)) s.removeItem(s.key(i)!);
+  } catch {}
+  keys.forEach(notify);
+}
+
+/** The cached response for this key (the same object until it changes): memory first, then the account's storage. */
+export function peek<T>(key: string): { data: T; at: number } | undefined {
+  const m = mem.get(key);
+  if (m || !account) return m as { data: T; at: number } | undefined;
+  try {
+    const raw = storage()?.getItem(PREFIX + key);
+    if (!raw) return undefined;
+    const saved = JSON.parse(raw) as { account: string; at: number; data: T };
+    if (saved.account !== account) return undefined;
+    const e: Entry = { data: saved.data, at: saved.at };
+    mem.set(key, e);
+    return e as { data: T; at: number };
+  } catch {
+    return undefined;
+  }
+}
+
+export function put(key: string, data: unknown, persist = true) {
+  const at = Date.now();
+  mem.set(key, { data, at });
+  notify(key);
+  if (!persist || !account) return;
+  const s = storage();
+  try {
+    // Polls mostly bring the same answer: rewrite storage only when it changed (a reload shows its older `at` as stale anyway).
+    const body = JSON.stringify(data);
+    if (written.get(key) === body) return;
+    written.set(key, body);
+    const raw = JSON.stringify({ account, at, data });
+    if (raw.length > MAX_BYTES) return s?.removeItem(PREFIX + key);
+    s?.setItem(PREFIX + key, raw);
+  } catch {
+    // Full (quota) or blocked: this entry just isn't kept.
+  }
+}
+
+/**
+ * Fetch into the cache: one request per key at a time (a second caller shares it; with `after`, it waits for the running
+ * one and then fetches again, for a refresh that must see a change just made). A 401 clears the cache (the session ended)
+ * and rethrows, so the view can ask to sign in.
+ */
+export function load<T>(key: string, fetcher: () => Promise<T>, persist = true, after = false): Promise<T> {
+  const running = inflight.get(key);
+  if (running && after) {
+    // At most one follow-up per key: polls on a slow route share it instead of queueing behind each other.
+    if (!followUps.has(key)) {
+      const next = running.then(noop, noop).then(() => (followUps.delete(key), load(key, fetcher, persist)));
+      followUps.set(key, next);
+    }
+    return followUps.get(key) as Promise<T>;
+  }
+  if (running) return running as Promise<T>;
+  const p = fetcher().then(
+    (data) => {
+      if (inflight.get(key) === p) put(key, data, persist);
+      return data;
+    },
+    (e) => {
+      if (signedOut(e)) clearCache();
+      throw e;
+    },
+  );
+  inflight.set(key, p);
+  void p.then(
+    () => inflight.get(key) === p && inflight.delete(key),
+    () => inflight.get(key) === p && inflight.delete(key),
+  );
+  return p;
+}
+
+/** Warm the cache (a hovered tab): ignores errors; skips a key fetched in the last 15 seconds. */
+export function prefetch(key: string, fetcher: () => Promise<unknown>, persist = true) {
+  const e = mem.get(key);
+  if (e && Date.now() - e.at < 15_000) return;
+  load(key, fetcher, persist).catch(() => {});
+}
+
+function subscribe(key: string, l: () => void) {
+  if (!listeners.has(key)) listeners.set(key, new Set());
+  listeners.get(key)!.add(l);
+  return () => void listeners.get(key)?.delete(l);
+}
+
+export interface Cached<T> {
+  data: T | undefined;
+  /** What's shown came from an earlier load (memory or storage) and a fresh one hasn't landed yet. */
+  stale: boolean;
+  error: string;
+  /** Refetch now (events, polls, Refresh). */
+  reload: () => Promise<void>;
+}
+
+/**
+ * The response for `key`, cached: renders what's cached immediately, fetches on mount (and when `key` changes), and
+ * re-renders when any loader of the same key lands. `onSignIn` is called on a 401.
+ */
+export function useCached<T>(key: string, fetcher: () => Promise<T>, opts: { persist?: boolean; onSignIn?: () => void } = {}): Cached<T> {
+  const persist = opts.persist ?? true;
+  const ref = useRef({ fetcher, onSignIn: opts.onSignIn });
+  ref.current = { fetcher, onSignIn: opts.onSignIn };
+  const [error, setError] = useState({ key, text: "" });
+  const entry = useSyncExternalStore(
+    useCallback((l: () => void) => subscribe(key, l), [key]),
+    () => peek<T>(key),
+  );
+  const fetchNow = useCallback(
+    async (after: boolean) => {
+      try {
+        await load(key, () => ref.current.fetcher(), persist, after);
+        setError({ key, text: "" });
+      } catch (e) {
+        if (signedOut(e)) ref.current.onSignIn?.();
+        else setError({ key, text: (e as Error).message });
+      }
+    },
+    [key, persist],
+  );
+  // On open, share a fetch already running (a prefetch); a later reload (an event, a decision) fetches after it.
+  useEffect(() => void fetchNow(false), [fetchNow]);
+  const reload = useCallback(() => fetchNow(true), [fetchNow]);
+  // Stale: loaded before this view opened (an earlier visit, or storage), until a load that lands after.
+  const opened = useRef({ key, at: Date.now() });
+  if (opened.current.key !== key) opened.current = { key, at: Date.now() };
+  return { data: entry?.data, stale: !!entry && entry.at < opened.current.at, error: error.key === key ? error.text : "", reload };
+}

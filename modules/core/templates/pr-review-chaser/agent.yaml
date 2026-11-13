@@ -4,6 +4,7 @@
 name: Review Chaser
 description: Chases pull requests waiting on a review in the owner's repositories and drafts nudges to the reviewers.
 reports_to: architect
+department: outreach # where the board lists it (modules/core/module.yaml departments:)
 model: ~deepseek/deepseek-flash-latest
 budget: 10 # USD per month
 trial: true

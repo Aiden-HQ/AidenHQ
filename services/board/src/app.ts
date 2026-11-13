@@ -8,7 +8,7 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { makeRuns } from "./runs.js";
-import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunContext, type RunnerReport, type Working } from "./activity.js";
+import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunContext, type RunnerReport, type TaskRef, type Working } from "./activity.js";
 import { RecurringSchema, RunStateSchema, ScheduleSchema, changeRecurring, claimDue, recurringView, scheduleMove } from "./automation.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, RUNNER_MARKER, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, type DeliveredFrom } from "./crew.js";
@@ -26,7 +26,8 @@ import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradingOn, prRefAllowed } from "./grades.js";
-import { UsageSchema, WINDOWS, costs, type CostWindow } from "./costs.js";
+import { UsageSchema, WINDOWS, costs, keyUsage, type CostWindow } from "./costs.js";
+import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
 import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
@@ -266,11 +267,11 @@ export function createApp(opts: AppOptions): Server {
     return { me, agents, labels, assignees: assignees(agents), prefix: company.issuePrefix ?? "" };
   }
 
-  /** The tasks the board shows: assigned to the user, the Research Assistant or an Engineer. */
+  /** The tasks the board shows: assigned to the user, the Executive Assistant or an Engineer. */
   const mine = (issues: Issue[], ctx: { me: string; assignees: Assignee[] }) =>
     issues.filter((i) => (i.assigneeAgentId ? ctx.assignees.some((a) => a.key === i.assigneeAgentId) : i.assigneeUserId === ctx.me));
 
-  /** A task the board may change: assigned to the user, the Research Assistant or an Engineer. */
+  /** A task the board may change: assigned to the user, the Executive Assistant or an Engineer. */
   async function ownIssue(ref: string) {
     if (!REF.test(ref)) throw new HttpError(400, "bad task reference");
     const ctx = await context();
@@ -436,18 +437,22 @@ export function createApp(opts: AppOptions): Server {
     const issue = await pc.issueSummary(issueId).catch(() => undefined);
     if (!issue) return { run: null, tasks: [] };
     const tasks = runTasks(issue, prefix);
-    for (const t of tasks) t.title ??= (await refCache(t.identifier).catch(() => null))?.title;
+    await titled(tasks);
     return { run: { identifier: issue.identifier, title: issue.title }, tasks, assigneeAgentId: issue.assigneeAgentId };
   }
 
+  /** Names the tasks that carry only an identifier, looked up at once. */
+  const titled = (tasks: TaskRef[]) => Promise.all(tasks.filter((t) => t.title == null).map(async (t) => (t.title = (await refCache(t.identifier).catch(() => null))?.title)));
+
   async function activity(ctx: { agents: Awaited<ReturnType<typeof pc.agents>>; prefix: string }, withPast: boolean) {
+    // The roster never fails the page: without routines or run history, cards just show less. Started alongside the runs.
+    const rosterParts = withPast ? Promise.all([pc.routines().catch(() => []), pc.lastRuns().catch(() => new Map())]) : undefined;
     const [live, past] = await Promise.all([pc.liveRuns(), withPast ? pc.recentRuns(30) : Promise.resolve([])]);
     const view = await agentsView({ live, past, runner: shared.runner, agents: ctx.agents, resolve: (id) => runContext(id, ctx.prefix) });
     // Runner jobs report only their identifier; the Crew view names the task.
-    if (!withPast) return view;
-    for (const t of [...view.sessions, ...view.finished].flatMap((x) => x.tasks)) t.title ??= (await refCache(t.identifier).catch(() => null))?.title;
-    // The roster never fails the page: without routines or run history, cards just show less.
-    const [routines, last] = await Promise.all([pc.routines().catch(() => []), pc.lastRuns().catch(() => new Map())]);
+    if (!rosterParts) return view;
+    await titled([...view.sessions, ...view.finished].flatMap((x) => x.tasks));
+    const [routines, last] = await rosterParts;
     return { ...view, roster: roster(ctx.agents, routines, last) };
   }
 
@@ -772,7 +777,7 @@ export function createApp(opts: AppOptions): Server {
     const busy = (await working(ctx)).map;
     for (const k of kids) if (kind(k) && !closed(k) && !busy.has(k.identifier)) await pc.updateIssue(k.id, { status: "cancelled" });
     store.unschedule(source.id);
-    // Cancelled first: a comment on a closed task wakes nobody, and the runner's marker keeps it from the Research Assistant.
+    // Cancelled first: a comment on a closed task wakes nobody, and the runner's marker keeps it from the Executive Assistant.
     await pc.updateIssue(source.id, { status: "cancelled" });
     await pc.addComment(source.id, `Merged into ${target.identifier}.\n\n${RUNNER_MARKER}`);
     log.info({ issue: source.identifier, into: target.identifier, files: files.length }, "task merged");
@@ -1222,7 +1227,7 @@ export function createApp(opts: AppOptions): Server {
         return { text: digestText(store.approvals.since(new Date(now.getTime() - 86_400_000).toISOString())) };
       },
     },
-    // Board changes are the Research Assistant's (board-writer), through the tasks bridge with its own credential.
+    // Board changes are the Executive Assistant's (board-writer), through the tasks bridge with its own credential.
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), schedule(decodeURIComponent(m[1]!), body)) },
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), recurringChange(decodeURIComponent(m[1]!), body)) },
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!), parse(MergeSchema, body).into), merge(decodeURIComponent(m[1]!), body)) },
@@ -1252,7 +1257,7 @@ export function createApp(opts: AppOptions): Server {
       // user's own comment travels, word for word: the agent picks which one and for whom, never the words.
       method: "POST",
       path: /^\/internal\/issues\/([^/]+)\/pass$/,
-      // The runner (an Engineer's `aidenhq pass`) or the Research Assistant through the tasks bridge.
+      // The runner (an Engineer's `aidenhq pass`) or the Executive Assistant through the tasks bridge.
       handle: async (m, body, _u, req) => {
         if (!runnerKeyed(req)) await requireAgentTool(req, "task_pass_on", "board-writer");
         await refuseMemoryInbox(decodeURIComponent(m[1]!));
@@ -1266,7 +1271,7 @@ export function createApp(opts: AppOptions): Server {
         const byName = withHandle(ctx.assignees, to);
         const agent = named ?? (byName.length === 1 ? byName[0] : undefined);
         if (!agent) throw new HttpError(400, `${byName.length > 1 ? "more than one agent answers to" : "no agent is called"} ${to}: ${ctx.assignees.flatMap((a) => (a.kind === "me" ? [] : [a.persona?.name ?? a.name])).join(", ")}`);
-        // An agent may pass only to the Research Assistant, an Engineer, or an agent already on this task; never the Chief of Staff.
+        // An agent may pass only to the Executive Assistant, an Engineer, or an agent already on this task; never the Chief of Staff.
         const chief = ctx.agents.find((x) => x.id === agent.key)?.metadata?.setupKey === "aidenhq:chief-of-staff";
         const onTask = (await pc.children(task.id)).some((k) => k.assigneeAgentId === agent.key);
         if (chief || (agent.kind === "agent" && !onTask)) throw new HttpError(403, `${agent.persona?.name ?? agent.name} can't be passed to from here`);
@@ -1412,6 +1417,13 @@ export function createApp(opts: AppOptions): Server {
     { method: "GET", path: /^\/api\/runs\/([0-9a-f-]{36})$/, handle: async (m) => runView(m[1]!) },
     { method: "GET", path: /^\/api\/chats\/([^/]+)$/, handle: async (m) => chatView(decodeURIComponent(m[1]!)) },
     { method: "GET", path: /^\/api\/agents$/, handle: async () => activity(await context(), true) },
+    // The Agents page's first paint: who is in the fleet, where each sits and its schedules (no run history; /api/agents
+    // brings that, with each agent's last run, after).
+    { method: "GET", path: /^\/api\/agents\/roster$/, handle: async () => {
+        const [agents, routines] = await Promise.all([pc.agents(), pc.routines().catch(() => [])]);
+        return { roster: roster(agents, routines, new Map()) };
+      },
+    },
     { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, store), m[1]!) },
     {
       // Chats: open ones first, then the 20 newest finished ones; each with its agent and state.
@@ -1589,6 +1601,18 @@ export function createApp(opts: AppOptions): Server {
         return costs(pc, store, w as CostWindow);
       },
     },
+    // The Costs tab's ledger views (cost-ledger.ts): aggregates over ?from&to&bucket, and one agent's or model's top runs and tasks.
+    {
+      method: "GET",
+      path: /^\/api\/costs\/ledger$/,
+      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, grantsFile: process.env.AIDENHQ_GRANTS_FILE }, ledgerRange(url.searchParams)),
+    },
+    {
+      method: "GET",
+      path: /^\/api\/costs\/top$/,
+      handle: async (_m, _b, url) =>
+        ledgerTop({ store, agents: () => pc.agents(), issue: (id) => pc.issueSummary(id) }, ledgerRange(url.searchParams), { agentId: url.searchParams.get("agent") ?? undefined, model: url.searchParams.get("model") ?? undefined }),
+    },
     // Read-only module catalog (compiled config/modules.json), for Settings > Modules.
     { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")) }) },
     // Settings (web/src/Settings.tsx): the compiled config, read-only, with what the board can see live. Edits go through git.
@@ -1639,7 +1663,7 @@ export function createApp(opts: AppOptions): Server {
         // Hidden markers are machine-only: the runner ignores comments that carry its marker.
         let posted;
         if (!others.length || named.length > others.length) posted = await pc.addComment(issue.id, displayText(text));
-        // On the user's own task the message stays in the team chat; the Research Assistant leaves it to the others.
+        // On the user's own task the message stays in the team chat; the Executive Assistant leaves it to the others.
         else if (issue.id === task!.id) posted = await pc.addComment(issue.id, `${displayText(text)}\n\n${FOR_OTHERS}`);
         log.info({ issue: issue.identifier, mentions: named.map((a) => a.name) }, "comment added");
         // A message to a finished chat reopens it.

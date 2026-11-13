@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
-import { Avatar, Plan, PlusIcon } from "./components";
+import { Plan, PlusIcon } from "./components";
 import { useEvents } from "./events";
-import type { Agents, Assignee, Finished, RosterAgent, Scorecard as ScorecardData, Session, TaskRef } from "./types";
+import { QUERIES, scorecardQuery, useQuery } from "./queries";
+import { Bone, FleetSkeleton, SkeletonLines, Updating } from "./Skeleton";
+import type { Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
 import { ago, elapsed } from "./util";
-import { Monogram } from "./Workspace";
 
 const STATUS: Record<string, { text: string; tone: "ok" | "bad" | "meh" }> = {
   succeeded: { text: "Done", tone: "ok" },
@@ -32,12 +34,25 @@ async function newAgent(onSignIn: () => void, setError: (e: string) => void) {
   }
 }
 
-const GROUPS: { key: RosterAgent["group"]; name: string; hint: string }[] = [
-  { key: "coordinators", name: "Coordinators", hint: "Take your requests and hand the work out" },
-  { key: "scouts", name: "Scouts and loops", hint: "Watch your sources and keep loops closed" },
-  { key: "engineers", name: "Engineers", hint: "Write and ship code through the runner" },
-  { key: "instance", name: "Your agents", hint: "Defined for this AidenHQ" },
-];
+type Department = RosterAgent["department"];
+const GENERAL: Department = { id: "general", name: "General", order: 1_000 };
+/** The owner's own agents are listed flat until there are this many; then by department too. */
+const FLAT_UNDER = 6;
+/** The chief of staff leads its department, as "Your chief of staff". */
+const FRONT = "chief-of-staff";
+
+/** Agents by department, in the registry's order (compile resolves it: modules/core/module.yaml `departments:`). */
+function byDepartment(agents: RosterAgent[]): { dept: Department; members: RosterAgent[] }[] {
+  const groups = new Map<string, { dept: Department; members: RosterAgent[] }>();
+  for (const a of agents) {
+    const dept = a.department ?? GENERAL;
+    if (!groups.has(dept.id)) groups.set(dept.id, { dept, members: [] });
+    groups.get(dept.id)!.members.push(a);
+  }
+  const front = (a: RosterAgent) => (a.key === FRONT ? 0 : 1);
+  for (const g of groups.values()) g.members.sort((x, y) => front(x) - front(y));
+  return [...groups.values()].sort((x, y) => x.dept.order - y.dept.order || x.dept.name.localeCompare(y.dept.name));
+}
 
 /** Recent runs folded to one row per task (or per scan, by its title): how many, the latest outcome, when. */
 function fold(runs: Finished[]) {
@@ -53,41 +68,65 @@ function fold(runs: Finished[]) {
 }
 
 /**
- * The Agents page: the fleet as one table, a row per agent in its group: where it stands, what it's on now,
- * its next scheduled run and its last result. A row opens in place to the rest (routing line, model, every schedule,
- * live plans, recent runs). Then runs from no listed agent (runner jobs).
+ * The Agents page: the fleet as tables, the platform's agents then the owner's own, each by department: where each agent
+ * stands, what it's on now, its next scheduled run and its last result. A row opens in place to the rest (routing line,
+ * model, every schedule, live plans, recent runs). Then runs from no listed agent (runner jobs).
+ *
+ * Loads in two parts: the roster (names, departments, schedules: fast) paints the rows; the run history (/api/agents,
+ * slower) fills Now and Last result after. Both show the last good copy at once (cache.ts) while they refresh.
  */
 export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () => void }) {
-  const [data, setData] = useState<Agents | null>(null);
-  const [error, setError] = useState("");
+  const fleet = useQuery(QUERIES.roster, onSignIn);
+  const runs = useQuery(QUERIES.agents, onSignIn);
+  const [newError, setNewError] = useState("");
   const [now, setNow] = useState(Date.now());
   const [open, setOpen] = useState<Set<string>>(new Set());
 
-  const load = useCallback(async () => {
-    try {
-      setData(await api.agents());
-      setError("");
-    } catch (e) {
-      if (e instanceof SignInRequired) onSignIn();
-      else setError((e as Error).message);
-    }
-  }, [onSignIn]);
-
+  const { reload } = runs;
   useEffect(() => {
-    void load();
-    const poll = setInterval(() => document.visibilityState === "visible" && void load(), 5000);
+    const poll = setInterval(() => document.visibilityState === "visible" && void reload(), 5000);
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => (clearInterval(poll), clearInterval(tick));
-  }, [load]);
-  useEvents(["fleet", "approvals"], load); // a Fleet Ops check or a card changes: refresh now (events.ts)
+  }, [reload]);
+  // A Fleet Ops check or a card changes: refresh now (events.ts); the roster too, for a new or paused agent.
+  useEvents(["fleet", "approvals"], () => void Promise.all([runs.reload(), fleet.reload()]));
 
-  if (!data) return <main className="page wide">{error ? <p className="empty">Couldn't load your agents: {error}</p> : <span className="spinner" />}</main>;
+  const data = runs.data;
+  const roster = data?.roster ?? fleet.data?.roster;
+  const error = newError || runs.error || (!roster ? fleet.error : "");
+  const head = (sub: ReactNode) => (
+    <header className="page-head">
+      <div>
+        <h1>Agents</h1>
+        <p className="page-sub">{sub}</p>
+      </div>
+      <span className="spacer" />
+      <button className="btn primary" onClick={() => void newAgent(onSignIn, setNewError)}>
+        <PlusIcon /> New agent
+      </button>
+    </header>
+  );
+  if (!roster)
+    return (
+      <main className="page wide">
+        {head(fleet.error ? "" : "Loading your agents…")}
+        {fleet.error ? (
+          <div className="offline">Couldn't load your agents: {fleet.error}. Retrying…</div>
+        ) : (
+          <section className="fleet-section">
+            <h2 className="fleet-section-head">Platform agents</h2>
+            <FleetSkeleton />
+          </section>
+        )}
+      </main>
+    );
 
-  const roster = data.roster ?? [];
+  const sessions = data?.sessions ?? [];
+  const finishedRuns = data?.finished ?? [];
   const listed = (x: { agentId: string | null }) => roster.some((a) => a.id === x.agentId);
-  const other = data.sessions.filter((s) => !listed(s));
-  const otherDone = data.finished.filter((f) => !listed(f));
-  const working = roster.filter((a) => data.sessions.some((s) => s.agentId === a.id && s.state === "working")).length;
+  const other = sessions.filter((s) => !listed(s));
+  const otherDone = finishedRuns.filter((f) => !listed(f));
+  const working = roster.filter((a) => sessions.some((s) => s.agentId === a.id && s.state === "working")).length;
   const attention = roster.filter((a) => a.status === "paused" || a.status === "error").length;
   const toggle = (id: string) =>
     setOpen((o) => {
@@ -95,29 +134,26 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
       if (!n.delete(id)) n.add(id);
       return n;
     });
-
-  return (
-    <main className="page wide">
-      <header className="page-head">
-        <div>
-          <h1>Agents</h1>
-          <p className="page-sub">
-            {roster.length} agents, {working ? `${working} working now` : "none working now"}
-            {attention ? `, ${attention} need${attention === 1 ? "s" : ""} you` : ""}
-          </p>
-        </div>
-        <span className="spacer" />
-        <button className="btn primary" onClick={() => void newAgent(onSignIn, setError)}>
-          <PlusIcon /> New agent
-        </button>
-      </header>
-      {error && <div className="offline">Offline: {error}. Retrying…</div>}
-      {data.runner.stale && (
-        <p className="agents-note">
-          {data.runner.reportedAt ? `The runner last reported ${ago(data.runner.reportedAt, now)} ago, so Engineer jobs may be missing.` : "The runner hasn't reported yet, so Engineer jobs aren't shown."}
-        </p>
-      )}
-      <div className="fleet" role="table" aria-label="Agents">
+  const row = (a: RosterAgent) => (
+    <AgentRow
+      key={a.id}
+      a={a}
+      assignee={crew.find((c) => c.key === a.id) ?? { key: a.id, kind: "agent", name: a.name, ...(a.avatar ? { avatar: a.avatar } : {}) }}
+      sessions={sessions.filter((s) => s.agentId === a.id)}
+      finished={finishedRuns.filter((f) => f.agentId === a.id)}
+      runsLoaded={!!data}
+      now={now}
+      open={open.has(a.id)}
+      toggle={() => toggle(a.id)}
+    />
+  );
+  // Platform agents ship with AidenHQ (any module); "Your agents" are the instance's own (agents/<key>/ in its repo).
+  const platform = roster.filter((a) => a.system !== false);
+  const mine = roster.filter((a) => a.system === false);
+  const table = (label: string, agents: RosterAgent[], grouped: boolean) => (
+    <section className="fleet-section" aria-label={label}>
+      <h2 className="fleet-section-head">{label}</h2>
+      <div className="fleet" role="table" aria-label={label}>
         <div className="fleet-cols" role="row">
           <span role="columnheader">Agent</span>
           <span role="columnheader">Status</span>
@@ -126,31 +162,45 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
           <span role="columnheader">Last result</span>
           <span />
         </div>
-        {GROUPS.map((g) => {
-          const members = roster.filter((a) => a.group === g.key);
-          if (!members.length) return null;
-          return (
-            <div key={g.key} role="rowgroup" className="fleet-group">
-              <div className="fleet-group-head" role="row">
-                <h2>{g.name}</h2>
-                <span className="hint">{g.hint}</span>
+        {grouped
+          ? byDepartment(agents).map(({ dept, members }) => (
+              <div key={dept.id} role="rowgroup" className="fleet-group">
+                <div className="fleet-group-head" role="row">
+                  <h3>{dept.name}</h3>
+                  {dept.description && <span className="hint">{dept.description}</span>}
+                </div>
+                {members.map(row)}
               </div>
-              {members.map((a) => (
-                <AgentRow
-                  key={a.id}
-                  a={a}
-                  assignee={crew.find((c) => c.key === a.id) ?? { key: a.id, kind: "agent", name: a.name }}
-                  sessions={data.sessions.filter((s) => s.agentId === a.id)}
-                  finished={data.finished.filter((f) => f.agentId === a.id)}
-                  now={now}
-                  open={open.has(a.id)}
-                  toggle={() => toggle(a.id)}
-                />
-              ))}
-            </div>
-          );
-        })}
+            ))
+          : agents.map(row)}
       </div>
+    </section>
+  );
+
+  return (
+    <main className="page wide">
+      {head(
+        <>
+          {roster.length} agents, {data ? (working ? `${working} working now` : "none working now") : "checking who's working"}
+          {attention ? `, ${attention} need${attention === 1 ? "s" : ""} you` : ""}
+          <Updating on={runs.stale || fleet.stale || !data} />
+        </>,
+      )}
+      {error && <div className="offline">Offline: {error}. Retrying…</div>}
+      {data?.runner.stale && (
+        <p className="agents-note">
+          {data.runner.reportedAt ? `The runner last reported ${ago(data.runner.reportedAt, now)} ago, so Engineer jobs may be missing.` : "The runner hasn't reported yet, so Engineer jobs aren't shown."}
+        </p>
+      )}
+      {platform.length > 0 && table("Platform agents", platform, true)}
+      {mine.length > 0 ? (
+        table("Your agents", mine, mine.length >= FLAT_UNDER)
+      ) : (
+        <section className="fleet-section" aria-label="Your agents">
+          <h2 className="fleet-section-head">Your agents</h2>
+          <p className="empty-state">Agents you add show here. Use New agent to describe one; the Agent Architect designs it with you.</p>
+        </section>
+      )}
       {(other.length > 0 || otherDone.length > 0) && (
         <section className="agent-group">
           <header className="section-head">
@@ -194,7 +244,7 @@ const fromRow = (e: MouseEvent, f: () => void) => {
   if (!(e.target as HTMLElement).closest("a, button")) f();
 };
 
-function AgentRow({ a, assignee, sessions, finished, now, open, toggle }: { a: RosterAgent; assignee: Assignee; sessions: Session[]; finished: Finished[]; now: number; open: boolean; toggle: () => void }) {
+function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, toggle }: { a: RosterAgent; assignee: Assignee; sessions: Session[]; finished: Finished[]; runsLoaded: boolean; now: number; open: boolean; toggle: () => void }) {
   const on = sessions.filter((s) => s.state === "working");
   const queued = sessions.filter((s) => s.state === "queued");
   const st = standing(a, on, queued, now);
@@ -210,21 +260,25 @@ function AgentRow({ a, assignee, sessions, finished, now, open, toggle }: { a: R
     <div role="row" className={`fleet-row${on.length ? " busy" : ""}${open ? " open" : ""}${flag}`}>
       <div className="fleet-main" onClick={(e) => fromRow(e, toggle)}>
         <div className="fleet-who" role="cell">
-          <span className="crew-portrait">{assignee.persona?.avatar || assignee.avatar ? <Avatar assignee={assignee} size={36} /> : <Monogram name={a.name} size={36} />}</span>
+          <span className="crew-portrait">
+            <AgentAvatar className="avatar" name={a.name} portrait={assignee.persona?.avatar ?? assignee.avatar ?? a.avatar} size={36} front={a.key === FRONT} />
+          </span>
           <div className="fleet-name">
             <h3>
               <span className="fleet-name-text">{a.name}</span>
               {a.trial && <span className="pill pill-needs">Trial</span>}
             </h3>
-            {a.title && <p title={a.title}>{a.title}</p>}
+            {a.key === FRONT ? <p>Your chief of staff</p> : a.title && <p title={a.title}>{a.title}</p>}
           </div>
         </div>
         <div className="fleet-status" role="cell">
-          <span className={`pill${st.tone ? ` pill-${st.tone}` : ""}`}>{st.text}</span>
+          {runsLoaded || st.tone ? <span className={`pill${st.tone ? ` pill-${st.tone}` : ""}`}>{st.text}</span> : <Bone className="pill-sk" />}
         </div>
-        <div className={`fleet-now${on.length || queued.length ? "" : " is-empty"}`} role="cell">
+        <div className={`fleet-now${on.length || queued.length || !runsLoaded ? "" : " is-empty"}`} role="cell">
           <span className="fleet-label">Now</span>
-          {on.length ? (
+          {!runsLoaded ? (
+            <Bone w="60%" />
+          ) : on.length ? (
             <span className="fleet-line">
               <Tasks tasks={on[0]!.tasks} fallback={on[0]!.run} inline />
               {on.length > 1 && <span className="fleet-more">+{on.length - 1} more</span>}
@@ -247,9 +301,11 @@ function AgentRow({ a, assignee, sessions, finished, now, open, toggle }: { a: R
             <span className="fleet-line faint">{a.schedules.length ? "Schedules paused" : "When asked"}</span>
           )}
         </div>
-        <div className={`fleet-last${lastSt ? "" : " is-empty"}`} role="cell">
+        <div className={`fleet-last${lastSt || !runsLoaded ? "" : " is-empty"}`} role="cell">
           <span className="fleet-label">Last</span>
-          {lastSt ? (
+          {!runsLoaded ? (
+            <Bone w="70%" />
+          ) : lastSt ? (
             <span className="fleet-line" title={last?.f.detail}>
               <span className={`run-status run-${lastSt.tone}`}>{lastSt.text}</span>
               {last && <Tasks tasks={last.f.tasks} fallback={last.f.run} inline />}
@@ -362,12 +418,9 @@ const usd = (n: number) => `$${n < 1 ? n.toFixed(3) : n.toFixed(2)}`;
 
 /** The week's diagnostics for one agent: done, sent back (grades), cards rejected, failed runs, billed cost per task; a 7-day trend. Not a ranking. */
 function Scorecard({ id }: { id: string }) {
-  const [s, setS] = useState<ScorecardData | null | undefined>(undefined);
-  useEffect(() => {
-    api.scorecard(id).then(setS, () => setS(null));
-  }, [id]);
-  if (s === undefined) return <section><h4>Last 7 days</h4><span className="spinner" /></section>;
-  if (!s) return <section><h4>Last 7 days</h4><p className="fleet-empty">Couldn't load the scorecard.</p></section>;
+  const { data: s, error } = useQuery(scorecardQuery(id));
+  if (!s && error) return <section><h4>Last 7 days</h4><p className="fleet-empty">Couldn't load the scorecard.</p></section>;
+  if (!s) return <section><h4>Last 7 days</h4><SkeletonLines lines={5} /></section>;
   const was = (prior: number) => (prior ? ` (was ${prior})` : "");
   return (
     <section>

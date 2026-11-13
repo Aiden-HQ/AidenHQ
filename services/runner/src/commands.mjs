@@ -189,7 +189,7 @@ export function isUserPart(issue, engineers) {
 }
 
 /**
- * A sub-task an agent (the Research Assistant) created for an Engineer under one of the user's tasks. Its
+ * A sub-task an agent (the Executive Assistant) created for an Engineer under one of the user's tasks. Its
  * description is agent-written, so it waits for the user's go-ahead before it is the request.
  */
 export function isAgentSubtask(issue) {
@@ -209,7 +209,8 @@ export function runsUnasked(chain) {
 }
 
 /**
- * A rule or access proposal an agent filed straight to the Platform Engineer (`task_create`, marker `rule:<agent>:<slug>`; the
+ * A rule or access proposal, Coach finding, product bug or Dependabot sweep an agent filed straight to the Platform Engineer
+ * (`task_create`, marker `rule:` / `coach:` / `product-bug:` / `dependabot:`; the
  * Librarian's `task_propose_rule` wraps it as `delegate:<parent>:rule:...`). It runs without the owner's go-ahead: its only
  * output is a fleet apply card, which the AI reviewer or the owner still decides (the runner pushes and merges nothing without
  * one). Three checks, none of them typeable in free text: the marker is the tool's own last line (the tools strip `<!--` from
@@ -222,6 +223,6 @@ export function isRuleProposal(issue, grants) {
     issue?.createdByAgentId && !issue.createdByUserId &&
     grants?.agents?.[issue.assigneeAgentId]?.key === "fleet-engineer" &&
     (filer.includes("task_create") || filer.includes("task_propose_rule")) &&
-    /\n<!--\s*source:(?:delegate:[^:\s]+:)?rule:[A-Za-z0-9:._\/-]+\s*-->\s*$/.test(String(issue.description ?? "")),
+    /\n<!--\s*source:(?:delegate:[^:\s]+:)?(?:rule|coach|product-bug|dependabot):[A-Za-z0-9:._\/-]+\s*-->\s*$/.test(String(issue.description ?? "")),
   );
 }

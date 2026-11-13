@@ -10,7 +10,7 @@ export const DEFAULT_ALLOWLIST = [
   "slack_read_thread",
   "slack_read_user_profile",
   "slack_list_user_channels",
-  "slack_send_message_draft", // DRAFT_TOOL: drafts only; per-agent enabled_tools keep it with the Research Assistant
+  "slack_send_message_draft", // DRAFT_TOOL: drafts only; per-agent enabled_tools keep it with the Executive Assistant
 ];
 
 /**

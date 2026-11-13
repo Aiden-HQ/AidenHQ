@@ -17,7 +17,7 @@ export function elapsed(iso: string, now = Date.now()): string {
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
-/** "Research Assistant", or "Codex" for "Engineer · Codex (gpt-5.5, high effort)". */
+/** "Executive Assistant", or "Codex" for "Engineer · Codex (gpt-5.5, high effort)". */
 export function agentShort(agent: string): string {
   return agent.replace(/^Engineer · /, "").replace(/ \(.*\)$/, "");
 }

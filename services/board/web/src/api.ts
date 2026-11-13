@@ -1,4 +1,4 @@
-import type { ActivityItem, Agents, Approval, AppRow, Board, Bucket, Cadence, ChatAgent, ChatDetail, ChatRow, Costs, CostWindow, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RunTrace, Scorecard, SettingsData, Update } from "./types";
+import type { ActivityItem, Agents, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -117,12 +117,16 @@ export const api = {
   decide: (id: string, decision: "approve" | "reject") => call<Approval>("POST", `/api/approvals/${encodeURIComponent(id)}/${decision}`, {}),
   decideBatch: (items: { id: string; digest: string }[], decision: "approve" | "reject") => call<{ approvals: Approval[] }>("POST", `/api/approvals/batch/${decision}`, { items }),
   agents: () => call<Agents>("GET", "/api/agents"),
+  /** The fleet without run history: the Agents page's first paint. */
+  roster: () => call<{ roster: RosterAgent[] }>("GET", "/api/agents/roster"),
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
   modules: () => call<{ modules: ModuleRow[] }>("GET", "/api/modules"),
   settings: () => call<SettingsData>("GET", "/api/settings"),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
   apps: () => call<{ apps: AppRow[]; error?: string }>("GET", "/api/apps"),
   costs: (window: CostWindow) => call<Costs>("GET", `/api/costs?window=${window}`),
+  costLedger: (q: URLSearchParams) => call<CostLedger>("GET", `/api/costs/ledger?${q}`),
+  costTop: (q: URLSearchParams) => call<CostTop>("GET", `/api/costs/top?${q}`),
   run: (id: string) => call<RunTrace>("GET", `/api/runs/${encodeURIComponent(id)}`),
   issue: (ref: string) => call<IssueView>("GET", `/api/issues/${encodeURIComponent(ref)}`),
   update: (ref: string, u: Update) => call<IssueView>("PATCH", `/api/issues/${encodeURIComponent(ref)}`, u),

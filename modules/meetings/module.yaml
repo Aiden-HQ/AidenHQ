@@ -4,6 +4,7 @@ requires:
   - google
 agents:
   meeting-librarian:
+    department: intake
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest # OpenRouter ids; "" = Codex default
     reasoning_effort: medium

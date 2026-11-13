@@ -101,6 +101,7 @@ describe("roster", () => {
       { id: "eng", name: "Engineer", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { module: "engineering", runnerEngine: true } },
       { id: "scout", name: "Slack Scout", status: "paused", adapterType: "codex_local", metadata: { module: "slack" } },
       { id: "keeper", name: "Roadmap Keeper", status: "idle", adapterType: "codex_local", metadata: { module: "instance", trial: true } },
+      { id: "ui", name: "UI Designer", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:ui-designer", module: "design", department: { id: "engineering", name: "Engineering", order: 3 }, avatar: "ui-designer" } },
       { id: "old", name: "Old Scout", status: "terminated", adapterType: "codex_local", metadata: { module: "slack" } },
     ] as Agent[];
     const routines = [
@@ -108,7 +109,8 @@ describe("roster", () => {
       { id: "r2", title: "App incident", status: "active", assigneeAgentId: "cos", triggers: [{ kind: "webhook", enabled: true }] },
     ] as Routine[];
     const out = roster(fleet, routines, new Map([["cos", { at: ago(5), status: "succeeded" }]]));
-    expect(out.map((a) => [a.name, a.group])).toEqual([["Aiden", "coordinators"], ["Engineer", "engineers"], ["Slack Scout", "scouts"], ["Roadmap Keeper", "instance"]]);
+    expect(out.map((a) => [a.name, a.system, a.department.id])).toEqual([["Aiden", true, "general"], ["Engineer", true, "general"], ["Slack Scout", true, "general"], ["Roadmap Keeper", false, "general"], ["UI Designer", true, "engineering"]]);
+    expect(out[4]).toMatchObject({ key: "ui-designer", avatar: "ui-designer" });
     expect(out[0]).toMatchObject({ title: "Your chief of staff", model: "deepseek-flash-latest", schedules: [{ title: "Prepare daily brief", paused: false, nextRunAt: "2026-10-13T04:45:00Z" }], lastRunAt: ago(5), lastRunStatus: "succeeded" });
     expect(out[1]!.model).toBe("Claude Code");
     expect(out[3]!.trial).toBe(true);

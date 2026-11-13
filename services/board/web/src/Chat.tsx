@@ -1,8 +1,10 @@
 import { useCallback, useState } from "react";
-import { SignInRequired, api } from "./api";
+import { api } from "./api";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
-import type { Approval, ChatState, NeedsYou } from "./types";
+import { QUERIES, useQuery } from "./queries";
+import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
+import type { Approval, ChatState } from "./types";
 import { ago } from "./util";
 
 const STATE_CLASS: Record<ChatState, string> = {
@@ -44,7 +46,7 @@ const BATCH_MAX = 10;
  * One approval card: one sentence, what it reads and changes, the cost, Details, Approve / Reject; the outcome stays here.
  * An expired card (timed out or replaced by a newer request) folds to one muted line; a tap shows it whole.
  */
-export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold, pick }: { a: Approval; open: (identifier: string) => void; decided: () => Promise<void>; inline?: boolean; prefix?: string; unfold?: boolean; pick?: { on: boolean; full: boolean; toggle: () => void } }) {
+export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold, pick, hold }: { a: Approval; open: (identifier: string) => void; decided: () => Promise<void>; inline?: boolean; prefix?: string; unfold?: boolean; pick?: { on: boolean; full: boolean; toggle: () => void }; hold?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [unfolded, setUnfolded] = useState(Boolean(unfold));
@@ -64,12 +66,14 @@ export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold, pi
       </li>
     );
   }
+  // `hold`: this card is an earlier copy while the current one loads; it's decided on fresh server state only.
+  const why = hold ? "Checking it hasn't changed…" : undefined;
   const buttons = (
     <div className="approval-actions">
-      <button className="btn" disabled={busy} onClick={() => void act("reject")}>
+      <button className="btn" disabled={busy || hold} title={why} onClick={() => void act("reject")}>
         Reject
       </button>
-      <button className="btn primary approve" disabled={busy} onClick={() => void act("approve")}>
+      <button className="btn primary approve" disabled={busy || hold} title={why} onClick={() => void act("approve")}>
         Approve
       </button>
     </div>
@@ -172,23 +176,20 @@ function groups(list: Approval[]): Approval[][] {
 
 /** Approvals: what waits for you first, big; then the history as one line per request, open to the full card. */
 export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) => void; onSignIn: () => void }) {
-  const [data, setData] = useState<NeedsYou | null>(null);
-  const [cards, setCards] = useState<Approval[] | null>(null);
-  const [error, setError] = useState("");
+  // The cards (the board's own store: fast) show first; what else waits on you (Paperclip: slower) fills in after.
+  // Both are kept in memory only; a card shown from an earlier visit can't be decided until the fresh copy lands.
+  const approvalsQ = useQuery(QUERIES.approvals, onSignIn);
+  const needsQ = useQuery(QUERIES.needsYou, onSignIn);
   const [filter, setFilter] = useState<Filter | null>(null);
   const load = useCallback(async () => {
-    try {
-      const [n, a] = await Promise.all([api.needsYou(), api.approvals()]);
-      setData(n);
-      setCards(a.approvals);
-      setError("");
-    } catch (e) {
-      if (e instanceof SignInRequired) onSignIn();
-      else setError((e as Error).message);
-    }
-  }, [onSignIn]);
+    await Promise.all([approvalsQ.reload(), needsQ.reload()]);
+  }, [approvalsQ.reload, needsQ.reload]);
   // Live: refetched when a card is filed or decided anywhere (Telegram too); polled every 5s only without the stream.
   useLive(["approvals"], load, 5_000);
+  const cards = approvalsQ.data?.approvals;
+  const data = needsQ.data;
+  const hold = approvalsQ.stale;
+  const error = approvalsQ.error || needsQ.error;
   const all = cards ?? [];
   // Only Tier 2 waits for you; Tier 1 (with the reviewer) and Tier 0 runs (audit rows) are history lines.
   const pending = all.filter(forOwner);
@@ -224,7 +225,10 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
       <header className="page-head">
         <div>
           <h1>Approvals</h1>
-          <p className="page-sub">{pending.length ? `${pending.length} waiting for you` : "Nothing waiting for you"}</p>
+          <p className="page-sub">
+            {!cards ? "Checking what waits for you…" : pending.length ? `${pending.length} waiting for you` : "Nothing waiting for you"}
+            <Updating on={hold || needsQ.stale} />
+          </p>
         </div>
         <span className="spacer" />
         <div className="seg-tabs" role="tablist" aria-label="Show">
@@ -237,8 +241,8 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
         </div>
       </header>
       {error && <div className="alert">{error}</div>}
-      {!cards || !data ? (
-        <span className="spinner" />
+      {!cards ? (
+        !error && <CardListSkeleton />
       ) : (
         <>
           {(f === "pending" || f === "all") && pending.length > 1 && (
@@ -248,10 +252,10 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
               </label>
               <span className="muted small">All or nothing: if any changed since you saw it, nothing is decided.</span>
               <span className="spacer" />
-              <button className="btn" disabled={!chosen.length || batchBusy} onClick={() => void decideChosen("reject")}>
+              <button className="btn" disabled={!chosen.length || batchBusy || hold} onClick={() => void decideChosen("reject")}>
                 Reject selected
               </button>
-              <button className="btn primary approve" disabled={!chosen.length || batchBusy} onClick={() => void decideChosen("approve")}>
+              <button className="btn primary approve" disabled={!chosen.length || batchBusy || hold} onClick={() => void decideChosen("approve")}>
                 Approve selected
               </button>
             </div>
@@ -260,7 +264,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
           {(f === "pending" || f === "all") && pending.length > 0 && (
             <ul className="approval-list pending-grid">
               {pending.map((a) => (
-                <ApprovalCard key={a.id} a={a} open={open} decided={load} pick={pending.length > 1 ? { on: picked.get(a.id) === a.digest, full, toggle: () => toggle(a) } : undefined} />
+                <ApprovalCard key={a.id} a={a} open={open} decided={load} hold={hold} pick={pending.length > 1 ? { on: picked.get(a.id) === a.digest, full, toggle: () => toggle(a) } : undefined} />
               ))}
             </ul>
           )}
@@ -283,7 +287,12 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
               </ul>
             </section>
           )}
-          {f === "pending" && !pending.length && !others.length && <p className="empty-state">You're all caught up. New requests from your agents show here and in Telegram.</p>}
+          {(f === "pending" || f === "all") && !data && !needsQ.error && (
+            <section aria-label="Also waiting on you">
+              <SkeletonLines lines={2} />
+            </section>
+          )}
+          {f === "pending" && data && !pending.length && !others.length && <p className="empty-state">You're all caught up. New requests from your agents show here and in Telegram.</p>}
           {f !== "pending" && (
             <section>
               <header className="section-head">

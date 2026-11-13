@@ -12,6 +12,7 @@ settings:
     values: ["on", "off"]
 agents:
   fleet-ops:
+    department: platform
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: medium

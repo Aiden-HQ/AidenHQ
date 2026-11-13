@@ -10,6 +10,7 @@ settings:
     required: true
 agents:
   slack-scout:
+    department: intake
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: medium
@@ -18,10 +19,11 @@ agents:
     connections:
       # No web: it reads untrusted email/Slack, so no outbound fetch (owner, 2026-11-11). app_view only.
       apps: [ app_view ]
-      # Reads only: drafts stay with the Research Assistant.
+      # Reads only: drafts stay with the Executive Assistant.
       slack: read
       paperclip_tasks: [ task_current, task_get, task_search, task_list, task_create, task_update, task_comment, task_set_status, task_finish ]
   inbox-agent:
+    department: intake
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: medium
@@ -33,6 +35,7 @@ agents:
       google_workspace: [ gmail_search, gmail_read_thread ]
       paperclip_tasks: [ task_current, task_get, task_search, task_list, task_create, task_update, task_comment, task_set_status, task_finish ]
   open-loops:
+    department: outreach
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: medium
@@ -47,6 +50,7 @@ agents:
       slack_live: [ notify_owner ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_update, task_comment, task_handoff, task_set_status, task_join, task_team, task_delegate, task_finish ]
   slack-triage:
+    department: intake
     adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: medium

@@ -32,3 +32,12 @@ describe("flow-proposal, another assignee", () => {
     assert.equal(t.claudeRuns().length, 0);
   });
 });
+
+// A product bug Fleet Ops filed (or a Coach finding, or the Dependabot sweep) runs the same way: its writes are still tiered.
+describe("flow-proposal, product-bug marker", () => {
+  const t = flow({ part: part(`${body}\n\n<!-- source:product-bug:flaky-runner-db -->`), grants: grants("fleet-engineer") });
+  it("runs unasked", async () => {
+    await t.waitFor("the bug's run", () => t.reviews().length > 0);
+    assert.match(t.claudeRuns()[0].prompt, /Change the rule in acme\/app/);
+  });
+});
