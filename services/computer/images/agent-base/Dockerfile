@@ -14,3 +14,7 @@ RUN agent-browser install --with-deps && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
 # repo-checkout: a commit of an agents-org repo, placed by the launcher (services/computer/launcher.mjs POST /repo); no credentials.
 COPY --chmod=755 repo-checkout /usr/local/bin/repo-checkout
+# ui-review: screenshots, axe (embedded in agent-browser), web vitals and layout checks for a running app; the design system
+# (synced from modules/core/design-system by scripts/sync-shared.mjs) for mockups and as the review reference.
+COPY --chmod=755 ui-review /usr/local/bin/ui-review
+COPY design-system /opt/aidenhq/design-system

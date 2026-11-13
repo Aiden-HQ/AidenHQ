@@ -37,3 +37,19 @@ test("the runner's own GitHub token never reaches the agent", async () => {
     else process.env.GH_TOKEN = saved.GH_TOKEN;
   }
 });
+
+// WOR-3640: a model call that never answered left a job silent for 10+ minutes while its approved merge waited for it.
+test("a run whose log stops growing is stopped as stalled", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "spawn-"));
+  writeFileSync(join(dir, "codex"), '#!/bin/sh\necho "{}"\nexec sleep 60\n', { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${dir}:${path}`;
+  try {
+    const t0 = Date.now();
+    const r = await runAgent({ cfg: { ghWrapperDir: dir, timeout_minutes: 1, stall_minutes: 0.02 }, engine: { kind: "codex" }, worktree: dir, prompt: "hi", logPath: join(dir, "log") });
+    assert.ok(r.stalled && r.timedOut, "stopped as stalled");
+    assert.ok(Date.now() - t0 < 30_000, "well before the deadline");
+  } finally {
+    process.env.PATH = path;
+  }
+});

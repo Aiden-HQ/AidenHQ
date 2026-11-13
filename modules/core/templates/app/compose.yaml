@@ -1,0 +1,10 @@
+# The app as the apps platform runs it. Health: GET /health answers {"ok": true, "checks": []}.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+    read_only: true
+    tmpfs:
+      - /tmp

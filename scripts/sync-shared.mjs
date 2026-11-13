@@ -38,6 +38,13 @@ export const SHARED = {
   "scripts/supply-chain/best-version.mjs": ["modules/core/templates/ci/.github/supply-chain/best-version.mjs"],
   "scripts/supply-chain/pins.mjs": ["modules/core/templates/ci/.github/supply-chain/pins.mjs"],
   "scripts/supply-chain/npm-age.mjs": ["modules/core/templates/ci/.github/supply-chain/npm-age.mjs"],
+  // The design system: the app starter vendors it, and the agent computers carry it at /opt/aidenhq/design-system.
+  ...Object.fromEntries(
+    ["tokens.css", "components.css", "kit.js", "catalog.html", "guidelines.md", "review-checklist.md", "README.md"].map((f) => [
+      `modules/core/design-system/${f}`,
+      [...(f.endsWith(".md") || f === "catalog.html" ? [] : [`modules/core/templates/app/public/design-system/${f}`]), `services/computer/images/agent-base/design-system/${f}`],
+    ]),
+  ),
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

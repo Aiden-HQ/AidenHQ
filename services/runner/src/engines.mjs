@@ -374,7 +374,7 @@ export const adoptRun = ({ pid, logPath }) => ({ pid, logPath, adopted: true });
  * (the runner is restarting and leaves the run to its successor).
  * `onProgress({ said, saidAt, plan })` gets the agent's latest words and task list as they change.
  */
-export function watchAgent(run, { engine, sessionId, deadline, signal, detach, channel, onProgress }) {
+export function watchAgent(run, { engine, sessionId, deadline, stallMs = 15 * 60_000, signal, detach, channel, onProgress }) {
   const { pid, logPath, stdin, streamInput } = run;
   const exitFile = `${logPath}.exit`;
   const lastMessageFile = `${logPath}.last.md`;
@@ -415,6 +415,9 @@ export function watchAgent(run, { engine, sessionId, deadline, signal, detach, c
       }
     };
     let offset = 0;
+    // When the log last grew: a run silent for stallMs (a model call that never answers) is stopped as stalled, so
+    // it doesn't hold its task, and the writes waiting on it, until the deadline.
+    let grewAt = Date.now();
     let buffer = "";
     const decoder = new StringDecoder("utf8");
     const read = () => {
@@ -423,6 +426,7 @@ export function watchAgent(run, { engine, sessionId, deadline, signal, detach, c
         fd = openSync(logPath, "r");
         const size = fstatSync(fd).size;
         if (size <= offset) return;
+        grewAt = Date.now();
         const chunk = Buffer.alloc(size - offset);
         readSync(fd, chunk, 0, chunk.length, offset);
         offset = size;
@@ -440,6 +444,7 @@ export function watchAgent(run, { engine, sessionId, deadline, signal, detach, c
     };
 
     let timedOut = false;
+    let stalled = false;
     let cancelled = false;
     let killed = false;
     const kill = () => {
@@ -482,13 +487,17 @@ export function watchAgent(run, { engine, sessionId, deadline, signal, detach, c
         }
         if (lastMessage) writeFileSync(lastMessageFile, lastMessage);
         // No status: the run died without its shell, by its own stop or timeout (killed), else by hand (a failure).
-        resolve({ code: code === null && !killed ? 1 : code, sessionId: found, lastMessage, timedOut, cancelled });
+        resolve({ code: code === null && !killed ? 1 : code, sessionId: found, lastMessage, timedOut, stalled, cancelled });
       });
     const tick = () => {
       read();
       if (exitStatus(exitFile) || !pid|| run.spawnError || !alive(pid)) return done();
       if (!timedOut && Date.now() > deadline) {
         timedOut = true;
+        kill();
+      }
+      if (!timedOut && Date.now() - grewAt > stallMs) {
+        timedOut = stalled = true;
         kill();
       }
     };
@@ -503,5 +512,5 @@ export function watchAgent(run, { engine, sessionId, deadline, signal, detach, c
 /** Start the agent and follow it to its end (startAgent + watchAgent). */
 export function runAgent({ cfg, signal, detach, onProgress, channel, ...opts }) {
   const run = startAgent({ cfg, channel, ...opts });
-  return watchAgent(run, { engine: opts.engine, sessionId: opts.sessionId, deadline: Date.now() + (cfg.timeout_minutes ?? 60) * 60_000, signal, detach, channel, onProgress });
+  return watchAgent(run, { engine: opts.engine, sessionId: opts.sessionId, deadline: Date.now() + (cfg.timeout_minutes ?? 60) * 60_000, stallMs: (cfg.stall_minutes ?? 15) * 60_000, signal, detach, channel, onProgress });
 }

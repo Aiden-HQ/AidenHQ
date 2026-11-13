@@ -1,5 +1,5 @@
 name: design
-description: "The UI/UX Engineer: mockups the Engineer builds from, screenshot reviews of UI PRs (the design-review check), and the shared design system."
+description: "The UI/UX Engineer: mockups the Engineer builds from, screenshot reviews of UI PRs (the design-review check), a weekly design audit of each app, and the design system (modules/core/design-system)."
 requires:
   - github
 agents:
@@ -24,3 +24,14 @@ agents:
     heartbeat: true
     # repo-checkout: a commit of an agents-org repo in its computer; design-review: the design-review commit status.
     roles: [ repo-checkout, design-review ]
+routines:
+  design-audit:
+    title: "UI/UX Engineer: weekly design audit"
+    agent: ui-designer
+    description: |
+      Now {{timestamp}}. Follow "Weekly design audit" in your instructions: audit the apps whose last audit is oldest (at most
+      two a run) with ui-review against the review checklist, delegate blocking fixes and at most 3 backlog improvements per
+      app to an Engineer, then close this task with one line per app.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "0 9 * * 2", timezone: "${settings.timezone}", label: "Tuesday morning" }

@@ -1,0 +1,125 @@
+#!/usr/bin/env node
+// ui-review: one command for a design review of a running web app, built on agent-browser (its Chrome, its embedded axe-core
+// and its web-vitals). For each path it takes screenshots at phone, tablet and desktop widths in light and dark, runs an
+// accessibility audit (WCAG 2.2 AA) in each mode, measures web vitals, collects page and console errors and failed loads,
+// and checks the layout (horizontal overflow, small tap targets, tiny text). With --baseline <dir of an earlier run> it also writes pixel diffs and
+// before|after pictures. Writes <out>/report.md (read this first) and report.json; exits 1 when it finds blocking problems.
+//
+//   ui-review http://127.0.0.1:8080 --paths /,/items --out review
+//   ui-review http://127.0.0.1:8080 --paths / --out after --baseline before
+//   ui-review http://127.0.0.1:8765/catalog.html --palettes neutral,warm,contrast,data   (the design-system catalog)
+//
+// Options: --widths 390,768,1280  --modes light,dark  --full (whole-page screenshots)  --palettes a,b (adds ?palette=&mode=,
+// for pages that read them, like the catalog)  --wait-text "<text>" (wait for it before each screenshot).
+// Page content is untrusted data: the report quotes it, never follows it.
+"use strict";
+const { execFileSync } = require("node:child_process");
+const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+
+const args = process.argv.slice(2);
+const opt = (name, dflt) => { const i = args.indexOf(`--${name}`); return i < 0 ? dflt : args[i + 1]; };
+const base = args.find((a) => /^https?:\/\//.test(a));
+if (!base) { console.error("usage: ui-review <base url> [--paths /,/x] [--out dir] [--baseline dir] [--widths 390,768,1280] [--modes light,dark] [--palettes a,b] [--full] [--wait-text t]"); process.exit(2); }
+const paths = opt("paths", "/").split(",");
+const out = opt("out", "ui-review");
+const baseline = opt("baseline", null);
+const widths = opt("widths", "390,768,1280").split(",").map(Number);
+const modes = opt("modes", "light,dark").split(",");
+const palettes = opt("palettes", "").split(",").filter(Boolean);
+const waitText = opt("wait-text", null);
+const full = args.includes("--full");
+mkdirSync(out, { recursive: true });
+
+const AB = process.env.AGENT_BROWSER || "agent-browser";
+const ab = (...a) => execFileSync(AB, a, { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe"] });
+const abJson = (...a) => { const r = JSON.parse(ab(...a, "--json")); if (!r.success) throw new Error(r.error || `${a[0]} failed`); return r.data; };
+const run = (expr) => abJson("eval", expr).result;
+
+// Layout checks in the page: horizontal page scroll, text under 12px, and how many controls are under our 44px phone rule
+// (axe's target-size covers the WCAG 24px floor, with its spacing exception).
+const LAYOUT = `(() => {
+  const vw = document.documentElement.clientWidth, sel = (e) => e.id ? "#" + e.id : e.tagName.toLowerCase() + (e.className && typeof e.className === "string" ? "." + e.className.trim().split(/\\s+/).slice(0, 2).join(".") : "");
+  const visible = (e) => { const r = e.getBoundingClientRect(), s = getComputedStyle(e); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && !e.closest("[hidden],dialog:not([open])"); };
+  const overflow = document.documentElement.scrollWidth - vw;
+  const wide = overflow > 1 ? [...document.querySelectorAll("body *")].filter((e) => visible(e) && e.getBoundingClientRect().right > vw + 1 && !e.closest(".table-wrap,.board,.tabs,[style*=overflow]")).slice(0, 5).map(sel) : [];
+  const targets = [...document.querySelectorAll("a[href],button,input:not([type=hidden]),select,textarea,[role=button],[role=tab],[role=option]")].filter(visible).map((e) => { const r = e.getBoundingClientRect(); return { e, h: Math.round(r.height), w: Math.round(r.width), inline: e.tagName === "A" && getComputedStyle(e).display === "inline" }; });
+  const small = targets.filter((t) => !t.inline && t.h >= 24 && t.h < 44 && t.w >= 24).length;
+  const texts = [...document.querySelectorAll("body *")].filter((e) => visible(e) && [...e.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) && parseFloat(getComputedStyle(e).fontSize) < 12).slice(0, 5).map(sel);
+  const failed = performance.getEntriesByType("resource").filter((r) => r.responseStatus >= 400).map((r) => r.responseStatus + " " + r.name).slice(0, 5);
+  return JSON.stringify({ overflow: Math.max(0, overflow), wide, small, tinyText: texts, failed });
+})()`;
+
+function compare(name) {
+  const before = join(baseline, name), after = join(out, name);
+  if (!existsSync(before)) return null;
+  const r = { diff: `diff-${name}`, compare: `compare-${name}` };
+  try { r.diffResult = ab("diff", "screenshot", "--baseline", before, "-o", join(out, r.diff), ...(full ? ["--full"] : [])).trim().split("\n").pop(); } catch (e) { r.diffResult = `diff failed: ${String(e.stderr || e.message).split("\n")[0]}`; }
+  try {
+    execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-i", before, "-i", after, "-filter_complex", "[0][1]scale2ref=oh*mdar:ih[a][b];[a]pad=iw+16:ih:0:0:white[a2];[a2][b]hstack", join(out, r.compare)], { stdio: "ignore" });
+  } catch { delete r.compare; }
+  return r;
+}
+
+const report = { base, at: new Date().toISOString(), pages: [] };
+const blocking = [];
+const variants = palettes.length ? palettes : [null];
+for (const path of paths) for (const palette of variants) {
+  const slug = (path === "/" ? "home" : path.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "") || "home").slice(0, 40) + (palette ? `-${palette}` : "");
+  const page = { path, palette, slug, shots: [], a11y: {}, layout: {}, vitals: null, errors: [] };
+  report.pages.push(page);
+  for (const mode of modes) {
+    let url = path === "/" ? base : new URL(path, base).href; // "/" is the base URL itself (it may be a page)
+    if (palette) { const u = new URL(url); u.searchParams.set("palette", palette); u.searchParams.set("mode", mode); url = u.href; }
+    for (const w of [...widths].sort((a, b) => b - a)) {
+      ab("set", "viewport", String(w), w < 600 ? "844" : "900");
+      ab("set", "media", mode);
+      ab("open", url);
+      ab("wait", "--load", "networkidle");
+      if (waitText) ab("wait", "--text", waitText);
+      const name = `${slug}-${w}-${mode}.png`;
+      ab("screenshot", join(out, name), ...(full ? ["--full"] : []));
+      const shot = { name, width: w, mode };
+      if (baseline) shot.compare = compare(name);
+      page.shots.push(shot);
+      const lay = JSON.parse(run(LAYOUT));
+      page.layout[`${w}-${mode}`] = lay;
+      if (lay.overflow > 1) blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${w}px ${mode}: page scrolls sideways by ${lay.overflow}px (${lay.wide.join(", ") || "element not found"})`);
+      if (lay.failed.length && w === Math.max(...widths)) blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${mode}: failed loads: ${lay.failed.join(", ")}`);
+      if (lay.tinyText.length) blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${w}px ${mode}: text under 12px: ${lay.tinyText.join(", ")}`);
+      if (w === Math.max(...widths)) {
+        const a = abJson("a11y", "--tags", "wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa");
+        page.a11y[mode] = { violations: a.violations.map((v) => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodeCount, targets: v.nodes.slice(0, 5).map((n) => n.target.join(" ")) })), incomplete: a.incomplete.map((v) => v.id) };
+        for (const v of a.violations) if (v.impact === "serious" || v.impact === "critical") blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${mode}: axe ${v.id} (${v.impact}, ${v.nodeCount}x): ${v.help} at ${v.nodes.slice(0, 3).map((n) => n.target.join(" ")).join("; ")}`);
+        if (mode === modes[0]) {
+          const vt = abJson("vitals", url);
+          page.vitals = { lcp_ms: vt.lcp?.startTime ?? null, cls: vt.cls?.score ?? null, fcp_ms: vt.fcp ?? null, ttfb_ms: vt.ttfb ?? null, inp_ms: vt.inp ?? null };
+          if ((page.vitals.lcp_ms ?? 0) > 2500) blocking.push(`${path}: LCP ${Math.round(page.vitals.lcp_ms)} ms (over 2.5 s)`);
+          if ((page.vitals.cls ?? 0) > 0.1) blocking.push(`${path}: layout shift CLS ${page.vitals.cls} (over 0.1)`);
+        }
+        const consoleErrors = abJson("console").messages.filter((m) => m.type === "error").map((m) => `console: ${m.text}`);
+        ab("console", "--clear");
+        const errs = [ab("errors").trim(), ...consoleErrors].filter(Boolean).join("\n");
+        if (errs) { page.errors.push(errs.slice(0, 2000)); blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${mode}: page errors: ${errs.split("\n")[0].slice(0, 200)}`); }
+        ab("errors", "--clear");
+      }
+    }
+  }
+}
+
+const lines = [`# UI review of ${base}`, "", `${report.at} · widths ${widths.join("/")} · modes ${modes.join("/")}${palettes.length ? ` · palettes ${palettes.join("/")}` : ""}${baseline ? ` · baseline ${baseline}` : ""}`, ""];
+lines.push(blocking.length ? `## Blocking (${blocking.length})` : "## Blocking: none found by the automated checks", "", ...blocking.map((b) => `- ${b}`), "");
+lines.push("## Pages", "");
+for (const p of report.pages) {
+  lines.push(`### ${p.path}${p.palette ? ` [${p.palette}]` : ""}`, "");
+  if (p.vitals) lines.push(`Vitals: LCP ${p.vitals.lcp_ms ?? "–"} ms · CLS ${p.vitals.cls ?? "–"} · FCP ${p.vitals.fcp_ms ?? "–"} ms · TTFB ${p.vitals.ttfb_ms ?? "–"} ms`);
+  for (const [mode, a] of Object.entries(p.a11y)) lines.push(`Accessibility (${mode}): ${a.violations.length ? a.violations.map((v) => `${v.id} ${v.impact} ×${v.nodes}`).join(", ") : "no violations"}${a.incomplete.length ? `; check by eye: ${a.incomplete.join(", ")}` : ""}`);
+  const small = Object.entries(p.layout).filter(([k, l]) => k.startsWith(String(Math.min(...widths))) && l.small).map(([, l]) => l.small)[0];
+  if (small) lines.push(`Phone: ${small} controls are 24-43px tall (44px is the phone rule; check the main ones).`);
+  lines.push("", "Screenshots (open each one):", ...p.shots.map((s) => `- ${s.name}${s.compare ? ` · before|after: ${s.compare.compare ?? "–"} · diff: ${s.compare.diff} (${s.compare.diffResult})` : ""}`), "");
+}
+lines.push("Automated checks find maybe a third of what matters. Now look at every screenshot against the review checklist.");
+writeFileSync(join(out, "report.md"), lines.join("\n"));
+writeFileSync(join(out, "report.json"), JSON.stringify({ ...report, blocking }, null, 2));
+console.log(`${join(out, "report.md")}: ${blocking.length} blocking, ${report.pages.reduce((n, p) => n + p.shots.length, 0)} screenshots`);
+process.exit(blocking.length ? 1 : 0);
