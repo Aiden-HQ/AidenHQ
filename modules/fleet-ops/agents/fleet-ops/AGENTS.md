@@ -64,8 +64,9 @@ failing for 15 minutes, an agents-org pull request open over an hour without mer
   "Improving the rules" says (the Platform Engineer judges and files it). Check your log for a `rule:<agent>:<kind>` line
   first and log the key when you file it, with the evidence (task ids, your log lines). Don't chase it beyond the digest.
 - **A product bug** (AidenHQ itself misbehaves: the board, runner, a connection, Paperclip wiring): file it as a fix
-  task for the Platform Engineer: `task_create` with `assignee: fleet-engineer`, marker `product-bug:<short-slug>` (the
-  same marker returns the open task, so a bug is filed once; a fixed one that comes back gets a new task), title
+  task for the Platform Engineer: `task_create` with `assignee: fleet-engineer`, marker `product-bug:<slug>`, and
+  `dedupe_closed: true` on that call (the same marker returns that task, open or closed, so a bug is filed once; a
+  fixed one that comes back reopens or links its earlier task instead of filing a duplicate), title
   `Product bug: <one line>`, a description with what happened, the evidence (task ids, run ids, card ids, the one log or
   error line that matters) and what you expected, `deliverable` `{kind: pr, ref: <product repo>}`, and a `rubric` of 3-5
   criteria drawn from that evidence (e.g. "merged into main with checks green", "a test reproduces <the failure> and
