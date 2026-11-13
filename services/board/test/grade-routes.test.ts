@@ -6,6 +6,7 @@ import { join } from "node:path";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { completionGate } from "../src/grades.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
@@ -128,6 +129,37 @@ describe("grade routes", () => {
       expect(patches.at(-1)).toEqual({ labelIds: [] });
     } finally {
       writeFileSync(grantsFile, JSON.stringify(grantsTable));
+    }
+  });
+
+  it("the owner channel does not ask for an accept-or-reject decision after the grader failed every retry", async () => {
+    const s = new Store(":memory:");
+    s.grades.file("g", [], { kind: "report", ref: "" });
+    completionGate(s.grades, "g", "task_finish");
+    for (let i = 0; i < 5; i++) s.grades.record("g", { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] });
+    const decideKey = "d".repeat(32);
+    const app2 = createApp({ paperclip: pc, store: s, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY, decideKey });
+    await new Promise<void>((r) => app2.listen(0, "127.0.0.1", r));
+    const port2 = (app2.address() as AddressInfo).port;
+    const get = (path: string, headers: Record<string, string>) =>
+      new Promise<{ status: number; json: any }>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port: port2, method: "GET", path, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...headers } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve({ status: res.statusCode!, json: text ? JSON.parse(text) : undefined }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    try {
+      const r = await get("/internal/owner/grades", { "x-owner-key": decideKey });
+      expect(r.status).toBe(200);
+      const line = r.json.lines.find((l: string) => /Grading failed/.test(l));
+      expect(line).toContain("failed 5 times");
+      expect(line).toContain("no rubric criterion was assessed");
+      expect(line).not.toContain("close it to accept");
+    } finally {
+      app2.close();
     }
   });
 });

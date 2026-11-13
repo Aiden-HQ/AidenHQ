@@ -2,7 +2,8 @@
 // a merged PR is bound to its merge commit, and several PRs to a version that fits the board's 200 characters.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { gather, grade, graderModels } from "../src/grade.mjs";
+import { gather, grade, gradeNote, graderModels } from "../src/grade.mjs";
+import { GLM, KIMI } from "../src/review.mjs";
 
 const pr = ({ state = "OPEN", check = "SUCCESS", head = "h".repeat(40), merge = "m".repeat(40) } = {}) => ({
   repository: { pullRequest: { state, headRefOid: head, baseRefName: "main", mergeCommit: state === "MERGED" ? { oid: merge } : null, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "test", status: check === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: check }] } } } }] } } },
@@ -43,6 +44,33 @@ test("the grader is never the author's family: GLM first, Kimi for a GLM author"
   assert.deepEqual(graderModels("openrouter/~deepseek/deepseek-flash-latest"), ["~z-ai/glm-latest", "moonshotai/kimi-k3.1-pro"]);
   assert.deepEqual(graderModels("z-ai/glm-5.3"), ["moonshotai/kimi-k3.1-pro"]);
   assert.deepEqual(graderModels("moonshotai/kimi-k3.1-pro"), ["~z-ai/glm-latest"]);
+});
+
+test("a grader timeout goes to the next model; when every model fails it is a retryable grading failure, not a verdict", async () => {
+  const rubric = ["merged into main"];
+  const deliverable = { kind: "report", ref: "" };
+  const timeout = Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+  const ok = { content: JSON.stringify({ verdict: "satisfied", criteria: [{ id: "1", met: "yes", evidence: "shown in the report" }] }) };
+  const asked = [];
+  const ask = async (model) => {
+    asked.push(model);
+    if (model === GLM) throw timeout;
+    return ok;
+  };
+  const v = await grade({ rubric, deliverable, facts: [], data: {}, request: "x", authorModel: "", ask });
+  assert.deepEqual(asked, [GLM, KIMI], "a timeout falls through to the other model");
+  assert.deepEqual({ outcome: v.outcome, model: v.model }, { outcome: "satisfied", model: KIMI });
+
+  const fail = await grade({ rubric, deliverable, facts: [], data: {}, request: "x", authorModel: "", ask: async () => { throw timeout; } });
+  assert.equal(fail.outcome, "grading_failed", "a failed pass is a retryable grading failure, never a verdict");
+  assert.match(fail.reason, /aborted due to timeout/);
+});
+
+test("a grader that keeps failing escalates with honest wording, not an accept-or-reject request", () => {
+  const note = gradeNote({ outcome: "grading_failed", model: "glm", criteria: [], reason: "the grader failed (timeout)" }, [], "escalated", { version: "v1" });
+  assert.match(note, /failed 5 times/);
+  assert.match(note, /no rubric criterion was assessed/);
+  assert.match(note, /not a request to accept or reject ungraded work/);
 });
 
 test("corrupt or empty criteria are a retryable grading failure, never a verdict", async () => {

@@ -20,9 +20,9 @@ const RUN = process.env.PAPERCLIP_RUN_ID || "";
 const COMPANY = process.env.PAPERCLIP_COMPANY_ID || "";
 const CURRENT_TASK = process.env.PAPERCLIP_TASK_ID || "";
 
-// Paperclip rejects agent-set "blocked"/"in_review" without structured blockers or review
-// paths, so agents only get the statuses that always work.
-const STATUSES = ["todo", "in_progress", "done", "cancelled"];
+// The task API rejects agent-set "in_review" without a review path, and "blocked" without an unresolved
+// first-class blocker (or a pending interaction/approval), so `blocked` takes the blocking task.
+const STATUSES = ["todo", "in_progress", "blocked", "done", "cancelled"];
 
 // Engineer sub-tasks: engines map to the Engineer agents' setup keys.
 const ENGINES = ["codex", "claude", "openrouter"];
@@ -177,6 +177,24 @@ async function patchIssue(issue, body) {
     }).catch(() => undefined);
     return await api("PATCH", `/api/issues/${issueRef(issue)}`, body);
   }
+}
+
+/**
+ * The first-class blockers a task enters blocked with: the task named by `blocked_by`, or the open ones it already has.
+ * The recovery checker reads those relations, so a dependency wait is recorded as a target, not prose.
+ */
+async function blockedByIssueIds(issue, blockedBy) {
+  const current = await api("GET", `/api/issues/${issueRef(issue)}`);
+  const open = (current.blockedBy ?? []).filter((b) => !["done", "cancelled"].includes(b.status));
+  if (!blockedBy) {
+    if (open.length) return open.map((b) => b.id);
+    throw new Error("setting status to blocked needs blocked_by: the task it waits on (identifier or id)");
+  }
+  const blocker = await api("GET", `/api/issues/${issueRef(blockedBy)}`);
+  if (!blocker?.id) throw new Error(`unknown blocking task ${blockedBy}`);
+  if (blocker.id === current.id) throw new Error("a task cannot block itself");
+  if (["done", "cancelled"].includes(blocker.status)) throw new Error(`cannot be blocked by ${blocker.identifier ?? blocker.id}: it is ${blocker.status}`);
+  return [blocker.id];
 }
 
 /** The other parts of one of the user's tasks, with whom each is, for reading their conversations. */
@@ -1152,16 +1170,22 @@ const TOOLS = {
     },
   },
   task_set_status: {
-    description: `Set a Paperclip task's status (${STATUSES.join(", ")}), optionally with a comment. To reopen a task with new instructions, put the instructions in \`comment\` here: one message, never a task_comment followed by this.`,
+    description: `Set a Paperclip task's status (${STATUSES.join(", ")}), optionally with a comment. \`blocked\` needs \`blocked_by\`: the task it waits on, recorded as a first-class blocker so the board and the recovery checker see the target. To reopen a task with new instructions, put the instructions in \`comment\` here: one message, never a task_comment followed by this.`,
     inputSchema: {
       type: "object",
-      properties: { issue: { type: "string" }, status: { type: "string", enum: STATUSES }, comment: { type: "string" } },
+      properties: {
+        issue: { type: "string" },
+        status: { type: "string", enum: STATUSES },
+        comment: { type: "string" },
+        blocked_by: { type: "string", description: "When status is blocked: the task blocking this one (identifier or id). Required unless it already has an open blocker." },
+      },
       required: ["issue", "status"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ issue, status, comment }) => {
+    run: async ({ issue, status, comment, blocked_by }) => {
       if (!STATUSES.includes(status)) throw new Error("invalid status");
+      if (status !== "blocked" && blocked_by) throw new Error("blocked_by only applies when status is blocked");
       await refuseMemoryInbox(issue);
       // An agent's part of the user's task stays open for the user's replies: closing it is theirs.
       let was;
@@ -1175,6 +1199,7 @@ const TOOLS = {
         }
       }
       const body = { status };
+      if (status === "blocked") body.blockedByIssueIds = await blockedByIssueIds(issue, blocked_by);
       if (comment) body.comment = await postLeadingParts(issue, comment);
       const i = await patchIssue(issue, body);
       const parent = was && was !== status ? await tellParent(i) : undefined;

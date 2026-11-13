@@ -133,16 +133,17 @@ function answerOf(raw, n) {
 }
 
 /**
- * The verdict on one deliverable version: { outcome: satisfied | needs_revision | cannot_judge | grading_failed | error,
- * model, criteria }. A refused or malformed answer is retried on the next model; a call error, or every model refusing, is
- * an error (the board escalates it to the owner). An answer that came back but cannot be parsed into the rubric's criteria
- * is a grading failure the board retries, never a verdict assembled from its fragments.
+ * The verdict on one deliverable version: { outcome: satisfied | needs_revision | cannot_judge | grading_failed | error, model, criteria }.
+ * A refused or malformed answer is retried on the next model; a call error (a timeout, a provider failure) goes to the next
+ * model too. A call error, or an answer that came back but cannot be parsed into the rubric's criteria, is `grading_failed`
+ * (the board retries it, not the owner's decision); only when every model refuses is the pass `error`.
  */
 export async function grade({ rubric, deliverable, facts, data, request, authorModel = "", ask }) {
   const models = graderModels(authorModel);
   if (!models.length) return { outcome: "error", model: "", criteria: [], reason: "no grader model independent of the author's" };
   if (!rubric.length) return { outcome: "grading_failed", model: "", criteria: [], reason: "the rubric has no criteria to grade" };
   const prompt = gradePrompt({ rubric, deliverable, facts, data, request });
+  let failure;
   let corrupt = false;
   let corruptModel = "";
   for (const model of models) {
@@ -150,7 +151,8 @@ export async function grade({ rubric, deliverable, facts, data, request, authorM
     try {
       raw = await ask(model, prompt);
     } catch (err) {
-      return { outcome: "error", model, criteria: [], reason: `the grader failed (${String(err.message ?? err).slice(0, 160)})` };
+      failure = { model, reason: `the grader failed (${String(err.message ?? err).slice(0, 160)})` };
+      continue;
     }
     const a = answerOf(raw, rubric.length);
     if (a) return { outcome: a.verdict, model, criteria: a.criteria };
@@ -159,6 +161,7 @@ export async function grade({ rubric, deliverable, facts, data, request, authorM
       corruptModel = model;
     }
   }
+  if (failure) return { outcome: "grading_failed", model: failure.model, criteria: [], reason: failure.reason };
   if (corrupt) return { outcome: "grading_failed", model: corruptModel, criteria: [], reason: "the grader returned no usable criteria" };
   return { outcome: "error", model: models.at(-1), criteria: [], reason: "every grader model refused" };
 }
@@ -172,7 +175,9 @@ export function gradeNote(g, rubric, outcome, { version, reason } = {}) {
       : outcome === "needs_revision"
         ? "**Graded: needs revision.** Fix the criteria below, then finish the task again; the grader checks the new version."
         : outcome === "grading_failed"
-          ? `**Grading failed; retrying.** (${reason ?? g.reason ?? "the grader returned no usable criteria"}). No rubric verdict yet: the grader runs again shortly.`
-          : `**Graded: escalated to the owner** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). It waits for their decision: they close it to accept, or reopen it with what to change.`;
+          ? `**Grading failed; retrying.** (${reason ?? g.reason ?? "the grader failed or returned no usable criteria"}). No rubric verdict yet: the grader runs again shortly.`
+          : outcome === "escalated" && g.outcome === "grading_failed"
+            ? `**Grading failed; escalated to the owner.** The grader failed 5 times and no rubric criterion was assessed. This is not a request to accept or reject ungraded work: it needs the grader fixed or a later retry.`
+            : `**Graded: escalated to the owner** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). It waits for their decision: they close it to accept, or reopen it with what to change.`;
   return [head, lines.join("\n"), `_Grader: ${g.model || "none"}; version ${String(version ?? "").slice(0, 80) || "(none)"}. The grader's words, not the owner's._`, GRADER_MARKER].filter(Boolean).join("\n\n");
 }

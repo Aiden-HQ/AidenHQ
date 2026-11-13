@@ -28,7 +28,7 @@ import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor } from "./settings-change.js";
-import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradePassed, gradingOn, prRefAllowed } from "./grades.js";
+import { FileGradeSchema, GateSchema, MAX_GRADER_FAILURES, VerdictSchema, completionGate, gradePassed, gradingOn, prRefAllowed } from "./grades.js";
 import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -1164,6 +1164,11 @@ export function createApp(opts: AppOptions): Server {
           if (store.meta(key) === g.updatedAt) continue;
           store.setMeta(key, g.updatedAt);
           const issue = await pc.issue(g.issueId).catch(() => undefined);
+          // A grader that failed every retry has no rubric verdict: the owner is not asked to accept or reject ungraded work.
+          if (g.failures >= MAX_GRADER_FAILURES) {
+            lines.push(`⚖️ **Grading failed**: ${issue?.identifier ?? g.issueId} (the grader failed ${g.failures} times and no rubric criterion was assessed). This is not a request to accept or reject ungraded work; reopen it only if you want to change the work.`);
+            continue;
+          }
           const why = g.verdicts.at(-1)?.verdict === "cannot_judge" ? "the grader couldn't judge it" : `${g.attempts} rejected version${g.attempts === 1 ? "" : "s"}`;
           lines.push(`⚖️ **Grading needs you**: ${issue?.identifier ?? g.issueId} (${why}). Its unmet criteria are on the task; close it to accept, or reopen it with what to change.`);
         }

@@ -81,6 +81,26 @@ describe("flow-graded: a finished parent is not reopened by an escalation", () =
   });
 });
 
+describe("flow-graded: a grader timeout is retried, not the owner's", () => {
+  const t = flow({
+    ...held("timeout", { rubric, deliverable: { kind: "report", ref: "" }, state: "pending" }),
+    partComments: [{ id: "report-1", authorType: "agent", body: "The report is ready.", createdAt: new Date(0).toISOString() }],
+  });
+
+  it("keeps the task held as grading_failed with no owner escalation, then retries it", async () => {
+    const { waitFor, paperclip, partComments } = t;
+    paperclip.graderAnswers.push({ abort: true }, { abort: true }, answer(["yes", "yes", "yes"]));
+    await waitFor("the failed grading pass", () => paperclip.gradeLog.some((v) => v.outcome === "grading_failed"));
+    await waitFor("grading_failed", () => paperclip.grades.get("part").state === "grading_failed");
+    assert.ok(!partComments().some((c) => /Graded: escalated to the owner/.test(c)), "a timeout is not an owner decision");
+    assert.ok(!paperclip.comments.get("parent").some((c) => /went to the owner/.test(c.body)), "the parent is not told of an escalation");
+    assert.notEqual(paperclip.issues.get("part").status, "done");
+    // The next pass picks it up again and can still close the task.
+    await waitFor("the retry to pass", () => paperclip.issues.get("part").status === "done", 90_000);
+    assert.equal(paperclip.grades.get("part").state, "satisfied");
+  });
+});
+
 describe("flow-graded: the kill switch lets held tasks go", () => {
   const t = flow(held("off", { rubric, deliverable: { kind: "report", ref: "" }, state: "pending" }, { gradingOff: true }));
 

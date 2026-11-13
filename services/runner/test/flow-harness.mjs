@@ -20,12 +20,12 @@ export const git = (cwd, ...args) => execFileSync("git", args, { cwd, env: { ...
 let gitEnv = {};
 
 /** A Paperclip with one parent task (the user's) and one part of it for Ada. */
-export function fakePaperclip({ parent, part, engineers, parentComments = [], others = [], grades = new Map(), gradingOff = false }) {
+export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false }) {
   const gradeLog = [];
   const graderCalls = [];
   const graderAnswers = [];
   const issues = new Map([parent, part, ...others.map((o) => o.issue)].map((i) => [i.id, i]));
-  const comments = new Map([[parent.id, parentComments], [part.id, []], ...others.map((o) => [o.issue.id, o.comments])]);
+  const comments = new Map([[parent.id, parentComments], [part.id, partComments], ...others.map((o) => [o.issue.id, o.comments])]);
   const patches = [];
   const activity = [];
   const passed = [];
@@ -117,7 +117,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], ot
       const stamp = (state) => Object.assign(g, { state, updatedAt: new Date().toISOString() });
       if (gradeRoute[2] === "gate") {
         if (gradingOff || !g || g.state === "satisfied") return send({ pass: true });
-        if (!["pending", "awaiting_evidence", "escalated"].includes(g.state)) stamp("pending");
+        if (!["pending", "awaiting_evidence", "grading_failed", "escalated"].includes(g.state)) stamp("pending");
         return send({ pass: false, state: g.state, label: "grading" });
       }
       const v = JSON.parse(body);
@@ -125,13 +125,21 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], ot
       if (v.outcome === "awaiting_evidence") stamp("awaiting_evidence");
       else if (v.outcome === "satisfied") stamp("satisfied");
       else if (v.outcome === "needs_revision") stamp(++g.attempts >= 3 ? "escalated" : "needs_revision");
+      else if (v.outcome === "grading_failed") stamp("grading_failed");
       else stamp("escalated");
       return send(g);
     }
-    if (path === "/internal/grades" && req.method === "GET") return send({ on: grades.size > 0 && !gradingOff, grades: [...grades.values()].filter((g) => ["pending", "awaiting_evidence"].includes(g.state)), resubmitted: [] });
+    // The board's retry window for a failed grading pass is a minute; the fake shortens it so a flow can see the retry.
+    const retryDue = (g) => (g.state === "grading_failed" ? Date.now() - Date.parse(g.updatedAt) >= 2000 : false);
+    if (path === "/internal/grades" && req.method === "GET") return send({ on: grades.size > 0 && !gradingOff, grades: [...grades.values()].filter((g) => ["pending", "awaiting_evidence"].includes(g.state) || retryDue(g)), resubmitted: [] });
     if (path === "/grader" && req.method === "POST") {
       graderCalls.push(JSON.parse(body));
-      return send({ choices: [{ message: { content: JSON.stringify(graderAnswers.shift() ?? { verdict: "cannot_judge", criteria: [] }) } }], usage: { prompt_tokens: 10, completion_tokens: 5 } });
+      const next = graderAnswers.shift();
+      if (next?.abort) {
+        res.writeHead(500, { "content-type": "text/plain" });
+        return res.end("The operation was aborted due to timeout");
+      }
+      return send({ choices: [{ message: { content: JSON.stringify(next ?? { verdict: "cannot_judge", criteria: [] }) } }], usage: { prompt_tokens: 10, completion_tokens: 5 } });
     }
     // A Tier 0 run's audit row: only with the runner's key.
     if (path === "/internal/approvals/auto" && req.method === "POST") {
@@ -175,7 +183,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], ot
  * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
-export function flow({ parent: parentOver, part: partOver, grants, grades, gradingOff, env = {}, runnerYaml = "" } = {}) {
+export function flow({ parent: parentOver, part: partOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "" } = {}) {
   let dir, runner, runnerEnv, paperclip, output = "";
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -287,7 +295,7 @@ ${runnerYaml}`,
     ];
     Object.assign(parent, parentOver);
     Object.assign(part, partOver);
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred], parentComments, others: [{ issue: alfredPart, comments: alfredChat }], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff });
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 

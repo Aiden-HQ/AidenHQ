@@ -9,8 +9,8 @@ import type { Events } from "./events.js";
 /**
  * open: filed with the delegation, the task not finished yet. pending: a completion path hit the gate, waiting for the
  * runner. awaiting_evidence: checks, a deploy or an approval still running. Then satisfied, needs_revision (back to the
- * assignee), grading_failed (the grader returned no usable criteria: retried in place, never the owner's) or escalated
- * (3 rejected versions or cannot_judge).
+ * assignee), grading_failed (the grader failed or returned no usable criteria: retried on a bounded ladder, never the
+ * owner's) or escalated (3 rejected versions, cannot_judge, or 5 failed grader passes).
  */
 export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "escalated";
 export interface Deliverable {
@@ -34,6 +34,10 @@ export interface Grade {
   attempts: number;
   state: GradeState;
   verdicts: Verdict[];
+  /** Failed grader passes since the last real verdict; the retry ladder starts over at 0. */
+  failures: number;
+  /** When the last grader pass failed (null until one does). */
+  failedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -45,14 +49,20 @@ interface Row {
   attempts: number;
   state: string;
   verdicts: string;
+  failures: number;
+  failed_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
 /** Rejected versions before the owner decides (owner decision, wave 1). */
 export const MAX_LOOPS = 3;
-/** A grader pass that produced no usable verdict is retried this long after it, in place. */
-export const GRADE_RETRY_MS = 60_000;
+/** The waits after successive failed grader passes (1, 5, 15 then 60 minutes); the pass after the last wait is the 5th. */
+export const GRADER_RETRY_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+/** Failed grader passes before the owner hears of it; the retry ladder has one wait fewer. */
+export const MAX_GRADER_FAILURES = 5;
+/** How long after the `failures`-th failed pass the runner retries it. */
+export const graderRetryDelay = (failures: number) => GRADER_RETRY_MS[Math.min(Math.max(failures, 1), GRADER_RETRY_MS.length) - 1]!;
 
 export const DeliverableSchema = z.object({ kind: z.enum(["pr", "app", "apply", "file", "report"]), ref: z.string().max(500).default("") }).strict();
 /** A delegation's rubric: 3-8 checkable criteria, or none (the grader then uses modules/core/rubrics/<kind>.md). */
@@ -64,7 +74,7 @@ export const FileGradeSchema = z
   })
   .strict();
 export const GateSchema = z.object({ via: z.enum(["task_finish", "task_set_status", "finish_turn", "finish_merges"]) }).strict();
-/** The runner's outcome of one grading pass: still waiting on evidence, or the grader's verdict on `version` (error: the grader failed). */
+/** The runner's outcome of one grading pass: still waiting on evidence, or the grader's verdict on `version` (grading_failed: the grader failed and is retried; error: evidence that never came or every model refused). */
 export const VerdictSchema = z
   .object({
     version: z.string().max(200),
@@ -99,7 +109,7 @@ export function prRefAllowed(ref: string, grantsFile = process.env.AIDENHQ_GRANT
   return Boolean((t.agents_org && org === t.agents_org.toLowerCase()) || (t.product_repo && repo === t.product_repo.toLowerCase()));
 }
 
-const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), createdAt: r.created_at, updatedAt: r.updated_at });
+const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
 
 export class Grades {
   constructor(
@@ -108,7 +118,11 @@ export class Grades {
   ) {
     db.exec(`CREATE TABLE IF NOT EXISTS grades (
       issue_id TEXT PRIMARY KEY, rubric TEXT NOT NULL, deliverable TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-      state TEXT NOT NULL, verdicts TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+      state TEXT NOT NULL, verdicts TEXT NOT NULL DEFAULT '[]', failures INTEGER NOT NULL DEFAULT 0, failed_at TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+    const columns = (db.prepare("PRAGMA table_info(grades)").all() as { name: string }[]).map((c) => c.name);
+    if (!columns.includes("failures")) db.exec("ALTER TABLE grades ADD COLUMN failures INTEGER NOT NULL DEFAULT 0");
+    if (!columns.includes("failed_at")) db.exec("ALTER TABLE grades ADD COLUMN failed_at TEXT");
     // An escalated task finished again: graded again only once the runner finds a new deliverable version (resubmit).
     db.exec("CREATE TABLE IF NOT EXISTS grade_resubmits (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL)");
   }
@@ -128,12 +142,11 @@ export class Grades {
     return { created: Number(r.changes) > 0, grade: this.get(issueId)! };
   }
 
-  /** The rows the runner grades: a completion path hit the gate, the evidence was still coming, or the grader failed and is due a retry. */
+  /** The rows the runner grades: a completion path hit the gate, the evidence was still coming, or the grader failed (no verdict yet) and its next retry is due. */
   due(now = Date.now()): Grade[] {
-    const retryBefore = new Date(now - GRADE_RETRY_MS).toISOString();
-    return (
-      this.db.prepare("SELECT * FROM grades WHERE state IN ('pending', 'awaiting_evidence') OR (state = 'grading_failed' AND updated_at <= ?) ORDER BY updated_at").all(retryBefore) as unknown as Row[]
-    ).map(fromRow);
+    return (this.db.prepare("SELECT * FROM grades WHERE state IN ('pending', 'awaiting_evidence', 'grading_failed') ORDER BY updated_at").all() as unknown as Row[])
+      .map(fromRow)
+      .filter((g) => g.state !== "grading_failed" || !g.failedAt || Date.parse(g.failedAt) + graderRetryDelay(g.failures) <= now);
   }
 
   /** Escalated rows, newest first: the owner channel tells the owner of each once. */
@@ -170,8 +183,10 @@ export class Grades {
     this.events?.emit("grades", issueId);
   }
 
-  private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[]): Grade {
-    this.db.prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, updated_at = ? WHERE issue_id = ?").run(state, attempts, JSON.stringify(verdicts), new Date().toISOString(), issueId);
+  private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, now = Date.now()): Grade {
+    this.db
+      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, updated_at = ? WHERE issue_id = ?")
+      .run(state, attempts, JSON.stringify(verdicts), failures, failedAt, new Date(now).toISOString(), issueId);
     this.events?.emit("grades", issueId);
     return this.get(issueId)!;
   }
@@ -179,26 +194,31 @@ export class Grades {
   /** Waiting for the grader again (the completion gate). */
   pend(issueId: string): void {
     const g = this.get(issueId)!;
-    this.set(issueId, "pending", g.attempts, g.verdicts);
+    this.set(issueId, "pending", g.attempts, g.verdicts, g.failures, g.failedAt);
   }
 
   /**
    * One grading pass's outcome. A rejected version counts once (loops are distinct versions). A version rejected before and
-   * handed in again unchanged, the MAX_LOOPS-th rejected version, cannot_judge and a grader error all escalate to the owner.
-   * A grader pass with no usable criteria (grading_failed) is retried, never counted as a verdict on the work.
+   * handed in again unchanged, the MAX_LOOPS-th rejected version, cannot_judge, a grader refusal and evidence that never came
+   * (error) escalate to the owner. A grader that failed or returned no usable criteria (grading_failed) is retried on the
+   * 1-5-15-60 minute ladder and only escalates after MAX_GRADER_FAILURES passes; any real verdict clears that count.
    */
-  record(issueId: string, v: z.infer<typeof VerdictSchema>): Grade {
+  record(issueId: string, v: z.infer<typeof VerdictSchema>, now = Date.now()): Grade {
     const g = this.get(issueId);
     if (!g) throw new Error("no grade for this task");
-    if (v.outcome === "awaiting_evidence") return this.set(issueId, "awaiting_evidence", g.attempts, g.verdicts);
-    const verdict: Verdict = { at: new Date().toISOString(), version: v.version, model: v.model, verdict: ["error", "grading_failed"].includes(v.outcome) ? "cannot_judge" : (v.outcome as Verdict["verdict"]), criteria: v.criteria };
+    if (v.outcome === "awaiting_evidence") return this.set(issueId, "awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt, now);
+    const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: ["error", "grading_failed"].includes(v.outcome) ? "cannot_judge" : (v.outcome as Verdict["verdict"]), criteria: v.criteria };
     const verdicts = [...g.verdicts, verdict].slice(-20);
-    if (v.outcome === "satisfied") return this.set(issueId, "satisfied", g.attempts, verdicts);
-    if (v.outcome === "grading_failed") return this.set(issueId, "grading_failed", g.attempts, verdicts);
-    if (v.outcome !== "needs_revision") return this.set(issueId, "escalated", g.attempts, verdicts);
-    if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return this.set(issueId, "escalated", g.attempts, verdicts);
+    if (v.outcome === "satisfied") return this.set(issueId, "satisfied", g.attempts, verdicts, 0, null, now);
+    if (v.outcome === "grading_failed") {
+      const failures = g.failures + 1;
+      const state = failures >= MAX_GRADER_FAILURES ? "escalated" : "grading_failed";
+      return this.set(issueId, state, g.attempts, verdicts, failures, new Date(now).toISOString(), now);
+    }
+    if (v.outcome !== "needs_revision") return this.set(issueId, "escalated", g.attempts, verdicts, 0, null, now);
+    if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return this.set(issueId, "escalated", g.attempts, verdicts, 0, null, now);
     const attempts = g.attempts + 1;
-    return this.set(issueId, attempts >= MAX_LOOPS ? "escalated" : "needs_revision", attempts, verdicts);
+    return this.set(issueId, attempts >= MAX_LOOPS ? "escalated" : "needs_revision", attempts, verdicts, 0, null, now);
   }
 }
 
