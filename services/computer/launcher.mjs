@@ -8,12 +8,13 @@
 //   POST /release {container, destroy}   the run ended: its token is revoked (destroy: the box goes too)
 //   POST /inspect {container}
 //   POST /progress {agentId}  the tail of that agent's Codex session log from its live box → {lines} (the board's live view)
-//   POST /usage {since}       model calls through the gateway since then, with OpenRouter's billed cost → {records} (Costs tab)
-//   GET /health (no auth)     GET /whoami (Bearer <run token>) → {agentId}: connections resolve run tokens here
+//   GET /health (no auth)     GET /whoami (Bearer <run token>) → {agentId, runId, issueId}: connections and the model gateway
+//                             resolve run tokens here (runId, issueId: the Paperclip run and task the token's first exec named)
 //   POST /reply {issueId, body} (Bearer <run token>): a comment on the run's own task, posted inside the box through Paperclip's
 //                             bridge with the run's own credential (notify_owner from a computer; slack-live calls it)
 // Gateway, on the computers network gateway (only boxes reach it; ops/vm/computer-net.sh):
-//   POST /api/v1/responses    model calls: the "API key" must be a live run token; the real OpenRouter key is added here
+//   POST /api/v1/responses    model calls: the "API key" must be a live run token; passed on to the model gateway
+//                             (services/gateway, which counts and caps them like every agent's) with that token
 //   /c/<connection>/mcp       tool calls to a connection: X-Agent-Key must be a live run token; the service's bearer is added here
 //   POST /repo {repo, sha}    the box's `repo-checkout`: a snapshot (no .git, no credentials) of an agents-org repo at a commit,
 //                             from the runner's cache clone, into /workspace/repos/<name>; agents with the repo-checkout role
@@ -24,7 +25,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFile
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, usageTap, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, Tokens, admit, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, Tokens, admit, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -59,6 +60,8 @@ const CFG = {
   })(),
 };
 const GATEWAY_URL = `http://${CFG.gateway.host}:${CFG.gateway.port}`;
+// The model gateway on host loopback (services/gateway): every box's model call goes on to it.
+const MODEL_GATEWAY_URL = env("AIDENHQ_MODEL_GATEWAY_URL", "http://127.0.0.1:8201");
 const TOKEN = secret("computer_launcher_token");
 const PROGRESS_TOKEN = secret("computer_progress_token");
 if (!TOKEN) throw new Error("the secret computer_launcher_token is missing (scripts/compile.mjs creates it)");
@@ -85,9 +88,6 @@ try { tokens.load(readJson(tokensFile)); } catch {}
 // Written whole then renamed, so a crash never leaves a half file.
 const saveTokens = () => { try { writeFileSync(`${tokensFile}.tmp`, JSON.stringify(tokens.dump()), { mode: 0o600 }); renameSync(`${tokensFile}.tmp`, tokensFile); } catch (e) { log("couldn't save run tokens:", e.message); } };
 const boxes = new Map(); // container → { agentId, lastUsed, busy, cred? } (cred: the current run's Paperclip credential, for /reply)
-// What each model call through the gateway cost, as OpenRouter billed it: the board pulls these (/usage) for its Costs tab.
-// In memory, the last day at most: the board pulls every minute and dedupes by generation id.
-let usage = [];
 
 function docker(args, opts = {}) {
   return new Promise((resolve) => {
@@ -176,6 +176,8 @@ const control = {
     if (token) await writeRunToken(container, token); // a launcher restart, or a box from before this code, still gets it
     const cred = token && runCredential(e);
     if (cred) b.cred = cred;
+    // The run's token names its Paperclip run and task from here on: the model gateway attributes and caps by them.
+    if (cred && tokens.bind(container, { runId: e.PAPERCLIP_RUN_ID, issueId: cred.taskId })) saveTokens();
     const xenv = execEnv(e, { token, mcp: e.CODEX_HOME && token ? mcpFor(b.agentId) : undefined });
     const [cmd, cargs] = wrapExec(command, routineArgs(command, args, e), xenv);
     if (DEBUG) log("exec env keys", container, Object.keys(xenv).sort().join(","));
@@ -207,10 +209,6 @@ const control = {
     if (!box) return { lines: [] };
     const r = await docker(["exec", box, "sh", "-c", PROGRESS_SCRIPT], { timeoutMs: 8000 });
     return { lines: r.exitCode === 0 ? r.stdout.split("\n").filter(Boolean) : [] };
-  },
-  /** The board's Costs tab: model calls through the gateway since `since` (ISO), with what OpenRouter billed for each. */
-  async usage({ since }) {
-    return { records: usage.filter((r) => r.at >= String(since ?? "")) };
   },
   async inspect({ container }) {
     if (!ours(container)) throw fail(400, "not a computer");
@@ -283,14 +281,14 @@ http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") return send(res, 200, { ok: true, computers: boxes.size, max: CFG.max });
   if (req.method === "GET" && req.url === "/whoami") {
     const who = tokens.whoami(bearer(req));
-    return who ? send(res, 200, { agentId: who.agentId }) : send(res, 401, { error: "unknown run token" });
+    return who ? send(res, 200, { agentId: who.agentId, runId: who.runId, issueId: who.issueId }) : send(res, 401, { error: "unknown run token" });
   }
   let body = "";
   req.on("data", (d) => (body += d));
   req.on("end", async () => {
     if (req.method === "POST" && req.url === "/reply") return reply(req, body).then((r) => send(res, r.status, r.body));
-    // The board's progress key opens /progress and /usage only; everything else needs the plugin's control key.
-    const progressOnly = PROGRESS_TOKEN && bearer(req) === PROGRESS_TOKEN && req.method === "POST" && (req.url === "/progress" || req.url === "/usage");
+    // The board's progress key opens /progress only; everything else needs the plugin's control key.
+    const progressOnly = PROGRESS_TOKEN && bearer(req) === PROGRESS_TOKEN && req.method === "POST" && req.url === "/progress";
     if (bearer(req) !== TOKEN && !progressOnly) return send(res, 401, { error: "unauthorized" });
     const fn = req.method === "POST" && Object.hasOwn(control, req.url.slice(1)) ? control[req.url.slice(1)] : null;
     if (!fn) return send(res, 404, { error: "no such route" });
@@ -307,7 +305,7 @@ http.createServer((req, res) => {
     try {
       const p = JSON.parse(body || "{}");
       const out = await fn(p);
-      if (req.url === "/progress" || req.url === "/usage" ? DEBUG : req.url !== "/exec" || out.exitCode !== 0 || DEBUG) log(req.url, p.container ?? p.agentId ?? "", p.command ? `${p.command} ${(p.args ?? []).join(" ").slice(0, 60)}` : "", `${Date.now() - t0}ms`, out.exitCode ?? out.state ?? out.container ?? "");
+      if (req.url === "/progress" ? DEBUG : req.url !== "/exec" || out.exitCode !== 0 || DEBUG) log(req.url, p.container ?? p.agentId ?? "", p.command ? `${p.command} ${(p.args ?? []).join(" ").slice(0, 60)}` : "", `${Date.now() - t0}ms`, out.exitCode ?? out.state ?? out.container ?? "");
       send(res, 200, out);
     } catch (e) {
       log(req.url, "ERROR", e.message);
@@ -335,28 +333,12 @@ http.createServer(async (req, res) => {
   const deny = (status, msg) => { log("gateway", req.method, req.url, status, msg); res.writeHead(status, { "content-type": "text/plain" }).end(`gateway: ${msg}`); };
   try {
     if (req.method === "POST" && req.url === "/api/v1/responses") {
-      // The model: the box's "API key" is its run token; the real key never enters a box. One path, fail closed.
-      const who = tokens.whoami(bearer(req));
+      // The model: the box's "API key" is its run token; the model gateway, not a box or the launcher, holds the real key.
+      const token = bearer(req);
+      const who = tokens.whoami(token);
       if (!who) return deny(401, "not a live computer");
-      const key = secret("openrouter_key");
-      if (!key) return deny(503, "no model key on the host");
-      const chunks = [];
-      for await (const c of req) chunks.push(c);
-      const body = Buffer.concat(chunks);
-      const up = await fetch("https://openrouter.ai/api/v1/responses", { method: "POST", headers: { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${key}` }, body });
       boxes.get(who.container) && (boxes.get(who.container).lastUsed = Date.now());
-      res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding"].includes(k))));
-      const tap = usageTap();
-      const text = new TextDecoder();
-      for await (const c of up.body) (res.write(c), tap.feed(text.decode(c, { stream: true })));
-      res.end();
-      const u = tap.done();
-      if (u) {
-        // Everything here is OpenRouter's answer or the run token's agent; nothing from the box's request.
-        usage = usage.filter((r) => Date.parse(r.at) > Date.now() - 864e5).slice(-20_000);
-        usage.push({ ...u, at: new Date().toISOString(), agentId: who.agentId });
-      }
-      return;
+      return await forwardModel(req, res, `${MODEL_GATEWAY_URL}/api/v1/responses`, token);
     }
     if (req.method === "POST" && req.url === "/repo") {
       const who = tokens.whoami(String(req.headers["x-agent-key"] ?? ""));

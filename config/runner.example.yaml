@@ -56,11 +56,12 @@ gcp:
 
 # Reads plain-language requests (target repo, reference repos, mode, model) with a short Codex call.
 intake:
-  model: ""                           # empty = your Codex default
+  # Default: OpenRouter through the gateway (model ~deepseek/deepseek-flash-latest). For a ChatGPT login instead,
+  # set `codex_args: []` (and optionally `model`).
+  # model: ""
   reasoning_effort: low
   timeout_seconds: 180
-  # Extra `codex exec` args for the intake and the write check (authorize), e.g. OpenRouter instead of a
-  # ChatGPT login: ["-c", 'model_provider="or"', "-c", 'model_providers.or.name="OpenRouter"', ...]
+  # `codex exec` args for the intake and the write check (authorize); unset = OpenRouter, [] = the host's ChatGPT login.
   # codex_args: []
 
 sandbox:

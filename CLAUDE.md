@@ -1,8 +1,18 @@
 # AidenHQ: guide for coding agents and contributors
 
-AidenHQ is a self-hosted agentic workspace: one chief of staff (Aiden) the owner talks to, crews of specialist
-agents under it, shared tool connections, a code-gated runner and a sandboxed apps platform, all coordinated by
-Paperclip. Start with [README.md](README.md), [docs/concepts.md](docs/concepts.md) and
+AidenHQ is a self-hosted platform for creating, running and managing your own AI agents and the applications they
+build. The owner describes an agent or an app; agents design it (the Agent Architect), build it (Engineers on the
+runner), deploy and maintain it (the DevOps Engineer on the apps platform) and run it on schedules and events.
+Everything sits behind one chief of staff (Aiden) the owner talks to, with shared tool connections, a shared
+warehouse, a code-gated runner and a sandboxed apps platform, all coordinated by Paperclip.
+
+**Why it exists:** one person should be able to run a capable fleet of agents and internal apps on their own
+infrastructure without writing prompts or glue for each one, and trust it: agents may decide, but every write (push,
+merge, deploy, outbound message, config change) is gated in code and approved by tier, and every agent, handbook and
+app lives in git so changes are reviewable and reversible. When you change the product, keep that goal in view: a new
+capability should make creating, running or managing agents and apps easier for any owner, not just fit one workflow.
+
+Start with [README.md](README.md), [docs/concepts.md](docs/concepts.md) and
 [docs/architecture.md](docs/architecture.md). How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md). Installing an
 instance: [SETUP.md](SETUP.md). Put personal notes (your server, your instance) in a gitignored `CLAUDE.local.md`,
 never in this file.
@@ -70,6 +80,10 @@ merging those.
   `services/runner/src/config.mjs`). Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
+- **Supply chain:** unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version
+  published less than 7 days ago. Pin versions, and state the release date of any image or action you bump. Dependabot
+  (cooldown 7), `scripts/supply-chain/npm-age.mjs` (CI, exceptions in `.github/supply-chain-exceptions.yaml`) and gitleaks
+  (`.gitleaks.toml`) enforce it.
 - **Minimal tests.** A few that prove the thing works end to end; no tests for obvious code.
 - **Simple.** Less code, fewer moving parts. No speculative abstractions, knobs or compatibility shims. Handle the
   common path and let rare cases fail loudly.

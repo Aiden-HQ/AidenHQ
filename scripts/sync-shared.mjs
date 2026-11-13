@@ -3,6 +3,7 @@
 // byte-identical copy; scripts/test/shared.test.mjs fails when one drifts.
 //   services/shared/agent-auth.ts    run identity and grants, in every service that checks callers
 //   services/shared/source-store.ts  the shared-sources writer side, in every source writer
+//   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   node scripts/sync-shared.mjs
 import { copyFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -30,6 +31,7 @@ export const SHARED = {
     "modules/google/connections/google-workspace-mcp/src/source-store.ts",
     "modules/security/scanner/src/source-store.ts",
   ],
+  "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

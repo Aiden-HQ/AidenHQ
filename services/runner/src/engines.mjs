@@ -5,6 +5,7 @@ import { StringDecoder } from "node:string_decoder";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { progressTracker } from "./progress.mjs";
+import { mintToken } from "../../gateway/token.mjs";
 
 const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
@@ -144,13 +145,27 @@ function jailed(pasta, masks, loopback, argv) {
  * inside `codex sandbox`. `gcp` is the job's gcloud session (src/gcp.mjs), for engines that observe.
  * `loopback`: further host URLs the job may reach (the run's helper), besides the MCP endpoints it is wired to.
  */
-export function buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, loopback = [] }) {
-  const built = engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp: observes(engine.kind) ? gcp : undefined });
-  const mcp = [primer(cfg)?.url, ...(observes(engine.kind) ? privateReads(cfg).map((r) => r.url) : [])];
+export function buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, loopback = [], job = {} }) {
+  const built = engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp: observes(engine.kind) ? gcp : undefined, job });
+  // opencode's model calls go to the model gateway on host loopback (forwarded into the job's network jail).
+  const mcp = [primer(cfg)?.url, ...(observes(engine.kind) ? privateReads(cfg).map((r) => r.url) : []), ...(engine.kind === "openrouter" ? [gatewayUrl(cfg)] : [])];
   return { ...built, argv: hiding(cfg, built.argv, [...mcp, ...loopback]) };
 }
 
-function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp }) {
+const gatewayUrl = (cfg) => cfg.gatewayUrl ?? "http://127.0.0.1:8201";
+
+/**
+ * A model credential for the gateway (services/gateway/token.mjs), signed with gateway_job_secret: a job's (kind agent, capped,
+ * billed to its Engineer and task) or the runner's own (reviewer, grader, intake). Never the OpenRouter key.
+ */
+export function modelToken(cfg, claims) {
+  let secret = "";
+  try { secret = readFileSync(cfg.gatewayJobSecretFile, "utf8").trim(); } catch {}
+  return mintToken(secret, claims);
+}
+export const gatewayApi = (cfg) => `${gatewayUrl(cfg)}/api/v1`;
+
+function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, job = {} }) {
   const p = primer(cfg);
   const reads = observes(engine.kind) ? privateReads(cfg) : [];
   const mcpEnv = { ...(p ? { PRIMER_MCP_TOKEN: p.token } : {}), ...Object.fromEntries(reads.map((r) => [r.env, r.token])), ...(gcp?.env ?? {}) };
@@ -180,7 +195,8 @@ function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp 
     return { argv: args, env: mcpEnv };
   }
   if (engine.kind === "openrouter") {
-    const key = readFileSync(cfg.openrouterKeyFile, "utf8").trim();
+    // The job's own credential to the model gateway, valid past its deadline (an adopted run keeps its env).
+    const key = modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 });
     const opencode = ["opencode", "run", "--format", "json", "--model", `openrouter/${engine.model}`];
     if (sessionId) opencode.push("--session", sessionId);
     // OS-level confinement for opencode's tools: Codex's sandbox around the whole process.
@@ -198,6 +214,9 @@ function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp 
           permission: { read: "allow", edit: "allow", bash: "allow", webfetch: "allow", external_directory: "allow", doom_loop: "allow" },
           autoupdate: false,
           share: "disabled",
+          // Through the model gateway; its title calls use the job's model, not opencode's default small model.
+          provider: { openrouter: { options: { baseURL: gatewayApi(cfg) } } },
+          small_model: `openrouter/${engine.model}`,
           ...(p ? { mcp: { primer: { type: "remote", url: p.url, headers: { Authorization: "Bearer {env:PRIMER_MCP_TOKEN}" }, oauth: false, enabled: true } } } : {}),
         }),
       },
@@ -264,9 +283,9 @@ const POLL_MS = 250;
  * The agent's environment: no SSH agent (fetch only via the runner), read-only gh first on PATH (reading with
  * `ghToken`, a read-only App token for the task's repos), and a git ssh wrapper that refuses pushes.
  */
-export function startAgent({ cfg, engine, worktree, prompt, sessionId, logPath, env: jobEnv = {}, gcp, channel, identity = DEFAULT_IDENTITY, ghToken }) {
+export function startAgent({ cfg, engine, worktree, prompt, sessionId, logPath, env: jobEnv = {}, gcp, channel, identity = DEFAULT_IDENTITY, ghToken, job }) {
   const lastMessageFile = `${logPath}.last.md`;
-  const { argv, env, promptAsArg, streamInput } = buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, loopback: [jobEnv.AIDENHQ_REPO_URL] });
+  const { argv, env, promptAsArg, streamInput } = buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, loopback: [jobEnv.AIDENHQ_REPO_URL], job });
   const full = promptAsArg ? [...argv, prompt] : argv;
   const agentEnv = {
     ...process.env,

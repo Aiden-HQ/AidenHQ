@@ -33,7 +33,7 @@ export const notificationsOn = () => usable && Notification.permission === "gran
 export const askForNotifications = () => (usable ? Notification.requestPermission() : Promise.resolve("denied" as NotificationPermission));
 
 /** Polls every 30 s; returns a stop function. The first poll only records what's already waiting (no burst on open). */
-export function watchNeedsYou(poll: () => Promise<{ items: Waiting[] }>, onOpen: (identifier: string) => void): () => void {
+export function watchNeedsYou(poll: () => Promise<{ items: Waiting[] }>, onOpen: (identifier: string) => void, wake?: (tick: () => void) => () => void): () => void {
   let first = true;
   const tick = async () => {
     try {
@@ -54,5 +54,7 @@ export function watchNeedsYou(poll: () => Promise<{ items: Waiting[] }>, onOpen:
   };
   void tick();
   const t = setInterval(() => void tick(), 30_000);
-  return () => clearInterval(t);
+  // `wake`: live updates (a card filed or decided anywhere) poll at once; the 30 s poll stays as the fallback.
+  const off = wake?.(() => void tick());
+  return () => (clearInterval(t), off?.());
 }

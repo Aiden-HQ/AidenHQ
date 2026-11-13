@@ -1,20 +1,42 @@
 #!/bin/sh
-# Codex for an agent whose routine has its own model and/or reasoning effort (docs/configuration.md, "A model per routine").
-# Setup puts them in the routine's env as AIDENHQ_MODEL and AIDENHQ_REASONING_EFFORT, which Paperclip passes to that routine's
-# runs; this swaps them in for the agent's own on `codex exec`. Anything else (neither set, --version, ...) runs Codex as is.
-# (A computer agent's launcher does the same in services/computer/lib.mjs, routineArgs.)
-[ "$1" = exec ] && { [ -n "$AIDENHQ_MODEL" ] || [ -n "$AIDENHQ_REASONING_EFFORT" ]; } || exec codex "$@"
-shift
-n=$#
-set -- "$@" exec
-[ -n "$AIDENHQ_MODEL" ] && set -- "$@" --model "$AIDENHQ_MODEL"
-[ -n "$AIDENHQ_REASONING_EFFORT" ] && set -- "$@" -c "model_reasoning_effort=\"$AIDENHQ_REASONING_EFFORT\""
+# Codex for every agent Paperclip runs locally. Two jobs, both only on `codex ... exec` (--version and the like run Codex as is):
+# 1. A routine with its own model and/or reasoning effort (docs/configuration.md, "A model per routine"): setup puts them in the
+#    routine's env as AIDENHQ_MODEL and AIDENHQ_REASONING_EFFORT, which Paperclip passes to that routine's runs; they replace the
+#    agent's own. (A computer agent's launcher does the same in services/computer/lib.mjs, routineArgs.)
+# 2. Prompt caching: Codex prints its cwd in the <environment_context> message ahead of the handbook, and Paperclip's cwd is a new
+#    directory per task, so the handbook never matched a cached prefix across runs. A run starts in one stable directory per
+#    agent instead. Codex loads AGENTS.md from its cwd, so the directory is empty and read-only (0555, ours, not a link): a run
+#    can't plant instructions for later ones. Without PAPERCLIP_AGENT_ID the cwd is left alone.
+# Paperclip calls `codex -c k=v ... exec ...`: the global -c pairs come before `exec`.
+sub=; skip=
+for a; do
+  if [ -n "$skip" ]; then skip=; continue; fi
+  if [ "$a" = -c ]; then skip=1; continue; fi
+  sub=$a; break
+done
+[ "$sub" = exec ] || exec codex "$@"
+case $PAPERCLIP_AGENT_ID in ""|*[!0-9a-fA-F-]*) ;; *)
+  d=/tmp/aidenhq-cwd/$PAPERCLIP_AGENT_ID
+  [ -d "$d" ] || { mkdir -p "$d" && chmod 555 "$d"; }
+  # Only an empty directory of ours under a parent of ours: anything planted there (a run can chmod it back) means Paperclip's own cwd.
+  # Codex also reads AGENTS.md from every folder between a git root and its cwd, so a planted .git or AGENTS.md above it counts too.
+  ok=1; for m in /tmp /tmp/aidenhq-cwd; do for f in .git AGENTS.md AGENTS.override.md; do [ -e "$m/$f" ] || [ -L "$m/$f" ] && ok=; done; done
+  if [ -n "$ok" ] && [ -d "$d" ] && [ ! -L /tmp/aidenhq-cwd ] && [ -O /tmp/aidenhq-cwd ] && [ ! -L "$d" ] && [ -O "$d" ] && [ -z "$(ls -A "$d")" ]; then chmod 555 "$d" && cd "$d"; fi ;;
+esac
+n=$#; seen=
 while [ "$n" -gt 0 ]; do
   a=$1; shift; n=$((n - 1))
-  if [ -n "$AIDENHQ_MODEL" ] && [ "$a" = --model ] && [ "$n" -gt 0 ]; then shift; n=$((n - 1)); continue; fi
-  if [ -n "$AIDENHQ_REASONING_EFFORT" ] && [ "$a" = -c ] && [ "$n" -gt 0 ]; then
-    case $1 in model_reasoning_effort=*) shift; n=$((n - 1)); continue ;; esac
+  if [ "$a" = -c ] && [ "$n" -gt 0 ]; then
+    v=$1; shift; n=$((n - 1))
+    [ -n "$AIDENHQ_REASONING_EFFORT" ] && case $v in model_reasoning_effort=*) continue ;; esac
+    set -- "$@" -c "$v"; continue
   fi
+  if [ -n "$AIDENHQ_MODEL" ] && [ "$a" = --model ] && [ "$n" -gt 0 ]; then shift; n=$((n - 1)); continue; fi
   set -- "$@" "$a"
+  if [ "$a" = exec ] && [ -z "$seen" ]; then
+    seen=1
+    [ -n "$AIDENHQ_MODEL" ] && set -- "$@" --model "$AIDENHQ_MODEL"
+    [ -n "$AIDENHQ_REASONING_EFFORT" ] && set -- "$@" -c "model_reasoning_effort=\"$AIDENHQ_REASONING_EFFORT\""
+  fi
 done
 exec codex "$@"

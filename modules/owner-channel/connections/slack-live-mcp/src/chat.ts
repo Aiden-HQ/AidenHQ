@@ -237,13 +237,17 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
         // A card's Approve or Reject: decided by the record's id; the buttons become the outcome so it can't be pressed twice.
         const card = extras?.approvals ? approvalPress(u, cfg.telegramChatId, store) : null;
         if (card) {
-          const r = await extras!.approvals!.decide({ id: card.id, decision: card.decision, via: "telegram" }).catch((err: Error) => {
+          // A `B…` id is a stored list (Approve all / Reject all): the board decides all of it as shown, or none.
+          const r = await extras!.approvals!.decide({ ...(card.id.startsWith("B") ? { batch: card.id } : { id: card.id }), decision: card.decision, via: "telegram" }).catch((err: Error) => {
             store.setKv(`appr:${(u as any).callback_query.data}`, `${card.id}:${card.decision}`); // the button works again
             return unreachable(err);
           });
           // The buttons become the outcome; a board that couldn't be reached leaves them to press again.
           const label = r.ok ? (r.state === "rejected" ? "✗ Rejected" : "✓ Approved") : "⚠ Not decided";
           if (r.ok || !/couldn't reach/.test(r.reason)) await tg("editMessageReplyMarkup", { chat_id: card.chatId, message_id: card.messageId, reply_markup: { inline_keyboard: [[{ text: label, callback_data: "done" }]] } });
+          // A list once pressed keeps its outcome (no later "replaced"); a refused one gets a fresh list of what still waits.
+          if (card.id.startsWith("B") && (r.ok || !/couldn't reach/.test(r.reason))) store.setKv("batch:msg", "");
+          if (!r.ok && card.id.startsWith("B") && !/couldn't reach/.test(r.reason)) store.setKv("batch:last", "");
           await extras!.reply({ text: decidedText(r, card.decision) });
         }
         const press = card ? null : fromTelegramCallback(u, cfg.telegramChatId, store);

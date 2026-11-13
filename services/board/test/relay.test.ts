@@ -148,6 +148,22 @@ describe("/internal/relay", () => {
     expect((await relay({}, COS, "/internal/fleet/status")).status).not.toBe(403);
   });
 
+  it("fleet_status survives a failed summary (summary: null)", async () => {
+    (pc as any).request = async () => [];
+    (pc as any).closedSince = async () => Promise.reject(new Error("paperclip down"));
+    (pc as any).recentRuns = async () => [];
+    try {
+      const r = await relay({}, COS, "/internal/fleet/status");
+      expect(r.status).toBe(200);
+      expect(r.json.summary).toBeNull();
+      expect(r.json.agents).toEqual([]);
+    } finally {
+      delete (pc as any).request;
+      delete (pc as any).closedSince;
+      delete (pc as any).recentRuns;
+    }
+  });
+
   it("fleet-read (Fleet Ops) may read the fleet status, never control the fleet, read costs or relay", async () => {
     expect((await relay({}, FLEET_OPS, "/internal/fleet/status")).status).not.toBe(403);
     const control = await relay({ action: "pause_agent", target: "slack scout", quote: "pause the slack scout", task: chat.identifier }, FLEET_OPS, "/internal/fleet/control");

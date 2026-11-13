@@ -20,7 +20,7 @@ const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 // The argument that says what the call is about, in order of how well it reads.
 const ARG_KEYS = ["query", "q", "jql", "question", "url", "path", "channel", "command", "cmd", "text", "name"];
 
-function firstArg(args: Record<string, unknown>): string {
+export function firstArg(args: Record<string, unknown>): string {
   for (const k of ARG_KEYS) if (typeof args[k] === "string" && args[k]) return clip(oneLine(args[k] as string), 80);
   for (const v of Object.values(args)) if (typeof v === "string" && v) return clip(oneLine(v), 80);
   return "";

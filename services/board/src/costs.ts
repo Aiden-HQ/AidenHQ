@@ -1,6 +1,6 @@
 // The Costs tab: what each agent and system component spent on models in a window, as close to OpenRouter's bill as we can see.
-//  - Billed: every call an agent computer makes passes the launcher's gateway, which keeps what OpenRouter billed for it; the
-//    board pulls those (pullUsage). The runner's Engineer jobs (opencode) and AI reviewer report OpenRouter's cost likewise.
+//  - Billed: every call through the model gateway (services/gateway; agent computers' calls reach it through the launcher)
+//    is kept with what OpenRouter billed for it; the board pulls those (pullUsage). The runner's Engineer jobs (opencode) and AI reviewer report OpenRouter's cost likewise.
 //  - Estimated: agents in Paperclip's own container call OpenRouter directly, so only Paperclip's token counts exist. Their
 //    dollars are tokens × list price × that model's billed/list ratio over the last 7 days of billed calls, Engineer jobs left
 //    out (opencode's costs sit far below what the gateway sees billed for the same model, cause unknown). The list price is the
@@ -20,6 +20,18 @@ const DAY = 864e5;
 export const WINDOWS = ["today", "yesterday", "7d", "30d"] as const;
 export type CostWindow = (typeof WINDOWS)[number];
 
+/** A call's run attribution (RunIdentity in agent-auth.ts, plus how the call went); every field optional. See UsageRecord. */
+const Attribution = {
+  runKey: z.string().regex(/^[\w:.-]{1,128}$/).nullable().optional(),
+  /** Paperclip's run id, when the credential names it (a run JWT): the run page's exact join. */
+  runId: z.string().min(1).max(80).nullable().optional(),
+  issueId: z.string().min(1).max(80).nullable().optional(),
+  rev: z.string().regex(/^[0-9a-f]{1,64}$/).nullable().optional(),
+  kind: z.enum(["agent", "advisor", "grader", "reviewer", "fanout", "source"]).nullable().optional(),
+  ms: z.number().int().min(0).nullable().optional(),
+  status: z.string().regex(/^[a-z0-9_]{1,40}$/).nullable().optional(),
+};
+
 export const UsageSchema = z
   .object({
     key: z.string().min(1).max(200),
@@ -29,6 +41,7 @@ export const UsageSchema = z
     cached: z.number().int().min(0),
     output: z.number().int().min(0),
     costUsd: z.number().min(0).nullable().optional(),
+    ...Attribution,
   })
   .strict();
 
@@ -335,18 +348,21 @@ export async function costs(pc: Paperclip, store: Pick<Store, "usage">, w: CostW
 const PulledRecord = z.object({
   key: z.string().min(1).max(200),
   at: z.string().datetime(),
-  agentId: z.string().min(1).max(80),
+  // None for the model gateway's system calls (the AI reviewer, source writers); they are counted by component.
+  agentId: z.string().min(1).max(80).nullable(),
+  component: z.string().trim().min(1).max(80).optional(),
   model: z.string().max(120),
   input: z.number().int().min(0),
   cached: z.number().int().min(0),
   output: z.number().int().min(0),
   costUsd: z.number().min(0).nullable(),
+  ...Attribution,
 });
 
 /** Gateway records, each checked on its own: a bad one is skipped, never the batch (it must not hold the pull back). */
 export function pulledRecords(body: unknown): z.infer<typeof PulledRecord>[] {
   const records = (body as { records?: unknown } | null)?.records;
-  if (!Array.isArray(records)) throw new Error("the launcher's answer has no records");
+  if (!Array.isArray(records)) throw new Error("the gateway's answer has no records");
   return records.flatMap((r) => {
     const p = PulledRecord.safeParse(r);
     return p.success ? [p.data] : [];
@@ -377,24 +393,24 @@ export function asConfiguredModel(usage: UsageTotal[], modelOf: Map<string, stri
 }
 
 /**
- * Every minute: agent computers' model calls from the launcher's gateway, with what OpenRouter billed, deduped by generation
- * id; usage older than 40 days goes. The launcher keeps a day of calls, so a board down for less than that loses none.
+ * Every minute: model calls from the model gateway's ledger, with what OpenRouter billed, deduped by generation id; usage
+ * older than 40 days goes. The gateway keeps 40 days of calls, so a board down for less than that loses none.
  */
-export function pullUsage(launcher: { url: string; token: string } | undefined, store: Pick<Store, "addUsage" | "pruneUsage" | "meta" | "setMeta">, log: Logger, everyMs = 60_000) {
-  if (!launcher) return;
+export function pullUsage(gateway: { url: string; token: string } | undefined, store: Pick<Store, "addUsage" | "pruneUsage" | "meta" | "setMeta">, log: Logger, everyMs = 60_000, metaKey = "usage_pulled_at") {
+  if (!gateway) return;
   const tick = async () => {
     try {
       // From the last pull less a margin (a call is stamped as its answer ends); the overlap dedupes by key.
-      const last = store.meta("usage_pulled_at");
+      const last = store.meta(metaKey);
       const since = last ? new Date(Date.parse(last) - 10 * 60_000).toISOString() : "";
       const now = new Date().toISOString();
-      const res = await fetch(`${launcher.url}/usage`, { method: "POST", headers: { authorization: `Bearer ${launcher.token}`, "content-type": "application/json" }, body: JSON.stringify({ since }), signal: AbortSignal.timeout(15_000) });
-      if (!res.ok) throw new Error(`launcher answered ${res.status}`);
-      for (const r of pulledRecords(await res.json())) store.addUsage({ ...r, component: "agent", model: r.model || "unknown" });
-      store.setMeta("usage_pulled_at", now);
+      const res = await fetch(`${gateway.url}/usage`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}`, "content-type": "application/json" }, body: JSON.stringify({ since }), signal: AbortSignal.timeout(15_000) });
+      if (!res.ok) throw new Error(`the gateway answered ${res.status}`);
+      for (const r of pulledRecords(await res.json())) store.addUsage({ ...r, component: r.component ?? "agent", model: r.model || "unknown" });
+      store.setMeta(metaKey, now);
       store.pruneUsage(new Date(Date.now() - 40 * DAY).toISOString());
     } catch (err) {
-      log.warn({ err: String(err).slice(0, 200) }, "usage pull from the launcher failed");
+      log.warn({ err: String(err).slice(0, 200), from: gateway.url }, "usage pull failed");
     }
   };
   void tick();

@@ -46,9 +46,11 @@ describe("approval routes", () => {
   const get = (path: string, headers: Record<string, string> = {}) => internal("GET", path, undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...headers });
 
   it("the runner files and claims, but never approves; the owner channel's decide key does, once; only the claimer reports", async () => {
-    const filed = await post("/internal/approvals", ask());
+    const filed = await post("/internal/approvals", { ...ask(), baseTier: 1 });
     expect(filed.status).toBe(200);
     const id = filed.json.id;
+    // Stamped for batching: the runner's classify() tier on the merits, and the task's agent (looked up, never the caller's).
+    expect(filed.json).toMatchObject({ baseTier: 1, requesterId: "fe" });
     // The card is the board's, from the args: the sha and the diff the runner rechecks before landing.
     expect(filed.json).toMatchObject({ state: "pending", identifier: "WOR-184", issueId: issue.id, sentence: "Apply a change to the fleet's configuration (commit aaaaaaaaaaaa).", details: "+schedule: daily" });
     expect((await post(`/internal/approvals/${id}/claim`, {})).status).toBe(409); // not approved
@@ -160,5 +162,37 @@ describe("app_run cards", () => {
     expect(calls).toEqual([{ url: "http://apps-mcp:8090/internal/run", body: { name: "roadmap-keeper", script: "seed:backfill", service: "app", sha: SHA, approval: id } }]);
     expect(store.approvals.get(id)!.outcomeText).toContain("Ran `npm run seed:backfill` in app roadmap-keeper at 01234567.");
     await vi.waitFor(() => expect(posted.at(-1)!.body).toContain("````\nseeded 3 rows ```\n````"));
+  });
+});
+
+describe("raise_cap from the model gateway", () => {
+  const GATEWAY_KEY = "g".repeat(48);
+  const store = new Store(":memory:");
+  const internal = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY, decideKey: DECIDE_KEY, gatewayKey: GATEWAY_KEY, gateway: { url: "http://gateway:8201", token: GATEWAY_KEY } }));
+  const post = (body: unknown, key: string) => internal("POST", "/internal/approvals/raise-cap", body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-gateway-key": key });
+  const ask = { issue: issue.id, scope: "task", agentId: "fe", subject: issue.id, cap: 10, spent: 10.02 };
+
+  it("files one Tier 2 card with the gateway's key only, named for the agent", async () => {
+    expect((await post(ask, RUNNER_KEY)).status).toBe(403);
+    const a = await post(ask, GATEWAY_KEY);
+    expect(a.json).toMatchObject({ action: "raise_cap", tier: 2, state: "pending", identifier: "WOR-184", sentence: "Double Fleet Engineer's task spend cap from $10.00 to $20.00." });
+    expect((await post({ ...ask, spent: 10.5 }, GATEWAY_KEY)).json.id).toBe(a.json.id);
+    expect((await post({ ...ask, to: 500 }, GATEWAY_KEY)).status).toBe(400);
+  });
+
+  it("an approved raise_cap sets the doubled cap on the gateway and tells the task to carry on", async () => {
+    const calls: { url: string; auth: string; body: any }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, auth: String((init.headers as Record<string, string>).authorization), body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const id = (await post({ ...ask, cap: 20, spent: 20.4 }, GATEWAY_KEY)).json.id;
+    const decided = await internal("POST", "/internal/owner/approvals/decide", { id, decision: "approve", via: "telegram" }, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-owner-key": DECIDE_KEY });
+    expect(decided.json).toMatchObject({ state: "approved" });
+    await vi.waitFor(() => expect(store.approvals.get(id)!.outcome).toBe("applied"));
+    vi.unstubAllGlobals();
+    expect(calls).toEqual([{ url: "http://gateway:8201/internal/caps", auth: `Bearer ${GATEWAY_KEY}`, body: { scope: "task", agentId: "fe", subject: issue.id, cap: 40 } }]);
+    expect(store.approvals.get(id)!.outcomeText).toBe("Raised the task spend cap from $20.00 to $40.00 ($20.40 spent). Carry on where the cap stopped you.");
+    await vi.waitFor(() => expect(posted.at(-1)!.body).toContain("Carry on where the cap stopped you."));
   });
 });

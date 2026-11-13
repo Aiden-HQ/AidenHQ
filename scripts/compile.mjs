@@ -5,6 +5,7 @@
 //   compose.modules.yaml       → docker compose (COMPOSE_FILE in .env)
 //   config/modules.json        → the module catalog (setup adds it to the capabilities catalog)
 //   config/computers.json      → the computer launcher (images by content hash, connections it may proxy; services/computer)
+//   config/gateway.json        → the model gateway (services/gateway): enforce_caps, from settings.spend_caps (the kill switch)
 //   config/gate.json, config/cloudflared.yml → the gate and the tunnel (shared access; only with settings.edge, scripts/edge.mjs)
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -15,6 +16,7 @@ import YAML from "yaml";
 import { compile, ensureOptionalSecrets, hostMounts } from "./modules.mjs";
 import { computersConfig } from "./computers.mjs";
 import { checkIngress } from "./edge.mjs";
+import { checkOn, report, staticCheck } from "./agent-check.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dotenv = {};
@@ -34,6 +36,8 @@ try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encodi
 
 let out, computers;
 try { out = compile(repo, instanceDir, { revision }); computers = computersConfig(out.paperclip, repo); } catch (e) { die(e.message); }
+// The pre-launch agent check (scripts/agent-check.mjs): before anything is written, so a failing agent never launches.
+if (checkOn(instanceDir) && report("agent-check", staticCheck(out.paperclip))) die("the agent check failed (above); fix the agent, or set settings.agent_check: off");
 
 // Host paths come from the host's .env, never from instance.yaml (agents can edit that through apply).
 const ops = out.compose.services["ops-mcp"];
@@ -60,6 +64,7 @@ const compose = Object.fromEntries(Object.entries(out.compose).filter(([k, v]) =
 writeFileSync(join(repo, "compose.modules.yaml"), dump(compose));
 writeFileSync(join(repo, "config/modules.json"), JSON.stringify(out.catalog, null, 2) + "\n");
 writeFileSync(join(repo, "config/computers.json"), JSON.stringify(computers, null, 2) + "\n");
+writeFileSync(join(repo, "config/gateway.json"), JSON.stringify(out.gateway, null, 2) + "\n");
 if (out.edge) {
   try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die(e.message); }
   // The board's account map for the gate: the board rewrites it on every account change. It starts

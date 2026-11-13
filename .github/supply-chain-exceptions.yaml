@@ -1,0 +1,7 @@
+# Security-fix exceptions to the 7-day rule (CONTRIBUTING.md, "Supply chain"). The owner's review of a change to this
+# file is the approval. scripts/supply-chain/npm-age.mjs checks each entry against the GitHub Advisory Database: the
+# advisory must name the package and have a first_patched_version at or below the version.
+#
+# exceptions:
+#   - { package: fast-uri, version: 3.1.1, advisory: GHSA-xxxx-xxxx-xxxx, reason: why this fix cannot wait }
+exceptions: []

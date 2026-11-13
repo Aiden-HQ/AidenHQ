@@ -1,0 +1,18 @@
+# Version updates, weekly, never a version under 7 days old (the owner's supply-chain rule). Security updates are
+# separate and not held by the cooldown. Add an entry per extra package directory (and `docker` if there is a Dockerfile).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    open-pull-requests-limit: 5
+    groups:
+      npm: { patterns: ["*"] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    open-pull-requests-limit: 5
+    groups:
+      actions: { patterns: ["*"] }

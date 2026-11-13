@@ -9,9 +9,11 @@ const PRODUCT_GATES = [
   /^services\/board\/src\/(approvals|app)\.ts$/,
   /(^|\/)agent-auth\.ts$/, // services/shared/agent-auth.ts and every synced copy
   /^services\/runner\/src\/(tiers|review|authorize|merges|apply)\.mjs$/,
-  /^scripts\/(modules|paperclip-setup)\.mjs$/,
+  /^services\/gateway\//, // the model gateway: the OpenRouter key, attribution and spend caps
+  /^scripts\/(modules|paperclip-setup|agent-check|handbook-tools)\.mjs$/,
   /^ops\//,
   /^modules\/core\/security\//,
+  /^(modules\/core\/module\.yaml|scripts\/computers\.mjs|compose\.yaml)$|^services\/computer\//, // the tool-only sandbox definition (codex_args) and the box
   /launcher/i,
 ];
 const GITHUB = /(^|\/)\.github\//;
@@ -38,6 +40,8 @@ export function highest(parts) {
  *   ownerStarted (the task chain began with the owner), trialNoTap (today's trial-handbook rule) }
  */
 export function classify(action, s) {
+  // Raising a spend cap (the board's raise_cap card, filed by the model gateway) is always the owner's tap.
+  if (action === "raise_cap") return T(2, "raise-cap", "raising a spend cap is the owner's");
   if (["cancelled", "done"].includes(s.taskStatus)) return REJECT("closed-task", `the task is ${s.taskStatus}: a leftover request runs nothing`);
   // Fail closed: without knowing which repos are the product and the instance, nothing can be told apart from them.
   if (!s.productRepo || !s.instanceRepo || !s.agentsOrg) return T(2, "unknown-repos", "the product repo, instance repo or agents org isn't known here");
@@ -122,8 +126,8 @@ export function newGrants(base = {}, head = {}) {
   return out;
 }
 
-const AGENT_SAFE = new Set(["name", "description", "model", "reasoning_effort", "timeout_sec", "routines", "budget", "max_parallel", "catch_up"]);
-const OVERRIDE_SAFE = { agents: new Set(["model", "reasoning_effort", "timeout_sec"]), routines: new Set(["schedules", "status", "model"]) };
+const AGENT_SAFE = new Set(["name", "description", "model", "reasoning_effort", "timeout_sec", "routines", "budget", "max_parallel", "heartbeat"]);
+const OVERRIDE_SAFE = { agents: new Set(["model", "reasoning_effort", "timeout_sec", "heartbeat"]), routines: new Set(["schedules", "status", "model"]) };
 
 function applyParts(s) {
   const parts = [];
@@ -135,6 +139,8 @@ function applyParts(s) {
       const [b, h] = [parse(s.base?.[f]), parse(s.head?.[f])];
       parts.push(...(b === null || h === null ? [T(2, "unparseable", "apps.yaml doesn't parse")] : appsParts(b?.apps ?? [], h?.apps ?? [], s.moduleApps)));
     } else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/agent\.yaml$/.exec(f))) parts.push(agentDefPart(m[1], parse(def(m[1], "base")), parse(def(m[1], "head")), s));
+    // A curated memory (the Librarian's proposal; compiled into the agent's handbook as facts, never instructions): the reviewer decides for an agent without a role, the owner for one that holds one.
+    else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/memory\.md$/.exec(f))) parts.push(ROLE_AGENTS.has(m[1]) || (s.roles?.[m[1]] ?? []).length ? T(2, "role-memory", `memory of ${m[1]}, which holds a role`) : T(1, "agent-memory", `memory of ${m[1]}, an agent without a role`));
     else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f))) {
       const key = m[1];
       const base = parse(def(key, "base"));

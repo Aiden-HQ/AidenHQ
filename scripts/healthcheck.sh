@@ -19,18 +19,47 @@ check() { # name, command...
   fi
 }
 
+# What this install has configured decides which checks are hard. A module that is installed (config/modules.json, written
+# by every apply), an engine that is configured, stays a hard failure; anything else is skipped and listed at the end.
+# A missing config file never skips a check: absent means "can't tell", so it is checked.
+skipped=()
+skip() { printf '  skip  %s\n' "$1"; skipped+=("$1"); }
+module_on() { # name: installed unless modules.json says it isn't
+  [ -s config/modules.json ] || return 0
+  node -e 'const m=JSON.parse(require("fs").readFileSync("config/modules.json","utf8")).find(x=>x.name===process.argv[1]); process.exit(m&&!m.enabled?1:0)' "$1"
+}
+secrets="${AIDENHQ_SECRETS_DIR:-/nonexistent}"
+engine_default="$(sed -n 's/^  default: *\([a-z]*\).*/\1/p' config/runner.yaml 2>/dev/null | head -1)"
+
 echo "AidenHQ health"
 check "paperclip http (127.0.0.1:3100)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3100/api/health | grep -q "\"status\":\"ok\""'
 check "paperclip bootstrap (account claimed)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3100/api/health | grep -q "\"bootstrapStatus\":\"ready\""'
 
-# ops-mcp is only reachable inside the compose network; ask Paperclip's container.
-ops_health="$(dc exec -T paperclip node -e "fetch('http://ops-mcp:8080/healthz').then(r=>r.text()).then(t=>console.log(t)).catch(e=>{console.log(JSON.stringify({error:e.message}));process.exit(1)})" 2>/dev/null)"
-check "ops-mcp reachable" test -n "$ops_health"
-for k in sqlite_writable transcripts_readable vault_available vault_writable paperclip_api; do
-  check "ops-mcp $k" sh -c "echo '$ops_health' | grep -q '\"$k\":{\"ok\":true'"
-done
+if module_on meetings; then
+  # ops-mcp is only reachable inside the compose network; ask Paperclip's container.
+  ops_health="$(dc exec -T paperclip node -e "fetch('http://ops-mcp:8080/healthz').then(r=>r.text()).then(t=>console.log(t)).catch(e=>{console.log(JSON.stringify({error:e.message}));process.exit(1)})" 2>/dev/null)"
+  check "ops-mcp reachable" test -n "$ops_health"
+  for k in sqlite_writable transcripts_readable vault_available vault_writable paperclip_api; do
+    check "ops-mcp $k" sh -c "echo '$ops_health' | grep -q '\"$k\":{\"ok\":true'"
+  done
+else
+  skip "ops-mcp (meetings module not installed)"
+fi
 
-check "codex logged in (ChatGPT)" dc exec -T -u node paperclip test -s /paperclip/.codex/auth.json
+# A ChatGPT login only matters when an engine uses it: the runner's default engine is Codex (also when unset).
+if [ -z "$engine_default" ] || [ "$engine_default" = codex ]; then
+  check "codex logged in (ChatGPT)" dc exec -T -u node paperclip test -s /paperclip/.codex/auth.json
+else
+  skip "codex ChatGPT login (default engine is $engine_default)"
+fi
+
+# The runner's request reader (SETUP step 6) goes through the model gateway on OpenRouter unless runner.yaml sets
+# `intake.codex_args: []` (the host's ChatGPT login).
+if grep -Eq '^ *codex_args: *\[ *\]' config/runner.yaml 2>/dev/null; then
+  check "request reader (host ChatGPT login)" test -s "$HOME/.codex/auth.json"
+else
+  check "request reader (OpenRouter gateway, 127.0.0.1:8201)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:8201/health | grep -q "\"ok\":true"'
+fi
 
 g_health="$(dc exec -T paperclip node -e "fetch('http://google-workspace-mcp:8081/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
 if echo "$g_health" | grep -q '"ok":true'; then
@@ -128,16 +157,23 @@ if systemctl --user list-unit-files aidenhq-runner.service >/dev/null 2>&1; then
   check "runner active" systemctl --user is-active --quiet aidenhq-runner
   runner_pid="$(systemctl --user show aidenhq-runner -p MainPID --value)"
   runner_path="$(tr '\0' '\n' < "/proc/$runner_pid/environ" 2>/dev/null | sed -n 's/^PATH=//p')"
+  # claude counts once the Claude engine has its token (the runner's own signal that it is configured).
+  tools="bwrap codex opencode git node"
+  if [ -s "$secrets/claude_oauth_token" ]; then tools="$tools claude"; else skip "claude job tool (no Claude engine token)"; fi
   job_tools() {
     env -i HOME="$HOME" PATH="${runner_path:-/usr/local/bin:/usr/bin:/bin}" \
-      sh -c 'for t in bwrap codex claude opencode git node; do command -v "$t" >/dev/null || { echo "missing $t"; exit 1; }; done'
+      sh -c 'for t in "$@"; do command -v "$t" >/dev/null || { echo "missing $t"; exit 1; }; done' _ $tools
   }
   check "runner has the job tools" job_tools
 else
   printf '  skip  runner (not installed)\n'
 fi
 
-check "watcher webhook configured" test -s "${AIDENHQ_SECRETS_DIR:-/nonexistent}/meeting_webhook_url"
+if module_on meetings; then
+  check "watcher webhook configured" test -s "$secrets/meeting_webhook_url"
+else
+  skip "watcher webhook (meetings module not installed)"
+fi
 if systemctl --user list-unit-files aidenhq-transcripts.path >/dev/null 2>&1; then
   check "transcript watcher active" systemctl --user is-active --quiet aidenhq-transcripts.path
 else
@@ -145,4 +181,5 @@ else
 fi
 
 echo
+[ "${#skipped[@]}" -eq 0 ] || printf 'Skipped (not configured): %s\n' "$(printf '%s; ' "${skipped[@]}" | sed 's/; $//')"
 [ "$fails" -eq 0 ] && echo "All checks passed." || { echo "$fails check(s) failed."; exit 1; }

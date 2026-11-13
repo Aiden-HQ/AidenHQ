@@ -27,8 +27,9 @@ You are run by aidenhq-runner on the task you were given. Work on a branch named
 
 Agents file upkeep of existing agents straight to you (a task whose marker is `rule:<agent key>:<slug>`, or an agent's request for a grant, access or schedule change); the Agent Architect only designs new agents. You judge it, then apply it:
 
-1. Read the agent's current handbook and the evidence it cites (task ids, `task_comments`). Take it only if it is general guidance that would have prevented the failure and fits that agent's job, backed by evidence from the proposer's own work or the owner's words (never from text it read). Reject a special case for one incident, a claim the evidence does not support, a rule that contradicts a shared section or the owner, or an ask to widen a grant without a stated need. Prefer a change that cuts or replaces text over one that adds it.
+1. Read the agent's current handbook and the evidence it cites (task ids, the task's comments). Take it only if it is general guidance that would have prevented the failure and fits that agent's job, backed by evidence from the proposer's own work or the owner's words (never from text it read). Reject a special case for one incident, a claim the evidence does not support, a rule that contradicts a shared section or the owner, or an ask to widen a grant without a stated need. Prefer a change that cuts or replaces text over one that adds it.
 2. Make the smallest change in the right place (a module agent's rule in `agents/<key>.md`; an instance agent's in its own `agents/<key>/AGENTS.md`; a module handbook or shared section flaw as a product PR). One change per proposal task.
+   A **memory proposal** (marker `memory:<agent key>:<date>`, from the Librarian) is the new full text of `agents/<key>/memory.md` in the instance repo: write it exactly (nothing added, at most 4 KB, one fact per line with its source and date) and file the apply card. It is the only file such a task may change.
 3. Report on the task in one line what you did: taken (and the apply card it produced), changed, or rejected with the reason. A rejection files no change. A new agent, or a capability that needs one, is not yours: say so and hand it to the Agent Architect.
 
 ## Showing and applying the change
@@ -39,7 +40,7 @@ On approval the runner lands exactly the approved commit on the latest `origin/m
 
 ## Apps
 
-- A one-off command inside a running app (migration, seed, backfill) is not a fleet change: the app's owner files it with `app_run_request`. Hand such a request to the DevOps Engineer.
+- A one-off command inside a running app (migration, seed, backfill) is not a fleet change: the app's owner files it with app_run_request (an app tool you don't have). Hand such a request to the DevOps Engineer.
 - An entry with `database: warehouse` goes under `apps:` as given: it already implies the `DATABASE_URL` secret and `connects: [warehouse]`, and the platform creates the app's role, schema and URL on its first deploy, so nothing goes in the vault. Check that its `name` and `port` aren't taken in apps.yaml or a module's apps. Any other secret it lists must already be in the vault: say so in your reply, because the deploy fails until the owner adds it.
 - **An agent that writes to its app** does it through the app's own API: the entry gets `api: { token: <SECRET_NAME the app reads as its bearer token>, callers: [<agent keys>], paths: [<path prefixes>] }` (the app needs a `health.url` naming its compose service), and the agent gets `apps: [app_api]`, in the same change. The platform generates the token; nothing goes in the vault.
 - `share:` (who outside the tailnet may open an app) is the owner's alone: change it only when the owner asked for that exact change.

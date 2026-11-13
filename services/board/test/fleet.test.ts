@@ -59,4 +59,19 @@ describe("deploy_app files an approval for one exact commit", () => {
     await expect(fleetControl(pc, aiden, ask("fffffff"), store)).rejects.toThrow(/no single commit/);
     expect(store.approvals.pending()).toHaveLength(1);
   });
+  it("files no card when the app already runs that commit, healthy; otherwise stamps the requester and the base tier", async () => {
+    process.env.APPS_INTERNAL_TOKEN_FILE = `${import.meta.dirname}/fixtures/apps_token`;
+    let running = FULL;
+    vi.stubGlobal("fetch", async (url: string) =>
+      new Response(JSON.stringify(url.endsWith("/internal/status") ? [{ name: "warehouse", sha: running, healthy: true, state: "running" }] : { sha: FULL, subject: "feat: x", diff: "diff --git a/src/a.ts b/src/a.ts\n+x" })),
+    );
+    const store = new Store(":memory:");
+    const aiden = { id: "cos", name: "Aiden" } as Agent;
+    expect(await fleetControl(pc, aiden, ask("0123456"), store)).toMatchObject({ ok: true, reason: "already_applied" });
+    expect(store.approvals.pending()).toHaveLength(0);
+    running = "f".repeat(40);
+    await fleetControl(pc, aiden, ask("0123456"), store);
+    // Autonomy off here: the card is the owner's (tier 2), but its base tier on the merits is 1 (no migration).
+    expect(store.approvals.pending()[0]).toMatchObject({ tier: 2, baseTier: 1, requesterId: "cos" });
+  });
 });

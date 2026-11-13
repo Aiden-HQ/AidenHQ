@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { gatewayApi, modelToken } from "./engines.mjs";
 
 /** Codex model slugs known to the local Codex install (newest first, as Codex lists them). */
 export function codexModels(file = join(homedir(), ".codex/models_cache.json")) {
@@ -60,22 +61,29 @@ export async function askCodex(cfg, prompt, schema) {
   }
 }
 
+/** OpenRouter through the gateway: the default, since a fresh install has no ChatGPT login. `intake.codex_args: []` opts out. */
+const OPENROUTER_ARGS = ["-c", 'model_provider="or"', "-c", 'model_providers.or.name="OpenRouter"', "-c", 'model_providers.or.base_url="https://openrouter.ai/api/v1"',
+  "-c", 'model_providers.or.env_key="OPENROUTER_API_KEY"', "-c", 'model_providers.or.wire_api="responses"'];
+
 async function askCodexOnce(cfg, prompt, schema) {
   const dir = mkdtempSync(join(tmpdir(), "aidenhq-intake-"));
   try {
     writeFileSync(join(dir, "schema.json"), JSON.stringify(schema));
     const out = join(dir, "out.json");
-    const model = cfg.intake?.model;
+    const codexArgs = cfg.intake?.codex_args ?? OPENROUTER_ARGS;
+    const model = cfg.intake?.model || (cfg.intake?.codex_args ? undefined : "~deepseek/deepseek-flash-latest");
     const argv = [
       "codex", "exec", "--ephemeral", "--skip-git-repo-check", "-s", "read-only",
       "-c", `model_reasoning_effort="${cfg.intake?.reasoning_effort ?? "low"}"`,
       "--output-schema", join(dir, "schema.json"), "-o", out,
       ...(model ? ["-m", model] : []),
-      ...(cfg.intake?.codex_args ?? []), // e.g. the OpenRouter provider, for a host without a ChatGPT login
+      // e.g. the OpenRouter provider, for a host without a ChatGPT login: always through the model gateway.
+      ...codexArgs.map((a) => (/^model_providers\.[\w-]+\.base_url=/.test(a) ? a.replace(/=.*/s, `="${gatewayApi(cfg)}"`) : a)),
       "-",
     ];
     const env = { ...process.env };
-    if (cfg.intake?.codex_args?.length && existsSync(cfg.openrouterKeyFile)) env.OPENROUTER_API_KEY = readFileSync(cfg.openrouterKeyFile, "utf8").trim();
+    // The provider's env_key (OPENROUTER_API_KEY in codex_args) carries the runner's own gateway token, never the real key.
+    if (codexArgs.length) env.OPENROUTER_API_KEY = modelToken(cfg, { kind: "source", component: "Runner intake", ttlMs: 3600_000 });
     delete env.SSH_AUTH_SOCK;
     await new Promise((resolve, reject) => {
       const child = spawn(argv[0], argv.slice(1), { cwd: dir, env, stdio: ["pipe", "ignore", "pipe"] });

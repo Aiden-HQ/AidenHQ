@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import type { Agent, Paperclip } from "./paperclip.js";
 import type { Store } from "./store.js";
 import { appsApi } from "./fleet.js";
+import { parseRunLog } from "./runs.js";
 
 const MIN = 60_000;
 const STATE_KEY = "fleet_ops_detector";
@@ -38,7 +39,7 @@ const STUCK_DEFAULT_MS = 180 * MIN; // a run with no known timeout, running this
 const FAILS = 3; // an agent's last finished runs, all failed
 
 export interface Incident { key: string; reason: string }
-interface Open { reason: string; at: string; fired: boolean }
+interface Open { reason: string; at: string; fired: boolean; told?: boolean }
 interface State { open: Record<string, Open>; recovered: { key: string; reason: string; at: string; fired: boolean }[] }
 
 /** What is open and what recovered lately (fleet_status shows it to Fleet Ops). */
@@ -72,6 +73,13 @@ export async function tick(store: Pick<Store, "meta" | "setMeta">, checks: Recor
       if (o.fired) s.recovered.push({ key, reason: o.reason, at, fired: false });
     }
   }
+  // The owner hears of a health flag that stays open a day, from here: it arrives even when Fleet Ops is the broken part.
+  for (const [key, o] of Object.entries(s.open)) {
+    if (!o.told && HEALTH.some((g) => key.startsWith(`${g}:`)) && Date.parse(at) - Date.parse(o.at) > DAY_MS) {
+      o.told = true;
+      queueOwnerLine(store, `🩺 **Fleet flag open over a day**: ${o.reason}.`);
+    }
+  }
   const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, reason: o.reason, since: o.at }));
   const recovered = s.recovered.filter((r) => !r.fired).map(({ key, reason, at }) => ({ key, reason, recovered_at: at }));
   if ((incidents.length || recovered.length) && (await fire({ incidents, recovered }).catch(() => false))) {
@@ -82,11 +90,57 @@ export async function tick(store: Pick<Store, "meta" | "setMeta">, checks: Recor
   store.setMeta(STATE_KEY, JSON.stringify(s));
 }
 
+const DAY_MS = 24 * 60 * MIN;
+const HEALTH = ["missed", "routine", "silent", "grade"]; // the health groups: a flag open over a day reaches the owner
+const SILENT_RUNS = 3; // silent runs in a day before the flag opens
+const MISSED_GRACE_MS = 15 * MIN;
+const HARD_FAIL = new Set(["failed", "timed_out"]);
+const SOFT_CODES = new Set(["cap_reached", "issue_reassigned"]); // not the routine's fault
+
+/** One-line owner messages waiting for the owner channel (it collects them with the grading escalations, once). */
+export function queueOwnerLine(store: Pick<Store, "meta" | "setMeta">, line: string): void {
+  const q: string[] = JSON.parse(store.meta("owner_health_lines") ?? "[]");
+  store.setMeta("owner_health_lines", JSON.stringify([...q, line].slice(-20)));
+}
+export function takeOwnerLines(store: Pick<Store, "meta" | "setMeta">): string[] {
+  const q: string[] = JSON.parse(store.meta("owner_health_lines") ?? "[]");
+  if (q.length) store.setMeta("owner_health_lines", "[]");
+  return q;
+}
+
+interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
+/** Active routines whose next fire (by Paperclip's cron) is overdue past the grace: the fire never happened. A coalesced or skipped fire still advances it. */
+export function missedFires(routines: RoutineRow[], t: number): Incident[] {
+  const out: Incident[] = [];
+  for (const r of routines.filter((x) => x.status === "active")) {
+    const late = (r.triggers ?? []).filter((x) => x.kind === "schedule" && x.enabled !== false && x.nextRunAt && age(x.nextRunAt, t) > MISSED_GRACE_MS);
+    for (const x of late) out.push({ key: `${r.id}:${x.label ?? "schedule"}`, reason: `routine ${r.title} (${x.label ?? "schedule"}): fire due ${mins(age(x.nextRunAt, t))} ago, no run started` });
+  }
+  return out;
+}
+
+interface RoutineRun { routineId: string; status: string; errorCode?: string | null; at: string }
+/** Routines whose latest finished runs are all hard failures (FAILS in a row), counting only runs after `since[routineId]` (the owner's resume). */
+export function failingRoutines(routines: RoutineRow[], runs: RoutineRun[], since: Record<string, string>): { routine: RoutineRow; failures: number }[] {
+  const out: { routine: RoutineRow; failures: number }[] = [];
+  for (const r of routines.filter((x) => x.status !== "archived")) {
+    // While paused the failures stay on the books (the flag stays open); once resumed, only newer runs count.
+    const from = r.status === "paused" ? undefined : since[r.id];
+    const mine = runs.filter((x) => x.routineId === r.id && (!from || x.at > from) && !["running", "queued", "cancelled"].includes(x.status) && !SOFT_CODES.has(x.errorCode ?? "")).sort((a, b) => b.at.localeCompare(a.at));
+    let n = 0;
+    while (n < mine.length && HARD_FAIL.has(mine[n]!.status)) n++;
+    if (n >= FAILS) out.push({ routine: r, failures: n });
+  }
+  return out;
+}
+
+const silentRuns = new Map<string, boolean>(); // run id → silent (a finished run's log never changes)
+
 const age = (t: string | null | undefined, now: number) => (t ? now - Date.parse(t) : Infinity);
 const mins = (ms: number) => `${Math.round(ms / MIN)} min`;
 
 /** The owner's alert list, as checks. */
-export function checks(pc: Paperclip, store: Pick<Store, "approvals">, now = () => Date.now()): Record<string, Check> {
+export function checks(pc: Paperclip, store: Pick<Store, "approvals" | "grades" | "meta" | "setMeta" | "refusalsSince">, now = () => Date.now(), env: NodeJS.ProcessEnv = process.env): Record<string, Check> {
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   return {
     async card() {
@@ -108,6 +162,75 @@ export function checks(pc: Paperclip, store: Pick<Store, "approvals">, now = () 
         if (finished.length === FAILS && finished.every((r) => r.status !== "succeeded")) out.push({ key: `${a.id}:failing`, reason: `${a.name}: its last ${FAILS} runs failed (${finished.map((r) => r.status).join(", ")})` });
       }
       return out;
+    },
+    async missed() {
+      return missedFires(await pc.request<RoutineRow[]>("GET", `/api/companies/${pc.companyId}/routines`), now());
+    },
+    // 3 hard failures in a row: flag it and (unless the kill switch FLEET_OPS_AUTOPAUSE=off) pause the routine until the owner resumes it.
+    async routine() {
+      const co = `/api/companies/${pc.companyId}`;
+      const [routines, issues, runs] = await Promise.all([
+        pc.request<RoutineRow[]>("GET", `${co}/routines`),
+        pc.request<{ id: string; originId?: string | null }[]>("GET", `${co}/issues?originKind=routine_execution&limit=300`),
+        pc.request<{ id: string; status: string; errorCode?: string | null; startedAt?: string | null; createdAt: string; contextSnapshot?: { issueId?: string } | null }[]>("GET", `${co}/heartbeat-runs?limit=300`),
+      ]);
+      const origin = new Map(issues.map((i) => [i.id, i.originId]));
+      const t = now();
+      // Spend-cap and upstream stops (the board ledger) are not the routine's fault; while one is happening fleet-wide, nothing is auto-paused.
+      const refusals = store.refusalsSince(new Date(t - 7 * DAY_MS).toISOString());
+      const refused = new Set(refusals.map((x) => x.runId));
+      const fleetWide = refusals.some((x) => age(x.at, t) < 60 * MIN);
+      // One outcome per routine issue: its latest run (a retry or wake is not another failure).
+      const latest = new Map<string, (typeof runs)[number]>();
+      for (const x of runs) {
+        const issueId = x.contextSnapshot?.issueId;
+        if (!issueId || !origin.get(issueId)) continue;
+        const prev = latest.get(issueId);
+        if (!prev || (x.startedAt ?? x.createdAt) > (prev.startedAt ?? prev.createdAt)) latest.set(issueId, x);
+      }
+      const rr = [...latest].map(([issueId, x]) => ({ routineId: origin.get(issueId)!, status: x.status, errorCode: refused.has(x.id) ? "cap_reached" : x.errorCode, at: x.startedAt ?? x.createdAt }));
+      const since: Record<string, string> = JSON.parse(store.meta("routine_paused_at") ?? "{}");
+      const failing = failingRoutines(routines, rr, since);
+      for (const { routine, failures } of failing) {
+        if (routine.status === "paused") {
+          // Paused by the owner (or while autopause was off): the resume must not re-pause on these old failures.
+          if (!since[routine.id]) {
+            since[routine.id] = new Date(t).toISOString();
+            store.setMeta("routine_paused_at", JSON.stringify(since));
+          }
+          continue;
+        }
+        if (env.FLEET_OPS_AUTOPAUSE === "off" || fleetWide) continue;
+        await pc.request("PATCH", `/api/routines/${routine.id}`, { status: "paused" });
+        since[routine.id] = new Date(t).toISOString();
+        store.setMeta("routine_paused_at", JSON.stringify(since));
+        queueOwnerLine(store, `⏸ **Routine paused**: ${routine.title} failed ${failures} runs in a row. Ask Aiden to resume it once it's fixed.`);
+      }
+      return failing.map(({ routine, failures }) => ({ key: routine.id, reason: `routine ${routine.title}: its last ${failures} runs failed${routine.status === "paused" ? " (paused until the owner resumes it)" : ""}` }));
+    },
+    // One heuristic: a Codex run that succeeded with no tool calls and no message, 3+ times in a day. Diagnostic only; nothing is paused.
+    async silent() {
+      const t = now();
+      const codex = new Set((await pc.agents()).filter((a) => a.adapterType === "codex_local").map((a) => a.id));
+      const runs = await pc.request<{ id: string; agentId: string; status: string; finishedAt?: string | null }[]>("GET", `/api/companies/${pc.companyId}/heartbeat-runs?limit=200`);
+      let fetched = 0;
+      const byAgent = new Map<string, number>();
+      for (const r of runs.filter((x) => codex.has(x.agentId) && x.status === "succeeded" && x.finishedAt && age(x.finishedAt, t) < DAY_MS)) {
+        let silent = silentRuns.get(r.id);
+        if (silent === undefined) {
+          if (fetched++ >= 15) continue; // the rest next tick
+          silent = await pc.runLog(r.id, 300_000).then((l) => !l.truncated && parseRunLog(l.text).events.length === 0, () => false);
+          if (silentRuns.size >= 500) silentRuns.delete(silentRuns.keys().next().value!);
+          silentRuns.set(r.id, silent);
+        }
+        if (silent) byAgent.set(r.agentId, (byAgent.get(r.agentId) ?? 0) + 1);
+      }
+      return [...byAgent].filter(([, n]) => n >= SILENT_RUNS).map(([agentId, n]) => ({ key: agentId, reason: `agent ${agentId}: ${n} runs in 24h ended with no tool calls and no output` }));
+    },
+    // A graded task waiting on grading, or escalated, for over a day.
+    async grade() {
+      const t = now();
+      return [...store.grades.due(), ...store.grades.escalated()].filter((g) => age(g.updatedAt, t) > DAY_MS).map((g) => ({ key: g.issueId, reason: `graded task ${g.issueId} ${g.state} for ${mins(age(g.updatedAt, t))}` }));
     },
     async app() {
       const t = now();
@@ -171,6 +294,7 @@ export function startDetector(pc: Paperclip, store: Store, log: { info(o: object
         log.info({ ok, incidents: b.incidents.map((i) => i.key), recovered: b.recovered.map((r) => r.key) }, "fleet-ops webhook");
         return ok;
       });
+      store.events.emit("fleet"); // open boards refresh the fleet's health (events.ts)
     } catch (err) {
       log.warn({ err: String(err) }, "fleet-ops detector failed");
     } finally {

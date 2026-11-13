@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { SignInRequired, api } from "./api";
+import { useLive } from "./events";
 import { Markdown } from "./markdown";
 import type { Approval, ChatState, NeedsYou } from "./types";
 import { ago } from "./util";
@@ -36,12 +37,14 @@ const OUTCOME: Record<Approval["state"], string> = {
 const TIER_WORDS = ["Tier 0: ran at once", "Tier 1: the AI reviewer decides", "Tier 2: yours to decide"];
 /** Waiting for the owner: a pending Tier 2 card. A pending Tier 1 card is with the AI reviewer. */
 const forOwner = (a: Approval) => a.state === "pending" && a.tier === 2;
+/** The most cards one batch decides (the board refuses more). */
+const BATCH_MAX = 10;
 
 /**
  * One approval card: one sentence, what it reads and changes, the cost, Details, Approve / Reject; the outcome stays here.
  * An expired card (timed out or replaced by a newer request) folds to one muted line; a tap shows it whole.
  */
-export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold }: { a: Approval; open: (identifier: string) => void; decided: () => Promise<void>; inline?: boolean; prefix?: string; unfold?: boolean }) {
+export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold, pick }: { a: Approval; open: (identifier: string) => void; decided: () => Promise<void>; inline?: boolean; prefix?: string; unfold?: boolean; pick?: { on: boolean; full: boolean; toggle: () => void } }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [unfolded, setUnfolded] = useState(Boolean(unfold));
@@ -77,6 +80,7 @@ export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold }: 
   return (
     <li className={`approval-card ap-${a.outcome ?? a.state}${inline ? " inline" : ""}`}>
       <div className="approval-head">
+        {pick && <input type="checkbox" className="approval-pick" aria-label={`Select ${a.id}`} checked={pick.on} disabled={!pick.on && pick.full} onChange={pick.toggle} />}
         <button className="chat-open" onClick={() => open(a.identifier)}>
           <span className="chat-agent">{a.requestedBy}</span>
           <span className="chat-title">{!inline ? "Open the chat" : a.state === "auto" ? "ran it at once (Tier 0)" : a.tier === 1 && a.state === "pending" ? "asks the AI reviewer" : "asks for your approval"}</span>
@@ -98,6 +102,8 @@ export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold }: 
         <dd>
           {TIER_WORDS[a.tier] ?? `Tier ${a.tier}`}
           {a.reason && <span className="muted"> ({a.reason})</span>}
+          {a.reasonCode && <span className="mono muted"> · {a.reasonCode}</span>}
+          {a.baseTier != null && a.baseTier < a.tier && <span className="muted"> · Tier {a.baseTier} on its merits</span>}
         </dd>
         {a.decidedBy && (
           <>
@@ -108,7 +114,11 @@ export function ApprovalCard({ a, open, decided, inline, prefix = "", unfold }: 
         {a.review && (
           <>
             <dt>Reviewer's note</dt>
-            <dd className="pre">{a.review}</dd>
+            <dd className="pre">
+              {a.reviewCode === "reviewer_unsure" && <strong>The reviewer wasn't sure, so it's yours: </strong>}
+              {a.review}
+              {a.reviewCode && <span className="mono muted"> · {a.reviewCode}</span>}
+            </dd>
           </>
         )}
       </dl>
@@ -177,14 +187,33 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
       else setError((e as Error).message);
     }
   }, [onSignIn]);
-  useEffect(() => {
-    void load();
-    const t = setInterval(() => void load(), 5_000);
-    return () => clearInterval(t);
-  }, [load]);
+  // Live: refetched when a card is filed or decided anywhere (Telegram too); polled every 5s only without the stream.
+  useLive(["approvals"], load, 5_000);
   const all = cards ?? [];
   // Only Tier 2 waits for you; Tier 1 (with the reviewer) and Tier 0 runs (audit rows) are history lines.
   const pending = all.filter(forOwner);
+  // Batch: the cards ticked, as shown (id → digest); a card that changed or left drops out of the selection.
+  const [picked, setPicked] = useState<Map<string, string>>(new Map());
+  const [batchBusy, setBatchBusy] = useState(false);
+  // Kept apart from the view's error, which each refetch clears: why a batch was refused stays until the next batch.
+  const [batchError, setBatchError] = useState("");
+  const chosen = pending.filter((a) => picked.get(a.id) === a.digest);
+  const full = chosen.length >= BATCH_MAX;
+  const toggle = (a: Approval) => setPicked((p) => {
+    const next = new Map(p);
+    if (next.get(a.id) === a.digest) next.delete(a.id);
+    else next.set(a.id, a.digest);
+    return next;
+  });
+  const pickAll = () => setPicked(chosen.length ? new Map() : new Map(pending.slice(0, BATCH_MAX).map((a) => [a.id, a.digest])));
+  const decideChosen = async (d: "approve" | "reject") => {
+    if (!window.confirm(`${d === "approve" ? "Approve" : "Reject"} these ${chosen.length} requests?\n\n${chosen.map((a) => `• ${a.identifier}: ${a.sentence}`).join("\n")}`)) return;
+    setBatchBusy(true);
+    setBatchError("");
+    await api.decideBatch(chosen.map((a) => ({ id: a.id, digest: a.digest })), d).then(() => setPicked(new Map()), (e: Error) => setBatchError(e.message));
+    setBatchBusy(false);
+    await load();
+  };
   const f: Filter = filter ?? (pending.length ? "pending" : "all");
   const others = (data?.items ?? []).filter((i) => i.state !== "waiting for approval");
   const past = groups(all.filter((a) => !forOwner(a)));
@@ -212,10 +241,26 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
         <span className="spinner" />
       ) : (
         <>
+          {(f === "pending" || f === "all") && pending.length > 1 && (
+            <div className="batch-bar">
+              <label>
+                <input type="checkbox" checked={chosen.length > 0} onChange={pickAll} /> {chosen.length ? `${chosen.length} selected` : `Select ${pending.length > BATCH_MAX ? `the first ${BATCH_MAX}` : "all"}`}
+              </label>
+              <span className="muted small">All or nothing: if any changed since you saw it, nothing is decided.</span>
+              <span className="spacer" />
+              <button className="btn" disabled={!chosen.length || batchBusy} onClick={() => void decideChosen("reject")}>
+                Reject selected
+              </button>
+              <button className="btn primary approve" disabled={!chosen.length || batchBusy} onClick={() => void decideChosen("approve")}>
+                Approve selected
+              </button>
+            </div>
+          )}
+          {batchError && <div className="alert">{batchError}</div>}
           {(f === "pending" || f === "all") && pending.length > 0 && (
             <ul className="approval-list pending-grid">
               {pending.map((a) => (
-                <ApprovalCard key={a.id} a={a} open={open} decided={load} />
+                <ApprovalCard key={a.id} a={a} open={open} decided={load} pick={pending.length > 1 ? { on: picked.get(a.id) === a.digest, full, toggle: () => toggle(a) } : undefined} />
               ))}
             </ul>
           )}

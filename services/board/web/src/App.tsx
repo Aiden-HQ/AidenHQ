@@ -25,16 +25,18 @@ import { ModulesView } from "./Modules";
 import { CostsView } from "./Costs";
 import { ActivityView } from "./Activity";
 import { ApprovalsView } from "./Chat";
+import { subscribe } from "./events";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
 import { CardView, GoogleBanner, GoogleConnections, PlusIcon, SignInBanners, SortableCard, memberIssue } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
 import { Markdown, setSlackTeams } from "./markdown";
+import { RunPage } from "./Run";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
 import { dayDate, matches } from "./util";
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "task"; ref: string; focus?: string } | { kind: "brief" } | { kind: "help" } | { kind: "set-password"; token: string };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "set-password"; token: string };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -84,6 +86,8 @@ function parseRoute(): Route {
     const [ref = "", focus] = h.slice(2).split("/");
     return { kind: "task", ref, ...(focus ? { focus } : {}) };
   }
+  // #/r/<run id> opens a run's trace.
+  if (/^r\/[0-9a-f-]{36}$/.test(h)) return { kind: "run", id: h.slice(2) };
   // #/c/ starts a new chat; #/c/WOR-12 opens that chat in the chat workspace.
   if (h === "c" || h.startsWith("c/")) return { kind: "chat", ref: h.slice(2).split("?")[0] || null };
   // #/approvals, #/activity, ...: deep links to a tab.
@@ -146,6 +150,7 @@ export function App() {
       watchNeedsYou(
         () => api.needsYou().then((r) => (setApprovalsOpen(r.approvals), r)),
         (identifier) => go(`#/c/${identifier}`),
+        (tick) => subscribe(["approvals", "chat"], tick),
       ),
     [],
   );
@@ -429,7 +434,7 @@ export function App() {
         return setSelected(null);
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (route.kind === "task" || route.kind === "brief" || view === "chat") return;
+      if (route.kind === "task" || route.kind === "brief" || route.kind === "run" || view === "chat") return;
       const lists = filtered;
       if (!lists) return;
       const cols = visibleBuckets;
@@ -731,6 +736,7 @@ export function App() {
           </aside>
         </div>
       )}
+      {route.kind === "run" && <RunPage key={route.id} id={route.id} onClose={() => (history.length > 1 ? history.back() : go("#/"))} onSignIn={signInNeeded} />}
       {route.kind === "help" && <Help />}
       {creating && (
         <NewTask

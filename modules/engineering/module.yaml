@@ -8,6 +8,8 @@ agents:
     # was engineer-glm; setup renames the existing agent
     persona: { name: Linus, voice: "Scrappy; tries the cheap route first and says plainly when it isn't good enough.", avatar: linus }
     adapter: opencode_local
+    # Graded done: deliverables delegated to it are checked against their rubric before they close (the runner's grader).
+    graded: true
     model: openrouter/~deepseek/deepseek-flash-latest
     # Offered in the board's model picker and known to the runner ("use DeepSeek"). Any other
     # OpenRouter model id still works when typed in full.

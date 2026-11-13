@@ -19,9 +19,11 @@ services:
       CALENDAR_ID: "${GOOGLE_CALENDAR_ID:-primary}"
       # Set GOOGLE_FIXTURES_DIR=/fixtures in .env to serve fixtures/ instead of Google (testing).
       GOOGLE_FIXTURES_DIR: "${GOOGLE_FIXTURES_DIR:-}"
-      # Shared sources (src_docs): its warehouse login, and the OpenRouter key for doc summaries (the root openrouter_key).
+      # Shared sources (src_docs): its warehouse login, and the model credential for doc summaries.
       WAREHOUSE_PASSWORD_FILE: /run/secrets/warehouse_src_docs_password
-      OPENROUTER_KEY_FILE: /run/secrets/openrouter_key
+      # Summaries go through the model gateway (services/gateway) with the source writers' key, never OpenRouter's.
+      OPENROUTER_KEY_FILE: /run/secrets/gateway_source_key
+      OPENROUTER_BASE_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}/api/v1"
     volumes:
       - ./fixtures:/fixtures:ro
       # Writable (not a secret) so a reconnect from the board can store the new refresh token.
@@ -31,7 +33,7 @@ services:
       - google_mcp_token
       - google_auth_token
       - warehouse_src_docs_password
-      - openrouter_key
+      - gateway_source_key
     dns: [ 1.1.1.1, 8.8.8.8 ] # see paperclip
     networks:
       - backplane

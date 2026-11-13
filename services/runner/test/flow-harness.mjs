@@ -20,7 +20,10 @@ export const git = (cwd, ...args) => execFileSync("git", args, { cwd, env: { ...
 let gitEnv = {};
 
 /** A Paperclip with one parent task (the user's) and one part of it for Ada. */
-export function fakePaperclip({ parent, part, engineers, parentComments = [], others = [] }) {
+export function fakePaperclip({ parent, part, engineers, parentComments = [], others = [], grades = new Map(), gradingOff = false }) {
+  const gradeLog = [];
+  const graderCalls = [];
+  const graderAnswers = [];
   const issues = new Map([parent, part, ...others.map((o) => o.issue)].map((i) => [i.id, i]));
   const comments = new Map([[parent.id, parentComments], [part.id, []], ...others.map((o) => [o.issue.id, o.comments])]);
   const patches = [];
@@ -90,11 +93,37 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], ot
       const same = open.find((a) => a.digest === digest);
       if (same) return send(same);
       for (const a of open) a.state = "expired";
-      const a = { id: `A${String(approvals.size + 1).padStart(8, "0")}`, issueId, identifier: find(b.issue).identifier, action: b.action, args: b.args, details: b.diff ?? "", digest, state: "pending", replaced: open.length > 0 };
+      const a = { id: `A${String(approvals.size + 1).padStart(8, "0")}`, issueId, identifier: find(b.issue).identifier, action: b.action, args: b.args, details: b.diff ?? "", digest, state: "pending", replaced: open.length > 0, baseTier: b.baseTier };
       approvals.set(a.id, a);
       return send(a);
     }
+    if (path === "/internal/approvals" && req.method === "GET" && url.searchParams.get("issue")) return send({ approvals: [...approvals.values()].filter((a) => a.issueId === find(url.searchParams.get("issue"))?.id) });
     if (path === "/internal/approvals" && req.method === "GET") return send({ approvals: [...approvals.values()].filter((a) => a.state === url.searchParams.get("state")) });
+    // Graded done: the board's grades contract (services/board/src/grades.ts), simplified, and a scripted grader model.
+    const gradeRoute = /^\/internal\/grades\/([^/]+)\/(gate|verdict|release)$/.exec(path);
+    if (gradeRoute) {
+      const id = find(decodeURIComponent(gradeRoute[1]))?.id;
+      const g = grades.get(id);
+      if (gradeRoute[2] === "release") return send({ ok: grades.delete(id) });
+      const stamp = (state) => Object.assign(g, { state, updatedAt: new Date().toISOString() });
+      if (gradeRoute[2] === "gate") {
+        if (gradingOff || !g || g.state === "satisfied") return send({ pass: true });
+        if (!["pending", "awaiting_evidence", "escalated"].includes(g.state)) stamp("pending");
+        return send({ pass: false, state: g.state, label: "grading" });
+      }
+      const v = JSON.parse(body);
+      gradeLog.push(v);
+      if (v.outcome === "awaiting_evidence") stamp("awaiting_evidence");
+      else if (v.outcome === "satisfied") stamp("satisfied");
+      else if (v.outcome === "needs_revision") stamp(++g.attempts >= 3 ? "escalated" : "needs_revision");
+      else stamp("escalated");
+      return send(g);
+    }
+    if (path === "/internal/grades" && req.method === "GET") return send({ on: grades.size > 0 && !gradingOff, grades: [...grades.values()].filter((g) => ["pending", "awaiting_evidence"].includes(g.state)), resubmitted: [] });
+    if (path === "/grader" && req.method === "POST") {
+      graderCalls.push(JSON.parse(body));
+      return send({ choices: [{ message: { content: JSON.stringify(graderAnswers.shift() ?? { verdict: "cannot_judge", criteria: [] }) } }], usage: { prompt_tokens: 10, completion_tokens: 5 } });
+    }
     // A Tier 0 run's audit row: only with the runner's key.
     if (path === "/internal/approvals/auto" && req.method === "POST") {
       autos.push({ key: req.headers["x-reviewer-key"], ...JSON.parse(body) });
@@ -130,11 +159,11 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], ot
     a.state = state;
     return a;
   };
-  return { server, comments, patches, activity, passed, attached, unknown, addComment, approvals, autos, decide };
+  return { server, comments, patches, activity, passed, attached, unknown, addComment, approvals, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers };
 }
 
 /** Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. */
-export function flow({ parent: parentOver, part: partOver, grants } = {}) {
+export function flow({ parent: parentOver, part: partOver, grants, grades, gradingOff } = {}) {
   let dir, runner, runnerEnv, paperclip, output = "";
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -210,6 +239,7 @@ engines:
 gcp:
   credentials: ${join(secrets, "gcloud/application_default_credentials.json")}
 intake:
+  codex_args: []
   timeout_seconds: 30
 replies:
   enabled: false
@@ -245,7 +275,7 @@ recurring:
     ];
     Object.assign(parent, parentOver);
     Object.assign(part, partOver);
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred], parentComments, others: [{ issue: alfredPart, comments: alfredChat }] });
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred], parentComments, others: [{ issue: alfredPart, comments: alfredChat }], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 
@@ -261,6 +291,7 @@ recurring:
         BOARD_INTERNAL_URL: url,
         FAKE_LOG: join(dir, "fake.log"),
         FAKE_STEP: join(dir, "claude-step"),
+        AIDENHQ_GRADER_URL: `${url}/grader`,
     };
     startRunner();
   });

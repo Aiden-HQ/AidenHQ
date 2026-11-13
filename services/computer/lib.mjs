@@ -1,6 +1,7 @@
-// The computer launcher's logic, kept free of Docker and HTTP so it can be tested: run tokens, the env an exec gets, the Codex
-// config the box gets, and the `docker run` line. launcher.mjs wires it up.
+// The computer launcher's logic, kept free of Docker so it can be tested: run tokens, the env an exec gets, the Codex
+// config the box gets, the `docker run` line and the model call's hand-off to the gateway. launcher.mjs wires it up.
 import { randomBytes } from "node:crypto";
+import http from "node:http";
 
 const RUN_TOKEN_PREFIX = "ahqc_"; // services/shared/agent-auth.ts resolves these through /whoami
 const RUN_TOKEN_ENV = "AIDENHQ_RUN_TOKEN";
@@ -14,9 +15,12 @@ export const RUN_TOKEN_PATH = "/dev/shm/aidenhq/run-token";
 export const WRITE_RUN_TOKEN_SCRIPT = `mkdir -p /dev/shm/aidenhq && chmod 700 /dev/shm/aidenhq && cat > ${RUN_TOKEN_PATH} && chmod 600 ${RUN_TOKEN_PATH}`;
 export const CLEAR_RUN_TOKEN_SCRIPT = `rm -f ${RUN_TOKEN_PATH}`;
 
-/** Run tokens: one live token per container, issued when a run starts there, gone when it ends. */
+/**
+ * Run tokens: one live token per container, issued when a run starts there, gone when it ends. The first exec from Paperclip
+ * binds the token to its Paperclip run and task (the model gateway reads them from /whoami to attribute and cap the run).
+ */
 export class Tokens {
-  #byToken = new Map(); // token → { container, agentId, at }
+  #byToken = new Map(); // token → { container, agentId, at, runId?, issueId? }
   #byContainer = new Map(); // container → token
   issue(container, agentId, now = Date.now()) {
     this.revoke(container);
@@ -31,16 +35,24 @@ export class Tokens {
     this.#byContainer.delete(container);
   }
   current(container) { return this.#byContainer.get(container); }
+  /** The container's current token names this Paperclip run and task; true when that changed (save the tokens). */
+  bind(container, { runId, issueId }) {
+    const hit = this.#byToken.get(this.#byContainer.get(container));
+    const next = { runId: runId ? String(runId) : null, issueId: issueId ? String(issueId) : null };
+    if (!hit || (!next.runId && !next.issueId) || (hit.runId === next.runId && hit.issueId === next.issueId)) return false;
+    Object.assign(hit, next);
+    return true;
+  }
   /** The live tokens as plain data, to survive a launcher restart (the box's env file holds its token). */
   dump() { return [...this.#byToken].map(([token, v]) => ({ token, ...v })); }
   load(rows, now = Date.now()) {
-    for (const r of rows) if (r?.token?.startsWith(RUN_TOKEN_PREFIX) && now - r.at <= TOKEN_TTL_MS) { this.#byToken.set(r.token, { container: r.container, agentId: r.agentId, at: r.at }); this.#byContainer.set(r.container, r.token); }
+    for (const r of rows) if (r?.token?.startsWith(RUN_TOKEN_PREFIX) && now - r.at <= TOKEN_TTL_MS) { this.#byToken.set(r.token, { container: r.container, agentId: r.agentId, at: r.at, runId: r.runId ?? null, issueId: r.issueId ?? null }); this.#byContainer.set(r.container, r.token); }
   }
   whoami(token, now = Date.now()) {
     const hit = typeof token === "string" ? this.#byToken.get(token) : undefined;
     if (!hit) return undefined;
     if (now - hit.at > TOKEN_TTL_MS) { this.revoke(hit.container); return undefined; }
-    return { agentId: hit.agentId, container: hit.container };
+    return { agentId: hit.agentId, container: hit.container, runId: hit.runId ?? null, issueId: hit.issueId ?? null };
   }
 }
 
@@ -76,9 +88,12 @@ const BOX_KEYS = new Set(["PAPERCLIP_BRIDGE_TOKEN"]);
  */
 export function routineArgs(command, args, env) {
   const model = env?.AIDENHQ_MODEL, effort = env?.AIDENHQ_REASONING_EFFORT;
-  if (!/(^|\/)codex$/.test(command) || args[0] !== "exec" || (!model && !effort)) return args;
-  const out = ["exec", ...(model ? ["--model", model] : []), ...(effort ? ["-c", `model_reasoning_effort="${effort}"`] : [])];
-  for (let i = 1; i < args.length; i++) {
+  // Paperclip puts its global -c pairs before `exec` (codex -c k=v ... exec ...): skip them to find the subcommand.
+  let at = 0;
+  while (args[at] === "-c" && at + 1 < args.length) at += 2;
+  if (!/(^|\/)codex$/.test(command) || args[at] !== "exec" || (!model && !effort)) return args;
+  const out = [...args.slice(0, at), "exec", ...(model ? ["--model", model] : []), ...(effort ? ["-c", `model_reasoning_effort="${effort}"`] : [])];
+  for (let i = at + 1; i < args.length; i++) {
     if (model && args[i] === "--model" && i + 1 < args.length) { i++; continue; }
     if (effort && args[i] === "-c" && String(args[i + 1]).startsWith("model_reasoning_effort=")) { i++; continue; }
     out.push(args[i]);
@@ -212,36 +227,27 @@ export function checkoutRequest(body, { agentsOrg, cacheRoot }) {
 export const UNTAR_SCRIPT = 'rm -rf "$1" && mkdir -p "$1" && tar -x --no-same-owner -C "$1"';
 
 /**
- * What OpenRouter billed for one model call, read as the answer streams past the gateway: the `response.completed` event of
- * an SSE stream (or a plain JSON answer) carries the generation id and the usage, its cost included.
- * feed() takes the text as it arrives; done() gives { key, model, input (uncached), cached, output, costUsd }, or undefined.
- * The model is the one OpenRouter answered with (the resolved slug, e.g. deepseek/deepseek-v4.1-flash-1017), never the request's.
+ * A box's model call, passed on to the model gateway (services/gateway) with the run token as its credential: the gateway
+ * names the run through /whoami, counts what OpenRouter billed and refuses past a spend cap. Its answer (a stream, or a 402
+ * cap_reached) goes back to the box as it is. The OpenRouter key is never here.
  */
-export function usageTap() {
-  let tail = "";
-  let found;
-  const take = (text) => {
-    if (found || !text.includes('"usage"')) return;
-    try {
-      const j = JSON.parse(text);
-      const r = j.type === "response.completed" ? j.response : j;
-      if (r?.usage && typeof r.id === "string") found = r;
-    } catch {}
-  };
-  return {
-    feed(text) {
-      if (found) return;
-      const lines = (tail + text).split("\n");
-      tail = lines.pop();
-      for (const l of lines) if (l.startsWith("data: ") && l.includes('"response.completed"')) take(l.slice(6));
-    },
-    done() {
-      take(tail.startsWith("data: ") ? tail.slice(6) : tail);
-      if (!found) return undefined;
-      const u = found.usage;
-      const cached = u.input_tokens_details?.cached_tokens ?? 0;
-      // OpenRouter's output_tokens already include the reasoning tokens.
-      return { key: found.id.slice(0, 200), model: typeof found.model === "string" ? found.model.slice(0, 120) : "", input: Math.max(0, (u.input_tokens ?? 0) - cached), cached, output: u.output_tokens ?? 0, costUsd: typeof u.cost === "number" ? u.cost : null };
-    },
-  };
+export function forwardModel(req, res, url, token) {
+  return new Promise((resolve) => {
+    const u = new URL(url);
+    const headers = { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${token}` };
+    const up = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (ur) => {
+      res.writeHead(ur.statusCode ?? 502, ur.headers);
+      ur.pipe(res);
+      ur.on("end", resolve);
+      ur.on("error", () => { res.destroy(); resolve(); });
+    });
+    up.on("error", (e) => {
+      if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 502, type: "gateway_unreachable", message: `the model gateway is unreachable (${e.message})` } }));
+      else res.destroy();
+      resolve();
+    });
+    // The box hung up: drop our leg too (the gateway still reads OpenRouter's answer to the end and records it).
+    res.on("close", () => { if (!res.writableFinished) up.destroy(); resolve(); });
+    req.pipe(up);
+  });
 }

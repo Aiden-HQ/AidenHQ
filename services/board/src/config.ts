@@ -25,6 +25,8 @@ export interface Config {
   watcherKey?: string;
   /** The operator's key (board_operator_key): ops/setup.sh's owner setup link, welcome chat and account resets, nothing else. */
   operatorKey?: string;
+  /** The model gateway (services/gateway): its billed ledger is pulled from `url`; `token` (gateway_board_key) both ways (it files raise_cap). */
+  gateway?: { url: string; token: string };
   timezone: string;
   workdays: Weekday[];
   /** Slack host → workspace or organization ID (E… on Enterprise Grid), for slack:// links. */
@@ -98,6 +100,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     clickhouse: signIn(env.CLICKHOUSE_AUTH_TOKEN_FILE ?? "/run/secrets/clickhouse_auth_token", env.CLICKHOUSE_SERVICE_URL ?? "http://clickhouse-mcp:8088"),
     jira: signIn(env.JIRA_AUTH_TOKEN_FILE ?? "/run/secrets/jira_auth_token", env.JIRA_SERVICE_URL ?? "http://jira-mcp:8091"),
     sessions: sessionsConfig(env),
+    gateway: env.AIDENHQ_GATEWAY_URL && keyFile(env.GATEWAY_BOARD_KEY_FILE ?? "/run/secrets/gateway_board_key") ? { url: env.AIDENHQ_GATEWAY_URL.replace(/\/+$/, ""), token: keyFile(env.GATEWAY_BOARD_KEY_FILE ?? "/run/secrets/gateway_board_key")! } : undefined,
     accounts: accountsConfig(env, port, hosts),
   };
 }

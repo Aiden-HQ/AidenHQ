@@ -2,7 +2,8 @@
 // Moonshot requester never gets Kimi; oversize or missing diffs and call errors escalate without a verdict.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GLM, KIMI, MAX_DIFF, MAX_FILES, fileContext, review } from "../src/review.mjs";
+import { CODE_CODES, GLM, KIMI, MAX_DIFF, MAX_FILES, MODEL_CODES, fileContext, review } from "../src/review.mjs";
+import { REVIEW_CODES } from "../../shared/reason-codes.ts";
 
 const card = { action: "pr", rule: "outside-pr", target: "acme/app feat/x", sentence: "Open a PR", reason: "outside the agents org" };
 const asker = (answers) => {
@@ -13,8 +14,17 @@ const ok = { content: JSON.stringify({ decision: "approve", reason: "matches the
 
 test("a refusal goes to the other model; the model that decided is named", async () => {
   const { asked, ask } = asker([{ content: "", refusal: "I can't help with exploits" }, ok]);
-  assert.deepEqual(await review({ card, diff: "+x", policy: "p", ask }), { decision: "approve", reason: "matches the ask", model: GLM });
+  assert.deepEqual(await review({ card, diff: "+x", policy: "p", ask }), { decision: "approve", code: "in_scope", reason: "matches the ask", model: GLM });
   assert.deepEqual(asked, [KIMI, GLM]);
+});
+
+test("unsure escalates to the owner, coded reviewer_unsure, with its reason", async () => {
+  const { ask } = asker([{ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason: "the diff is cut short" }) }]);
+  assert.deepEqual(await review({ card, diff: "+x", policy: "p", ask }), { decision: "escalate", code: "reviewer_unsure", reason: "the diff is cut short", model: KIMI });
+});
+
+test("the reviewer's codes are exactly the shared REVIEW_CODES (services/shared/reason-codes.ts)", () => {
+  assert.deepEqual([...new Set([...MODEL_CODES, ...CODE_CODES])].sort(), [...REVIEW_CODES].sort());
 });
 
 test("both refuse (or answer off-schema): escalated as 'reviewer refused'", async () => {

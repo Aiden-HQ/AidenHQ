@@ -1,0 +1,15 @@
+{
+  "name": "aidenhq-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "description": "The model gateway: the only holder of the OpenRouter key; per-run attribution, billed costs and spend caps.",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning gateway.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs",
+    "typecheck": "node --check gateway.mjs && node --check lib.mjs && node --check token.mjs"
+  }
+}

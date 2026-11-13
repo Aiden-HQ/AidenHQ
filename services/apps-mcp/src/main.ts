@@ -142,6 +142,24 @@ const http = createServer(async (req, res) => {
       const r = await d.pool.query("SELECT repo, number, created_at_src AS opened_at FROM src_github.issues WHERE kind = 'pr' AND state = 'open' AND lower(repo) LIKE $1", [`${agentsOrg.toLowerCase()}/%`]);
       return send(res, 200, { prs: r.rows });
     }
+    // Named pull requests' state from the warehouse (`?pr=owner/repo#12`, up to 100): the board's event wake-ups (wake.ts) wake
+    // the agent waiting on one when it merges or closes. Empty when there is no warehouse yet.
+    if (url.pathname === "/internal/pr-states" && req.method === "GET") {
+      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
+      const refs = url.searchParams.getAll("pr").slice(0, 100).map((r) => /^([\w.-]+\/[\w.-]+)#(\d{1,9})$/.exec(r)).filter((m) => m !== null);
+      let d;
+      try {
+        d = p.warehouse();
+      } catch {
+        return send(res, 200, {});
+      }
+      if (!refs.length) return send(res, 200, { prs: [] });
+      const r = await d.pool.query(
+        "SELECT i.repo, i.number, i.state, i.merged_at, i.closed_at FROM src_github.issues i JOIN unnest($1::text[], $2::int[]) AS want(repo, number) ON lower(i.repo) = lower(want.repo) AND i.number = want.number WHERE i.kind = 'pr'",
+        [refs.map((m) => m[1]), refs.map((m) => Number(m[2]))],
+      );
+      return send(res, 200, { prs: r.rows });
+    }
     // The exact commit a deploy approval names (full sha + subject), on the app's branch; 400 when there's no such commit.
     if (url.pathname === "/internal/commit" && req.method === "GET") {
       if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });

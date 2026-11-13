@@ -1,8 +1,12 @@
 # AidenHQ
 
-A self-hosted agentic workspace. Bring a server and it becomes your AI office: you talk to **Aiden**, your chief of
-staff, on Telegram, Slack or the web, and Aiden runs crews of specialist agents that follow up, track, verify and
-build for you.
+A self-hosted platform for creating, running and managing your own AI agents and the applications they build.
+
+Describe an agent or an app you need, and AidenHQ designs it, deploys it, runs it on a schedule or when something
+happens, and keeps it maintained, on a server you control. Agents share one set of tool connections and one data
+warehouse, and every write they make (a push, a deploy, a message, a config change) passes an approval gate
+enforced in code. You work with all of it through **Aiden**, your chief of staff, on Telegram, Slack or the web: Aiden
+turns what you ask for into work for the right agent, chases it, and brings you only the decisions.
 
 ## Building blocks
 
@@ -41,7 +45,8 @@ only. See [docs/architecture.md](docs/architecture.md).
 - **Concepts:** [docs/concepts.md](docs/concepts.md) explains Aiden, crews, modules, connections, grants, apps, the
   warehouse, the runner and the approval tiers in one page.
 - **Set up your own instance:** [SETUP.md](SETUP.md) walks a person or Claude Code from a fresh Ubuntu VM to a working
-  instance, with a check after every step. Each person runs their own server, instance repo and keys.
+  instance, with a check after every step (in Claude Code, ask it to "set up AidenHQ": the `setup-aidenhq` skill walks
+  it). Each person runs their own server, instance repo and keys.
 - **Contribute:** [CONTRIBUTING.md](CONTRIBUTING.md). Contributors have read access: fork the repo and open a pull
   request; the maintainer reviews and merges.
 

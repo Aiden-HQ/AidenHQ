@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { SignInRequired, api } from "./api";
 import { Avatar, Plan, PlusIcon } from "./components";
-import type { Agents, Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
+import { useEvents } from "./events";
+import type { Agents, Assignee, Finished, RosterAgent, Scorecard as ScorecardData, Session, TaskRef } from "./types";
 import { ago, elapsed } from "./util";
 import { Monogram } from "./Workspace";
 
@@ -78,6 +79,7 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => (clearInterval(poll), clearInterval(tick));
   }, [load]);
+  useEvents(["fleet", "approvals"], load); // a Fleet Ops check or a card changes: refresh now (events.ts)
 
   if (!data) return <main className="page wide">{error ? <p className="empty">Couldn't load your agents: {error}</p> : <span className="spinner" />}</main>;
 
@@ -328,7 +330,7 @@ function AgentRow({ a, assignee, sessions, finished, now, open, toggle }: { a: R
                   const s = runStatus(f.status);
                   return (
                     <div key={f.id} className="recent-row" title={f.detail}>
-                      <span className={`run-status run-${s.tone}`}>{s.text}</span>
+                      {f.id.startsWith("runner:") ? <span className={`run-status run-${s.tone}`}>{s.text}</span> : <a className={`run-status run-${s.tone}`} href={`#/r/${f.id}`} title="Open the run's trace">{s.text}</a>}
                       <Tasks tasks={f.tasks} fallback={f.run} inline />
                       {count > 1 && (
                         <span className="recent-count" title={failed ? `${failed} of ${count} failed` : `${count} runs`}>
@@ -344,9 +346,55 @@ function AgentRow({ a, assignee, sessions, finished, now, open, toggle }: { a: R
               <p className="fleet-empty">No runs in the last 12 hours.</p>
             )}
           </section>
+          <Scorecard id={a.id} />
         </div>
       )}
     </div>
+  );
+}
+
+const SPARK = "▁▂▃▄▅▆▇█";
+const spark = (xs: number[]) => {
+  const max = Math.max(...xs, 0);
+  return xs.map((x) => (max ? SPARK[Math.min(7, Math.round((x / max) * 7))] : SPARK[0])).join("");
+};
+const usd = (n: number) => `$${n < 1 ? n.toFixed(3) : n.toFixed(2)}`;
+
+/** The week's diagnostics for one agent: done, sent back (grades), cards rejected, failed runs, billed cost per task; a 7-day trend. Not a ranking. */
+function Scorecard({ id }: { id: string }) {
+  const [s, setS] = useState<ScorecardData | null | undefined>(undefined);
+  useEffect(() => {
+    api.scorecard(id).then(setS, () => setS(null));
+  }, [id]);
+  if (s === undefined) return <section><h4>Last 7 days</h4><span className="spinner" /></section>;
+  if (!s) return <section><h4>Last 7 days</h4><p className="fleet-empty">Couldn't load the scorecard.</p></section>;
+  const was = (prior: number) => (prior ? ` (was ${prior})` : "");
+  return (
+    <section>
+      <h4>Last 7 days</h4>
+      <dl className="fleet-facts">
+        <dt>Tasks done</dt>
+        <dd title={s.done.tasks.map((t) => t.identifier).join(", ")}>
+          {s.done.count}
+          {was(s.done.prior)} <span title="done per day">{spark(s.daily.map((d) => d.done))}</span>
+        </dd>
+        <dt>Sent back</dt>
+        <dd>{s.reopen.graded ? `${s.reopen.reopened} of ${s.reopen.graded} graded tasks` + (s.reopen.escalated ? `, ${s.reopen.escalated} escalated` : "") : "no graded tasks"}</dd>
+        <dt>Cards rejected</dt>
+        <dd>
+          {s.approvals.rejected} of {s.approvals.filed} filed{was(s.approvals.priorRejected)}
+        </dd>
+        <dt>Runs failed</dt>
+        <dd>{s.runsFailed}</dd>
+        <dt>Cost</dt>
+        <dd>
+          {usd(s.cost.usd)}
+          {s.cost.perDone !== null && `, ${usd(s.cost.perDone)} per finished task`}
+          {s.cost.usd > 0 && !s.cost.billed && " (some calls unbilled)"} <span title="cost per day">{spark(s.daily.map((d) => d.costUsd))}</span>
+        </dd>
+      </dl>
+      <p className="fleet-empty">Diagnostics, not a ranking: agents have different jobs.</p>
+    </section>
   );
 }
 

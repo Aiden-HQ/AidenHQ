@@ -37,6 +37,7 @@ test("dry run prints the plan and no secrets", () => {
     "with OPENROUTER_MANAGEMENT_KEY,AIDENHQ_SECRETS_DIR) node", // the key goes in through the environment
     "openrouter-key.mjs create aidenhq-alice 50",
     "write /home/alice/.config/aidenhq/google_oauth.json",
+    "write /home/alice/aidenhq-instance/apps.yaml", // instance.yaml's heredoc ends where it should
     "ops/apply-config.sh",
     "tailscale serve --bg --https=443 http://127.0.0.1:3121",
     "new chat to Aiden",
@@ -48,4 +49,16 @@ test("dry run prints the plan and no secrets", () => {
 test("refuses a config without the owner, and a line that isn't KEY=value", () => {
   assert.throws(() => dry(conf(["OWNER_NAME=Bob"])), /OWNER_NAME, OWNER_EMAIL and TIMEZONE are required/);
   assert.throws(() => dry(conf([...person, "$(touch /tmp/pwned)"])), /not KEY=value/);
+});
+
+test("person.env: an unquoted value ends at ' #', a quoted one keeps it", () => {
+  const out = dry(conf([...person, "OPENROUTER_LIMIT_USD=75   # a month", "COMPANY_NAME='Acme # Co'"]));
+  assert.ok(out.includes("openrouter-key.mjs create aidenhq-alice 75"), out);
+});
+
+test("dry run needs no node, and a missing OpenRouter key is 'would fail'", () => {
+  const file = conf(person.filter((l) => !l.startsWith("OPENROUTER")));
+  const out = execFileSync("/bin/bash", [setup, "--dry-run", "--config", file], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent" } });
+  assert.ok(out.includes("would fail: set OPENROUTER_MANAGEMENT_KEY"), out);
+  assert.ok(out.includes("write /home/alice/.config/aidenhq/google_oauth.json"), out);
 });

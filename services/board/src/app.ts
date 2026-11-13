@@ -7,6 +7,7 @@ import { extname, join, normalize } from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { liveActivity, type SessionSources } from "./live-activity.js";
+import { makeRuns } from "./runs.js";
 import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunContext, type RunnerReport, type Working } from "./activity.js";
 import { RecurringSchema, RunStateSchema, ScheduleSchema, changeRecurring, claimDue, recurringView, scheduleMove } from "./automation.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, RUNNER_MARKER, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
@@ -15,9 +16,13 @@ import { AccountError, forwardedProto, type Accounts, type AccountSession, type 
 import { AccessError, assertNamesApp } from "./app-access.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
 import { ControlSchema, CostsSchema, RelaySchema, Refused, appsApi, appsToken, assertMeantTask, deployApproved, fleetControl, fleetCosts, fleetStatus, relayableWords, requestRun, requireAgent, requireFleetRole, runApproved } from "./fleet.js";
-import { detectorState } from "./fleet-ops.js";
-import { ARGS, BOARD_ACTIONS, REVIEWER_MODELS, RunRequestSchema, autonomy, card, digestText, parseReply, shown, type Approval, type RunnerAction } from "./approvals.js";
+import { detectorState, takeOwnerLines } from "./fleet-ops.js";
+import { ARGS, BOARD_ACTIONS, BatchItemsSchema, REVIEWER_MODELS, RaiseCapSchema, RunRequestSchema, autonomy, batchesOn, card, digestText, parseReply, raiseCapRequest, shown, type Approval, type BatchResult, type RaiseCap, type RunnerAction } from "./approvals.js";
+import { liveUpdatesOn } from "./events.js";
+import { REVIEW_CODES, TIER_RULE } from "./reason-codes.js";
+import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { moduleStates } from "./modules.js";
+import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradingOn, prRefAllowed } from "./grades.js";
 import { UsageSchema, WINDOWS, costs, type CostWindow } from "./costs.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
 import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
@@ -79,6 +84,10 @@ export interface AppOptions {
   reviewerKey?: string;
   /** "internal" mode: the owner's Claude watcher's decide key (secret watcher_decide_key): decides like the owner channel, stamped `watcher`. */
   watcherKey?: string;
+  /** "internal" mode: the model gateway's key (secret gateway_board_key, x-gateway-key): files raise_cap, nothing else. */
+  gatewayKey?: string;
+  /** The model gateway (every listener: a raise_cap is applied where it is tapped): an approved raise_cap sets the new cap there. */
+  gateway?: { url: string; token: string };
   /**
    * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only: on "local", the owner's setup
    * link and the welcome chat; on "internal", an account reset. Nothing else.
@@ -106,6 +115,10 @@ const ApprovalRequestSchema = z
     /** The runner's tier: 1 (the reviewer's) or 2 (the owner's); 2 when absent, and always 2 while autonomy is off. */
     tier: z.union([z.literal(1), z.literal(2)]).default(2),
     reason: z.string().max(1000).default(""),
+    /** classify()'s tier on the request's merits, before the autonomy override (batch approvals); absent when unknown. */
+    baseTier: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
+    /** classify()'s rule: the card's reason code. */
+    rule: z.string().regex(TIER_RULE).optional(),
   })
   .strict();
 /** A Tier 0 run the runner already made: an audit row only. */
@@ -122,7 +135,7 @@ const AuditSchema = z
   })
   .strict();
 const ReviewSchema = z
-  .object({ digest: z.string().min(1).max(64), decision: z.enum(["approve", "reject", "escalate"]), reason: z.string().max(2000), model: z.enum(REVIEWER_MODELS) })
+  .object({ digest: z.string().min(1).max(64), decision: z.enum(["approve", "reject", "escalate"]), reason: z.string().max(2000), model: z.enum(REVIEWER_MODELS), code: z.enum(REVIEW_CODES).optional() })
   .strict();
 
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
@@ -197,10 +210,12 @@ export function createApp(opts: AppOptions): Server {
       if (typeof value !== "function") return value;
       const s = perRequest.getStore()?.session;
       const account = s && s !== OPERATOR ? s.accountId : undefined;
-      if (account && (prop === "addComment" || prop === "createIssue"))
+      // What the board posts or opens is announced to open boards (events.ts): the task's id only.
+      if (prop === "addComment" || prop === "createIssue")
         return async (...args: unknown[]) => {
           const made = await value.apply(client, args);
-          store.setAuthored(made.id, account);
+          if (account) store.setAuthored(made.id, account);
+          store.events.emit("chat", prop === "addComment" ? String(args[0]) : made?.id);
           return made;
         };
       return value.bind(client);
@@ -224,6 +239,17 @@ export function createApp(opts: AppOptions): Server {
   };
 
   const sessionOf = liveActivity(opts.sessions);
+  const runOf = makeRuns({ pc, store, sessionsDir: opts.sessions?.dir, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
+  /** The newest runs on a task, for the links to their run pages. */
+  const runLinks = (past: { id: string; agentId: string; status: string; issueId: string | null; startedAt: string | null }[], issueId: string, agents: Agent[]) =>
+    past.filter((r) => r.issueId === issueId).slice(0, 6).map((r) => ({ id: r.id, agent: agents.find((a) => a.id === r.agentId)?.name ?? "Agent", status: r.status, at: r.startedAt }));
+  /** A run's page data with the names of its agent and task. */
+  async function runView(id: string) {
+    const run = await runOf(id);
+    if (!run) throw new HttpError(404, "Paperclip no longer has this run (pruned), or it isn't this company's");
+    const [agents, issue] = await Promise.all([pc.agents(), run.issueId ? pc.issueSummary(run.issueId).catch(() => undefined) : undefined]);
+    return { ...run, agent: agents.find((a) => a.id === run.agentId)?.name ?? "Agent", issue: issue ? { identifier: issue.identifier, title: issue.title } : null };
+  }
   /** A Paperclip-run Codex agent's live words, plan and steps from its session log, on top of what Paperclip says. Runner jobs report their own. */
   async function withSession(w: Working | null | undefined, live: LiveRun[], issueId: string, full: boolean): Promise<Working | null> {
     const run = w && !w.queued && !w.plan ? live.find((r) => r.issueId === issueId && r.status === "running") : undefined;
@@ -305,11 +331,27 @@ export function createApp(opts: AppOptions): Server {
     const a = r.approval;
     log.info({ approval: a.id, task: a.identifier, action: a.action, state: a.state, via }, "approval decided");
     // What follows a decision is the board's own speech (outcome, rejection notice): never recorded as the deciding admin's.
-    perRequest.exit(() => {
-      if (a.state === "approved" && BOARD_ACTIONS.includes(a.action)) void applyOnBoard(a);
-      if (a.state === "rejected") void toldRejected(a);
-    });
+    perRequest.exit(() => void followUp(a));
     return shownApproval(await bylines(), a);
+  }
+
+  /** What follows one decided card: a board-applied action runs now; a rejection is told on its task. */
+  async function followUp(a: Approval) {
+    if (a.state === "approved" && BOARD_ACTIONS.includes(a.action)) await applyOnBoard(a);
+    if (a.state === "rejected") await toldRejected(a);
+  }
+
+  /** A batch decided (all or nothing): each card is followed up on its own, one after another, as if tapped alone. */
+  async function decidedMany(r: BatchResult, via: string) {
+    if (!r.ok) throw new HttpError(409, r.reason);
+    log.info({ approvals: r.approvals.map((a) => a.id), state: r.approvals[0]?.state, via }, "approvals decided as a batch");
+    perRequest.exit(() => {
+      void (async () => {
+        for (const a of r.approvals) await followUp(a).catch((err) => log.warn({ approval: a.id, err: String(err) }, "batch follow-up failed"));
+      })();
+    });
+    const names = await bylines();
+    return { approvals: r.approvals.map((a) => shownApproval(names, a)) };
   }
 
   /** A rejection reaches the asking task (and the chat above an agent's sub-task), so nobody waits on a card that won't run. */
@@ -329,14 +371,32 @@ export function createApp(opts: AppOptions): Server {
     let ok = true;
     let text: string;
     try {
-      text = a.action === "app_run" ? await runApproved(args, a.id) : await deployApproved(args.name, args.sha, a.id);
+      if (a.action === "app_run") text = await runApproved(args, a.id);
+      else if (a.action === "deploy_app") text = await deployApproved(args.name, args.sha, a.id);
+      else if (a.action === "raise_cap") text = await raiseCap(used.args as RaiseCap & { to: number });
+      else throw new Error(`${a.action} isn't applied by the board`);
     } catch (err) {
       ok = false;
       text = (err as Error).message;
     }
     store.approvals.finish(a.id, used.nonce, ok, text);
     log[ok ? "info" : "warn"]({ approval: a.id, ok, text: text.slice(0, 300) }, "approval applied");
-    await pc.addComment(a.issueId, `${ok ? "" : "**Failed:** "}${text} (approval ${a.id})\n\n${APPROVAL_MARKER}`).catch((err) => log.warn({ err: String(err) }, "couldn't post the approval outcome"));
+    // The owner's comment wakes the task's agent (Paperclip); a task Paperclip holds gets its agent woken directly.
+    const posted = await pc.addComment(a.issueId, `${ok ? "" : "**Failed:** "}${text} (approval ${a.id})\n\n${APPROVAL_MARKER}`).catch((err) => void log.warn({ err: String(err) }, "couldn't post the approval outcome"));
+    if (posted && ok && a.action === "raise_cap") await wakeIfHeld(a.issueId, posted.id);
+  }
+
+  /** An approved raise_cap: the gateway's cap for that scope and subject becomes `to` (the card's doubled cap). */
+  async function raiseCap(r: RaiseCap & { to: number }): Promise<string> {
+    if (!opts.gateway) throw new Error("the board has no model gateway configured (AIDENHQ_GATEWAY_URL, gateway_board_key)");
+    const res = await fetch(`${opts.gateway.url}/internal/caps`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${opts.gateway.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ scope: r.scope, agentId: r.agentId, subject: r.subject, cap: r.to }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`the model gateway refused the new cap (${res.status}): ${(await res.text().catch(() => "")).slice(0, 200)}`);
+    return `Raised the ${r.scope} spend cap from $${r.cap.toFixed(2)} to $${r.to.toFixed(2)} ($${r.spent.toFixed(2)} spent). Carry on where the cap stopped you.`;
   }
 
   /** A label by name, created on first use. */
@@ -481,7 +541,7 @@ export function createApp(opts: AppOptions): Server {
 
   async function issueView(ref: string) {
     const { ctx, issue, assigned } = await ownIssue(ref);
-    const [comments, busy, files, parent, kids, names] = await Promise.all([
+    const [comments, busy, files, parent, kids, names, past] = await Promise.all([
       pc.comments(issue.id),
       working(ctx),
       pc.attachments(issue.id).catch(() => []),
@@ -489,6 +549,7 @@ export function createApp(opts: AppOptions): Server {
       // The crew works in sub-tasks of the user's task.
       issue.assigneeUserId === ctx.me ? pc.children(issue.id).catch(() => []) : Promise.resolve([] as Issue[]),
       bylines(),
+      pc.recentRuns(100).catch(() => []),
     ]);
     const crew = crewOf(issue, kids, { assignees: ctx.assignees, seen: (id) => store.seenAt(id), working: busy.map, jobs: latestJobs(shared.runner) });
     // Each crew member's latest word, when there's one issue to read it from (a fan-out shows its count instead):
@@ -524,6 +585,7 @@ export function createApp(opts: AppOptions): Server {
       // An agent's sub-task links back to the task it works on.
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
       crew: crew.map((m) => ({ ...m, said: said[m.agent] ?? null })),
+      runs: runLinks(past, issue.id, ctx.agents),
     };
   }
 
@@ -590,6 +652,7 @@ export function createApp(opts: AppOptions): Server {
           }),
       ),
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
+      runs: runLinks(runs, issue.id, ctx.agents),
       asks: asks.map(({ task, ask }) => ({ ...ask, identifier: task.identifier, agent: agentOf(task.assigneeAgentId)?.name ?? "Agent" })),
     };
   }
@@ -710,7 +773,14 @@ export function createApp(opts: AppOptions): Server {
   const internal: typeof routes = [
     // Fleet tools of the Chief of Staff: the caller's own Paperclip credential rides in x-agent-key and must be the CoS's.
     // The status read also takes fleet-read (Fleet Ops), with the detector's open and recovered incidents.
-    { method: "POST", path: /^\/internal\/fleet\/status$/, handle: async (_m, _b, _u, req) => fleetCall(req, async (pc) => ({ ...(await fleetStatus(pc, store)), detector: detectorState(store) }), ["fleet-admin", "fleet-read"]) },
+    { method: "POST", path: /^\/internal\/fleet\/status$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc) => {
+      // The summary is extra: a failed read there never fails fleet_status (summary: null). After the status reads, not beside
+      // them (Paperclip limits concurrent list requests per client).
+      const window = (body as { window?: string } | null)?.window === "7d" ? "7d" : "24h";
+      const status = await fleetStatus(pc, store);
+      const summary = await statusSummary(pc, store, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
+      return { ...status, detector: detectorState(store), summary };
+    }, ["fleet-admin", "fleet-read"]) },
     { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
@@ -807,9 +877,25 @@ export function createApp(opts: AppOptions): Server {
         const from = engineer ? engineer.name : "an Engineer";
         // Tier 1 only while autonomy is on: off means every card is the owner's, as before.
         const tier = autonomy() === "off" ? 2 : b.tier;
-        const a = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: from, tier, reason: b.reason, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
-        log.info({ approval: a.id, task: a.identifier, action: a.action, replaced: a.replaced, tier: a.tier }, "approval requested");
+        // The requester is the task's agent, looked up here; the base tier is the runner's classify() (its key filed this).
+        const a = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: from, tier, reason: b.reason, requesterId: task.assigneeAgentId ?? null, baseTier: b.baseTier ?? null, reasonCode: b.rule ?? null, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
+        log.info({ approval: a.id, task: a.identifier, action: a.action, replaced: a.replaced, tier: a.tier, baseTier: a.baseTier, code: a.reasonCode }, "approval requested");
         return { ...approvalView(a), args: a.args };
+      },
+    },
+    {
+      // The model gateway refused a call at a spend cap: one raise_cap card (Tier 2), filed with the gateway's own key. The numbers
+      // are the gateway's ledger; the task and the agent's name are looked up here. The card and its apply are the board's (W2).
+      method: "POST",
+      path: /^\/internal\/approvals\/raise-cap$/,
+      handle: async (_m, body, _u, req) => {
+        if (!opts.gatewayKey || !keyMatches(req.headers["x-gateway-key"], opts.gatewayKey)) throw new HttpError(403, "only the model gateway files raise_cap");
+        const { issue, ...r } = parse(RaiseCapSchema.extend({ issue: z.string().min(1).max(80) }).strict(), body);
+        const [ctx, task] = await Promise.all([context(), pc.issue(issue)]);
+        const name = ctx.agents.find((a) => a.id === r.agentId)?.name ?? r.agentId;
+        const a = store.approvals.request(raiseCapRequest({ id: task.id, identifier: task.identifier }, r, name));
+        log.info({ approval: a.id, task: a.identifier, scope: r.scope, agent: r.agentId, cap: r.cap }, "raise_cap requested");
+        return approvalView(a);
       },
     },
     {
@@ -823,7 +909,7 @@ export function createApp(opts: AppOptions): Server {
         const args = parse(ARGS[b.action], b.args);
         const [ctx, task] = await Promise.all([context(), pc.issue(b.issue)]);
         const engineer = ctx.assignees.find((a) => a.kind === "engineer" && a.key === task.assigneeAgentId);
-        const a = store.approvals.audit({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: engineer ? engineer.name : "an Engineer", reason: b.reason, rule: b.rule, ok: b.ok, outcomeText: b.text, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
+        const a = store.approvals.audit({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: engineer ? engineer.name : "an Engineer", reason: b.reason, rule: b.rule, ok: b.ok, outcomeText: b.text, requesterId: task.assigneeAgentId ?? null, baseTier: 0, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
         log.info({ approval: a.id, task: a.identifier, action: a.action, rule: b.rule, ok: b.ok }, "tier 0 ran");
         return approvalView(a);
       },
@@ -840,7 +926,7 @@ export function createApp(opts: AppOptions): Server {
         if (b.decision !== "escalate" && autonomy() !== "full") throw new HttpError(409, "autonomy isn't full: the reviewer may only escalate");
         const r = store.approvals.review(m[1]!, b);
         if (r.ok && b.decision === "escalate") {
-          log.info({ approval: r.approval.id, task: r.approval.identifier, model: b.model }, "approval escalated by the reviewer");
+          log.info({ approval: r.approval.id, task: r.approval.identifier, model: b.model, code: b.code }, "approval escalated by the reviewer");
           return approvalView(r.approval);
         }
         return decided(r, `reviewer:${b.model}`);
@@ -898,6 +984,140 @@ export function createApp(opts: AppOptions): Server {
         return { ok: true };
       },
     },
+    // Graded done (grades.ts): the delegating agent files the rubric (write-once, trusted storage); every completion path
+    // asks the gate; the runner grades the waiting rows and records each outcome; the owner channel hears of escalations.
+    {
+      method: "POST",
+      path: /^\/internal\/grades$/,
+      handle: async (_m, body, _u, req) => {
+        const agent = await requireAgentTool(req, "task_delegate").catch(() => requireAgentTool(req, "task_propose_rule"));
+        const b = parse(FileGradeSchema, body);
+        // The grader reads only the task's own PRs; a ref naming another org's repo is refused here too.
+        if (b.deliverable.kind === "pr" && !prRefAllowed(b.deliverable.ref)) throw new HttpError(400, "deliverable.ref: a repo or PR in the agents org or the product repo, or empty for the task's own PRs");
+        const issue = await pc.issue(b.issue);
+        if (issue.createdByAgentId !== agent.id) throw new HttpError(403, "only the agent that delegated a task files its rubric");
+        const r = store.grades.file(issue.id, b.rubric, b.deliverable);
+        if (r.created) log.info({ task: issue.identifier, kind: b.deliverable.kind, criteria: b.rubric.length }, "rubric filed");
+        return { created: r.created, state: r.grade.state };
+      },
+    },
+    {
+      method: "POST",
+      path: /^\/internal\/grades\/([^/]+)\/gate$/,
+      handle: async (m, body, _u, req) => {
+        const { via } = parse(GateSchema, body);
+        // Ungraded (no row) or grading off: pass before any auth or Paperclip call, so the gate never blocks other closes.
+        // Callers send the task's id; an identifier is resolved first.
+        const ref = decodeURIComponent(m[1]!);
+        const id = /^[0-9a-f-]{36}$/i.test(ref) ? ref : (await pc.issue(ref)).id;
+        if (!gradingOn() || !store.grades.get(id)) return { pass: true };
+        const runner = via === "finish_turn" || via === "finish_merges";
+        const agent = runner ? (requireRunner(req, `closes a task by ${via}`), undefined) : await requireAgentTool(req, via);
+        const issue = await pc.issue(decodeURIComponent(m[1]!));
+        // Only the task's own assignee moves its grade: anyone else closing a graded task (its delegator) is refused, and
+        // an ungraded one passes without touching anything.
+        if (agent && issue.assigneeAgentId !== agent.id) {
+          const g = gradingOn() ? store.grades.get(issue.id) : undefined;
+          if (g && !(g.state === "satisfied" && issue.status === "done")) throw new HttpError(403, "this task is graded: the grader closes it once its rubric is met (only its assignee finishes it)");
+          return { pass: true };
+        }
+        const r = completionGate(store.grades, issue.id, via, { done: issue.status === "done" });
+        if (r.pass) return r;
+        // A board-key change: Paperclip refuses an agent's move to in_review without a review path; the grader is that path.
+        const label = (await pc.labels()).find((l) => l.name === "grading");
+        if (!label) log.warn('label "grading" missing in Paperclip (run scripts/paperclip-setup.mjs)');
+        const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
+        const labelIds = label && !ids.includes(label.id) ? [...ids, label.id] : undefined;
+        if (issue.status !== "in_review" || labelIds) await pc.updateIssue(issue.id, { status: "in_review", ...(labelIds ? { labelIds } : {}) });
+        log.info({ task: issue.identifier, via, state: r.state }, "completion held for grading");
+        return r;
+      },
+    },
+    {
+      method: "GET",
+      path: /^\/internal\/grades$/,
+      handle: async (_m, _b, _u, req) => {
+        requireRunner(req, "grades");
+        return { on: gradingOn(), grades: store.grades.due(), resubmitted: store.grades.resubmitted() };
+      },
+    },
+    {
+      // An escalated task finished again: the runner's deliverable version decides whether it goes back to the grader.
+      method: "POST",
+      path: /^\/internal\/grades\/([^/]+)\/resubmit$/,
+      handle: async (m, body, _u, req) => {
+        requireRunner(req, "resubmits grades");
+        const { version } = parse(z.object({ version: z.string().max(200) }).strict(), body);
+        const issue = await pc.issue(decodeURIComponent(m[1]!));
+        const g = store.grades.resubmit(issue.id, version);
+        if (!g) throw new HttpError(404, "no grade for this task");
+        log.info({ task: issue.identifier, state: g.state }, "escalated grade resubmitted");
+        return g;
+      },
+    },
+    {
+      method: "POST",
+      path: /^\/internal\/grades\/([^/]+)\/verdict$/,
+      handle: async (m, body, _u, req) => {
+        requireRunner(req, "records verdicts");
+        const v = parse(VerdictSchema, body);
+        const issue = await pc.issue(decodeURIComponent(m[1]!));
+        if (!store.grades.get(issue.id)) throw new HttpError(404, "no grade for this task");
+        const g = store.grades.record(issue.id, v);
+        // Done waiting: the label goes (the runner moves the task on).
+        if (g.state !== "awaiting_evidence") {
+          const label = (await pc.labels()).find((l) => l.name === "grading");
+          const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
+          if (label && ids.includes(label.id)) await pc.updateIssue(issue.id, { labelIds: ids.filter((id) => id !== label.id) });
+        }
+        log.info({ task: issue.identifier, outcome: v.outcome, version: v.version.slice(0, 12), state: g.state, attempts: g.attempts }, "grade recorded");
+        return g;
+      },
+    },
+    {
+      // Grading switched off: the runner let a held task go; its row and the `grading` label go too.
+      method: "POST",
+      path: /^\/internal\/grades\/([^/]+)\/release$/,
+      handle: async (m, _b, _u, req) => {
+        requireRunner(req, "releases grades");
+        if (gradingOn()) throw new HttpError(409, "grading is on");
+        const issue = await pc.issue(decodeURIComponent(m[1]!));
+        const label = (await pc.labels()).find((l) => l.name === "grading");
+        const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
+        if (label && ids.includes(label.id)) await pc.updateIssue(issue.id, { labelIds: ids.filter((id) => id !== label.id) });
+        store.grades.release(issue.id);
+        log.info({ task: issue.identifier }, "grade released (grading off)");
+        return { ok: true };
+      },
+    },
+    {
+      // An app deliverable's evidence for the runner's grader: apps-mcp's status of that app (deployed SHA, health, incident).
+      method: "GET",
+      path: /^\/internal\/grades\/app\/([a-z0-9-]{1,63})$/,
+      handle: async (m, _b, _u, req) => {
+        requireRunner(req, "reads app evidence");
+        const apps = await appsApi<{ name: string }[]>("/internal/status");
+        return { app: apps.find((a) => a.name === m[1]) ?? null };
+      },
+    },
+    {
+      // Escalated grades for the owner's Telegram, each handed over once (the owner channel, decide key).
+      method: "GET",
+      path: /^\/internal\/owner\/grades$/,
+      handle: async (_m, _b, _u, req) => {
+        if (!opts.decideKey || !keyMatches(req.headers["x-owner-key"], opts.decideKey)) throw new HttpError(403, "only the owner's channel collects escalations");
+        const lines: string[] = [];
+        for (const g of store.grades.escalated()) {
+          const key = `grade_told:${g.issueId}`;
+          if (store.meta(key) === g.updatedAt) continue;
+          store.setMeta(key, g.updatedAt);
+          const issue = await pc.issue(g.issueId).catch(() => undefined);
+          const why = g.verdicts.at(-1)?.verdict === "cannot_judge" ? "the grader couldn't judge it" : `${g.attempts} rejected version${g.attempts === 1 ? "" : "s"}`;
+          lines.push(`⚖️ **Grading needs you**: ${issue?.identifier ?? g.issueId} (${why}). Its unmet criteria are on the task; close it to accept, or reopen it with what to change.`);
+        }
+        return { lines: [...lines, ...takeOwnerLines(store)] }; // plus the detector's health lines (routine paused, flag open a day)
+      },
+    },
     {
       // Account reset links for the owner's Telegram: only the owner channel (decide key) collects them, once.
       method: "GET",
@@ -929,10 +1149,31 @@ export function createApp(opts: AppOptions): Server {
         const owner = Boolean(opts.decideKey && keyMatches(req.headers["x-owner-key"], opts.decideKey));
         const watcher = !owner && Boolean(opts.watcherKey && keyMatches(req.headers["x-owner-key"], opts.watcherKey));
         if (!owner && !watcher) throw new HttpError(403, "only the owner's channel decides");
-        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/).optional(), task: z.string().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/).optional(), decision: z.enum(["approve", "reject"]), via: z.enum(["telegram", "slack"]).optional() }).strict(), body);
-        if (!b.id === !b.task) throw new HttpError(400, "id or task");
-        const by = watcher ? "watcher" : b.id ? "owner:telegram" : "owner:reply";
+        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/).optional(), task: z.string().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/).optional(), batch: z.string().regex(/^B[0-9a-f]{8}$/).optional(), decision: z.enum(["approve", "reject"]), via: z.enum(["telegram", "slack"]).optional() }).strict(), body);
+        if ([b.id, b.task, b.batch].filter(Boolean).length !== 1) throw new HttpError(400, "id, task or batch");
+        const by = watcher ? "watcher" : b.id || b.batch ? "owner:telegram" : "owner:reply";
+        if (b.batch) {
+          // A Telegram list's button: the cards exactly as that message showed them, used once (see the batch route below).
+          if (!batchesOn()) throw new HttpError(409, "batch approvals are off; tap each card");
+          const items = store.approvals.takeBatch(b.batch);
+          if (!items) throw new HttpError(409, "this list was already used or is over a day old; tap the cards one by one");
+          return decidedMany(store.approvals.decideMany(items, b.decision, by), by);
+        }
         return decided(b.id ? store.approvals.decide(b.id, b.decision, by) : store.approvals.decideByReply(b.task!, b.decision, by), by);
+      },
+    },
+    {
+      // A list of the owner's pending cards the owner channel is about to send to Telegram with Approve all / Reject all:
+      // stored as shown (id and digest each) under one id its buttons carry. Only the owner channel's decide key.
+      method: "POST",
+      path: /^\/internal\/owner\/approvals\/batch$/,
+      handle: async (_m, body, _u, req) => {
+        if (!opts.decideKey || !keyMatches(req.headers["x-owner-key"], opts.decideKey)) throw new HttpError(403, "only the owner's channel lists batches");
+        if (!batchesOn()) throw new HttpError(409, "batch approvals are off");
+        const { items } = parse(z.object({ items: BatchItemsSchema }).strict(), body);
+        const r = store.approvals.snapshot(items);
+        if (!r.ok) throw new HttpError(409, r.reason);
+        return { batch: r.id, approvals: r.approvals.map(approvalView) };
       },
     },
     {
@@ -1064,8 +1305,10 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
+    { method: "GET", path: /^\/api\/runs\/([0-9a-f-]{36})$/, handle: async (m) => runView(m[1]!) },
     { method: "GET", path: /^\/api\/chats\/([^/]+)$/, handle: async (m) => chatView(decodeURIComponent(m[1]!)) },
     { method: "GET", path: /^\/api\/agents$/, handle: async () => activity(await context(), true) },
+    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, store), m[1]!) },
     {
       // Chats: open ones first, then the 20 newest finished ones; each with its agent and state.
       method: "GET",
@@ -1174,6 +1417,17 @@ export function createApp(opts: AppOptions): Server {
       handle: async (m, _b, _u, req) => {
         const by = requireAdmin(req);
         return decided(store.approvals.decide(m[1]!, m[2] === "approve" ? "approve" : "reject", by), by);
+      },
+    },
+    {
+      // Several of the owner's cards at once, as the board showed them (id and digest each, at most 10): all or nothing.
+      method: "POST",
+      path: /^\/api\/approvals\/batch\/(approve|reject)$/,
+      handle: async (m, body, _u, req) => {
+        const by = requireAdmin(req);
+        if (!batchesOn()) throw new HttpError(409, "batch approvals are off; decide each card");
+        const { items } = parse(z.object({ items: BatchItemsSchema }).strict(), body);
+        return decidedMany(store.approvals.decideMany(items, m[1] === "approve" ? "approve" : "reject", by), by);
       },
     },
     {
@@ -1588,6 +1842,11 @@ export function createApp(opts: AppOptions): Server {
     return perRequest.run({ session }, async () => {
       const file = req.method === "GET" ? /^\/api\/issues\/([^/]+)\/files\/([0-9a-f-]{36})$/.exec(path) : null;
       if (file) return download(res, decodeURIComponent(file[1]!), file[2]!);
+      // Live updates (events.ts): an event stream, behind the same gate; with the setting off the client keeps polling.
+      if (req.method === "GET" && path === "/api/events") {
+        if (!liveUpdatesOn()) throw new HttpError(404, "live updates are off");
+        return store.events.stream(req, res, SECURITY_HEADERS);
+      }
       const route = routes.find((r) => r.method === req.method && r.path.test(path));
       if (!route) throw new HttpError(404, "not found");
       const body = req.method === "GET" ? undefined : await readJson(req, route.maxBody);

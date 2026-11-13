@@ -1,8 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { card, parseReply, shown, type Request } from "../src/approvals.js";
+import { ARGS, BOARD_ACTIONS, RaiseCapSchema, card, parseReply, raiseCapRequest, shown, type Request, type RunnerAction } from "../src/approvals.js";
 import { Store } from "../src/store.js";
 
 const req = (over: Partial<Request> = {}): Request => ({ issueId: "i1", identifier: "WOR-184", action: "apply", target: "acme/instance", digest: "a".repeat(40), args: { sha: "a".repeat(40) }, sentence: "Apply", reads: "", changes: "instance.yaml", cost: "none", details: "diff", requestedBy: "runner", ...over });
+
+describe("raise_cap", () => {
+  it("is the owner's, doubles only, and is never the runner's to claim", () => {
+    const { approvals } = new Store(":memory:");
+    const r = RaiseCapSchema.parse({ scope: "task", agentId: "ag1", subject: "i1", cap: 10, spent: 10.02 });
+    const a = approvals.request(raiseCapRequest({ id: "i1", identifier: "WOR-9" }, r, "Aiden"));
+    expect(a).toMatchObject({ action: "raise_cap", tier: 2, baseTier: 2, requesterId: null, state: "pending", args: { cap: 10, to: 20 }, sentence: "Double Aiden's task spend cap from $10.00 to $20.00." });
+    expect(approvals.request(raiseCapRequest({ id: "i1", identifier: "WOR-9" }, { ...r, spent: 10.4 }, "Aiden")).id).toBe(a.id); // spend moved: the same card
+    expect(RaiseCapSchema.safeParse({ ...r, to: 500 }).success).toBe(false); // no typed amount
+    expect(approvals.decide(a.id, "approve", "account:x").ok).toBe(true);
+    expect(approvals.approved(Object.keys(ARGS) as RunnerAction[])).toEqual([]);
+    expect(BOARD_ACTIONS).toContain("raise_cap");
+  });
+});
 
 describe("approval records", () => {
   it("approves once, is claimed once, and reports its outcome once", () => {

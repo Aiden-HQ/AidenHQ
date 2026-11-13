@@ -8,6 +8,8 @@ import type { Store } from "./store.js";
 export interface PendingApproval {
   id: string;
   identifier: string;
+  /** Of exactly what the record runs: a batch list is bound to it. */
+  digest: string;
   sentence: string;
   changes: string;
   reads: string;
@@ -30,8 +32,12 @@ export interface Board {
   resetLinks(): Promise<{ email: string; url: string }[]>;
   /** The daily approvals digest, handed over once a day by the board; null when not due or empty. */
   digest(): Promise<string | null>;
-  /** The board's answer: the record after the decision, or why it refused. */
-  decide(body: { id?: string; task?: string; decision: "approve" | "reject"; via: "telegram" }): Promise<{ ok: true; sentence: string; state: string } | { ok: false; reason: string }>;
+  /** Graded tasks escalated to the owner (3 rejected versions, or the grader couldn't judge), each line handed over once. */
+  escalations(): Promise<string[]>;
+  /** The board's answer: the record after the decision (for a batch, all of them, or nothing), or why it refused. */
+  decide(body: { id?: string; task?: string; batch?: string; decision: "approve" | "reject"; via: "telegram" }): Promise<{ ok: true; sentence: string; state: string } | { ok: false; reason: string }>;
+  /** Stores a list of pending cards as about to be shown (id and digest each); its id goes on the list's buttons. */
+  batch(items: { id: string; digest: string }[]): Promise<{ batch: string; approvals: { id: string; identifier: string; sentence: string }[] }>;
 }
 
 export function boardClient(url: string, token: string, decideKey: string): Board {
@@ -65,9 +71,21 @@ export function boardClient(url: string, token: string, decideKey: string): Boar
       if (r.status !== 200) throw new Error(`board approvals digest → ${r.status}`);
       return typeof r.json.text === "string" ? r.json.text : null;
     },
+    escalations: async () => {
+      const r = await call("GET", "/internal/owner/grades");
+      if (r.status !== 200) throw new Error(`board grade escalations → ${r.status}`);
+      return Array.isArray(r.json.lines) ? r.json.lines.map(String) : [];
+    },
     decide: async (body) => {
       const r = await call("POST", "/internal/owner/approvals/decide", body);
-      return r.status === 200 ? { ok: true, sentence: String(r.json.sentence ?? ""), state: String(r.json.state ?? "") } : { ok: false, reason: String(r.json.error ?? `the board said ${r.status}`) };
+      if (r.status !== 200) return { ok: false, reason: String(r.json.error ?? `the board said ${r.status}`) };
+      const all = Array.isArray(r.json.approvals) ? (r.json.approvals as { identifier: string; state: string }[]) : undefined;
+      return all ? { ok: true, sentence: `${all.length} requests (${all.map((a) => a.identifier).join(", ")}).`, state: String(all[0]?.state ?? "") } : { ok: true, sentence: String(r.json.sentence ?? ""), state: String(r.json.state ?? "") };
+    },
+    batch: async (items) => {
+      const r = await call("POST", "/internal/owner/approvals/batch", { items });
+      if (r.status !== 200) throw new Error(`board batch → ${r.status}: ${String(r.json.error ?? "").slice(0, 200)}`);
+      return r.json;
     },
   };
 }
@@ -95,12 +113,7 @@ export function cardText(a: PendingApproval): string {
 
 /** Approve and Reject buttons for one record; each press is one-shot and carries the record's id, never a label. */
 export function cardButtons(store: Pick<Store, "setKv">, id: string) {
-  const btn = (text: string, decision: "approve" | "reject") => {
-    const cb = `a${randomBytes(8).toString("hex")}`;
-    store.setKv(`appr:${cb}`, `${id}:${decision}`);
-    return { text, callback_data: cb };
-  };
-  return { inline_keyboard: [[btn("Approve", "approve"), btn("Reject", "reject")]] };
+  return { inline_keyboard: [[button(store, "Approve", id, "approve"), button(store, "Reject", id, "reject")]] };
 }
 
 /** A press of a card button in the owner chat → the record and the decision, used up. null for anything else. */
@@ -128,6 +141,39 @@ export async function sendCards(board: Pick<Board, "pending">, store: Pick<Store
     }
   }
   return sent;
+}
+
+/** The most cards one list decides (the board refuses more). */
+const BATCH_MAX = 10;
+
+/**
+ * Batch approvals: when 2 or more of the cards sent here are still pending and a new one joined them, one more message lists
+ * them (oldest 10) with Approve all / Reject all. The board stores the list as shown (id and digest each) and its buttons
+ * carry only that list's id; it decides all of them or, if any changed since, none. A newer list replaces the older message.
+ */
+export async function sendBatch(board: Pick<Board, "pending" | "batch">, store: Pick<Store, "getKv" | "setKv">, send: (text: string, markup: unknown) => Promise<boolean | number>, edit?: (messageId: number, text: string) => Promise<unknown>): Promise<boolean> {
+  const carded = (await board.pending()).filter((a) => store.getKv(`card:${a.id}`)).slice(0, BATCH_MAX);
+  const last = new Set((store.getKv("batch:last") ?? "").split(",").filter(Boolean));
+  // Only a card new to the list makes a new one: deciding cards one by one never sends another list.
+  if (carded.length < 2 || carded.every((a) => last.has(a.id))) return false;
+  // Tried once per set: a refusal (the batch_approvals setting off) or a failed send isn't retried every tick.
+  store.setKv("batch:last", carded.map((a) => a.id).join(","));
+  const r = await board.batch(carded.map((a) => ({ id: a.id, digest: a.digest })));
+  const n = r.approvals.length;
+  const text = [`🗂 **${n} approvals waiting**: decide them together, or tap each card above.`, ...r.approvals.map((a) => `• ${a.identifier}: ${plain(a.sentence, 200)}`), "All or nothing: if any of them changed or was decided since this list, nothing is decided."].join("\n");
+  const sent = await send(text, { inline_keyboard: [[button(store, `Reject all ${n}`, r.batch, "reject"), button(store, `Approve all ${n}`, r.batch, "approve")]] });
+  if (!sent) return false;
+  const prev = Number(store.getKv("batch:msg"));
+  if (edit && prev) await edit(prev, "Replaced by a newer list below.").catch(() => null);
+  if (typeof sent === "number") store.setKv("batch:msg", String(sent));
+  return true;
+}
+
+/** A one-shot button for a record or a stored list (`A…` or `B…` id): its callback data is random, the id stays here. */
+function button(store: Pick<Store, "setKv">, text: string, id: string, decision: "approve" | "reject") {
+  const cb = `a${randomBytes(8).toString("hex")}`;
+  store.setKv(`appr:${cb}`, `${id}:${decision}`);
+  return { text, callback_data: cb };
 }
 
 /** What the owner is told after a decision. */

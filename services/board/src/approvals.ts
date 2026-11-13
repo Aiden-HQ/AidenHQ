@@ -5,11 +5,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
+import type { Events } from "./events.js";
+import { TIER_RULE, type ReviewCode } from "./reason-codes.js";
 
-export const ACTIONS = ["apply", "push", "pr", "merge", "deploy_app", "app_run"] as const;
+export const ACTIONS = ["apply", "push", "pr", "merge", "deploy_app", "app_run", "raise_cap"] as const;
 export type Action = (typeof ACTIONS)[number];
 /** Applied by the board on the tap; the rest by the runner, which claims approved records on its poll. */
-export const BOARD_ACTIONS: readonly Action[] = ["deploy_app", "app_run"];
+export const BOARD_ACTIONS: readonly Action[] = ["deploy_app", "app_run", "raise_cap"];
 
 // "auto": a Tier 0 audit row: the runner already ran it; never decided, never claimable.
 export type State = "pending" | "approved" | "rejected" | "expired" | "used" | "auto";
@@ -42,13 +44,32 @@ export interface Request {
   tier?: 1 | 2;
   /** Why this tier (the classifier's reason). */
   reason?: string;
+  /** The filer's Paperclip agent id, from the authenticated caller (never request text); none for system filers. */
+  requesterId?: string | null;
+  /** The tier computed on the request's merits (tiers.mjs classify, or the board's own rule) before the autonomy override. */
+  baseTier?: Tier | null;
+  /** The tier's reason code: the classifier's rule (tiers.mjs `rule`, or the board's own), kebab-case; dropped unless it has that shape. */
+  reasonCode?: string | null;
 }
 
-export interface Approval extends Omit<Request, "tier" | "reason"> {
+/** A tier rule as a reason code: kebab-case words only (classifier output, never agent text); anything else is dropped. */
+const ruleCode = (rule: string | null | undefined) => (rule && TIER_RULE.test(rule) ? rule : null);
+
+/** The stable reason for a request whose change is already satisfied: no card is filed, the task gets the evidence. */
+export const ALREADY_APPLIED = "already_applied";
+
+export interface Approval extends Omit<Request, "tier" | "reason" | "requesterId" | "baseTier" | "reasonCode"> {
   tier: Tier;
   reason: string;
+  /** Null on records filed before it was recorded. */
+  requesterId: string | null;
+  baseTier: Tier | null;
   /** The AI reviewer's note: its verdict's reason, or why it escalated. */
   review: string | null;
+  /** The tier rule's code (null on older records). */
+  reasonCode: string | null;
+  /** The reviewer's code (services/shared/reason-codes.ts REVIEW_CODES): reviewer_unsure when it couldn't tell; null before review. */
+  reviewCode: ReviewCode | null;
   id: string;
   state: State;
   decidedBy: string | null;
@@ -130,6 +151,53 @@ export function runCard(r: RunRequest): Pick<Request, "target" | "digest" | "arg
 }
 
 /**
+ * A raise_cap: the model gateway refused a call at a spend cap and asks to raise it (filed by the gateway's own key, the
+ * numbers from its ledger, never an agent's text). `subject` is what the cap is on: the run key (scope run), the Paperclip
+ * task id (task) or the UTC date (day, for `agentId`). Double only: the new cap is derived here, never typed.
+ */
+export const RaiseCapSchema = z
+  .object({
+    scope: z.enum(["run", "task", "day"]),
+    agentId: z.string().min(1).max(80),
+    subject: z.string().regex(/^[\w:.-]{1,128}$/),
+    cap: z.number().positive().max(1000),
+    spent: z.number().min(0).max(100_000),
+  })
+  .strict();
+export type RaiseCap = z.infer<typeof RaiseCapSchema>;
+const usd = (n: number) => `$${n.toFixed(2)}`;
+
+/**
+ * The raise_cap request: always Tier 2 (the owner's tap; no reviewer, no autonomy setting lowers it). Its args are the
+ * checked request plus `to` (twice the cap), which is what the applier sets; the digest covers both. A different cap value
+ * is a new request, and like every record it replaces the open raise_cap on the same task.
+ */
+export function raiseCapRequest(task: { id: string; identifier: string }, r: RaiseCap, agentName: string): Request {
+  const args = { ...r, to: Math.round(r.cap * 200) / 100 };
+  const who = oneLine(agentName, 80) || r.agentId;
+  const on = r.scope === "run" ? "this run" : r.scope === "task" ? `task ${task.identifier}` : `${r.subject} (UTC day)`;
+  return {
+    issueId: task.id,
+    identifier: task.identifier,
+    action: "raise_cap",
+    target: `${who} ${r.scope} cap`,
+    // What the tap applies, not `spent`: a re-file as spend moves keeps the same card (one per scope and cap value).
+    digest: createHash("sha256").update(JSON.stringify({ action: "raise_cap", scope: r.scope, agentId: r.agentId, subject: r.subject, cap: r.cap, to: args.to })).digest("hex").slice(0, 40),
+    args,
+    sentence: `Double ${who}'s ${r.scope} spend cap from ${usd(r.cap)} to ${usd(args.to)}.`,
+    reads: "Nothing new.",
+    changes: `${who} may spend up to ${usd(args.to)} on ${on} (${usd(r.spent)} spent so far); its calls are refused again at the new cap.`,
+    cost: `Up to ${usd(Math.max(0, args.to - r.spent))} more in model calls.`,
+    details: `agent: ${r.agentId}\nscope: ${r.scope}\non: ${r.subject}\ncap: ${usd(r.cap)} → ${usd(args.to)}\nspent: ${usd(r.spent)}`,
+    requestedBy: "the model gateway",
+    tier: 2,
+    baseTier: 2,
+    reason: `a ${r.scope} spend cap is the owner's to raise`,
+    reasonCode: "raise-cap",
+  };
+}
+
+/**
  * The instance's `autonomy` setting, as setup writes it into the grants table: off (everything is the owner's, as
  * before), tier0 (Tier 0 runs; the reviewer only comments) or full (the reviewer decides Tier 1). Read on every use: it is
  * the pause switch. Anything unreadable is off.
@@ -207,6 +275,10 @@ interface Row {
   tier: number;
   reason: string;
   review: string | null;
+  requester_id: string | null;
+  base_tier: number | null;
+  reason_code: string | null;
+  review_code: string | null;
 }
 
 const toApproval = (r: Row): Approval => ({
@@ -235,10 +307,41 @@ const toApproval = (r: Row): Approval => ({
   tier: r.tier as Tier,
   reason: r.reason,
   review: r.review,
+  requesterId: r.requester_id,
+  baseTier: r.base_tier as Tier | null,
+  reasonCode: r.reason_code,
+  reviewCode: r.review_code as ReviewCode | null,
 });
 
+/** One card as the owner saw it in a batch: its id and the digest of exactly what it runs. */
+export type BatchItem = { id: string; digest: string };
+/** The most cards one batch decides (the board's multiselect and a Telegram list). */
+export const BATCH_MAX = 10;
+export const BatchItemsSchema = z
+  .array(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/), digest: z.string().regex(/^[0-9a-f]{40}$/) }).strict())
+  .min(1)
+  .max(BATCH_MAX)
+  .refine((xs) => new Set(xs.map((x) => x.id)).size === xs.length, "each card once");
+export type BatchResult = { ok: true; approvals: Approval[] } | { ok: false; reason: string };
+const BATCH_TTL_MS = 86_400_000;
+
+/**
+ * The instance's `batch_approvals` setting (grants table, read per use): off is the kill switch; every card is then decided
+ * on its own, as before.
+ */
+export function batchesOn(grantsFile = process.env.AIDENHQ_GRANTS_FILE): boolean {
+  try {
+    return JSON.parse(readFileSync(grantsFile ?? "", "utf8"))?.batch_approvals !== "off";
+  } catch {
+    return true;
+  }
+}
+
 export class Approvals {
-  constructor(private db: DatabaseSync) {
+  constructor(
+    private db: DatabaseSync,
+    private events?: Events,
+  ) {
     db.exec(`CREATE TABLE IF NOT EXISTS approvals (
       id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, identifier TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL,
       digest TEXT NOT NULL, args TEXT NOT NULL, sentence TEXT NOT NULL, reads TEXT NOT NULL, changes TEXT NOT NULL,
@@ -250,6 +353,16 @@ export class Approvals {
     if (!columns.includes("tier")) db.exec("ALTER TABLE approvals ADD COLUMN tier INTEGER NOT NULL DEFAULT 2");
     if (!columns.includes("reason")) db.exec("ALTER TABLE approvals ADD COLUMN reason TEXT NOT NULL DEFAULT ''");
     if (!columns.includes("review")) db.exec("ALTER TABLE approvals ADD COLUMN review TEXT");
+    if (!columns.includes("requester_id")) db.exec("ALTER TABLE approvals ADD COLUMN requester_id TEXT");
+    if (!columns.includes("base_tier")) db.exec("ALTER TABLE approvals ADD COLUMN base_tier INTEGER");
+    if (!columns.includes("reason_code")) db.exec("ALTER TABLE approvals ADD COLUMN reason_code TEXT");
+    if (!columns.includes("review_code")) db.exec("ALTER TABLE approvals ADD COLUMN review_code TEXT");
+    // A batch the owner channel showed in Telegram: the exact cards (id and digest), decided at most once within 24h.
+    db.exec("CREATE TABLE IF NOT EXISTS approval_batches (id TEXT PRIMARY KEY, items TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)");
+  }
+
+  private changed(issueId?: string) {
+    this.events?.emit("approvals", issueId);
   }
 
   /** Sticky escalation: once the owner or the reviewer rejected this action on this task, every later request is Tier 2. */
@@ -281,10 +394,12 @@ export class Approvals {
       const sticky = req.tier === 1 && this.rejectedBefore(req.issueId, req.action);
       const tier = sticky ? 2 : (req.tier ?? 2);
       const reason = sticky ? `rejected before on this task, so the owner decides (was: ${req.reason ?? ""})` : (req.reason ?? "");
+      const code = sticky ? "sticky" : ruleCode(req.reasonCode);
       this.db
-        .prepare("INSERT INTO approvals (id, issue_id, identifier, action, target, digest, args, sentence, reads, changes, cost, details, requested_by, state, created_at, expires_at, replaced, tier, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)")
-        .run(id, req.issueId, req.identifier, req.action, req.target, req.digest, JSON.stringify(req.args ?? null), req.sentence, req.reads, req.changes, req.cost, req.details, req.requestedBy, iso, new Date(now.getTime() + TTL_MS).toISOString(), open.length ? 1 : 0, tier, reason.slice(0, 1000));
+        .prepare("INSERT INTO approvals (id, issue_id, identifier, action, target, digest, args, sentence, reads, changes, cost, details, requested_by, state, created_at, expires_at, replaced, tier, reason, requester_id, base_tier, reason_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, req.issueId, req.identifier, req.action, req.target, req.digest, JSON.stringify(req.args ?? null), req.sentence, req.reads, req.changes, req.cost, req.details, req.requestedBy, iso, new Date(now.getTime() + TTL_MS).toISOString(), open.length ? 1 : 0, tier, reason.slice(0, 1000), req.requesterId ?? null, req.baseTier ?? null, code);
       this.db.exec("COMMIT");
+      this.changed(req.issueId);
       return this.get(id)!;
     } catch (err) {
       this.db.exec("ROLLBACK");
@@ -297,16 +412,18 @@ export class Approvals {
     const iso = now.toISOString();
     const id = `A${randomBytes(4).toString("hex")}`;
     this.db
-      .prepare("INSERT INTO approvals (id, issue_id, identifier, action, target, digest, args, sentence, reads, changes, cost, details, requested_by, state, decided_by, decided_at, used_at, outcome, outcome_text, created_at, expires_at, tier, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', ?, ?, ?, ?, ?, ?, ?, 0, ?)")
-      .run(id, req.issueId, req.identifier, req.action, req.target, req.digest, JSON.stringify(req.args ?? null), req.sentence, req.reads, req.changes, req.cost, req.details, req.requestedBy, `auto:${req.rule}`, iso, iso, req.ok ? "applied" : "failed", req.outcomeText.slice(0, 4000), iso, iso, (req.reason ?? "").slice(0, 1000));
+      .prepare("INSERT INTO approvals (id, issue_id, identifier, action, target, digest, args, sentence, reads, changes, cost, details, requested_by, state, decided_by, decided_at, used_at, outcome, outcome_text, created_at, expires_at, tier, reason, requester_id, base_tier, reason_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)")
+      .run(id, req.issueId, req.identifier, req.action, req.target, req.digest, JSON.stringify(req.args ?? null), req.sentence, req.reads, req.changes, req.cost, req.details, req.requestedBy, `auto:${req.rule}`, iso, iso, req.ok ? "applied" : "failed", req.outcomeText.slice(0, 4000), iso, iso, (req.reason ?? "").slice(0, 1000), req.requesterId ?? null, req.baseTier ?? null, ruleCode(req.rule));
+    this.changed(req.issueId);
     return this.get(id)!;
   }
 
   /**
    * The AI reviewer's verdict on a pending Tier 1 record, bound to its digest: approve or reject decides it (decided_by
-   * `reviewer:<model>`); escalate makes it Tier 2 (the owner's), with the note. Anything else is refused.
+   * `reviewer:<model>`); escalate makes it Tier 2 (the owner's), with the note. Anything else is refused. `code` is the
+   * reviewer's reason code (reviewer_unsure: it couldn't tell, so the owner decides).
    */
-  review(id: string, v: { digest: string; decision: "approve" | "reject" | "escalate"; reason: string; model: string }, now = new Date()): { ok: true; approval: Approval } | { ok: false; reason: string } {
+  review(id: string, v: { digest: string; decision: "approve" | "reject" | "escalate"; reason: string; model: string; code?: ReviewCode }, now = new Date()): { ok: true; approval: Approval } | { ok: false; reason: string } {
     const a = this.get(id);
     if (!a) return { ok: false, reason: "no such approval" };
     if (shown(a, now.getTime()) !== "pending") return { ok: false, reason: `this approval is ${shown(a, now.getTime())}` };
@@ -315,9 +432,11 @@ export class Approvals {
     const note = v.reason.slice(0, 2000);
     const r =
       v.decision === "escalate"
-        ? this.db.prepare("UPDATE approvals SET tier = 2, review = ? WHERE id = ? AND state = 'pending' AND tier = 1").run(note, id)
-        : this.db.prepare("UPDATE approvals SET state = ?, decided_by = ?, decided_at = ?, review = ? WHERE id = ? AND state = 'pending' AND tier = 1").run(v.decision === "approve" ? "approved" : "rejected", `reviewer:${v.model}`, now.toISOString(), note, id);
-    return r.changes === 1 ? { ok: true, approval: this.get(id)! } : { ok: false, reason: "it changed meanwhile" };
+        ? this.db.prepare("UPDATE approvals SET tier = 2, review = ?, review_code = ? WHERE id = ? AND state = 'pending' AND tier = 1").run(note, v.code ?? null, id)
+        : this.db.prepare("UPDATE approvals SET state = ?, decided_by = ?, decided_at = ?, review = ?, review_code = ? WHERE id = ? AND state = 'pending' AND tier = 1").run(v.decision === "approve" ? "approved" : "rejected", `reviewer:${v.model}`, now.toISOString(), note, v.code ?? null, id);
+    if (r.changes !== 1) return { ok: false, reason: "it changed meanwhile" };
+    this.changed(a.issueId);
+    return { ok: true, approval: this.get(id)! };
   }
 
   /** Records filed or decided since then, oldest first (the daily digest). */
@@ -330,7 +449,7 @@ export class Approvals {
     return (this.db.prepare("SELECT * FROM approvals ORDER BY CASE WHEN state = 'pending' THEN 0 WHEN state IN ('approved','used') AND outcome IS NULL THEN 1 ELSE 2 END, created_at DESC LIMIT ?").all(limit) as unknown as Row[]).map(toApproval);
   }
 
-  /** Every record on a task, by its id or identifier, newest first (an agent's catch-up reads them). */
+  /** Every record on a task, by its id or identifier, newest first (an agent's heartbeat reads them). */
   on(ref: string): Approval[] {
     return (this.db.prepare("SELECT * FROM approvals WHERE issue_id = ? OR identifier = ? ORDER BY created_at DESC LIMIT 50").all(ref, ref.toUpperCase()) as unknown as Row[]).map(toApproval);
   }
@@ -363,7 +482,64 @@ export class Approvals {
     const a = this.get(id);
     if (!a) return { ok: false, reason: "no such approval" };
     if (r.changes !== 1) return { ok: false, reason: `this approval is ${shown(a, now.getTime())}${a.outcomeText && a.state === "expired" ? ` (${a.outcomeText})` : ""}` };
+    this.changed(a.issueId);
     return { ok: true, approval: a };
+  }
+
+  /** Why a card can't be decided in a batch as shown: gone, no longer pending, the reviewer's, or changed since. */
+  private unbatchable(x: BatchItem, now: number): string | undefined {
+    const a = this.get(x.id);
+    if (!a) return `${x.id} doesn't exist`;
+    const s = shown(a, now);
+    if (s !== "pending") return `${a.identifier} (${a.id}) is ${s}`;
+    if (a.tier !== 2) return `${a.identifier} (${a.id}) is with the AI reviewer`;
+    if (a.digest !== x.digest) return `${a.identifier} (${a.id}) changed since it was shown`;
+    return undefined;
+  }
+
+  /**
+   * The owner's decision on several cards at once, exactly as they were shown (id and digest each). All or nothing: if any
+   * card is no longer pending, not the owner's (Tier 2), or changed since, nothing is decided and the reason names each such
+   * card. Each card stays its own record: claimed, applied and reported on its own. `by` is set by the caller's server code.
+   */
+  decideMany(items: BatchItem[], decision: "approve" | "reject", by: string, now = new Date()): BatchResult {
+    const iso = now.toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const bad = items.map((x) => this.unbatchable(x, now.getTime())).filter((r): r is string => Boolean(r));
+      if (bad.length) {
+        this.db.exec("ROLLBACK");
+        return { ok: false, reason: `nothing was decided: ${bad.join("; ")}` };
+      }
+      const update = this.db.prepare("UPDATE approvals SET state = ?, decided_by = ?, decided_at = ? WHERE id = ? AND state = 'pending' AND tier = 2 AND digest = ? AND expires_at > ?");
+      for (const x of items) if (update.run(decision === "approve" ? "approved" : "rejected", by, iso, x.id, x.digest, iso).changes !== 1) throw new Error(`${x.id} changed while deciding`);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+    const approvals = items.map((x) => this.get(x.id)!);
+    for (const issue of new Set(approvals.map((a) => a.issueId))) this.changed(issue);
+    return { ok: true, approvals };
+  }
+
+  /**
+   * A batch the owner channel is about to show in Telegram: the cards as they are now (each pending, Tier 2, digest as
+   * given), stored under one id its buttons carry (a button holds 64 bytes, not the list). Refused if any card isn't.
+   */
+  snapshot(items: BatchItem[], now = new Date()): { ok: true; id: string; approvals: Approval[] } | { ok: false; reason: string } {
+    const bad = items.map((x) => this.unbatchable(x, now.getTime())).filter((r): r is string => Boolean(r));
+    if (bad.length) return { ok: false, reason: bad.join("; ") };
+    const id = `B${randomBytes(4).toString("hex")}`;
+    this.db.prepare("INSERT INTO approval_batches (id, items, created_at, expires_at) VALUES (?, ?, ?, ?)").run(id, JSON.stringify(items), now.toISOString(), new Date(now.getTime() + BATCH_TTL_MS).toISOString());
+    return { ok: true, id, approvals: items.map((x) => this.get(x.id)!) };
+  }
+
+  /** A stored batch, used up: its cards as shown, or undefined when unknown, already used or past its 24 hours. */
+  takeBatch(id: string, now = new Date()): BatchItem[] | undefined {
+    const iso = now.toISOString();
+    if (this.db.prepare("UPDATE approval_batches SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?").run(iso, id, iso).changes !== 1) return undefined;
+    return JSON.parse((this.db.prepare("SELECT items FROM approval_batches WHERE id = ?").get(id) as { items: string }).items);
   }
 
   /**
@@ -387,13 +563,19 @@ export class Approvals {
   claim(id: string, now = new Date()): (Approval & { nonce: string }) | undefined {
     const nonce = randomBytes(16).toString("hex");
     const r = this.db.prepare("UPDATE approvals SET state = 'used', used_at = ?, claim_nonce = ? WHERE id = ? AND state = 'approved' AND expires_at > ?").run(now.toISOString(), nonce, id, now.toISOString());
-    return r.changes === 1 ? { ...this.get(id)!, nonce } : undefined;
+    if (r.changes !== 1) return undefined;
+    const a = this.get(id)!;
+    this.changed(a.issueId);
+    return { ...a, nonce };
   }
 
   /** The claimer's outcome, once. A repeat of the report is a no-op (the applier retries until the board takes it). */
   finish(id: string, nonce: string, ok: boolean, text: string): boolean {
     const r = this.db.prepare("UPDATE approvals SET outcome = ?, outcome_text = ? WHERE id = ? AND state = 'used' AND outcome IS NULL AND claim_nonce = ?").run(ok ? "applied" : "failed", text.slice(0, 4000), id, nonce);
-    if (r.changes === 1) return true;
+    if (r.changes === 1) {
+      this.changed(this.get(id)?.issueId);
+      return true;
+    }
     const a = this.db.prepare("SELECT outcome, claim_nonce FROM approvals WHERE id = ?").get(id) as { outcome: string | null; claim_nonce: string | null } | undefined;
     return a?.outcome != null && a.claim_nonce === nonce;
   }

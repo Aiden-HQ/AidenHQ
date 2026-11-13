@@ -29,6 +29,7 @@ config/modules.json
 config/grants/*.json
 .claude/worktrees/
 config/computers.json
+config/gateway.json
 config/gate.json
 config/cloudflared.yml
 

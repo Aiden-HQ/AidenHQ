@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
-import { Tokens, admit, dockerRunArgs, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, replyRefusal, REPLY_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, usageTap, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
+import { Tokens, admit, dockerRunArgs, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, replyRefusal, REPLY_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
 
 test("only execs carrying a CODEX_HOME are wrapped", () => {
   assert.deepEqual(wrapExec("ls", ["-l"], {}), ["ls", ["-l"]]);
@@ -21,6 +21,8 @@ test("a routine's model and effort replace the agent's in a box's codex exec, be
   const env = { AIDENHQ_MODEL: "routine-m", AIDENHQ_REASONING_EFFORT: "low" };
   assert.deepEqual(routineArgs("codex", args, env), ["exec", "--model", "routine-m", "-c", 'model_reasoning_effort="low"', "--json", "-c", "x=1", "-"]);
   assert.deepEqual(routineArgs("codex", args, {}), args);
+  // Paperclip's own -c pairs come before exec and stay where they are.
+  assert.deepEqual(routineArgs("codex", ["-c", "a=1", ...args], env), ["-c", "a=1", "exec", "--model", "routine-m", "-c", 'model_reasoning_effort="low"', "--json", "-c", "x=1", "-"]);
   assert.deepEqual(routineArgs("sh", args, env), args);
   assert.ok(!("AIDENHQ_MODEL" in execEnv(env, {})));
 });
@@ -29,7 +31,13 @@ test("a run token names its agent until the run ends; a new run gets a new one",
   const t = new Tokens();
   const a = t.issue("box1", "agent-1");
   assert.match(a, /^ahqc_[A-Za-z0-9_-]{43}$/);
-  assert.deepEqual(t.whoami(a), { agentId: "agent-1", container: "box1" });
+  assert.deepEqual(t.whoami(a), { agentId: "agent-1", container: "box1", runId: null, issueId: null });
+  // The first exec from Paperclip binds the run and task (what the model gateway caps by); it survives a reload.
+  assert.equal(t.bind("box1", { runId: "run-1", issueId: "iss-1" }), true);
+  assert.equal(t.bind("box1", { runId: "run-1", issueId: "iss-1" }), false);
+  const reloaded = new Tokens();
+  reloaded.load(t.dump());
+  assert.deepEqual(reloaded.whoami(a), { agentId: "agent-1", container: "box1", runId: "run-1", issueId: "iss-1" });
   const b = t.issue("box1", "agent-1");
   assert.equal(t.whoami(a), undefined);
   assert.equal(t.current("box1"), b);
@@ -138,7 +146,7 @@ test("repo-checkout reads this run's token from the launcher's file, never a sta
   const stale = t.issue("box1", "agent-1");
   const current = t.issue("box1", "agent-1");
   assert.equal(t.whoami(stale), undefined);
-  assert.deepEqual(t.whoami(current), { agentId: "agent-1", container: "box1" });
+  assert.equal(t.whoami(current)?.agentId, "agent-1");
 
   const dir = mkdtempSync(join(tmpdir(), "repo-checkout-"));
   const tokenFile = join(dir, "run-token");
@@ -170,15 +178,4 @@ test("the launcher hands the box its token on stdin and clears it at the end of 
   assert.match(WRITE_RUN_TOKEN_SCRIPT, /chmod 600/);
   assert.match(CLEAR_RUN_TOKEN_SCRIPT, /rm -f \/dev\/shm\/aidenhq\/run-token/);
   for (const s of [WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT]) assert.doesNotMatch(s, /ahqc_/);
-});
-
-test("the gateway reads OpenRouter's billed cost from a streamed answer, split across chunks", () => {
-  const done = { type: "response.completed", response: { id: "gen-1", model: "deepseek/deepseek-v4.1-flash-1017", usage: { input_tokens: 17000, input_tokens_details: { cached_tokens: 3584 }, output_tokens: 44, output_tokens_details: { reasoning_tokens: 1 }, cost: 0.002369 } } };
-  const sse = `event: response.created\ndata: {"type":"response.created","response":{"id":"gen-1"}}\n\nevent: response.completed\ndata: ${JSON.stringify(done)}\n\n`;
-  const tap = usageTap();
-  for (let i = 0; i < sse.length; i += 37) tap.feed(sse.slice(i, i + 37));
-  assert.deepEqual(tap.done(), { key: "gen-1", model: "deepseek/deepseek-v4.1-flash-1017", input: 13416, cached: 3584, output: 44, costUsd: 0.002369 });
-  const none = usageTap();
-  none.feed('data: {"type":"response.failed"}\n');
-  assert.equal(none.done(), undefined);
 });

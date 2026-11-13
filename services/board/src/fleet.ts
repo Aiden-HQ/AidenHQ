@@ -4,7 +4,16 @@ import { z } from "zod";
 import { grantsTable, type Grant } from "./agent-auth.js";
 import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./paperclip.js";
 import type { Store } from "./store.js";
-import { autonomy, runCard, touchesMigrations, type RunRequest } from "./approvals.js";
+import { ALREADY_APPLIED, autonomy, runCard, touchesMigrations, type RunRequest } from "./approvals.js";
+
+/** The duplicate-card guard's kill switch (instance setting `dup_guard`, in the grants table next to `autonomy`). Read fresh. */
+function dupGuardOn(grantsFile = process.env.AIDENHQ_GRANTS_FILE): boolean {
+  try {
+    return JSON.parse(readFileSync(grantsFile ?? "", "utf8"))?.dup_guard !== "off";
+  } catch {
+    return true;
+  }
+}
 
 export class Refused extends Error {}
 
@@ -223,10 +232,21 @@ async function requestDeploy(pc: Paperclip, caller: Agent, a: z.infer<typeof Con
   // The reviewer's (Tier 1), unless it touches a migration or schema (fail closed) or is too large to read whole (Tier 2).
   // Computed here from apps-mcp's diff; nothing an agent sends sets it.
   const diff = String(c.diff ?? "");
-  const [tier, reason] = autonomy() === "off" ? [2 as const, "autonomy is off"] : c.truncated || !diff ? [2 as const, "the change is too large (or missing) to review"] : touchesMigrations(diff) ? [2 as const, "it touches a migration or schema file"] : [1 as const, "a stateful deploy with no migration or schema change"];
+  // The duplicate-card guard: the app already runs this commit, healthy. No card; the evidence goes back to the agent (a
+  // board-written task comment would be authored as the owner). A status read that fails files the card as before.
+  if (dupGuardOn()) {
+    const running = await appsApi<{ name: string; sha?: string; healthy?: boolean }[]>("/internal/status").then((apps) => apps.find((x) => x.name === app), () => undefined);
+    if (running?.sha === c.sha && running.healthy) return { ok: true, reason: ALREADY_APPLIED, done: `no card filed: ${app} already runs ${c.sha.slice(0, 12)} and is healthy (${ALREADY_APPLIED}). Nothing to deploy; say so in one line` };
+  }
+  // The tier on its merits (the base tier, for batching), then the autonomy override.
+  const [baseTier, baseReason, baseCode] = c.truncated || !diff ? [2 as const, "the change is too large (or missing) to review", "deploy-unreviewable"] : touchesMigrations(diff) ? [2 as const, "it touches a migration or schema file", "deploy-migration"] : [1 as const, "a stateful deploy with no migration or schema change", "deploy-stateful"];
+  const [tier, reason, reasonCode] = autonomy() === "off" ? [2 as const, "autonomy is off", "autonomy-off"] : [baseTier, baseReason, baseCode];
   const rec = store.approvals.request({
     tier,
     reason,
+    reasonCode,
+    requesterId: caller.id,
+    baseTier,
     issueId: task.id,
     identifier: task.identifier,
     action: "deploy_app",
@@ -262,7 +282,7 @@ export async function requestRun(pc: Paperclip, r: RunRequest, store: Pick<Store
   if (["done", "cancelled"].includes(task.status)) throw new Refused("refused: that task is closed");
   const agent = (await pc.agents()).find((a) => a.id === r.agent_id);
   // An app_run is the reviewer's (Tier 1) while autonomy is on.
-  const rec = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: "app_run", requestedBy: agent ? personaOf(agent) : "an agent", tier: autonomy() === "off" ? 2 : 1, reason: "a one-off script in an app the agent owns", ...runCard(r) });
+  const rec = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: "app_run", requestedBy: agent ? personaOf(agent) : "an agent", tier: autonomy() === "off" ? 2 : 1, reason: "a one-off script in an app the agent owns", reasonCode: autonomy() === "off" ? "autonomy-off" : "app-run", requesterId: r.agent_id, baseTier: 1, ...runCard(r) });
   return { ok: true, approval: rec.id, done: `asked ${rec.tier === 1 ? "the AI reviewer" : "the owner"} to approve running \`npm run ${r.script}\` in ${r.name} (approval ${rec.id}, on the board's Approvals${rec.tier === 1 ? "" : " and in Telegram"}). It runs once, when approved; the outcome and output land on ${task.identifier}. Don't say it ran until then` };
 }
 

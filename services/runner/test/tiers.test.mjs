@@ -31,6 +31,8 @@ test("push and draft pr", () => {
   assert.equal(tierOf(pub("pr", { repo: "acme/bor" }, { branches: [branch(), branch({ repo: "acme/bor" }), branch({ branch: "main" })] })), 2, "mixed: the highest part");
 });
 
+test("raise_cap is always the owner's", () => assert.equal(tierOf(classify("raise_cap", { ...base, sticky: false })), 2));
+
 test("product repo PRs: platform only, gate files are the owner's", () => {
   assert.equal(tierOf(pub("pr", { repo: base.productRepo }, { requester: { platform: true } })), 1);
   assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["services/runner/src/merges.mjs"] }, { requester: { platform: true } })), 2);
@@ -68,6 +70,9 @@ test("apply: agents", () => {
   assert.equal(tierOf(apply(["agents/architect/AGENTS.md"], {}, {})), 2, "a role agent's handbook by the agents/<key>/ path");
   assert.equal(tierOf(apply(["agents/ghost/AGENTS.md"], {}, {})), 2, "a new handbook without its trial agent.yaml in the change");
   assert.equal(tierOf(apply(["agents/assistant.md"], {}, {})), 1, "module agent without a role");
+  assert.equal(tierOf(apply(["agents/assistant/memory.md"], {}, {})), 1, "memory of an agent without a role goes to the reviewer");
+  assert.equal(tierOf(apply(["agents/architect/memory.md"], {}, {})), 2, "memory of a role agent is the owner's");
+  assert.equal(tierOf(apply(["agents/assistant/memory.md", "agents/assistant/MEMORY.md"], {}, {})), 2, "an unrecognised file next to it");
   assert.equal(tierOf(apply(["agents/chaser/agent.yaml"], { "agents/chaser/agent.yaml": trial }, { "agents/chaser/agent.yaml": grad })), 1, "graduation keeping its tools");
   const wider = def({ name: "Chaser", connections: { github: "write", slack_live: ["slack_post"] } });
   assert.equal(tierOf(apply(["agents/chaser/agent.yaml"], { "agents/chaser/agent.yaml": trial }, { "agents/chaser/agent.yaml": wider })), 2, "graduation with new grants");
@@ -80,9 +85,13 @@ test("apply: instance settings, pin and apps", () => {
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst().replace("[C1]", "[C1, C2]") })), 1, "slack_post_channels addition");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst({ github_orgs: [] }) }, { "instance.yaml": inst({ github_orgs: ["evil"] }) })), 2, "github_orgs");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({ autonomy: "full" }) })), 2, "any other setting");
+  assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({ spend_caps: "off" }) })), 2, "the spend caps' kill switch is the owner's");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst().replace(PIN_A, PIN_B) }, { pin: { forward: true } })), 1, "pin forward");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({}, "overrides:\n  routines:\n    daily-brief:\n      schedules: []\n") })), 1, "routine schedule");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({}, "overrides:\n  agents:\n    assistant:\n      model: x\n") })), 1, "model change");
+  assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({}, "overrides:\n  agents:\n    assistant:\n      caps: { task_usd: 50 }\n") })), 2, "an agent's spend caps are the owner's");
+  const graded = (g) => def({ name: "Chaser", connections: { github: "read" }, ...g });
+  assert.equal(tierOf(apply(["agents/chaser/agent.yaml"], { "agents/chaser/agent.yaml": graded({}) }, { "agents/chaser/agent.yaml": graded({ graded: false }) })), 2, "turning grading off is the owner's");
   const apps = (a) => `apps:\n${a.map((x) => `  - ${JSON.stringify(x)}`).join("\n")}\n`;
   const app = { name: "roadmap", repo: "acme-agents/roadmap", owner: "a", description: "d" };
   assert.equal(tierOf(apply(["apps.yaml"], { "apps.yaml": apps([]) }, { "apps.yaml": apps([app]) })), 1, "non-sensitive app");

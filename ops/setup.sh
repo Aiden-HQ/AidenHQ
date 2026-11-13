@@ -14,7 +14,8 @@
 # OPENROUTER_KEY, GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (the company OAuth app), TS_AUTHKEY (tailnet join key),
 # TS_APPS_AUTHKEY (the apps' own tailnet node: a reusable, tagged, pre-authorized key; docs/setup.md),
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
-# (with --restore: the old VM's paperclip_owner_password; otherwise one is generated).
+# (with --restore: the old VM's paperclip_owner_password; otherwise one is generated), GITHUB_AGENTS_ORG (the GitHub
+# org for agent-built repos, which must exist and be owned by you; SETUP.md step 8). An unquoted value ends at ' #'.
 # What it makes: see SETUP.md. It holds secrets: delete person.env when setup is done.
 set -euo pipefail
 
@@ -38,8 +39,10 @@ die() { printf 'setup: %s\n' "$*" >&2; exit 1; }
 while IFS= read -r line || [ -n "$line" ]; do
   [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
   [[ "$line" =~ ^[[:space:]]*([A-Z][A-Z0-9_]*)=(.*)$ ]] || die "$CONFIG: not KEY=value: ${line%%=*}"
-  v="${BASH_REMATCH[2]}"; v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
-  printf -v "CFG_${BASH_REMATCH[1]}" '%s' "$v"
+  k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"; v="${v#"${v%%[![:space:]]*}"}"   # leading blanks
+  if [[ "$v" =~ ^\"([^\"]*)\" ]] || [[ "$v" =~ ^\'([^\']*)\' ]]; then v="${BASH_REMATCH[1]}"   # quoted: keeps any '#'
+  else v="${v%%[[:space:]]#*}"; v="${v%"${v##*[![:space:]]}"}"; fi   # unquoted: drop ' # comment', trim
+  printf -v "CFG_$k" '%s' "$v"
 done < "$CONFIG"
 cfg() { local n="CFG_$1"; printf '%s' "${!n:-${2:-}}"; }
 
@@ -48,6 +51,8 @@ H="/home/$U"
 OWNER_NAME="$(cfg OWNER_NAME)"; OWNER_EMAIL="$(cfg OWNER_EMAIL)"; TIMEZONE="$(cfg TIMEZONE)"
 [ -n "$OWNER_NAME" ] && [ -n "$OWNER_EMAIL" ] && [ -n "$TIMEZONE" ] || die "OWNER_NAME, OWNER_EMAIL and TIMEZONE are required"
 [[ "$U" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "AIDENHQ_USER must be a plain user name"
+AGENTS_ORG="$(cfg GITHUB_AGENTS_ORG)"
+[[ -z "$AGENTS_ORG" || "$AGENTS_ORG" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "GITHUB_AGENTS_ORG must be a GitHub organization name"
 COMPANY="$(cfg COMPANY_NAME work)"; MODULES="$(cfg MODULES google)"; LIMIT="$(cfg OPENROUTER_LIMIT_USD 50)"
 SECRETS="$H/.config/aidenhq"; INST="$H/aidenhq-instance"; REMOTE="$H/aidenhq-instance.git"; ENVF="$REPO/.env"
 
@@ -81,7 +86,7 @@ set_env() { # KEY VALUE: sets KEY in .env (replacing a commented or old line, el
   if [ "$DRY" = 1 ]; then echo "  + .env: $1=$( [[ "$1" =~ KEY|SECRET|PASSWORD|TOKEN ]] && echo '…' || echo "$2")"; return 0; fi
   as_user K="$1" V="$2" F="$ENVF" sh -c 'umask 077; awk -v k="$K" -v v="$V" '"'"'BEGIN{d=0} $0 ~ "^#? *" k "=" && !d {print k "=" v; d=1; next} {print} END{if(!d) print k "=" v}'"'"' "$F" > "$F.tmp" && mv -f "$F.tmp" "$F"'
 }
-json() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
+json() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }   # a JSON string, without node (a dry run has none)
 read_secret() { [ -s "$SECRETS/$1" ] && cat "$SECRETS/$1" || true; }
 board() { # METHOD PATH [JSON]: the board's own (loopback) listener, with the operator's key (setup link, welcome chat)
   # The key goes in on stdin (-H @-), never in argv where other processes could read it.
@@ -126,10 +131,21 @@ say "System packages, Docker, gVisor, Tailscale"
 run env AIDENHQ_USER="$U" bash "$REPO/ops/vm/setup.sh"
 # The runner's engines on the host: the Platform Engineer is opencode inside Codex's sandbox (engines.mjs).
 command -v codex >/dev/null || run npm install -g --silent @openai/codex@0.166.0
-command -v opencode >/dev/null || run npm install -g --silent opencode-ai
+command -v opencode >/dev/null || run npm install -g --silent opencode-ai@1.19.5
+# The machine step just added the user to the docker group, but their systemd user manager (kept alive by linger, so
+# logging out doesn't restart it) still has the old groups: the user units started below couldn't reach Docker.
+if [ "$DRY" = 0 ]; then
+  mpid="$(systemctl show -p MainPID --value "user@$(id -u "$U").service" 2>/dev/null || true)"
+  if [ -n "$mpid" ] && [ "$mpid" != 0 ] && ! awk '/^Groups:/' "/proc/$mpid/status" | grep -qw "$(getent group docker | cut -d: -f3)"; then
+    say "Restarting $U's systemd user manager (it predates the docker group)"
+    systemctl restart "user@$(id -u "$U").service"
+  fi
+fi
 if [ -z "$BOARD_HOST" ]; then
   TS_AUTHKEY="$(cfg TS_AUTHKEY)"
-  if [ "$DRY" = 1 ]; then BOARD_HOST="<this-vm>.<tailnet>.ts.net"; echo "  + tailscale up (with TS_AUTHKEY)"
+  if [ "$DRY" = 1 ]; then BOARD_HOST="<this-vm>.<tailnet>.ts.net"
+    if [ -n "$TS_AUTHKEY" ]; then echo "  + tailscale up (with TS_AUTHKEY)"
+    else echo "  ! would fail: not on the tailnet; set TS_AUTHKEY in $CONFIG, or run 'sudo tailscale up' first"; fi
   elif [ -n "$TS_AUTHKEY" ]; then
     keyfile="$(umask 077; mktemp /run/aidenhq-ts-key.XXXXXX)"   # root-only, created 0600 before the key is written
     trap 'rm -f "$keyfile"' EXIT
@@ -140,6 +156,8 @@ if [ -z "$BOARD_HOST" ]; then
   else die "this VM isn't on the tailnet: set TS_AUTHKEY in $CONFIG, or run 'sudo tailscale up', then run setup again"; fi
 fi
 say "Board address: https://$BOARD_HOST"
+# The machine step installs node; everything after it needs it.
+[ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
 
 # ---------------------------------------------------------------- 2. the product (its main is what may run here)
 # Reads of the user's repo run as the user too: git refuses a repository owned by someone else ("dubious ownership").
@@ -217,6 +235,7 @@ settings:
   timezone: $(json "$TIMEZONE")
   company_name: $(json "$COMPANY")
   channels: [web]
+${AGENTS_ORG:+  github_agents_org: $AGENTS_ORG}
 EOF
   echo "apps: []" | write_user_file "$INST/apps.yaml" 644
   as_user mkdir -p "$INST/agents"
@@ -237,12 +256,15 @@ if [ -z "$(read_secret openrouter_key)" ]; then
   elif [ -n "$(cfg OPENROUTER_MANAGEMENT_KEY)" ]; then
     say "OpenRouter key: a new one for $U, limit \$$LIMIT a month"
     as_user OPENROUTER_MANAGEMENT_KEY="$(cfg OPENROUTER_MANAGEMENT_KEY)" AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.mjs" create "aidenhq-$U" "$LIMIT"
+  elif [ "$DRY" = 1 ]; then echo "  ! would fail: set OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_KEY) in $CONFIG"
   else die "set OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_KEY) in $CONFIG"; fi
 fi
+# Fail now on a rejected key, not after an apply that waits minutes per agent. (A dry run only says what it would check.)
+if [ "$DRY" = 1 ]; then echo "  + check the OpenRouter key against openrouter.ai (GET /api/v1/key); stop if it is rejected"
+else as_user AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.mjs" check || die "the OpenRouter key was rejected (see above)"; fi
 if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && ! grep -q '"client_id"' "$SECRETS/google_oauth.json" 2>/dev/null; then
   say "Google: the company OAuth app behind Connect"
-  GCI="$(cfg GOOGLE_CLIENT_ID)" GCS="$(cfg GOOGLE_CLIENT_SECRET)" node -e \
-    'process.stdout.write(JSON.stringify({ client_id: process.env.GCI, client_secret: process.env.GCS, accounts: {} }, null, 2))' \
+  printf '{\n  "client_id": %s,\n  "client_secret": %s,\n  "accounts": {}\n}' "$(json "$(cfg GOOGLE_CLIENT_ID)")" "$(json "$(cfg GOOGLE_CLIENT_SECRET)")" \
     | write_user_file "$SECRETS/google_oauth.json" 600
 fi
 if [ -n "$(cfg TS_APPS_AUTHKEY)" ] && [ -z "$(read_secret tailscale_apps_authkey)" ]; then
@@ -276,12 +298,13 @@ else
   as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --force-recreate board"
 fi
 run tailscale serve --bg --https=443 http://127.0.0.1:3121
-say "Runner and run pruning (user units)"
+say "Runner, model gateway and run pruning (user units)"
 as_user mkdir -p "$H/.config/systemd/user"
-as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$H/.config/systemd/user/"
+as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-gateway.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$H/.config/systemd/user/"
 as_user systemctl --user daemon-reload
 # aidenhq-computers: the agent-computer launcher (services/computer); idle until an agent has an image.
-as_user systemctl --user enable --now aidenhq-runner aidenhq-computers prune-runs.timer
+# aidenhq-gateway: every model call (services/gateway); the only holder of the OpenRouter key.
+as_user systemctl --user enable --now aidenhq-gateway aidenhq-runner aidenhq-computers prune-runs.timer
 
 # ---------------------------------------------------------------- 8. the first ten minutes
 marker="$REPO/data/board/welcome-sent"

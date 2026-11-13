@@ -5,6 +5,11 @@ settings:
   # threshold trips or recovers (services/board/src/fleet-ops.ts).
   fleet_ops_interval_minutes:
     default: 10
+  # Health flags (missed fires, failing routines, silent runs, stuck grading) always show. "on" = the detector also pauses a
+  # routine after 3 hard failures in a row (the owner resumes it); "off" = the kill switch: flags only.
+  health_autopause:
+    default: "on"
+    values: ["on", "off"]
 agents:
   fleet-ops:
     adapter: codex_local
@@ -19,7 +24,7 @@ agents:
       # task_delegate: runner Engineers only (they take tasks from any agent; it has no reports): product and instance fixes
       # through the Platform Engineer. task_create with assignee: app fixes to an app's owner, rule proposals to the Platform
       # Engineer. Product bugs go on the "Fleet issues" task and into the digest.
-      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team, task_create, task_comment, task_delegate, task_handoff, task_set_status, task_finish, fleet_status, fleet_catalog ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team, task_create, task_comment, task_delegate, task_handoff, task_set_status, task_finish, fleet_status, fleet_catalog, fanout_map ]
     roles: [ fleet-read ]
 routines:
   fleet-ops-check:
@@ -42,6 +47,14 @@ routines:
     # it needs the codex-model launcher, which fails Paperclip 2026.1106's harness verification (the agent stays paused).
     schedules:
       - { cron: "45 20 * * *", timezone: "${settings.timezone}", label: "evening" }
+  fleet-ops-weekly:
+    title: "Fleet Ops: weekly review"
+    agent: fleet-ops
+    description: |
+      Today is {{date}}. Follow "Weekly review" in your instructions, then close this task with one line.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "0 9 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
 compose: compose.yaml
 # Written by setup once the routine's webhook exists; empty until then (the detector stays off while they're empty).
 optional_secrets:

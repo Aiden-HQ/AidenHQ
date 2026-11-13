@@ -52,6 +52,7 @@ describe("files on the board", () => {
     issue: async (ref: string) => ([issue, other].find((i) => i.id === ref || i.identifier === ref) ?? Promise.reject(new Error("404"))),
     comments: async () => [],
     liveRuns: async () => [],
+    recentRuns: async () => [],
     children: async () => [],
     attachments: async (id: string) => files.filter((f) => f.issueId === id),
     addAttachment: async (issueId: string, name: string, type: string, data: Buffer) => {

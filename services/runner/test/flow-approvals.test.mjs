@@ -60,6 +60,8 @@ describe("flow-approvals", () => {
       assert.equal(call.code, 0, call.out);
       assert.match(call.out, /Waiting for Dana's approval/);
       const card = t.paperclip.decide("push", "rejected");
+      // Autonomy is off here, yet the card carries classify()'s tier on its merits (wave 3: batch approvals).
+      assert.ok([0, 1, 2].includes(card.baseTier), `base tier stamped: ${card.baseTier}`);
       await idle();
       assert.equal(githubTip(), tip, "nothing pushed");
       assert.equal(t.paperclip.approvals.get(card.id).state, "rejected", "never claimed");
@@ -97,6 +99,34 @@ describe("flow-approvals", () => {
       t.paperclip.decide("push", "approved");
       await waitFor("the result", () => partComments().slice(n).some((c) => /didn't make/.test(c)));
       assert.equal(githubTip(), theirs, "their commit is still there");
+    });
+
+    it("never errors or asks for a repository along the way", () => t.noErrors());
+  });
+
+  // End to end (wave 3, item 4): a change that already landed on main by another route gets evidence, not a second card.
+  describe("the duplicate-card guard, end to end", () => {
+    const { waitFor, partComments, toolRuns, step, turn, githubTip } = t;
+
+    it("a push whose files are already identical on main files no card and says so once on the task", async () => {
+      // The agent's branch first; then the same file lands on main by another route.
+      step("third");
+      await turn("Add the third change.");
+      const other = join(t.dir, "by-hand");
+      git(t.dir, "clone", "-q", join(t.dir, "github/acme/app.git"), other);
+      writeFileSync(join(other, "third.txt"), "third\n");
+      git(other, "add", "third.txt");
+      git(other, "commit", "-qm", "feat: third, landed by hand");
+      git(other, "push", "-q", "origin", "HEAD:main");
+      const cards = t.paperclip.approvals.size;
+      step("none\naidenhq push acme/app feat/third");
+      await turn("Go ahead and push it.");
+      const call = toolRuns().at(-1);
+      assert.equal(call.code, 0, call.out);
+      assert.match(call.out, /Already satisfied on main.*already_applied.*third\.txt/);
+      assert.equal(t.paperclip.approvals.size, cards, "no card filed");
+      assert.throws(() => githubTip("feat/third"), "nothing pushed");
+      await waitFor("the evidence comment", () => partComments().some((c) => /Already satisfied on main.*already_applied/.test(c)));
     });
 
     it("never errors or asks for a repository along the way", () => t.noErrors());

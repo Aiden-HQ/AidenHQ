@@ -33,6 +33,8 @@ else
   KEY=host
   echo "WARNING: no usable TPM2. The vault password is sealed with a host key stored on this disk." >&2
 fi
+TPM_WARN=""
+[ "$KEY" = tpm2 ] || TPM_WARN="WARNING: NO TPM2. The vault is sealed with a host key on this disk: it protects a copied vault, not a stolen disk. Give the VM a vTPM (ops/vm/provision.sh adds one) and redo this step to fix it."
 
 install -d -m 0700 "$TMP"
 trap 'rm -rf "$TMP"' EXIT
@@ -56,7 +58,7 @@ runuser -u "$U" -- gocryptfs -init -q -passfile "$TMP/pass.$U" "$CIPHER" || die 
 # Swap the plaintext dir for the (empty) mountpoint. gocryptfs refuses a non-empty mountpoint, so a stray write while
 # locked fails loudly; Docker requires the vault and the runner waits for it.
 systemctl stop docker.socket docker.service
-user_systemctl stop aidenhq-runner || true
+user_systemctl stop aidenhq-runner 2>/dev/null || true   # not installed yet on a fresh setup
 as_user mv "$VIEW" "$PLAIN"
 as_user install -d -m 0700 "$VIEW"
 
@@ -77,7 +79,8 @@ if ! diff <(cd "$PLAIN" && find . -type f -print0 | sort -z | xargs -0 sha256sum
 fi
 
 systemctl start docker.service
-user_systemctl start aidenhq-runner || true
+user_systemctl start aidenhq-runner 2>/dev/null || true
 echo "vault ready: $(runuser -u "$U" -- find "$VIEW" -type f | wc -l) files encrypted; key: $KEY"
 echo "recovery key written to $RECOVERY (root only). Copy it to your password manager, then: sudo shred -u $RECOVERY"
 echo "plaintext kept at $PLAIN until the reboot and recovery tests pass (ops/vault/README.md)"
+[ -z "$TPM_WARN" ] || echo "$TPM_WARN" >&2

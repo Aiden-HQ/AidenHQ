@@ -10,8 +10,42 @@ import { readFileSync, statSync, type Stats } from "node:fs";
 import type { IncomingMessage } from "node:http";
 
 export interface Caller { id: string; key: string; name: string; roles: string[]; tools: Record<string, string[]> }
-export interface Grant { key: string; roles?: string[]; tools?: Record<string, string[]> }
-class AuthError extends Error {}
+/**
+ * One agent's grants-table entry. `models`, `caps` and `graded` (scripts/modules.mjs grantEntry) are for the model gateway
+ * and the grader: the model ids it may call, its spend caps in USD, and whether tasks delegated to it are graded by default.
+ */
+export interface Grant {
+  key: string;
+  roles?: string[];
+  tools?: Record<string, string[]>;
+  models?: string[];
+  caps?: { run_usd: number; task_usd: number; day_usd: number };
+  graded?: boolean;
+  /** The agent's config revision (setup stamps it); the model gateway puts it on each run's ledger rows. */
+  rev?: string;
+}
+
+/** Who a model call is for: derived from the credential and the route, never from what the caller says. */
+export type CallKind = "agent" | "advisor" | "grader" | "reviewer" | "fanout" | "source";
+export interface RunIdentity {
+  agentId: string | null;
+  /** runKey(credential): a run cap's key. A computer's run token is per box session (launcher acquire/resume), so there it is the session. */
+  runKey: string;
+  issueId: string | null;
+  rev: string | null;
+  kind: CallKind;
+}
+/** The run key of a per-run credential (Paperclip run JWT, runner job token, computer run token): its sha256, hex. */
+export const runKey = (credential: string) => createHash("sha256").update(credential).digest("hex");
+/** A refusal, with its reason code (services/shared/reason-codes.ts GRANT_CODES): the caller is unknown unless said otherwise. */
+type GrantCode = "denied_not_granted" | "denied_role" | "denied_no_grants" | "denied_unknown_caller";
+class AuthError extends Error {
+  code: GrantCode;
+  constructor(message: string, code: GrantCode = "denied_unknown_caller") {
+    super(message);
+    this.code = code;
+  }
+}
 
 /** The grants table, {agents: {<Paperclip agent id>: {key, roles, tools}}}, re-read whenever the file changes. */
 export function grantsTable(file: string | undefined): () => Record<string, Grant> {
@@ -57,7 +91,7 @@ function makeWhoami(paperclipUrl: string | undefined, table: () => Record<string
       if (!res.ok) throw new AuthError(`run token rejected by the computer launcher (${res.status})`);
       const id = String(((await res.json()) as { agentId?: unknown }).agentId ?? "");
       const g = id ? table()[id] : undefined;
-      if (!g) throw new AuthError(`${id || "this computer"} has no grants`);
+      if (!g) throw new AuthError(`${id || "this computer"} has no grants`, "denied_no_grants");
       return { id, key: g.key, name: g.key, roles: g.roles ?? [], tools: g.tools ?? {} };
     }
     if (!paperclipUrl) throw new AuthError("this service doesn't know where Paperclip is (PAPERCLIP_URL)");
@@ -74,7 +108,7 @@ function makeWhoami(paperclipUrl: string | undefined, table: () => Record<string
       ids.set(h, hit);
     }
     const g = table()[hit.id];
-    if (!g) throw new AuthError(`${hit.name || hit.id} has no grants`);
+    if (!g) throw new AuthError(`${hit.name || hit.id} has no grants`, "denied_no_grants");
     return { id: hit.id, key: g.key, name: hit.name, roles: g.roles ?? [], tools: g.tools ?? {} };
   };
 }
@@ -107,6 +141,7 @@ export function makeAuthorize(opts: AuthorizeOptions = {}) {
     const tools = msgs.filter((m) => m?.method === "tools/call").map((m) => String(m.params?.name));
     const key = String(req.headers["x-agent-key"] ?? "");
     let reason: string;
+    let code: GrantCode = "denied_not_granted";
     try {
       if (!o.connection) throw new AuthError("this service doesn't know its connection name (AIDENHQ_CONNECTION)");
       const caller = await whoami(key);
@@ -116,9 +151,10 @@ export function makeAuthorize(opts: AuthorizeOptions = {}) {
       reason = `${caller.key} isn't granted ${denied.join(", ")} on ${o.connection}`;
     } catch (err) {
       reason = (err as Error).message;
+      code = err instanceof AuthError ? err.code : "denied_unknown_caller";
     }
-    o.log?.warn({ connection: o.connection, tools, reason }, "tool call refused");
-    const refusal = (m: { id?: unknown }) => ({ jsonrpc: "2.0", id: m?.id ?? null, result: { isError: true, content: [{ type: "text", text: `Refused: ${reason}.` }] } });
+    o.log?.warn({ connection: o.connection, tools, reason, code }, "tool call refused");
+    const refusal = (m: { id?: unknown }) => ({ jsonrpc: "2.0", id: m?.id ?? null, result: { isError: true, content: [{ type: "text", text: `Refused: ${reason} (${code}).` }] } });
     return { ok: false, status: 200, body: Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!) };
   };
 }

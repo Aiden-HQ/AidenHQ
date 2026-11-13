@@ -30,6 +30,30 @@ jobs:
       - name: Test
         run: npm ci && npm test
 
+  # Secret scan over the PR's new commits: the pinned, checksummed scanner binary (no licence key, no secrets used).
+  # Fake test values go in a .gitleaks.toml by exact value; it is read from the base commit, so land it in its own PR.
+  secrets:
+    runs-on: [self-hosted, aidenhq]
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1 # released 2026-03-21
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb # gitleaks_8.30.1_linux_x64.tar.gz
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan
+        run: |
+          curl -sSfL -o gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gl.tgz" | sha256sum -c -
+          tar xzf gl.tgz gitleaks
+          # The config comes from the base, so a PR cannot allowlist its own findings (defaults if the base has none).
+          git show "${BASE_SHA}:.gitleaks.toml" > "$RUNNER_TEMP/gl.toml" 2>/dev/null || printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gl.toml"
+          ./gitleaks git --redact --exit-code 1 --config "$RUNNER_TEMP/gl.toml" --log-opts "${BASE_SHA}..${HEAD_SHA}" .
+
   # Never runs the PR's code: codegenie only reads it from git objects. Its config and rules come from the base commit
   # (reviewed code), so a PR can't loosen its own review; the gate comes from the default branch's current tip, so a
   # gate update protects every open PR at once. Only the PR that first adds CI (no gate on the default branch yet)

@@ -78,6 +78,12 @@ export const WRITES = [
   { method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ },
 ];
 
+/** A write in WRITES; comments, PR edits and branch deletes in the agents org only (outside it the host's gh login writes). */
+export function allowedWrite(method, path, agentsOrg) {
+  if (!WRITES.some((w) => w.method === method && w.path.test(path))) return false;
+  return method === "PUT" || (Boolean(agentsOrg) && path.split("/")[1].toLowerCase() === agentsOrg.toLowerCase());
+}
+
 /**
  * A PR merges only into the repository's default branch. Returns "ok" when it targets it. A PR stacked on another's branch
  * is retargeted ("retarget") only when that branch's own PR is confirmed merged: a same-repo merged PR whose head is the

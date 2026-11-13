@@ -12,6 +12,7 @@ import { GoogleAuth } from "./google.js";
 import { Paperclip } from "./paperclip.js";
 import { weekdayOf } from "./recurrence.js";
 import { Store, localDate } from "./store.js";
+import { startWake } from "./wake.js";
 
 const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
@@ -34,8 +35,11 @@ rollover();
 setInterval(rollover, 60_000).unref();
 // Fleet Ops' detector: only when the fleet-ops module is enabled (it sets FLEET_OPS_INTERVAL_MINUTES).
 startDetector(paperclip, store, log);
-// The Costs tab: agent computers' model calls with what OpenRouter billed for each, from the launcher's gateway.
-pullUsage(cfg.sessions?.launcher, store, log);
+// Event wake-ups for heartbeat agents (wake.ts): on unless the instance setting wake_ups is off.
+startWake(paperclip, store, log);
+// The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (services/gateway), agent
+// computers' included (the launcher forwards their calls there).
+pullUsage(cfg.gateway, store, log, 60_000, "gateway_usage_pulled_at");
 
 const google = cfg.google && new GoogleAuth(cfg.google.url, cfg.google.token, log);
 // Glean; Grafana and ClickHouse for the runner's Engineer jobs; Jira through Atlassian's remote MCP server.
@@ -49,7 +53,7 @@ const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...
   manifest: (app) => appsApi<Manifest>(`/internal/apps/${encodeURIComponent(app)}/manifest`, undefined, { auth: true }),
   wake: webhookWake(process.env.APP_REQUEST_WEBHOOK_URL_FILE ?? "/run/secrets/app_request_webhook_url", process.env.APP_REQUEST_WEBHOOK_SECRET_FILE ?? "/run/secrets/app_request_webhook_secret", log),
   log });
-const common = { paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity: {}, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts };
+const common = { paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity: {}, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway };
 const server = createApp({ ...common, allowedHosts: cfg.allowedHosts, mode: "local", operatorKey: cfg.operatorKey });
 server.listen(cfg.port, "0.0.0.0", () => log.info({ port: cfg.port, hosts: cfg.allowedHosts }, "board listening"));
 // The board's https address (`tailscale serve`) and phones on the home network: a separate port, signed in as on 3120.
@@ -57,7 +61,7 @@ const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));
 
 // The tasks bridge and the runner: bearer token, /internal/ only. Not published beyond loopback.
-const internal = cfg.internal && createApp({ ...common, allowedHosts: cfg.internal.hosts, mode: "internal", internalToken: cfg.internal.token, decideKey: cfg.decideKey, reviewerKey: cfg.reviewerKey, watcherKey: cfg.watcherKey, operatorKey: cfg.operatorKey });
+const internal = cfg.internal && createApp({ ...common, allowedHosts: cfg.internal.hosts, mode: "internal", internalToken: cfg.internal.token, decideKey: cfg.decideKey, reviewerKey: cfg.reviewerKey, watcherKey: cfg.watcherKey, operatorKey: cfg.operatorKey, gatewayKey: cfg.gateway?.token });
 // The gate's sign-in listener (3129): Better Auth's sign-in endpoints and pages only, never a board route.
 const signin = createSigninServer({ accounts, hosts: cfg.accounts.signin.hosts, gate: () => readGate(cfg.accounts.gateFile), log });
 void accounts.syncGate();
@@ -70,6 +74,7 @@ if (internal && cfg.internal) internal.listen(cfg.internal.port, "0.0.0.0", () =
 
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.on(sig, () => {
+    store.events.close();
     server.close();
     lan.close();
     internal?.close();

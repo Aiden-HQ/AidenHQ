@@ -206,6 +206,13 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
           Part of <a href={`#/t/${issue.parent.identifier}`}>{issue.parent.identifier}{issue.parent.title ? `: ${issue.parent.title}` : ""}</a>
         </div>
       )}
+      {issue.runs.length > 0 && (
+        <div className="part-of">
+          Runs: {issue.runs.map((r, i) => (
+            <span key={r.id}>{i ? " · " : ""}<a href={`#/r/${r.id}`} title={r.at ?? ""}>{r.agent} ({r.status})</a></span>
+          ))}
+        </div>
+      )}
       <div className="task-top">
         <Title issue={issue} editable={editable} save={(title) => update({ title })} />
         <div className="head-chips">

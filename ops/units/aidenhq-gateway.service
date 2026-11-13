@@ -1,0 +1,16 @@
+[Unit]
+Description=AidenHQ model gateway (services/gateway/gateway.mjs)
+After=network-online.target
+
+[Service]
+# The secret vault must be mounted (ops/vault): the OpenRouter key is read from it at each call. It also listens on the
+# backplane's gateway address (10.231.0.1), which exists once compose is up: the gateway retries that bind itself while
+# loopback serves.
+ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
+ExecStart=/usr/bin/env node --disable-warning=ExperimentalWarning %h/aidenhq/services/gateway/gateway.mjs
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -2,6 +2,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Approvals } from "./approvals.js";
+import { Events } from "./events.js";
+import { Grades } from "./grades.js";
 import type { Rule } from "./recurrence.js";
 
 /** The board's own columns. Paperclip has no ordering or buckets, so these live here. */
@@ -24,8 +26,22 @@ export interface UsageRecord {
   output: number;
   /** What the source itself reported it cost (opencode, OpenRouter's answer), when it did. */
   costUsd?: number | null;
-  /** The Paperclip agent that made the call (agent computers' calls through the launcher's gateway); none for system components. */
+  /** The Paperclip agent that made the call (any agent's call through the model gateway); none for system components. */
   agentId?: string | null;
+  /** The run's key (runKey in agent-auth.ts: the credential's sha256; a computer's box session), for per-run caps and the run page. */
+  runKey?: string | null;
+  /** Paperclip's run id, when the credential names it (the model gateway, for a run JWT). */
+  runId?: string | null;
+  /** The Paperclip task the run works on. */
+  issueId?: string | null;
+  /** The agent's config revision at the run's first call. */
+  rev?: string | null;
+  /** agent | advisor | grader | reviewer | fanout | source: from the gateway route or service key, never the caller. */
+  kind?: string | null;
+  /** How long the call took. */
+  ms?: number | null;
+  /** How it ended: "ok", or a code such as "cap_reached", "model_not_granted", "upstream_502". */
+  status?: string | null;
 }
 
 export interface UsageTotal {
@@ -118,6 +134,10 @@ export class Store {
   private db: DatabaseSync;
   /** Approval records. */
   readonly approvals: Approvals;
+  /** Graded-done rubrics and state. */
+  readonly grades: Grades;
+  /** Live board updates: approvals and grades announce their changes here (events.ts). */
+  readonly events = new Events();
 
   constructor(path: string) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -135,7 +155,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS scheduled_moves (issue_id TEXT PRIMARY KEY, date TEXT NOT NULL, bucket TEXT NOT NULL, position TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS recurring (issue_id TEXT PRIMARY KEY, rule TEXT NOT NULL, repos TEXT NOT NULL, next_run TEXT, manual_at TEXT, paused INTEGER NOT NULL DEFAULT 0, last_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       -- Model usage with what OpenRouter billed (or the runner's Engineer jobs and AI reviewer, which Paperclip doesn't record):
-      -- one row per job or call, by key; agent_id for an agent computer's calls through the launcher's gateway.
+      -- one row per job or call, by key; agent_id for an agent's calls through the model gateway.
       CREATE TABLE IF NOT EXISTS usage (key TEXT PRIMARY KEY, at TEXT NOT NULL, component TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, cached INTEGER NOT NULL, output INTEGER NOT NULL, cost_usd REAL);
       -- Which account wrote a task or comment on the board: for the "by <name>" label, never in the text.
       CREATE TABLE IF NOT EXISTS authored (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, at TEXT NOT NULL);
@@ -145,8 +165,12 @@ export class Store {
     if (!columns.includes("carried")) this.db.exec("ALTER TABLE placements ADD COLUMN carried INTEGER NOT NULL DEFAULT 0");
     const usageColumns = (this.db.prepare("PRAGMA table_info(usage)").all() as { name: string }[]).map((c) => c.name);
     if (!usageColumns.includes("agent_id")) this.db.exec("ALTER TABLE usage ADD COLUMN agent_id TEXT");
+    // Run attribution (wave 1): which run, task, config revision and caller kind each call was for, and how it went.
+    for (const [c, type] of [["run_key", "TEXT"], ["run_id", "TEXT"], ["issue_id", "TEXT"], ["rev", "TEXT"], ["kind", "TEXT"], ["ms", "INTEGER"], ["status", "TEXT"]]) if (!usageColumns.includes(c!)) this.db.exec(`ALTER TABLE usage ADD COLUMN ${c} ${type}`);
+    this.db.exec("CREATE INDEX IF NOT EXISTS usage_run ON usage (run_key); CREATE INDEX IF NOT EXISTS usage_issue ON usage (issue_id)");
     if (!this.meta("installed_at")) this.setMeta("installed_at", new Date().toISOString());
-    this.approvals = new Approvals(this.db);
+    this.approvals = new Approvals(this.db, this.events);
+    this.grades = new Grades(this.db, this.events);
   }
 
   meta(key: string): string | undefined {
@@ -163,7 +187,9 @@ export class Store {
 
   /** One usage record; the same key again (a retried report) is ignored. */
   addUsage(u: UsageRecord): void {
-    this.db.prepare("INSERT OR IGNORE INTO usage (key, at, component, model, input, cached, output, cost_usd, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.costUsd ?? null, u.agentId ?? null);
+    this.db
+      .prepare("INSERT OR IGNORE INTO usage (key, at, component, model, input, cached, output, cost_usd, agent_id, run_key, run_id, issue_id, rev, kind, ms, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.costUsd ?? null, u.agentId ?? null, u.runKey ?? null, u.runId ?? null, u.issueId ?? null, u.rev ?? null, u.kind ?? null, u.ms ?? null, u.status ?? null);
   }
 
   /** Usage records older than `before` go (the Costs tab looks back 30 days). */
@@ -176,6 +202,25 @@ export class Store {
     return this.db
       .prepare("SELECT component, model, agent_id AS agentId, COUNT(*) AS runs, SUM(input) AS input, SUM(cached) AS cached, SUM(output) AS output, SUM(cost_usd) AS costUsd, COUNT(cost_usd) AS priced FROM usage WHERE at >= ? AND at < ? GROUP BY component, model, agent_id")
       .all(from, to) as unknown as UsageTotal[];
+  }
+
+  /** Billed dollars per agent and UTC day in [from, to) (scorecards, the morning fleet section): rows, and how many carried a cost. */
+  usageDaily(from: string, to: string): { agentId: string | null; day: string; costUsd: number; rows: number; priced: number }[] {
+    return this.db
+      .prepare("SELECT agent_id AS agentId, substr(at, 1, 10) AS day, COALESCE(SUM(cost_usd), 0) AS costUsd, COUNT(*) AS rows, COUNT(cost_usd) AS priced FROM usage WHERE at >= ? AND at < ? GROUP BY agent_id, day")
+      .all(from, to) as unknown as { agentId: string | null; day: string; costUsd: number; rows: number; priced: number }[];
+  }
+
+  /** The ledger rows of one agent in [from, to] (the run page's join: rows carry the credential's hash, not Paperclip's run id), oldest first. */
+  usageOf(agentId: string, from: string, to: string): UsageRecord[] {
+    return (this.db
+      .prepare("SELECT key, at, component, model, input, cached, output, cost_usd AS costUsd, agent_id AS agentId, run_key AS runKey, run_id AS runId, issue_id AS issueId, rev, kind, ms, status FROM usage WHERE agent_id = ? AND at >= ? AND at <= ? ORDER BY at")
+      .all(agentId, from, to) as unknown as UsageRecord[]);
+  }
+
+  /** Gateway refusals and upstream failures since `from`: the run each belonged to (when known) and when. Not the agent's fault. */
+  refusalsSince(from: string): { runId: string | null; at: string }[] {
+    return this.db.prepare("SELECT run_id AS runId, at FROM usage WHERE status IN ('cap_reached', 'upstream_402', 'upstream_5xx', 'upstream_aborted') AND at >= ?").all(from) as unknown as { runId: string | null; at: string }[];
   }
 
   placements(): Map<string, Placement> {

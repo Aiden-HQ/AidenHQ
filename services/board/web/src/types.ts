@@ -118,6 +118,16 @@ export interface Agents {
   roster?: RosterAgent[];
 }
 
+/** GET /api/agents/:id/scorecard (fleet-stats.ts). */
+export interface Scorecard {
+  done: { count: number; prior: number; tasks: { identifier: string; title: string }[] };
+  reopen: { graded: number; reopened: number; escalated: number };
+  approvals: { filed: number; rejected: number; priorRejected: number };
+  runsFailed: number;
+  cost: { usd: number; prior: number; perDone: number | null; billed: boolean };
+  daily: { day: string; done: number; costUsd: number }[];
+}
+
 export interface RosterAgent {
   id: string;
   name: string;
@@ -215,6 +225,8 @@ export interface IssueView extends Omit<Card, "scheduled" | "recurring" | "worki
   comments: CommentView[];
   files: FileView[];
   parent: TaskRef | null;
+  /** The newest runs on this task, linked to their run pages. */
+  runs: RunLink[];
   /** The agents on this task, with each one's latest word. */
   crew: (CrewMember & { said: { text: string; at: string } | null })[];
   /** After a reply: the agent's part a message that @-mentioned them went to, instead of this chat. */
@@ -241,8 +253,16 @@ export interface Approval {
   /** 0 ran at once, 1 the AI reviewer decides, 2 the owner decides. */
   tier: 0 | 1 | 2;
   reason: string;
+  /** The tier on the request's merits, before the autonomy setting (display only; null on older records). */
+  baseTier?: 0 | 1 | 2 | null;
+  /** The filing agent's Paperclip id (display only). */
+  requesterId?: string | null;
   /** The AI reviewer's note (its verdict's reason, or why it sent the card to the owner). */
   review: string | null;
+  /** The tier rule's reason code (null on older records). */
+  reasonCode?: string | null;
+  /** The reviewer's reason code (reviewer_unsure: it couldn't tell, so the owner decides). */
+  reviewCode?: string | null;
   /** Stamped by the board from the credential: account:<id> (an admin's tap, or the owner's typed reply on the board), owner:telegram, owner:reply (a typed reply in Telegram), watcher, reviewer:<model>, auto:<rule>. */
   decidedBy: string | null;
   /** The deciding admin's name, when it wasn't the owner. */
@@ -383,8 +403,34 @@ export interface ChatDetail {
   approvals: Approval[];
   handedOut: { identifier: string; title: string; agent: string; state: ChatState; reason?: string; updatedAt: string; working: Working | null }[];
   parent: TaskRef | null;
+  runs: RunLink[];
   /** Questions an agent this chat handed work to is asking the owner; answered on that agent's task (`identifier`). */
   asks: { id: string; at: string; text: string; questions: Question[]; identifier: string; agent: string }[];
+}
+export interface RunLink {
+  id: string;
+  agent: string;
+  status: string;
+  at: string | null;
+}
+/** One run's trace (services/board/src/runs.ts RunView, with the agent's and task's names). */
+export interface RunTrace {
+  id: string;
+  agent: string;
+  status: string;
+  error: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  issue: { identifier: string; title: string } | null;
+  rev: { rev: string; productSha: string | null; instanceSha: string | null; from: "ledger" | "revs" } | null;
+  tokens: { input: number; cached: number; output: number; reasoning: number } | null;
+  paperclip: { input: number | null; output: number | null; model: string | null };
+  contexts: number[];
+  tools: { name: string; calls: number; failures: number; medianMs: number | null }[];
+  timeline: { at: string; kind: "tool" | "shell" | "message" | "error"; name: string; text: string; ok: boolean; error?: string; ms?: number }[];
+  ledger: { rows: { at: string; kind: string | null; model: string; input: number; cached: number; output: number; costUsd: number | null; ms: number | null; status: string | null; runKey: string | null }[]; usd: number | null; capUsd: number | null };
+  notes: string[];
 }
 export interface ActivityItem {
   when: string;

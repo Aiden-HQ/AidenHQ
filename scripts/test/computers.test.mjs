@@ -7,7 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
-import { computerAdapterConfig, computersConfig, ensureComputers, validateImages, GATEWAY_URL } from "../computers.mjs";
+import { assertNoShell, computerAdapterConfig, computersConfig, ensureComputers, validateImages, GATEWAY_URL } from "../computers.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
 function inst(overrides) {
@@ -89,5 +89,20 @@ test("a computer agent with the launcher down fails setup loudly", async () => {
   const api = async () => ({ json: [] });
   await assert.rejects(ensureComputers({ api, companyId: "c", cfg: { agents: { m: { name: "M", image: "agent-base" } } }, agents: {}, step: () => {}, launcherUrl: "http://127.0.0.1:9" }),
     /the computer launcher isn't answering/);
+});
+
+test("a tool-only agent whose final Codex args turn the shell on, drop the read-only sandbox or bypass it fails setup", () => {
+  const ok = ["--sandbox", "read-only", "-c", "features.shell_tool=false", "-c", "features.unified_exec=false", "-c", "features.apps=false"];
+  assertNoShell("a", ok, false);
+  assert.throws(() => assertNoShell("a", [...ok, "-c", "features.shell_tool=true"], false), /shell_tool is true/); // later wins
+  assert.throws(() => assertNoShell("a", ["--sandbox", "danger-full-access", ...ok.slice(2)], false), /danger-full-access/);
+  assert.throws(() => assertNoShell("a", ok, true), /dangerouslyBypass/);
+  for (const x of [["--config=features.shell_tool=true"], ["-cfeatures.shell_tool=true"], ["-p", "x"], ["-c", "features={shell_tool=true}"], ["-c", 'sandbox_permissions=["disk-full-write-access"]'], ["-c", "profile=x"], ["--enable", "x"]])
+    assert.throws(() => assertNoShell("a", [...ok, ...x], false), /not allowed|table or list/); // anything not allowlisted fails closed
+  assertNoShell("a", [...ok, "-c", 'mcp_servers.apps.enabled_tools=["app_list"]'], false);
+  assert.throws(() => assertNoShell("a", [...ok, "-c", "features.computer_use=true"], false), /features off only/);
+  assert.throws(() => assertNoShell("a", ok.slice(2), false), /sandbox is unset/);
+  // The compiled core config passes.
+  assertNoShell("core", compile(product, inst()).paperclip.codex_args, false);
 });
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { approvalPress, parseReply, sendCards, type PendingApproval } from "../src/approvals.js";
+import { approvalPress, parseReply, sendBatch, sendCards, type PendingApproval } from "../src/approvals.js";
 import { openStore } from "../src/store.js";
 
-const card = (id: string, replaced = false): PendingApproval => ({ id, identifier: "WOR-184", sentence: "Apply a change.", changes: "instance.yaml", reads: "Nothing new.", cost: "No model cost.", requestedBy: "Fleet Engineer", replaced });
+const card = (id: string, replaced = false): PendingApproval => ({ id, identifier: "WOR-184", digest: "d".repeat(40), sentence: "Apply a change.", changes: "instance.yaml", reads: "Nothing new.", cost: "No model cost.", requestedBy: "Fleet Engineer", replaced });
 
 describe("approval cards in Telegram", () => {
   it("one card per pending record, with buttons that carry its id, each used once", async () => {
@@ -25,6 +25,32 @@ describe("approval cards in Telegram", () => {
     const texts: string[] = [];
     await sendCards({ pending: async () => [card("A00000002", true)] }, store, async (t) => (texts.push(t), true));
     expect(texts[0]).toContain("replaces an earlier request");
+  });
+
+  it("2+ carded cards with a new one: one list stored on the board, Approve all / Reject all carrying its id; not resent", async () => {
+    const store = openStore(":memory:");
+    const pending = [card("A00000003"), card("A00000004")];
+    const stored: unknown[] = [];
+    const board = { pending: async () => pending, batch: async (items: { id: string; digest: string }[]) => (stored.push(items), { batch: "B0000000a", approvals: pending.map((a) => ({ id: a.id, identifier: a.identifier, sentence: a.sentence })) }) };
+    const sent: { text: string; markup: any }[] = [];
+    const send = async (text: string, markup: unknown) => (sent.push({ text, markup }), 7);
+    expect(await sendBatch(board, store, send)).toBe(false); // no card sent yet
+    await sendCards(board, store, async () => true);
+    expect(await sendBatch(board, store, send)).toBe(true);
+    expect(stored[0]).toEqual(pending.map((a) => ({ id: a.id, digest: a.digest })));
+    const [reject, approve] = sent[0]!.markup.inline_keyboard[0];
+    expect([reject.text, approve.text]).toEqual(["Reject all 2", "Approve all 2"]);
+    const press = { callback_query: { id: "cb", data: approve.callback_data, message: { message_id: 7, chat: { id: 42 } } } };
+    expect(approvalPress(press, "42", store)).toMatchObject({ id: "B0000000a", decision: "approve" });
+    expect(await sendBatch(board, store, send)).toBe(false); // same cards: no second list
+    // A refusing board (batch_approvals off) is asked once per set of cards, not every tick.
+    pending.push(card("A00000005"));
+    await sendCards(board, store, async () => true);
+    let asked = 0;
+    const off = { pending: board.pending, batch: async () => (asked++, Promise.reject(new Error("board batch → 409"))) };
+    await expect(sendBatch(off, store, send)).rejects.toThrow("409");
+    expect(await sendBatch(off, store, send)).toBe(false);
+    expect(asked).toBe(1);
   });
 
   it("parses only an exact typed reply", () => {

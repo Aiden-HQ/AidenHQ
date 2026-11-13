@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { asConfiguredModel, billedRatios, bounds, costRows, pulledRecords, resumedOvercount, withResolvedPrices, withoutResumedOvercount, type Prices } from "../src/costs.js";
 import { Store } from "../src/store.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const prices: Prices = new Map([["~deepseek/deepseek-flash-latest", { prompt: "0.000000022", completion: "0.0000004", input_cache_read: "0.000000004" }]]);
 
@@ -104,5 +108,24 @@ describe("bounds", () => {
     expect(bounds("7d", now).period.from).toBe("2026-11-09T00:00:00.000Z");
     expect(bounds("today", now).from).toBe("2026-11-12T00:00:00.000Z");
     expect(bounds("yesterday", now)).toMatchObject({ from: "2026-11-11T00:00:00.000Z", to: "2026-11-12T00:00:00.000Z", period: { field: null } });
+  });
+});
+
+describe("usage run attribution", () => {
+  it("adds the columns to an existing ledger in place, and stores a gateway record's run, task, rev and kind", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "usage-")), "board.db");
+    const old = new DatabaseSync(path);
+    old.exec("CREATE TABLE usage (key TEXT PRIMARY KEY, at TEXT NOT NULL, component TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, cached INTEGER NOT NULL, output INTEGER NOT NULL, cost_usd REAL, agent_id TEXT)");
+    old.exec("INSERT INTO usage VALUES ('job:0', '2026-11-12T00:00:00.000Z', 'Engineer jobs', 'm', 1, 0, 1, 0.1, NULL)");
+    old.close();
+    const store = new Store(path);
+    const [r] = pulledRecords({ records: [{ key: "gen-9", at: "2026-11-12T01:00:00.000Z", agentId: "c", model: "m", input: 1, cached: 0, output: 1, costUsd: 0.2, runKey: "a".repeat(64), issueId: "iss-1", rev: "0123456789ab", kind: "agent", ms: 900, status: "ok" }] });
+    store.addUsage({ ...r!, component: "agent" });
+    const rows = new DatabaseSync(path).prepare("SELECT key, run_key, issue_id, rev, kind, ms, status FROM usage ORDER BY key").all();
+    expect(rows).toEqual([
+      { key: "gen-9", run_key: "a".repeat(64), issue_id: "iss-1", rev: "0123456789ab", kind: "agent", ms: 900, status: "ok" },
+      { key: "job:0", run_key: null, issue_id: null, rev: null, kind: null, ms: null, status: null },
+    ]);
+    expect(store.usage("2026-11-12T00:00:00.000Z", "2026-11-13T00:00:00.000Z")).toHaveLength(2);
   });
 });

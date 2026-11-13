@@ -27,7 +27,10 @@ history. Its UI is the fleet console. Agents run with the Codex adapter against 
 **Chief of staff and crews.** Aiden is the single entry point: it reads widely and delegates writes. Crews are
 specialist agents woken by schedules (Paperclip routines), events (routine webhooks) or the runner. Every agent is a
 `module.yaml` entry plus an `AGENTS.md` handbook, so new behaviour is configuration and prose, not core code. A
-`catch_up: true` agent is also woken on a schedule to check the work it waits on.
+`heartbeat: true` agent is also woken when work it waits on changes (a sub-task, an approval card, a grade, a PR: the
+board's `wake.ts`) and, as a backstop, by a "Heartbeat: <key>" routine every `heartbeat_hours` (default 4). This is not
+Paperclip's own heartbeat: Paperclip calls every agent run a "heartbeat run" and has a per-agent heartbeat timer, which
+AidenHQ keeps off.
 
 **Shared connections.** Each external system (Google, Slack, Glean, Jira, GitHub, Primer, Grafana, ClickHouse) is an
 MCP server that holds one login, so credentials are connected once and never given to agents. Every tool is tagged

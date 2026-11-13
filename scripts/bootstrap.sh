@@ -90,6 +90,8 @@ mkdir -p "$AIDENHQ_SECRETS_DIR/grafana" && chmod 0700 "$AIDENHQ_SECRETS_DIR/graf
 mkdir -p "$AIDENHQ_SECRETS_DIR/clickhouse" && chmod 0700 "$AIDENHQ_SECRETS_DIR/clickhouse"
 mkdir -p "$AIDENHQ_SECRETS_DIR/jira" && chmod 0700 "$AIDENHQ_SECRETS_DIR/jira"   # jira-mcp: the Atlassian sign-in (jira module)
 mkdir -p "$AIDENHQ_SECRETS_DIR/apps" && chmod 0700 "$AIDENHQ_SECRETS_DIR/apps"   # <app>.env files for apps-mcp
+# The GitHub App's key (SETUP.md step 8, optional): compose mounts the folder, and Docker can't create it inside the vault.
+mkdir -p "$AIDENHQ_SECRETS_DIR/github-app" && chmod 0700 "$AIDENHQ_SECRETS_DIR/github-app"
 
 # apps-mcp runs as your uid with the docker group (the Docker socket); apps reach the warehouse over a shared network.
 if ! grep -q '^DOCKER_GID=' "$env_file"; then
@@ -107,7 +109,8 @@ grep -q 'names: \[\]' "$config_dir/system.yaml" && say "edit self.names/self.ema
 
 echo "Data"
 data="${AIDENHQ_DATA_DIR:-./data}"
-mkdir -p "$data/paperclip" "$data/ops-mcp" "$data/slack-live" "$data/board" "$data/apps" "$data/apps-mcp" "$data/apps-edge/state" "$data/apps-edge/serve"   # as you, so Docker never creates them as root
+mkdir -p "$data/paperclip/instances/default/companies" "$data/ops-mcp" "$data/slack-live" "$data/board" "$data/apps" "$data/apps-mcp" "$data/apps-edge/state" "$data/apps-edge/serve"   # as you, so Docker never creates them as root
+# (the board mounts Paperclip's companies folder: made by Docker as root, Paperclip itself could no longer write its home)
 umask 022
 
 echo "Installing setup-script dependency"

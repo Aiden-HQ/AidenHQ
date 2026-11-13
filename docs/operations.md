@@ -6,7 +6,9 @@
 
 1. refuses to run if either checkout has local changes to tracked files;
 2. fast-forwards the instance repo (`AIDENHQ_INSTANCE_DIR`) to `origin/main`, or to exactly the commit given;
-3. checks out the product commit pinned by `product:` in `instance.yaml` (it must be on the product's `origin/main`);
+3. checks out the product commit pinned by `product:` in `instance.yaml` (it must be on the product's `origin/main`); if
+   that commit changes `ops/apply-config.sh`, it hands over to the new script once (`exec`, with the previous product in
+   `AIDENHQ_APPLY_BEFORE` so restarts are still decided against it), so one run is always enough;
 4. runs `node scripts/compile.mjs`, builds agent computer images, `docker compose up -d --build --remove-orphans`, and
    `node scripts/paperclip-setup.mjs`;
 5. schedules a runner restart when runner code changed.
@@ -17,6 +19,10 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
 - **Roll back:** revert the instance commit (or set `product:` to the earlier sha), push, apply again.
 - **After changing a connection service:** `docker compose up -d --force-recreate <svc>`.
 - **After changing runner code:** `ops/apply-config.sh` sends `systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`: the runner takes nothing new, exits as soon as nothing is half done (a reply being posted, a publish, an apply), and systemd starts it again 5s later. Running agent jobs are not touched (`KillMode=process`; each runs in its own process group, writing its log and exit status under the runner's state dir): the new runner adopts them, keeps their `aidenhq` tools working (same helper port and token) and reports each turn once. A plain `systemctl --user restart aidenhq-runner` does the same. A job that died while no runner was up (no exit status) resumes in the same session. apply-config installs the unit (and daemon-reloads) when `ops/units/aidenhq-runner.service` changes.
+
+- **The model gateway** (`services/gateway`, user unit `aidenhq-gateway`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `services/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (runner jobs through their jail, the AI reviewer, the intake, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull). Ledger: `data/gateway/usage.db`. Kill switch for caps: `settings.spend_caps: off`. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
+- **Agent memory** (`agent_memory`): `memory_note` writes to the agent's own inbox task; the Librarian's daily pass curates it into `agents/<key>/memory.md`, landed by an apply card. To clear one agent's memory, apply a change that empties its file. Kill switch: `agent_memory: off`.
+- **Advisor and fan-out** (`services/paperclip-tasks-mcp/models.mjs`): `advisor_ask` (every Codex agent; Kimi, or GPT Sol once per run for an agent whose `models` list `~openai/gpt-sol-latest`; 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Not yet in agent computers. Kill switch: `settings.model_tools: off`, then apply.
 
 ## Health
 
@@ -140,7 +146,7 @@ exact email match only).
   creates its own tables and views at start. While the warehouse isn't running it skips; run it again once it is.
 - Writer passwords are generated secrets (`warehouse_src_<source>_password`, made by compile). Writers connect lazily and
   retry each pass, so a role created after they started is picked up without a restart.
-- The DevOps Engineer checks `src_meta.ingest_run` on each catch-up and posts a source stale for over an hour to the
+- The DevOps Engineer checks `src_meta.ingest_run` on each heartbeat and posts a source stale for over an hour to the
   "Fleet issues" task (its handbook, "Shared sources").
 - Slack's gap sync needs the owner's user token of the Slack live app in `slack_live_user_token` (scopes in
   `modules/owner-channel/module.yaml`); without it src_slack gets live events only.

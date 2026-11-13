@@ -13,6 +13,9 @@ Thanks for helping. Contributors have read access to this repository; the mainta
 5. The maintainer reviews and merges. Your own instance picks the change up when you bump `product:` in your instance
    repo to a commit on `main` (see [SETUP.md](SETUP.md), "Upgrading the product").
 
+To set up your own instance to test on, follow [SETUP.md](SETUP.md), or ask Claude Code to "set up AidenHQ" (the
+`setup-aidenhq` skill).
+
 Running your instance from your fork is fine while you test, but `ops/apply-config.sh` only accepts a pinned
 `product:` commit that is on the checkout's `origin/main`, so point your checkout's `origin` at whichever repo holds
 that commit.
@@ -66,6 +69,15 @@ Read [CLAUDE.md](CLAUDE.md) first; it is also the guide coding agents follow. In
 Never commit secrets, tokens, `.env` files, generated config, or anyone's real data: names, emails, Slack or Telegram
 ids, hostnames, IPs, org names. Those belong in your instance repo or your gitignored `CLAUDE.local.md`. Tests and
 docs use neutral examples (`acme`, `acme-agents`, `alice`, `example.com`, `<tailnet>`, documentation IP ranges).
+
+## Supply chain
+
+Supply chain: unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version published less than 7 days ago. Pin versions, and state the release date of any image or action you bump.
+Dependabot waits 7 days before proposing a version, and CI fails a `package-lock.json` change that adds or alters an entry
+under 7 days old. A security fix is the one exception: add `{package, version, advisory, reason}` to
+`.github/supply-chain-exceptions.yaml`; CI checks the advisory patches that version, and the owner's review of the file
+is the approval. CI also scans new commits for secrets (gitleaks); fake values in tests go in `.gitleaks.toml` by exact
+value.
 
 ## Questions and bugs
 

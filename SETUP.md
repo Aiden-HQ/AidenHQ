@@ -4,6 +4,9 @@ This guide takes one person from an empty server to a working AidenHQ: Aiden (th
 sign in to, agents running on OpenRouter, and your accounts connected. A person or Claude Code can follow it top to
 bottom. Every step ends with a **Check**: a command and what it should print. Don't move on until the check passes.
 
+In Claude Code, the `setup-aidenhq` skill (`.claude/skills/setup-aidenhq/`) walks this guide for you: it runs the steps
+and each Check and asks you only for the decisions that are yours.
+
 Each instance has its own server, its own instance repo and its own keys. Nothing is shared with anyone else's
 AidenHQ.
 
@@ -30,7 +33,7 @@ other connections, board account recovery and shared access for colleagues.
 | A Tailscale auth key for the server (`TS_AUTHKEY`). Optional: you can run `sudo tailscale up` by hand instead | [org admin] Tailscale | step 3 |
 | A Tailscale auth key for the apps node (`TS_APPS_AUTHKEY`): reusable, pre-approved, tagged (for example `tag:aidenhq-apps` under `tagOwners`). Optional: without it, agent-built apps run but nobody can reach them | [org admin] Tailscale | step 3 |
 | An OpenRouter **management (provisioning) key**, or a normal OpenRouter API key you made yourself | OpenRouter account admin | step 3 |
-| A Google OAuth client of type *Web application*, with the Calendar, Drive and Gmail APIs enabled | [org admin] Google Workspace | step 3, step 7 |
+| A Google OAuth client of type *Web application*, with the Calendar, Drive and Gmail APIs enabled. Not needed to finish step 3: without it, add `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` to `person.env` later and run setup again | [org admin] Google Workspace | step 3, step 7 |
 | Read access to the AidenHQ product repo on GitHub (to clone it or fork it) | the repo owner | step 2 |
 | Optional, later: Cloudflare Access, a tunnel and DNS records, to share apps with people outside your tailnet | [org admin] Cloudflare | [docs/setup.md](docs/setup.md#shared-access-apps-for-people-beyond-the-tailnet) |
 
@@ -45,7 +48,8 @@ to that account. If your data policy needs zero-data-retention routing, turn it 
 
 ## 1. Create the VM
 
-You need Ubuntu 24.04 (amd64), 4 vCPUs, 8 GB RAM and a 100 GB disk, plus a non-root user with `sudo` and your SSH
+You need Ubuntu 24.04 (amd64), 4 vCPUs, 8 GB RAM and a 100 GB disk (the container images alone take about 25 GB, the
+Paperclip image 17 GB of it; a 40 GB disk runs out during the first build), plus a non-root user with `sudo` and your SSH
 key. A **virtual TPM** is strongly recommended: the secret vault (step 3) seals its password to the TPM. Without one
 the vault still works, but its password is sealed with a key stored on the same disk, which protects a copied vault
 folder but not a stolen disk.
@@ -69,17 +73,15 @@ PVE_HOST=<proxmox-host> VM_NAME=aidenhq VM_USER=aidenhq PVE_STORAGE=local-lvm BR
 PVE_HOST=<proxmox-host> VM_NAME=aidenhq VM_USER=aidenhq ./ops/vm/provision.sh
 ```
 
-`provision.sh` does **not** add a vTPM. Add one yourself before step 3, on the Proxmox host (not exercised by
-the scripts; check the syntax against your Proxmox version):
-
-```sh
-qm shutdown <vmid> && qm set <vmid> --tpmstate0 local-lvm:1,version=v2.0 && qm start <vmid>
-```
+`provision.sh` adds a vTPM 2.0 (the vault's key). `CORES`, `MEMORY` (MiB) and `DISK` env vars override the 4 / 8192 / 100G
+defaults, and `VMID` picks the VM id (default: the next free one).
 
 Find the VM's address in your router's DHCP table, or from the MAC address the script prints.
 
-**Check** (on the VM): `ssh <you>@<host> 'lsb_release -rs; systemd-creds has-tpm2 | head -1'` prints `24.04` and
-`yes`. If the second line is not `yes`, there is no usable TPM and the vault will fall back to a host key.
+**Check** (on the VM): `ssh <you>@<host> 'lsb_release -rs; ls /dev/tpmrm0'` prints `24.04` and `/dev/tpmrm0`. Without
+that device there is no usable TPM and the vault falls back to a host key (the vault step prints a loud warning at the
+end). (`systemd-creds has-tpm2` prints `partial` on a fresh image, missing only `libraries`: step 3 installs them, and it
+prints `yes` after that.)
 
 ## 2. Get the product checkout
 
@@ -109,7 +111,8 @@ git config --global user.email alex@example.com
 ```
 
 **Check:** `git -C ~/aidenhq remote get-url origin` prints your chosen repo, and
-`git -C ~/aidenhq merge-base --is-ancestor HEAD origin/main && echo on-main` prints `on-main`.
+`git -C ~/aidenhq merge-base --is-ancestor HEAD origin/main && echo on-main` prints `on-main`. (With no `origin`,
+both fail; that is expected, and step 3 makes the local mirror.)
 
 ## 3. Run `ops/setup.sh`
 
@@ -131,7 +134,7 @@ One run sets up the whole machine. It is idempotent: if it stops partway, fix th
 8. runs `ops/apply-config.sh`: compiles the modules, starts the stack, creates your Paperclip account and company,
    then turns off Paperclip sign-up;
 9. publishes the board on your tailnet (`tailscale serve --bg --https=443 http://127.0.0.1:3121`), installs the
-   runner and run-pruning user units, and opens a Welcome chat with Aiden;
+   model gateway, runner, agent-computer launcher and run-pruning user units, and opens a Welcome chat with Aiden;
 10. prints your one-time board setup link.
 
 Write `~/person.env` (it holds secrets; never commit it, and delete it at the end):
@@ -140,7 +143,7 @@ Write `~/person.env` (it holds secrets; never commit it, and delete it at the en
 AIDENHQ_USER=<you>
 OWNER_NAME=Alex Doe
 OWNER_EMAIL=alex@example.com
-# An IANA timezone name, e.g. America/New_York. Comments go on their own lines: setup reads everything after '='.
+# An IANA timezone name, e.g. America/New_York. A trailing ' # comment' on an unquoted value is dropped; quote a value to keep a '#'.
 TIMEZONE=UTC
 # Or OPENROUTER_KEY=sk-or-v1-... (a key you made yourself) instead of the management key.
 OPENROUTER_MANAGEMENT_KEY=sk-or-v1-...
@@ -149,7 +152,9 @@ GOOGLE_CLIENT_ID=....apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=...
 TS_AUTHKEY=tskey-auth-...
 TS_APPS_AUTHKEY=tskey-auth-...
-# Optional: MODULES=google,slack,github (default google), COMPANY_NAME (default work), BOARD_HOST,
+# Optional: MODULES=google,slack,github (default google), COMPANY_NAME (default work), BOARD_HOST (a name for the
+# board; the VM must still be on the tailnet, or setup stops at 'tailscale serve' with "Logged out."),
+# GITHUB_AGENTS_ORG (step 8: an existing GitHub org you own; setup writes it to instance.yaml),
 # PAPERCLIP_PASSWORD (otherwise generated; required with --restore)
 ```
 
@@ -161,14 +166,14 @@ cd ~/aidenhq
 sudo ops/setup.sh --config ~/person.env          # [human] sudo
 ```
 
-`ops/setup.sh --config ~/person.env --dry-run` prints every step and changes nothing, but it needs Node, which the
-first real run installs: use it before re-runs, not before the first one.
+`ops/setup.sh --config ~/person.env --dry-run` prints every step and changes nothing. It needs no Node and no sudo, so
+run it first; a missing OpenRouter key shows as `would fail`.
 
 At the end it prints the board setup link, the Google redirect URI and, if the vault was created, where the vault
 recovery key is.
 
 **Log out and SSH back in** after the first run: `ops/vm/setup.sh` added you to the `docker` group, and your current
-session doesn't have it yet.
+shell doesn't have it yet (setup restarts your systemd user manager itself, so the AidenHQ user units already have it).
 
 **Check** (each must pass):
 
@@ -178,11 +183,11 @@ session doesn't have it yet.
 | Vault | `systemctl is-active aidenhq-vault; mountpoint ~/.config/aidenhq` | `active`, then `... is a mountpoint` |
 | Vault key type | the setup output line `vault ready: N files encrypted; key: ...` | `key: tpm2` (`key: host` means no TPM: see step 1) |
 | Instance repo | `git -C ~/aidenhq-instance log --oneline -1 && grep '^product:' ~/aidenhq-instance/instance.yaml` | `instance for <name>`, and a 40-character sha |
-| OpenRouter key | `curl -s https://openrouter.ai/api/v1/key -H "Authorization: Bearer $(cat ~/.config/aidenhq/openrouter_key)" \| jq .data.limit` | your limit, e.g. `50` (OpenRouter response shape not verified here) |
+| OpenRouter key | the setup output line `OpenRouter key ok (...)` (setup stops before the apply if OpenRouter rejects the key); re-check with `AIDENHQ_SECRETS_DIR=~/.config/aidenhq node ~/aidenhq/scripts/openrouter-key.mjs check` | `OpenRouter key ok`, with your remaining limit |
 | Paperclip | `curl -s http://127.0.0.1:3100/api/health` | contains `"status":"ok"` and `"bootstrapStatus":"ready"` |
 | Board | `curl -s http://127.0.0.1:3120/healthz` | `ok` |
 | Containers | `cd ~/aidenhq && docker compose ps --format '{{.Service}} {{.State}}'` | every service `running` |
-| Runner | `systemctl --user is-active aidenhq-runner` | `active` |
+| Runner and model gateway | `systemctl --user is-active aidenhq-runner aidenhq-gateway` | `active` twice |
 
 ## 4. Finish the secrets
 
@@ -234,20 +239,10 @@ in at `http://localhost:3100` shows your company with Aiden in its org chart.
 
 ### The runner's request reader
 
-Engineer jobs (the runner) read each request with a short `codex exec` call on the host. By default that uses a
-ChatGPT login on the host, which a fresh install doesn't have. Either log in once (`codex login --device-auth`), or
-point it at OpenRouter in `config/runner.yaml` (not tracked in git):
-
-```yaml
-intake:
-  model: "~deepseek/deepseek-flash-latest"
-  reasoning_effort: low
-  codex_args: ["-c", 'model_provider="or"', "-c", 'model_providers.or.name="OpenRouter"',
-    "-c", 'model_providers.or.base_url="https://openrouter.ai/api/v1"',
-    "-c", 'model_providers.or.env_key="OPENROUTER_API_KEY"', "-c", 'model_providers.or.wire_api="responses"']
-```
-
-Then run `systemctl --user restart aidenhq-runner`.
+Engineer jobs (the runner) read each request with a short `codex exec` call on the host. By default that goes through
+OpenRouter (the gateway, model `~deepseek/deepseek-flash-latest`), so a fresh install needs nothing here. To use a
+ChatGPT login instead, run `codex login --device-auth` and set `intake: {codex_args: []}` in `config/runner.yaml` (not
+tracked in git), then `systemctl --user restart aidenhq-runner`.
 
 **Check:** `systemctl --user is-active aidenhq-runner` prints `active`, and
 `journalctl --user -u aidenhq-runner --since '-5 min' | grep -i 'intake exited'` prints nothing after the first
@@ -342,8 +337,9 @@ acts on GitHub as an App owned by an **agents org**, never as you.
 
 1. [org admin: GitHub] Create a GitHub organization for agent-built repos, for example `acme-agents`. You must be an
    owner of it.
-2. Name it in `instance.yaml` under `settings:` as `github_agents_org: acme-agents`, commit, push and apply (step 7).
-   The runner and the setup script both read the org from this setting.
+2. Name it: if `GITHUB_AGENTS_ORG=acme-agents` was in `person.env`, setup already wrote it. Otherwise add
+   `github_agents_org: acme-agents` to `instance.yaml` under `settings:`, commit, push and apply (step 7). The runner
+   and the setup script both read the org from this setting.
 3. Create the App. The script serves a one-time plain-http page on port 8765, so give it an address your browser
    can reach, such as the server's tailnet IP:
    ```sh
@@ -388,13 +384,10 @@ scripts/verify-security.sh
 
 **Check, healthcheck:** these lines must be `ok`: `paperclip http`, `paperclip bootstrap (account claimed)`,
 `board (127.0.0.1:3120)`, `runner active`, plus the lines of every account you connected in step 7. Lines for things
-you didn't set up print `skip`. On a fresh install some lines **FAIL even though nothing is wrong**, so the script
-exits non-zero:
-
-- `codex logged in (ChatGPT)`: agents run on OpenRouter and don't need a ChatGPT login;
-- `watcher webhook configured`, `transcript watcher active` and the `ops-mcp ...` lines: need the `meetings` module;
-- `runner has the job tools` when it reports `missing claude`: Claude Code is only needed for the optional Claude
-  engine.
+you didn't set up print `skip` and are listed on a `Skipped (not configured)` line at the end. What counts as set up
+is read from the install: the `meetings` module (`config/modules.json`) enables the `ops-mcp` and watcher webhook
+checks, the runner's default engine being `codex` enables the ChatGPT login check, and a Claude engine token enables
+the `claude` job-tool check. A module or engine you did install still fails when it is broken.
 
 **Check, security:** the last line is `All security checks passed.` If not, each `FAIL` line names what is wrong. Run
 it again after every change to how the server is exposed (Tailscale serve, ports, shared access).

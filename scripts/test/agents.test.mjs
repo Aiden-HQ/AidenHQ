@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync, copyFileSync, statSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,7 +70,7 @@ test("the Architect: the stronger model, only its own role, no fleet tools, read
   assert.equal(a.model, "moonshotai/kimi-k3.1-pro");
   assert.deepEqual(a.roles, ["architect"]);
   assert.deepEqual(a.enabled_tools.slack_live, ["notify_owner"]);
-  assert.deepEqual(a.enabled_tools.apps, ["app_list", "app_status", "app_logs", "app_view", "web_view", "warehouse_query", "source_new", "app_requests", "app_roles"]); // no deploys (the request and role reads refuse it: not an owner, no app-requests role)
+  assert.deepEqual(a.enabled_tools.apps, ["app_list", "app_status", "app_logs", "app_view", "web_view", "warehouse_query"]); // research reads only: no deploys, and the request and role reads would refuse it anyway
   assert.ok(a.enabled_tools.slack.includes("slack_read_thread") && !a.enabled_tools.slack.some((t) => /send|draft/.test(t)));
   assert.ok(a.enabled_tools.github.includes("github_issue_read") && !a.enabled_tools.github.some((t) => /comment|create|update|review|rerun/.test(t)));
   for (const t of ["fleet_control", "fleet_status", "task_relay_owner_words", "task_create_engineer_task", "task_update", "task_create"]) assert.ok(!a.enabled_tools.paperclip_tasks.includes(t), t);
@@ -88,8 +88,8 @@ test("model: on a routine runs it on that model: the agent gets the codex-model 
   const r = compile(product, withAgents({ "review-chaser": { yaml: { routines: sweep({ model: "~z-ai/glm-flash-latest" }) } } }, ["github", "slack"]));
   assert.equal(r.paperclip.routines["review-chaser-sweep"].model, "~z-ai/glm-flash-latest");
   assert.equal(r.paperclip.agents["review-chaser"].command, "/opt/aidenhq/codex-model");
-  // Without a routine model the agent keeps plain codex.
-  assert.equal(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"].command, undefined);
+  // Without a routine model it still gets the launcher (a stable cwd, for prompt caching).
+  assert.equal(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"].command, "/opt/aidenhq/codex-model");
   const boxed = { image: "agent-base", trial: undefined, reports_to: "chief-of-staff" };
   const b = compile(product, withAgents({ "review-chaser": { yaml: { ...boxed, routines: sweep({ model: "m" }) } } }, ["github", "slack"]));
   assert.equal(b.paperclip.routines["review-chaser-sweep"].model, "m");
@@ -105,6 +105,23 @@ test("the codex-model launcher swaps the routine's model in for the agent's, and
   assert.equal(run(["exec", "--json", "-"], "routine-m"), "exec|--model|routine-m|--json|-|");
   assert.equal(run(["exec", "--json", "--model", "agent-m", "-"]), "exec|--json|--model|agent-m|-|");
   assert.equal(run(["--version"], "routine-m"), "--version|");
+  // Paperclip puts its own -c pairs before `exec`.
+  assert.equal(run(["-c", "a=1", "exec", "--json", "--model", "agent-m", "-"], "routine-m"), "-c|a=1|exec|--model|routine-m|--json|-|");
+  assert.equal(run(["-c", "a=1", "exec", "-"]), "-c|a=1|exec|-|");
+  // A run starts in one stable directory per agent, not the task's.
+  writeFileSync(join(bin, "codex"), "#!/bin/sh\npwd\n", { mode: 0o755 });
+  const here = (id) => execFileSync(join(product, "services/paperclip-tasks-mcp/codex-model"), ["-c", "x=1", "exec"], { encoding: "utf8", cwd: tmpdir(), env: { PATH: `${bin}:/usr/bin:/bin`, ...(id ? { PAPERCLIP_AGENT_ID: id } : {}) } });
+  assert.equal(here("a1"), "/tmp/aidenhq-cwd/a1\n");
+  assert.equal(statSync("/tmp/aidenhq-cwd/a1").mode & 0o777, 0o555); // read-only: Codex loads AGENTS.md from its cwd
+  assert.doesNotMatch(here(""), /aidenhq-cwd/); // no agent id: left alone
+  assert.doesNotMatch(here("../x"), /aidenhq-cwd/);
+  chmodSync("/tmp/aidenhq-cwd/a1", 0o755); writeFileSync("/tmp/aidenhq-cwd/a1/AGENTS.md", "planted"); // a run made it writable again
+  assert.doesNotMatch(here("a1"), /aidenhq-cwd/); // not empty: Paperclip's own cwd
+  rmSync("/tmp/aidenhq-cwd/a1", { recursive: true });
+  mkdirSync("/tmp/aidenhq-cwd/.git"); // a planted git root above the cwd would make Codex read AGENTS.md from the parent
+  assert.doesNotMatch(here("a1"), /aidenhq-cwd/);
+  rmSync("/tmp/aidenhq-cwd", { recursive: true, force: true });
+  writeFileSync(join(bin, "codex"), '#!/bin/sh\nprintf "%s|" "$@"\n', { mode: 0o755 });
   // The routine's reasoning effort replaces the agent's -c model_reasoning_effort, other -c settings stay.
   const eff = ["exec", "--json", "-c", 'model_reasoning_effort="high"', "-c", "x=1", "-"];
   assert.equal(execFileSync(join(product, "services/paperclip-tasks-mcp/codex-model"), eff, { encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, AIDENHQ_REASONING_EFFORT: "low" } }), 'exec|-c|model_reasoning_effort="low"|--json|-c|x=1|-|');
@@ -131,4 +148,17 @@ test("the web for every codex agent: live search by default (an agent may opt do
   for (const [key, a] of Object.entries(r.paperclip.agents)) if (a.dispatch === "runner") assert.ok(!a.mcp_servers.includes("apps"), key);
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
+});
+
+test("every template in modules/core/templates compiles as an instance agent in trial", () => {
+  const root = join(product, "modules/core/templates");
+  for (const key of readdirSync(root).filter((d) => existsSync(join(root, d, "agent.yaml")))) {
+    const dir = withAgents({}, ["github", "slack"]);
+    mkdirSync(join(dir, "agents", key));
+    for (const f of ["agent.yaml", "AGENTS.md"]) copyFileSync(join(root, key, f), join(dir, "agents", key, f));
+    const a = compile(product, dir).paperclip.agents[key];
+    assert.equal(a.trial, true, key);
+    assert.equal(a.reports_to, "architect", key);
+    assert.equal(a.model, "~deepseek/deepseek-flash-latest", key);
+  }
 });

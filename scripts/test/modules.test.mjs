@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, ensureOptionalSecrets, hostMounts } from "../modules.mjs";
+import { compile, ensureOptionalSecrets, grantEntry, hostMounts } from "../modules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -71,6 +71,11 @@ test("overrides apply to allowed fields only", () => {
   assert.throws(() => compile(mods, inst(["a"], base, { overrides: { agents: { x: { mcp_servers: [] } } } })), /override not allowed: agents\.x\.mcp_servers/);
   assert.throws(() => compile(mods, inst(["a"], base, { overrides: { agents: { nope: { model: "m" } } } })), /unknown agent: nope/);
   assert.deepEqual(compile(mods, inst([], base, { overrides: { routines: { daily: { status: "paused" } } } })).paperclip.routines.daily.status, "paused");
+});
+test("grants entry: models, fleet caps under the agent's override, graded off by default; a bad cap fails compile", () => {
+  const r = compile(mods, inst(["a"], base, { overrides: { agents: { x: { model: "openrouter/m2", caps: { task_usd: 20 } } } } })).paperclip;
+  assert.deepEqual(grantEntry("x", r.agents.x, { r1: { agent: "x", model: "m3" }, r2: { agent: "y", model: "m4" } }), { models: ["m2", "m3"], caps: { run_usd: 2, task_usd: 20, day_usd: 30 }, graded: false });
+  assert.throws(() => compile(mods, inst(["a"], base, { overrides: { agents: { x: { caps: { month_usd: 5 } } } } })), /x: caps\.month_usd isn't a cap/);
 });
 test("reports_to a disabled agent is an error", () => assert.throws(() => compile(mods, inst(["orphan"])), /z: reports_to y, which is not enabled/));
 test("untrusted app compiles to untrusted: true", () => {

@@ -11,8 +11,9 @@ agents:
     connections:
       # Public web pages (web_view) and the apps' live pages (app_view): reads, like every agent.
       apps: [ web_view, app_view ]
-      ops_mcp: write
-      google_workspace: read
+      # Its own pipeline only: no voice notes, knowledge mounts or meeting_note_correct (tool-budget slimming, 2026-11-13).
+      ops_mcp: [ transcripts_scan, source_read, source_register_drive_document, meeting_match, meeting_resolve, meeting_publish, source_mark_failed, sync_cursor_get, sync_cursor_set, obsidian_search, obsidian_read, obsidian_read_document_map ]
+      google_workspace: [ calendar_list_events, calendar_search_events, calendar_get_event, drive_list_meeting_documents, drive_search_files, drive_read_file, docs_read ]
       paperclip_tasks: [ task_current, task_get, task_comment, task_set_status, task_finish ]
     # ops-key: ops-mcp creates meeting tasks in Paperclip as this agent (setup gives ops-mcp its API key).
     roles: [ ops-key ]

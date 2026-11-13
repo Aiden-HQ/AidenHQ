@@ -35,17 +35,41 @@ main() {
   [ -n "$product" ] || { echo "refusing: instance.yaml has no full-sha 'product:' line" >&2; exit 1; }
   git fetch --quiet origin main
   git merge-base --is-ancestor "$product" origin/main || { echo "refusing: product $product is not on origin/main" >&2; exit 1; }
-  local before; before="$(git rev-parse HEAD)"
+  # `before` is the product this host ran; a re-exec (below) carries it over, since HEAD has already moved by then.
+  local before; before="${AIDENHQ_APPLY_BEFORE:-$(git rev-parse HEAD)}"
   git checkout --quiet --detach "$product"
+  # bash runs the script it started with: if the new product changes this script, hand over to the new one once (it sees
+  # AIDENHQ_APPLY_BEFORE, so it never hands over again), so one apply is enough. Pinned to the instance commit just
+  # checked. A script that predates the hand-over (a rollback) can't take `before`, so this one carries on instead.
+  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh \
+     && grep -q AIDENHQ_APPLY_BEFORE ops/apply-config.sh; then
+    echo "apply-config.sh changed: running the new one"
+    AIDENHQ_APPLY_BEFORE="$before" exec ops/apply-config.sh "$want"
+  fi
   # Host-side Node deps (the compiler/setup and the runner) follow the product's lockfiles.
   for d in scripts services/runner; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
 
+  # The compiled config before this apply: the live agent check fails only on connections granted since.
+  local prev_config; prev_config="$(mktemp)"; cp config/paperclip.yaml "$prev_config" 2>/dev/null || true
   node scripts/compile.mjs
   # Shared access: the tunnel may only point at the gate (never the board, Paperclip or an app port directly).
   node scripts/edge.mjs check config/cloudflared.yml || { echo "refusing: config/cloudflared.yml targets something other than the gate" >&2; exit 1; }
   ops/computer-images.sh # agent computers: only the images an agent names (scripts/computers.mjs)
+  # The model gateway (every model call passes it): installed and started if missing, restarted only when its own code or
+  # unit changed (a restart cuts the streams in flight; Codex and opencode retry). Before compose and setup point callers at
+  # it. Not keyed on a product change, so it also heals a missing unit.
+  local gw="$HOME/.config/systemd/user/aidenhq-gateway.service"
+  mkdir -p "$(dirname "$gw")"   # a fresh host's first apply runs before ops/setup.sh installs the other units
+  if ! cmp -s ops/units/aidenhq-gateway.service "$gw"; then
+    cp ops/units/aidenhq-gateway.service "$gw" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-gateway \
+      && systemctl --user restart aidenhq-gateway && echo "gateway unit installed/updated"
+  elif ! systemctl --user is-active --quiet aidenhq-gateway; then
+    systemctl --user restart aidenhq-gateway && echo "gateway started"
+  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/gateway; then
+    systemctl --user restart aidenhq-gateway && echo "gateway code changed: restarted"
+  fi
   docker compose up -d --build --remove-orphans
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.mjs prune
@@ -69,6 +93,11 @@ main() {
     systemctl --user restart aidenhq-computers && echo "computer launcher restarted"
   fi
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"
+  # The live agent check, last (everything above is applied either way): each connection an agent is granted answers and is
+  # signed in. Fails the apply only when a newly granted one doesn't (scripts/agent-check.mjs).
+  local check=0; node scripts/agent-check.mjs live --since "$prev_config" || check=$?
+  rm -f "$prev_config"
+  return "$check"
 }
 # The whole script is read before it runs: the checkout above may rewrite this file.
 main "$@"; exit

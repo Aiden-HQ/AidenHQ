@@ -130,7 +130,8 @@ Answer with 2 to 4 plain sentences and nothing else: what kind of document it is
 /** OpenRouter chat completions, ZDR providers only, no tools (the doc text is attacker-writable). */
 export function openRouterSummarise(key: string, model: string, fetchFn: typeof fetch = fetch): Summarise {
   return async (title, text) => {
-    const res = await fetchFn("https://openrouter.ai/api/v1/chat/completions", {
+    // OPENROUTER_BASE_URL: the model gateway (compose sets it); the key file then holds the gateway's source key.
+    const res = await fetchFn(`${process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1"}/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
       body: JSON.stringify({

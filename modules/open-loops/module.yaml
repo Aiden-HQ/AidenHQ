@@ -42,7 +42,7 @@ agents:
       # The shared warehouse's sources (Slack, GitHub, Jira): new rows since its cursor, and ad-hoc reads.
       apps: [ web_view, app_view, warehouse_query, source_new, source_ack ]
       slack: write
-      github?: read
+      github?: [ github_issue_read, github_search_issues ]
       google_workspace: [ docs_read, drive_search_files, drive_read_file, calendar_list_events, calendar_get_event, gmail_search, gmail_read_thread ]
       slack_live: [ notify_owner ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_update, task_comment, task_handoff, task_set_status, task_join, task_team, task_delegate, task_finish ]
@@ -96,7 +96,7 @@ routines:
     agent: slack-triage
     description: |
       New Slack events arrived. Today is {{date}}. The user's Slack user ID is ${settings.owner_slack_user_id}.
-      Follow your handbook.
+      Follow your handbook. Then close this task with one line saying what you did.
     concurrency: coalesce_if_active
     webhook: true # fired by slack-live-mcp (TRIAGE_WEBHOOK_URL/SECRET)
     webhook_base: http://paperclip:3100 # slack-live-mcp calls it from inside the compose network

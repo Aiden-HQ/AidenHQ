@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { classify } from "../src/tiers.mjs";
-import { addEach, advance, closePrs, awaitChecks, eachDecision, findPrs, finishedStatus, newQueue, prDecision, startOrResume, WRITES } from "../src/merges.mjs";
+import { addEach, advance, allowedWrite, closePrs, awaitChecks, eachDecision, findPrs, finishedStatus, newQueue, prDecision, startOrResume, WRITES } from "../src/merges.mjs";
 
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
 const red = { state: "FAILURE", contexts: { nodes: [{ __typename: "StatusContext", context: "buildkite/deploy", state: "FAILURE" }] } };
@@ -106,6 +106,16 @@ describe("merge queue: deciding", () => {
     assert.ok(!WRITES.some((w) => w.path.test("repos/o/r/pulls/1/reviews")));
     assert.ok(WRITES.some((w) => w.method === "DELETE" && w.path.test("repos/o/r/git/refs/heads/feat/x")));
     assert.ok(!WRITES.some((w) => w.method !== "DELETE" && w.path.test("repos/o/r/git/refs/heads/master")));
+  });
+
+  it("comments, PR edits and branch deletes only in the agents org; merges anywhere", () => {
+    assert.ok(allowedWrite("PUT", "repos/acme/app/pulls/1/merge", "acme-agents"));
+    assert.ok(allowedWrite("DELETE", "repos/Acme-Agents/app/git/refs/heads/feat/x", "acme-agents"));
+    for (const [m, p] of [["POST", "repos/acme/app/issues/1/comments"], ["PATCH", "repos/acme/app/pulls/1"], ["DELETE", "repos/acme/app/git/refs/heads/feat/x"]]) {
+      assert.ok(!allowedWrite(m, p, "acme-agents"), `${m} ${p}`);
+      assert.ok(!allowedWrite(m, p.replace("acme/", "acme-agents/"), undefined), "no agents org: refused");
+    }
+    assert.ok(!allowedWrite("PUT", "repos/acme-agents/app/pulls/1/reviews", "acme-agents"));
   });
 });
 

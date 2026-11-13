@@ -1,0 +1,117 @@
+// Fleet reporting from facts the system already holds: tasks done (Paperclip), approvals (the board), billed cost (the usage ledger
+// the gateway fills), grades (graded done). Diagnostics, not rankings: agents with different jobs are not compared on one number.
+// scorecard: one agent, 7 days against the 7 before (the Agents page); fleetSummary: the whole fleet (fleet_status, the morning brief).
+import type { Approval } from "./approvals.js";
+import type { Grade } from "./grades.js";
+import type { Issue, Paperclip, PastRun } from "./paperclip.js";
+import type { Store } from "./store.js";
+
+const DAY = 864e5;
+const day = (t: number) => new Date(t).toISOString().slice(0, 10);
+
+export interface Facts {
+  /** Tasks closed (done or cancelled) over the last 14 days. */
+  closed: Issue[];
+  /** Approval records over the last 14 days, any state. */
+  approvals: Approval[];
+  grades: (issueId: string) => Grade | undefined;
+  /** store.usageDaily over the last 14 days. */
+  cost: { agentId: string | null; day: string; costUsd: number; rows: number; priced: number }[];
+  /** Agent runs, newest first (as far back as Paperclip lists them). */
+  runs: PastRun[];
+}
+
+const doneAt = (i: Issue) => Date.parse(i.completedAt ?? i.updatedAt);
+const FAILED_RUN = ["failed", "error", "timed_out", "timeout"];
+
+/** One agent's 7 days against the prior 7, plus a daily trend of tasks done and billed cost. */
+export function scorecard(f: Facts, agentId: string, now = Date.now()) {
+  const today = Date.parse(day(now));
+  const [week, prior] = [today - 6 * DAY, today - 13 * DAY];
+  const inWeek = (t: number) => t >= week;
+  const inPrior = (t: number) => t >= prior && t < week;
+  const mine = f.closed.filter((i) => i.status === "done" && i.assigneeAgentId === agentId);
+  const done = mine.filter((i) => inWeek(doneAt(i)));
+  const ofAgent = f.cost.filter((c) => c.agentId === agentId);
+  const spend = (keep: (t: number) => boolean) => ofAgent.filter((c) => keep(Date.parse(c.day))).reduce((n, c) => n + c.costUsd, 0);
+  const costUsd = spend(inWeek);
+  // Billed only when every call in the week carried a cost; otherwise the figure undercounts and says so.
+  const rows = ofAgent.filter((c) => inWeek(Date.parse(c.day)));
+  const graded = done.map((i) => f.grades(i.id)).filter((g): g is Grade => Boolean(g));
+  const mineAp = f.approvals.filter((a) => a.requesterId === agentId);
+  const apIn = (keep: (t: number) => boolean) => mineAp.filter((a) => keep(Date.parse(a.createdAt)));
+  const runs = f.runs.filter((r) => r.agentId === agentId && r.startedAt && inWeek(Date.parse(r.startedAt)));
+  return {
+    window: { from: new Date(week).toISOString(), days: 7 },
+    done: { count: done.length, prior: mine.filter((i) => inPrior(doneAt(i))).length, tasks: done.slice(0, 20).map((i) => ({ identifier: i.identifier, title: i.title })) },
+    // Reopen rate: of the graded tasks finished this week, how many had a version the grader sent back (attempts, graded done).
+    reopen: { graded: graded.length, reopened: graded.filter((g) => g.attempts > 0).length, escalated: graded.filter((g) => g.state === "escalated").length },
+    approvals: { filed: apIn(inWeek).length, rejected: apIn(inWeek).filter((a) => a.state === "rejected").length, priorRejected: apIn(inPrior).filter((a) => a.state === "rejected").length },
+    runsFailed: runs.filter((r) => FAILED_RUN.includes(r.status)).length,
+    cost: { usd: costUsd, prior: spend(inPrior), perDone: done.length ? costUsd / done.length : null, billed: rows.length > 0 && rows.every((c) => c.priced === c.rows) },
+    daily: Array.from({ length: 7 }, (_, k) => {
+      const d = day(week + k * DAY);
+      return { day: d, done: done.filter((i) => day(doneAt(i)) === d).length, costUsd: ofAgent.filter((c) => c.day === d).reduce((n, c) => n + c.costUsd, 0) };
+    }),
+  };
+}
+
+export interface FleetSummary {
+  window: "24h" | "7d";
+  /** Tasks finished in the window, and applies, PRs, merges and deploys that landed. */
+  shipped: { tasks: { identifier: string; title: string; agent: string; link: string }[]; landed: { id: string; action: string; target: string; task: string }[] };
+  /** Failed outcomes and failed runs (open incidents are added by the caller from the detector). */
+  failed: { outcomes: { id: string; action: string; target: string; task: string; text: string }[]; runs: number };
+  /** Cards waiting on the owner and blocked tasks. */
+  waiting: { cards: { id: string; action: string; target: string; task: string; ageHours: number }[]; blocked: { identifier: string; title: string; link: string }[] };
+  spend: { yesterdayUsd: number; avg7dUsd: number; top: { agent: string; usd: number }[] };
+}
+
+/** The whole fleet in a few lists. `blocked` is the open blocked tasks; `names` maps agent ids to names. */
+export function fleetSummary(f: Facts, o: { window: "24h" | "7d"; blocked: Issue[]; names: Map<string, string>; now?: number }): FleetSummary {
+  const now = o.now ?? Date.now();
+  const since = now - (o.window === "24h" ? DAY : 7 * DAY);
+  const link = (identifier: string) => `#/t/${identifier}`;
+  const landed = ["push", "pr", "merge", "apply", "deploy_app"];
+  const recent = f.approvals.filter((a) => Date.parse(a.usedAt ?? a.createdAt) >= since);
+  const card = (a: Approval) => ({ id: a.id, action: a.action, target: a.target, task: a.identifier });
+  const today = Date.parse(day(now));
+  const yesterday = day(today - DAY);
+  const total = (keep: (d: string) => boolean) => f.cost.filter((c) => keep(c.day)).reduce((n, c) => n + c.costUsd, 0);
+  const week = Array.from({ length: 7 }, (_, k) => day(today - (k + 1) * DAY));
+  const perAgent = new Map<string, number>();
+  for (const c of f.cost) if (c.day === yesterday && c.agentId) perAgent.set(c.agentId, (perAgent.get(c.agentId) ?? 0) + c.costUsd);
+  return {
+    window: o.window,
+    shipped: {
+      tasks: f.closed.filter((i) => i.status === "done" && doneAt(i) >= since).map((i) => ({ identifier: i.identifier, title: i.title, agent: (i.assigneeAgentId && o.names.get(i.assigneeAgentId)) || "someone", link: link(i.identifier) })),
+      landed: recent.filter((a) => landed.includes(a.action) && a.outcome === "applied").map(card),
+    },
+    failed: {
+      outcomes: recent.filter((a) => a.outcome === "failed").map((a) => ({ ...card(a), text: (a.outcomeText ?? "").slice(0, 200) })),
+      runs: f.runs.filter((r) => r.startedAt && Date.parse(r.startedAt) >= since && FAILED_RUN.includes(r.status)).length,
+    },
+    waiting: {
+      cards: f.approvals.filter((a) => a.state === "pending" && a.tier === 2 && a.expiresAt > new Date(now).toISOString()).map((a) => ({ ...card(a), ageHours: Math.round((now - Date.parse(a.createdAt)) / 36e5) })),
+      blocked: o.blocked.map((i) => ({ identifier: i.identifier, title: i.title, link: link(i.identifier) })),
+    },
+    spend: {
+      yesterdayUsd: total((d) => d === yesterday),
+      avg7dUsd: total((d) => week.includes(d)) / 7,
+      top: [...perAgent].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id, usd]) => ({ agent: o.names.get(id) ?? id, usd })),
+    },
+  };
+}
+
+/** Gathers the 14 days of facts (done tasks, cards, billed cost, runs); `grades` reads the store per task. */
+export async function gatherFacts(pc: Paperclip, store: Pick<Store, "approvals" | "grades" | "usageDaily">, now = Date.now()): Promise<Facts> {
+  const [from, to] = [new Date(Date.parse(day(now)) - 13 * DAY).toISOString(), new Date(now + 1000).toISOString()];
+  const [closed, runs] = await Promise.all([pc.closedSince(from, "500"), pc.recentRuns(200)]);
+  return { closed, runs, approvals: store.approvals.since(from), grades: (id) => store.grades.get(id), cost: store.usageDaily(from, to) };
+}
+
+/** fleet_status's `summary`: the fleet in a few lists over the window (24h or 7d). */
+export async function statusSummary(pc: Paperclip, store: Pick<Store, "approvals" | "grades" | "usageDaily">, window: "24h" | "7d"): Promise<FleetSummary> {
+  const [facts, open, agents] = await Promise.all([gatherFacts(pc, store), pc.openIssues(), pc.agents()]);
+  return fleetSummary(facts, { window, blocked: open.filter((i) => i.status === "blocked"), names: new Map(agents.map((a) => [a.id, a.name])) });
+}

@@ -22,7 +22,7 @@ const setting = (k) => (instYaml && existsSync(instYaml) ? new RegExp(`^\\s+${k}
 const instanceName = setting("instance_name") ?? env.AIDENHQ_INSTANCE_NAME;
 const org = process.argv[2] || env.AIDENHQ_GITHUB_AGENTS_ORG || setting("github_agents_org") || (instanceName ? `aidenhq-${instanceName}` : "");
 if (!org) {
-  console.error("No agents org: set settings.instance_name in instance.yaml (AIDENHQ_INSTANCE_DIR), or pass the org: node ops/github-app-setup.mjs <org>");
+  console.error("No agents org: set github_agents_org under settings: in instance.yaml (or GITHUB_AGENTS_ORG in person.env before setup), or pass the org: node ops/github-app-setup.mjs <org>. The org must already exist on GitHub and be owned by you.");
   process.exit(1);
 }
 

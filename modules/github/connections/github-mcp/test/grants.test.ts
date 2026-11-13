@@ -98,7 +98,7 @@ describe("github-mcp over HTTP", () => {
     const refused = await post("key-scout", { ...call("github_issue_comment"), params: { name: "github_issue_comment", arguments: { url: "o/r#1", body: "hi" } } });
     expect(refused.status).toBe(200);
     expect(refused.body.result?.isError).toBe(true);
-    expect(refused.body.result?.content?.[0]?.text).toBe("Refused: open-loops isn't granted github_issue_comment on github.");
+    expect(refused.body.result?.content?.[0]?.text).toBe("Refused: open-loops isn't granted github_issue_comment on github (denied_not_granted).");
     // A granted read passes the check and fails only at GitHub (no token here): proof it got past authorize.
     const read = await post("key-scout", call("github_whoami"));
     expect(read.body.result?.content?.[0]?.text).toContain("github_auth_unavailable");

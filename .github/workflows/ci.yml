@@ -16,6 +16,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The 7-day rule for npm: lockfile entries this change adds or alters must be 7+ days old, unless an owner-approved
+  # security exception in .github/supply-chain-exceptions.yaml holds up against the advisory (wave 3 item 17).
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PR_BASE: ${{ github.event.pull_request.base.sha }}
+      PUSH_BEFORE: ${{ github.event.before }}
+      HEAD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Install (no lifecycle scripts: the lockfile is not vetted yet)
+        working-directory: scripts
+        run: npm ci --ignore-scripts
+      - name: Age check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          base="${PR_BASE:-$PUSH_BEFORE}"
+          # a new branch or a force push has no usable before: compare with the default branch
+          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
+          fi
+          node scripts/supply-chain/npm-age.mjs "$base" "$HEAD_SHA"
+
   test:
     name: ${{ matrix.dir }}
     runs-on: ubuntu-latest

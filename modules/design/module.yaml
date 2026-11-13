@@ -6,6 +6,8 @@ agents:
   ui-designer:
     adapter: codex_local
     max_parallel: 2 # design reviews per PR are independent; each run gets its own box
+    # Graded done: mockups and design work delegated to it are checked against their rubric before they close.
+    graded: true
     # Looks at screenshots: Kimi takes images on OpenRouter (input_modalities text, image, video).
     model: moonshotai/kimi-k3.1-pro
     reasoning_effort: high
@@ -18,6 +20,6 @@ agents:
       # Reads PRs and their checks; commit_status_set is the design-review verdict (role-checked in github-mcp).
       github: [ github_whoami, github_issue_read, github_search_issues, commit_status_set ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_comment, task_handoff, task_set_status, task_finish ]
-    catch_up: true
+    heartbeat: true
     # repo-checkout: a commit of an agents-org repo in its computer; design-review: the design-review commit status.
     roles: [ repo-checkout, design-review ]

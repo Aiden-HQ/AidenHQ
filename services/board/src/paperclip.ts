@@ -220,8 +220,8 @@ export class Paperclip {
     return this.request("POST", `/api/heartbeat-runs/${encodeURIComponent(runId)}/cancel`, {});
   }
 
-  closedSince(since: string): Promise<Issue[]> {
-    return this.list("done,cancelled", since, "100");
+  closedSince(since: string, limit = "100"): Promise<Issue[]> {
+    return this.list("done,cancelled", since, limit);
   }
 
   private list(status: string, updatedSince?: string, limit = "500"): Promise<Issue[]> {
@@ -259,6 +259,25 @@ export class Paperclip {
       const raw = await this.request<(PastRun & { contextSnapshot?: { issueId?: string } | null })[]>("GET", `/api/companies/${this.companyId}/heartbeat-runs?limit=${limit}`);
       return raw.map((r) => ({ id: r.id, status: r.status, agentId: r.agentId, issueId: r.contextSnapshot?.issueId ?? null, startedAt: r.startedAt, finishedAt: r.finishedAt, error: r.error ? String(r.error).slice(0, 200) : null, errorCode: r.errorCode ?? null }));
     });
+  }
+
+  /** One heartbeat run in full (companyId, session ids, usageJson); a 404 means Paperclip pruned it. */
+  heartbeatRun(id: string): Promise<Record<string, any>> {
+    return this.request("GET", `/api/heartbeat-runs/${encodeURIComponent(id)}`);
+  }
+
+  /** A run's stored log: ndjson {ts, stream, chunk} lines, up to `cap` bytes from the start, in a few pages. */
+  async runLog(id: string, cap = 2_000_000): Promise<{ text: string; truncated: boolean }> {
+    let offset = 0;
+    const parts: string[] = [];
+    while (offset < cap) {
+      const r = await this.request<{ content?: string; nextOffset?: number }>("GET", `/api/heartbeat-runs/${encodeURIComponent(id)}/log?offset=${offset}&limitBytes=500000`);
+      if (!r.content) return { text: parts.join(""), truncated: false };
+      parts.push(r.content);
+      if (typeof r.nextOffset !== "number" || r.nextOffset <= offset) return { text: parts.join(""), truncated: false };
+      offset = r.nextOffset;
+    }
+    return { text: parts.join(""), truncated: true };
   }
 
   /** An issue's title and origin, which rarely change: cached for a minute. */

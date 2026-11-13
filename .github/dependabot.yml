@@ -1,0 +1,48 @@
+# Version updates, weekly, never a version under 7 days old (the owner's supply-chain rule, wave 3 item 17).
+# Security updates are separate and not held by the cooldown; the CI check scripts/supply-chain/npm-age.mjs fails them
+# until the owner approves an entry in .github/supply-chain-exceptions.yaml.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories:
+      - /scripts
+      - /services/apps-mcp
+      - /services/board
+      - /services/runner
+      - /modules/security/scanner
+      - /modules/clickhouse/connections/clickhouse-mcp
+      - /modules/github/connections/github-mcp
+      - /modules/glean/connections/glean-mcp
+      - /modules/google/connections/google-workspace-mcp
+      - /modules/grafana/connections/grafana-mcp
+      - /modules/owner-channel/connections/slack-live-mcp
+      - /modules/jira/connections/jira-mcp
+      - /modules/primer/connections/primer-mcp
+      - /modules/slack/connections/slack-mcp
+      - /modules/meetings/connections/ops-mcp
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    open-pull-requests-limit: 5
+    groups:
+      npm: { patterns: ["*"] }
+  - package-ecosystem: docker
+    directories: ["/**/*"]
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    open-pull-requests-limit: 5
+    groups:
+      docker: { patterns: ["*"] }
+  - package-ecosystem: docker-compose
+    directories: ["/**/*"]
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    open-pull-requests-limit: 5
+    groups:
+      docker-compose: { patterns: ["*"] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    open-pull-requests-limit: 5
+    groups:
+      actions: { patterns: ["*"] }

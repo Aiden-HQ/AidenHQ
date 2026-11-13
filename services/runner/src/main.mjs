@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, repoAllowed, resolveEngine, stripHidden } from "./commands.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { architectFollowUps, bumpTitle, definitionsOf, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
-import { adoptRun, jailProblem, observes, runAlive, startAgent, watchAgent } from "./engines.mjs";
+import { adoptRun, gatewayApi, jailProblem, modelToken, observes, runAlive, startAgent, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.mjs";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
 import { ISOLATED_ENV, defaultBranch, ensureClone, ensureGuardHooks, git, landOnMain, remoteIsEmpty, setGitAuth } from "./git.mjs";
@@ -29,9 +29,11 @@ import { State } from "./state.mjs";
 import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.mjs";
 import { authorize } from "./authorize.mjs";
 import YAML from "yaml";
-import { classify, normalizeApp, sensitiveTraits } from "./tiers.mjs";
+import { classify, highest, normalizeApp, sensitiveTraits } from "./tiers.mjs";
 import { KIMI, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
-import { jobUsage, usageFromCompletion } from "./usage.mjs";
+import { GRADE_SCHEMA, gather, grade, gradeNote, template } from "./grade.mjs";
+import { ALREADY_APPLIED, guardBranch } from "./evidence.mjs";
+import { jobUsage } from "./usage.mjs";
 import { readBusy } from "./busy.mjs";
 import { repoAccess } from "./repos.mjs";
 
@@ -145,6 +147,14 @@ async function poll() {
   if (boardApi) await runReviews().catch((err) => log("reviews check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Handbook edits to agents in trial: no tap. Every poll.
   await runTrialEdits().catch((err) => log("trial edits failed", { err: String(err.message ?? err).slice(0, 300) }));
+  // Graded done: finished deliverables waiting for the grader (grade.mjs). Every poll.
+  // Not awaited: a grader call or a slow GitHub read never holds up the poll; one pass at a time.
+  if (boardApi && !gradesRunning) {
+    gradesRunning = true;
+    runGrades()
+      .catch((err) => log("grading failed", { err: String(err.message ?? err).slice(0, 300) }))
+      .finally(() => (gradesRunning = false));
+  }
   state.set("last_poll", now);
   drainQueue();
 }
@@ -184,15 +194,9 @@ function reportUsage(record) {
   boardApi.post("/internal/usage", record, runnerKey()).catch((err) => log("usage report failed", { err: String(err.message ?? err).slice(0, 200) }));
 }
 
-/** The reviewer's model call, with each call's usage reported as the AI reviewer's. */
-function reviewerAsk(approvalId) {
-  const ask = openRouterAsk(openRouterKey(cfg));
-  return async (model, prompt) => {
-    const r = await ask(model, prompt);
-    const u = usageFromCompletion(r.usage);
-    if (u) reportUsage({ key: `review:${approvalId}:${model}:${Date.now()}`, component: "AI reviewer", model, ...u });
-    return r;
-  };
+/** The reviewer's model calls, through the model gateway with the runner's reviewer token (the gateway bills them, uncapped). */
+function reviewerAsk() {
+  return openRouterAsk(modelToken(cfg, { kind: "reviewer", component: "AI reviewer", ttlMs: 3600_000 }), { url: `${gatewayApi(cfg)}/chat/completions` });
 }
 
 // ------------------------------------------------------------------ activity for the board's Agents view
@@ -577,9 +581,11 @@ async function runAutoMerges() {
       const bound = ready.map(([p]) => p);
       // Each PR on its own (owner, 2026-11-12): one red or carded PR doesn't hold the others back.
       const tiers = off ? ready.map(() => ({ tier: 2, rule: "autonomy-off", reason: "autonomy is off" })) : await Promise.all(ready.map(([, s]) => tierFor(issue, "merge", { prs: [s] })));
+      // The base tier on its merits, also with autonomy off (best effort there: unknown on a failed read).
+      const bases = off ? await Promise.all(ready.map(([, s]) => tierFor(issue, "merge", { prs: [s] }).catch(() => null))) : tiers;
       const isZero = (t) => t.tier === 0 && !t.reject;
       const zero = bound.filter((_, i) => isZero(tiers[i]));
-      const rest = bound.map((p, i) => [p, tiers[i]]).filter(([, t]) => !isZero(t));
+      const rest = bound.map((p, i) => [p, tiers[i], bases[i]]).filter(([, t]) => !isZero(t));
       // Taken out before acting, so a failure from here on can't file twice: it's said on the task instead. During the run
       // the rest stays for its end (a newer request for it clears that and tiers it again).
       const taken = [...gone, ...zero, ...(busy ? [] : rest.map(([p]) => p))];
@@ -602,7 +608,7 @@ async function runAutoMerges() {
       if (carded.length) {
         const tier = carded.some(([, t]) => t.tier !== 1) ? 2 : 1;
         const reason = carded.map(([, t]) => t.reason).join("; ");
-        const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(([p]) => p), ...(want.gap !== undefined ? { gap: want.gap } : {}) }, tier, reason });
+        const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(([p]) => p), ...(want.gap !== undefined ? { gap: want.gap } : {}) }, tier, reason, baseTier: baseOf(...carded.map(([, , b]) => b)), rule: highest(carded.map(([, t]) => t)).rule });
         await pc.comment(issueId, `The merge waits for ${a.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${a.id}): ${reason}.`);
       }
     } catch (err) {
@@ -683,7 +689,9 @@ async function advanceMerges({ minute = true } = {}) {
 /** A finished queue: the task's status (with `say`, unless already posted), the parent's note, and the tasks that opened its PRs. */
 async function finishMerges(issueId, queue, say, { posted = false } = {}) {
   const full = await pc.issue(issueId).catch(() => undefined);
-  const status = merges.finishedStatus(full, queue, state.branches(issueId).filter((b) => b.pr_url && !b.merged).map((b) => b.pr_url));
+  let status = merges.finishedStatus(full, queue, state.branches(issueId).filter((b) => b.pr_url && !b.merged).map((b) => b.pr_url));
+  // A graded task closes only through the grader: it stays in review until then.
+  if (status === "done" && !(await mayClose(issueId, "finish_merges"))) status = "in_review";
   if (!posted) await pc.setStatus(issueId, status, say.join("\n\n"));
   else if (full && status !== full.status) await pc.setStatus(issueId, status);
   // Like an applied change: the chat that asked hears how the merges ended, which wakes its agent (the Agent Architect).
@@ -694,7 +702,7 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
     for (const b of state.branches(other)) if (b.pr_url && mergedUrls.some((u) => u.toLowerCase() === b.pr_url.toLowerCase())) state.updateBranch(other, b.repo, b.branch, { merged: 1 });
     const o = await pc.issue(other).catch(() => undefined);
     const open = state.branches(other).filter((b) => b.pr_url && !b.merged).map((b) => b.pr_url);
-    if (o?.status === "in_review" && merges.finishedStatus(o, queue, open) === "done") await pc.setStatus(other, "done", `Merged by ${queue.identifier}'s merge queue.`).catch(() => {});
+    if (o?.status === "in_review" && merges.finishedStatus(o, queue, open) === "done" && (await mayClose(other, "finish_merges"))) await pc.setStatus(other, "done", `Merged by ${queue.identifier}'s merge queue.`).catch(() => {});
   }
 }
 
@@ -742,12 +750,181 @@ const mergeGithub = {
 };
 
 async function githubWrite(repo, path, fields, method = "PUT") {
-  if (!merges.WRITES.some((w) => w.method === method && w.path.test(path))) throw new Error(`refused GitHub write ${method} ${path}`);
+  if (!merges.allowedWrite(method, path, cfg.agentsOrg)) throw new Error(`refused GitHub write ${method} ${path}`);
   const args = ["api", "-X", method, path];
   for (const [k, v] of Object.entries(fields)) args.push("-f", `${k}=${v}`);
   const { stdout } = await execFileP(await findRealGh(), args, await ghoMerge(repo));
   return JSON.parse(stdout || "{}");
 }
+
+// ------------------------------------------------------------------ graded done
+
+/**
+ * The board's completion gate (graded done) for one of the runner's close paths: true when the task may close as before.
+ * The board unreachable (a network error, not an answer): passes, since most tasks have no rubric and an outage must not
+ * hold every close. An error answer fails closed: the task stays in review.
+ */
+async function mayClose(issueId, via) {
+  if (!boardApi) return true;
+  try {
+    return (await boardApi.post(`/internal/grades/${encodeURIComponent(issueId)}/gate`, { via })).pass === true;
+  } catch (err) {
+    const answered = /^board POST .* → \d+/.test(String(err.message ?? ""));
+    log("completion gate failed", { issue: issueId, via, answered, err: String(err.message ?? err).slice(0, 200) });
+    return !answered;
+  }
+}
+
+let gradesRunning = false;
+const grading = new Set();
+const GRADE_WAIT_MS = 24 * 60 * 60_000; // evidence still missing a day after the close: the owner hears of it
+const gradeLooked = new Map(); // issueId → when its evidence was last looked at while waiting
+/** The board's waiting rows: grade each (one at a time per task), and check escalated tasks finished again for a new version. */
+async function runGrades() {
+  const { on, grades = [], resubmitted = [] } = await boardApi.get("/internal/grades");
+  if (!on) return releaseGrades(grades);
+  for (const g of resubmitted) {
+    // The mark stays until a version is found: look again once a minute.
+    if (Date.now() - (gradeLooked.get(g.issueId) ?? 0) < 60_000) continue;
+    gradeLooked.set(g.issueId, Date.now());
+    try {
+      const issue = await pc.issue(g.issueId);
+      let version = "";
+      if (["file", "report"].includes(g.deliverable.kind)) {
+        // Any comment is a new version of these: only the owner's own word since the escalation sends it back to the grader.
+        version = (await pc.comments(issue.id)).filter((c) => Paperclip.isUserInstruction(c) && c.createdAt > g.updatedAt).at(-1)?.id ?? "";
+      } else {
+        const ev = await gather(g.deliverable, gradeDeps(issue));
+        if (ev.awaiting) continue; // still moving (checks, merges, a card): the mark stays, the next look decides
+        version = ev.version ?? "";
+      }
+      await boardApi.post(`/internal/grades/${encodeURIComponent(g.issueId)}/resubmit`, { version });
+    } catch (err) {
+      log("resubmitted grade check failed", { issue: g.issueId, err: String(err.message ?? err).slice(0, 300) });
+    }
+  }
+  for (const g of grades) {
+    if (grading.has(g.issueId)) continue;
+    // A bridge close posts its finishing comment just after the gate: let it land. Waiting evidence: once a minute.
+    if (g.state === "pending" && Date.now() - Date.parse(g.updatedAt) < 5_000) continue;
+    if (g.state === "awaiting_evidence" && Date.now() - (gradeLooked.get(g.issueId) ?? 0) < 60_000) continue;
+    grading.add(g.issueId);
+    try {
+      await gradeOne(g);
+    } catch (err) {
+      log("grading a task failed", { issue: g.issueId, err: String(err.message ?? err).slice(0, 300) });
+    } finally {
+      grading.delete(g.issueId);
+    }
+  }
+}
+
+/**
+ * Grading switched off (the kill switch): every held task ends where it would have ungraded. A bridge agent's held task
+ * is in review only because it finished and the gate held it, so it closes as done; a runner Engineer's turn ends in
+ * review anyway, so it stays there for the owner; a task someone has moved since keeps its status. Then the board drops
+ * the row and the `grading` label. Status first: a failed write is retried on the next poll.
+ */
+async function releaseGrades(grades) {
+  const engineers = grades.length ? (await pc.engineerAgents()).map((a) => a.id) : [];
+  for (const g of grades) {
+    try {
+      const issue = await pc.issue(g.issueId);
+      if (issue.status === "in_review" && !engineers.includes(issue.assigneeAgentId)) {
+        await pc.setStatus(issue.id, "done", `Grading is switched off: closed as its assignee finished it, ungraded.`);
+        if (issue.parentId) await pc.comment(issue.parentId, `${issue.identifier} is done (grading is off, so it closed ungraded): ${issue.title}. Its result is on ${issue.identifier}.`).catch(() => {});
+      }
+      await boardApi.post(`/internal/grades/${encodeURIComponent(g.issueId)}/release`, {});
+      log("grade released", { issue: issue.identifier, status: issue.status });
+    } catch (err) {
+      log("releasing a grade failed", { issue: g.issueId, err: String(err.message ?? err).slice(0, 300) });
+    }
+  }
+}
+
+/** What the grader reads, for one task: GitHub through the App, the board's cards and app status, Paperclip's comments and files. */
+function gradeDeps(issue) {
+  return {
+    busy: () =>
+      running.has(issue.id) || queue.some((j) => j.issue.id === issue.id)
+        ? "the Engineer is still working on it"
+        : mergeQueue(issue.id)?.state === "running" || JSON.parse(state.get("auto_merges") || "{}")[issue.id]?.prs?.length
+          ? "its merges are still running"
+          : "",
+    approvals: async () => (await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.id)}`)).approvals ?? [],
+    taskPrs: async () => merges.findPrs(state.branches(issue.id).map((b) => b.pr_url).filter(Boolean).join("\n")),
+    ownRepo,
+    pr: (repo, number) => mergeGithub.pr(repo, number),
+    diff: async (repo, number) => (await execFileP(await findRealGh(), ["api", "-H", "Accept: application/vnd.github.diff", `repos/${repo}/pulls/${number}`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }))).stdout,
+    app: async (name) => (/^[a-z0-9-]{1,63}$/.test(name) ? (await boardApi.get(`/internal/grades/app/${name}`)).app : null),
+    comments: () => pc.comments(issue.id),
+    attachments: () => pc.attachments(issue.id),
+  };
+}
+
+async function gradeOne(g) {
+  const issue = await pc.issue(g.issueId);
+  // Closed meanwhile (the owner accepted or cancelled it): nothing to grade.
+  if (["done", "cancelled"].includes(issue.status)) return;
+  gradeLooked.set(g.issueId, Date.now());
+  const ev = await gather(g.deliverable, gradeDeps(issue));
+  const verdictPath = `/internal/grades/${encodeURIComponent(g.issueId)}/verdict`;
+  const rubric = g.rubric.length ? g.rubric : template(g.deliverable.kind);
+  const agent = (await pc.agents()).find((a) => a.id === issue.assigneeAgentId);
+  const last = g.verdicts?.at(-1);
+  let v;
+  if (ev.awaiting) {
+    // Evidence that never comes (a PR nobody merges, a deploy that never lands) goes to the owner after a day, saying why;
+    // a task still moving (a run, its merges) is never cut short.
+    if (ev.busy || Date.now() - Date.parse(g.updatedAt) < GRADE_WAIT_MS) {
+      if (g.state !== "awaiting_evidence") await boardApi.post(verdictPath, { version: "", outcome: "awaiting_evidence" });
+      log("grading waits for evidence", { issue: issue.identifier, why: ev.awaiting });
+      return;
+    }
+    ev.version = "";
+    v = { outcome: "error", model: "", criteria: [], reason: `still waiting for its evidence a day after it was finished: ${ev.awaiting}` };
+  } else if (g.state === "awaiting_evidence" && last?.verdict === "satisfied" && last.version === ev.version) {
+    // Graded satisfied before, but closing the task failed: the same version keeps its verdict, no second grader call.
+    v = { outcome: "satisfied", model: last.model, criteria: last.criteria };
+  } else {
+    // The author's model: the job's engine for a runner Engineer, else the agent's own; the grader is never of its family.
+    const authorModel = `${state.lastJob(issue.id)?.engine ?? ""} ${agent?.adapterConfig?.model ?? ""}`;
+    // Through the model gateway with the runner's grader token (kind grader: billed to the task, never capped). AIDENHQ_GRADER_URL: tests' fake.
+    const ask = process.env.AIDENHQ_GRADER_URL
+      ? openRouterAsk(openRouterKey(cfg), { schema: GRADE_SCHEMA, url: process.env.AIDENHQ_GRADER_URL })
+      : openRouterAsk(modelToken(cfg, { kind: "grader", issueId: issue.id, component: "Grader", ttlMs: 3600_000 }), { schema: GRADE_SCHEMA, url: `${gatewayApi(cfg)}/chat/completions` });
+    v = await grade({ rubric, deliverable: g.deliverable, facts: ev.facts, data: ev.data, request: `${issue.title}\n\n${stripHidden(issue.description ?? "")}`, authorModel, ask });
+  }
+  const row = await boardApi.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria });
+  log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, model: v.model, version: ev.version.slice(0, 40) });
+  const note = gradeNote(v, rubric, row.state, { version: ev.version, reason: row.state === "escalated" && v.outcome === "error" ? v.reason : undefined });
+  if (row.state === "satisfied") {
+    try {
+      await pc.setStatus(issue.id, "done", note);
+    } catch (err) {
+      // Back to waiting, so the next poll closes it (the verdict above is reused, not asked again).
+      await boardApi.post(verdictPath, { version: "", outcome: "awaiting_evidence" }).catch(() => {});
+      throw err;
+    }
+    if (issue.parentId) {
+      const p = await pc.issue(issue.parentId).catch(() => undefined);
+      if (p?.assigneeAgentId && !["done", "cancelled"].includes(p.status)) await pc.comment(p.id, `${issue.identifier} (${agent?.metadata?.persona?.name ?? agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.`);
+    }
+  } else if (row.state === "needs_revision") {
+    await pc.setStatus(issue.id, "todo", note);
+    // The runner ignores comments with its own marker, and takes a todo task only before its first run: a reopened Engineer
+    // task is dispatched here, once per rejected version (a restart neither drops nor repeats it). Paperclip agents wake on the comment.
+    const key = `grade-dispatched:${issue.id}:${ev.version}`;
+    if ((await pc.engineerAgents()).some((a) => a.id === issue.assigneeAgentId) && !state.get(key)) {
+      await dispatch({ issue, instructions: `(From the grader, not ${cfg.selfName}'s own words: your finished work was checked against the task's rubric.)\n\n${note.replace(GRADER_NOTE_TAIL, "")}` });
+      state.set(key, new Date().toISOString());
+    }
+  } else if (row.state === "escalated") {
+    await pc.comment(issue.id, note);
+    if (issue.parentId) await pc.comment(issue.parentId, `${issue.identifier} went to the owner after grading: ${issue.title}. See ${issue.identifier}.`).catch(() => {});
+  }
+}
+const GRADER_NOTE_TAIL = /\n\n<!-- aidenhq:grader -->$/;
 
 // ------------------------------------------------------------------ replies → Research Assistant
 
@@ -939,9 +1116,10 @@ const waitingFor = (a, issue) =>
  * File (or find, when the same request is already open) the approval record for one exact request. The board writes the
  * card from `args`; `diff` (apply only) is what the user reads, and applyApproved() rechecks it before landing.
  */
-async function fileApproval(issue, { action, args, diff, tier = 2, reason = "" }) {
+async function fileApproval(issue, { action, args, diff, tier = 2, reason = "", baseTier, rule }) {
   if (!boardApi) throw new UserError("Not done: approvals need the board, which isn't set up here.");
-  const a = await boardApi.post("/internal/approvals", { issue: issue.identifier, action, args, ...(diff ? { diff } : {}), ...(tier === 1 ? { tier } : {}), ...(reason ? { reason: reason.slice(0, 1000) } : {}) }, runnerKey());
+  // rule: the classifier's rule, the card's reason code (the board keeps it only in kebab-case).
+  const a = await boardApi.post("/internal/approvals", { issue: issue.identifier, action, args, ...(diff ? { diff } : {}), ...(tier === 1 ? { tier } : {}), ...(reason ? { reason: reason.slice(0, 1000) } : {}), ...(baseTier !== undefined ? { baseTier } : {}), ...(rule ? { rule } : {}) }, runnerKey());
   log("approval filed", { issue: issue.identifier, approval: a.id, action, state: a.state, tier: a.tier });
   return a;
 }
@@ -953,6 +1131,29 @@ async function fileApproval(issue, { action, args, diff, tier = 2, reason = "" }
  * before), tier0 (Tier 0 runs at once; the reviewer only notes its verdict), full (the reviewer decides Tier 1).
  */
 const autonomyNow = () => (["tier0", "full"].includes(readGrants()?.autonomy) ? readGrants().autonomy : "off");
+/**
+ * A card's base tier (wave 3, batch approvals): what classify() says on the request's merits, before the autonomy override;
+ * a reject is 2. Unknown (undefined: a read failed) when any part of the card is, so the card is never batched.
+ */
+const baseOf = (...ts) => (ts.length && ts.every(Boolean) ? Math.max(...ts.map((t) => (t.reject ? 2 : t.tier))) : undefined);
+/** The duplicate-card guard's kill switch (instance setting `dup_guard`, in the grants table next to `autonomy`). */
+const dupGuardOn = () => readGrants()?.dup_guard !== "off";
+/** The guard found the change already satisfied on the target: no card; the evidence goes back to the agent instead. */
+class AlreadyApplied extends Error {}
+/**
+ * The duplicate-card guard's evidence comment on the task (reason `already_applied`), once per request: W5's grader or the
+ * delegator can finish the task from it. Returns what the agent is told.
+ */
+async function alreadyApplied(issue, action, key, evidence) {
+  const text = `**Already satisfied on main** (\`${ALREADY_APPLIED}\`, ${action}): ${evidence}. No approval card was filed.`;
+  const once = `already_applied:${issue.id}:${action}:${key}`;
+  if (!state.get(once)) {
+    await pc.comment(issue.id, text);
+    state.set(once, new Date().toISOString());
+  }
+  log("already applied", { issue: issue.identifier, action, key: key.slice(0, 120) });
+  return `${text} Nothing more to do for it: say so in one line.`;
+}
 /** The runner's own key to the board (reviewer_key): Tier 1 filing, Tier 0 audit rows, the reviewer's verdicts. */
 const runnerKey = () => (existsSync(cfg.reviewerKeyFile) ? { "x-reviewer-key": readFileSync(cfg.reviewerKeyFile, "utf8").trim() } : {});
 
@@ -1143,7 +1344,7 @@ async function runReviews() {
     reviewing.add(a.id);
     try {
       // Paused (autonomy off): cards filed before the switch go to the owner rather than wait unseen.
-      if (mode === "off") await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: "escalate", reason: "autonomy is off: the owner decides", model: KIMI }, runnerKey());
+      if (mode === "off") await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: "escalate", reason: "autonomy is off: the owner decides", model: KIMI, code: "autonomy_off" }, runnerKey());
       else await reviewOne(a, mode);
     } catch (err) {
       log("review failed", { approval: a.id, err: String(err.message ?? err).slice(0, 300) });
@@ -1163,9 +1364,9 @@ async function reviewOne(a, mode) {
     input = { error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300) };
   }
   const v = input.error
-    ? { decision: "escalate", reason: `couldn't check the change (${input.error})`, model: KIMI }
+    ? { decision: "escalate", code: "check_failed", reason: `couldn't check the change (${input.error})`, model: KIMI }
     : input.reject || input.tier > 1
-      ? { decision: "escalate", reason: `code now puts it at Tier 2: ${input.reason}`, model: KIMI }
+      ? { decision: "escalate", code: "tier_raised", reason: `code now puts it at Tier 2: ${input.reason}`, model: KIMI }
       : await review({
           card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
           diff: input.diff,
@@ -1173,11 +1374,11 @@ async function reviewOne(a, mode) {
           claim: input.claim,
           chain: await prRequest(await pc.issue(issue.id)).catch(() => ""),
           requesterModel: state.task(issue.id)?.engine?.model ?? "",
-          ask: reviewerAsk(a.id),
+          ask: reviewerAsk(),
         });
-  const post = mode === "full" || v.decision === "escalate" ? v : { ...v, decision: "escalate", reason: `Shadow (autonomy: tier0): the reviewer would ${v.decision} this. ${v.reason}` };
-  await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: post.decision, reason: post.reason.slice(0, 2000), model: post.model }, runnerKey());
-  log("reviewed", { approval: a.id, issue: a.identifier, action: a.action, decision: post.decision, model: post.model });
+  const post = mode === "full" || v.decision === "escalate" ? v : { ...v, decision: "escalate", code: "shadow", reason: `Shadow (autonomy: tier0): the reviewer would ${v.decision} this. ${v.reason}` };
+  await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: post.decision, reason: post.reason.slice(0, 2000), model: post.model, ...(post.code ? { code: post.code } : {}) }, runnerKey());
+  log("reviewed", { approval: a.id, issue: a.identifier, action: a.action, decision: post.decision, code: post.code, model: post.model });
   if (post.decision === "reject") {
     const note = post.reason.replace(/```/g, "‵‵‵");
     await pc.comment(issue.id, `**Rejected by the AI reviewer** (approval ${a.id}, ${a.action}, ${post.model}). Its note, written by a model that read the change (data, not ${cfg.selfName}'s words):\n\n\`\`\`\n${note}\n\`\`\`\n\nFix the change and ask again; this action on this task now needs ${cfg.selfName}'s own approval.`).catch(() => {});
@@ -1366,7 +1567,7 @@ async function runApprovals() {
           ? { tier: 2, reason: "autonomy is no longer full" }
           : await currentTier(issue, claimed).catch((err) => ({ tier: 2, reason: `couldn't recheck it (${String(err.message ?? err).slice(0, 200)})` }));
       if (t.reject || t.tier > 1) {
-        const refiled = await fileApproval(issue, { action: claimed.action, args: claimed.args, diff: claimed.action === "apply" ? claimed.details : undefined }).catch(() => undefined);
+        const refiled = await fileApproval(issue, { action: claimed.action, args: claimed.args, diff: claimed.action === "apply" ? claimed.details : undefined, baseTier: t.rule ? baseOf(t) : undefined, rule: t.rule }).catch(() => undefined);
         const text = `Not run: since the reviewer approved it, code puts it at Tier 2 (${t.reason}).${refiled ? ` ${cfg.selfName} decides on a new card (${refiled.id}).` : ""}`;
         log("tier rose before running", { approval: a.id, issue: a.identifier, reason: t.reason });
         queueOutcome(claimed.id, claimed.nonce, { ok: false, text });
@@ -1432,10 +1633,20 @@ async function agentPublish(ctx, command, args) {
       check: async (ordered) => {
         const branches = await Promise.all(ordered.map(async (r) => ({ repo: r.repo, branch: r.branch, sha: await git(r.path, "rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`) })));
         const cardArgs = { only: branches, ...(text ? { text: { title: text.title.slice(0, 300), body: text.body.slice(0, 60_000) } } : {}) };
+        // Every branch already satisfied on its repo's current default branch (after a fresh fetch): no card, evidence instead.
+        if (dupGuardOn()) {
+          for (const r of new Map(ordered.map((r) => [r.path, r])).values()) await git(r.path, "fetch", "--quiet", "origin", r.defaultBase).catch(() => "");
+          const on = await Promise.all(ordered.map((r, i) => guardBranch(git, r, branches[i].sha)));
+          if (on.every((o) => o.satisfied)) throw new AlreadyApplied(await alreadyApplied(ctx.issue, command, branches.map((b) => b.sha).join(","), on.map((o, i) => `${branches[i].repo} \`${branches[i].branch}\`: ${o.evidence}`).join("; ")));
+        }
+        const off = autonomyNow() === "off";
+        // Computed here, right before anything is published, from the branches as git sees them. With autonomy off only
+        // as the card's base tier (best effort: unknown on a failed read).
+        const tierNow = async () => tierFor(ctx.issue, command, { branches: await Promise.all(ordered.map((r, i) => branchTierState(r, branches[i].sha))) });
+        const computed = off ? await tierNow().catch(() => null) : await tierNow();
         let t = { tier: 2, reason: "" };
-        if (autonomyNow() !== "off") {
-          // Computed here, right before anything is published, from the branches as git sees them.
-          t = await tierFor(ctx.issue, command, { branches: await Promise.all(ordered.map((r, i) => branchTierState(r, branches[i].sha))) });
+        if (!off) {
+          t = computed;
           if (t.reject) throw new UserError(`Not done: ${t.reason}.`);
           if (t.tier === 0) {
             ranAtOnce = { t, args: cardArgs };
@@ -1443,14 +1654,14 @@ async function agentPublish(ctx, command, args) {
             return new Map(branches.map((b) => [`${b.repo}|${b.branch}`, b.sha]));
           }
         }
-        const a = await fileApproval(ctx.issue, { action: command, args: cardArgs, tier: t.tier, reason: t.reason });
+        const a = await fileApproval(ctx.issue, { action: command, args: cardArgs, tier: t.tier, reason: t.reason, baseTier: baseOf(computed), rule: off ? "autonomy-off" : t.rule });
         throw new AwaitingApproval(waitingFor(a, ctx.issue));
       },
     });
     if (ranAtOnce) await recordAuto(ctx.issue, command, ranAtOnce.args, "", ranAtOnce.t, result);
     return stripHidden(result.text).trim();
   } catch (err) {
-    if (err instanceof AwaitingApproval) return err.message;
+    if (err instanceof AwaitingApproval || err instanceof AlreadyApplied) return err.message;
     throw err;
   }
 }
@@ -1513,6 +1724,8 @@ async function fleetDiffText(c, bump) {
 async function showFleetDiff(issue, workspace) {
   const b = await fleetBranch(issue, workspace).catch(() => ({ error: "x" }));
   if (b.error || !b.files.length) return "";
+  // No duplicate-card guard for an apply: the instance's main can be ahead of what this host runs (a failed apply-config),
+  // so the change being on main never means it was applied.
   const stray = strayFiles(b.files);
   if (stray.length) return `**Can't be applied:** it changes files outside the instance config (${stray.join(", ")}). Only instance.yaml, apps.yaml, agents/<key>.md and agents/<key>/{agent.yaml,AGENTS.md} can be applied; product code and module handbooks change through an Engineer PR.`;
   const diff = await b.diff();
@@ -1534,7 +1747,9 @@ async function showFleetDiff(issue, workspace) {
   }
   if (mode === "off") bump = await productBump(b).catch((e) => ({ error: e.message }));
   if (bump?.error) return `**Can't be applied:** ${bump.error}.`;
-  const card = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), tier: tier?.tier === 1 ? 1 : 2, reason: tier?.reason }).catch((err) => ({ error: String(err.message ?? err).slice(0, 300) }));
+  // The base tier on its merits, also with autonomy off (best effort there: unknown on a failed read).
+  const base = mode === "off" ? await applyTierState(b, bump).then((s) => tierFor(issue, "apply", s)).catch(() => null) : tier;
+  const card = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), tier: tier?.tier === 1 ? 1 : 2, reason: tier?.reason, baseTier: baseOf(base), rule: tier?.rule ?? "autonomy-off" }).catch((err) => ({ error: String(err.message ?? err).slice(0, 300) }));
   const upgrade = bump ? `\n\n**${bump.title}:**\n\n\`\`\`\n${bump.log.replaceAll("```", "‵‵‵")}\n\`\`\`` : "";
   const ask = card.error
     ? `**Couldn't file the approval card:** ${card.error}. Nothing will be applied until it is filed; ask the agent to try again.`
@@ -1620,6 +1835,12 @@ async function agentMerge(ctx, args) {
   const outside = prs.filter((p) => !repoAllowed(normalizeRepo(p.repo), cfg.allowed_orgs));
   if (outside.length) throw new UserError(`Only PRs in ${cfg.allowed_orgs.join(", ")} can be merged: ${outside.map((p) => p.url).join(", ")}.`);
   const gap = Number.isInteger(args.gap) && args.gap >= 0 && args.gap <= 720 ? args.gap : undefined;
+  // Every PR already merged: no card, evidence instead.
+  if (dupGuardOn()) {
+    const read = await Promise.all(prs.map((p) => mergeGithub.pr(p.repo, p.number).then((d) => d?.repository?.pullRequest, () => null)));
+    if (read.every((pr) => pr?.state === "MERGED"))
+      return alreadyApplied(ctx.issue, "merge", prs.map((p) => p.url).join(","), prs.map((p, i) => `${p.url} is already merged${read[i].mergeCommit?.oid ? ` (merge commit \`${read[i].mergeCommit.oid.slice(0, 12)}\`)` : ""}`).join("; "));
+  }
   // Each card is bound to the PR's current head; in the agents org the tap is the review (merges.prDecision).
   const bound = [];
   for (const { repo, number, url } of prs) {
@@ -1634,11 +1855,16 @@ async function agentMerge(ctx, args) {
   // Tier 0 (agents org, named checks green or running on the exact head) starts at once, each PR merged on its own
   // once green (owner, 2026-11-12); the rest go on one card, as before.
   let tiers = bound.map(() => ({ tier: 2, reason: "" }));
+  let bases = tiers.map(() => null);
   if (autonomyNow() !== "off") {
     const states = await merges.awaitChecks(() => mergeTierState(bound)); // CI may not have started yet
-    tiers = await Promise.all(states.map((s) => tierFor(ctx.issue, "merge", { prs: [s] })));
+    tiers = bases = await Promise.all(states.map((s) => tierFor(ctx.issue, "merge", { prs: [s] })));
     const bad = tiers.find((t) => t.reject);
     if (bad) throw new UserError(`Not done: ${bad.reason}.`);
+  } else {
+    // Only the base tier on its merits: one read, no wait for CI (best effort: unknown on a failed read).
+    const states = await mergeTierState(bound).catch(() => null);
+    if (states) bases = await Promise.all(states.map((s) => tierFor(ctx.issue, "merge", { prs: [s] }).catch(() => null)));
   }
   const now = bound.filter((_, i) => tiers[i].tier === 0);
   const card = bound.filter((_, i) => tiers[i].tier !== 0);
@@ -1646,7 +1872,7 @@ async function agentMerge(ctx, args) {
   const merging = now.length ? `Merging ${now.map((p) => `#${p.number}`).join(", ")} now, each as soon as its named checks are green on its current head; results are posted on this task.` : "";
   if (!card.length) return `${merging} No card is needed.`;
   const rest = tiers.filter((t) => t.tier !== 0);
-  const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, tier: rest.some((t) => t.tier !== 1) ? 2 : 1, reason: rest.map((t) => t.reason).filter(Boolean).join("; ") });
+  const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, tier: rest.some((t) => t.tier !== 1) ? 2 : 1, reason: rest.map((t) => t.reason).filter(Boolean).join("; "), baseTier: baseOf(...bases.filter((_, i) => tiers[i].tier !== 0)), rule: highest(rest).rule ?? "autonomy-off" });
   return `${merging ? `${merging} ` : ""}${waitingFor(a, ctx.issue)} Once approved, ${card.map((p) => `#${p.number}`).join(", ")} merge one at a time${gap !== undefined ? `, ${gap} minutes apart` : ""}, each only at the commit the card shows, with green checks and a green base branch (outside ${cfg.agentsOrg ?? "the agents org"} also approved on GitHub), or the queue stops and says why on the task.`;
 }
 
@@ -1852,7 +2078,7 @@ async function startJob({ issue, instructions }) {
     const helper = repoHelper.register(tools);
     const sessionId = resumed ? state.task(issue.id).session_id : undefined;
     const startedAt = Date.now();
-    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken });
+    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId: assigned?.id ?? engineers.find((a) => a.adapterType === "opencode_local")?.id ?? null, issueId: issue.id } }); // billed to the Engineer (a label-only task: the OpenRouter one)
     // What the next runner needs to adopt the run and finish its turn after a restart.
     tools.run = { pid: run.pid, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, repos: running.get(issue.id).info.repo };
     state.saveRun(jobId, tools.run);
@@ -1938,6 +2164,8 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
       // The agent's reply, in its own words. None: a comment that needed no answer ("thanks").
       const reply = [outcome.silent ? "" : stripCommitLine(result.lastMessage), primerNote, sharedNote, ...(footer.length ? ["---", ...footer] : [])].filter(Boolean).join("\n\n");
       await pc.setStatus(issue.id, "in_review", reply.trim() ? `${REPLY_MARKER}${reply}` : undefined);
+      // A graded deliverable's turn ended: the grader looks at it (a task without a rubric passes untouched).
+      await mayClose(issue.id, "finish_turn");
     } else {
       // Failures also go to review (Paperclip refuses "blocked" without a blocker); the runner says what failed.
       const report = stripCommitLine(result.lastMessage);
@@ -1956,7 +2184,8 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     await reportError(issue, err);
   } finally {
     if (!result?.detached) {
-      if (logPath) reportUsage(jobUsage(logPath, engine));
+      // OpenRouter jobs are billed by the model gateway; only the other engines' tokens are self-reported.
+      if (logPath && engine.kind !== "openrouter") reportUsage(jobUsage(logPath, engine));
       gcp?.done();
       await endTurn(issue, tools);
     }

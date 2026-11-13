@@ -16,8 +16,8 @@ scripts/bootstrap.sh                 # secrets dir, data dirs
 # create your private instance repo (instance.yaml, apps.yaml, agents/), check it out, and set
 # AIDENHQ_INSTANCE_DIR=<checkout> in .env
 ops/apply-config.sh                  # instance -> pinned product -> compile -> compose up -> setup
-mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-runner.service ops/units/prune-runs.* ~/.config/systemd/user/
-systemctl --user enable --now aidenhq-runner prune-runs.timer
+mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{gateway,runner,computers}.service ops/units/prune-runs.* ~/.config/systemd/user/
+systemctl --user enable --now aidenhq-gateway aidenhq-runner aidenhq-computers prune-runs.timer
 ```
 
 Copy `config/runner.example.yaml` to `config/runner.yaml` and set `allowed_orgs` (see

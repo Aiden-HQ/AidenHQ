@@ -2,6 +2,7 @@
 // One OpenRouter key per person, with a monthly spend limit, made with OpenRouter's provisioning API.
 //   OPENROUTER_MANAGEMENT_KEY=... node scripts/openrouter-key.mjs create <name> <limit USD>
 //   OPENROUTER_MANAGEMENT_KEY=... node scripts/openrouter-key.mjs revoke          (offboarding)
+//   AIDENHQ_SECRETS_DIR=... node scripts/openrouter-key.mjs check                 (does OpenRouter accept the key on file?)
 // Writes openrouter_key (the key) and openrouter_key_hash (its id, for revoking) into AIDENHQ_SECRETS_DIR. create does
 // nothing when openrouter_key is already set. The management key comes from the environment only and is never written.
 // Privacy (ZDR) is an account setting at OpenRouter: a new key follows the account it's made in.
@@ -33,6 +34,21 @@ export async function revokeKey({ fetch: fetchImpl = fetch, managementKey, hash 
   await call(fetchImpl, managementKey, "DELETE", `${API}/${encodeURIComponent(hash)}`);
 }
 
+/** Asks OpenRouter about a key: ok (label, remaining limit), rejected (401/403, with its message) or unreachable. */
+export async function checkKey({ fetch: fetchImpl = fetch, key }) {
+  let res;
+  try {
+    res = await fetchImpl("https://openrouter.ai/api/v1/key", { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
+  } catch (e) {
+    return { status: "unreachable", message: e.message };
+  }
+  const json = await res.json().catch(() => ({}));
+  const message = json?.error?.message ?? "no detail";
+  if (res.status === 401 || res.status === 403) return { status: "rejected", message };
+  if (!res.ok) return { status: "unreachable", message: `OpenRouter answered ${res.status}: ${message}` };
+  return { status: "ok", label: json.data?.label, remaining: json.data?.limit_remaining ?? null };
+}
+
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [cmd, name, limit] = process.argv.slice(2);
   const dir = process.env.AIDENHQ_SECRETS_DIR;
@@ -57,7 +73,14 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       if (!managementKey) die("set OPENROUTER_MANAGEMENT_KEY");
       await revokeKey({ managementKey, hash });
       console.log("OpenRouter key revoked");
-    } else die("usage: create <name> <limit USD> | revoke");
+    } else if (cmd === "check") {
+      const key = read("openrouter_key");
+      if (!key) die("no openrouter_key on file");
+      const r = await checkKey({ key });
+      if (r.status === "rejected") die(`OpenRouter rejected the key in ${file("openrouter_key")}: ${r.message}; fix it and re-run setup`);
+      if (r.status === "unreachable") console.error(`openrouter-key: WARNING: could not verify the key (${r.message}); continuing`);
+      else console.log(`OpenRouter key ok${r.label ? ` (${r.label})` : ""}${r.remaining != null ? `, $${r.remaining} left` : ", no spend limit"}`);
+    } else die("usage: create <name> <limit USD> | revoke | check");
   } catch (e) {
     die(e.message);
   }

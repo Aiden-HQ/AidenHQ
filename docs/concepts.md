@@ -3,8 +3,10 @@
 A one-page map of the words used everywhere else. [architecture.md](architecture.md) shows how the parts connect;
 [configuration.md](configuration.md) shows how to set them.
 
-**AidenHQ.** A self-hosted agentic workspace for one person (the *owner*). It runs on one server you control: Docker
-Compose for the services, plus a few systemd user units on the host. You talk to one agent; a fleet works behind it.
+**AidenHQ.** A self-hosted platform for creating, running and managing your own AI agents and the applications they
+build, for one person (the *owner*). It runs on one server you control: Docker Compose for the services, plus a few
+systemd user units on the host. New agents and apps are designed, deployed and maintained by agents, behind approval
+gates the owner controls. You talk to one agent; a fleet works behind it.
 
 **Aiden (chief of staff).** The single agent the owner talks to, on Telegram, Slack or the board's chat. It reads
 widely, turns messages and forwards into tasks, delegates the doing to other agents, chases, sends a daily brief and

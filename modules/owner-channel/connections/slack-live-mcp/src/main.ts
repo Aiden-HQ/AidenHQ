@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
-import { boardClient, sendCards, sendOutcomes, sendResetLinks } from "./approvals.js";
+import { boardClient, sendBatch, sendCards, sendOutcomes, sendResetLinks } from "./approvals.js";
 import { makeChat, startTelegramPoll, type ChatConfig } from "./chat.js";
 import { quickCommand } from "./commands.js";
 import { taskForNotify, ownerViaOf } from "./threads.js";
@@ -136,15 +136,22 @@ const decideKey = env("OWNER_DECIDE_KEY");
 const board = boardUrl && boardToken && decideKey.length >= 32 ? boardClient(boardUrl, boardToken, decideKey) : undefined;
 if (!board) log.warn("BOARD_INTERNAL_URL/BOARD_INTERNAL_TOKEN/OWNER_DECIDE_KEY not set; approvals from Telegram are off (tap them on the board)");
 if (board && cfg.telegramToken && cfg.telegramChatId) {
+  const withButtons = async (text: string, markup: unknown) => {
+    const out: { id?: number } = {};
+    return (await postTelegram(cfg, text, markup, undefined, undefined, undefined, out)) && (out.id ?? true);
+  };
   const cards = () =>
     Promise.all([
-      sendCards(board, store, async (text, markup) => {
-        const out: { id?: number } = {};
-        return (await postTelegram(cfg, text, markup, undefined, undefined, undefined, out)) && (out.id ?? true);
-      }).catch((err) => log.warn({ err: String(err) }, "approval cards failed")),
+      // Then, when 2 or more wait and one is new, a list of them with Approve all / Reject all (batch approvals).
+      sendCards(board, store, withButtons)
+        .catch((err) => log.warn({ err: String(err) }, "approval cards failed"))
+        .then(() => sendBatch(board, store, withButtons, (id, text) => editTelegram(cfg, id, text)))
+        .catch((err) => log.warn({ err: String(err) }, "approval batch list failed")),
       sendResetLinks(board, (text) => postTelegram(cfg, text)).catch((err) => log.warn({ err: String(err) }, "reset links failed")),
       // The daily approvals digest: the board hands it over once, from 21:00 in the owner's timezone.
       board.digest().then(async (text) => void (text ? await postTelegram(cfg, text) : undefined)).catch((err) => log.warn({ err: String(err) }, "approvals digest failed")),
+      // Graded tasks the grader escalated (graded done): one line each, handed over once by the board.
+      board.escalations().then(async (lines) => { for (const l of lines) await postTelegram(cfg, l); }).catch((err) => log.warn({ err: String(err) }, "grade escalations failed")),
       sendOutcomes(board, store, (text) => postTelegram(cfg, text), (id, text) => editTelegram(cfg, id, text)).catch((err) => log.warn({ err: String(err) }, "approval outcomes failed")),
     ]);
   void cards();

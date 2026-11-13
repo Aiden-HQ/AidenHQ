@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
 import { ApprovalCard, StateChip } from "./Chat";
+import { useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
 import { anyLive, groupChats, groupTasks, showsChip, taskSummary, type AgentGroup } from "./sidebar";
@@ -68,6 +69,7 @@ export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, o
     }
   }, [onSignIn]);
   usePoll(load, anyLive(rows ?? []), 6_000);
+  useEvents(["chat", "approvals"], load);
   const [panel, setPanel] = useState(() => {
     try {
       return localStorage.getItem(PANEL_KEY) ? localStorage.getItem(PANEL_KEY) === "1" : window.innerWidth >= 1280;
@@ -321,6 +323,9 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
   }, [refId, onSignIn]);
   const live = anyLive(chat ? [chat, ...chat.handedOut] : []);
   usePoll(load, live, 8_000);
+  // The board's own changes arrive at once: a message posted here, a card filed or decided, a grade (events.ts).
+  useEvents(["chat"], load, chat?.id);
+  useEvents(["approvals", "grades"], load);
   useEffect(() => {
     // The live row's clock ("1m 20s", "nothing new for 3 min").
     if (!live) return;
@@ -434,6 +439,11 @@ function Conversation({ refId, mobile, crew, prefix, go, onSignIn, toast, panel,
             <button className="btn" onClick={() => void stop()} title="End the run in progress and clear its queue">
               Stop
             </button>
+          )}
+          {chat.runs.length > 0 && (
+            <a className="btn" href={`#/r/${chat.runs[0]!.id}`} title="The trace of this chat's latest run">
+              Last run
+            </a>
           )}
           {chat.handedOut.length > 0 && (
             <button className={`btn tasks-btn${mobile ? " always" : ""}${tasksSheet ? " on" : ""}`} onClick={() => setTasksSheet(!tasksSheet)} title="Work handed out from this chat">

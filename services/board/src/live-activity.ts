@@ -27,16 +27,20 @@ async function rolloutsUnder(sessions: string): Promise<string[]> {
 }
 
 /** The newest rollout of this agent touched since the run started, under any company of the mounted instances dir. */
-async function newestLocal(root: string, agentId: string, since: number): Promise<string | undefined> {
-  const sessionDirs: string[] = [];
+export async function sessionDirs(root: string, agentId: string): Promise<string[]> {
+  const out: string[] = [];
   for (const company of await names(root)) {
     const c = join(root, company);
-    sessionDirs.push(join(c, "agents", agentId, "codex-home", "sessions"));
+    out.push(join(c, "agents", agentId, "codex-home", "sessions"));
     const rt = join(c, "codex-home", "skill-runtimes", agentId);
-    for (const hash of await names(rt)) sessionDirs.push(join(rt, hash, "sessions"));
+    for (const hash of await names(rt)) out.push(join(rt, hash, "sessions"));
   }
+  return out;
+}
+
+async function newestLocal(root: string, agentId: string, since: number): Promise<string | undefined> {
   let best: { file: string; at: number } | undefined;
-  for (const f of (await Promise.all(sessionDirs.map(rolloutsUnder))).flat()) {
+  for (const f of (await Promise.all((await sessionDirs(root, agentId)).map(rolloutsUnder))).flat()) {
     const at = (await stat(f).catch(() => null))?.mtimeMs ?? 0;
     if (at >= since && (!best || at > best.at)) best = { file: f, at };
   }

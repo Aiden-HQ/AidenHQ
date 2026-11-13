@@ -96,9 +96,9 @@ describe("engines and modes", () => {
 
   it("gives every engine Primer's read-only endpoint, with the token only in the environment", () => {
     const dir = mkdtempSync(join(tmpdir(), "pw-primer-"));
-    for (const [f, v] of [["claude", "tok"], ["or", "ork"], ["primer", "ptok\n"]]) writeFileSync(join(dir, f), v);
+    for (const [f, v] of [["claude", "tok"], ["or", "sk-or-realkey"], ["primer", "ptok\n"]]) writeFileSync(join(dir, f), v);
     const url = "http://127.0.0.1:3123/mcp/read";
-    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), primerMcpUrl: url, primerTokenFile: join(dir, "primer"), sandbox: { extra_writable_roots: [] } };
+    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "claude"), primerMcpUrl: url, primerTokenFile: join(dir, "primer"), sandbox: { extra_writable_roots: [] } };
     for (const kind of ["codex", "claude", "openrouter"]) {
       const { argv, env } = buildCommand({ cfg: c, engine: { kind, model: "m" }, worktree: "/w", lastMessageFile: "/x" });
       assert.equal(env.PRIMER_MCP_TOKEN, "ptok", kind);
@@ -106,6 +106,11 @@ describe("engines and modes", () => {
       const where = kind === "openrouter" ? env.OPENCODE_CONFIG_CONTENT : argv.join(" ");
       assert.ok(where.includes(url), kind);
     }
+    // opencode: the model gateway with the job's own token, never the OpenRouter key; the gateway's port reaches the jail.
+    const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "m" }, worktree: "/w", job: { agentId: "eng1", issueId: "i1" } });
+    assert.match(or.env.OPENROUTER_API_KEY, /^ahqj_/);
+    assert.ok(!JSON.stringify(or).includes("sk-or-realkey"), "the OpenRouter key is nowhere in the job");
+    assert.equal(JSON.parse(or.env.OPENCODE_CONFIG_CONTENT).provider.openrouter.options.baseURL, "http://127.0.0.1:8201/api/v1");
     const claude = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w" }).argv;
     assert.deepEqual(Object.keys(JSON.parse(claude[claude.indexOf("--mcp-config") + 1]).mcpServers), ["primer"]);
     // Not set up yet: no Primer, and the job still runs.
@@ -118,7 +123,7 @@ describe("engines and modes", () => {
   it("gives Claude Code and Codex the Slack and Glean read endpoints, never OpenRouter", () => {
     const dir = mkdtempSync(join(tmpdir(), "reads-"));
     for (const f of ["claude", "or", "slack", "glean"]) writeFileSync(join(dir, f), `${f}-token\n`);
-    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), primerTokenFile: join(dir, "missing"), grafanaTokenFile: join(dir, "missing"), slackMcpUrl: "http://127.0.0.1:3125/mcp/read", slackTokenFile: join(dir, "slack"), gleanMcpUrl: "http://127.0.0.1:3126/mcp/read", gleanTokenFile: join(dir, "glean"), sandbox: { extra_writable_roots: [] } };
+    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), primerTokenFile: join(dir, "missing"), grafanaTokenFile: join(dir, "missing"), slackMcpUrl: "http://127.0.0.1:3125/mcp/read", slackTokenFile: join(dir, "slack"), gleanMcpUrl: "http://127.0.0.1:3126/mcp/read", gleanTokenFile: join(dir, "glean"), sandbox: { extra_writable_roots: [] } };
     const claude = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w" });
     const servers = JSON.parse(claude.argv[claude.argv.indexOf("--mcp-config") + 1]).mcpServers;
     assert.deepEqual(Object.keys(servers), ["slack", "glean"]);
@@ -139,7 +144,7 @@ describe("engines and modes", () => {
   it("gives Claude Code and Codex ClickHouse with a longer tool timeout, never OpenRouter", () => {
     const dir = mkdtempSync(join(tmpdir(), "reads-"));
     for (const f of ["claude", "or", "clickhouse"]) writeFileSync(join(dir, f), `${f}-token\n`);
-    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), primerTokenFile: join(dir, "missing"), clickhouseMcpUrl: "http://127.0.0.1:3127/mcp", clickhouseTokenFile: join(dir, "clickhouse"), sandbox: { extra_writable_roots: [] } };
+    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), primerTokenFile: join(dir, "missing"), clickhouseMcpUrl: "http://127.0.0.1:3127/mcp", clickhouseTokenFile: join(dir, "clickhouse"), sandbox: { extra_writable_roots: [] } };
     const claude = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w" });
     const servers = JSON.parse(claude.argv[claude.argv.indexOf("--mcp-config") + 1]).mcpServers;
     assert.deepEqual(servers, { clickhouse: { type: "http", url: "http://127.0.0.1:3127/mcp", headers: { Authorization: "Bearer ${CLICKHOUSE_MCP_TOKEN}" } } });
@@ -907,7 +912,7 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     const dir = mkdtempSync(join(tmpdir(), "pw-observe-"));
     for (const [f, v] of [["claude", "tok"], ["or", "ork"], ["grafana", "gtok\n"]]) writeFileSync(join(dir, f), v);
     mkdirSync(join(dir, "gcloud-user"));
-    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), grafanaMcpUrl: "http://127.0.0.1:3124/mcp", grafanaTokenFile: join(dir, "grafana"), gcp: { hidden: [join(dir, "gcloud-user"), join(dir, "not-there")] }, sandbox: { extra_writable_roots: [] } };
+    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), grafanaMcpUrl: "http://127.0.0.1:3124/mcp", grafanaTokenFile: join(dir, "grafana"), gcp: { hidden: [join(dir, "gcloud-user"), join(dir, "not-there")] }, sandbox: { extra_writable_roots: [] } };
     const gcp = { root: join(dir, "job-gcloud"), env: { CLOUDSDK_CONFIG: join(dir, "job-gcloud/config") } };
     mkdirSync(gcp.root);
     return { dir, c, gcp };
@@ -973,7 +978,7 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     // The job's first step: private and reserved ranges, and each of the host's own addresses (a public one too), are unreachable.
     for (const n of ["192.168.0.0/16", "240.0.0.0/4", "10.0.2.7/32", "203.0.113.9/32"]) assert.ok(claude[jail - 1].split(/[ ;]/).includes(n), n);
     // OpenRouter never gets the private reads (Grafana's 3124), so not their ports either.
-    assert.equal(or[3], "3123,41000");
+    assert.equal(or[3], "3123,8201,41000"); // and the model gateway's
   });
 
   it("masks the state db (every run's helper token) but not the state dir, where a job's gcloud session lives", async () => {
