@@ -1,7 +1,7 @@
 # Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used.
-# Every job but image-scan runs on our self-hosted runners (modules/ci; docs/operations.md, "CI runners"): one fresh
-# container per job, no Docker. A PR from a fork goes to a GitHub-hosted runner instead, never ours (the runner group,
-# which allows private repositories only, is the real boundary: a PR can edit this file).
+# Every job runs on our self-hosted runners (modules/ci; docs/operations.md, "CI runners"): one fresh container per job,
+# no Docker (image-scan scans without building). A PR from a fork goes to a GitHub-hosted runner instead, never ours (the
+# runner group, which allows private repositories only, is the real boundary: a PR can edit this file).
 # The AI reviewer's exit test (services/runner/scripts/reviewer-eval.mjs) needs a paid OpenRouter key, so the
 # maintainer runs it by hand for changes to the reviewer, its policy or its cases.
 name: ci
@@ -280,6 +280,7 @@ jobs:
 
       - id: find
         run: |
+          set -f # file names are split on whitespace below, never globbed
           base="${PR_BASE:-$PUSH_BEFORE}"
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
@@ -299,41 +300,50 @@ jobs:
           echo "Images to scan:${found:- none}"
           echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
 
-  # The `image-scan` check: builds each image this change could alter and fails on a high or critical vulnerability that
-  # has a fix. It is the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change.
-  # The scanner is the security module's grype pin (modules/security/scanner/Dockerfile), by digest.
+  # The `image-scan` check: for each image this change could alter, grype scans its directory (lock files, manifests) and
+  # every base image its FROM and COPY --from lines name, pulled from the registry, and fails on a high or critical
+  # vulnerability that has a fix. Nothing is built and no PR code runs (a build would run the PR's RUN steps on our
+  # runner): scripts/supply-chain/image-scan.mjs reads each Dockerfile as text and passes grype only digest-pinned
+  # references. Not covered: packages RUN steps install, so only base-image and lock-file changes are proven here. It is
+  # the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change. grype is baked
+  # into the runner image (modules/ci/runner), the security module's pin.
   image-scan:
     needs: image-changes
     if: needs.image-changes.outputs.dockerfiles != ''
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
     timeout-minutes: 30
     env:
       DOCKERFILES: ${{ needs.image-changes.outputs.dockerfiles }}
-      GRYPE_IMAGE: anchore/grype:v0.121.3@sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887 # released 2026-11-09 (security exception GHSA-c9gr-gmg4-2vqv)
+      PR_BASE: ${{ github.event.pull_request.base.sha }}
+      PUSH_BEFORE: ${{ github.event.before }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - name: Build and scan
+      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Scan (no build)
         run: |
-          mkdir -p "$RUNNER_TEMP/grype-db" && chmod 777 "$RUNNER_TEMP/grype-db"
-          # Images others build FROM by an ARG default (the engineer image's BASE): built here first under that name, so
-          # the FROM resolves to this repo's image, never to a registry image of the same name.
-          case " $DOCKERFILES " in *" services/computer/images/engineer/Dockerfile "*) docker build -q -t aidenhq/computer-agent-base services/computer/images/agent-base ;; esac
-          status=0; n=0
-          for df in $DOCKERFILES; do
-            n=$((n + 1)); tag="image-scan:$n"
-            echo "::group::$df"
-            if docker build -f "$df" -t "$tag" "$(dirname "$df")" && docker save "$tag" -o "$RUNNER_TEMP/image.tar"; then
-              # The scanner reads the saved image: no Docker socket inside it.
-              docker run --rm -v "$RUNNER_TEMP/grype-db:/db" -e GRYPE_DB_CACHE_DIR=/db -v "$RUNNER_TEMP/image.tar:/image.tar:ro" \
-                "$GRYPE_IMAGE" docker-archive:/image.tar --only-fixed --fail-on high || { echo "::error file=$df::fixable high or critical vulnerabilities"; status=1; }
-            else
-              echo "::error file=$df::the image did not build"; status=1
-            fi
-            echo "::endgroup::"
-          done
-          exit $status
+          # On a pull request the scanner and its exceptions come from the base commit, so a PR can't run its own code here
+          # or loosen its own scan; a base without the scanner fails closed. A push to main runs main's own.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            git show "$PR_BASE:scripts/supply-chain/image-scan.mjs" > "$RUNNER_TEMP/image-scan.mjs" \
+              || { echo "::error::the base commit has no scripts/supply-chain/image-scan.mjs: the PR that adds the scanner can't run it"; exit 1; }
+            git show "$PR_BASE:.github/image-scan-exceptions.yaml" > "$RUNNER_TEMP/exceptions.yaml" 2>/dev/null || : > "$RUNNER_TEMP/exceptions.yaml"
+          else
+            cp scripts/supply-chain/image-scan.mjs "$RUNNER_TEMP/image-scan.mjs"
+            cp .github/image-scan-exceptions.yaml "$RUNNER_TEMP/exceptions.yaml"
+          fi
+          mkdir -p "$RUNNER_TEMP/grype-db"
+          # The engineer image is built FROM the agent-base image (an ARG default): scanned through that Dockerfile, never
+          # pulled from a registry image of the same name. DOCKERFILES is split on spaces, never globbed (set -f); the
+          # script checks each path.
+          set -f
+          GRYPE_DB_CACHE_DIR="$RUNNER_TEMP/grype-db" node "$RUNNER_TEMP/image-scan.mjs" --exceptions "$RUNNER_TEMP/exceptions.yaml" \
+            --local aidenhq/computer-agent-base=services/computer/images/agent-base/Dockerfile $DOCKERFILES
 
   # The one result a merge waits for: every job above passed (pr-title, the runner, board and image-scan jobs may be
   # skipped: not a pull request, or the change doesn't touch them). Jobs that

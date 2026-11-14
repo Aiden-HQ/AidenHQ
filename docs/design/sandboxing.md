@@ -133,6 +133,7 @@ This supersedes "Engineer jobs stay in the runner's bubblewrap and passt jail" a
   that needs a browser, root installs or app and data tools, at least 2 jobs at once. The runner keeps the workspace,
   git, cards, tiers and grading; the box holds no credentials.
 
-Image builds and CVE scans run in neither tier: CI's `image-scan` check is their evidence. The grader captures deployed
+Image CVE scans run in neither tier: CI's `image-scan` check (lock files and pinned base images, no build) is their
+evidence, and the security module's scan of deployed images covers what RUN steps install. The grader captures deployed
 apps' live pages itself, for both tiers. Building the strong tier needs the box integration in
 [the App Engineer plan](../superpowers/plans/2026-11-13-app-engineer.md); until it lands, work that needs it waits.

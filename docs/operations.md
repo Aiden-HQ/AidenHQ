@@ -260,11 +260,15 @@ read it).
    systemctl --user enable --now aidenhq-ci-runner@1 aidenhq-ci-runner@2`. Check: the org's Settings → Actions →
    Runners lists `aidenhq-<container id>` idle; `journalctl --user -u aidenhq-ci-runner@1`.
 
-**The product repo's org.** The product workflows (`ci.yml`, `secrets.yml`) run every job but `image-scan` on
-`[self-hosted, aidenhq]`; `image-scan` builds images, which needs a Docker daemon the runner doesn't have (a daemonless
-builder needs user namespaces the hardened container refuses), so it stays on `ubuntu-latest` and runs only when a change
-could alter an image. A PR from a fork is routed to `ubuntu-latest` instead of our runners. That routing lives in the
-workflow file the PR itself carries, so it is not the boundary: the org's runner group is. To serve the product org:
+**The product repo's org.** The product workflows (`ci.yml`, `secrets.yml`) run every job on `[self-hosted, aidenhq]`.
+`image-scan` builds nothing (a build would run a PR's RUN steps on our runner, and the runner has no Docker): the grype
+baked into the runner image scans each changed image's directory (lock files) and the digest-pinned base images its
+Dockerfile names (`scripts/supply-chain/image-scan.mjs` reads the Dockerfile as text), so packages RUN steps install are
+not covered there; the security module's scans of deployed images cover them. A base image's files a Dockerfile replaces
+or never copies out (node's bundled npm, the Alpine packages of a stage only partly copied) are owner-approved entries in
+`.github/image-scan-exceptions.yaml`, read from the base commit. A PR from a fork is routed to `ubuntu-latest` instead of
+our runners (where image-scan fails: no grype). That routing lives in the workflow file the PR itself carries, so it is
+not the boundary: the org's runner group is. To serve the product org:
 1. The App's installation on that org accepts *Self-hosted runners: Read and write* (GitHub → the org → Settings →
    GitHub Apps → the App → Configure; a pending permission request shows there).
 2. The org → Settings → Actions → Runner groups → Default: private repositories only. Never allow public repositories

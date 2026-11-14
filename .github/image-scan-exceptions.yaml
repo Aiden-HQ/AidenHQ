@@ -1,0 +1,35 @@
+# Paths the `image-scan` check ignores in one base image (scripts/supply-chain/image-scan.mjs): files a Dockerfile replaces,
+# or never copies out of a build stage. image-scan builds nothing, so it scans base images as published; without these, a
+# fix made in a RUN step (or a stage only partly copied) would stay red forever.
+# The owner's review of a change to this file is the approval; the check reads it from the base commit, so an entry lands
+# in its own PR before the change that relies on it. Never list a path an image ships as is.
+#
+# One entry per line, in this flow style (other lines are refused):
+#   - { image: <name without tag or digest>, path: /<dir>/<dir or file>[/…], when: <condition>, reason: "…" }
+#   - { image: <name>, vulnerability: <GHSA-…, CVE-… or GO-…>, expires: <YYYY-MM-DD, at most 90 days ahead>, reason: "…" }
+# `when` is checked against every Dockerfile using the image, and the path is scanned again as soon as one fails it
+# (nothing may be RUN --mount'ed from the image either way):
+#   build-stage     no final image is built on this image, and every COPY out of it names explicit paths that can't
+#                   hold the path (no /, no parent directory, no glob);
+#   "RUN <text>"    wherever the path can reach the final image (its own stages, or a stage a COPY takes it from), a
+#                   stage built on the image runs a command (or an && part, with no ;, | or &) with <text>'s leading
+#                   words and <text>'s last word as one of its arguments, exactly (a last word ending in @ takes an
+#                   exact version: "RUN npm install -g npm@" holds for npm@11.21.2; "RUN rm -rf /a" not for /a-old).
+# This is a tripwire for drift; the owner's review of each Dockerfile is the control.
+# Several entries for one image and path: each Dockerfile using the image must meet one of them.
+exceptions:
+  - { image: node, path: /usr/local/lib/node_modules/npm/**, when: "RUN npm install -g npm@", reason: "node's bundled npm (vulnerable undici, brace-expansion): the Dockerfile replaces it with a pinned npm" }
+  - { image: node, path: /usr/local/lib/node_modules/npm/**, when: "RUN rm -rf /usr/local/lib/node_modules/npm", reason: "node's bundled npm: the Dockerfile deletes it (services/gate)" }
+  - { image: docker, path: /lib/apk/db/installed, when: build-stage, reason: "only the docker CLI and compose binaries are copied out of the docker stage (services/apps-mcp); its Alpine packages never ship" }
+  - { image: docker, path: /usr/local/libexec/docker/cli-plugins/docker-buildx, when: build-stage, reason: "buildx is never copied out of the docker stage" }
+  - { image: swaggerapi/swagger-ui, path: /lib/apk/db/installed, when: build-stage, reason: "only swagger-ui's CSS and JS files are copied out (modules/owner-channel/whisper); its Alpine packages never ship" }
+  # The CI runner (modules/ci/runner/Dockerfile) deletes what its jobs never run and what carries known vulnerabilities.
+  - { image: ghcr.io/actions/actions-runner, path: /home/runner/externals/node20/**, when: "RUN rm -rf /home/runner/externals/node20", reason: "Node 20 (end of life) and its npm: deleted" }
+  - { image: ghcr.io/actions/actions-runner, path: /home/runner/externals/node20_alpine/**, when: "RUN rm -rf /home/runner/externals/node20_alpine", reason: "Node 20 for Alpine: deleted" }
+  - { image: ghcr.io/actions/actions-runner, path: /home/runner/externals/node24/lib/node_modules/**, when: "RUN rm -rf /home/runner/externals/node24/lib/node_modules", reason: "node24's bundled npm: deleted (actions run node directly)" }
+  - { image: ghcr.io/actions/actions-runner, path: /usr/bin/containerd, when: "RUN rm -rf /usr/bin/containerd", reason: "the runner gets no Docker: deleted" }
+  - { image: ghcr.io/actions/actions-runner, path: /usr/bin/ctr, when: "RUN rm -rf /usr/bin/ctr", reason: "the runner gets no Docker: deleted" }
+  - { image: ghcr.io/actions/actions-runner, path: /usr/bin/dockerd, when: "RUN rm -rf /usr/bin/dockerd", reason: "the runner gets no Docker: deleted" }
+  - { image: ghcr.io/actions/actions-runner, path: /usr/local/lib/docker/**, when: "RUN rm -rf /usr/local/lib/docker", reason: "the runner gets no Docker (buildx and its plugins): deleted" }
+  # Accepted findings with no fixed release yet, each until a date at most 90 days ahead (then scanned again).
+  - { image: ghcr.io/actions/actions-runner, vulnerability: GHSA-x33c-w48q-qrgc, expires: 2026-12-14, reason: "Microsoft.AspNetCore.WebUtilities 8.0.25 in the runner's own Runner.Worker: fixed only by an actions/runner release shipping 8.0.34+, none as of 2026-11-14; accepted when #48 merged" }
