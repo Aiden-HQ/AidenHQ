@@ -94,6 +94,16 @@ describe("merge queue: reading the PRs", () => {
     assert.deepEqual(startOrResume({ ...q, independent: true }, findPrs("o/b#2"), {}).prs.map((p) => p.number), [2]); // re-requested by the caller
   });
 
+  // 2026-11-14: a replay card re-named a PR already waiting behind two others; it was appended last, so its merge waited
+  // on PRs it had been ahead of (the flow test timed out 15 minutes apart). It keeps its place, at the head the card binds.
+  it("a card that re-names a waiting PR keeps its place, at its new head", () => {
+    const q = newQueue(findPrs("o/r#1 o/r#2 o/r#3"), { gapMinutes: 15, now: at(0) });
+    q.prs[0].head = "old";
+    const again = startOrResume(q, [{ ...findPrs("o/r#1")[0], head: "replayed" }], {});
+    assert.deepEqual(again.prs.map((p) => [p.number, p.status]), [[1, "pending"], [2, "pending"], [3, "pending"]]);
+    assert.equal(again.prs[0].head, "replayed", "the card's head, not the queue's");
+  });
+
   // roadmap-keeper#111 (2026-11-13): its first queue failed on a code-review timeout; asked again on an approved card, it
   // got "merged already" while the PR was still open. Only a merged (or merged-by-someone-else) PR is done.
   it("a PR that failed in an earlier queue is merged when asked for again", () => {

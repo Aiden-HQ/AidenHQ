@@ -767,17 +767,22 @@ export function startOrResume(existing, prs, { gapMinutes, now = new Date() }) {
     if (!existing || !existing.prs.some((p) => p.status === "pending")) return undefined;
     return { ...existing, state: "running", gapMinutes: gapMinutes ?? existing.gapMinutes, reason: undefined, wait: undefined };
   }
+  const same = (a, b) => a.repo.toLowerCase() === b.repo.toLowerCase() && a.number === b.number;
   // Only a merged PR (or one someone else merged: skipped) is done. A failed or escalated one asked for again is merged now.
   const done = (existing?.prs ?? []).filter((p) => p.status === "merged" || p.status === "skipped");
-  const fresh = prs.filter((p) => !done.some((d) => d.repo.toLowerCase() === p.repo.toLowerCase() && d.number === p.number));
+  const fresh = prs.filter((p) => !done.some((d) => same(d, p)));
   if (!fresh.length) return undefined;
   const q = newQueue(fresh, { gapMinutes: gapMinutes ?? existing?.gapMinutes ?? 15, now });
   // A running queue's PRs still waiting were approved too (WOR-4611: a second merge card on the task dropped #141 from the
-  // first): they stay, ahead of the new ones. A stopped queue's leftovers are the agent's to name again.
-  // An independent queue's waiting PRs are requested again by the caller (requestAutoMerge), so they aren't carried here.
-  const waiting = existing?.state === "running" && !existing.independent ? existing.prs.filter((p) => p.status === "pending" && !fresh.some((f) => f.repo.toLowerCase() === p.repo.toLowerCase() && f.number === p.number)) : [];
-  q.prs = [...done, ...waiting, ...q.prs];
+  // first): they keep their place, ahead of the ones the new card adds. A stopped queue's leftovers are the agent's to name
+  // again. An independent queue's waiting PRs are requested again by the caller (requestAutoMerge), so they aren't carried.
+  const carried = existing?.state === "running" && !existing.independent ? existing.prs.filter((p) => p.status === "pending") : [];
+  // One named again takes its new head where it already stood: a card that re-names a waiting PR (a replay) must not push
+  // it behind PRs it was ahead of, or the merge it asked for waits on all of them.
+  const waiting = carried.map((p) => ({ ...(fresh.find((f) => same(f, p)) ?? p), status: "pending" }));
+  const added = fresh.filter((f) => !carried.some((p) => same(p, f))).map((p) => ({ ...p, status: "pending" }));
+  q.prs = [...done, ...waiting, ...added];
   // Carried-over PRs keep the gating they were approved under: a strict queue's leftovers never merge on a laxer one.
-  if (waiting.length && existing.strict) q.strict = true;
+  if (carried.length && existing.strict) q.strict = true;
   return q;
 }
