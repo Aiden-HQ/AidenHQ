@@ -11,6 +11,14 @@ import { decide, STATE } from "../../modules/core/templates/ci/.github/codegenie
 
 const finding = (severity, title) => ({ severity, title, path: "src/a.ts", anchor: { line: 3 }, finalBody: `${title} body` });
 const review = (findings, extra = {}) => JSON.stringify({ findings, summaryOnlyFindings: [], coverage: { partial: false }, health: { status: "completed" }, ...extra });
+// A runner container exports AIDENHQ_GATEWAY_URL (modules/ci/compose.yaml) and the Review step then trades this job's
+// GitHub OIDC token for a gateway token; this test has no OIDC endpoint, so it builds the child env without either, and
+// the local npx stub path always runs. The result never depends on the ambient CI environment.
+const testEnv = (extra) => {
+  const env = { ...process.env, ...extra };
+  for (const key of ["AIDENHQ_GATEWAY_URL", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"]) delete env[key];
+  return env;
+};
 
 test("high or critical findings block; the rest are listed as not blocking", () => {
   const v = verdict(0, review([finding("high", "Null deref"), finding("medium", "Slow loop")], { summaryOnlyFindings: [finding("critical", "SQL injection")] }), "abcdef123");
@@ -80,7 +88,7 @@ test("the Review step skips a tiny PR, never a delta, and picks depth from criti
   writeFileSync(join(bin, "npx"), `#!/bin/sh\ntouch "${join(bin, "called")}"\n`);
   writeFileSync(join(bin, "review.json"), "{}");
   chmodSync(join(bin, "npx"), 0o755);
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: g("rev-parse", "HEAD"), PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin, GITHUB_TOKEN: "test-token", DEFAULT_BRANCH: "main", PR_NUMBER: "1", GITHUB_REPOSITORY: "x/y" };
+  const env = testEnv({ PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: g("rev-parse", "HEAD"), PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin, GITHUB_TOKEN: "test-token", DEFAULT_BRANCH: "main", PR_NUMBER: "1", GITHUB_REPOSITORY: "x/y" });
   writeFileSync(env.GITHUB_ENV, "");
   execFileSync("bash", ["-e", "-c", script("Review")], { cwd: dir, env });
   assert.ok(readFileSync(env.GITHUB_ENV, "utf8").includes("CODE_REVIEW_SKIPPED=1"), "skipped");
@@ -150,7 +158,7 @@ test("no verdict: a budget stop retries with double the budget, a provider error
     writeFileSync(join(bin, "sleep"), `#!/bin/sh\ntouch "${bin}/slept"\n`);
     chmodSync(join(bin, "npx"), 0o755);
     chmodSync(join(bin, "sleep"), 0o755);
-    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: head, PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin };
+    const env = testEnv({ PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: head, PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin });
     writeFileSync(env.GITHUB_ENV, "");
     execFileSync("bash", ["-e", "-c", script], { cwd: dir, env, stdio: "pipe" });
     const out = Object.fromEntries(readFileSync(env.GITHUB_ENV, "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
