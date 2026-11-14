@@ -1554,7 +1554,7 @@ async function commonTierState(issue, action, also = []) {
   // A task the runner filed itself (a Dependabot PR's) carries the board key's user, but is never the owner's.
   const ownerMade = ownerMadeTask(full);
   const all = boardApi ? ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(full.identifier)}`)).approvals ?? []) : [];
-  const { records, answers } = splitAnswered(all, await pc.comments(full.id).catch(() => []), cfg.selfName);
+  const { records, answers } = splitAnswered(all, await pc.comments(full.id).catch(() => []), cfg.selfName, await pc.me().catch(() => undefined));
   return {
     answers,
     agentsOrg: cfg.agentsOrg,
