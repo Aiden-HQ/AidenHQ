@@ -25,6 +25,7 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/files$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/commits/[0-9a-f]{40}/status$`) },
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/commits/[0-9a-f]{40}/check-runs$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/labels$`) },
   { method: "GET", path: /^\/search\/issues$/ },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs$`) },
@@ -233,9 +234,12 @@ export class GitHub {
       const reviews = await this.request<GhReview[]>("GET", `${base}/pulls/${ref.number}/reviews`, { query: { per_page: 100 } });
       // The changed files' names (first 100), e.g. for the UI Reviewer to find the screens a PR touches.
       const files = await this.request<{ filename: string }[]>("GET", `${base}/pulls/${ref.number}/files`, { query: { per_page: 100 } }).catch(() => []);
-      // Commit statuses on the head (e.g. design-review pending); check runs (CI) aren't listed here.
+      // Commit statuses on the head (e.g. design-review pending) and the Actions check runs (CI) are separate lists:
+      // a name missing from `statuses` may still be a check run, so both are read. A read that fails is reported
+      // rather than flattened to [] (which reads as "no checks").
       const sha = /^[0-9a-f]{40}$/.test(String(pr.head?.sha)) ? pr.head!.sha! : undefined;
-      const statuses = sha ? await this.request<{ statuses?: { context: string; state: string; description?: string | null }[] }>("GET", `${base}/commits/${sha}/status`).then((s) => s.statuses ?? [], () => []) : [];
+      const statuses = sha ? await this.optional(() => this.request<{ statuses?: GhStatus[] }>("GET", `${base}/commits/${sha}/status`)) : {};
+      const checks = sha ? await this.optional(() => this.request<{ check_runs?: GhCheckRun[] }>("GET", `${base}/commits/${sha}/check-runs`, { query: { filter: "latest", per_page: 100 } })) : {};
       out.pull_request = {
         draft: pr.draft,
         merged: pr.merged,
@@ -247,7 +251,10 @@ export class GitHub {
         deletions: pr.deletions,
         changed_files: pr.changed_files,
         files: files.map((f) => f.filename),
-        statuses: statuses.map((s) => ({ context: s.context, state: s.state, description: s.description ?? "" })),
+        statuses: (statuses.value?.statuses ?? []).map((s) => ({ context: s.context, state: s.state, description: s.description ?? "" })),
+        check_runs: (checks.value?.check_runs ?? []).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, run_id: runIdOf(c), job_id: c.id, url: c.html_url })),
+        ...(statuses.error ? { statuses_error: statuses.error } : {}),
+        ...(checks.error ? { check_runs_error: checks.error } : {}),
         reviews: reviews.map((r) => ({ author: r.user?.login, state: r.state, submitted_at: r.submitted_at, body: r.body ?? "" })),
       };
     }
@@ -377,6 +384,16 @@ export class GitHub {
     return res.data;
   }
 
+  /** A read whose failure is reported in the output (as `<field>_error`) instead of thrown or flattened to empty. */
+  private async optional<T>(fn: () => Promise<T>): Promise<{ value?: T; error?: string }> {
+    try {
+      return { value: await fn() };
+    } catch (err) {
+      if (err instanceof GitHubAuthError || err instanceof GitHubRefused) throw err;
+      return { error: (err as Error).message.slice(0, 200) };
+    }
+  }
+
   /**
    * Opens an issue as the user, with labels, optionally on an organization project with a
    * status. Everything that can be refused (organization, project, status, labels) is checked before
@@ -492,3 +509,23 @@ interface GhReview {
   submitted_at?: string;
   body?: string | null;
 }
+interface GhStatus {
+  context: string;
+  state: string;
+  description?: string | null;
+}
+/** An Actions check run on a commit (`/commits/:sha/check-runs`); `id` is the job id GitHub links to. */
+interface GhCheckRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  html_url?: string | null;
+  details_url?: string | null;
+}
+
+/** The workflow run a check run belongs to: the `…/actions/runs/<id>/job/<id>` link GitHub gives it. */
+const runIdOf = (c: GhCheckRun): number | undefined => {
+  const id = (c.details_url ?? c.html_url ?? "").match(/\/actions\/runs\/([1-9][0-9]{0,15})(?:[/?#]|$)/)?.[1];
+  return id ? Number(id) : undefined;
+};

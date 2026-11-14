@@ -32,6 +32,7 @@ describe("guard", () => {
       ["GET", "/repos/example-org/issue-tracker/issues/7334/comments"],
       ["GET", "/repos/a/b/pulls/3"],
       ["GET", "/repos/a/b/pulls/3/reviews"],
+      ["GET", "/repos/a/b/commits/0123456789abcdef0123456789abcdef01234567/check-runs"],
       ["GET", "/search/issues"],
       ["POST", "/repos/a/b/issues/3/comments"],
       ["POST", "/repos/a/b/issues"],
@@ -116,6 +117,58 @@ describe("GitHub", () => {
     expect(out.kind).toBe("pull_request");
     expect(out.pull_request.merged).toBe(true);
     expect(out.pull_request.reviews).toHaveLength(1);
+  });
+
+  it("lists the head's Actions check runs next to the commit statuses, a running one included", async () => {
+    const head = "0123456789abcdef0123456789abcdef01234567";
+    const job = (id: number, name: string, status: string, conclusion: string | null) => ({
+      id,
+      name,
+      status,
+      conclusion,
+      html_url: `https://github.com/a/b/actions/runs/90000000001/job/${id}`,
+      details_url: `https://github.com/a/b/actions/runs/90000000001/job/${id}`,
+    });
+    const { impl, calls } = fake({
+      "GET /repos/a/b/issues/7": { ...issue, comments: 0, pull_request: {} },
+      "GET /repos/a/b/issues/7/comments": [],
+      "GET /repos/a/b/pulls/7": { draft: false, merged: false, base: { ref: "main" }, head: { ref: "feat/x", sha: head } },
+      "GET /repos/a/b/pulls/7/reviews": [],
+      "GET /repos/a/b/pulls/7/files": [],
+      "GET /repos/a/b/commits/0123456789abcdef0123456789abcdef01234567/status": { statuses: [{ context: "design-review", state: "pending", description: "Reviewing" }] },
+      "GET /repos/a/b/commits/0123456789abcdef0123456789abcdef01234567/check-runs": {
+        check_runs: [job(50000000001, "tests", "completed", "success"), job(50000000002, "secrets", "completed", "success"), job(50000000003, "code-review", "in_progress", null), job(50000000004, "design-check", "queued", null)],
+      },
+    });
+    const out = (await new GitHub(tokenFile(), new Set(), impl).read({ owner: "a", repo: "b", number: 7 })) as {
+      pull_request: { statuses: unknown[]; check_runs: { name: string; status: string; conclusion: string | null; run_id?: number; job_id: number }[]; check_runs_error?: string };
+    };
+    // Commit statuses alone would have said "only design-review pending"; the CI jobs are listed too.
+    expect(out.pull_request.statuses).toEqual([{ context: "design-review", state: "pending", description: "Reviewing" }]);
+    expect(out.pull_request.check_runs.map((c) => [c.name, c.status, c.conclusion])).toEqual([
+      ["tests", "completed", "success"],
+      ["secrets", "completed", "success"],
+      ["code-review", "in_progress", null],
+      ["design-check", "queued", null],
+    ]);
+    expect(out.pull_request.check_runs[2]).toMatchObject({ run_id: 90000000001, job_id: 50000000003 });
+    expect(out.pull_request.check_runs_error).toBeUndefined();
+    expect(calls.some((c) => c.url.pathname.endsWith("/check-runs") && c.url.searchParams.get("filter") === "latest")).toBe(true);
+  });
+
+  it("says a check read failed instead of returning an empty list", async () => {
+    const head = "0123456789abcdef0123456789abcdef01234567";
+    const { impl } = fake({
+      "GET /repos/a/b/issues/7": { ...issue, comments: 0, pull_request: {} },
+      "GET /repos/a/b/issues/7/comments": [],
+      "GET /repos/a/b/pulls/7": { draft: false, merged: false, base: { ref: "main" }, head: { ref: "feat/x", sha: head } },
+      "GET /repos/a/b/pulls/7/reviews": [],
+      "GET /repos/a/b/pulls/7/files": [],
+      "GET /repos/a/b/commits/0123456789abcdef0123456789abcdef01234567/status": { statuses: [] },
+    });
+    const out = (await new GitHub(tokenFile(), new Set(), impl).read({ owner: "a", repo: "b", number: 7 })) as { pull_request: { check_runs: unknown[]; check_runs_error?: string } };
+    expect(out.pull_request.check_runs).toEqual([]);
+    expect(out.pull_request.check_runs_error).toContain("GitHub 404");
   });
 
   it("reads a repo the App covers with its token, and every other repo with the user's", async () => {
