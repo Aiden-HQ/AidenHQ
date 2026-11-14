@@ -53,7 +53,8 @@ describe("flow-product", () => {
     await t.idle(1500);
     assert.equal(merged().length, 0, "not merged while its checks run");
     setPrs({ 9: { branch: "fix/remove-legacy", files: ["chains.txt"], checks: "SUCCESS" } });
-    await t.waitFor("the merge", () => merged().length === 1, 100_000); // card queues step once a minute
+    await restart(); // a card queue steps once a minute: a fresh runner steps it now
+    await t.waitFor("the merge", () => merged().length === 1);
     assert.ok(merged()[0].data.includes(`sha=${sha}`), "at exactly the approved commit");
     assert.equal(t.paperclip.approvals.size, 1, "no second card");
   });

@@ -53,64 +53,38 @@ test("questions the reviewer couldn't settle (health unresolved) don't block: th
 });
 
 // The workflow's Review and Verdict steps, run as bash in a scratch repo (npx is a stub that records being called).
-test("a tiny change in non-sensitive files skips the code review and passes; a sensitive or larger one is reviewed", () => {
+test("the Review step skips a tiny change (and Verdict passes it); Verdict runs the gate from the default branch tip, not the PR's base", () => {
   const steps = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps;
   const script = (name) => steps.find((s) => s.name === name).run;
-  const run = (file, lines) => {
-    const dir = mkdtempSync(join(tmpdir(), "ci-skip-"));
-    const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
-    g("init", "-q");
-    writeFileSync(join(dir, "README.md"), "x\n");
-    g("add", ".");
-    g("commit", "-qm", "base");
-    const base = g("rev-parse", "HEAD");
-    mkdirSync(join(dir, "src"));
-    writeFileSync(join(dir, file), Array.from({ length: lines }, (_, i) => `line ${i}\n`).join(""));
-    g("add", "src");
-    g("commit", "-qm", "change");
-    const bin = mkdtempSync(join(tmpdir(), "ci-bin-"));
-    writeFileSync(join(bin, "npx"), `#!/bin/sh\ntouch "${join(bin, "called")}"\n`);
-    writeFileSync(join(bin, "sleep"), "#!/bin/sh\n"); // no review out of the stub: its retry would wait a minute
-    chmodSync(join(bin, "npx"), 0o755);
-    chmodSync(join(bin, "sleep"), 0o755);
-    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: g("rev-parse", "HEAD"), PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin };
-    writeFileSync(env.GITHUB_ENV, "");
-    execFileSync("bash", ["-e", "-c", script("Review")], { cwd: dir, env });
-    const skipped = readFileSync(env.GITHUB_ENV, "utf8").includes("CODE_REVIEW_SKIPPED=1");
-    const passed = skipped ? execFileSync("bash", ["-e", "-c", script("Verdict")], { cwd: dir, env: { ...env, CODE_REVIEW_SKIPPED: "1" } }).toString() : "";
-    return { reviewed: existsSync(join(bin, "called")), skipped, passed };
-  };
-  const tiny = run("src/a.ts", 5);
-  assert.deepEqual([tiny.reviewed, tiny.skipped], [false, true]);
-  assert.match(tiny.passed, /not reviewed, and it passes/);
-  assert.equal(run("src/auth.ts", 5).reviewed, true, "a sensitive path");
-  assert.equal(run("src/a.ts", 25).reviewed, true, "20 lines or more");
-});
-
-test("the Verdict step runs the gate from the default branch tip, not the PR's recorded base", () => {
-  const steps = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps;
-  const script = steps.find((s) => s.name === "Verdict").run;
-  const remote = mkdtempSync(join(tmpdir(), "ci-remote-"));
-  const g = (dir, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
-  g(remote, "init", "-q", "-b", "main");
-  mkdirSync(join(remote, ".github"));
-  writeFileSync(join(remote, ".github", "codegenie-gate.mjs"), 'console.log("gate from base"); process.exit(1);\n');
-  g(remote, "add", ".");
-  g(remote, "commit", "-qm", "base gate");
-  const base = g(remote, "rev-parse", "HEAD");
-  writeFileSync(join(remote, ".github", "codegenie-gate.mjs"), 'console.log("gate from default branch tip");\n');
-  g(remote, "add", ".");
-  g(remote, "commit", "-qm", "new gate");
-
-  const work = mkdtempSync(join(tmpdir(), "ci-work-"));
-  g(work, "init", "-q", "-b", "main");
-  g(work, "remote", "add", "origin", remote);
-  g(work, "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main");
-  g(work, "checkout", "-q", base);
-  const bin = mkdtempSync(join(tmpdir(), "ci-verdict-"));
+  // One scratch repo: main holds the gate as it was at the PR's base, then a newer one; the PR branch is a 5-line change.
+  const dir = mkdtempSync(join(tmpdir(), "ci-gate-"));
+  const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
+  mkdirSync(join(dir, ".github"));
+  g("init", "-q", "-b", "main");
+  writeFileSync(join(dir, ".github", "codegenie-gate.mjs"), 'console.log("gate from base"); process.exit(1);\n');
+  g("add", ".");
+  g("commit", "-qm", "base");
+  const base = g("rev-parse", "HEAD");
+  writeFileSync(join(dir, ".github", "codegenie-gate.mjs"), 'console.log("gate from default branch tip");\n');
+  g("commit", "-qam", "new gate");
+  g("remote", "add", "origin", ".");
+  g("fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main");
+  g("checkout", "-q", base);
+  writeFileSync(join(dir, "a.ts"), "1\n2\n3\n4\n5\n");
+  g("add", "a.ts");
+  g("commit", "-qm", "change");
+  const bin = mkdtempSync(join(tmpdir(), "ci-bin-"));
+  writeFileSync(join(bin, "npx"), `#!/bin/sh\ntouch "${join(bin, "called")}"\n`);
   writeFileSync(join(bin, "review.json"), "{}");
-  const env = { ...process.env, GITHUB_TOKEN: "test-token", DEFAULT_BRANCH: "main", HEAD_SHA: base, PR_NUMBER: "1", GITHUB_REPOSITORY: "x/y", RUNNER_TEMP: bin };
-  const out = execFileSync("bash", ["-e", "-c", script], { cwd: work, env }).toString();
+  chmodSync(join(bin, "npx"), 0o755);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: g("rev-parse", "HEAD"), PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin, GITHUB_TOKEN: "test-token", DEFAULT_BRANCH: "main", PR_NUMBER: "1", GITHUB_REPOSITORY: "x/y" };
+  writeFileSync(env.GITHUB_ENV, "");
+  execFileSync("bash", ["-e", "-c", script("Review")], { cwd: dir, env });
+  assert.ok(readFileSync(env.GITHUB_ENV, "utf8").includes("CODE_REVIEW_SKIPPED=1"), "skipped");
+  assert.ok(!existsSync(join(bin, "called")), "the reviewer never ran");
+  const verdictStep = (extra) => execFileSync("bash", ["-e", "-c", script("Verdict")], { cwd: dir, env: { ...env, ...extra } }).toString();
+  assert.match(verdictStep({ CODE_REVIEW_SKIPPED: "1" }), /not reviewed, and it passes/);
+  const out = verdictStep({ HEAD_SHA: base });
   assert.match(out, /gate from default branch tip/);
   assert.doesNotMatch(out, /gate from base/);
 });
@@ -120,24 +94,26 @@ test("no verdict: a budget stop retries with double the budget, a provider error
   const steps = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps;
   const script = steps.find((s) => s.name === "Review").run;
   const ok = `echo '${review([])}'; exit 0`;
+  // The scratch repo (a 50-line change) is built once: the Review step only reads it.
+  const dir = mkdtempSync(join(tmpdir(), "ci-retry-"));
+  const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
+  g("init", "-q");
+  writeFileSync(join(dir, "README.md"), "x\n");
+  g("add", ".");
+  g("commit", "-qm", "base");
+  const base = g("rev-parse", "HEAD");
+  writeFileSync(join(dir, "a.ts"), Array.from({ length: 50 }, (_, i) => `line ${i}\n`).join(""));
+  g("add", ".");
+  g("commit", "-qm", "change");
+  const head = g("rev-parse", "HEAD");
   const run = (...responses) => {
-    const dir = mkdtempSync(join(tmpdir(), "ci-retry-"));
-    const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
-    g("init", "-q");
-    writeFileSync(join(dir, "README.md"), "x\n");
-    g("add", ".");
-    g("commit", "-qm", "base");
-    const base = g("rev-parse", "HEAD");
-    writeFileSync(join(dir, "a.ts"), Array.from({ length: 50 }, (_, i) => `line ${i}\n`).join(""));
-    g("add", ".");
-    g("commit", "-qm", "change");
     const bin = mkdtempSync(join(tmpdir(), "ci-bin-"));
     responses.forEach((r, i) => writeFileSync(join(bin, `resp${i + 1}`), r));
     writeFileSync(join(bin, "npx"), `#!/bin/sh\nn=$(( $(cat "${bin}/count" 2>/dev/null || echo 0) + 1 )); echo $n > "${bin}/count"\necho "$*" >> "${bin}/args"\n. "${bin}/resp$n"\n`);
     writeFileSync(join(bin, "sleep"), `#!/bin/sh\ntouch "${bin}/slept"\n`);
     chmodSync(join(bin, "npx"), 0o755);
     chmodSync(join(bin, "sleep"), 0o755);
-    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: g("rev-parse", "HEAD"), PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin };
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: head, PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin };
     writeFileSync(env.GITHUB_ENV, "");
     execFileSync("bash", ["-e", "-c", script], { cwd: dir, env, stdio: "pipe" });
     const out = Object.fromEntries(readFileSync(env.GITHUB_ENV, "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));

@@ -150,7 +150,13 @@ describe("flow-autonomy", () => {
       step("ui-card\naidenhq push acme/app feat/ui-card");
       await turn("Restyle the card and push it.");
       assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
-      t.paperclip.decide("push", "approved");
+      // `turn` returns on any in_review patch of the task (a merge queue's end, left over from an earlier test's PRs, makes
+      // one too), which can be before this run filed its card: the card is waited for, never assumed (CI flaked here).
+      const approvePush = async () => {
+        await waitFor("the push card", () => [...t.paperclip.approvals.values()].some((a) => a.action === "push" && a.state === "pending"));
+        return t.paperclip.decide("push", "approved");
+      };
+      const first = await approvePush();
       const tipOnGithub = () => {
         try {
           return git(t.dir, "--git-dir", join(t.dir, "github/acme/app.git"), "rev-parse", "feat/ui-card");
@@ -159,6 +165,7 @@ describe("flow-autonomy", () => {
         }
       };
       await waitFor("the push to land", () => tipOnGithub());
+      await waitFor("the first card's outcome", () => first.outcome);
       // Its PR is open now (in the fake GitHub with every named check green): another push requests its merge again.
       const state = new State(join(t.dir, "state"));
       state.updateBranch("part", "acme/app", "feat/ui-card", { pr_url: "https://github.com/acme/app/pull/11" });
@@ -168,7 +175,7 @@ describe("flow-autonomy", () => {
       await turn("One more tweak to it, and push.");
       assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
       const tip = tipOnGithub();
-      t.paperclip.decide("push", "approved");
+      await approvePush();
       await waitFor("the second push to land", () => tipOnGithub() !== tip);
       const n = partComments().length;
       const ours = () => [...t.paperclip.approvals.values()].find((a) => a.action === "merge" && a.state === "pending" && a.args?.prs?.[0]?.number === 11);
@@ -177,6 +184,7 @@ describe("flow-autonomy", () => {
       const card = ours();
       assert.deepEqual(Object.keys(card.args.prs[0]).sort(), ["head", "noReview", "number", "repo", "url"], "the board's fields, and no ui");
       assert.equal(card.args.prs[0].url, "https://github.com/acme/app/pull/11");
+      await waitFor("quiet", () => !t.running()); // the next test's turn must not meet this one's tail
     });
 
     // A UI PR merged on the owner's tap never got its review: the card's path asks for it too, and its outcome says where it stands.

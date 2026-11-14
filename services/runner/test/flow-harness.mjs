@@ -17,7 +17,20 @@ const COMPANY = "00000000-0000-4000-8000-000000000001";
 const USER = "user-1";
 
 export const git = (cwd, ...args) => execFileSync("git", args, { cwd, env: { ...process.env, ...gitEnv }, stdio: "pipe" }).toString().trim();
-let gitEnv = {};
+// Not tied to any one flow's home: flows may run side by side, and this helper must outlive the flow that last set it up.
+const gitEnv = {
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_AUTHOR_NAME: "Test",
+  GIT_AUTHOR_EMAIL: "test@example.com",
+  GIT_COMMITTER_NAME: "Test",
+  GIT_COMMITTER_EMAIL: "test@example.com",
+  GIT_CONFIG_COUNT: "2",
+  GIT_CONFIG_KEY_0: "init.defaultBranch",
+  GIT_CONFIG_VALUE_0: "main",
+  GIT_CONFIG_KEY_1: "protocol.file.allow",
+  GIT_CONFIG_VALUE_1: "always",
+};
 
 /** A Paperclip with one parent task (the user's) and one part of it for Ada. */
 export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0 }) {
@@ -242,7 +255,6 @@ export function flow({ parent: parentOver, part: partOver, grants, grades, gradi
 
     // GitHub: bare repositories that git@github.com:<org>/<name>.git resolves to.
     writeFileSync(join(home, ".gitconfig"), `[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n[protocol "file"]\n\tallow = always\n[url "${join(dir, "github")}/"]\n\tinsteadOf = git@github.com:\n`);
-    gitEnv = { HOME: home, GIT_CONFIG_NOSYSTEM: "1" };
     for (const slug of ["acme/app", "acme/infra"]) {
       const src = join(dir, "src", slug);
       mkdirSync(src, { recursive: true });
