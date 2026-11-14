@@ -33,5 +33,7 @@ optional_secrets:
 # replies). Mounted only into slack-live-mcp and the board; agents never hold it.
 generated_secrets:
   - owner_decide_key
+  # Signs the fast chat lane's per-turn model tokens (agent kind only; the gateway refuses any other kind signed with it).
+  - gateway_lane_secret
   # src_slack's warehouse login (ops/warehouse-sources.sh gives the role this password).
   - warehouse_src_slack_password

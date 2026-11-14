@@ -16,7 +16,7 @@ const jwt = (sub, runId, exp) => `eyJhbGciOiJIUzI1NiJ9.${b64({ sub, run_id: runI
 
 test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill switch", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
-  const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret", gateway_board_key: "gw-board", gateway_source_key: "src-key", paperclip_board_key: "pc-board", board_internal_token: "internal" };
+  const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret", gateway_lane_secret: "lane-secret", gateway_board_key: "gw-board", gateway_source_key: "src-key", paperclip_board_key: "pc-board", board_internal_token: "internal" };
   const grantsFile = join(dir, "grants.json");
   writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden", rev: "abc123", caps: { run_usd: 0.05, task_usd: 0.08, day_usd: 30 } }, ag2: { key: "eng" } } }));
   const settingsFile = join(dir, "gateway.json");
@@ -82,6 +82,12 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
   assert.equal((await call(mintToken("wrong", { agentId: "ag2" }, now))).status, 401);
   rows = await usage();
   assert.deepEqual([rows[1].agentId, rows[1].issueId, rows[1].component, rows[1].costUsd], ["ag2", "iss9", "Engineer jobs", 0.03]);
+
+  // A fast chat lane's turn token: a capped agent call, attributed to the lane; the lane secret never mints a system kind.
+  assert.equal((await call(mintToken("lane-secret", { agentId: "ag2", component: "Aria" }, now))).status, 200);
+  assert.equal((await call(mintToken("lane-secret", { kind: "reviewer" }, now))).status, 401);
+  rows = await usage();
+  assert.deepEqual([rows[2].agentId, rows[2].component, rows[2].kind], ["ag2", "Fast lane: Aria", "agent"]);
 
   // Run cap $0.05: the second call starts at $0.03 (allowed), the third at $0.06 is refused. A run cap is never filed for
   // raising (the next run has a new key): one ledger row, a message that says the run stops.

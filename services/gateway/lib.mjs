@@ -14,7 +14,7 @@
 // Credentials: a Paperclip run JWT (Codex in Paperclip, env_key PAPERCLIP_API_KEY; checked at Paperclip's /api/agents/me,
 // its run id from the checked token, the task from that run); an agent computer's run token `ahqc_` (the launcher forwards
 // its boxes' calls here with it; the launcher's /whoami names the agent, Paperclip run and task, asked every call so a run
-// that ended stops at once); a runner token `ahqj_` (token.mjs: an Engineer job, or the runner's reviewer/grader/intake); the source writers' key (gateway_source_key); Paperclip's harness key
+// that ended stops at once); a runner token `ahqj_` (token.mjs: an Engineer job, or the runner's reviewer/grader/intake), or a fast chat lane's turn token (same format, signed with gateway_lane_secret, agent kind only); the source writers' key (gateway_source_key); Paperclip's harness key
 // (gateway_harness_key: the new-agent hello probe, whose env has no run JWT). The run key is the credential's sha256.
 // Caps: run / task / agent-day (grants caps, defaults 2/10/30 USD), checked before each call as settled + in flight. A task
 // labelled `chat` or a routine's execution task is perpetual: its task cap counts the UTC day only. System kinds
@@ -226,6 +226,13 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
       return { ...as(null, routeKind, "agent", true), runKey: `harness:${day(now())}` };
     }
     if (cred.startsWith("ahqj_")) {
+      // A fast chat lane's turn token (slack-live-mcp) is signed with gateway_lane_secret: an agent's capped call only, so a
+      // holder of the lane secret can never mint a system (uncapped) token.
+      const lane = verifyToken(secret("gateway_lane_secret"), cred, now());
+      if (lane?.k === "agent" && lane.a) {
+        const row = q.run.get(runKey) ?? settle(runKey, { agentId: lane.a, issueId: null });
+        return as(row, routeKind, `Fast lane: ${String(lane.c ?? lane.a)}`.slice(0, 80), true);
+      }
       const p = verifyToken(secret("gateway_job_secret"), cred, now());
       if (!p) throw fail(401, "unauthorized", "this run's model credential is invalid or expired");
       const row = q.run.get(runKey) ?? settle(runKey, { agentId: p.a, issueId: p.i });
