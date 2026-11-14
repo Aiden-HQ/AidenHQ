@@ -13,6 +13,19 @@ Thanks for helping. Contributors have read access to this repository; the mainta
 5. The maintainer reviews and merges. Your own instance picks the change up when you bump `product:` in your instance
    repo to a commit on `main` (see [SETUP.md](SETUP.md), "Upgrading the product").
 
+### Pull requests and commits
+
+- **Every change lands through a pull request**, and is **squash-merged**: one PR becomes one commit on `main`.
+  Nobody pushes to `main` directly, the maintainer included.
+- **The PR title follows [Conventional Commits](https://www.conventionalcommits.org/)** and becomes the squash
+  commit's subject: `type(scope): summary`, lower-case type, the scope optional, `!` before the colon for a breaking
+  change. Types: `feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `perf`, `ci`, plus `build`, `style` and `revert`.
+  The scope is the area touched: `runner`, `board`, `gate`, `computer`, `apps-mcp`, `scripts`, `ops`, a module's name.
+  For example `feat(runner): retry a merge after a flaky check`, `fix(board): keep the drawer open on refresh`,
+  `docs: explain instance pins`. The `pr-title` CI check enforces it; after fixing a title, re-run the failed jobs.
+- **The PR body says why**: the problem, and why this is the fix. The diff already shows what.
+- Commits on your branch may be as granular as you like; they are squashed.
+
 To set up your own instance to test on, follow [SETUP.md](SETUP.md), or ask Claude Code to "set up AidenHQ" (the
 `setup-aidenhq` skill).
 
@@ -62,7 +75,7 @@ Read [CLAUDE.md](CLAUDE.md) first; it is also the guide coding agents follow. In
   `ops/`, `scripts/paperclip-setup.mjs`) get extra review.
 - **Minimal tests.** A few tests that prove the change works end to end. No tests for obvious code.
 - **Simple.** Less code, no speculative options or compatibility shims.
-- **Commits.** One commit per meaningful change, with a message that says why, not only what.
+- **Commits.** One focused change per PR, titled as a Conventional Commit, with a body that says why, not only what.
 
 ## No secrets, no personal data
 

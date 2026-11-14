@@ -1,5 +1,6 @@
 import type { ReactNode } from "react"
 import type { LucideIcon } from "lucide-react"
+import { PoweredBy } from "@/components/powered-by"
 import { cn } from "@/lib/utils"
 
 // An optional app shell for an app with a few destinations: a slim top bar (logo and name, links, actions) over the
@@ -65,6 +66,7 @@ export function TopBarShell({
       <main id="content" className="min-w-0">
         {children}
       </main>
+      <PoweredBy />
     </>
   )
 }

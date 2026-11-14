@@ -55,6 +55,36 @@ jobs:
           node scripts/supply-chain/pins.mjs "$base" "$HEAD_SHA" || status=1
           exit $status
 
+  # The PR title becomes the squash commit on main, so it must be a Conventional Commit (CONTRIBUTING.md, "Pull requests
+  # and commits"). It reads the title live from the API, so after fixing a title, re-run the failed jobs. The title is never
+  # interpolated into the script: it is untrusted text.
+  pr-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Conventional Commit title
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.url }}
+        run: |
+          node --input-type=module -e '
+            const res = await fetch(process.env.PR_URL, { headers: { authorization: `Bearer ${process.env.GITHUB_TOKEN}`, accept: "application/vnd.github+json" } });
+            if (!res.ok) throw new Error(`reading the PR failed: ${res.status}`);
+            const { title } = await res.json();
+            const ok = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/.test(title);
+            console.log(`Title: ${JSON.stringify(title)}`);
+            if (!ok) {
+              console.log("::error::The PR title must be a Conventional Commit, e.g. \"fix(board): keep the drawer open\" or \"docs: explain pins\". Types: feat, fix, docs, chore, test, refactor, perf, ci, build, style, revert. Edit the title, then re-run the failed jobs.");
+              process.exit(1);
+            }
+          '
+
   test:
     name: ${{ matrix.dir }}
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}

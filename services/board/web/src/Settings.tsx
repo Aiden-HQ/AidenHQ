@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AccountsView } from "./Accounts";
 import { SignInRequired, api, type Session } from "./api";
+import { PoweredBy } from "./components";
 import { needsAttention, type ConnectionsData } from "./connections";
 import { askForNotifications, notificationsSupported } from "./notify";
 import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
@@ -156,6 +157,7 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
           <div className="st-page-in" key={current}>
             <Pane cat={current} data={data} conns={conns} session={session} onSignIn={onSignIn} can={can} checking={checking} check={check} />
           </div>
+          <PoweredBy />
         </div>
         <Toasts items={toasts} />
       </div>

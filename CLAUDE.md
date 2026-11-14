@@ -97,12 +97,16 @@ merging those.
   common path and let rare cases fail loudly.
 - **No owner data in the product.** Real names, emails, IPs, hostnames, org names and ids belong in the instance repo
   or `CLAUDE.local.md`. Tests use neutral examples (`acme`, `acme-agents`, `example.com`, documentation IP ranges).
-- **Commit per meaningful change**, with a message that says why.
+- **Commit per meaningful change**, with a Conventional Commit subject (`fix(runner): …`) and a body that says why.
+- **Licence:** `AGPL-3.0-only`, except the app starter and the design system, which are MIT (their own `LICENSE`) so
+  apps carry no AGPL obligations: keep AGPL-only code out of them. Keep the Pennyworth notices in `NOTICE` and
+  `LICENSES/`.
 
 ## Contributing flow
 
 Contributors have read access: fork, branch, open a PR against `main`, get CI green; the maintainer reviews and
-merges. Never push to `main`. Instances pin product commits that are on `main`, so a change reaches an instance only
+squash-merges. The PR title is a Conventional Commit (`type(scope): summary`; CI's `pr-title` check) and becomes the
+commit on `main`; the body says why. Never push to `main`. Instances pin product commits that are on `main`, so a change reaches an instance only
 after it is merged and that instance's owner bumps the pin.
 
 ## Running an instance (deploy flow)

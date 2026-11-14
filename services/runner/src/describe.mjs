@@ -44,7 +44,7 @@ export function describePrompt({ repo, base, request, messages, stat, diff, repo
 
 Rules:
 - If the request below specifies the PR title or body (for example "Title: …" and "Body: …"), use them exactly, filled in for this repository.
-- Otherwise: title in the repository's commit style (usually a conventional commit subject, at most 72 characters). Body in markdown: what changed and why, in a few sentences or bullets, then "Testing" with only checks the report says were actually run. No "Summary of the run", no step-by-step story.
+- Otherwise: the title is a Conventional Commit subject (\`type(scope): summary\`, type one of feat, fix, docs, chore, test, refactor, perf, ci, build; at most 72 characters), unless the commits clearly follow another style. Body in markdown: why the change is needed and what changed, in a few sentences or bullets, then "Testing" with only checks the report says were actually run. No "Summary of the run", no step-by-step story.
 - The reviewers can't see the request, the report or any tool. Never mention them, or any task tracker, ticket number, agent, AI tool, local file path or machine. Don't link to local files.
 - Only describe what the diff and commits show.
 

@@ -1,6 +1,8 @@
+<!-- Title: a Conventional Commit, e.g. `fix(board): keep the drawer open on refresh`. It becomes the squash commit. -->
+
 ## What and why
 
-<!-- What does this change, and why is it needed? Link an issue if there is one. -->
+<!-- Why is this change needed, and why this way? Link an issue if there is one. -->
 
 ## How it was tested
 

@@ -15,6 +15,7 @@ import {
   SidebarRail,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
+import { PoweredBy } from "@/components/powered-by"
 import { cn } from "@/lib/utils"
 
 // An optional app shell for apps with many destinations or nested groups (guidelines: Layout and navigation): a
@@ -87,6 +88,7 @@ export function SidebarShell({
           <div className="ml-auto">{actions}</div>
         </header>
         {children}
+        <PoweredBy className="mt-auto max-md:mb-16" />
       </SidebarInset>
       <nav
         aria-label="Primary"

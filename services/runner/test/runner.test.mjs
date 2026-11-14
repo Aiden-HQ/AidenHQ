@@ -536,6 +536,12 @@ describe("public PR text", async () => {
     for (const t of ["Draft opened by AidenHQ for Paperclip task PEN-406.", "see PEN-12", "[README](/home/dana/aidenhq/tasks/PEN-406/README.md)", "generated with opencode"]) assert.equal(leaksInternal(t), true, t);
     assert.equal(leaksInternal("chore: add deprecation notice\n\nAdds a deprecation notice ahead of archiving this repository."), false);
   });
+  it("falls back to a Conventional Commit title, which a squash merge makes the commit", async () => {
+    const { prTitle } = await import("../src/prompt.mjs");
+    assert.equal(prTitle("a1b2c3d fix(board): keep the drawer open", "Drawer closes"), "fix(board): keep the drawer open");
+    assert.equal(prTitle("a1b2c3d test: cover it\nd4e5f6a feat(runner): retry merges", "Retry flaky merges"), "feat(runner): Retry flaky merges");
+    assert.equal(prTitle("a1b2c3d docs: x\nd4e5f6a fix: y", "chore: tidy"), "chore: tidy");
+  });
   it("drops old trailers and falls back to the commit messages", () => {
     const msgs = cleanMessages("chore: add deprecation notice\n\nPaperclip task: PEN-406\n\x1efix: typo\n\nCorrects the link.\n\x1e");
     assert.deepEqual(msgs, ["chore: add deprecation notice", "fix: typo\n\nCorrects the link."]);

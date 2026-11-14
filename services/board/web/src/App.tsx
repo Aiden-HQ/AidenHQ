@@ -26,7 +26,7 @@ import { subscribe } from "./events";
 import { VIEW_CHUNKS, prefetchView } from "./queries";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
-import { CardView, GearIcon, GoogleBanner, PlusIcon, SignInBanners, SortableCard, memberIssue } from "./components";
+import { CardView, GearIcon, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
@@ -946,6 +946,7 @@ function Help() {
           ))}
         </dl>
         <p className="muted small">Drag cards to rank them; Tomorrow moves into Today at the start of the next workday, below what's left over. Open a task to bring it back on a date or make it repeat.</p>
+        <PoweredBy />
       </div>
     </div>
   );

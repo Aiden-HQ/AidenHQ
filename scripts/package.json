@@ -1,6 +1,7 @@
 {
   "name": "aidenhq-scripts",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": { "test": "node --test test/*.test.mjs" },
   "dependencies": { "yaml": "^2.8.1" }

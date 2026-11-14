@@ -46,7 +46,7 @@ export const SHARED = {
   // The design system: the app starter vendors its theme (tokens.css, shadcn.css), and the agent computers carry it all at
   // /opt/aidenhq/design-system. components.css and kit.js are the deprecated plain-CSS kit (its README).
   ...Object.fromEntries(
-    ["tokens.css", "shadcn.css", "components.css", "kit.js", "guidelines.md", "review-checklist.md", "README.md"].map((f) => [
+    ["tokens.css", "shadcn.css", "components.css", "kit.js", "guidelines.md", "review-checklist.md", "README.md", "LICENSE"].map((f) => [
       `modules/core/design-system/${f}`,
       [...(f === "tokens.css" || f === "shadcn.css" ? [`modules/core/templates/app/src/styles/${f}`] : []), `services/computer/images/agent-base/design-system/${f}`],
     ]),

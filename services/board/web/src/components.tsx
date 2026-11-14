@@ -533,3 +533,15 @@ export function SignInBanners({ board, canConnect }: { board: Board; canConnect:
     </>
   );
 }
+
+/** A small "Powered by AidenHQ" credit with a link to the project, shown by default. */
+export const AIDENHQ_REPO = "https://github.com/Aiden-HQ/AidenHQ";
+export function PoweredBy() {
+  return (
+    <p className="powered-by">
+      <a href={AIDENHQ_REPO} target="_blank" rel="noopener noreferrer">
+        Powered by AidenHQ
+      </a>
+    </p>
+  );
+}

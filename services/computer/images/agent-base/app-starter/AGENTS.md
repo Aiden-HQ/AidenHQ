@@ -8,6 +8,8 @@ the AidenHQ design system. `README.md` says what's where. These rules keep its p
   imports. The README lists every piece. Pick the shell that fits the app's navigation (`TopBarShell`, `SidebarShell`,
   `BareShell`, or none). The example page is one sample. Need a control? Use or add a shadcn component (README) before
   writing your own.
+- **"Powered by AidenHQ".** Every shell renders `PoweredBy` (`src/components/powered-by.tsx`) at the foot of the
+  page by default. It is not required: the app's owner may move or remove it.
 - **Theme:** keep the default palette, pick a preset (`src/styles/presets/`: import it after `shadcn.css` and set
   `<html data-palette="<name>">`), or adapt one in a `theme.css`. Presets are starting points, not rules.
 - **The catalog is dev-only:** `npm run catalog` (`catalog.html`, `src/catalog/`) shows every block, component,

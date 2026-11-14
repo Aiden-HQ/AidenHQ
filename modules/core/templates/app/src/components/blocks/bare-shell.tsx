@@ -1,4 +1,5 @@
 import type { ReactNode } from "react"
+import { PoweredBy } from "@/components/powered-by"
 import { cn } from "@/lib/utils"
 
 // An optional shell with no chrome: just the page, for a single-view app, an embed, a sign-in or a status page.
@@ -11,7 +12,17 @@ export function BareShell({ variant = "full", children }: { variant?: "full" | "
       data-variant={variant}
       className={cn("min-w-0", variant === "centered" && "flex min-h-svh items-center justify-center bg-page px-4 py-10")}
     >
-      {variant === "centered" ? <div className="w-full max-w-md">{children}</div> : children}
+      {variant === "centered" ? (
+        <div className="w-full max-w-md">
+          {children}
+          <PoweredBy />
+        </div>
+      ) : (
+        <>
+          {children}
+          <PoweredBy />
+        </>
+      )}
     </main>
   )
 }

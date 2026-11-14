@@ -24,6 +24,7 @@ updates:
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
     open-pull-requests-limit: 5
+    commit-message: { prefix: build, include: scope } # "build(deps): bump …", a Conventional Commit title (ci.yml pr-title)
     groups:
       npm: { patterns: ["*"] }
   - package-ecosystem: docker
@@ -31,6 +32,7 @@ updates:
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
     open-pull-requests-limit: 5
+    commit-message: { prefix: build, include: scope } # "build(deps): bump …", a Conventional Commit title (ci.yml pr-title)
     groups:
       docker: { patterns: ["*"] }
     # A major runtime/base-image jump (e.g. Node 24 -> 26) is a planned migration, not a routine bump.
@@ -42,6 +44,7 @@ updates:
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
     open-pull-requests-limit: 5
+    commit-message: { prefix: build, include: scope } # "build(deps): bump …", a Conventional Commit title (ci.yml pr-title)
     groups:
       docker-compose: { patterns: ["*"] }
     ignore:
@@ -52,5 +55,6 @@ updates:
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
     open-pull-requests-limit: 5
+    commit-message: { prefix: build, include: scope } # "build(deps): bump …", a Conventional Commit title (ci.yml pr-title)
     groups:
       actions: { patterns: ["*"] }
