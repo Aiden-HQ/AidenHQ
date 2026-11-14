@@ -11,7 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import pino from "pino";
 import { z } from "zod";
-import { allowedTools, isAllowed, READ_TOOLS } from "./policy.js";
+import { allowedTools, fenced, isAllowed, READ_TOOLS } from "./policy.js";
 import { SignIn, SignInError } from "./signin.js";
 import { GleanAuthError, TokenStore } from "./tokens.js";
 import { makeAuthorize } from "./agent-auth.js";
@@ -96,7 +96,7 @@ function buildServer(): Server {
       return { isError: true, content: [{ type: "text", text: `Tool ${name} is not available through AidenHQ.` }] };
     }
     try {
-      return (await withUpstream((u) => u.client.callTool({ name, arguments: req.params.arguments ?? {} }))) as never;
+      return fenced(await withUpstream((u) => u.client.callTool({ name, arguments: req.params.arguments ?? {} }))) as never;
     } catch (err) {
       const auth = err instanceof GleanAuthError || tokens.status().state === "expired";
       log.warn({ tool: name, err: String(err).slice(0, 300) }, "Glean tool failed");

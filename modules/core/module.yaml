@@ -109,6 +109,8 @@ agents:
     # Grants: `connection: read | write | [tools]`; `name?` = only when that module is installed.
     connections:
       google_workspace?: [ calendar_list_events, calendar_get_event ]
+      # A quick lookup answered in the owner's chat, not delegated (reads only): Drive, Confluence, Jira and Slack in one search.
+      glean?: [ search, read_document ]
       slack_live: [ notify_owner ]
       apps: [ app_list, app_status, app_view, web_view, warehouse_query, source_new, source_ack ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_set_status, task_finish, task_team, task_delegate, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, app_request_from_owner ]
