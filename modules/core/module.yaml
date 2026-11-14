@@ -100,6 +100,9 @@ agents:
   chief-of-staff:
     department: leadership
     adapter: codex_local
+    # The owner's message must not queue behind a long wake on another task: on 2026-11-14 a Telegram question waited
+    # 5m48s for two runs on Aiden's notice chat (WOR-2275). Paperclip still runs one at a time per task.
+    max_parallel: 2
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1200
