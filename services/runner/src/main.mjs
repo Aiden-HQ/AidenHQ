@@ -152,6 +152,11 @@ async function poll() {
     lastStaleCheck = Date.now();
     await closeStaleRoutineRuns().catch((err) => log("stale routine check failed", { err: String(err.message ?? err).slice(0, 300) }));
   }
+  // Design-review tasks whose head moved on, or whose verdict is in: closed as superseded, once a minute.
+  if (Date.now() - lastDesignReviewSweep >= 60_000) {
+    lastDesignReviewSweep = Date.now();
+    await closeSupersededDesignReviews().catch((err) => log("superseded design review sweep failed", { err: String(err.message ?? err).slice(0, 300) }));
+  }
   // Merges you asked for, at most once a minute; independent agents-org queues (owner, 2026-11-12) every poll.
   const minute = Date.now() - lastMergeCheck >= 60_000;
   if (minute) lastMergeCheck = Date.now();
@@ -416,6 +421,35 @@ async function fileDesignReviewTask(pr, { waits = true } = {}) {
   state.set(`asked:${marker}`, new Date().toISOString());
   state.set(`runner-made:${issue.id}`, new Date().toISOString());
   log("design review task filed", { pr: pr.url, head: pr.head, issue: issue.identifier, waits });
+  // The head it supersedes is no longer waiting on anyone: its task closes now, not when someone notices.
+  await closeSupersededDesignReviews().catch((err) => log("superseded design review check failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 200) }));
+}
+
+let lastDesignReviewSweep = 0;
+/**
+ * A design-review task whose head is no longer the one to review is closed as superseded, so it never sits in the owner's
+ * queue as though it needed him: its PR moved on to a newer head, merged or closed, or a `design-review` verdict is on that
+ * exact head already (owner, 2026-11-13). The reviewer's own open tasks and the owner's are both read: a hand-back leaves
+ * the task with the owner. A task for the PR's current head with no verdict yet stays open.
+ */
+async function closeSupersededDesignReviews() {
+  const reviewer = designReviewer();
+  if (!reviewer) return;
+  const list = [...(await pc.assignedIssues(reviewer)), ...(await pc.myOpenIssues())];
+  const seen = new Set();
+  for (let issue of list) {
+    if (seen.has(issue.id)) continue;
+    seen.add(issue.id);
+    if (running.has(issue.id)) continue; // its review is going on: it posts its verdict, then the sweep closes it
+    if (issue.descriptionTruncated) issue = await pc.issue(issue.id).catch(() => issue);
+    const marker = merges.designReviewMarker(issue);
+    if (!marker) continue;
+    const pr = (await mergeGithub.pr(marker.repo, marker.number).catch(() => null))?.repository?.pullRequest;
+    const why = merges.supersededDesignReview(marker, pr);
+    if (!why) continue;
+    await pc.setStatus(issue.id, "cancelled", `Closed as superseded: ${why}. Nothing is waiting on this review.`).catch((err) => log("superseded design review close failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }));
+    log("superseded design review task closed", { issue: issue.identifier, pr: `${marker.repo}#${marker.number}`, head: marker.head, why });
+  }
 }
 
 const DESIGN_SAID = { success: "passed", failure: "changes requested", pending: "pending", missing: "pending" };

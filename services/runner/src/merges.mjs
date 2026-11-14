@@ -167,6 +167,30 @@ export function designReview(rollup) {
 }
 const advisory = (n) => ADVISORY.has(n.name ?? n.context);
 
+/**
+ * A "Design review: <repo>#<n>" task's source marker (`<!-- source:design-review:<repo>/<n>@<sha> -->`), as the runner
+ * wrote it: { repo, number, head }, undefined for any other task. The head is the one the task asked about, which the PR
+ * itself no longer knows once it has moved on.
+ */
+export function designReviewMarker(issue) {
+  const m = /<!--\s*source:design-review:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(\d+)@([0-9a-f]{7,40})\s*-->/.exec(String(issue?.description ?? ""));
+  return m ? { repo: m[1], number: Number(m[2]), head: m[3] } : undefined;
+}
+
+/**
+ * Why an open design-review task no longer needs its reviewer, from its marker and the PR as GitHub returns it: its head
+ * moved on, the PR merged or closed, or a `design-review` verdict is on that exact head already. Undefined while the task
+ * is the one live review for the PR's current head (or the PR can't be read: unknown is never a reason to close).
+ */
+export function supersededDesignReview(marker, pr) {
+  if (!marker || !pr) return undefined;
+  if (pr.state === "MERGED") return "its PR merged";
+  if (pr.state === "CLOSED") return "its PR was closed";
+  if (pr.headRefOid && pr.headRefOid !== marker.head) return `its PR has moved on to head \`${String(pr.headRefOid).slice(0, 12)}\``;
+  const dr = designReview(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
+  return dr.state === "success" || dr.state === "failure" ? "its verdict is on that head already" : undefined;
+}
+
 /** The rollup without its advisory checks, its state recomputed from the rest; the rollup itself when it has none. */
 export function required(rollup) {
   const nodes = rollup?.contexts?.nodes ?? [];

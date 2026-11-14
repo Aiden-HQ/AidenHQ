@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { classify } from "../src/tiers.mjs";
-import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, eachDecision, findPrs, finishedStatus, newQueue, prDecision, startOrResume, touchesUi, WRITES } from "../src/merges.mjs";
+import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, findPrs, finishedStatus, newQueue, prDecision, startOrResume, supersededDesignReview, touchesUi, WRITES } from "../src/merges.mjs";
 
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
 const red = { state: "FAILURE", contexts: { nodes: [{ __typename: "StatusContext", context: "buildkite/deploy", state: "FAILURE" }] } };
@@ -360,6 +360,32 @@ describe("design review is advisory (owner, 2026-11-12)", () => {
     assert.equal(prDecision(head(withDesign("PENDING", "PENDING")), { strictChecks: true }).do, "wait");
     assert.equal(prDecision(head(withDesign("PENDING", "FAILURE")), { strictChecks: true }).do, "stop");
     assert.equal(prDecision(pr(10, { mergeStateStatus: "UNSTABLE" })).do, "stop", "UNSTABLE without design-review: as before");
+  });
+});
+
+describe("a design-review task whose head is superseded (owner, 2026-11-13)", () => {
+  const issue = (head = "e086aa64") => ({ description: `https://github.com/acme/app/pull/7 changes UI files.\n\n<!-- source:design-review:acme/app/7@${head} -->` });
+  const withVerdict = (state) => ({ state: "OPEN", headRefOid: "f727bc63", url: "https://github.com/acme/app/pull/7", commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "StatusContext", context: "design-review", state }] } } } }] } });
+
+  it("reads the head a review task asked about from its source marker", () => {
+    assert.deepEqual(designReviewMarker(issue()), { repo: "acme/app", number: 7, head: "e086aa64" });
+    assert.equal(designReviewMarker({ description: "a task with no marker" }), undefined);
+    assert.equal(designReviewMarker({ description: "<!-- source:dependabot:acme/app/7 -->" }), undefined);
+  });
+
+  it("closes the earlier head's task once the PR has moved on, rather than leaving it to the owner", () => {
+    assert.equal(supersededDesignReview(designReviewMarker(issue()), { state: "OPEN", headRefOid: "e086aa64" }), undefined, "the current head, no verdict: still the live review");
+    assert.match(supersededDesignReview(designReviewMarker(issue()), withVerdict("PENDING")), /moved on to head `f727bc63`/);
+    assert.equal(supersededDesignReview(designReviewMarker(issue("f727bc63")), { state: "MERGED", headRefOid: "f727bc63" }), "its PR merged");
+    assert.equal(supersededDesignReview(designReviewMarker(issue("f727bc63")), { state: "CLOSED", headRefOid: "f727bc63" }), "its PR was closed");
+    assert.equal(supersededDesignReview(designReviewMarker(issue()), undefined), undefined, "a PR the runner can't read is never closed");
+  });
+
+  it("closes a task whose verdict is already on its exact head, which nothing is waiting on", () => {
+    const at = (state) => supersededDesignReview(designReviewMarker(issue("f727bc63")), withVerdict(state));
+    assert.equal(at("FAILURE"), "its verdict is on that head already");
+    assert.equal(at("SUCCESS"), "its verdict is on that head already");
+    assert.equal(at("PENDING"), undefined, "still reviewing: the task stays open");
   });
 });
 
