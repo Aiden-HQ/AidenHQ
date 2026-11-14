@@ -11,7 +11,7 @@ import { Store } from "../src/store.js";
 const ME = "user-1";
 const persona = (name: string) => ({ persona: { name, voice: "", avatar: name.toLowerCase() } });
 const agents: Agent[] = [
-  { id: "00000000-0000-0000-0000-00000000000a", name: "Assistant", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant", ...persona("Alfred") } },
+  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant", ...persona("Alfred") } },
   { id: "00000000-0000-0000-0000-0000000000c1", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", ...persona("Ada") } },
   { id: "00000000-0000-0000-0000-0000000000c0", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer", ...persona("Grace") } },
   { id: "00000000-0000-0000-0000-0000000000d1", name: "Chief of Staff", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:chief-of-staff" } },
@@ -98,7 +98,7 @@ describe("routing mentions and passed-on messages", () => {
       req.end(JSON.stringify(body));
     });
   const say = (ref: string, text: string) => call(ports.local, `/api/issues/${ref}/comments`, { body: text }, { host: "localhost:3120", "x-aidenhq-board": "1", origin: "http://localhost:3120", "sec-fetch-site": "same-origin" });
-  // The runner's `aidenhq pass` (its key); the Research Assistant's own credential is the other way in (internal.test.ts).
+  // The runner's `aidenhq pass` (its key); the Researcher's own credential is the other way in (internal.test.ts).
   const pass = (ref: string, body: unknown) => call(ports.internal, `/internal/issues/${ref}/pass`, body, { host: "board:3122", authorization: `Bearer ${TOKEN}`, "x-reviewer-key": RUNNER_KEY });
 
   let task: Issue, alfred: Issue, ada: Issue;

@@ -1,5 +1,5 @@
 name: core
-description: Aiden (chief of staff), the Executive Assistant, the apps platform's DevOps Engineer, the Agent Architect (designs new agents), the Agent Coach (reviews agents' outcomes) and the Platform Engineer. Always installed.
+description: Aiden (chief of staff), the Researcher, the apps platform's DevOps Engineer, the Agent Architect (designs new agents), the Agent Coach (reviews agents' outcomes) and the Platform Engineer. Always installed.
 requires:
   - owner-channel
 settings:

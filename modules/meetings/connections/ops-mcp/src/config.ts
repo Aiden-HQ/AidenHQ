@@ -50,7 +50,7 @@ const VaultSchema = z.object({
   // Frontmatter tags on every canonical meeting note (in Obsidian: tag:#type/meeting).
   meeting_tags: z.array(z.string()).default(["type/meeting"]),
   max_search_results: z.number().int().positive().default(20),
-  // The user's writing voice guide (vault-relative, inside a write root). The Executive Assistant reads it
+  // The user's writing voice guide (vault-relative, inside a write root). The Researcher reads it
   // before drafting in the user's voice and adds lessons when the user asks. Unset: no guide.
   voice_note: z.string().optional(),
 });

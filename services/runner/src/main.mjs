@@ -297,7 +297,7 @@ function reportProgress() {
 
 /**
  * The board creates the user's task for each due run (top of Today) and hands it here: add the
- * period's GitHub activity for the definition's repositories, then start the Research Assistant on it.
+ * period's GitHub activity for the definition's repositories, then start the Researcher on it.
  */
 async function startRecurringRuns() {
   for (const run of await board.claim()) {
@@ -607,7 +607,7 @@ async function handleIssue(issue, engineerIds) {
         state.set(`ownreq:${issue.id}`, new Date().toISOString());
         return handleRequest(issue, ""); // the description is the request
       }
-      // Sub-tasks the Research Assistant created wait quietly for the go-ahead on their parent.
+      // Sub-tasks the Researcher created wait quietly for the go-ahead on their parent.
       if (isAgentSubtask(full)) return;
       if (!state.get(`greeted:${issue.id}`)) {
         state.set(`greeted:${issue.id}`, new Date().toISOString());
@@ -632,7 +632,7 @@ async function handleIssue(issue, engineerIds) {
 }
 
 /**
- * The request in a task's description: the user's own task, or a sub-task the Research Assistant created
+ * The request in a task's description: the user's own task, or a sub-task the Researcher created
  * that the user has given the go-ahead for. Empty for everything else.
  */
 function requestFrom(full) {
@@ -644,7 +644,7 @@ function requestFrom(full) {
 async function handleRequest(issue, latest, { fromAgent = false } = {}) {
   const full = await pc.issue(issue.id);
   let instructions = latest;
-  // Commenting on a sub-task the Research Assistant created is the go-ahead for that one; an agent's comment never is.
+  // Commenting on a sub-task the Researcher created is the go-ahead for that one; an agent's comment never is.
   if (latest && !fromAgent && isAgentSubtask(full)) state.set(`approved:${issue.id}`, new Date().toISOString());
   // First run on a task the user wrote (or approved): its title and description are part of the request.
   if (!state.get(`history:${issue.id}`)) {
@@ -1269,10 +1269,10 @@ async function tellOpenParent(issue, text) {
 }
 const GRADER_NOTE_TAIL = /\n\n<!-- aidenhq:grader -->$/;
 
-// ------------------------------------------------------------------ replies → Research Assistant
+// ------------------------------------------------------------------ replies → Researcher
 
 /**
- * Your comments on your own open tasks go to the Research Assistant ("Process task replies"),
+ * Your comments on your own open tasks go to the Researcher ("Process task replies"),
  * after a short quiet period so a follow-up comment or closing the task is taken into account.
  * Review tasks (ops-mcp) and engineer tasks (this runner) have their own handlers.
  */
@@ -1292,7 +1292,7 @@ async function dispatchReplies() {
   for (const issue of await pc.myOpenIssues()) {
     if ((issue.labels ?? []).some((l) => exclude.has(l.name))) continue;
     let fresh = (await pc.comments(issue.id)).filter((c) => Paperclip.isUserInstruction(c) && c.createdAt >= since && !state.handled(c.id));
-    // A message that @-mentions only other agents went to them: the Research Assistant leaves it.
+    // A message that @-mentions only other agents went to them: the Researcher leaves it.
     for (const c of fresh.filter((c) => hasMarker(c.body, FOR_OTHERS))) state.markHandled(c.id, issue.id);
     fresh = fresh.filter((c) => !hasMarker(c.body, FOR_OTHERS));
     if (!fresh.length) continue;
@@ -1309,13 +1309,13 @@ async function dispatchReplies() {
   if (!ready.length) return;
   await pc.runRoutine(r.routine ?? "Process task replies", { tasks: ready.join(", ") });
   for (const [cid, iid] of pending) state.markHandled(cid, iid);
-  log("replies dispatched to Research Assistant", { tasks: ready });
+  log("replies dispatched to Researcher", { tasks: ready });
 }
 
 /**
- * If Engineer sub-tasks the Research Assistant created under this task are waiting, decide whether the
+ * If Engineer sub-tasks the Researcher created under this task are waiting, decide whether the
  * user's new comments are the go-ahead. "start" starts them all, "hold" keeps them waiting; anything
- * else (changes, questions) goes to the Research Assistant as usual. True when the comments were handled here.
+ * else (changes, questions) goes to the Researcher as usual. True when the comments were handled here.
  */
 async function handleGoAhead(parent, fresh) {
   const engineers = await pc.engineerAgents();
@@ -3176,7 +3176,7 @@ async function handleParentPr(parent, fresh) {
   const asks = fresh.filter((c) => parseCommand(c.body) === "pr");
   if (!asks.length) return false;
   const engineers = await pc.engineerAgents();
-  // Approved sub-tasks the Research Assistant made, and the parts the user gave Engineers themselves.
+  // Approved sub-tasks the Researcher made, and the parts the user gave Engineers themselves.
   const kids = (await pc.children(parent.id)).filter((c) => (isAgentSubtask(c) && state.get(`approved:${c.id}`)) || isUserPart(c, engineers));
   if (!kids.length) return false;
   for (const c of asks) state.markHandled(c.id, parent.id);

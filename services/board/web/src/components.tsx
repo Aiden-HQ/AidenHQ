@@ -526,7 +526,7 @@ function SignInBanner({ name, path, status, canConnect, missing, stopped }: { na
 export function SignInBanners({ board, canConnect }: { board: Board; canConnect: boolean }) {
   return (
     <>
-      <SignInBanner name="Glean" path="glean" status={board.glean} canConnect={canConnect} missing="The Executive Assistant can't search company knowledge until it is." stopped="The Executive Assistant's company search is paused." />
+      <SignInBanner name="Glean" path="glean" status={board.glean} canConnect={canConnect} missing="The Researcher can't search company knowledge until it is." stopped="The Researcher's company search is paused." />
       <SignInBanner name="Grafana" path="grafana" status={board.grafana} canConnect={canConnect} missing="The Engineers can't read logs and metrics until it is." stopped="The Engineers can't read logs and metrics." />
       <SignInBanner name="ClickHouse" path="clickhouse" status={board.clickhouse} canConnect={canConnect} missing="The Engineers can't query it until it is." stopped="The Engineers can't query it." />
       <SignInBanner name="Jira" path="jira" status={board.jira} canConnect={canConnect} missing="The agents can't read it until it is." stopped="The agents can't read it." />

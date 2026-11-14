@@ -84,21 +84,21 @@ export function issueState(i: Issue, agent: Assignee, input: CrewInput): CrewSta
   const w = input.working.get(i.identifier);
   if (w) return w.queued ? "queued" : "working";
   const closed = i.status === "done" || i.status === "cancelled";
-  // An Engineer task the Executive Assistant made waits for the user's go-ahead: the runner starts it on approval.
+  // An Engineer task the Researcher made waits for the user's go-ahead: the runner starts it on approval.
   if (!closed && i.status === "todo" && agent.kind === "engineer" && i.createdByAgentId && !i.createdByUserId) return "proposed";
   const job = input.jobs.get(i.identifier);
   if (!closed && job && STUCK.has(job)) return "failed";
   // Something new to read is the user's turn, even on a part that's closed.
   const activityAt = i.lastActivityAt ?? i.updatedAt;
   if (activityAt > input.seen(i.id)) return "needs";
-  // Assigned and not picked up yet (nothing happened since it was made): the runner polls, Paperclip wakes the Executive Assistant.
+  // Assigned and not picked up yet (nothing happened since it was made): the runner polls, Paperclip wakes the Researcher.
   if (!closed && i.status === "todo" && !job && Date.parse(activityAt) - Date.parse(i.createdAt) < 60_000) return "queued";
   return "done";
 }
 
 /**
  * The crew of one card: the card's own agent when it's assigned to one (older tasks), then
- * its children grouped by agent, the Executive Assistant first, then in the order they joined.
+ * its children grouped by agent, the Researcher first, then in the order they joined.
  */
 export function crewOf(card: Issue, children: Issue[], input: CrewInput): CrewMember[] {
   const groups = new Map<string, { agent: Assignee; issues: Issue[] }>();
@@ -169,7 +169,7 @@ export function mentionedAgents(text: string, assignees: Assignee[]): Assignee[]
 
 const displayTextOf = (s: string) => s.replace(/<!--[\s\S]*?-->/g, "").replace(/```[\s\S]*?```|`[^`\n]*`/g, " ");
 
-/** Marks a message on the user's task that names only other agents: the Executive Assistant leaves it to them. */
+/** Marks a message on the user's task that names only other agents: the Researcher leaves it to them. */
 export const FOR_OTHERS = "<!-- aidenhq-for-others -->";
 
 /** Where a message delivered to an agent's part came from: the chat, the original comment, and a line saying so. */
@@ -182,7 +182,7 @@ export interface DeliveredFrom {
 /** A delivered message: the user's own words and a visible line saying where they came from. */
 export const deliveredText = (text: string, from: DeliveredFrom) => `${text.trim()}\n\n_${from.note}_`;
 
-/** The marker after it, for the runner and the Executive Assistant to find that chat's conversation. */
+/** The marker after it, for the runner and the Researcher to find that chat's conversation. */
 export const fromMarker = (from: DeliveredFrom) => `<!-- aidenhq-from:${from.identifier}${from.commentId ? `:${from.commentId}` : ""} -->`;
 
 /** The chat a delivered message came from: its task identifier and the original comment, when known. */

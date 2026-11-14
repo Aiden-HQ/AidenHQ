@@ -4,7 +4,7 @@ import type { Agent, LiveRun, PastRun, Routine } from "../src/paperclip.js";
 
 const NOW = Date.parse("2026-10-12T15:00:00Z");
 const ago = (min: number) => new Date(NOW - min * 60_000).toISOString();
-const agents = [{ id: "a-assistant", name: "Assistant" }, { id: "a-slack", name: "Slack Scout" }] as Agent[];
+const agents = [{ id: "a-assistant", name: "Researcher" }, { id: "a-slack", name: "Slack Scout" }] as Agent[];
 
 
 describe("agentsView", () => {
@@ -32,7 +32,7 @@ describe("agentsView", () => {
   it("lists Paperclip runs and runner jobs with their tasks, and what finished in the last 12 hours", async () => {
     const view = await agentsView({ live, past, runner, agents, resolve, now: NOW });
     expect(view.sessions.map((s) => [s.agent, s.state, s.tasks.map((t) => t.identifier)])).toEqual([
-      ["Assistant", "working", ["PEN-864"]],
+      ["Researcher", "working", ["PEN-864"]],
       ["Slack Scout", "working", []],
       ["Engineer · Codex (gpt-5.5)", "working", ["PEN-900"]],
       ["Engineer", "queued", ["PEN-901"]],
@@ -40,7 +40,7 @@ describe("agentsView", () => {
     expect(view.sessions[1]!.quiet).toBe(true);
     expect(view.sessions[2]!.doing).toBe("Implement in org/repo");
     expect(view.finished.map((f) => [f.agent, f.status])).toEqual([
-      ["Assistant", "succeeded"],
+      ["Researcher", "succeeded"],
       ["Engineer · Claude Code", "done"],
     ]);
     expect(view.runner).toEqual({ reportedAt: runner.at, stale: false });
@@ -56,7 +56,7 @@ describe("agentsView", () => {
   it("marks the tasks being worked on, preferring a running agent over a queue", async () => {
     const view = await agentsView({ live, past: [], runner: { ...runner, queued: [{ issueId: runner.running[0]!.issueId, identifier: "PEN-864" }] }, agents, resolve, now: NOW });
     const map = workingOn(view.sessions);
-    expect(map.get("PEN-864")).toEqual({ agent: "Assistant", since: ago(3), queued: false });
+    expect(map.get("PEN-864")).toEqual({ agent: "Researcher", since: ago(3), queued: false });
     expect(map.get("PEN-900")?.queued).toBe(false);
     expect(map.has("PEN-871")).toBe(false);
   });
@@ -83,7 +83,7 @@ describe("who is behind a session", () => {
     const live = [{ id: "r1", status: "running", agentId: "a-assistant", issueId: null, startedAt: ago(3), createdAt: ago(3) }] as LiveRun[];
     const view = await agentsView({ live, past: [], runner, agents: crew, resolve, now: NOW });
     expect(view.sessions.map((s) => [s.agent, s.agentId])).toEqual([
-      ["Assistant", "a-assistant"],
+      ["Researcher", "a-assistant"],
       ["Engineer · Codex (gpt-5.5, high effort)", "e-codex"],
       ["Engineer · Claude", "e-claude"],
     ]);

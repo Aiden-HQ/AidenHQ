@@ -272,11 +272,11 @@ export function createApp(opts: AppOptions): Server {
     return { me, agents, labels, assignees: assignees(agents), prefix: company.issuePrefix ?? "" };
   }
 
-  /** The tasks the board shows: assigned to the user, the Executive Assistant or an Engineer. */
+  /** The tasks the board shows: assigned to the user, the Researcher or an Engineer. */
   const mine = (issues: Issue[], ctx: { me: string; assignees: Assignee[] }) =>
     issues.filter((i) => (i.assigneeAgentId ? ctx.assignees.some((a) => a.key === i.assigneeAgentId) : i.assigneeUserId === ctx.me));
 
-  /** A task the board may change: assigned to the user, the Executive Assistant or an Engineer. */
+  /** A task the board may change: assigned to the user, the Researcher or an Engineer. */
   async function ownIssue(ref: string) {
     if (!REF.test(ref)) throw new HttpError(400, "bad task reference");
     const [ctx, issue] = await Promise.all([context(), pc.issue(ref)]);
@@ -286,7 +286,7 @@ export function createApp(opts: AppOptions): Server {
   }
 
   /** `ownIssue`, refused unless the board may change it. */
-  async function editableIssue(ref: string, refusal = "this task isn't yours or an assistant's") {
+  async function editableIssue(ref: string, refusal = "this task isn't yours or the Researcher's") {
     const own = await ownIssue(ref);
     if (!own.assigned) throw new HttpError(403, refusal);
     return own;
@@ -785,7 +785,7 @@ export function createApp(opts: AppOptions): Server {
     const busy = (await working(ctx)).map;
     for (const k of kids) if (kind(k) && !closed(k) && !busy.has(k.identifier)) await pc.updateIssue(k.id, { status: "cancelled" });
     store.unschedule(source.id);
-    // Cancelled first: a comment on a closed task wakes nobody, and the runner's marker keeps it from the Executive Assistant.
+    // Cancelled first: a comment on a closed task wakes nobody, and the runner's marker keeps it from the Researcher.
     await pc.updateIssue(source.id, { status: "cancelled" });
     await pc.addComment(source.id, `Merged into ${target.identifier}.\n\n${RUNNER_MARKER}`);
     log.info({ issue: source.identifier, into: target.identifier, files: files.length }, "task merged");
@@ -1283,7 +1283,7 @@ export function createApp(opts: AppOptions): Server {
         return { text: digestText(store.approvals.since(new Date(now.getTime() - 86_400_000).toISOString())) };
       },
     },
-    // Board changes are the Executive Assistant's (board-writer), through the tasks bridge with its own credential.
+    // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), schedule(decodeURIComponent(m[1]!), body)) },
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), recurringChange(decodeURIComponent(m[1]!), body)) },
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!), parse(MergeSchema, body).into), merge(decodeURIComponent(m[1]!), body)) },
@@ -1313,7 +1313,7 @@ export function createApp(opts: AppOptions): Server {
       // user's own comment travels, word for word: the agent picks which one and for whom, never the words.
       method: "POST",
       path: /^\/internal\/issues\/([^/]+)\/pass$/,
-      // The runner (an Engineer's `aidenhq pass`) or the Executive Assistant through the tasks bridge.
+      // The runner (an Engineer's `aidenhq pass`) or the Researcher through the tasks bridge.
       handle: async (m, body, _u, req) => {
         if (!runnerKeyed(req)) await requireAgentTool(req, "task_pass_on", "board-writer");
         await refuseMemoryInbox(decodeURIComponent(m[1]!));
@@ -1327,7 +1327,7 @@ export function createApp(opts: AppOptions): Server {
         const byName = withHandle(ctx.assignees, to);
         const agent = named ?? (byName.length === 1 ? byName[0] : undefined);
         if (!agent) throw new HttpError(400, `${byName.length > 1 ? "more than one agent answers to" : "no agent is called"} ${to}: ${ctx.assignees.flatMap((a) => (a.kind === "me" ? [] : [a.persona?.name ?? a.name])).join(", ")}`);
-        // An agent may pass only to the Executive Assistant, an Engineer, or an agent already on this task; never the Chief of Staff.
+        // An agent may pass only to the Researcher, an Engineer, or an agent already on this task; never the Chief of Staff.
         const chief = ctx.agents.find((x) => x.id === agent.key)?.metadata?.setupKey === "aidenhq:chief-of-staff";
         const onTask = (await pc.children(task.id)).some((k) => k.assigneeAgentId === agent.key);
         if (chief || (agent.kind === "agent" && !onTask)) throw new HttpError(403, `${agent.persona?.name ?? agent.name} can't be passed to from here`);
@@ -1770,7 +1770,7 @@ export function createApp(opts: AppOptions): Server {
         // Hidden markers are machine-only: the runner ignores comments that carry its marker.
         let posted;
         if (!others.length || named.length > others.length) posted = await pc.addComment(issue.id, displayText(text));
-        // On the user's own task the message stays in the team chat; the Executive Assistant leaves it to the others.
+        // On the user's own task the message stays in the team chat; the Researcher leaves it to the others.
         else if (issue.id === task!.id) posted = await pc.addComment(issue.id, `${displayText(text)}\n\n${FOR_OTHERS}`);
         log.info({ issue: issue.identifier, mentions: named.map((a) => a.name) }, "comment added");
         // A message to a finished chat reopens it.

@@ -48,7 +48,7 @@ const upstream = createServer(async (req, res) => {
   await transport.handleRequest(req, res);
 });
 
-// Paperclip's /api/agents/me: the run key names the agent; the grants table gives the Assistant Jira reads only.
+// Paperclip's /api/agents/me: the run key names the agent; the grants table gives the Researcher Jira reads only.
 const paperclip = createServer((req, res) => {
   const id = { "Bearer assistant-key": "a1", "Bearer writer-key": "w1" }[String(req.headers.authorization)];
   if (!id) return void res.writeHead(401).end();

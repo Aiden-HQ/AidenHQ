@@ -1015,7 +1015,7 @@ describe("an Engineer's part of a task", () => {
     assert.match(followUpPrompt({ ...base, crew: { ...crew, others: [] } }), /The task this is part of[\s\S]*PARENT>>>/);
     assert.doesNotMatch(followUpPrompt({ ...base, crew: { ...crew, others: [] } }), /What the others/);
   });
-  it("counts parts the user gave an Engineer, not the Assistant's or other people's", async () => {
+  it("counts parts the user gave an Engineer, not the Researcher's or other people's", async () => {
     const { isUserPart } = await import("../src/commands.mjs");
     const engineers = [{ id: "e1" }];
     assert.equal(isUserPart({ parentId: "p", createdByUserId: "u", assigneeAgentId: "e1" }, engineers), true);

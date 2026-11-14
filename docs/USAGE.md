@@ -63,7 +63,7 @@ by the host's TPM, plaintext only while mounted. Keep the recovery key in a pass
 ## Connect Jira
 
 The `jira` module reads Jira (and Confluence) through Atlassian's own remote MCP server, signed in as you. The Research
-Assistant gets reads only (JQL search, an issue, its change history, comments, projects, releases); nobody gets the
+The Researcher gets reads only (JQL search, an issue, its change history, comments, projects, releases); nobody gets the
 write tools (comment, create issue) until you grant them. Every call is pinned to your Atlassian site.
 
 1. On the host, create the sign-in folder first, as your user and not root: `mkdir -p ~/.config/aidenhq/jira && chmod 700

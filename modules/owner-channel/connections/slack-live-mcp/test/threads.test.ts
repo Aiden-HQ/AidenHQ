@@ -6,7 +6,7 @@ import { notifyOwner } from "../src/urgent.js";
 
 afterEach(() => vi.unstubAllGlobals());
 const ag = (id: string, name: string, key: string, status = "idle") => ({ id, name, status, metadata: { setupKey: `aidenhq:${key}` } });
-const agents = [ag("c", "Aiden", "chief-of-staff"), ag("s", "Assistant", "assistant"), ag("p", "Slack Scout", "slack-scout", "paused")];
+const agents = [ag("c", "Aiden", "chief-of-staff"), ag("s", "Researcher", "assistant"), ag("p", "Slack Scout", "slack-scout", "paused")];
 
 describe("routeOwnerMessage", () => {
   const store = openStore(":memory:");

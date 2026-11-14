@@ -1,5 +1,5 @@
 // Recurring tasks: the runner claims due runs from the board, adds the period's GitHub
-// activity to the user's task for it, and starts the Executive Assistant. The GitHub part is fixed, read-only
+// activity to the user's task for it, and starts the Researcher. The GitHub part is fixed, read-only
 // GraphQL with your gh login (like reviews.mjs); nothing is written to GitHub.
 import { existsSync, readFileSync } from "node:fs";
 
@@ -124,5 +124,5 @@ export function formatRepo(repo, data, since, until, err) {
 
 /** The comment the runner adds to the user's task for the period. */
 export function activityComment(run, sections) {
-  return [`**GitHub activity, ${run.sinceLocal} to ${run.untilLocal}** (${run.timezone}), for the Executive Assistant to draft from.`, ...sections].join("\n\n");
+  return [`**GitHub activity, ${run.sinceLocal} to ${run.untilLocal}** (${run.timezone}), for the Researcher to draft from.`, ...sections].join("\n\n");
 }

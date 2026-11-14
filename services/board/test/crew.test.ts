@@ -5,7 +5,7 @@ import type { Agent, Issue } from "../src/paperclip.js";
 
 const ME = "user-1";
 const agents: Agent[] = [
-  { id: "a-alfred", name: "Assistant", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant" } },
+  { id: "a-alfred", name: "Researcher", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant" } },
   { id: "a-grace", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:engineer" } },
   { id: "a-ada", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", metadata: { setupKey: "aidenhq:engineer-claude" } },
 ];
@@ -94,7 +94,7 @@ describe("an agent's state", () => {
 });
 
 describe("the crew of a card", () => {
-  it("groups a fan-out under one agent, Assistant first, with how many finished", () => {
+  it("groups a fan-out under one agent, Researcher first, with how many finished", () => {
     const parent = issue({ assigneeUserId: ME });
     const kids = [
       issue({ parentId: parent.id, assigneeAgentId: "a-grace", status: "in_review" }),

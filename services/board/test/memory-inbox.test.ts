@@ -9,7 +9,7 @@ import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
-// The Research Assistant may change the board, but never a memory inbox (the grants table names it): only memory_note writes there.
+// The Researcher may change the board, but never a memory inbox (the grants table names it): only memory_note writes there.
 const INBOX = "22222222-2222-2222-2222-222222222222";
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
 writeFileSync(grantsFile, JSON.stringify({ agents: { ra: { key: "assistant", roles: ["board-writer"], tools: { paperclip_tasks: ["task_schedule", "task_merge"] } }, scout: { key: "scout", roles: [], tools: {}, memory_inbox: INBOX } } }));

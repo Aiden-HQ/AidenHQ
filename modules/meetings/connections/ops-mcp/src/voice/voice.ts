@@ -22,7 +22,7 @@ export interface VoiceLesson {
 }
 
 /**
- * The user's writing voice guide: one vault note the Executive Assistant reads before drafting in the
+ * The user's writing voice guide: one vault note the Researcher reads before drafting in the
  * user's voice, and adds lessons to when the user asks. Lessons are only ever appended under
  * the Lessons heading; everything else in the note is the user's.
  */

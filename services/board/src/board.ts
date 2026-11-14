@@ -30,7 +30,7 @@ export const EFFORTS: Record<Engine, string[]> = {
   openrouter: ["low", "medium", "high"],
 };
 
-/** Someone a task can be assigned to from the board: the user, the Executive Assistant, an Engineer, or any other agent. */
+/** Someone a task can be assigned to from the board: the user, the Researcher, an Engineer, or any other agent. */
 export interface Assignee {
   key: string; // "me" or the agent id
   kind: "me" | "assistant" | "engineer" | "agent";
@@ -256,8 +256,8 @@ export function replyTarget(issue: Issue, list: Assignee[]): string {
   const a = list.find((x) => x.key === issue.assigneeAgentId);
   if (a?.kind === "engineer" || labels.has("engineer")) return "The runner reads replies here and starts or continues the coding job.";
   if (labels.has("needs-review")) return "AidenHQ applies review replies here (pick N, ignore).";
-  if (a?.kind === "assistant") return "The Executive Assistant is working on this and reads replies.";
-  return "The Executive Assistant picks up replies here after about 90 seconds.";
+  if (a?.kind === "assistant") return "The Researcher is working on this and reads replies.";
+  return "The Researcher picks up replies here after about 90 seconds.";
 }
 
 // ------------------------------------------------------------------ edits

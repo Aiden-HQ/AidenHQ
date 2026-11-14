@@ -415,7 +415,7 @@ async function requireOwnTask(g, issue) {
 async function requireRole(role, what) {
   if (!(await grant()).roles.includes(role)) throw new Error(`only an agent with the ${role} role can ${what}`);
 }
-/** Board changes are the Executive Assistant's, on the user's word only (its grants plus this role). */
+/** Board changes are the Researcher's, on the user's word only (its grants plus this role). */
 const requireAssistant = () => requireRole("board-writer", "change the board");
 
 /** The caller's direct and indirect reports (Paperclip's reportsTo tree), excluding itself. */
@@ -748,7 +748,7 @@ const TOOLS = {
   },
   task_create_engineer_task: {
     description:
-      "Executive Assistant only, and only when the user asked for it in their own comment: create an Engineer task as a sub-task of one of the user's tasks. One repository and one self-contained request per task: include everything the engineer needs (repo URL, exact changes, checks, what to skip), because it cannot see the parent. It waits for the user's go-ahead on the parent before it starts. Idempotent per parent and marker.",
+      "Researcher only, and only when the user asked for it in their own comment: create an Engineer task as a sub-task of one of the user's tasks. One repository and one self-contained request per task: include everything the engineer needs (repo URL, exact changes, checks, what to skip), because it cannot see the parent. It waits for the user's go-ahead on the parent before it starts. Idempotent per parent and marker.",
     inputSchema: {
       type: "object",
       properties: {
@@ -766,13 +766,13 @@ const TOOLS = {
     run: async ({ parent, title, description, engine, model, marker }) => {
       refuseReservedMarker(marker);
       if (!COMPANY) throw new Error("PAPERCLIP_COMPANY_ID not set");
-      // Code work is gated by the user's go-ahead; only the Executive Assistant may queue it.
+      // Code work is gated by the user's go-ahead; only the Researcher may queue it.
       const me = await api("GET", "/api/agents/me");
       await requireRole("engineer-dispatch", "create Engineer tasks");
       if (!ENGINES.includes(engine)) throw new Error(`engine must be one of ${ENGINES.join(", ")}`);
       let p = await api("GET", `/api/issues/${issueRef(parent)}`);
       const owner = await ownerUserId();
-      // From the Executive Assistant's own sub-task, the Engineer joins the user's task it belongs to.
+      // From the Researcher's own sub-task, the Engineer joins the user's task it belongs to.
       if (p.parentId && p.assigneeAgentId === me.id) p = await api("GET", `/api/issues/${issueRef(p.parentId)}`);
       if (!owner || (p.assigneeUserId !== owner && p.responsibleUserId !== owner)) throw new Error("the parent must be one of the user's tasks");
       const key = String(marker).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").slice(0, 80);
@@ -826,7 +826,7 @@ const TOOLS = {
   },
   task_delegate: {
     description:
-      "Delegate work: create a task assigned to one of your reports (direct or indirect; see task_team), status todo, which wakes them. Give a clear title, a checkable done condition and all the context, because the assignee cannot see your conversation. Defaults to a child of the current task. Idempotent per parent and marker. Engineers can be delegated code jobs (one repo, a self-contained request); under the owner's own tasks they still wait for their go-ahead, so there the Executive Assistant does it.",
+      "Delegate work: create a task assigned to one of your reports (direct or indirect; see task_team), status todo, which wakes them. Give a clear title, a checkable done condition and all the context, because the assignee cannot see your conversation. Defaults to a child of the current task. Idempotent per parent and marker. Engineers can be delegated code jobs (one repo, a self-contained request); under the owner's own tasks they still wait for their go-ahead, so there the Researcher does it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -942,7 +942,7 @@ const TOOLS = {
   },
   task_schedule: {
     description:
-      "Executive Assistant only, when the user asks in their own comment: on a date, move one of their tasks to a board column (default: the top of Today), e.g. \"bring this back on the 15th\". Resolve the user's words to a calendar date in their timezone first. A date of today moves it now; a later move by hand replaces the schedule. clear: true removes it.",
+      "Researcher only, when the user asks in their own comment: on a date, move one of their tasks to a board column (default: the top of Today), e.g. \"bring this back on the 15th\". Resolve the user's words to a calendar date in their timezone first. A date of today moves it now; a later move by hand replaces the schedule. clear: true removes it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -964,7 +964,7 @@ const TOOLS = {
   },
   task_recurring: {
     description:
-      "Executive Assistant only, when the user asks in their own comment: make one of their tasks recurring, or pause, resume, stop or run it now. Each run follows the task's description as instructions; the result lands on top of the user's Today as a new task, at 07:00 unless they name a time. cadence: {kind: \"weekly\", weekday, interval?} (interval 2 = every other week), {kind: \"monthly_day\", day: 1-31 or \"last\", interval?}, or {kind: \"monthly_weekday\", nth: 1-4 or \"last\", weekday, interval?}; weekdays lowercase English. repos: GitHub repositories (owner/name) the instructions name; their activity is collected for each run. Returns the rule in words and the next runs: tell the user.",
+      "Researcher only, when the user asks in their own comment: make one of their tasks recurring, or pause, resume, stop or run it now. Each run follows the task's description as instructions; the result lands on top of the user's Today as a new task, at 07:00 unless they name a time. cadence: {kind: \"weekly\", weekday, interval?} (interval 2 = every other week), {kind: \"monthly_day\", day: 1-31 or \"last\", interval?}, or {kind: \"monthly_weekday\", nth: 1-4 or \"last\", weekday, interval?}; weekdays lowercase English. repos: GitHub repositories (owner/name) the instructions name; their activity is collected for each run. Returns the rule in words and the next runs: tell the user.",
     inputSchema: {
       type: "object",
       properties: {
@@ -986,7 +986,7 @@ const TOOLS = {
   },
   task_merge: {
     description:
-      "Executive Assistant only, when the user asks in their own comment (\"merge into PEN-12\", \"same as PEN-12\"): merge one of their tasks into another. The board appends its description to the other's word for word, copies its files, moves the user's sub-tasks, and cancels it. A task with an Engineer's work on it is refused with the reason: tell the user. Returns what was merged into what: say so in one line.",
+      "Researcher only, when the user asks in their own comment (\"merge into PEN-12\", \"same as PEN-12\"): merge one of their tasks into another. The board appends its description to the other's word for word, copies its files, moves the user's sub-tasks, and cancels it. A task with an Engineer's work on it is refused with the reason: tell the user. Returns what was merged into what: say so in one line.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1119,7 +1119,7 @@ const TOOLS = {
   },
   task_pass_on: {
     description:
-      "Executive Assistant only: pass one of the user's comments on to another agent on the same task (Ada, Grace, Linus…), when what they ask is that agent's to do: an Engineer's own report or code, a Primer document an Engineer wrote, work in a repository. The board delivers the user's comment word for word to that agent's part of the task (adding them to it if needed), with this conversation as context; you choose which comment and for whom, never the words. Once per comment and agent. Say in one line that you passed it on, and don't do their part yourself.",
+      "Researcher only: pass one of the user's comments on to another agent on the same task (Ada, Grace, Linus…), when what they ask is that agent's to do: an Engineer's own report or code, a Primer document an Engineer wrote, work in a repository. The board delivers the user's comment word for word to that agent's part of the task (adding them to it if needed), with this conversation as context; you choose which comment and for whom, never the words. Once per comment and agent. Say in one line that you passed it on, and don't do their part yourself.",
     inputSchema: {
       type: "object",
       properties: {

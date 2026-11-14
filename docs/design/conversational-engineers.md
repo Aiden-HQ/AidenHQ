@@ -109,7 +109,7 @@ branch and PR footer when something changed. An empty final message ("thanks" ne
 empty task starts no turn until the first comment. Uncommitted changes are left alone and shown in the state table.
 
 Not part of this model: the go-ahead on a parent's sub-tasks, recurring runs, review tasks and the board's crew view. The
-Assistant agent still gathers its own context rather than reading the thread this way.
+Researcher agent still gathers its own context rather than reading the thread this way.
 
 ## Cost
 

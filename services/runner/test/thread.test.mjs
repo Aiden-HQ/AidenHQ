@@ -6,7 +6,7 @@ import { REPLY_MARKER, prSnapshot, stateSection, threadEntries, threadSection, t
 const at = (m) => `2026-10-27T20:${String(m).padStart(2, "0")}:00.000Z`;
 const user = (m, body) => ({ authorType: "user", createdAt: at(m), body });
 const runner = (m, body) => ({ authorType: "user", createdAt: at(m), body: `${body}\n\n${RUNNER_MARKER}` });
-const alfred = { id: "a1", name: "Assistant", metadata: { persona: { name: "Alfred" } } };
+const alfred = { id: "a1", name: "Researcher", metadata: { persona: { name: "Alfred" } } };
 
 describe("the conversation on a task", () => {
   // PEN-2714, 2026-10-27: the PR list answered the runner's question, then "as I instructed you".

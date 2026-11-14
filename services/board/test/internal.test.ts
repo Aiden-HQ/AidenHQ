@@ -9,7 +9,7 @@ import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
-// The grants table setup writes: the Research Assistant may change the board; the Scout holds the tool but not the role.
+// The grants table setup writes: the Researcher may change the board; the Scout holds the tool but not the role.
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
 writeFileSync(grantsFile, JSON.stringify({ agents: { ra: { key: "assistant", roles: ["board-writer", "fleet-read"], tools: { paperclip_tasks: ["task_schedule"] } }, scout: { key: "scout", roles: [], tools: { paperclip_tasks: ["task_schedule"] } } } }));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;

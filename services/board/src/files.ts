@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Attachment } from "./paperclip.js";
 
 /**
- * Files the user attaches to a task, as context for the Executive Assistant and the Engineers.
+ * Files the user attaches to a task, as context for the Researcher and the Engineers.
  * Paperclip stores them; the board uploads, lists and serves them. A PDF gets a text version
  * next to it (`<name>.txt`), so every agent can read it without a PDF reader.
  */

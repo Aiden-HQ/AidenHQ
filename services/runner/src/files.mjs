@@ -1,5 +1,5 @@
 // Files the user attached to a task, copied into the workspace before each run so every engine
-// can read them like any other file. A sub-task also gets its parent's: the Executive Assistant splits a task
+// can read them like any other file. A sub-task also gets its parent's: the Researcher splits a task
 // into Engineer sub-tasks, and the files that came with the request belong to all of them.
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";

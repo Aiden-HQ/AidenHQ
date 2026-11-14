@@ -19,7 +19,7 @@ agents:
     connections:
       # No web: it reads untrusted email/Slack, so no outbound fetch (owner, 2026-11-11). app_view only.
       apps: [ app_view ]
-      # Reads only: drafts stay with the Executive Assistant.
+      # Reads only: drafts stay with the Researcher.
       slack: read
       paperclip_tasks: [ task_current, task_get, task_search, task_list, task_create, task_update, task_comment, task_set_status, task_finish ]
   inbox-agent:

@@ -5,7 +5,7 @@ import type { Agent, Issue, Label } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
 const agents: Agent[] = [
-  { id: "00000000-0000-0000-0000-00000000000a", name: "Assistant", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant" } },
+  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant" } },
   { id: "00000000-0000-0000-0000-0000000000c1", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: { model: "claude-opus-5-5" }, metadata: { setupKey: "aidenhq:engineer-claude" } },
   { id: "00000000-0000-0000-0000-0000000000c0", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer" } },
   { id: "00000000-0000-0000-0000-0000000000c2", name: "Engineer · OpenRouter", status: "idle", adapterType: "opencode_local", adapterConfig: { model: "openrouter/z-ai/glm-5.3-flash" }, metadata: { setupKey: "aidenhq:engineer-openrouter", models: ["openrouter/deepseek/deepseek-v4.1-flash", 7] } },

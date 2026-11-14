@@ -319,7 +319,7 @@ ${runnerYaml}`,
     const parent = { id: "parent", identifier: "PEN-1", title: "Drop Legacy support", status: "todo", assigneeUserId: USER, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Remove Legacy from these repos:\n\n- acme/app\n- acme/infra\n" };
     const part = { id: "part", identifier: "PEN-2", title: "Drop Legacy support", status: "todo", parentId: "parent", assigneeAgentId: "engineer-claude", assigneeUserId: null, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Ada, go ahead and start this on dev please" };
     // PEN-3155: Alfred's report is a comment on the user's task, and the user asks Ada to take it over.
-    const alfred = { id: "assistant", name: "Assistant", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:assistant", persona: { name: "Alfred" } } };
+    const alfred = { id: "assistant", name: "Researcher", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:assistant", persona: { name: "Alfred" } } };
     const parentComments = [{ id: "alfred-report", authorType: "agent", authorAgentId: "assistant", body: "## Legacy usage — preliminary\n\nLegacy is still read by the infra alerts.", createdAt: new Date(Date.now() - 60_000).toISOString() }];
     // Alfred's part of the same task: his chat, where the user may write to Ada from.
     const alfredPart = { id: "alfred-part", identifier: "PEN-3", title: "Drop Legacy support", status: "todo", parentId: "parent", assigneeAgentId: "assistant", assigneeUserId: null, labels: [], description: "Draft the changelog entry" };

@@ -12,7 +12,7 @@ gates the owner controls. You talk to one agent; a fleet works behind it.
 widely, turns messages and forwards into tasks, delegates the doing to other agents, chases, sends a daily brief and
 relays the owner's decisions. It never needs the owner to write prompts.
 
-**Crews and agents.** Specialist agents under Aiden: the Executive Assistant (long research and drafts, your task
+**Crews and agents.** Specialist agents under Aiden: the Researcher (long research and drafts, your task
 replies, recurring reports), DevOps Engineer (app health), Agent Architect (designs new agents), Agent Coach (reviews
 whether agents' output is right and complete, and files fixes), Platform Engineer (changes the instance and the product;
 owns Dependabot PRs), and whatever modules add (Follow-up Tracker, Meeting Librarian, Engineers, UI/UX Designer and UI Reviewer,

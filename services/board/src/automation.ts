@@ -1,4 +1,4 @@
-// Scheduled moves and recurring tasks: the board side. The user (board UI), the Executive Assistant
+// Scheduled moves and recurring tasks: the board side. The user (board UI), the Researcher
 // (tasks bridge) and the runner (claims due runs) reach these through app.ts; every decision about
 // dates and runs is made here, in code.
 import { createHash } from "node:crypto";
@@ -225,7 +225,7 @@ export async function claimDue(pc: Paperclip, store: Store, ctx: Ctx, tz: string
     const untilLocal = local(until.toISOString(), tz);
     const output = await pc.createIssue({
       title: `${issue.title} — ${dayLabel(until, tz)}`.slice(0, 200),
-      description: `_The Executive Assistant is preparing this from ${issue.identifier} (${describeRule(r.rule)}), covering ${sinceLocal} to ${untilLocal}._\n\n<!-- source:${m} -->`,
+      description: `_The Researcher is preparing this from ${issue.identifier} (${describeRule(r.rule)}), covering ${sinceLocal} to ${untilLocal}._\n\n<!-- source:${m} -->`,
       status: "todo",
       priority: issue.priority,
       assigneeUserId: ctx.me,

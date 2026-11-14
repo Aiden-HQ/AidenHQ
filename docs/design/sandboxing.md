@@ -43,7 +43,7 @@ alone does not stop exfiltration.
 | Tier | Agents |
 |---|---|
 | Computer (per-run gVisor box, shell and browser) | Agent Architect, DevOps Engineer (app-maintainer), UI/UX Designer, UI Reviewer: unchanged |
-| Tool-only, in Paperclip, shell off | Chief of staff, assistant, Fleet Ops, librarians, Slack Scout, Slack Triage, Email Triage, Open Loops, Security Watch, Red Teamer, Roadmap Keeper |
+| Tool-only, in Paperclip, shell off | Chief of staff, Researcher, Fleet Ops, librarians, Slack Scout, Slack Triage, Email Triage, Open Loops, Security Watch, Red Teamer, Roadmap Keeper |
 | Runner jail (bwrap, passt netns) | Light Engineers (fleet-engineer, engineer-openrouter); strong Engineer work moves to a box (decision below) |
 
 **Rule:** an agent gets `image:` only when its work needs a shell, a browser or files. Later work, not tonight: a

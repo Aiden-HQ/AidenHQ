@@ -25,7 +25,7 @@ writeFileSync(grantsFile, JSON.stringify(grantsTable));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 const task = { id: "33333333-3333-3333-3333-333333333333", identifier: "WOR-7", title: "T", status: "in_progress", assigneeAgentId: "eng", createdByAgentId: "cos", labels: [] as { id: string }[] };
-// An Engineer sub-task the Research Assistant created (task_create_engineer_task): it has no task_delegate.
+// An Engineer sub-task the Researcher created (task_create_engineer_task): it has no task_delegate.
 const engineerTask = { ...task, id: "44444444-4444-4444-4444-444444444444", identifier: "WOR-8", createdByAgentId: "ra" };
 const patches: Record<string, unknown>[] = [];
 /** The task's saved Paperclip review path: its scheduled check, as a time. */

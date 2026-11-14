@@ -69,7 +69,7 @@ test("only the Architect's follow-ups on a task it created count as a request (r
   const grants = { agents: { arch: { roles: ["architect"] }, cos: { roles: ["fleet-admin"] } } };
   const notes = [{ id: "1", authorAgentId: "arch" }, { id: "2", authorAgentId: "cos" }];
   assert.deepEqual(architectFollowUps(notes, "arch", grants).map((c) => c.id), ["1"]);
-  assert.deepEqual(architectFollowUps(notes, "cos", grants), [], "Aiden's or the Assistant's comments start nothing");
+  assert.deepEqual(architectFollowUps(notes, "cos", grants), [], "Aiden's or the Researcher's comments start nothing");
   assert.deepEqual(architectFollowUps(notes, "arch", undefined), [], "no grants table: nothing");
   assert.deepEqual(architectFollowUps(notes, undefined, grants), []);
   // A task that already runs without the owner's go-ahead (delegated from an agent's chat or app work): its delegator's

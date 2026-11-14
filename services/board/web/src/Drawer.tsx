@@ -112,7 +112,7 @@ type Member = IssueView["crew"][number];
 
 /**
  * The task: an Overview (description, files, the crew, and the team chat that goes to the
- * Executive Assistant) and a tab per agent with a direct chat. Settings live behind Details.
+ * Researcher) and a tab per agent with a direct chat. Settings live behind Details.
  */
 function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMove, onSnooze, reload, onChanged, toast, setIssue }: BodyProps) {
   const closed = issue.status === "done" || issue.status === "cancelled";
@@ -322,7 +322,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
   );
 }
 
-/** The task itself: what it's about, its files, who's on it, and the team chat (the Executive Assistant reads it). */
+/** The task itself: what it's about, its files, who's on it, and the team chat (the Researcher reads it). */
 function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, moved }: { issue: IssueView; board: Board; editable: boolean; update: (u: Update) => Promise<void>; reload: () => Promise<void>; toast: Props["toast"]; pick: (t: string) => void; onAdd: () => void; moved: (identifier: string) => void }) {
   const mine = issue.assignee === "me";
   const closed = issue.status === "done" || issue.status === "cancelled";
@@ -439,7 +439,7 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
             <div className="agent-name">
               {name} <span className={`pill pill-${state}`}>{STATE_PILLS[state]}</span>
             </div>
-            <div className="muted small">{agent?.kind === "assistant" ? "Executive Assistant · research and drafts" : agent?.kind === "agent" ? "Agent" : `Engineer · ${ENGINE_NAMES[agent?.engine ?? ""] ?? agent?.name}`}</div>
+            <div className="muted small">{agent?.kind === "assistant" ? "Researcher · research and drafts" : agent?.kind === "agent" ? "Agent" : `Engineer · ${ENGINE_NAMES[agent?.engine ?? ""] ?? agent?.name}`}</div>
             {agent?.persona?.voice && <div className="agent-voice">{agent.persona.voice}</div>}
           </div>
         </div>
@@ -611,7 +611,7 @@ export function CrewPicker({ crew, present, pick, setPick, me }: { crew: Assigne
         <button key={a.key} type="button" className={`pick${pick === a.key ? " on" : ""}`} disabled={present?.has(a.key)} onClick={() => setPick(a.key)}>
           <Avatar assignee={a} size={40} />
           <b>{shortName(a)}</b>
-          <span>{present?.has(a.key) ? "already on it" : a.kind === "assistant" ? "Executive Assistant" : a.kind === "agent" ? "Agent" : `Engineer · ${ENGINE_NAMES[a.engine ?? ""] ?? ""}`}</span>
+          <span>{present?.has(a.key) ? "already on it" : a.kind === "assistant" ? "Researcher" : a.kind === "agent" ? "Agent" : `Engineer · ${ENGINE_NAMES[a.engine ?? ""] ?? ""}`}</span>
         </button>
       ))}
     </div>

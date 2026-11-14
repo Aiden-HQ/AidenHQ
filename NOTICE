@@ -34,7 +34,7 @@ AidenHQ began as a fork of Pennyworth. Files derived from it, wholly or in part,
 - scripts/ (paperclip-setup.mjs, healthcheck.sh, bootstrap.sh, verify-security.sh, the
   *-auth.sh scripts, trigger-meeting-scan.sh, dev/mcp-call.mjs)
 - config/*.example.yaml, compose.yaml, .env.example
-- the handbooks of the assistant, meeting-librarian, slack-scout and inbox-agent agents
+- the handbooks of the researcher, meeting-librarian, slack-scout and inbox-agent agents
 - fixtures/
 Modifications to these files are Copyright (C) 2026 Mudit Gupta and the AidenHQ
 contributors, under the AGPL as above.

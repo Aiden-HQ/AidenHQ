@@ -72,7 +72,7 @@ services:
     secrets:
       - paperclip_auth_secret
       - paperclip_agent_jwt_secret
-      # The board's internal API, for the Executive Assistant's task_schedule / task_recurring.
+      # The board's internal API, for the Researcher's task_schedule / task_recurring.
       - board_internal_token
       - paperclip_master_key
       - computer_launcher_token # the computer plugin's key to the launcher on the host

@@ -1,4 +1,4 @@
-// GitHub REST client for the Executive Assistant. It holds the user's own `gh` token, which can do
+// GitHub REST client for the Researcher. It holds the user's own `gh` token, which can do
 // anything the user can (push, delete branches, change settings). The only thing standing between
 // that token and those requests is `guard`: every request goes through it, and it allows a fixed
 // list of read endpoints plus the writes the user asks for: a comment on an issue or pull request, a

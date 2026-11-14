@@ -201,7 +201,7 @@ export function isUserPart(issue, engineers) {
 }
 
 /**
- * A sub-task an agent (the Executive Assistant) created for an Engineer under one of the user's tasks. Its
+ * A sub-task an agent (the Researcher) created for an Engineer under one of the user's tasks. Its
  * description is agent-written, so it waits for the user's go-ahead before it is the request.
  */
 export function isAgentSubtask(issue) {

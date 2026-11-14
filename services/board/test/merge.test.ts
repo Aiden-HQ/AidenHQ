@@ -10,7 +10,7 @@ import { Store } from "../src/store.js";
 const ME = "user-1";
 const persona = (name: string) => ({ persona: { name, voice: "", avatar: name.toLowerCase() } });
 const agents: Agent[] = [
-  { id: "00000000-0000-0000-0000-00000000000a", name: "Assistant", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant", ...persona("Alfred") } },
+  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant", ...persona("Alfred") } },
   { id: "00000000-0000-0000-0000-0000000000c1", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", ...persona("Ada") } },
 ];
 const [ALFRED, ADA] = [agents[0]!.id, agents[1]!.id];

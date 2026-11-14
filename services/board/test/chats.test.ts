@@ -36,7 +36,7 @@ describe("a handed-out task in review", () => {
 
 describe("pickAgent", () => {
   const ag = (id: string, name: string, key: string, status = "idle"): Agent => ({ id, name, status, adapterType: "codex_local", metadata: { setupKey: `aidenhq:${key}` } });
-  const agents = [ag("c", "Aiden", "chief-of-staff"), ag("i", "Inbox Agent", "inbox-agent"), ag("s", "Assistant", "assistant"), ag("p", "Slack Scout", "slack-scout", "paused")];
+  const agents = [ag("c", "Aiden", "chief-of-staff"), ag("i", "Inbox Agent", "inbox-agent"), ag("s", "Researcher", "assistant"), ag("p", "Slack Scout", "slack-scout", "paused")];
   it("an unknown or paused name goes to Aiden with a note", () => {
     expect(pickAgent("@nobody hi", agents)).toMatchObject({ agent: { id: "c" }, note: "(No agent called @nobody; sent to Aiden.)" });
     expect(pickAgent("@slack scout look", agents).agent.id).toBe("c");
