@@ -206,13 +206,13 @@ test("a review that never came out says what to do next: split the PR after a bu
 });
 
 // codegenie-prior.mjs on a scratch repo, with GitHub's records of this workflow faked.
-test("prior review: delta, reuse of a byte-identical rebase, else full; the guard; only trusted records and CI count", async () => {
+test("prior review: delta, reuse of a byte-identical rewrite on the same base, else full; the guard; only trusted records and CI count", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ci-prior-"));
   const git = (...a) => {
     const opts = typeof a.at(-1) === "object" ? a.pop() : {};
     return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir, encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], ...opts }).trim();
   };
-  const commit = (file, text) => { writeFileSync(join(dir, file), text); git("add", "."); git("commit", "-qm", file); return git("rev-parse", "HEAD"); };
+  const commit = (file, text, message = file) => { writeFileSync(join(dir, file), text); git("add", "."); git("commit", "-qm", message); return git("rev-parse", "HEAD"); };
   const lines = (k) => Array.from({ length: k }, (_, i) => `line ${i}\n`).join("");
   git("init", "-q", "-b", "main");
   mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
@@ -227,24 +227,30 @@ test("prior review: delta, reuse of a byte-identical rebase, else full; the guar
   git("checkout", "-q", "-b", "rebased", base2);
   git("cherry-pick", green);
   const rebased = git("rev-parse", "HEAD");
+  git("checkout", "-q", "-b", "reworded", base);
+  const reworded = commit("a.txt", lines(10), "reworded"); // the same patch as `green`, recommitted on the same base
+  git("checkout", "-q", "-b", "spaced", base);
   const spaced = commit("a.txt", lines(10).replace("line 0", "line  0")); // the same patch to patch-id, not to the bytes
   git("checkout", "-q", "-b", "ci-moved", base2);
   commit(".github/workflows/ci.yml", "a newer ci.yml\n");
 
-  const decideOn = (head, b, state, { creator = "github-actions[bot]", defaultRef = "main", redAfter = false, setAt = "2026-01-01T00:30:00Z" } = {}) => decide({
+  const decideOn = (head, b, state, { creator = "github-actions[bot]", defaultRef = "main", redAfter = false, setAt = "2026-01-01T00:30:00Z", mb = base } = {}) => decide({
     git, repo: "acme/app", pr: 1, headRef: "pr", base: b, head, defaultRef,
     api: async (path) => {
       assert.doesNotMatch(path, /comments/, "PR comments are never read");
       const run = (id) => ({ id, head_sha: green, pull_requests: [{ number: 1 }], run_started_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T01:00:00Z" });
       if (path.includes("/workflows/ci.yml/runs")) return { workflow_runs: [...(redAfter ? [run(8)] : []), run(7)] };
       if (path.includes("/runs/")) return { jobs: [{ name: "code-review", conclusion: path.includes("/runs/8/") ? "failure" : "success" }] };
-      return [{ context: STATE, state: "success", creator: { login: creator }, target_url: "https://github.com/acme/app/actions/runs/7", created_at: setAt, description: `${state} mb=${base}` }];
+      return [{ context: STATE, state: "success", creator: { login: creator }, target_url: "https://github.com/acme/app/actions/runs/7", created_at: setAt, description: `${state} mb=${mb}` }];
     },
   });
   assert.deepEqual(await decideOn(pushed, base, "full n=0 lines=0"), { mode: "delta", from: green, n: 1, lines: 5, mb: base });
-  assert.deepEqual(await decideOn(rebased, base2, "delta n=1 lines=40"), { mode: "reuse", from: green, n: 1, lines: 40, mb: base2 });
+  assert.deepEqual(await decideOn(reworded, base, "full n=0 lines=0"), { mode: "reuse", from: green, n: 0, lines: 0, mb: base });
+  // Reuse needs the merge-base the verdict was made against: the same bytes rebased onto a newer base are reviewed whole.
+  assert.equal((await decideOn(rebased, base2, "delta n=1 lines=40")).mode, "full", "a byte-identical rebase onto a new base is not reused");
+  assert.equal((await decideOn(rebased, base2, "delta n=1 lines=40", { mb: base2 })).mode, "full", "nor when only its recorded merge-base matches the new base");
   const fulls = [
-    [spaced, base2, "full n=0 lines=0", {}], // a rebase that isn't byte-identical
+    [spaced, base, "full n=0 lines=0", {}], // the same base, but not a byte-identical patch
     [pushed, base, "delta n=3 lines=40", {}], // after 3 deltas
     [pushed, base, "delta n=1 lines=1998", {}], // past 2,000 delta lines
     [pushed, base, "full n=0 lines=0", { creator: "acme-agents[bot]" }], // a status anyone else set
@@ -256,6 +262,6 @@ test("prior review: delta, reuse of a byte-identical rebase, else full; the guar
   for (const [i, c] of fulls.entries()) assert.equal((await decideOn(...c)).mode, "full", `case ${i}`);
   // The PR comment names the mode.
   assert.match(verdict(0, review([]), pushed, { mode: "delta", from: green, n: "1" }).body, new RegExp(`only the changes since \`${green.slice(0, 7)}\``));
-  const reused = verdict(1, "", rebased, { mode: "reuse", from: green });
-  assert.deepEqual([reused.block, reused.body.includes(`reused on \`${rebased.slice(0, 7)}\`** from \`${green.slice(0, 7)}\``)], [false, true]);
+  const reused = verdict(1, "", reworded, { mode: "reuse", from: green });
+  assert.deepEqual([reused.block, reused.body.includes(`reused on \`${reworded.slice(0, 7)}\`** from \`${green.slice(0, 7)}\``)], [false, true]);
 });

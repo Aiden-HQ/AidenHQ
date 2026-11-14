@@ -4,7 +4,8 @@
 // earlier head, and the state status that same run set on it), never a PR comment.
 //   full:  review the whole PR (no trusted green review, a merge-base that moved, the deep-review label, or the guard)
 //   delta: the old head is an ancestor and the merge-base is the same: review only old..new
-//   reuse: a rebase whose change is byte-identical (same paths, same old and new blobs): pass on the old verdict
+//   reuse: a rewritten head whose change is byte-identical against the same merge-base (same paths, same old and new
+//          blobs): pass on the old verdict. A byte-identical patch on a moved base is reviewed whole instead (below).
 // Splitting guard: after MAX_STEPS deltas or MAX_LINES delta lines since the last full review, review it whole again.
 //   node codegenie-prior.mjs  ->  "<mode> <from sha or -> <deltas since full> <delta lines since full> <merge-base>"
 // Env: GITHUB_TOKEN (actions: read), GITHUB_REPOSITORY, PR_NUMBER, HEAD_REF, BASE_SHA, HEAD_SHA, DEFAULT_BRANCH,
@@ -41,8 +42,9 @@ async function lastGreen(api, { repo, pr, headRef, head }) {
 }
 
 /**
- * { mode, from, n, lines, mb }: mb is the head's merge-base with the PR's base, recorded so a delta needs the same one
- * (a retargeted PR's merge-base moves). git(...args, { input }?) returns trimmed stdout and throws on a non-zero exit.
+ * { mode, from, n, lines, mb }: mb is the head's merge-base with the PR's base, recorded so a delta or a reuse needs the
+ * same one (a retargeted PR's merge-base moves). git(...args, { input }?) returns trimmed stdout and throws on a non-zero
+ * exit.
  */
 export async function decide({ api, git, repo, pr, headRef, base, head, defaultRef, labels = "", fetchCommit = () => {} }) {
   const mergeBase = (sha) => git("merge-base", base, sha);
@@ -62,13 +64,18 @@ export async function decide({ api, git, repo, pr, headRef, base, head, defaultR
   const blob = (ref, f) => { try { return git("rev-parse", `${ref}:${f}`); } catch { return undefined; } };
   if (!CI_FILES.every((f) => blob(last.sha, f) && blob(last.sha, f) === blob(defaultRef, f))) return full;
   if ([last.sha, head].some((sha) => !ok("diff", "--quiet", mergeBase(sha), sha, "--", ".github/"))) return full;
-  if (last.mb === mb && mergeBase(last.sha) === mb && ok("merge-base", "--is-ancestor", last.sha, head)) {
+  const sameBase = last.mb === mb && mergeBase(last.sha) === mb;
+  if (sameBase && ok("merge-base", "--is-ancestor", last.sha, head)) {
     const lines = git("diff", "--numstat", `${last.sha}..${head}`).split("\n").filter(Boolean)
       .reduce((n, l) => { const [a, d] = l.split("\t"); return n + (a === "-" ? 1000 : Number(a) + Number(d)); }, 0);
     if (last.n >= MAX_STEPS || last.lines + lines > MAX_LINES) return full;
     return { mode: "delta", from: last.sha, n: last.n + 1, lines: last.lines + lines, mb };
   }
   // Byte-identical change, not patch-id (which ignores whitespace): every changed path with its old and new blob ids.
+  // Those bytes say nothing about the code around them, so only the same merge-base makes it the same patch: on a moved
+  // one (a rebase onto a newer default branch) the reviewed code may sit in context the verdict never saw, and the PR
+  // is reviewed whole. That gives up reuse across such a rebase; a rewrite that keeps the merge-base still reuses.
+  if (!sameBase) return full;
   const change = (sha) => git("diff", "--raw", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv", mergeBase(sha), sha);
   if (change(last.sha) === change(head)) return { mode: "reuse", from: last.sha, n: last.n, lines: last.lines, mb };
   return full;
