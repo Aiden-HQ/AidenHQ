@@ -28,6 +28,9 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const comments = new Map([[parent.id, parentComments], [part.id, partComments], ...others.map((o) => [o.issue.id, o.comments])]);
   const patches = [];
   const activity = [];
+  // Requests held open and never answered: a tick that never finishes (a stuck read), so only a pass before it can act.
+  const hang = new Set();
+  const held = [];
   const passed = [];
   const attached = [];
   const unknown = [];
@@ -48,6 +51,10 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       res.end(JSON.stringify(json));
     };
     const path = url.pathname;
+    if (hang.has("issues") && req.method === "GET" && path === `/api/companies/${COMPANY}/issues`) {
+      held.push(res);
+      return;
+    }
     const issue = /^\/api\/issues\/([^/]+)/.exec(path)?.[1];
     if (req.method === "GET" && path === `/api/companies/${COMPANY}/labels`) return send([{ id: "label-engineer", name: "engineer" }]);
     if (req.method === "GET" && path === `/api/companies/${COMPANY}/agents`) return send(engineers);
@@ -185,7 +192,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     a.state = state;
     return a;
   };
-  return { server, comments, patches, activity, passed, attached, unknown, addComment, approvals, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created };
+  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created, hang };
 }
 
 /**

@@ -55,6 +55,11 @@ if (step === "commit") {
   writeFileSync(join(repo, "third.txt"), "third\n");
   git("add", "third.txt");
   git("commit", "-qm", "feat: third change");
+} else if (step === "fourth") {
+  git("switch", "-qc", "feat/fourth", "origin/main");
+  writeFileSync(join(repo, "fourth.txt"), "fourth\n");
+  git("add", "fourth.txt");
+  git("commit", "-qm", "feat: fourth change");
 } else if (step === "ui") {
   git("switch", "-qc", "feat/ui", "origin/main");
   mkdirSync(join(repo, "web"), { recursive: true });

@@ -63,6 +63,14 @@ Typical assignments in `tiers.mjs` (read the file for the full rules):
 | `apply`: handbook of an agent without a role, graduation that adds no tools, model or schedule change, non-sensitive app registry change, forward product pin | 1 |
 | `apply`: role-holding agent's handbook, new grants, roles, write connections or credentials, sensitive app (access, share, caps, connects to Paperclip or sources), other settings, backward product pin | 2 |
 
+**Every approval produces an outcome.** The runner claims approved records first in every tick, before the task list and
+the other work that reads GitHub or drives merges, so a slow or failing step behind them never leaves an approved write
+waiting. Each claimed record runs once and reports either the result or why it failed, and one record's failure is its own
+outcome, not the others'. A record approved while no runner was up is claimed by its first tick.
+
+Only the tick claims and runs them: a second pass on a timer of its own would run alongside work still using the cache
+clones and workspaces, where a lock or a moved ref could lose a claim that is never retried, so there is none.
+
 Actions the board itself applies after approval are tiered by the board (`services/board/src/fleet.ts`): a stateful
 `deploy_app` is Tier 1 unless it touches a migration or schema file or is too large to review (then Tier 2), and an
 `app_run` is Tier 1. With `autonomy: off` both are Tier 2.

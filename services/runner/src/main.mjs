@@ -117,6 +117,9 @@ async function poll() {
   const now = new Date().toISOString();
   // Overlap the window so comments landing during a poll are never missed (handled IDs dedupe).
   const updatedSince = since ? new Date(Date.parse(since) - 120_000).toISOString() : undefined;
+  // Writes the user approved first, before anything else the tick reads: an approved card must be claimed and run even
+  // when the task list, a merge or a GitHub read fails or is slow this time round. Every poll.
+  if (boardApi) await runApprovals().catch((err) => log("approvals check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Tasks labelled "engineer" or assigned to an Engineer agent.
   const byId = new Map((await pc.labelledIssues(cfg.label, updatedSince)).map((i) => [i.id, i]));
   const engineers = await pc.engineerAgents().catch(() => []);
@@ -155,8 +158,6 @@ async function poll() {
   await advanceMerges({ minute }).catch((err) => log("merge check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Agents-org merge requests (owner, 2026-11-12): Tier 0 starts at once, even during the run; cards wait for its end. Every poll.
   if (boardApi) await runAutoMerges().catch((err) => log("auto merges failed", { err: String(err.message ?? err).slice(0, 300) }));
-  // Writes the user approved: claimed once, run, reported. Every poll.
-  if (boardApi) await runApprovals().catch((err) => log("approvals check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Tier 1 cards for the AI reviewer, while autonomy is on. Every poll.
   if (boardApi) await runReviews().catch((err) => log("reviews check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Handbook edits to agents in trial: no tap. Every poll.
@@ -2082,7 +2083,7 @@ async function flushOutcomes() {
   state.set("auto_outbox", JSON.stringify(rows));
 }
 
-/** Every poll: claim each approved record once (approved → used on the board), run it, report how it went. Never retried. */
+/** Every poll, first: claim each approved record once (approved → used on the board), run it, report how it went. Never retried. */
 async function runApprovals() {
   await flushOutcomes();
   const { approvals = [] } = await boardApi.get("/internal/approvals?state=approved");
@@ -2091,46 +2092,57 @@ async function runApprovals() {
     const claimed = await boardApi.post(`/internal/approvals/${a.id}/claim`).catch((err) => void log("approval claim failed", { approval: a.id, err: String(err.message ?? err).slice(0, 200) }));
     if (!claimed) continue;
     log("approval claimed", { approval: a.id, issue: a.identifier, action: a.action });
-    // The AI reviewer approved it: recompute the tier just before running. If it rose (or can't be checked), this
-    // record runs nothing and a fresh card goes to the owner.
-    if (claimed.decidedBy?.startsWith("reviewer:")) {
-      const issue = await pc.issue(claimed.issueId);
-      const t =
-        autonomyNow() !== "full"
-          ? { tier: 2, reason: "autonomy is no longer full" }
-          : await currentTier(issue, claimed).catch((err) => ({ tier: 2, reason: `couldn't recheck it (${String(err.message ?? err).slice(0, 200)})` }));
-      if (t.reject || t.tier > 1) {
-        const refiled = await fileApproval(issue, { action: claimed.action, args: claimed.args, diff: claimed.action === "apply" ? claimed.details : undefined, baseTier: t.rule ? baseOf(t) : undefined, rule: t.rule }).catch(() => undefined);
-        const text = `Not run: since the reviewer approved it, code puts it at Tier 2 (${t.reason}).${refiled ? ` ${cfg.selfName} decides on a new card (${refiled.id}).` : ""}`;
-        log("tier rose before running", { approval: a.id, issue: a.identifier, reason: t.reason });
-        queueOutcome(claimed.id, claimed.nonce, { ok: false, text });
-        await pc.comment(claimed.issueId, text).catch(() => {});
-        await flushOutcomes();
-        continue;
-      }
-    }
-    let outcome;
-    try {
-      outcome = await executeApproval(claimed);
-    } catch (err) {
-      outcome = { ok: false, text: String(err instanceof UserError ? err.message : err.stderr || err.message || err).trim().slice(0, 2000) };
-      await pc.comment(claimed.issueId, `**Approved, but it failed** (approval ${claimed.id}): ${outcome.text}`).catch(() => {});
-    }
-    log("approval applied", { approval: a.id, ok: outcome.ok });
-    queueOutcome(claimed.id, claimed.nonce, outcome);
-    // The agent that delegated this (e.g. the Agent Architect, on its chat) learns the result: the comment wakes it.
-    const full = await pc.issue(claimed.issueId).catch(() => null);
-    if (full && isAgentSubtask(full)) {
-      // The agent that asked may have handed its chat to the owner while waiting for the tap: give it back so it wakes.
-      const parent = await pc.issue(full.parentId).catch(() => null);
-      // Only the asking agent's own chat (its id in the chat's end-anchored marker), and only while it sits with the owner.
-      const chatAgent = /<!-- aidenhq-chat-agent:([A-Za-z0-9_-]+) -->\s*$/.exec(parent?.description ?? "")?.[1];
-      if (parent && full.createdByAgentId && chatAgent === full.createdByAgentId && !parent.assigneeAgentId && parent.assigneeUserId && !["done", "cancelled"].includes(parent.status))
-        await pc.api("PATCH", `/api/issues/${encodeURIComponent(parent.id)}`, { assigneeAgentId: full.createdByAgentId, assigneeUserId: null, status: "todo" }).catch(() => {});
-      await pc.comment(full.parentId, appliedNote(a.identifier, claimed.id, outcome)).catch(() => {});
-    }
-    await flushOutcomes();
+    // One card's trouble is that card's outcome: a claimed record never goes without one, and the others still run this tick.
+    await runClaimed(claimed).catch(async (err) => {
+      const text = `Not run: ${String(err.message ?? err).slice(0, 2000)}`;
+      log("approval dispatch failed", { approval: claimed.id, issue: claimed.identifier, action: claimed.action, err: text });
+      queueOutcome(claimed.id, claimed.nonce, { ok: false, text });
+      await flushOutcomes();
+    });
   }
+}
+
+/** One claimed record: run it and report the outcome on the card and the task. */
+async function runClaimed(claimed) {
+  // The AI reviewer approved it: recompute the tier just before running. If it rose (or can't be checked), this
+  // record runs nothing and a fresh card goes to the owner.
+  if (claimed.decidedBy?.startsWith("reviewer:")) {
+    const issue = await pc.issue(claimed.issueId);
+    const t =
+      autonomyNow() !== "full"
+        ? { tier: 2, reason: "autonomy is no longer full" }
+        : await currentTier(issue, claimed).catch((err) => ({ tier: 2, reason: `couldn't recheck it (${String(err.message ?? err).slice(0, 200)})` }));
+    if (t.reject || t.tier > 1) {
+      const refiled = await fileApproval(issue, { action: claimed.action, args: claimed.args, diff: claimed.action === "apply" ? claimed.details : undefined, baseTier: t.rule ? baseOf(t) : undefined, rule: t.rule }).catch(() => undefined);
+      const text = `Not run: since the reviewer approved it, code puts it at Tier 2 (${t.reason}).${refiled ? ` ${cfg.selfName} decides on a new card (${refiled.id}).` : ""}`;
+      log("tier rose before running", { approval: claimed.id, issue: claimed.identifier, reason: t.reason });
+      queueOutcome(claimed.id, claimed.nonce, { ok: false, text });
+      await pc.comment(claimed.issueId, text).catch(() => {});
+      await flushOutcomes();
+      return;
+    }
+  }
+  let outcome;
+  try {
+    outcome = await executeApproval(claimed);
+  } catch (err) {
+    outcome = { ok: false, text: String(err instanceof UserError ? err.message : err.stderr || err.message || err).trim().slice(0, 2000) };
+    await pc.comment(claimed.issueId, `**Approved, but it failed** (approval ${claimed.id}): ${outcome.text}`).catch(() => {});
+  }
+  log("approval applied", { approval: claimed.id, ok: outcome.ok });
+  queueOutcome(claimed.id, claimed.nonce, outcome);
+  // The agent that delegated this (e.g. the Agent Architect, on its chat) learns the result: the comment wakes it.
+  const full = await pc.issue(claimed.issueId).catch(() => null);
+  if (full && isAgentSubtask(full)) {
+    // The agent that asked may have handed its chat to the owner while waiting for the tap: give it back so it wakes.
+    const parent = await pc.issue(full.parentId).catch(() => null);
+    // Only the asking agent's own chat (its id in the chat's end-anchored marker), and only while it sits with the owner.
+    const chatAgent = /<!-- aidenhq-chat-agent:([A-Za-z0-9_-]+) -->\s*$/.exec(parent?.description ?? "")?.[1];
+    if (parent && full.createdByAgentId && chatAgent === full.createdByAgentId && !parent.assigneeAgentId && parent.assigneeUserId && !["done", "cancelled"].includes(parent.status))
+      await pc.api("PATCH", `/api/issues/${encodeURIComponent(parent.id)}`, { assigneeAgentId: full.createdByAgentId, assigneeUserId: null, status: "todo" }).catch(() => {});
+    await pc.comment(full.parentId, appliedNote(claimed.identifier, claimed.id, outcome)).catch(() => {});
+  }
+  await flushOutcomes();
 }
 
 /**

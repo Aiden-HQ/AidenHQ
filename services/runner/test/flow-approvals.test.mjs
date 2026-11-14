@@ -104,6 +104,35 @@ describe("flow-approvals", () => {
     it("never errors or asks for a repository along the way", () => t.noErrors());
   });
 
+  // End to end: a card the owner approved while nothing ran on its task is dispatched at the START of the next tick.
+  // The task list read never answers, so the only pass that can claim it is one that runs before the tick's own reads:
+  // behind them (as approvals were), the card would sit approved with no outcome until the task was reopened.
+  describe("an approved card with no run on its task, end to end", () => {
+    const { waitFor, toolRuns, step, turn, githubTip, idle, running } = t;
+
+    it("is claimed and run at the start of a tick whose task list never answers", async () => {
+      step("fourth\naidenhq push acme/app feat/fourth");
+      await turn("Add the fourth change, and push it.");
+      assert.match(toolRuns().at(-1).out, /Waiting for Dana's approval/);
+      // No run on the task: only the approvals pass can claim the card.
+      await waitFor("quiet", () => !running());
+      t.paperclip.hang.add("issues");
+      try {
+        const card = t.paperclip.decide("push", "approved");
+        await waitFor("the approved push", () => t.paperclip.approvals.get(card.id)?.outcome?.ok === true, 120_000);
+        assert.ok(githubTip("feat/fourth"), "on GitHub");
+        assert.equal(t.paperclip.approvals.get(card.id).state, "used", "claimed once");
+        await idle();
+        assert.equal(t.paperclip.approvals.get(card.id).state, "used", "never claimed twice");
+      } finally {
+        t.paperclip.hang.delete("issues");
+        for (const res of t.paperclip.held.splice(0)) res.end("[]");
+      }
+    });
+
+    it("never errors or asks for a repository along the way", () => t.noErrors());
+  });
+
   // End to end (wave 3, item 4): a change that already landed on main by another route gets evidence, not a second card.
   describe("the duplicate-card guard, end to end", () => {
     const { waitFor, partComments, toolRuns, step, turn, githubTip } = t;
