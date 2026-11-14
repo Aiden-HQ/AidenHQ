@@ -39,7 +39,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22.x
+          node-version: 24.x
       # The 7-day rule: everything is pinned, and what this PR adds or bumps (lockfile entries, images, actions, global
       # installs) is 7+ days old or a security exception in .github/supply-chain-exceptions.yaml. Before any install.
       # The checks and the exceptions come from the base commit, so a PR can't loosen its own check (the PR that adds
@@ -176,7 +176,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22.x
+          node-version: 24.x
       # Review only what changed since this PR's last green code review (codegenie-prior.mjs, from the base commit; full
       # when it isn't there yet, or on any doubt): delta, reuse after a rebase with the same patch, or full. Its own step,
       # so codegenie never gets the token.

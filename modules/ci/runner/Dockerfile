@@ -31,5 +31,8 @@ COPY --from=anchore/grype:v0.121.3@sha256:13113eeceab017260370cf540e1d25442c5966
 RUN cd /opt/hostedtoolcache/node/24.22.2/x64/bin \
  && ln -s ../lib/node_modules/npm/bin/npm-cli.js npm \
  && ln -s ../lib/node_modules/npm/bin/npx-cli.js npx \
- && touch /opt/hostedtoolcache/node/24.22.2/x64.complete
+ && touch /opt/hostedtoolcache/node/24.22.2/x64.complete \
+ && chown -R runner:runner /opt/hostedtoolcache
+# The runner owns the tool cache: setup-node for a version not baked in here downloads it and caches it for this job
+# (root-owned, every such job failed with EACCES: roadmap-keeper's code-review on 22.x, 2026-11-14).
 USER runner
