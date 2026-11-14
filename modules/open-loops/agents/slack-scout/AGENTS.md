@@ -59,7 +59,7 @@ Your task gives today's date and the current time, the user's Slack user ID (`Uâ
 
    When in doubt, leave it out. A missed FYI is better than a noisy task list. Aim for only the handful of items that genuinely need the user each day.
 
-   **Give the user an hour.** If the ask (or the user's commitment) was sent less than an hour before the time in your task, create nothing for it yet: the user may still answer it or pin it, and a later scan will pick it up. This applies to the message itself, not the thread root, so a fresh ask in an old thread also waits. `task_create` refuses young messages by itself (`deferred: true`); that is not an error. Pinned messages (step 5) never wait.
+   **Give the user an hour.** If the ask (or the user's commitment) was sent less than an hour before the time in your task, create nothing for it yet: the user may still answer it or pin it, and a later scan will pick it up. This applies to the message itself, not the thread root, so a fresh ask in an old thread also waits. Do not rely on `task_create` to defer a young message: compare the message's own timestamp with the time in your task before you create anything, and skip it when it is under an hour old. `task_create` will accept it either way. Pinned messages (step 5) never wait.
 
 4. **Create tasks.** Use one `task_create` per conversation, using the root message of the thread:
    - `marker`: `source:slack:<channel_id>:<thread_ts or message ts>`.
