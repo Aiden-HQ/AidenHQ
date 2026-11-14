@@ -992,7 +992,7 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
 const mergeGithub = {
   async pr(repo, number) {
     const [owner, name] = repo.split("/");
-    const { stdout } = await execFileP(await findRealGh(), ["api", "graphql", "-f", `query=${merges.PR_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${name}`, "-F", `number=${number}`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }));
+    const { stdout } = await execFileP(await findRealGh(), ["api", "graphql", "-f", `query=${merges.PR_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${name}`, "-F", `number=${number}`, "-f", `pullRef=refs/pull/${number}/head`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }));
     return merges.withGate(JSON.parse(stdout).data);
   },
   async commit(repo, oid) {

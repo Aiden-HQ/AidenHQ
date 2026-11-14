@@ -133,6 +133,11 @@ describe("merge queue: deciding", () => {
     assert.equal(prDecision(pr(1, { mergeStateStatus: "BLOCKED" })).do, "stop");
     assert.equal(prDecision(pr(1, { baseRef: { target: { statusCheckRollup: red } } })).do, "stop");
     assert.equal(prDecision(pr(1, { baseRef: { target: { statusCheckRollup: pending } } })).do, "wait");
+    // A red base: the PR that fixes it merges when it contains the base's tip, is updated first when behind, else stops.
+    const redBase = (behindBy) => pr(1, { baseRef: { compare: { behindBy }, target: { statusCheckRollup: red } } });
+    assert.equal(prDecision(redBase(0)).do, "merge");
+    assert.equal(prDecision(redBase(2)).do, "update");
+    assert.equal(prDecision(redBase(undefined)).do, "stop");
   });
 
   it("without required reviews, needs an approval and no change requests", () => {

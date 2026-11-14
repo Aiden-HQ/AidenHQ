@@ -35,7 +35,7 @@ export function newQueue(prs, { gapMinutes, now = new Date() }) {
   return { state: "running", gapMinutes, startedAt: now.toISOString(), prs: prs.map((p) => ({ ...p, status: "pending" })) };
 }
 
-export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
+export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $pullRef: String!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name }
     squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed
@@ -45,7 +45,7 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       latestOpinionatedReviews(first: 30) { nodes { state } }
       commits(last: 1) { nodes { commit { parents(first: 2) { nodes { oid } } signature { wasSignedByGitHub } statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion databaseId checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state description } } } } } } }
-      baseRef { target { oid ... on Commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
+      baseRef { compare(headRef: $pullRef) { behindBy } target { oid ... on Commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
     }
   }
 }`;
@@ -433,7 +433,14 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
     if (named.some((c) => !c.ok)) return { do: "stop", why: `${ref}: ${named.filter((c) => !c.ok).length} named check(s) not green (\`gh pr checks ${pr.number}\` names them)`, red: true };
   }
   const base = ciState(pr.baseRef?.target?.statusCheckRollup);
-  if (base === "red") return { do: "stop", why: `\`${pr.baseRefName}\` is red before merging ${ref} (its failing checks are on GitHub)` };
+  if (base === "red") {
+    // The PR that fixes a red base must be able to land: its own green checks (above) count when it already contains the
+    // base's tip, so they prove the tree after the merge. Behind: update it first. Unknown: stop.
+    const behind = pr.baseRef?.compare?.behindBy;
+    if (behind === 0) return { do: "merge" };
+    if (behind > 0) return pr.headRefOid === updatedHead ? { do: "wait", why: `${ref} is being updated with \`${pr.baseRefName}\`` } : { do: "update", why: `\`${pr.baseRefName}\` is red and ${ref} is behind it` };
+    return { do: "stop", why: `\`${pr.baseRefName}\` is red before merging ${ref} (its failing checks are on GitHub)` };
+  }
   if (base === "pending") return { do: "wait", why: `CI is running on \`${pr.baseRefName}\`` };
   return { do: "merge" };
 }
