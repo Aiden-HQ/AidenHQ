@@ -21,6 +21,7 @@ import { heartbeatSection, ensureFleetIssues, ensureMemoryInboxes, ensureReviewL
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, computerSection, ensureComputers, runnerBox } from "./computers.mjs";
 import { assertNoShell } from "./no-shell.mjs";
+import { recoverStalePid } from "./paperclip-recover.mjs";
 import { probeConfig } from "./agent-probe.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -129,6 +130,8 @@ function ask(question, { hidden = false } = {}) {
 async function waitForHealth() {
   step(`Waiting for Paperclip at ${baseUrl}`);
   for (let i = 0; i < 90; i++) {
+    // After a minute without health, try the one known cause once (an unclean Postgres shutdown); else fail below.
+    if (i === 30) { try { recoverStalePid({ repo, dataDir: resolve(repo, env("AIDENHQ_DATA_DIR", "./data")), env: { ...process.env, ...dotenv } }); } catch { /* fail loudly below */ } }
     try {
       const { json } = await api("GET", "/api/health", undefined, { auth: "none" });
       if (json.status === "ok") return json;
