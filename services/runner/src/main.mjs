@@ -112,6 +112,24 @@ const engineLabel = (e) => {
 
 // ------------------------------------------------------------------ polling
 
+const CLOSED = ["done", "cancelled"];
+
+/**
+ * A run whose task was closed while it ran (the owner cancelled it, or marked it done) is stopped, as a "stop" comment
+ * stops it: a closed task drops out of the open-task lists, so nothing else would end the run or free its box.
+ */
+async function stopClosedRuns() {
+  for (const [issueId, r] of running) {
+    if (!r.pid || r.finishing || r.closed) continue;
+    const status = (await pc.issue(issueId).catch(() => undefined))?.status;
+    if (!CLOSED.includes(status)) continue;
+    r.closed = status;
+    log("task closed while running: stopping the run", { issue: r.identifier, status });
+    r.controller.abort();
+    for (let i = queue.length - 1; i >= 0; i--) if (queue[i].issue.id === issueId) queue.splice(i, 1);
+  }
+}
+
 async function poll() {
   const since = state.get("last_poll");
   const now = new Date().toISOString();
@@ -127,6 +145,7 @@ async function poll() {
   for (const a of engineers) for (const i of await pc.assignedIssues(a.id, updatedSince)) byId.set(i.id, i);
   const engineerIds = new Set(engineers.map((a) => a.id));
   for (const issue of byId.values()) await handleIssue(issue, engineerIds).catch((err) => reportError(issue, err));
+  await stopClosedRuns().catch((err) => log("closed-task check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Replies: all of your open tasks (comments don't reliably bump "updated"), at most once a minute.
   if (cfg.replies?.enabled !== false && Date.now() - lastReplyCheck >= 60_000) {
     lastReplyCheck = Date.now();
@@ -2841,6 +2860,13 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     if (result.sessionId) {
       state.updateTask(issue.id, { session_id: result.sessionId });
       state.set(`session_engine:${issue.id}`, engine.kind);
+    }
+    // Closed while it ran: the task stays closed. A status or a reply here would reopen it (and send it to the grader).
+    const closed = running.get(issue.id)?.closed ?? [(await pc.issue(issue.id).catch(() => undefined))?.status].find((s) => CLOSED.includes(s));
+    if (closed) {
+      state.finishJob(jobId, "cancelled", `task ${closed}`);
+      log("job stopped: its task was closed", { issue: issue.identifier, status: closed });
+      return;
     }
     // Adopted: the task as it is now (its tools' context holds the same issue object).
     if (!full) Object.assign(issue, (full = await pc.issue(issue.id)));

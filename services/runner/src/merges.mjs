@@ -772,6 +772,12 @@ export function startOrResume(existing, prs, { gapMinutes, now = new Date() }) {
   const fresh = prs.filter((p) => !done.some((d) => d.repo.toLowerCase() === p.repo.toLowerCase() && d.number === p.number));
   if (!fresh.length) return undefined;
   const q = newQueue(fresh, { gapMinutes: gapMinutes ?? existing?.gapMinutes ?? 15, now });
-  q.prs = [...done, ...q.prs];
+  // A running queue's PRs still waiting were approved too (WOR-4611: a second merge card on the task dropped #141 from the
+  // first): they stay, ahead of the new ones. A stopped queue's leftovers are the agent's to name again.
+  // An independent queue's waiting PRs are requested again by the caller (requestAutoMerge), so they aren't carried here.
+  const waiting = existing?.state === "running" && !existing.independent ? existing.prs.filter((p) => p.status === "pending" && !fresh.some((f) => f.repo.toLowerCase() === p.repo.toLowerCase() && f.number === p.number)) : [];
+  q.prs = [...done, ...waiting, ...q.prs];
+  // Carried-over PRs keep the gating they were approved under: a strict queue's leftovers never merge on a laxer one.
+  if (waiting.length && existing.strict) q.strict = true;
   return q;
 }

@@ -286,4 +286,22 @@ describe("box jobs", () => {
       rmSync(d, { recursive: true, force: true });
     }
   });
+
+  it("a task cancelled while its run goes on: the run is stopped, its box released, and the task stays cancelled", async () => {
+    await waitFor("quiet", quiet);
+    step("slow");
+    const runs = dockerRuns().length;
+    say("Add sorting.");
+    await waitFor("the box run", () => dockerRuns().length === runs + 1);
+    const gone = boxLauncher.goneAt.size;
+    const n = reviews().length;
+    paperclip.issues.get("part").status = "cancelled";
+    await waitFor("the box released", () => boxLauncher.goneAt.size === gone + 1);
+    const released = [...boxLauncher.goneAt.values()].at(-1);
+    await waitFor("quiet", quiet);
+    assert.equal(lastJob().status, "cancelled");
+    assert.equal(reviews().length, n, "never moved back to review");
+    assert.ok(!paperclip.patches.some((p) => p.issue === "PEN-2" && p.at >= released), "no status or reply on the closed task");
+    paperclip.issues.get("part").status = "in_review";
+  });
 });

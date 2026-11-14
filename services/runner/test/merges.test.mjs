@@ -85,6 +85,15 @@ describe("merge queue: reading the PRs", () => {
     assert.equal(startOrResume({ ...q, prs: [q.prs[0]] }, [], {}), undefined); // nothing left to resume
   });
 
+  // WOR-4611 (2026-11-14): two merge cards on one task; the second card's queue replaced the first, so #141 never merged.
+  it("a second approved merge on a running queue keeps the PRs still waiting", () => {
+    const q = newQueue(findPrs("o/a#141"), { gapMinutes: 5, now: at(0) });
+    const both = startOrResume(q, findPrs("o/b#2"), {});
+    assert.deepEqual(both.prs.map((p) => [p.repo, p.number, p.status]), [["o/a", 141, "pending"], ["o/b", 2, "pending"]]);
+    assert.equal(startOrResume({ ...q, strict: true }, findPrs("o/b#2"), {}).strict, true); // its gating comes along
+    assert.deepEqual(startOrResume({ ...q, independent: true }, findPrs("o/b#2"), {}).prs.map((p) => p.number), [2]); // re-requested by the caller
+  });
+
   // roadmap-keeper#111 (2026-11-13): its first queue failed on a code-review timeout; asked again on an approved card, it
   // got "merged already" while the PR was still open. Only a merged (or merged-by-someone-else) PR is done.
   it("a PR that failed in an earlier queue is merged when asked for again", () => {
