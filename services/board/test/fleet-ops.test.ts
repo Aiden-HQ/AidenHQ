@@ -85,7 +85,7 @@ describe("stale agents-org PRs", () => {
   it("a PR open over an hour is an item, keyed pr:<repo>#<n>; once merged it recovers", async () => {
     const now = Date.parse("2026-11-12T12:00:00Z");
     const ago = (min: number) => new Date(now - min * 60_000).toISOString();
-    let rows = [{ repo: "org/app", number: 7, opened_at: ago(90) }, { repo: "org/app", number: 8, opened_at: ago(10) }];
+    let rows = [{ repo: "org/app", number: 7, opened_at: ago(90), draft: false }, { repo: "org/app", number: 8, opened_at: ago(10), draft: false }];
     const store = new Store(":memory:");
     const fired: { incidents: { key: string; reason: string }[]; recovered: { key: string }[] }[] = [];
     const run = () => tick(store, { pr: async () => stalePrs(rows, now) }, async (b) => fired.push(b as (typeof fired)[0]) > 0);
@@ -94,5 +94,16 @@ describe("stale agents-org PRs", () => {
     rows = []; // merged: no longer open
     await run();
     expect(fired[1]!.recovered.map((r) => r.key)).toEqual(["pr:org/app#7"]);
+  });
+
+  it("a draft PR open over an hour is not an item; a ready one past it still is", () => {
+    const now = Date.parse("2026-11-12T12:00:00Z");
+    const ago = (min: number) => new Date(now - min * 60_000).toISOString();
+    const rows = [
+      { repo: "org/app", number: 9, opened_at: ago(120), draft: true },
+      { repo: "org/app", number: 10, opened_at: ago(90), draft: false },
+      { repo: "org/app", number: 11, opened_at: ago(90), draft: true },
+    ];
+    expect(stalePrs(rows, now)).toEqual([{ key: "org/app#10", reason: "org/app#10 open 90 min without merging" }]);
   });
 });

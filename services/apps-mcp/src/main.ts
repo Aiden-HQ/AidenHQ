@@ -148,7 +148,7 @@ const http = createServer(async (req, res) => {
         return send(res, 200, {});
       }
       if (!agentsOrg) return send(res, 200, {});
-      const r = await d.pool.query("SELECT repo, number, created_at_src AS opened_at FROM src_github.issues WHERE kind = 'pr' AND state = 'open' AND lower(repo) LIKE $1", [`${agentsOrg.toLowerCase()}/%`]);
+      const r = await d.pool.query("SELECT repo, number, created_at_src AS opened_at, draft FROM src_github.issues WHERE kind = 'pr' AND state = 'open' AND lower(repo) LIKE $1", [`${agentsOrg.toLowerCase()}/%`]);
       return send(res, 200, { prs: r.rows });
     }
     // Named pull requests' state from the warehouse (`?pr=owner/repo#12`, up to 100): the board's event wake-ups (wake.ts) wake
