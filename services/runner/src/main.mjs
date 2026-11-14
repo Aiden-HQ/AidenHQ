@@ -731,6 +731,9 @@ function requestAutoMerge(issue, prs, gap) {
   state.set("auto_merges", JSON.stringify(box));
 }
 
+/** A queue entry as the board takes it: the fields its merge args schema has, never the runner's own flags (`ui`). */
+const cardPr = ({ repo, number, url, head, noReview }) => ({ repo, number, url, ...(head ? { head } : {}), ...(noReview ? { noReview } : {}) });
+
 async function runAutoMerges() {
   const box = JSON.parse(state.get("auto_merges") || "{}");
   for (const [issueId, want] of Object.entries(box)) {
@@ -765,7 +768,9 @@ async function runAutoMerges() {
       if (!ready.length && !gone.length) continue;
       // A UI PR's Tier 0 merge waits for the design review (merges.mjs eachDecision) when the fleet has a design reviewer.
       const reviewer = designReviewer();
-      const bound = ready.map(([p, s]) => (reviewer && merges.touchesUi(s.files) ? { ...p, ui: true } : p));
+      // `ui` is the queue's own flag, never the board's: the card's args are its schema, which knows only repo, number, url,
+      // head and noReview.
+      const bound = ready.map(([p, s]) => ({ ...p, ...(reviewer && merges.touchesUi(s.files) ? { ui: true } : {}) }));
       // Each PR on its own (owner, 2026-11-12): one red or carded PR doesn't hold the others back.
       const tiers = off ? ready.map(() => ({ tier: 2, rule: "autonomy-off", reason: "autonomy is off" })) : await Promise.all(ready.map(([, s]) => tierFor(issue, "merge", { prs: [s] })));
       // The base tier on its merits, also with autonomy off (best effort there: unknown on a failed read).
@@ -786,7 +791,7 @@ async function runAutoMerges() {
       want.taken = true;
       if (zero.length && (await startMerges(issue, { prs: zero, strict: true, each: true }))) {
         const zt = tiers.filter(isZero);
-        await recordAuto(issue, "merge", { prs: zero }, "", { rule: zt[0].rule, reason: zt.map((t) => t.reason).join("; ") }, { ok: true, text: `Merging ${zero.map((p) => p.url).join(", ")}, each once green on the head shown.` });
+        await recordAuto(issue, "merge", { prs: zero.map(cardPr) }, "", { rule: zt[0].rule, reason: zt.map((t) => t.reason).join("; ") }, { ok: true, text: `Merging ${zero.map((p) => p.url).join(", ")}, each once green on the head shown.` });
       }
       if (busy || !rest.length) continue;
       const said = rest.filter(([, t]) => t.reject || t.rule === "checks-not-green");
@@ -795,19 +800,21 @@ async function runAutoMerges() {
       if (carded.length) {
         const tier = carded.some(([, t]) => t.tier !== 1) ? 2 : 1;
         const reason = carded.map(([, t]) => t.reason).join("; ");
-        const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(([p]) => p), ...(want.gap !== undefined ? { gap: want.gap } : {}) }, tier, reason, baseTier: baseOf(...carded.map(([, , b]) => b)), rule: highest(carded.map(([, t]) => t)).rule });
+        const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(([p]) => cardPr(p)), ...(want.gap !== undefined ? { gap: want.gap } : {}) }, tier, reason, baseTier: baseOf(...carded.map(([, , b]) => b)), rule: highest(carded.map(([, t]) => t)).rule });
         await pc.comment(issueId, `The merge waits for ${a.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${a.id}): ${reason}.`);
       }
     } catch (err) {
-      // GitHub or the board on a bad minute: try again next poll, and give up after ten in a row.
+      // GitHub or the board on a bad minute: try again next poll, and give up after ten in a row. A refusal the board
+      // would repeat (a 4xx on the args) is said at once: nothing is waiting on a tap.
+      const refused = refusedForGood(err);
       const errors = (want.errors ?? 0) + 1;
       log("auto merge failed", { issue: issueId, errors, err: String(err.stderr || err.message || err).slice(0, 300) });
-      if (!want.taken && !(err instanceof UserError) && errors < 10) {
+      if (!want.taken && !refused && !(err instanceof UserError) && errors < 10) {
         save((b) => b[issueId] && (b[issueId].errors = errors));
         continue;
       }
       if (!want.taken) save((b) => delete b[issueId]); // once taken, what it acted on is out already
-      await pc.comment(issueId, `**The merge wasn't requested:** ${String(err instanceof UserError ? err.message : err.stderr || err.message || err).trim().slice(0, 1000)}`).catch(() => {});
+      await pc.comment(issueId, `**The merge wasn't requested:** ${String(err instanceof UserError ? err.message : err.stderr || err.message || err).trim().slice(0, 1000)}${refused ? " Nothing is waiting on your tap: fix it and publish again, or ask for the merge again." : ""}`).catch(() => {});
     }
   }
 }

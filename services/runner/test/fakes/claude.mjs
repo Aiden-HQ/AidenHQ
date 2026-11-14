@@ -66,6 +66,17 @@ if (step === "commit") {
   writeFileSync(join(repo, "web/app.css"), `body { margin: ${Date.now() % 7}px }\n`);
   git("add", "web/app.css");
   git("commit", "-qm", "feat: restyle the page, again");
+} else if (step === "ui-card") {
+  git("switch", "-qc", "feat/ui-card", "origin/main");
+  mkdirSync(join(repo, "web"), { recursive: true });
+  writeFileSync(join(repo, "web/card.css"), ".card { padding: 1rem }\n");
+  git("add", "web/card.css");
+  git("commit", "-qm", "feat: a card style");
+} else if (step === "ui-card-more") {
+  git("switch", "-q", "feat/ui-card");
+  writeFileSync(join(repo, "web/card.css"), `.card { padding: ${Date.now() % 5}rem }\n`);
+  git("add", "web/card.css");
+  git("commit", "-qm", "feat: a card style, tidied");
 } else if (step === "more") {
   git("switch", "-q", "feat/third");
   writeFileSync(join(repo, "more.txt"), "more\n");

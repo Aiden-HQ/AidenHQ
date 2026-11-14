@@ -134,6 +134,43 @@ describe("flow-autonomy", () => {
       assert.equal(t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9").length, 1, "one task per head");
     });
 
+    // A UI PR on its card (autonomy off): the runner's own `ui` flag used to ride along in the card's args, and the board's
+    // strict schema refused the whole request (400 "prs.0: Unrecognized key: ui"), leaving the task looking like it waited on a tap.
+    it("a UI PR's merge card is filed with the board's fields", async () => {
+      const { waitFor, partComments, step, turn, toolRuns } = t;
+      writeFileSync(join(t.dir, "config/grants/grants.json"), JSON.stringify({ autonomy: "off", agents: { "designer-1": { key: "ui-designer", roles: ["design-review"] } } }));
+      step("ui-card\naidenhq push acme/app feat/ui-card");
+      await turn("Restyle the card and push it.");
+      assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
+      t.paperclip.decide("push", "approved");
+      const tipOnGithub = () => {
+        try {
+          return git(t.dir, "--git-dir", join(t.dir, "github/acme/app.git"), "rev-parse", "feat/ui-card");
+        } catch {
+          return "";
+        }
+      };
+      await waitFor("the push to land", () => tipOnGithub());
+      // Its PR is open now (in the fake GitHub with every named check green): another push requests its merge again.
+      const state = new State(join(t.dir, "state"));
+      state.updateBranch("part", "acme/app", "feat/ui-card", { pr_url: "https://github.com/acme/app/pull/11" });
+      state.db.close();
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 9: { branch: "feat/ui", files: ["web/app.css"], checks: "SUCCESS" }, 11: { branch: "feat/ui-card", files: ["web/card.css"], checks: "SUCCESS" } }));
+      step("ui-card-more\naidenhq push acme/app feat/ui-card");
+      await turn("One more tweak to it, and push.");
+      assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
+      const tip = tipOnGithub();
+      t.paperclip.decide("push", "approved");
+      await waitFor("the second push to land", () => tipOnGithub() !== tip);
+      const n = partComments().length;
+      const ours = () => [...t.paperclip.approvals.values()].find((a) => a.action === "merge" && a.state === "pending" && a.args?.prs?.[0]?.number === 11);
+      await waitFor("the merge card", ours);
+      assert.ok(!partComments().slice(n).some((c) => /The merge wasn't requested/.test(c)), "no refusal");
+      const card = ours();
+      assert.deepEqual(Object.keys(card.args.prs[0]).sort(), ["head", "noReview", "number", "repo", "url"], "the board's fields, and no ui");
+      assert.equal(card.args.prs[0].url, "https://github.com/acme/app/pull/11");
+    });
+
     // A UI PR merged on the owner's tap never got its review: the card's path asks for it too, and its outcome says where it stands.
     it("an approved merge card of a UI PR asks the UI/UX Engineer for its review and says it's pending", async () => {
       const { waitFor, step, turn, toolRuns } = t;

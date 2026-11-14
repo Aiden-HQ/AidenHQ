@@ -117,6 +117,20 @@ describe("approval routes", () => {
     expect((await post("/internal/approvals", { issue: "WOR-184", action: "pr", args: { only, merge: false } })).status).toBe(400);
   });
 
+  // The runner's merge request for a UI PR, as it sends it now (its queue's own `ui` flag stays in the runner): was a 400,
+  // "prs.0: Unrecognized key: ui", on every card whose PR changes UI files.
+  it("a merge card for a UI PR is taken with the runner's payload", async () => {
+    const prs = [
+      { repo: "acme/app", number: 7, url: "https://github.com/acme/app/pull/7" },
+      { repo: "acme/app", number: 8, url: "https://github.com/acme/app/pull/8", head: "c".repeat(40), noReview: true },
+    ];
+    const filed = await post("/internal/approvals", { issue: "WOR-184", action: "merge", args: { prs } });
+    expect(filed.status).toBe(200);
+    expect(filed.json).toMatchObject({ sentence: "Merge 2 pull requests, one at a time.", target: prs.map((p) => p.url).join(", ") });
+    const onTask = await get("/internal/approvals?issue=WOR-184", { "x-reviewer-key": RUNNER_KEY });
+    expect(onTask.json.approvals.find((a: any) => a.id === filed.json.id).args).toEqual({ prs });
+  });
+
   const fresh = new Store(":memory:");
   // The owner's session (taps without one, and stamps, are admins.test.ts's and accounts.test.ts's).
   const owner = () => ({ accountId: "acct-owner", role: "admin" as const });

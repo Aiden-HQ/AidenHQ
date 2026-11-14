@@ -37,6 +37,8 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   let n = 0;
   const addComment = (issueId, body) => comments.get(issueId).push({ id: `comment-${++n}`, authorType: "user", authorUserId: USER, body, createdAt: new Date(Date.now() + n).toISOString() });
   const find = (ref) => issues.get(ref) ?? [...issues.values()].find((i) => i.identifier === ref);
+  // The board's args schema is strict: a merge card's PR entries take these fields only, and any other is a 400 naming it.
+  const strictArgs = (args) => (args?.prs ?? []).flatMap((p, i) => Object.keys(p ?? {}).filter((k) => !["repo", "number", "url", "head", "noReview"].includes(k)).map((k) => `prs.${i}: Unrecognized key: "${k}"`));
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
@@ -96,6 +98,8 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     // The board's approval records: filed by the runner, decided here by the test (the owner's tap), claimed once.
     if (path === "/internal/approvals" && req.method === "POST") {
       const b = JSON.parse(body);
+      const extra = strictArgs(b.args);
+      if (extra.length) return send({ error: extra.join(", ") }, 400);
       const digest = JSON.stringify([b.action, b.args, b.diff ?? ""]);
       const issueId = find(b.issue).id;
       const open = [...approvals.values()].filter((a) => a.issueId === issueId && a.action === b.action && a.state === "pending");
@@ -145,7 +149,10 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     }
     // A Tier 0 run's audit row: only with the runner's key.
     if (path === "/internal/approvals/auto" && req.method === "POST") {
-      autos.push({ key: req.headers["x-reviewer-key"], ...JSON.parse(body) });
+      const b = JSON.parse(body);
+      const extra = strictArgs(b.args);
+      if (extra.length) return send({ error: extra.join(", ") }, 400);
+      autos.push({ key: req.headers["x-reviewer-key"], ...b });
       return send({ state: "auto" });
     }
     const approval = /^\/internal\/approvals\/(A\d{8})\/(claim|outcome)$/.exec(path);
