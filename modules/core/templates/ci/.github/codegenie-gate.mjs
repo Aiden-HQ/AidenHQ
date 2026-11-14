@@ -31,14 +31,17 @@ const FALLBACK = "See the job log, fix the cause and re-run the check.";
  * mode (full, delta: only the changes since `from`, the n-th delta since a full review; reuse: `from`'s verdict stands).
  */
 export function verdict(exitCode, stdout, sha = "", opts = {}) {
-  const { mode, from, n } = opts;
+  const { mode, from, n, depth, critical } = opts;
   const at = sha ? ` on \`${sha.slice(0, 7)}\`` : "";
   const old = `\`${String(from).slice(0, 7)}\``;
   if (mode === "reuse") return { block: false, quiet: true, body: `${MARKER}\n**Code review reused${at}** from ${old}: the PR's patch is the same as at that green review (a rebase), so it isn't reviewed again.` };
   const v = judge(exitCode, stdout, sha, opts);
   const scope = mode === "delta" ? `_Reviewed only the changes since ${old}, this PR's last green review (delta ${n} of at most 3 before a full review). codegenie saw that diff alone, not the rest of the PR's._`
     : mode === "full" ? "_Reviewed the whole PR._" : "";
-  return scope ? { ...v, body: `${v.body}\n\n${scope}` } : v;
+  // The depth the workflow picked: light by default, normal on a critical path (the first one it matched), deep on request.
+  const how = depth === "normal" && critical ? `_Depth normal: touches \`${clip(critical, 200).replace(/`/g, "")}\`._` : depth ? `_Depth ${depth}._` : "";
+  const notes = [scope, how].filter(Boolean).join(" ");
+  return notes ? { ...v, body: `${v.body}\n\n${notes}` } : v;
 }
 
 function judge(exitCode, stdout, sha, { failure, cause, attempts }) {
@@ -103,6 +106,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const v = verdict(Number(code ?? 1), stdout, process.env.HEAD_SHA, {
     failure: process.env.CODEGENIE_FAILURE, cause: process.env.CODEGENIE_CAUSE, attempts: process.env.CODEGENIE_ATTEMPTS,
     mode: process.env.REVIEW_MODE, from: process.env.REVIEW_FROM, n: process.env.REVIEW_N,
+    depth: process.env.REVIEW_DEPTH, critical: process.env.REVIEW_CRITICAL,
   });
   console.log(v.body);
   // A partial pass is no baseline for the next push's delta (the workflow's Record step).

@@ -54,7 +54,7 @@ test("questions the reviewer couldn't settle (health unresolved) don't block: th
 });
 
 // The workflow's Review and Verdict steps, run as bash in a scratch repo (npx is a stub that records being called).
-test("the Review step skips a tiny PR, never a delta; Verdict runs the gate from the default branch tip; Record needs a review", () => {
+test("the Review step skips a tiny PR, never a delta, and picks depth from critical paths; Verdict runs the gate from the default branch tip; Record needs a review", () => {
   const steps = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps;
   const script = (name) => steps.find((s) => s.name === name).run;
   // One scratch repo: main holds the gate as it was at the PR's base, then a newer one; the PR branch is a 5-line change.
@@ -67,7 +67,9 @@ test("the Review step skips a tiny PR, never a delta; Verdict runs the gate from
   g("commit", "-qm", "base");
   const base = g("rev-parse", "HEAD");
   writeFileSync(join(dir, ".github", "codegenie-gate.mjs"), 'console.log("gate from default branch tip");\n');
-  g("commit", "-qam", "new gate");
+  writeFileSync(join(dir, ".github", "code-review-critical"), "# the app's own critical paths\nsrc/db/*\n");
+  g("add", ".");
+  g("commit", "-qm", "new gate");
   g("remote", "add", "origin", ".");
   g("fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main");
   g("checkout", "-q", base);
@@ -101,6 +103,27 @@ test("the Review step skips a tiny PR, never a delta; Verdict runs the gate from
   assert.ok(!existsSync(join(bin, "posted")), "no state after a skip");
   record({ CODE_REVIEW_DONE: "1" });
   assert.match(readFileSync(join(bin, "posted"), "utf8"), /code-review\/state/);
+  // Depth: light whatever the size; normal on a critical path from the default branch's list, never from the PR's.
+  const depthOf = (file, lines, extra = {}) => {
+    g("checkout", "-q", extra.from ?? base);
+    mkdirSync(join(dir, file, ".."), { recursive: true });
+    writeFileSync(join(dir, file), "x\n".repeat(lines));
+    g("add", ".");
+    g("commit", "-qm", file);
+    writeFileSync(env.GITHUB_ENV, "");
+    execFileSync("bash", ["-e", "-c", script("Review")], { cwd: dir, env: { ...env, HEAD_SHA: g("rev-parse", "HEAD"), ...(extra.from ? { REVIEW_MODE: "delta", REVIEW_FROM: extra.from } : {}) }, stdio: "pipe" });
+    return readFileSync(env.GITHUB_ENV, "utf8").match(/REVIEW_DEPTH=(\w+)\nREVIEW_CRITICAL=(.*)/).slice(1);
+  };
+  assert.deepEqual(depthOf("src/big.ts", 3000), ["light", ""]);
+  assert.deepEqual(depthOf("src/db/q.ts", 5), ["normal", "src/db/q.ts"]);
+  const odd = depthOf("src/db/naïve\tq.ts", 5); // git would quote this name without -z and quotePath off
+  assert.deepEqual([odd[0], odd[1].normalize("NFC")], ["normal", "src/db/naïve\tq.ts"]);
+  g("checkout", "-q", base);
+  writeFileSync(join(dir, ".github", "code-review-critical"), "src/x/*\n");
+  g("add", ".");
+  g("commit", "-qm", "the PR's own list");
+  assert.deepEqual(depthOf("src/x/a.ts", 30, { from: g("rev-parse", "HEAD") }), ["light", ""], "a list only in the PR doesn't count");
+  assert.match(verdict(0, review([]), "", { mode: "full", depth: "normal", critical: "src/db/q.ts" }).body, /Depth normal: touches `src\/db\/q.ts`/);
 });
 
 // The Review step's one retry when codegenie leaves no verdict (npx and sleep are stubs; each run plays the next response).
