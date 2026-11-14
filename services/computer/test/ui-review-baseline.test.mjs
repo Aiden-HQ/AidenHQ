@@ -91,3 +91,13 @@ test("the UI Reviewer's spec scopes the verdict to what the PR changed", () => {
   // The rewritten guidance's point still stands: a change is not failed for its shell, layout or palette.
   assert.match(checklist, /shell, blocks, palette and layout are the designer's choices/);
 });
+
+test("the one-failing-verdict rule keys on the PR's review history, not the task wording", () => {
+  const handbook = readFileSync(new URL("../../../modules/design/agents/ui-reviewer/AGENTS.md", import.meta.url), "utf8");
+  // A fix head in a task that never says "This is a re-review" is still a re-review, or the rule is skipped exactly when
+  // it matters; anything the first verdict didn't name is a note, never a second failure, with the broken-page exception.
+  assert.match(handbook, /Before reviewing a\s+head, check the PR's earlier review tasks for a verdict from you/);
+  assert.match(handbook, /even when this task does not say "This is a re-review"/);
+  assert.match(handbook, /Any other issue is a non-blocking note, never a second failure/);
+  assert.match(handbook, /note it for a follow-up, unless\s+the page is broken outright/);
+});

@@ -52,10 +52,11 @@ the owner or the app's owning agent approved it on the mockup task. Never pick a
 change with no named mockup is judged against the app as it is. A new screen with no mockup: say so in your report and
 attach its screenshots for the owner's own look; don't score the design.
 
-**One failing verdict per PR, at most.** After the Engineer's fix, the next review (the runner's task says "This is a
-re-review") checks only that the blockers you named are fixed. It doesn't review the whole PR again and raises nothing
-new as a blocker. A named blocker still there: set `success` and note it for a follow-up, unless the page is broken
-outright.
+**One failing verdict per PR, at most — keyed to the PR's review history, not the task wording.** Before reviewing a
+head, check the PR's earlier review tasks for a verdict from you. If any failed, this is a re-review: check only the
+blockers that verdict named and raise nothing new as a blocker, even when this task does not say "This is a re-review"
+and even when the head has moved. If a named blocker is still there, set `success` and note it for a follow-up, unless
+the page is broken outright. Any other issue is a non-blocking note, never a second failure.
 
 ## Your references (in your computer)
 
@@ -123,8 +124,8 @@ follow-up fixes.
    `commit_status_set` (repo, PR number, head SHA). The tool refuses a SHA that isn't the PR's current head.
    **Already reviewed?** If `statuses` already holds a `design-review` verdict (`success` or `failure`) on this head, or
    your own earlier comment on the task gives one for it, report it in one line and finish. Don't redo the review.
-   **A re-review** (the task says so): open the earlier reviews it names and check only the blockers they named on this
-   head (a `ui-review` of the pages they were on, and the flow they broke), then go to step 6.
+   **A re-review** (an earlier review of this PR failed, above): open the earlier reviews and check only the blockers
+   they named on this head (a `ui-review` of the pages they were on, and the flow they broke), then go to step 6.
 2. **Find the mockup** only if the PR's task names an agreed one (above), and open its screenshots.
 3. **Get the code:** `repo-checkout <org/name> <head sha>`, and for the before picture the PR's base too (into another
    folder). The code lands in `/workspace/repos/<name>` as plain files with no git. If the commit isn't in the runner's
