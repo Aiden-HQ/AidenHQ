@@ -146,6 +146,8 @@ export function loadConfig() {
     pasta: (env.PATH ?? "").split(":").filter((d) => d.startsWith("/")).map((d) => join(d, "pasta")).find((p) => existsSync(p)),
     workDir: expand(cfg.work_dir ?? "~/aidenhq-work"),
     stateDir,
+    // The monitoring module's textfile directory (node-exporter reads it): the runner's metrics (metrics.mjs).
+    metricsFile: join(resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data")), "monitoring", "textfile", "runner.prom"),
     ghWrapperDir: join(REPO_ROOT, "services/runner/bin"),
     // The pinned Chromium headless shell and playwright-core (ops/vm/setup.sh), read-only in jobs (bin/aidenhq-browse).
     browserDir: "/opt/aidenhq/browser",

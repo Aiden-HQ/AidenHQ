@@ -10,6 +10,7 @@ import type { Agent, Paperclip } from "./paperclip.js";
 import type { Store } from "./store.js";
 import { appsApi } from "./fleet.js";
 import { parseRunLog } from "./runs.js";
+import { alertIncidents } from "./monitoring.js";
 
 const MIN = 60_000;
 const STATE_KEY = "fleet_ops_detector";
@@ -286,6 +287,10 @@ export function checks(pc: Paperclip, store: Pick<Store, "approvals" | "grades" 
       // Which source and since when only: the agent reads the error itself with warehouse_query.
       return staleSources(r.sources, t);
     },
+    // Monitoring alerts (Alertmanager's webhook, monitoring.ts): one incident per firing alert, recovered when it resolves.
+    async alert() {
+      return alertIncidents(store);
+    },
     async pr() {
       const r = await appsApi<{ prs?: PrRow[] }>("/internal/open-prs", undefined, { auth: true });
       if (!r.prs) return undefined; // no warehouse or no agents org
@@ -314,6 +319,10 @@ export async function fireWebhook(body: unknown, env: NodeJS.ProcessEnv = proces
   return [200, 202, 409].includes(res.status);
 }
 
+let runNow: () => void = () => {};
+/** Runs the detector now (a monitoring alert arrived) instead of at its next tick; nothing when it is off or already running. */
+export const kickDetector = () => runNow();
+
 /** Starts the detector when the module is on (main.ts). */
 export function startDetector(pc: Paperclip, store: Store, log: { info(o: object, m: string): void; warn(o: object, m: string): void }, env: NodeJS.ProcessEnv = process.env): void {
   const minutes = Number(env.FLEET_OPS_INTERVAL_MINUTES);
@@ -337,6 +346,7 @@ export function startDetector(pc: Paperclip, store: Store, log: { info(o: object
       busy = false;
     }
   };
+  runNow = () => void run();
   setInterval(run, Math.max(1, minutes) * MIN).unref();
   setTimeout(run, MIN).unref();
   log.info({ minutes }, "fleet-ops detector on");

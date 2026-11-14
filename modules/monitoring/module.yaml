@@ -1,0 +1,29 @@
+name: monitoring
+description: "Host and fleet monitoring: Prometheus, node-exporter, cAdvisor, Alertmanager and Grafana. Every alert opens or updates a Fleet Ops task; critical ones also tell the owner in one line."
+# docs/design/monitoring.md. Alerts go into the Fleet Ops detector (services/board/src/monitoring.ts), so fleet-ops comes along.
+requires:
+  - fleet-ops
+settings:
+  # How long Prometheus keeps samples (Prometheus duration: 30d, 8w).
+  monitoring_retention:
+    default: 30d
+  # Grafana's https address on the tailnet, e.g. https://host.tailnet.ts.net:8444 (docs/operations.md, Monitoring). Links in
+  # Grafana use it; empty = http://localhost:3131.
+  grafana_root_url:
+    default: ""
+compose: compose.yaml
+# Made by compile: the scrape and webhook token (Prometheus → the board and the gateway, Alertmanager → the board) and
+# Grafana's admin password (user admin; read it from the vault to sign in).
+generated_secrets:
+  - monitoring_token
+  - grafana_admin_password
+# Created by compile (empty) so compose can mount it: the local Grafana's service account token for agents' Grafana reads
+# through grafana-mcp (the token alone, `glsa_...`, of a Viewer service account; docs/design/monitoring.md, Agents).
+optional_secrets:
+  - grafana_service_account_token
+# Under the data dir, created by compile before compose binds them (owned by the user, like the rest of data/).
+data_dirs:
+  - monitoring/textfile
+  - monitoring/prometheus
+  - monitoring/alertmanager
+  - monitoring/grafana

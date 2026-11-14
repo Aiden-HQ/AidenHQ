@@ -23,6 +23,7 @@ import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, 
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine } from "./prompt.mjs";
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
 import { startRepoHelper } from "./repohelper.mjs";
+import { createMetrics, writeMetrics } from "./metrics.mjs";
 import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, messagesSince, moveOffDefault, readManifest, repairWorkspaceGit, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.mjs";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.mjs";
@@ -112,6 +113,7 @@ const running = new Map(); // issueId → { controller, jobId, identifier, start
 // Aborted on a restart: the runs going on stop being followed here and are left to the next runner, which adopts them.
 const detach = new AbortController();
 const queue = []; // { issue, instructions }
+const metrics = createMetrics(); // the monitoring module's runner metrics (metrics.mjs)
 const engineLabel = (e) => {
   const details = [e.model, e.effort && `${e.effort} effort`].filter(Boolean).join(", ");
   if (e.kind === "codex-openrouter") return `Codex on OpenRouter${details ? ` (${details})` : ""}`;
@@ -3009,6 +3011,8 @@ function saveTools(ctx) {
 
 /** A turn is over (finished, failed, or cut off before its run started): what the agent asked for, then the next job. */
 async function endTurn(issue, tools) {
+  const started = Date.parse(running.get(issue.id)?.startedAt ?? "");
+  if (started) metrics.jobEnded((Date.now() - started) / 1000);
   running.delete(issue.id);
   // While the runner restarts nothing more starts or reports: the job resumes after it.
   if (stopping) return;
@@ -3875,3 +3879,13 @@ void loop();
 // The board's Agents view: on a timer, because a poll can take minutes (intake, GitHub checks).
 reportActivity();
 setInterval(reportActivity, 30_000);
+// The monitoring module's metrics (metrics.mjs): a textfile node-exporter serves; nothing while the module is off.
+const saveMetrics = () => {
+  try {
+    const merges = activeMerges().map((id) => mergeQueue(id)).filter(Boolean);
+    writeMetrics(cfg.metricsFile, metrics.text({ queued: queue.length, running: [...running.values()], merges }));
+  } catch (err) {
+    log("metrics write failed", { err: String(err.message ?? err).slice(0, 200) });
+  }
+};
+setInterval(saveMetrics, 30_000).unref();

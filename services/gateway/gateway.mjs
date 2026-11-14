@@ -5,7 +5,7 @@
 // board's usage pull), and, with the ci module on, on the CI runners' bridge (app CI code review, CI tokens only). Logic and
 // routes: lib.mjs; CI credentials: ci.mjs. Fails closed: if it is down, no model call is made.
 import http from "node:http";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createGateway } from "./lib.mjs";
@@ -67,3 +67,17 @@ let ciBound = false;
 const ciCheck = () => { if (!ciBound && ciAddr && gw.ciEnabled()) { ciBound = true; listen(ciAddr, true); } };
 ciCheck();
 setInterval(ciCheck, 60_000);
+
+// The monitoring module's metrics (lib.mjs metricsText): a node-exporter textfile every 30 seconds, written only while the
+// module's directory exists. A file, not a route: nothing new listens, and a stale file shows the gateway is down.
+const textfile = path.join(dataDir, "monitoring", "textfile");
+setInterval(() => {
+  if (!existsSync(textfile)) return;
+  try {
+    const tmp = path.join(textfile, ".gateway.prom.tmp");
+    writeFileSync(tmp, gw.metricsText());
+    renameSync(tmp, path.join(textfile, "gateway.prom"));
+  } catch (e) {
+    log("metrics write failed", { err: String(e.message).slice(0, 200) });
+  }
+}, 30_000).unref();

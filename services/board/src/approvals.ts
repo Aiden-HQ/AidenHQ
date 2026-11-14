@@ -608,6 +608,16 @@ export class Approvals {
     return new Set((this.db.prepare("SELECT DISTINCT issue_id FROM approvals WHERE state = 'pending' AND tier = 2 AND expires_at > ?").all(new Date(now).toISOString()) as { issue_id: string }[]).map((r) => r.issue_id));
   }
 
+  /** Counts for the metrics endpoint (monitoring.ts): cards created and decided since `since` by tier and state, and pending by tier. */
+  stats(since: string, now = Date.now()): { created: { tier: number; n: number }[]; decided: { tier: number; state: string; n: number }[]; pending: { tier: number; n: number }[] } {
+    const q = (sql: string, ...a: string[]) => this.db.prepare(sql).all(...a) as never;
+    return {
+      created: q("SELECT tier, COUNT(*) AS n FROM approvals WHERE created_at >= ? GROUP BY tier", since),
+      decided: q("SELECT tier, state, COUNT(*) AS n FROM approvals WHERE decided_at >= ? GROUP BY tier, state", since),
+      pending: q("SELECT tier, COUNT(*) AS n FROM approvals WHERE state = 'pending' AND expires_at > ? GROUP BY tier", new Date(now).toISOString()),
+    };
+  }
+
   /** Pending records (not expired) of one tier, oldest first: Tier 2 is what the owner-channel sends as cards; Tier 1, the reviewer's queue. */
   pending(now = Date.now(), tier: 1 | 2 = 2): Approval[] {
     return (this.db.prepare("SELECT * FROM approvals WHERE state = 'pending' AND tier = ? AND expires_at > ? ORDER BY created_at").all(tier, new Date(now).toISOString()) as unknown as Row[]).map(toApproval);

@@ -113,6 +113,16 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
   assert.equal(raise.status, 200);
   assert.equal((await call(jwt("ag1", "run2"))).status, 200);
 
+  // The monitoring module's metrics (a textfile gateway.mjs writes; no route): agent keys as labels.
+  assert.equal((await fetch(`${front.url}/metrics`)).status, 404);
+  const text = gw.metricsText();
+  assert.match(text, /^aidenhq_gateway_agent_day_cap_usd\{agent="aiden"\} 30$/m);
+  assert.match(text, /^aidenhq_gateway_agent_day_spend_usd\{agent="aiden"\} 0\.\d+$/m);
+  assert.match(text, /^aidenhq_gateway_cap_refusals_today\{agent="aiden",kind="agent"\} 2$/m);
+  assert.match(text, /^aidenhq_gateway_spend_usd_today\{agent="eng",kind="[a-z-]+"\} 0\.03$/m);
+  assert.doesNotMatch(text, /ag1|sk-real/); // ids and secrets never ride along
+  for (const l of text.trim().split("\n")) assert.match(l, /^(# (HELP|TYPE) \w+ .+|[a-z_]+(\{[^}]*\})? -?\d+(\.\d+)?)$/);
+
   // An expired run JWT is refused even once its run key is settled.
   const exp = Math.floor(now / 1000) + 60;
   assert.equal((await call(jwt("ag1", "run3", exp))).status, 200);

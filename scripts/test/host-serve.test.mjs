@@ -12,4 +12,8 @@ test("the host's serve keeps Paperclip and the board; an app port there is a str
   assert.deepEqual(strays(live).ports.map((p) => [p.port, p.tcp]), [["2222", true], ["8080", false]]);
   delete live.TCP[8080], delete live.TCP[2222], delete live.Web["agents.example.ts.net:8080"];
   assert.deepEqual(strays(live), { ports: [], funnel: [] });
+  // The monitoring module's Grafana (loopback 3131) is one of the host's own services.
+  live.TCP[8444] = { HTTPS: true };
+  Object.assign(live.Web, web(8444, "http://127.0.0.1:3131"));
+  assert.deepEqual(strays(live), { ports: [], funnel: [] });
 });

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { allowedTools, isAllowed, READ_TOOLS } from "../src/policy.js";
+import { allowedTools, isAllowed, LOCAL_TOOLS, READ_TOOLS } from "../src/policy.js";
 import { SignIn, SignInError } from "../src/signin.js";
 import { TokenStore } from "../src/tokens.js";
 
@@ -10,6 +10,14 @@ const tool = (name: string) => ({ name, inputSchema: { type: "object" as const }
 const tmp = () => mkdtempSync(join(tmpdir(), "grafana-mcp-"));
 
 describe("grafana-mcp policy", () => {
+  it("local mode allows exactly the grafana connection's granted reads, all of them reads", () => {
+    const yaml = readFileSync(join(__dirname, "../../../module.yaml"), "utf8");
+    const granted = /^\s+read: \[([^\]]*)\]/m.exec(yaml)![1]!.split(",").map((t) => t.trim()).filter(Boolean);
+    expect([...LOCAL_TOOLS].sort()).toEqual(granted.sort());
+    for (const t of LOCAL_TOOLS) expect(isAllowed(t, new Set(READ_TOOLS))).toBe(true);
+    expect(isAllowed("update_dashboard", new Set(LOCAL_TOOLS))).toBe(false);
+  });
+
   // Tools Grafana's hosted server offers that change things or act: never exposed.
   const writes = [
     "exec_gcx", "update_dashboard", "create_dashboard", "create_incident", "add_activity_to_incident", "update_incident", "resolve_incident",

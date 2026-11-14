@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The host's own tailnet name serves Paperclip and the board only: a browser sends that name's cookies (the board's
+// The host's own tailnet name serves Paperclip, the board and Grafana only: a browser sends that name's cookies (the board's
 // session) to every port of it, so agent-built apps live on their own node (compose.yaml apps-edge), never here.
 //   node scripts/host-serve.mjs check   prints what else the host's `tailscale serve` has; exit 1 if anything
 //   node scripts/host-serve.mjs prune   turns every such route off (ops/apply-config.sh; e.g. an app port served here before)
@@ -7,7 +7,8 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const OK = new Set(["http://127.0.0.1:3100", "http://127.0.0.1:3120", "http://127.0.0.1:3121"]); // Paperclip, the board (local, LAN)
+// Paperclip, the board (local, LAN) and the monitoring module's Grafana: trusted, signed-in services only (never an app).
+const OK = new Set(["http://127.0.0.1:3100", "http://127.0.0.1:3120", "http://127.0.0.1:3121", "http://127.0.0.1:3131"]);
 
 /** Ports the host serves that aren't HTTPS to Paperclip or the board, each with why; plus funnel, which prune leaves (loud). */
 export function strays(s) {

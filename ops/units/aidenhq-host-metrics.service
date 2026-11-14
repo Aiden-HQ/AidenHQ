@@ -1,0 +1,7 @@
+[Unit]
+Description=AidenHQ host metrics for the monitoring module: unit and container states as node-exporter textfiles (ops/host-metrics.sh)
+
+[Service]
+Type=oneshot
+ExecStart=%h/aidenhq/ops/host-metrics.sh
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

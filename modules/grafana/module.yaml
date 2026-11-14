@@ -11,6 +11,21 @@ settings:
     default: https://mcp.grafana.com/mcp
     type: url
     host: mcp.grafana.com
+  # "cloud": the Grafana Cloud stack above, signed in on the board. "local": the monitoring module's Grafana on this host
+  # (modules/monitoring; put a Viewer service account token in the vault's grafana_service_account_token), no sign-in.
+  grafana_source:
+    default: cloud
+    values: [cloud, local]
+# Agents granted `grafana: read` (e.g. Fleet Ops, in the instance's agent overrides) query metrics and dashboards.
+connections:
+  grafana:
+    setup: "Cloud: set your stack's URL on the board (Settings, Connections) and press Connect. Local: enable the monitoring module, set grafana_source: local and put a Viewer service account token in the vault (docs/design/monitoring.md)."
+    guide: "Metrics and dashboards: the host's disk, memory and containers, and the fleet's queue, spend and approvals (Prometheus through Grafana). `query_prometheus` for a PromQL query, `list_prometheus_metric_names` to find series, `search_dashboards` and `get_dashboard_panel_queries` for the panels' queries."
+    url: http://grafana-mcp:8087/mcp
+    bearer_token_env_var: AIDENHQ_GRAFANA_MCP_TOKEN
+    tools:
+      read: [ query_prometheus, query_prometheus_histogram, list_prometheus_metric_names, list_prometheus_label_names, list_prometheus_label_values, list_prometheus_metric_metadata, list_datasources, search_dashboards, get_dashboard_summary, get_dashboard_panel_queries, get_dashboard_by_uid, alerting_rules_read ]
+      write: []
 # How to set it up (the board's Settings, Connections).
 setup: "Set your Grafana Cloud stack's URL on the board (Settings, Connections) and approve the change, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120). Used by the runner's Engineer jobs."
 compose: compose.yaml

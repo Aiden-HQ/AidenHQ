@@ -1,0 +1,173 @@
+# monitoring module (docs/design/monitoring.md): its compose services. Paths are relative to this module; scripts/compile.mjs
+# makes them absolute. Nothing is published beyond loopback; Grafana alone is published (127.0.0.1:3131, `tailscale serve`
+# for the tailnet). Images pinned by digest (release dates in docs/design/monitoring.md).
+
+services:
+  prometheus:
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
+    user: "${PUID:-1000}:${PGID:-100}"
+    read_only: true
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${settings.monitoring_retention}
+      - --web.listen-address=:9090
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - ${AIDENHQ_DATA_DIR:-./data}/monitoring/prometheus:/prometheus
+    secrets:
+      - monitoring_token # scrapes the board's /internal/metrics
+    # monitoring-board: the board's internal listener (board:3122) only. Never the backplane: nothing there reaches Prometheus.
+    networks:
+      - monitoring
+      - monitoring-board
+
+  # Host metrics: as nobody, the host's / read-only (filesystems), its /proc and /sys (CPU, memory, pressure, OOM kills), and
+  # the textfiles the runner and ops/host-metrics.sh write (unit and container states, the runner's queue). Network counters
+  # are its own namespace's (no host networking).
+  node-exporter:
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    image: prom/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
+    user: "65534:65534"
+    read_only: true
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.textfile.directory=/textfile
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|run|sys|var/lib/docker/.+|var/lib/containerd/.+|home/.+/\.config/aidenhq)($|/)
+    volumes:
+      - /:/host:ro,rslave
+      - ${AIDENHQ_DATA_DIR:-./data}/monitoring/textfile:/textfile:ro
+    networks:
+      - monitoring
+
+  # Containers' CPU and memory by cgroup (no Docker socket: only apps-mcp holds one). Names come from containers.prom
+  # (ops/host-metrics.sh), joined on the cgroup id.
+  cadvisor:
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    image: ghcr.io/google/cadvisor:v0.60.6@sha256:b8e7d1093144fd088f425ff003d75a4aa405de075db78dae3bc563730b1bd07a
+    read_only: true
+    command:
+      - --docker_only=false
+      - --raw_cgroup_prefix_whitelist=/system.slice/docker-
+      - --housekeeping_interval=30s
+      - --store_container_labels=false
+      - --enable_metrics=cpu,memory,diskIO
+    volumes:
+      - /sys:/sys:ro
+      - /proc:/rootfs/proc:ro
+    networks:
+      - monitoring
+
+  alertmanager:
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    image: prom/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b
+    user: "${PUID:-1000}:${PGID:-100}"
+    read_only: true
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --cluster.listen-address=
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro
+      - ${AIDENHQ_DATA_DIR:-./data}/monitoring/alertmanager:/alertmanager
+    secrets:
+      - monitoring_token # its webhook into the board (/internal/alerts)
+    # monitoring-board: it posts to the board; its own API (silences) is reachable only by Prometheus, Grafana and the board.
+    networks:
+      - monitoring
+      - monitoring-board
+
+  grafana:
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    image: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
+    user: "${PUID:-1000}:${PGID:-100}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_SIGNOUT_MENU: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "${settings.grafana_root_url}"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana-dashboards:ro
+      - ${AIDENHQ_DATA_DIR:-./data}/monitoring/grafana:/var/lib/grafana
+    secrets:
+      - grafana_admin_password
+    ports:
+      # Loopback only; the tailnet reaches it through the host's `tailscale serve` (docs/operations.md, Monitoring).
+      - "127.0.0.1:3131:3000"
+    # egress only carries the published port (update checks and plugin installs are off).
+    networks:
+      - monitoring
+      - egress
+
+  # Grafana's open-source MCP server against this Grafana, for agents through grafana-mcp (modules/grafana with
+  # grafana_source: local): read tools only (--disable-write), the service account token from the vault (a Viewer account;
+  # empty until the owner makes one, docs/design/monitoring.md). It takes no auth of its own: grafana-local, which only it and
+  # grafana-mcp share, is the boundary.
+  mcp-grafana:
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    image: grafana/mcp-grafana:0.17.2@sha256:d5b51db0c8eaafc6ed3fede5bfcc8d67b2384a40cf3d493086e378855ceba882
+    user: "${PUID:-1000}:${PGID:-100}" # reads its token from the vault (0600, the user's)
+    read_only: true
+    entrypoint: [ "/app/mcp-grafana", "--transport", "streamable-http", "--address", "0.0.0.0:8000", "--endpoint-path", "/mcp", "--allowed-hosts", "mcp-grafana:8000", "--disable-write" ]
+    environment:
+      GRAFANA_URL: http://grafana:3000
+      GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE: /run/secrets/grafana_service_account_token
+    secrets:
+      - grafana_service_account_token
+    # monitoring: Grafana; grafana-local: grafana-mcp (modules/grafana) and nothing else.
+    networks:
+      - monitoring
+      - grafana-local
+
+  board:
+    environment:
+      MONITORING_TOKEN_FILE: /run/secrets/monitoring_token
+    secrets:
+      - monitoring_token
+    networks:
+      - monitoring-board
+
+networks:
+  # The monitoring services among themselves; no route out.
+  monitoring:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AIDENHQ_MONITORING_SUBNET:-10.231.6.0/24}
+  # Prometheus and Alertmanager to the board's internal listener (scrape, webhook); only those three.
+  monitoring-board:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AIDENHQ_MONITORING_BOARD_SUBNET:-10.231.7.0/24}
+  # mcp-grafana and grafana-mcp only (modules/grafana defines it identically).
+  grafana-local:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AIDENHQ_GRAFANA_LOCAL_SUBNET:-10.231.8.0/24}
+
+secrets:
+  monitoring_token:
+    file: ${AIDENHQ_SECRETS_DIR}/monitoring_token
+  grafana_admin_password:
+    file: ${AIDENHQ_SECRETS_DIR}/grafana_admin_password
+  grafana_service_account_token:
+    file: ${AIDENHQ_SECRETS_DIR}/grafana_service_account_token

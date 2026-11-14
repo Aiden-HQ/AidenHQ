@@ -12,6 +12,7 @@ services:
     environment:
       GRAFANA_URL: "${settings.grafana_url}"
       GRAFANA_MCP_URL: "${settings.grafana_mcp_url}"
+      GRAFANA_SOURCE: "${settings.grafana_source}" # local: the monitoring module's mcp-grafana on the backplane
       GRAFANA_STATE_DIR: /state
       MCP_TOKEN_FILE: /run/secrets/grafana_mcp_token
       # The board's sign-in endpoints: state, and starting or finishing a sign-in.
@@ -29,6 +30,14 @@ services:
     networks:
       - backplane
       - egress
+      - grafana-local # local mode: the monitoring module's mcp-grafana, on a network only the two share
+networks:
+  # mcp-grafana and grafana-mcp only (modules/monitoring defines it identically).
+  grafana-local:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AIDENHQ_GRAFANA_LOCAL_SUBNET:-10.231.8.0/24}
 secrets:
   grafana_mcp_token:
     file: ${AIDENHQ_SECRETS_DIR}/grafana_mcp_token

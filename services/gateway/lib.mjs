@@ -472,6 +472,34 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     return ++refusals.n <= CI_REFUSALS_LOGGED;
   }
 
+  /**
+   * Prometheus text for the monitoring module (gateway.mjs writes it as a node-exporter textfile; no route): today's spend and
+   * cap per agent, cap refusals, CI review spend and cap, calls in flight. Labels are agent keys, never ids or secrets.
+   */
+  function metricsText() {
+    const today = day(now());
+    const keyOf = (id) => (id ? String(grants()[id]?.key ?? "unknown") : "none");
+    const esc = (v) => String(v).replace(/["\\\n]/g, "_");
+    const out = [];
+    const metric = (name, help, rows) => {
+      out.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`);
+      for (const [labels, v] of rows) out.push(`${name}${Object.keys(labels).length ? `{${Object.entries(labels).map(([k, x]) => `${k}="${esc(x)}"`).join(",")}}` : ""} ${Math.round(v * 1e4) / 1e4}`);
+    };
+    const spend = db.prepare("SELECT agent_id, kind, COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status != 'cap_reached' GROUP BY agent_id, kind").all(today);
+    metric("aidenhq_gateway_spend_usd_today", "Billed model spend since 00:00 UTC, by agent key and call kind.", spend.map((r) => [{ agent: keyOf(r.agent_id), kind: r.kind }, r.s]));
+    const agents = [...new Set(spend.filter((r) => r.agent_id && !SYSTEM[r.kind] && r.kind !== CI_KIND).map((r) => r.agent_id))];
+    metric("aidenhq_gateway_agent_day_spend_usd", "An agent's spend counted against its agent-day cap, since 00:00 UTC.", agents.map((id) => [{ agent: keyOf(id) }, q.spentDay.get(id, today).s]));
+    metric("aidenhq_gateway_agent_day_cap_usd", "An agent's agent-day cap in force today.", agents.map((id) => [{ agent: keyOf(id) }, capOf({ agentId: id }, "day", today)]));
+    const refused = db.prepare("SELECT agent_id, kind, COUNT(*) AS n FROM calls WHERE day = ? AND status = 'cap_reached' GROUP BY agent_id, kind").all(today);
+    metric("aidenhq_gateway_cap_refusals_today", "Runs or CI reviews refused over a spend cap since 00:00 UTC (one per run, scope and cap).", refused.map((r) => [{ agent: keyOf(r.agent_id), kind: r.kind }, r.n]));
+    const ci = ciConf();
+    metric("aidenhq_gateway_ci_spend_usd_today", "App CI code review spend since 00:00 UTC.", [[{}, q.ciSpent.get(today).s]]);
+    metric("aidenhq_gateway_ci_day_cap_usd", "App CI code review's all-repos day cap (0: CI review off).", [[{}, ci?.enabled ? Number(ci.day_usd) || 0 : 0]]);
+    metric("aidenhq_gateway_enforcing_caps", "1 when spend caps refuse calls (settings.spend_caps).", [[{}, enforcing() ? 1 : 0]]);
+    metric("aidenhq_gateway_inflight", "Model calls in flight.", [[{}, inflight.size]]);
+    return out.join("\n") + "\n";
+  }
+
   /** `ci`: the request came in on the CI listener (gateway.mjs), which serves the CI routes only. */
   async function handle(req, res, { ci = false } = {}) {
     try {
@@ -507,5 +535,5 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     }
   }
 
-  return { handle, db, ciEnabled: () => Boolean(ciConf()?.enabled), close: () => { clearInterval(pruner); db.close(); } };
+  return { handle, db, metricsText, ciEnabled: () => Boolean(ciConf()?.enabled), close: () => { clearInterval(pruner); db.close(); } };
 }

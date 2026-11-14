@@ -107,6 +107,28 @@ for c in $containers; do
       [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
         && pass "clickhouse-mcp: only its own token directory mounted" || fail "clickhouse-mcp has unexpected mounts: $mounts"
       ;;
+    *mcp-grafana*|*prometheus*|*alertmanager*|*cadvisor*)
+      # The monitoring module's inner services: nothing published, and none on the backplane (their APIs take no auth:
+      # Alertmanager's silences, Prometheus, mcp-grafana). Only their own networks: monitoring, monitoring-board (the board),
+      # grafana-local (grafana-mcp).
+      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "$c: no published ports" || fail "$c publishes ports"
+      nets="$(docker inspect "$c" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')"
+      ! echo "$nets" | tr ' ' '\n' | grep -v '^$' | grep -qvxE "${project}_(monitoring|monitoring-board|grafana-local)" \
+        && pass "$c: on the monitoring networks only ($nets)" || fail "$c is on another network (backplane?): $nets"
+      ;;
+    *node-exporter*)
+      # Reads the host's / (filesystem sizes): as nobody, read-only, nothing published.
+      [ "$(docker inspect "$c" --format '{{.Config.User}}')" = "65534:65534" ] && pass "node-exporter: runs as nobody" || fail "node-exporter does not run as nobody"
+      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "node-exporter: no published ports" || fail "node-exporter publishes ports"
+      ! echo "$mounts" | tr ';' '\n' | grep -E '\|true$' | grep -q . && pass "node-exporter: every mount read-only" || fail "node-exporter has a writable mount: $mounts"
+      ;;
+    *-grafana-[0-9]*)
+      # Grafana: loopback 3131 only (the tailnet through the host's tailscale serve), no anonymous access.
+      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = '{"3000/tcp":[{"HostIp":"127.0.0.1","HostPort":"3131"}]}' ] \
+        && pass "grafana: published on 127.0.0.1:3131 only" || fail "grafana ports are not loopback 3131 only"
+      [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:3131/api/search)" = "401" ] \
+        && pass "grafana: no anonymous access" || fail "grafana answers without sign-in"
+      ;;
     *github-mcp*)
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github-mcp: no published ports" || fail "github-mcp publishes ports"
       ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/secrets/github-app|' | grep -v '|/grants|' | grep -q . \
@@ -219,6 +241,16 @@ if [ -f config/gate.json ]; then
   done < <(node -e 'const g=JSON.parse(require("fs").readFileSync("config/gate.json","utf8"));for(const[h,s]of Object.entries(g.hosts??{}))console.log(h,s.port)')
 fi
 
+# Monitoring (modules/monitoring): its token opens only the board's metrics and alert routes; the board's internal token
+# opens neither.
+mon="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/monitoring_token" 2>/dev/null)"
+if [ -n "$mon" ]; then
+  bi="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/board_internal_token" 2>/dev/null)"
+  b() { curl -s -m 10 -o /dev/null -w '%{http_code}' -X "$1" "http://127.0.0.1:3122$2" -H 'Host: 127.0.0.1:3122' -H "Authorization: Bearer $3" -H 'content-type: application/json' -d '{}'; }
+  [ "$(b GET /internal/metrics "$mon")" = 200 ] && [ "$(b POST /internal/fleet/status "$mon")" = 401 ] && [ "$(b GET /internal/metrics "$bi")" = 401 ] && [ "$(b POST /internal/alerts "$bi")" = 401 ] \
+    && pass "board: the monitoring token opens its metrics and alerts only; the internal token opens neither" || fail "board: monitoring routes and tokens are not split"
+fi
+
 # One host port, one owner (compile checks the config; this checks what actually runs).
 dups="$(for c in $containers; do docker port "$c" 2>/dev/null | sed -E 's/.*:([0-9]+)$/\1/' | sort -u; done | sort | uniq -d)"
 [ -z "$dups" ] && pass "no host port is published by two containers" || fail "host ports published twice: $(echo $dups)"
@@ -228,11 +260,11 @@ echo "Tailnet"
 # session) to every port of it, so agent-built apps live on their own node (compose.yaml apps-edge), never here.
 if bad="$(node scripts/host-serve.mjs check)"; then
   case "$bad" in
-    "") pass "tailscale: the host's own name serves only Paperclip and the board" ;;
+    "") pass "tailscale: the host's own name serves only Paperclip, the board and Grafana" ;;
     *) echo "  skip  $bad" ;;
   esac
 else
-  fail "tailscale: the host's own name serves more than Paperclip and the board: $bad (ops/apply-config.sh prunes it)"
+  fail "tailscale: the host's own name serves more than Paperclip, the board and Grafana: $bad (ops/apply-config.sh prunes it)"
 fi
 
 echo "Repository"

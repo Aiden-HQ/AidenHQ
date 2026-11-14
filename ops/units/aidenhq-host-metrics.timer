@@ -1,0 +1,10 @@
+[Unit]
+Description=AidenHQ host metrics every 30 seconds (modules/monitoring)
+
+[Timer]
+OnActiveSec=10s
+OnUnitActiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

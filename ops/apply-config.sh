@@ -107,6 +107,17 @@ main() {
     systemctl --user disable --now --quiet aidenhq-backup.timer
     rm -f "$units/aidenhq-backup.service" "$units/aidenhq-backup.timer" && systemctl --user daemon-reload && echo "backup timer removed (no backup_repository)"
   fi
+  # The monitoring module's host metrics (ops/host-metrics.sh): its timer runs while compile made the textfile directory
+  # (the module is on), and is removed once the module is off.
+  if grep -q '^  node-exporter:' compose.modules.yaml 2>/dev/null; then
+    if ! cmp -s ops/units/aidenhq-host-metrics.service "$units/aidenhq-host-metrics.service" || ! cmp -s ops/units/aidenhq-host-metrics.timer "$units/aidenhq-host-metrics.timer"; then
+      cp ops/units/aidenhq-host-metrics.service ops/units/aidenhq-host-metrics.timer "$units/" && systemctl --user daemon-reload && echo "host metrics timer installed/updated"
+    fi
+    systemctl --user enable --now --quiet aidenhq-host-metrics.timer
+  elif [ -e "$units/aidenhq-host-metrics.timer" ]; then
+    systemctl --user disable --now --quiet aidenhq-host-metrics.timer
+    rm -f "$units/aidenhq-host-metrics.service" "$units/aidenhq-host-metrics.timer" && systemctl --user daemon-reload && echo "host metrics timer removed (monitoring off)"
+  fi
   echo "$product" > "$applied"
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"
   # The live agent check, last (everything above is applied either way): each connection an agent is granted answers and is

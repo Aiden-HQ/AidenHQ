@@ -81,6 +81,25 @@ export const READ_TOOLS = [
   "get_doc",
 ];
 
+/**
+ * Local mode (the monitoring module's Grafana): only the reads the `grafana` connection grants agents (module.yaml
+ * tools.read; a test keeps the two equal), enforced here whatever a caller asks for.
+ */
+export const LOCAL_TOOLS = [
+  "query_prometheus",
+  "query_prometheus_histogram",
+  "list_prometheus_metric_names",
+  "list_prometheus_label_names",
+  "list_prometheus_label_values",
+  "list_prometheus_metric_metadata",
+  "list_datasources",
+  "search_dashboards",
+  "get_dashboard_summary",
+  "get_dashboard_panel_queries",
+  "get_dashboard_by_uid",
+  "alerting_rules_read",
+];
+
 // Defense in depth: even if an operator adds one of these to the allowlist, it is never exposed.
 const NEVER = /(creat|add_|update|delete|remove|manage|exec|write|edit|patch|send|post|resolve|acknowledge|silence(?!s_read)|share|upload|import|investigation|assistant|handler|gcx|sql)/i;
 

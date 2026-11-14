@@ -38,6 +38,14 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   and once on recovery (state in the board's store, meta `fleet_ops_detector`); Fleet Ops reads it from `fleet_status`
   → `detector` and logs on the "Fleet issues" task (`log ·` lines).
 
+- Monitoring (module `monitoring`, [docs/design/monitoring.md](design/monitoring.md)): Prometheus, node-exporter, cAdvisor,
+  Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `DiskNearlyFull`
+  and `CoreServiceDown` also send the owner one line. Grafana is on `127.0.0.1:3131`; one-time on the host:
+  `tailscale serve --bg --https=8444 http://127.0.0.1:3131` (no sudo: the user is tailscaled's operator) and set
+  `grafana_root_url`. Sign in as `admin` with the vault's `grafana_admin_password`. Unit and container states come from the
+  user timer `aidenhq-host-metrics` (`ops/host-metrics.sh`; apply installs it while the module is on), the runner's and the gateway's from
+  `data/monitoring/textfile/{runner,gateway}.prom`. No sudo step.
+
 ## Backups
 
 `scripts/backup.sh [output-dir] [--plain]` writes `aidenhq-<timestamp>.tar.gz` (`.tar` with `--plain`) with the whole

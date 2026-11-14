@@ -18,7 +18,8 @@ import { AccountError, forwardedProto, type Accounts, type AccountSession, type 
 import { AccessError, assertNamesApp } from "./app-access.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
 import { ControlSchema, CostsSchema, RelaySchema, Refused, appsApi, appsToken, assertMeantTask, boundedFleetStatus, deployApproved, fleetControl, fleetCosts, fleetStatus, relayableWords, requestRun, requireAgent, requireFleetRole, runApproved } from "./fleet.js";
-import { detectorState, staleSources, takeOwnerLines } from "./fleet-ops.js";
+import { detectorState, kickDetector, staleSources, takeOwnerLines } from "./fleet-ops.js";
+import { AlertsSchema, metricsText, receiveAlerts } from "./monitoring.js";
 import { ARGS, BOARD_ACTIONS, BatchItemsSchema, REVIEWER_MODELS, RaiseCapSchema, RunRequestSchema, autonomy, batchesOn, card, digestText, parseReply, raiseCapRequest, shown, type Approval, type BatchResult, type RaiseCap, type RunnerAction } from "./approvals.js";
 import { liveUpdatesOn } from "./events.js";
 import { wakeCheck } from "./brake.js";
@@ -2233,6 +2234,17 @@ export function createApp(opts: AppOptions): Server {
     if (url.pathname === "/healthz") return send(res, 200, "ok", "text/plain");
     if (mode === "internal") {
       try {
+        // The monitoring module's routes (monitoring.ts): their own token, which opens nothing else.
+        if (url.pathname === "/internal/metrics" || url.pathname === "/internal/alerts") {
+          const token = monitoringToken();
+          if (!token || !bearerMatches(req.headers.authorization, token)) throw new HttpError(401, "unauthorized");
+          if (!String(req.headers.host ?? "") || !opts.allowedHosts.includes(String(req.headers.host).toLowerCase())) throw new HttpError(403, "unknown host");
+          if (req.method === "GET" && url.pathname === "/internal/metrics") return send(res, 200, metricsText(store), "text/plain; version=0.0.4; charset=utf-8");
+          if (req.method !== "POST" || url.pathname !== "/internal/alerts") throw new HttpError(405, "method not allowed");
+          const r = receiveAlerts(store, parse(AlertsSchema, await readJson(req, 2_000_000)));
+          kickDetector();
+          return send(res, 200, JSON.stringify(r), "application/json");
+        }
         // /internal/apps/ takes only the apps token; everything else only the board's internal token.
         const apps = url.pathname.startsWith("/internal/apps/");
         const token = apps ? appsToken() : opts.internalToken;
@@ -2275,6 +2287,15 @@ function keyMatches(header: string | string[] | undefined, key: string): boolean
   const given = Buffer.from(typeof header === "string" ? header : "");
   const want = Buffer.from(key);
   return given.length === want.length && timingSafeEqual(given, want);
+}
+
+/** The monitoring module's scrape and webhook token (modules/monitoring), read fresh; "" when the module is off. */
+function monitoringToken(): string {
+  try {
+    return readFileSync(process.env.MONITORING_TOKEN_FILE ?? "/run/secrets/monitoring_token", "utf8").trim();
+  } catch {
+    return "";
+  }
 }
 
 function bearerMatches(header: string | undefined, token: string): boolean {

@@ -211,13 +211,13 @@ const isolationOf = (v, where, allowed = PROFILES) => {
 
 /**
  * A module's compose service; two modules (or a module and the edge) may both extend the same service (e.g. each adds a
- * secret, an env var or a mount to the board): their environment maps and secrets and volumes lists merge. Anything else
+ * secret, an env var, a mount or a network to the board): their environment maps and secrets, volumes and networks lists merge. Anything else
  * declared twice, or one env var set two ways, fails.
  */
 function mergeService(services, key, svc) {
   const prev = services[key];
   if (!prev) return void (services[key] = svc);
-  const extra = (x) => Object.keys(x).filter((f) => !["environment", "secrets", "volumes"].includes(f));
+  const extra = (x) => Object.keys(x).filter((f) => !["environment", "secrets", "volumes", "networks"].includes(f));
   if (extra(prev).length || extra(svc).length) fail(`duplicate compose service: ${key}`);
   const env = { ...(prev.environment ?? {}) };
   for (const [n, v] of Object.entries(svc.environment ?? {})) {
@@ -225,7 +225,7 @@ function mergeService(services, key, svc) {
     env[n] = v;
   }
   const list = (f) => [...new Set([...(prev[f] ?? []), ...(svc[f] ?? [])])];
-  services[key] = { ...(Object.keys(env).length ? { environment: env } : {}), secrets: list("secrets"), ...(list("volumes").length ? { volumes: list("volumes") } : {}) };
+  services[key] = { ...(Object.keys(env).length ? { environment: env } : {}), secrets: list("secrets"), ...(list("volumes").length ? { volumes: list("volumes") } : {}), ...(list("networks").length ? { networks: list("networks") } : {}) };
 }
 
 function put(target, key, value, kind) {
@@ -514,10 +514,15 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const optionalSecrets = enabled.flatMap((name) => all.get(name).def.optional_secrets ?? []);
   // Host-only tokens a module needs: created random when missing (compile.mjs).
   const generatedSecrets = enabled.flatMap((name) => all.get(name).def.generated_secrets ?? []);
+  // Directories under the data dir an enabled module's services bind (compile creates them before compose, as the user).
+  const dataDirs = enabled.flatMap((name) => (all.get(name).def.data_dirs ?? []).map((d) => {
+    if (typeof d !== "string" || !/^[a-z0-9][a-z0-9_/-]*$/.test(d) || d.includes("..")) fail(`module ${name}: data_dirs entries are relative paths (a-z, 0-9, _, -, /)`);
+    return d;
+  }));
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
   // The model gateway's switches (config/gateway.json, re-read per call): spend_caps off stops refusals, tracking stays.
   const gateway = { enforce_caps: String(settings.spend_caps ?? "on") !== "off", ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}) };
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, gateway, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, gateway, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**

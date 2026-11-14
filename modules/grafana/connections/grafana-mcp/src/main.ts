@@ -12,18 +12,22 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import pino from "pino";
 import { z } from "zod";
-import { allowedTools, isAllowed, READ_TOOLS } from "./policy.js";
+import { allowedTools, isAllowed, LOCAL_TOOLS, READ_TOOLS } from "./policy.js";
 import { SignIn, SignInError } from "./signin.js";
 import { GrafanaAuthError, TokenStore } from "./tokens.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "grafana-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });
-const grafanaUrl = (process.env.GRAFANA_URL ?? "").replace(/\/+$/, "");
-const UPSTREAM = grafanaUrl ? new URL(process.env.GRAFANA_MCP_URL || "https://mcp.grafana.com/mcp") : undefined;
+// GRAFANA_SOURCE=local: the monitoring module's own Grafana, through its mcp-grafana server (modules/monitoring), which holds
+// a Viewer service account token from the vault; no OAuth sign-in here. Otherwise a Grafana Cloud stack through Grafana's hosted MCP.
+const LOCAL = process.env.GRAFANA_SOURCE === "local";
+const grafanaUrl = LOCAL ? "http://grafana:3000" : (process.env.GRAFANA_URL ?? "").replace(/\/+$/, "");
+const UPSTREAM = LOCAL ? new URL("http://mcp-grafana:8000/mcp") : grafanaUrl ? new URL(process.env.GRAFANA_MCP_URL || "https://mcp.grafana.com/mcp") : undefined;
 const port = Number(process.env.PORT ?? 8087);
 const stateDir = process.env.GRAFANA_STATE_DIR ?? "/state";
 const tokens = new TokenStore(`${stateDir}/token.json`);
-const signIn = UPSTREAM ? new SignIn(UPSTREAM.toString(), grafanaUrl, `${stateDir}/client.json`, tokens) : undefined;
-const allowlist = new Set((process.env.GRAFANA_TOOL_ALLOWLIST ?? READ_TOOLS.join(",")).split(",").map((s) => s.trim()).filter(Boolean));
+const signIn = UPSTREAM && !LOCAL ? new SignIn(UPSTREAM.toString(), grafanaUrl, `${stateDir}/client.json`, tokens) : undefined;
+// Local mode: only the connection's own reads (LOCAL_TOOLS); no environment widens it.
+const allowlist = new Set((LOCAL ? LOCAL_TOOLS.join(",") : (process.env.GRAFANA_TOOL_ALLOWLIST ?? READ_TOOLS.join(","))).split(",").map((s) => s.trim()).filter(Boolean));
 const readToken = (env: string | undefined) => (env && existsSync(env) ? readFileSync(env, "utf8").trim() : undefined);
 const inboundToken = readToken(process.env.MCP_TOKEN_FILE);
 const authToken = readToken(process.env.GRAFANA_AUTH_TOKEN_FILE);
@@ -32,12 +36,12 @@ let upstream: { client: Client; tools: Tool[]; at: number } | undefined;
 
 async function connect(): Promise<NonNullable<typeof upstream>> {
   if (!UPSTREAM) throw new GrafanaAuthError("GRAFANA_URL is not set");
-  const token = await tokens.accessToken();
+  const headers: Record<string, string> = LOCAL ? {} : { authorization: `Bearer ${await tokens.accessToken()}`, "x-grafana-url": grafanaUrl };
   const client = new Client({ name: "aidenhq-grafana-proxy", version: "0.1.0" });
-  await client.connect(new StreamableHTTPClientTransport(UPSTREAM, { requestInit: { headers: { authorization: `Bearer ${token}`, "x-grafana-url": grafanaUrl } } }));
+  await client.connect(new StreamableHTTPClientTransport(UPSTREAM, { requestInit: { headers } }));
   const { tools } = await client.listTools();
   upstream = { client, tools, at: Date.now() };
-  tokens.mark("ok");
+  if (!LOCAL) tokens.mark("ok");
   // The upstream list too: new read tools show up here, to be considered for the allowlist.
   log.info({ upstream: tools.map((t) => t.name), exposed: allowedTools(tools, allowlist).map((t) => t.name) }, "connected to Grafana MCP");
   return upstream;
@@ -152,6 +156,7 @@ const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   try {
     if (url.pathname === "/healthz") {
+      if (LOCAL) return sendJson(res, 200, { ok: true, state: "local" });
       const s = tokens.status();
       const ok = Boolean(UPSTREAM) && s.state !== "missing" && s.state !== "expired";
       const detail = !UPSTREAM ? "GRAFANA_URL not set" : s.state === "missing" ? "Grafana not connected (Connect on the board)" : s.state === "expired" ? `Grafana sign-in expired: ${s.detail ?? ""} (Reconnect on the board)` : undefined;
