@@ -20,7 +20,7 @@ export const git = (cwd, ...args) => execFileSync("git", args, { cwd, env: { ...
 let gitEnv = {};
 
 /** A Paperclip with one parent task (the user's) and one part of it for Ada. */
-export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false }) {
+export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0 }) {
   const gradeLog = [];
   const graderCalls = [];
   const graderAnswers = [];
@@ -116,6 +116,8 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       if (gradeRoute[2] === "release") return send({ ok: grades.delete(id) });
       const stamp = (state) => Object.assign(g, { state, updatedAt: new Date().toISOString() });
       if (gradeRoute[2] === "gate") {
+        // A board round trip takes time on a loaded runner: a flow can hold the gate open to see what the turn has recorded.
+        if (gateDelayMs) await new Promise((r) => setTimeout(r, gateDelayMs));
         if (gradingOff || !g || g.state === "satisfied") return send({ pass: true });
         if (!["pending", "awaiting_evidence", "grading_failed", "escalated"].includes(g.state)) stamp("pending");
         return send({ pass: false, state: g.state, label: "grading" });

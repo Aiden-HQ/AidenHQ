@@ -96,7 +96,9 @@ describe("box jobs", () => {
     const engineers = [{ id: "app-eng", name: "App Engineer", status: "idle", adapterType: "opencode_local", adapterConfig: { model: "openrouter/acme/model-1" }, metadata: { setupKey: "aidenhq:app-engineer", runnerEngine: true, engine: "codex-openrouter", box: true, persona: { name: "Ada" } } }];
     const parent = { id: "parent", identifier: "PEN-1", title: "An apps page", status: "todo", assigneeUserId: USER, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Build a page listing the apps." };
     const part = { id: "part", identifier: "PEN-2", title: "An apps page", status: "todo", parentId: "parent", assigneeAgentId: "app-eng", assigneeUserId: null, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Ada, build a page listing the apps" };
-    paperclip = fakePaperclip({ parent, part, engineers });
+    // The board's completion gate answers slowly, as it can on a loaded runner: a turn's outcome has to be recorded
+    // before its reply goes out, or a report reads "running" beside a finished turn.
+    paperclip = fakePaperclip({ parent, part, engineers, gateDelayMs: 500 });
     // Each patch's time, to order the reply against the box's release.
     const patches = paperclip.patches;
     patches.push = (...xs) => Array.prototype.push.apply(patches, xs.map((x) => ({ ...x, at: Date.now() })));
@@ -165,6 +167,7 @@ describe("box jobs", () => {
     assert.match(reviews()[0].comment, /Box reply: the page lists the apps\./);
     assert.equal(calls("/job/release").length, 2);
     assert.ok(reviews()[0].at >= boxLauncher.goneAt.get("aidenhq-computer-t1"), "reported after the box was gone");
+    // Recorded with the reply, not after it: a restart in that window adopts a run that already ended.
     assert.equal(lastJob().status, "done");
     assert.equal(dockerRuns().length, 1, "adopted, not run again");
   });

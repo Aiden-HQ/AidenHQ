@@ -2792,6 +2792,9 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
       stillDirty ? "_The workspace has uncommitted changes._" : "",
       outcome.finished && tools?.brief ? await showFleetDiff(issue, workspace) : "",
     ].filter(Boolean);
+    // The turn's outcome is recorded before its reply goes out: the reply is what the board and a test see first, and a job
+    // still reading "running" beside a finished turn makes a report wait on a row that only the rest of this function sets.
+    state.finishJob(jobId, result.timedOut ? "timeout" : result.code ? "failed" : outcome.finished ? "done" : "incomplete", rows.some((r) => r.unpublished.length) ? "committed" : undefined);
     if (outcome.finished) {
       // The agent's reply, in its own words. None: a comment that needed no answer ("thanks").
       const reply = [outcome.silent ? "" : stripCommitLine(result.lastMessage), primerNote, sharedNote, ...(footer.length ? ["---", ...footer] : [])].filter(Boolean).join("\n\n");
@@ -2809,7 +2812,6 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
         `_${engineLabel(engine)} · log: \`${logPath}\`_`,
       ].filter(Boolean).join("\n\n"));
     }
-    state.finishJob(jobId, result.timedOut ? "timeout" : result.code ? "failed" : outcome.finished ? "done" : "incomplete", rows.some((r) => r.unpublished.length) ? "committed" : undefined);
     log("job finished", { issue: issue.identifier, code: result.code, timedOut: result.timedOut, finished: outcome.finished, branches: rows.length });
   } catch (err) {
     state.finishJob(jobId, "failed", String(err).slice(0, 500));
