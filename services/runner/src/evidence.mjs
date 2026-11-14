@@ -218,7 +218,7 @@ export async function otherTaskEvidence(idents, deps, own = []) {
 /** A content type as code may state it among the trusted facts: a plain type/subtype, or "unknown type". */
 const safeType = (t) => (/^[\w.+-]+\/[\w.+-]+$/.test(String(t ?? "")) ? String(t) : "unknown type");
 
-export const MAX_IMAGES = 6;
+export const MAX_IMAGES = 20; // a mockup task attaches ~18 screenshots; the byte budget below is the real bound
 const IMAGE_SIDE = 2048; // a PNG with a longer side is downscaled (the vision models scale to about this anyway)
 const IMAGE_BYTES = 3 * 1024 * 1024; // one image as sent; a bigger one is downscaled if a PNG, else left out
 const IMAGES_BYTES = 12 * 1024 * 1024; // all images as sent (base64 adds a third; the gateway takes 32 MB)
@@ -238,7 +238,7 @@ function fitPng(buf, info) {
 
 /**
  * The task's attached files' contents, for the grader (`files` as wordsEvidence labels them): images (sniffed from the
- * bytes, at most 6, a large PNG downscaled) as image parts, text files (.txt, .md, .json, .csv, ...) as one fenced FILES
+ * bytes, at most 20, a large PNG downscaled) as image parts, text files (.txt, .md, .json, .csv, ...) as one fenced FILES
  * block, each cut and all within a budget. Order: files the rubric names by file name, then files the task's recent
  * comments name, then the newest. { awaiting } when a file can't be read yet (missing evidence is never a pass), else
  * { facts, data, images }: the facts say per file label (never its name, the agent's string) what was sent (its size, its

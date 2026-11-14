@@ -286,10 +286,10 @@ test("a file deliverable's attachments reach the model: an image part (a large P
 
 test("images the rubric names are sent first, then those the comments name; the left-out ones read as not sent", async () => {
   const tiny = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 0, 8, 0, 0, 0, 8, 8, 2, 0, 0, 0])]);
-  // 20 screenshots (WOR-4468); the three directions are the oldest, so newest-first alone would leave them out.
-  const names = ["A-decision-desk-1440.png", "B-runway-1440.png", "C-portfolio-pulse-1440.png", ...Array.from({ length: 17 }, (_, i) => `shot-${i}.png`)];
+  // 23 screenshots (WOR-4468, WOR-4803: ~18 per mockup task must all fit); the three directions are the oldest, so newest-first alone would leave them out.
+  const names = ["A-decision-desk-1440.png", "B-runway-1440.png", "C-portfolio-pulse-1440.png", ...Array.from({ length: 20 }, (_, i) => `shot-${i}.png`)];
   const attachments = names.map((n, i) => ({ id: `f${i}`, originalFilename: n, contentType: "image/png", createdAt: `2026-11-13T10:00:${String(i).padStart(2, "0")}Z` }));
-  // The latest comment names ten newer shots (more than the cap), but not the newest ones.
+  // The latest comment names ten newer shots, but not the newest ones.
   const comment = `Fixed: ${Array.from({ length: 10 }, (_, i) => `shot-${i}.png`).join(", ")}.`;
   const ev = await gather(
     { kind: "file", ref: "" },
@@ -297,10 +297,10 @@ test("images the rubric names are sent first, then those the comments name; the 
     ["A-decision-desk-1440.png, B-runway-1440.png and C-portfolio-pulse-1440.png are attached", "Each direction is at 1440 px", "The directions differ in layout"],
   );
   const facts = ev.facts.join("\n");
-  assert.equal(ev.images.length, 6);
-  // Rubric-named first (files 1-3), then comment-named, newest first (shot-9..shot-7 = files 13..11).
-  for (const n of [1, 2, 3, 13, 12, 11]) assert.match(facts, new RegExp(`file_${n}: image 8x8 px \\(its real size\\), shown as IMAGE_\\d`));
-  assert.match(facts, /file_20: attached, not sent to the grader \(only 6 images are sent/);
+  assert.equal(ev.images.length, 20);
+  // Rubric-named first (files 1-3), then comment-named (files 4-13), then the newest (files 23..17).
+  for (const n of [1, 2, 3, 4, 13, 17, 23]) assert.match(facts, new RegExp(`file_${n}: image 8x8 px \\(its real size\\), shown as IMAGE_\\d`));
+  for (const n of [14, 15, 16]) assert.match(facts, new RegExp(`file_${n}: attached, not sent to the grader \\(only 20 images are sent`));
   assert.doesNotMatch(facts, /decision|runway|shot-/); // names stay in FILE_NAMES, never in the trusted facts
 });
 
