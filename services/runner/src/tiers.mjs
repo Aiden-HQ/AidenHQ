@@ -109,6 +109,8 @@ export function routineCap(origins, complete, routines = {}) {
 
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
 const carried = (r) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
+/** A watcher's no on a stale or duplicate card (decided_by `stale:watcher`) judged nothing: neither a veto nor a rejection. */
+const STALE = (r) => /^stale:/.test(r.decidedBy ?? "");
 
 /**
  * The rebuild path's check (an earlier yes is never replayed over a later no; the request gets a fresh card instead):
@@ -130,7 +132,7 @@ export function rejectedSince(records, action, also = [], branches = [], since =
  */
 export function laterRejections(records, action, also = [], since = "") {
   const want = [action, ...also];
-  return (records ?? []).filter((r) => r.state === "rejected" && carried(r).some((x) => want.includes(x)) && !CODE_REJECTS.includes(r.reviewCode) && String(r.decidedAt ?? "") >= String(since));
+  return (records ?? []).filter((r) => r.state === "rejected" && !STALE(r) && carried(r).some((x) => want.includes(x)) && !CODE_REJECTS.includes(r.reviewCode) && String(r.decidedAt ?? "") >= String(since));
 }
 
 /**
@@ -169,7 +171,7 @@ const keyOf = (list) => (list.length && list.every((x) => typeof x === "string" 
 export const MAX_REJECTS = 3;
 /** Rejections code made without judging the change (it moved, couldn't be read, too large): they are never findings. */
 export const CODE_REJECTS = ["refused_by_code", "check_failed", "too_large", "files_not_shown", "no_diff", "reviewer_failed"];
-const byOwner = (r) => Boolean(r.decidedBy) && !/^(reviewer|auto):/.test(r.decidedBy);
+const byOwner = (r) => Boolean(r.decidedBy) && !/^(reviewer|auto|stale):/.test(r.decidedBy);
 // An approved card a newer request replaced is `expired`, still decided (a yes).
 const decided = (r) => ["approved", "used", "expired", "rejected"].includes(r.state) && Boolean(r.decidedBy);
 
@@ -270,6 +272,13 @@ function mergeFriction(p, ref) {
   return undefined;
 }
 
+/** A merge's checks as counts the reviewer can match to any readout: "22 named checks, 21 passed, 1 skipped" (never names). */
+function checkCounts(checks) {
+  const n = (k) => checks.filter(k).length;
+  const parts = [[n((c) => c.ok && !c.skipped), "passed"], [n((c) => c.skipped), "skipped"], [n((c) => c.pending), "running"]].filter(([k]) => k).map(([k, w]) => `${k} ${w}`);
+  return [`${checks.length} named check${checks.length === 1 ? "" : "s"}`, ...parts].join(", ");
+}
+
 function mergeParts(s) {
   return (s.prs ?? []).map((p) => {
     const ref = `${p.repo}#${p.number ?? "?"}`;
@@ -313,7 +322,7 @@ function productMergePart(p, ref, s) {
   const friction = mergeFriction(p, ref);
   if (friction) return friction;
   const what = p.ownHead
-    ? T(1, "product-merge", `${ref}: a product PR from the Platform Engineer's line, merged only once its ${p.checks.length} named check${p.checks.length === 1 ? "" : "s"} are green on the exact head`)
+    ? T(1, "product-merge", `${ref}: a product PR from the Platform Engineer's line. On its head: ${checkCounts(p.checks)}. Code merges it only at that head, once every named check has passed (skipped counts as passed) and main is green`)
     : T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
   return highest([...productFileParts(p.files, p.texts, s), what]);
 }

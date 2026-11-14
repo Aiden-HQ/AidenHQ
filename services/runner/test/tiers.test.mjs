@@ -64,6 +64,10 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   const xy = [rec("rejected", "watcher", SHA("a"), 1), rec("approved", "watcher", SHA("b"), 2)];
   assert.deepEqual([tierOf(at(xy, SHA("a"))), at(xy, SHA("a")).rule], [2, "owner-veto"], "X again after Y's yes");
   assert.equal(tierOf(at([...xy, rec("approved", "owner:board", SHA("a"), 3)], SHA("a"))), 0, "until they approve X itself");
+  // A watcher's no on a stale or duplicate card judged nothing: no veto, not a rejection of that content, no replay block.
+  const stale = [rec("rejected", "stale:watcher", SHA("a"), 1)];
+  assert.equal(tierOf(at(stale, SHA("a"))), 0, "a stale no: not the owner's veto, not a rejection");
+  assert.equal(rejectedSince(stale, "pr", [], [{ repo: "acme-agents/roadmap", branch: "feat/x" }]), false, "nor does it block a replay");
   // By content, not commits: X rebased (new commit, same patch) is still vetoed; a missing patch key fails closed.
   const P = (c) => c.repeat(64);
   const withPatch = (r, p) => ({ ...r, args: { only: r.args.only.map((b) => ({ ...b, patch: p })) } });

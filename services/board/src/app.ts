@@ -385,7 +385,9 @@ export function createApp(opts: AppOptions): Server {
   /** A rejection reaches the asking task (and the chat above an agent's sub-task), so nobody waits on a card that won't run. */
   async function toldRejected(a: Approval) {
     // Fixed text and ids only: never the card's agent-supplied fields in a comment posted as the owner.
-    const text = `**Rejected** (approval ${a.id}, ${a.action}). Don't file it again unchanged; if it isn't clear why, ask what to change.\n\n${APPROVAL_MARKER}`;
+    const text = a.decidedBy?.startsWith("stale:")
+      ? `**Closed as stale or a duplicate** (approval ${a.id}, ${a.action}): not a no on the change. If it is still needed, ask again for its current state.\n\n${APPROVAL_MARKER}`
+      : `**Rejected** (approval ${a.id}, ${a.action}). Don't file it again unchanged; if it isn't clear why, ask what to change.\n\n${APPROVAL_MARKER}`;
     await pc.addComment(a.issueId, text).catch((err) => log.warn({ err: String(err) }, "couldn't post the rejection"));
     const parentId = await pc.issue(a.issueId).then((i) => (i as { parentId?: string | null }).parentId, () => undefined);
     if (parentId) await pc.addComment(parentId, `**Rejected** on ${a.identifier} (approval ${a.id}, ${a.action}).\n\n${APPROVAL_MARKER}`).catch(() => {});
@@ -1236,9 +1238,12 @@ export function createApp(opts: AppOptions): Server {
         const owner = Boolean(opts.decideKey && keyMatches(req.headers["x-owner-key"], opts.decideKey));
         const watcher = !owner && Boolean(opts.watcherKey && keyMatches(req.headers["x-owner-key"], opts.watcherKey));
         if (!owner && !watcher) throw new HttpError(403, "only the owner's channel decides");
-        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/).optional(), task: z.string().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/).optional(), target: z.string().trim().min(1).max(500).optional(), batch: z.string().regex(/^B[0-9a-f]{8}$/).optional(), decision: z.enum(["approve", "reject"]), via: z.enum(["telegram", "slack"]).optional() }).strict(), body);
+        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/).optional(), task: z.string().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/).optional(), target: z.string().trim().min(1).max(500).optional(), batch: z.string().regex(/^B[0-9a-f]{8}$/).optional(), decision: z.enum(["approve", "reject"]), via: z.enum(["telegram", "slack"]).optional(), stale: z.literal(true).optional() }).strict(), body);
         if ([b.id, b.task, b.batch].filter(Boolean).length !== 1) throw new HttpError(400, "id, task or batch");
-        const by = watcher ? "watcher" : b.id || b.batch ? "owner:telegram" : "owner:reply";
+        // A watcher's housekeeping no on one card (stale, a duplicate): stamped `stale:watcher`, so it never vetoes the action
+        // on the task (ownerVetoed, the runner's priorDecisions). A plain watcher no stays a real veto.
+        if (b.stale && !(watcher && b.id && b.decision === "reject")) throw new HttpError(400, "stale is only the watcher's reject of one card by id");
+        const by = b.stale ? "stale:watcher" : watcher ? "watcher" : b.id || b.batch ? "owner:telegram" : "owner:reply";
         if (b.batch) {
           // A Telegram list's button: the cards exactly as that message showed them, used once (see the batch route below).
           if (!batchesOn()) throw new HttpError(409, "batch approvals are off; tap each card");

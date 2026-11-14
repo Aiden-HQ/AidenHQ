@@ -473,11 +473,12 @@ export class Approvals {
   /**
    * The owner's veto (owner, 2026-11-14): their latest decision of this action on this task was a no, so every later request
    * is theirs (Tier 2) until they say yes; and a no on exactly this content (digest) holds until they approve that same
-   * content, whatever else they approved since. The AI reviewer's rejections never make a request the owner's.
+   * content, whatever else they approved since. The AI reviewer's rejections never make a request the owner's, nor does a
+   * watcher's no on a stale or duplicate card (`stale:watcher`).
    * (An approved card a newer request replaced is `expired` but still decided: it counts as their yes.)
    */
   ownerVetoed(ref: string, action: Action, digest?: string, args?: unknown): boolean {
-    const owner = "(issue_id = ? OR identifier = ?) AND action = ? AND decided_by IS NOT NULL AND decided_by NOT LIKE 'reviewer:%' AND decided_by NOT LIKE 'auto:%'";
+    const owner = "(issue_id = ? OR identifier = ?) AND action = ? AND decided_by IS NOT NULL AND decided_by NOT LIKE 'reviewer:%' AND decided_by NOT LIKE 'auto:%' AND decided_by NOT LIKE 'stale:%'";
     const rows = (this.db.prepare(`SELECT * FROM approvals WHERE ${owner} AND state IN ('approved','used','expired','rejected') ORDER BY decided_at DESC, rowid DESC`).all(ref, ref.toUpperCase(), action) as unknown as Row[]).map(toApproval);
     if (rows[0]?.state === "rejected") return true;
     // The same content: the digest, or the patch keys whatever the commits (a rebased or renamed resubmission).

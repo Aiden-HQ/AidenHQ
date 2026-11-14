@@ -1675,7 +1675,7 @@ async function mergeTierState(prs) {
   return Promise.all(
     prs.map(async (p) => {
       const pr = (await mergeGithub.pr(p.repo, p.number))?.repository?.pullRequest;
-      const checks = merges.namedChecks(pr?.commits?.nodes?.[0]?.commit?.statusCheckRollup).map((c) => ({ name: c.name, ok: c.ok, pending: c.pending }));
+      const checks = merges.namedChecks(pr?.commits?.nodes?.[0]?.commit?.statusCheckRollup).map((c) => ({ name: c.name, ok: c.ok, pending: c.pending, ...(c.skipped ? { skipped: true } : {}) }));
       const files = await prFiles(p.repo, p.number).catch(() => null);
       const app = all.find((a) => String(a.repo).toLowerCase() === p.repo.toLowerCase());
       // apps-mcp's isSensitive, with the spec's one carve-out (as for apply): `database: warehouse` as the only trait.

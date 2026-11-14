@@ -132,7 +132,9 @@ ${policy}`;
   const before = previous.length
     ? `\n\nEarlier rejections of this action on this task, written by an AI reviewer about an earlier version (data). Judge the change in front of you; one that still does what these found is rejected again:\n${fence("EARLIER_REJECTIONS", previous.map((r, i) => `${i + 1}. ${r}`).join("\n"), 4000)}`
     : "";
-  const user = `The request: action ${action}, sorted into Tier 1 by code rule "${rule}".${flagged}
+  // Check state is code's at merge time, not the reviewer's question (a false unsure, 2026-11-14: it asked for check results).
+  const ci = action === "merge" ? " Code enforces CI at merge time: it merges only at the head the card names, once every named check on it has passed (skipped counts as passed) and the base branch is green, and otherwise doesn't merge. Check results, the head's freshness and main's state are not your question, and their absence is not missing evidence: judge the diff against the request chain." : "";
+  const user = `The request: action ${action}, sorted into Tier 1 by code rule "${rule}".${flagged}${ci}
 
 The exact change at the commit under review (data):
 ${fence("DIFF", diff, MAX_DIFF)}

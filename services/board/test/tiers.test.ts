@@ -18,7 +18,7 @@ const WATCHER = "w".repeat(48);
 const REVIEWER = "r".repeat(48);
 const issue = { id: "11111111-1111-1111-1111-111111111111", identifier: "WOR-7", title: "T", description: "", status: "in_review", assigneeUserId: null, assigneeAgentId: "fe", createdAt: "", updatedAt: "" };
 const engineer = { id: "fe", name: "Fleet Engineer", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:engineer-fleet" } };
-const pc = { addComment: async () => {}, me: async () => "me-1", agents: async () => [engineer], labels: async () => [], company: async () => ({ issuePrefix: "WOR" }), issue: async () => issue } as unknown as Paperclip;
+const pc = { addComment: async () => {}, me: async () => "me-1", agents: async () => [engineer], labels: async () => [], company: async () => ({ issuePrefix: "WOR" }), issue: async (ref: string) => (ref === "WOR-9" || ref === "WOR-10" ? { ...issue, id: `00000000-0000-0000-0000-${ref.slice(4).padStart(12, "0")}`, identifier: ref } : issue) } as unknown as Paperclip;
 const grants = join(mkdtempSync(join(tmpdir(), "tiers-")), "grants.json");
 const setAutonomy = (a: string) => writeFileSync(grants, JSON.stringify({ autonomy: a, agents: {} }));
 
@@ -131,6 +131,19 @@ describe("tiered approvals", () => {
     expect((await decide({ id: y.id, decision: "approve" }, WATCHER)).json).toMatchObject({ state: "approved" });
     expect((await fileArgs("3")).tier).toBe(1); // other content: the reviewer's again
     expect((await fileArgs("1")).tier).toBe(2); // X resubmitted: still the owner's
+  });
+
+  it("a watcher's stale or duplicate no (stale: true) never vetoes the action on the task; a plain watcher no does", async () => {
+    setAutonomy("full");
+    const fileM = async (sha: string, tier: 1 | 2 = 1, issue = "WOR-9") => (await call("POST", "/internal/approvals", { issue, action: "merge", tier, reason: "r", args: { prs: [{ repo: "org/app", number: 4, url: "https://github.com/org/app/pull/4", head: sha.repeat(40), patch: sha.repeat(64) }] } }, { "x-reviewer-key": REVIEWER })).json;
+    const dup = await fileM("1", 2);
+    expect((await decide({ id: dup.id, decision: "reject", stale: true }, OWNER)).status).toBe(400); // the watcher's only
+    expect((await decide({ id: dup.id, decision: "approve", stale: true }, WATCHER)).status).toBe(400);
+    expect((await decide({ id: dup.id, decision: "reject", stale: true }, WATCHER)).json).toMatchObject({ state: "rejected", decidedBy: "stale:watcher" });
+    expect((await fileM("1")).tier).toBe(1); // even the same content: the reviewer's
+    const no = await fileM("2", 2, "WOR-10");
+    expect((await decide({ id: no.id, decision: "reject" }, WATCHER)).json).toMatchObject({ state: "rejected", decidedBy: "watcher" });
+    expect((await fileM("3", 1, "WOR-10")).tier).toBe(2);
   });
 
   it("the owner's veto binds to the patch: a rebased X (new commits) is still theirs; no patch key fails closed", async () => {
