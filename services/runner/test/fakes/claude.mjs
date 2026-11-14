@@ -87,6 +87,11 @@ if (step === "commit") {
   writeFileSync(join(repo, "web/app.css"), `body { margin: ${Date.now() % 7}px; padding: 0 }\n`);
   git("add", "web/app.css");
   git("commit", "-qm", "feat: restyle the page, once more");
+} else if (step === "ui-fix") {
+  git("switch", "-q", "feat/ui");
+  writeFileSync(join(repo, "web/app.css"), "body { margin: 0; padding: 8px }\n");
+  git("add", "web/app.css");
+  git("commit", "-qm", "fix: what the design review flagged");
 } else if (step === "more") {
   git("switch", "-q", "feat/third");
   writeFileSync(join(repo, "more.txt"), "more\n");

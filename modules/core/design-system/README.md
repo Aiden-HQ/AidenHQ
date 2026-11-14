@@ -10,7 +10,7 @@ components wear, the rules, and the review checklist.
 | `presets/` | Theme presets, one file each (`crisp`, `polished`, `editorial`, `dense`, `ops`, `indigo`, `soft`, `slate`, `minimal`, `graphite`): palette in light and dark, accent, radius, fonts and density. An app imports one after `shadcn.css` and sets `<html data-palette="<name>">`. A starting point, not a rule; all AA. |
 | `shadcn.css` | Maps the tokens onto shadcn's variables (`--background`, `--primary`, `--muted-foreground`, `--sidebar`…) and Tailwind's colour names, plus status (`ok`, `warn`, `danger`, `info`), `link`, `page` and `chart-1…6`. Points Tailwind's `dark:` at `<html data-theme>`. |
 | `guidelines.md` | The floors every app meets (behaviour, states, accessibility, the stack) and craft guidance (layout, navigation, emphasis, colour, type, motion, data views), with the generic tells to avoid. |
-| `review-checklist.md` | What blocks a UI pull request and what goes to the backlog, plus the Engineer's self-review. |
+| `review-checklist.md` | What blocks a UI pull request (obvious, major breakage only; the rest is a non-blocking note), plus the Engineer's self-review. |
 | `components.css`, `kit.js` | **Deprecated:** the plain-CSS kit (version 2), kept only for apps that still vendor it until they migrate (below). Don't use it in new work. |
 
 The catalog is the starter's dev-only `catalog.html` (`npm run catalog`): every block, component, variant, shell and

@@ -132,6 +132,14 @@ describe("flow-autonomy", () => {
       await waitFor("the design review task", () => t.paperclip.created.some((c) => c.title === "Design review: acme/app#9" && c.assigneeAgentId === "designer-1"));
       assert.ok(!fakeLog().some((e) => e.kind === "gh" && e.data.includes("repos/acme/app/pulls/9/merge")), "not merged");
       assert.equal(t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9").length, 1, "one task per head");
+      // The fix's head is a re-review that checks only what the first review named (owner, 2026-11-14).
+      step("ui-fix\naidenhq push acme/app feat/ui");
+      await turn("Fix what the review flagged and push.");
+      assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
+      await waitFor("the re-review task", () => t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9").length === 2);
+      const [first, again] = t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9");
+      assert.doesNotMatch(first.description, /re-review/);
+      assert.match(again.description, /This is a re-review: your reviews of earlier heads are PEN-\d+ \(head `[0-9a-f]{40}`\)\. If any of them failed, check only the blocking items it named/);
     });
 
     // A UI PR on its card (autonomy off): the runner's own `ui` flag used to ride along in the card's args, and the board's
@@ -186,7 +194,7 @@ describe("flow-autonomy", () => {
       assert.equal(asked.length, 1);
       assert.equal(asked[0].assigneeAgentId, "designer-1");
       assert.match(asked[0].description, /approved its merge at head `[0-9a-f]{40}`, which doesn't wait for you/);
-      assert.equal(t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9").length, 1, "#9's head was asked for on the Tier 0 path already");
+      assert.equal(t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9").length, 2, "#9's head (the fix) was asked for on the Tier 0 path already");
     });
 
     it("never errors or asks for a repository along the way", () => t.noErrors());

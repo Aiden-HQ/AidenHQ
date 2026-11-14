@@ -38,9 +38,15 @@ polished, modern UI with it by default (it is what v0, Lovable and Bolt generate
 - **Floors, not a template (revised 2026-11-14).** The first shadcn guidelines prescribed composition down to the block,
   the shell, the type classes and where the gradient went, and mockups came out the same: a full sidebar for three
   links, a permanent detail column beside a board, a large gradient tile. The owner judged the handbooks overfitted.
-  Now only behaviour, states, accessibility and the stack are floors (and block a review); layout, navigation, colour,
+  Now only behaviour, states, accessibility and the stack are floors; layout, navigation, colour,
   type and motion are guidance with examples, the starter's blocks and shell are optional, and the designer is asked to
   explore directions and fit each app to its people and job. Owner corrections first change or delete an existing rule.
+- **Light review (2026-11-14).** The owner wants no QA and no long back-and-forth: a UI review is one quick look that
+  blocks only obvious, major breakage the PR introduced (the page doesn't render or errors, a core flow it touches is
+  broken, data missing or wrong, unusable at desktop width, a severe accessibility blocker on the primary flow, a
+  structural departure from a named, agreed mockup); everything else is a non-blocking note, and when unsure it passes.
+  A PR gets at most one failing verdict: the runner files the fix's head as a re-review naming the earlier review, which
+  checks only the blockers it named and passes with any left noted for a follow-up unless the page is broken outright.
 - **Toolkit and process** are unchanged: `ui-review` (agent-browser with axe, vitals, layout checks and diffs) and the
   UI/UX Designer's plan, explore, build, capture, critique, fix loop, iterated while it improves.
 

@@ -84,6 +84,8 @@ merging those.
   `services/runner/src/config.mjs`). Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
+- **Approval card args are a contract:** the runner builds them (`services/runner/src/cards.mjs`) and the board validates
+  them strictly (`services/board/src/approvals.ts` ARGS). A new field goes in both; `card-contract.test.ts` must pass.
 - **Supply chain:** unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version
   published less than 7 days ago. Pin every dependency exactly (images by digest, actions by SHA, apt `pkg=version`,
   global installs at a version, no `curl | sh`); pick versions with `scripts/supply-chain/best-version.mjs`, and state the
@@ -115,6 +117,10 @@ after it is merged and that instance's owner bumps the pin.
 Runner restarts never interrupt agents: jobs run detached (`KillMode=process`) and the next runner adopts them.
 `ops/apply-config.sh` sends SIGUSR2 (`systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`); the runner
 exits once nothing is half done and systemd restarts it. See [docs/operations.md](docs/operations.md).
+
+Operating an instance: improve the system, don't babysit the agents. When an agent's work goes wrong, fix the source
+(handbook rule, shared section, gate, test, tier) so it never recurs, and let the fleet's own gates (CI, reviewers,
+grader) judge the current work; patch the current run directly only for critical issues, and then fix the source too.
 
 Testing on a live instance: use throwaway tasks titled `TEST` and an agent key; never post in real task threads with
 the board key (it writes as the owner). Agents never claim something is done until the doing agent's task reports it.

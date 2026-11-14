@@ -4,7 +4,7 @@ How AidenHQ apps should work and feel. Apps are built on **shadcn/ui + Tailwind 
 from the app starter (`modules/core/templates/app/`), themed by this design system's `tokens.css` and `shadcn.css`.
 
 Two kinds of rule live here. **Floors** (behaviour, states, accessibility, the stack) hold in every app; only the
-review checklist's "Blocking" items and departures from a task's named, agreed mockup block a review. **Craft** (layout, navigation, colour, type, motion) is guidance and examples, not a template:
+review checklist's "Blocking" items (obvious, major breakage) and structural departures from a task's named, agreed mockup block a review. **Craft** (layout, navigation, colour, type, motion) is guidance and examples, not a template:
 each app gets the design that fits its people and its job. Nothing here mandates a shell, a palette, a gradient or a page
 layout.
 
