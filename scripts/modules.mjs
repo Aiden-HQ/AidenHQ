@@ -43,7 +43,11 @@ const ROLES = {
 };
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
-const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "heartbeat", "web_search", "graded", "department"];
+const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "heartbeat", "web_search", "graded", "department", "chat"];
+// An instance agent's fast chat lane (`chat:`, owner-channel's slack-live-mcp): its chats answered in seconds by a light model
+// loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
+const CHAT_FIELDS = ["model", "reasoning", "tools", "deadline_s", "telegram"];
+export const CHAT_DEFAULTS = { model: "~z-ai/glm-flash-latest", reasoning: "low", deadline_s: 8, telegram: false };
 const INSTANCE_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedules", "status", "agent", "model", "autonomy"];
 // paperclip-tasks-mcp limits these to the trial agent's own tasks (the grants table marks it in trial); source_ack moves only
 // the caller's own source cursor.
@@ -87,6 +91,23 @@ export function healthProbeAgent(agents, connection) {
  * `openrouter/` dropped); `caps`, the fleet defaults with the agent's own over them; `graded`, whether tasks delegated to it
  * are graded by default (the board's completion gate and the runner's grader enforce it).
  */
+/** An agent's `chat:` block, checked, with defaults: every lane tool must be one of its own granted tools ("connection.tool"). */
+export function chatBlock(key, c, tools) {
+  if (!c || typeof c !== "object" || Array.isArray(c)) fail(`agent ${key}: chat must be a map (${CHAT_FIELDS.join(", ")})`);
+  for (const f of Object.keys(c)) if (!CHAT_FIELDS.includes(f)) fail(`agent ${key}: chat: unknown field ${f} (known: ${CHAT_FIELDS.join(", ")})`);
+  const out = { ...CHAT_DEFAULTS, ...c, tools: c.tools ?? [] };
+  if (typeof out.model !== "string" || !out.model) fail(`agent ${key}: chat.model must be a model id`);
+  if (!["off", "low"].includes(out.reasoning)) fail(`agent ${key}: chat.reasoning must be off or low`);
+  if (!(Number(out.deadline_s) >= 2 && Number(out.deadline_s) <= 30)) fail(`agent ${key}: chat.deadline_s must be 2 to 30`);
+  if (typeof out.telegram !== "boolean") fail(`agent ${key}: chat.telegram is true or false`);
+  if (!Array.isArray(out.tools)) fail(`agent ${key}: chat.tools must be a list of "connection.tool"`);
+  for (const t of out.tools) {
+    const [conn, tool] = String(t).split(".");
+    if (!tool || !tools[conn]?.includes(tool)) fail(`agent ${key}: chat tool ${t} isn't one of its granted tools (write it as connection.tool)`);
+  }
+  return out;
+}
+
 export function grantEntry(key, a, routines = {}) {
   const ids = [a.model, ...(a.models ?? []), ...Object.values(routines).filter((r) => r.agent === key).map((r) => r.model)];
   const models = [...new Set(ids.filter((m) => typeof m === "string" && m.trim()).map((m) => m.replace(/^openrouter\//, "")))];
@@ -388,6 +409,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     delete a.connections;
     a.mcp_servers = Object.keys(tools);
     a.enabled_tools = tools;
+    if (a.chat != null) a.chat = chatBlock(key, a.chat, tools);
     a.roles = a.roles ?? [];
     for (const r of a.roles) {
       if (!ROLES[r]) fail(`${key}: unknown role ${r} (known: ${Object.keys(ROLES).join(", ")})`);

@@ -448,6 +448,7 @@ async function terminatePeople(companyId) {
 }
 
 const revInputs = {};
+const handbooks = {}; // each agent's compiled AGENTS.md (the fast lane's prompt)
 async function ensureAgents(companyId, fleetIssues) {
   await ensureDummyOpenAiSecret(companyId);
   const { json: agents } = await api("GET", `/api/companies/${companyId}/agents`);
@@ -458,6 +459,8 @@ async function ensureAgents(companyId, fleetIssues) {
     let agent = agents.find((x) => keys.includes(x.metadata?.setupKey) && x.status !== "terminated") ?? agents.find((x) => x.name === a.name && x.status !== "terminated");
     const body = agentBody(key, a, agent);
     revInputs[key] = instructions + JSON.stringify(body.adapterConfig); // the rev's text (revOf)
+    // The lane gets the agent's own handbook and memory, not the shared run sections (task flow, notify_owner replies).
+    handbooks[key] = readInstructions(a) + memorySection(a);
     if (agent && agent.adapterType !== body.adapterType) fail(`agent ${a.name}: adapter is ${agent.adapterType} in Paperclip, ${body.adapterType} in the config`);
     // runner: "legacy" — since 2026.1106 new agents default to the native Paperclip Runner (adapterType
     // paperclip_runner), which drops our extraArgs (MCP scoping, sandbox). Pin legacy on create and update.
@@ -563,6 +566,40 @@ async function ensureOpsKey(agent) {
   writeSecret(`paperclip_ops_key${companySuffix}`, json.token);
   step("Created ops-mcp agent key (saved to secrets dir)");
   return true;
+}
+
+/**
+ * The fast chat lane's config (secret `lane_config`, read by slack-live-mcp): per agent with a `chat:` block, its id, name,
+ * its own agent key (`paperclip_lane_key_<agent>`, kept while it still names that agent), its chat settings, handbook,
+ * lane tools with each one's MCP server and bearer token, and its own Telegram bot token (`chat_<agent>_telegram_bot_token`)
+ * when chat.telegram is on. Rewritten in place only when it changes (the lane re-reads it; no restart).
+ */
+async function ensureLaneConfig(agents) {
+  const out = {};
+  for (const [key, a] of Object.entries(cfg.agents ?? {})) {
+    if (!a.chat || !agents[key]) continue;
+    const name = `paperclip_lane_key_${key}`;
+    let token = readSecret(name);
+    const res = token ? await fetch(new URL("/api/agents/me", baseUrl), { headers: { authorization: `Bearer ${token}` } }) : undefined;
+    if (!res?.ok || (await res.json()).id !== agents[key].id) {
+      token = (await api("POST", `/api/agents/${agents[key].id}/keys`, { name: "fast-lane" })).json.token;
+      writeSecret(name, token);
+      step(`Created ${a.name}'s fast lane key`);
+    }
+    const tools = (a.chat.tools ?? []).map((t) => {
+      const [connection, tool] = t.split(".");
+      const m = cfg.mcp_servers?.[connection];
+      const bearer = m?.bearer_token_env_var ? readSecret(m.bearer_token_env_var.replace(/^AIDENHQ_/, "").toLowerCase()) : "";
+      return { connection, name: tool, url: m?.url ?? "", token: bearer };
+    });
+    const telegram = a.chat.telegram ? readSecret(`chat_${key}_telegram_bot_token`) : "";
+    if (a.chat.telegram && !telegram) console.warn(`warning: ${a.name} has chat.telegram on but no chat_${key}_telegram_bot_token in the vault; board chat only`);
+    out[key] = { id: agents[key].id, name: a.name, api_key: token, model: a.chat.model, reasoning: a.chat.reasoning, deadline_s: a.chat.deadline_s, prompt: handbooks[key] ?? "", tools, ...(telegram ? { telegram_token: telegram } : {}) };
+  }
+  const text = Object.keys(out).length ? JSON.stringify({ agents: out }) : "";
+  if (readSecret("lane_config") === text) return;
+  writeSecret("lane_config", text);
+  step(`Wrote the fast lane config (${Object.keys(out).join(", ") || "no lane agents"})`);
 }
 
 /**
@@ -872,6 +909,7 @@ if (opsAgents.length > 1) fail(`only one agent may hold the ops-key role (${opsA
 const librarian = opsAgents.length ? agents[opsAgents[0]] : undefined;
 const keyChanged = librarian ? await ensureOpsKey(librarian) : false;
 if (isWork) await ensureHealthKeys(agents);
+if (isWork) await ensureLaneConfig(agents); // the fast chat lane serves the work company only (phase 1)
 const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
 if (librarian && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
 ensureCodexConfig();

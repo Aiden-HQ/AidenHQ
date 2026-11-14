@@ -176,3 +176,11 @@ test("departments: shipped agents name one from core's registry; an instance add
   writeFileSync(file, YAML.stringify({ ...YAML.parse(readFileSync(file, "utf8")), departments: [{ id: "growth", name: "Growth" }] }));
   assert.equal(compile(product, dir).paperclip.agents["review-chaser"].department.name, "Growth");
 });
+
+test("chat: an instance agent's fast chat lane: defaults, and only its own granted tools", () => {
+  const r = compile(product, withAgents({ "review-chaser": { yaml: { chat: { tools: ["github.github_issue_read"] } } } }, ["github", "slack"]));
+  assert.deepEqual(r.paperclip.agents["review-chaser"].chat, { model: "~z-ai/glm-flash-latest", reasoning: "low", deadline_s: 8, telegram: false, tools: ["github.github_issue_read"] });
+  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { chat: { tools: ["paperclip_tasks.fleet_control"] } } } }, ["github", "slack"])), /chat tool paperclip_tasks.fleet_control isn't one of its granted tools/);
+  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { chat: { reasoning: "high" } } } }, ["github", "slack"])), /chat.reasoning must be off or low/);
+  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { chat: { stream: true } } } }, ["github", "slack"])), /chat: unknown field stream/);
+});

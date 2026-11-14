@@ -45,6 +45,11 @@ services:
       # Shared sources (src_slack): its warehouse login, and the owner's user token (xoxp, history scopes) for the gap sync.
       WAREHOUSE_PASSWORD_FILE: /run/secrets/warehouse_src_slack_password
       SLACK_USER_TOKEN_FILE: /run/secrets/slack_live_user_token
+      # The fast chat lane (src/lane): its config, its model credential's secret (capped agent calls only) and the gateway.
+      LANE_CONFIG_FILE: /run/secrets/lane_config
+      LANE_DB: /data/lane.sqlite
+      GATEWAY_LANE_SECRET_FILE: /run/secrets/gateway_lane_secret
+      AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
     volumes:
       - ${AIDENHQ_DATA_DIR:-./data}/slack-live:/data
     secrets:
@@ -59,6 +64,8 @@ services:
       - owner_decide_key
       - warehouse_src_slack_password
       - slack_live_user_token
+      - lane_config
+      - gateway_lane_secret
     dns: [ 1.1.1.1, 8.8.8.8 ] # see paperclip
     networks:
       - backplane
@@ -103,3 +110,7 @@ secrets:
     file: ${AIDENHQ_SECRETS_DIR}/warehouse_src_slack_password
   slack_live_user_token:
     file: ${AIDENHQ_SECRETS_DIR}/slack_live_user_token
+  lane_config:
+    file: ${AIDENHQ_SECRETS_DIR}/lane_config
+  gateway_lane_secret:
+    file: ${AIDENHQ_SECRETS_DIR}/gateway_lane_secret

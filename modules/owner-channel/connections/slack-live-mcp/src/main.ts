@@ -19,6 +19,11 @@ import { startWatch } from "./watch.js";
 import { makeAuthorize } from "./agent-auth.js";
 import { SourceStore } from "./source-store.js";
 import { slackTee, startGapSync } from "./sources.js";
+import { laneConfig } from "./lane/config.js";
+import { makeLane } from "./lane/lane.js";
+import { laneRoutes, startLaneTelegram, startWakes, telegramSend } from "./lane/serve.js";
+import { openLaneStore } from "./lane/store.js";
+import { makeTools } from "./lane/tools.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "slack-live-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 // Who is calling, and may it use this tool: the run key against the grants table.
@@ -36,6 +41,26 @@ const store = openStore(process.env.SLACK_LIVE_DB ?? "/data/slack-live.sqlite");
 const cfg = { botToken: env("SLACK_BOT_TOKEN"), ownerId: env("OWNER_SLACK_USER_ID"), cooldownMs: Number(process.env.URGENT_COOLDOWN_MIN ?? 60) * 60_000, telegramToken: env("TELEGRAM_NOTIFY_BOT_TOKEN"), telegramChatId: env("TELEGRAM_OWNER_CHAT_ID"), taskUrl: env("TELEGRAM_TASK_URL"), resolveTask: undefined as NotifyConfig["resolveTask"], postReply: undefined as NotifyConfig["postReply"], ownerLastAt: undefined as NotifyConfig["ownerLastAt"], brakeOn: undefined as NotifyConfig["brakeOn"], muteFyi: process.env.TELEGRAM_FYI === "mute" };
 const postCfg = { botToken: cfg.botToken, allowed: new Set((process.env.SLACK_POST_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) };
 const ignored = new Set((process.env.IGNORE_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+
+// The fast chat lane (lane/lane.ts): agents with a `chat:` block, from the setup-written lane config.
+const laneStore = openLaneStore(process.env.LANE_DB ?? "/data/lane.sqlite");
+const laneAgents = laneConfig(process.env.LANE_CONFIG_FILE, (msg) => log.warn(msg));
+const lane = makeLane({
+  store: laneStore,
+  agents: laneAgents,
+  tools: makeTools(),
+  gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201",
+  laneSecret: env("GATEWAY_LANE_SECRET"),
+  timezone: process.env.OWNER_TIMEZONE || "UTC",
+  ownerName: process.env.OWNER_NAME || "the owner",
+  deliver: async (agent, conversation, text) => {
+    const chat = /^telegram:(-?\d+)$/.exec(conversation)?.[1];
+    if (chat && agent.telegramToken) await telegramSend(agent.telegramToken, chat, text);
+  },
+  log,
+});
+const laneTools = { store: laneStore, lane, agents: laneAgents, timezone: process.env.OWNER_TIMEZONE || "UTC" };
+const routeLane = laneRoutes({ lane, store: laneStore, agents: laneAgents, token: env("BOARD_INTERNAL_TOKEN"), log });
 
 // At most one triage webhook per 60 s; signed like scripts/trigger-meeting-scan.sh.
 const webhookUrl = env("TRIAGE_WEBHOOK_URL");
@@ -76,6 +101,7 @@ const health = JSON.stringify({ ok: true, channels: { telegram: Boolean(cfg.tele
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(health);
+  if (await routeLane(req, res, url)) return;
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
   if (!authorized(req)) return void res.writeHead(401).end();
   if (req.method !== "POST") return void res.writeHead(405).end();
@@ -87,7 +113,7 @@ const http = createServer(async (req, res) => {
     if (!auth.ok) return void res.writeHead(auth.status, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
     // The caller (agent-auth's whoami) and its key: notify_owner(task) posts the reply on the chat as that agent.
     const key = String(req.headers["x-agent-key"] ?? "");
-    const server = buildServer(store, cfg, auth.caller && key ? { id: auth.caller.id, name: auth.caller.name, key } : undefined, postCfg);
+    const server = buildServer(store, cfg, auth.caller && key ? { id: auth.caller.id, name: auth.caller.name, key } : undefined, postCfg, laneTools);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();
@@ -174,6 +200,18 @@ if (board && cfg.telegramToken && cfg.telegramChatId) {
   void cards();
   setInterval(cards, 20_000).unref();
 }
+startLaneTelegram({ lane, agents: laneAgents, ownerChatId: cfg.telegramChatId, getKv: (k) => store.getKv(k) ?? undefined, setKv: (k, v) => store.setKv(k, v), log });
+// A wake on a task is a labelled notice there (posted with the board key, marked so it never counts as the owner's words).
+startWakes({
+  store: laneStore,
+  lane,
+  agents: laneAgents,
+  noticeOnTask: async (task, text) => {
+    if (!deliver) throw new Error("no Paperclip board key here");
+    await deliver.api("POST", `/api/issues/${encodeURIComponent(task)}/comments`, { body: `${text}\n\n<!-- aidenhq-wake -->` });
+  },
+  log,
+});
 if (!deliver) log.warn("PAPERCLIP_BOARD_KEY/PAPERCLIP_URL not set; inbound chat disabled");
 else if (cfg.telegramToken && cfg.telegramChatId) {
   const whisperUrl = process.env.WHISPER_URL ?? "";

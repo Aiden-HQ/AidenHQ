@@ -8,7 +8,8 @@ connections:
     tools:
       read: [ slack_pending_events ]
       # slack_post: to channels in the slack_post_channels setting only, as the labelled bot; granted per agent.
-      write: [ notify_owner, slack_post ]
+      # wake_at: wake yourself later (a reminder or follow-up). chat_send: answer in your own fast-lane chat from a background run.
+      write: [ notify_owner, slack_post, wake_at, chat_send ]
 settings:
   # Slack channel ids agents may post to with slack_post (an agent still needs the tool granted).
   slack_post_channels:
@@ -29,6 +30,8 @@ optional_secrets:
   # The owner's user token (xoxp-) of the Slack live app, for the src_slack gap sync: channels:history, groups:history,
   # im:history, mpim:history, channels:read, groups:read, im:read, mpim:read, users:read (users:read.email for emails).
   - slack_live_user_token
+  # The fast chat lane's config (scripts/paperclip-setup.mjs writes it: agents with a `chat:` block, their keys and tools).
+  - lane_config
 # Generated once by compile (random): the key the owner channel proves an approval decision with (Telegram taps and exact
 # replies). Mounted only into slack-live-mcp and the board; agents never hold it.
 generated_secrets:
