@@ -99,10 +99,12 @@ jobs:
           persist-credentials: false
       - id: find
         run: |
-          set -f # file names are split on whitespace below, never globbed
+          set -f # DOCKERFILES is split on spaces below, never globbed
           changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
           found=""
-          for df in $(git ls-files | grep -iE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$'); do
+          while IFS= read -r -d '' df; do
+            # A path with whitespace would split in DOCKERFILES, one starting with - could pass for an option: refuse both.
+            case "$df" in *[[:space:]]*|-*) echo "::error::Dockerfile path $(printf '%q' "$df") has whitespace or starts with -"; exit 1 ;; esac
             d=$(dirname "$df"); prefix=""; [ "$d" = . ] || prefix="$d/"
             while IFS= read -r f; do
               case "$f" in "$prefix"*) ;; *) continue ;; esac
@@ -111,7 +113,7 @@ jobs:
                   found="$found $df"; break ;;
               esac
             done <<< "$changed"
-          done
+          done < <(git ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$')
           echo "Images to scan:${found:- none}"
           echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
 
@@ -147,9 +149,10 @@ jobs:
             || { echo "::error::the base commit has no .github/supply-chain/image-scan.mjs: the PR that adds the scanner can't run it"; exit 1; }
           git show "$BASE_SHA:.github/image-scan-exceptions.yaml" > "$RUNNER_TEMP/exceptions.yaml" 2>/dev/null || : > "$RUNNER_TEMP/exceptions.yaml"
           mkdir -p "$RUNNER_TEMP/grype-db"
-          # DOCKERFILES is split on spaces, never globbed (set -f); the script checks each path.
+          # DOCKERFILES is split on spaces, never globbed (set -f); the find step refused any path with whitespace or a leading -, and
+          # -- ends the options.
           set -f
-          GRYPE_DB_CACHE_DIR="$RUNNER_TEMP/grype-db" node "$RUNNER_TEMP/image-scan.mjs" --exceptions "$RUNNER_TEMP/exceptions.yaml" $DOCKERFILES
+          GRYPE_DB_CACHE_DIR="$RUNNER_TEMP/grype-db" node "$RUNNER_TEMP/image-scan.mjs" --exceptions "$RUNNER_TEMP/exceptions.yaml" -- $DOCKERFILES
 
   # Never runs the PR's code: codegenie only reads it from git objects. Its config and rules come from the base commit
   # (reviewed code), so a PR can't loosen its own review; the gate comes from the default branch's current tip, so a

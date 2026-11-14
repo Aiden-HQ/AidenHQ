@@ -10,7 +10,8 @@
 // in one base image, for files a Dockerfile replaces or never copies out, only while every Dockerfile using that image
 // still meets the exception's condition; or one accepted advisory with no fixed release in one image, until it expires.
 // No dependencies, Node 22+; a byte-identical copy is in the app CI template.
-//   node image-scan.mjs [--exceptions <file>] [--local <name>=<Dockerfile>]... <Dockerfile>...
+//   node image-scan.mjs [--exceptions <file>] [--local <name>=<Dockerfile>]... -- <Dockerfile>...
+//     (options only before --; everything after it is a path, even one that starts with -)
 //     (grype on PATH; GRYPE_DB_CACHE_DIR)
 // --local: an image this repository builds itself, named by a FROM (e.g. an ARG default): scanned through its own
 // Dockerfile, never pulled from a registry under the same name.
@@ -29,6 +30,8 @@ const NAMED = new RegExp(`^${REPO}$`); // an image name alone: a --local name, a
 const SYNTAX = /^(?:docker\.io\/)?docker\/dockerfile:[0-9][0-9a-z.-]*@sha256:[0-9a-f]{64}$/; // the official frontend only
 const PLATFORM = /^--platform=(?:linux\/amd64|\$\{?(?:BUILDPLATFORM|TARGETPLATFORM)\}?)$/; // CI and the hosts are amd64
 const PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9._/-]+$/; // repository-relative, no . or .. segments
+const PLAIN = "[A-Za-z0-9 ._@\/=:+,-]*"; // plain words and spaces: all a RUN step may hold to satisfy an exception
+const PLAIN_PART = new RegExp(`^${PLAIN}$`), PLAIN_RUN = new RegExp(`^${PLAIN}(?:&&${PLAIN})*$`);
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const show = (s) => JSON.stringify(String(s).slice(0, 200)); // untrusted text in a message: one quoted line
 const nameOf = (ref) => ref.replace(/@.*$/, "").replace(/:[^:/]*$/, "");
@@ -120,7 +123,9 @@ export function bases(text, local = new Set()) {
       const flags = [];
       while (rest[0]?.startsWith("--")) flags.push(rest.shift());
       const stage = current(word);
-      stage.runs.push(...rest.join(" ").split("&&").map((s) => s.trim()));
+      // Only plain words joined by && are split; anything else (quotes, $, >, ;, |, #, escapes) is kept whole and never matches.
+      const cmd = rest.join(" ");
+      stage.runs.push(...(PLAIN_RUN.test(cmd) ? cmd.split("&&").map((s) => s.trim()) : [cmd]));
       for (const w of flags) {
         if (!/^--mount=/i.test(w)) continue;
         // BuildKit reads a mount as CSV with case-insensitive keys: anything quoted is refused, every from= collected.
@@ -202,7 +207,9 @@ export function meets(e, use) {
   if (e.when === "build-stage") return !use.final && use.copies.every((c) => !covers(c.paths, e.path));
   const words = e.when.slice(4).split(" "), lead = words.slice(0, -1), arg = words.at(-1);
   const isArg = (w) => w === arg || (arg.endsWith("@") && w.startsWith(arg) && /^[0-9][A-Za-z0-9.+-]*$/.test(w.slice(arg.length)));
+  // The && split ignores shell syntax: a RUN step with anything but plain words and && never satisfies a condition.
   const replaced = (runs) => runs.some((s) => {
+    if (!PLAIN_PART.test(s)) return false;
     const t = s.trim().split(/\s+/);
     return !/[;|&]/.test(s) && lead.every((w, i) => t[i] === w) && t.slice(lead.length).some(isArg);
   });
@@ -261,12 +268,13 @@ function main(argv) {
   let exceptions = [];
   try {
     for (let i = 0; i < argv.length; i++) {
+      if (argv[i] === "--") { dockerfiles.push(...argv.slice(i + 1)); break; }
       if (argv[i] === "--local") {
         const m = /^([^=]+)=(.+)$/.exec(argv[++i] ?? "");
         if (!m || !NAMED.test(m[1]) || !PATH.test(m[2])) throw new Error(`--local ${show(argv[i])} is not <name>=<Dockerfile>`);
         local.set(m[1], m[2]);
       } else if (argv[i] === "--exceptions") exceptions = readExceptions(readFileSync(argv[++i], "utf8"));
-      else dockerfiles.push(argv[i]);
+      else throw new Error(`${show(argv[i])} is not an option; paths go after --`);
     }
   } catch (e) { console.log(`::error::${e.message}`); return 1; }
   const root = process.cwd();

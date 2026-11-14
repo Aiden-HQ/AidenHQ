@@ -4,7 +4,7 @@
 // which names the only images grype pulls: it refuses anything but a plain digest-pinned reference.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -159,4 +159,16 @@ test("an image-scan exception applies only while every Dockerfile using the imag
     '  - { image: node, path: /usr/lib/a, when: always, reason: "x" }',
     "ignore: [/usr/lib/a]", // any other shape
   ]) assert.throws(() => readExceptions(bad), /is not \{ image/, bad);
+});
+
+test("image-scan fails closed: a quoted or commented RUN never meets an exception; paths after -- are never options", () => {
+  const d = "@sha256:" + "a".repeat(64), node = `node:24${d}`;
+  const ex = readExceptions('  - { image: node, path: /usr/local/lib/node_modules/npm/**, when: "RUN npm install -g npm@", reason: "replaced" }');
+  const scan = (run) => { const b = bases(`FROM ${node}\nRUN ${run}\n`); return ignored({ ref: node, uses: [{ df: "d/Dockerfile", ...b.uses[0] }] }, ex).ignore.length; };
+  assert.equal(scan("npm install -g npm@11.21.2 && true"), 1);
+  for (const run of ["echo 'a && npm install -g npm@1'", 'echo "x" && npm install -g npm@1', "true # && npm install -g npm@1", "echo `x` && npm install -g npm@1", "echo $(x) && npm install -g npm@1", "echo $X && npm install -g npm@1", "echo x > /f && npm install -g npm@1", "npm install -g npm@1 > /f"]) assert.equal(scan(run), 0, run);
+  assert.equal(scan("true\nnpm install -g npm@1"), 0); // a second line is not part of the RUN
+  const r = spawnSync(process.execPath, [join(root, "scripts/supply-chain/image-scan.mjs"), "--", "--local"], { cwd: tmpdir(), encoding: "utf8" });
+  assert.match(r.stdout, /lstat .*--local/); // treated as a file name, not the --local option
+  assert.equal(spawnSync(process.execPath, [join(root, "scripts/supply-chain/image-scan.mjs"), "--bogus"], { cwd: tmpdir(), encoding: "utf8" }).status, 1);
 });
