@@ -151,6 +151,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      actions: read # Prior review: this workflow's earlier runs on the PR
+      statuses: write # Record: the code-review/state status on a head that passed
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -164,6 +166,23 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22.x
+      # Review only what changed since this PR's last green code review (codegenie-prior.mjs, from the base commit; full
+      # when it isn't there yet, or on any doubt): delta, reuse after a rebase with the same patch, or full. Its own step,
+      # so codegenie never gets the token.
+      - name: Prior review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          out=""
+          [ -f .github/codegenie-prior.mjs ] && { out=$(node .github/codegenie-prior.mjs) || out=""; }
+          read -r mode from n lines mb <<< "${out:-full - 0 0 -}"
+          [[ "$mode $from" =~ ^((delta|reuse)\ [0-9a-f]{40}|full\ -)$ && "$n $lines" =~ ^[0-9]+\ [0-9]+$ ]] || { mode=full; from=-; n=0; lines=0; }
+          [[ "$mb" =~ ^[0-9a-f]{40}$ ]] || mb=-
+          echo "Review mode: $mode (from $from; $n deltas, $lines delta lines since the last full review)"
+          printf 'REVIEW_MODE=%s\nREVIEW_FROM=%s\nREVIEW_N=%s\nREVIEW_LINES=%s\nREVIEW_MB=%s\n' "$mode" "$from" "$n" "$lines" "$mb" >> "$GITHUB_ENV"
       - name: Review
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -172,10 +191,19 @@ jobs:
         # fetch-depth 0 fetched every branch, the PR's head included (app PRs come from branches of the same repo).
         run: |
           set +e
+          if [ "${REVIEW_MODE:-}" = reuse ]; then
+            echo "::notice::The PR's patch is the same as at its green review of $REVIEW_FROM: that verdict stands, no new review."
+            echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # A delta reviews only the commits since the last green review. codegenie takes one diff (no option to add the
+          # rest of the PR as read-only context); its tools still read any file at the head.
+          from="$BASE_SHA"
+          [ "${REVIEW_MODE:-}" = delta ] && from="$REVIEW_FROM"
           # Mostly light: these are small, fast-moving apps. Normal when the diff touches dependencies, CI, Dockerfiles or
           # auth/security code, has binary files, is very large, or can't be read. Deep only when asked: the PR's
           # `deep-review` label.
-          stat=$(git diff --numstat "$BASE_SHA...$HEAD_SHA") || stat=""
+          stat=$(git diff --numstat "$from...$HEAD_SHA") || stat=""
           lines=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 1000} {n += $1 + $2} END {print n + 0}')
           depth=light
           if [ -z "$stat" ] || [ "$lines" -gt 800 ] || printf '%s\n' "$stat" | grep -qiE 'package(-lock)?\.json|lock|\.github/|dockerfile|auth|secur|token|session|permission'; then depth=normal; fi
@@ -184,8 +212,9 @@ jobs:
           # exhausted"), which fails the check without a single finding: scale the budget with the diff's size.
           boost=1
           if [ "$lines" -gt 6000 ]; then boost=4; elif [ "$lines" -gt 2000 ]; then boost=2; fi
-          # Tiny changes in non-sensitive files (still light: no sensitive path, no deep-review label) skip the review.
-          if [ "$depth" = light ] && [ "$lines" -lt 20 ]; then
+          # Tiny PRs in non-sensitive files (still light: no sensitive path, no deep-review label) skip the review. Only a
+          # whole PR: a delta is always reviewed, or a big PR could skip its review through small follow-up pushes.
+          if [ "${REVIEW_MODE:-full}" = full ] && [ "$depth" = light ] && [ "$lines" -lt 20 ]; then
             echo "::notice::$lines changed lines, no sensitive files: no code review needed."
             echo "CODE_REVIEW_SKIPPED=1" >> "$GITHUB_ENV"
             exit 0
@@ -198,7 +227,7 @@ jobs:
           printf '[telemetry]\nenabled = true\nlogLevel = "warn"\nrunDir = "%s"\n' "$RUNNER_TEMP/codegenie-runs" > "$CODEGENIE_HOME/config.toml"
           review() { # $1: --max-time in minutes. Sets $code; stderr is kept for failure() and still shown in the log.
             rm -rf "$RUNNER_TEMP/codegenie-runs"
-            npx -y @0xsequence/codegenie@0.7.0 review --base "$BASE_SHA" --head "$HEAD_SHA" --model "$MODEL" --depth "$depth" \
+            npx -y @0xsequence/codegenie@0.7.0 review --base "$from" --head "$HEAD_SHA" --model "$MODEL" --depth "$depth" \
               --format json --ci --no-progress --max-time "$1" --budget-boost "$boost" > "$RUNNER_TEMP/review.json" 2> "$RUNNER_TEMP/review.err"
             code=$?
             cat "$RUNNER_TEMP/review.err" >&2
@@ -274,6 +303,8 @@ jobs:
           echo "CODEGENIE_ATTEMPTS=$attempts" >> "$GITHUB_ENV"
           echo "CODEGENIE_FAILURE=$kind" >> "$GITHUB_ENV"
           [ "$kind" = ok ] || echo "CODEGENIE_CAUSE=$cause" >> "$GITHUB_ENV"
+          # Record marks a head reviewed only when a review actually came out (or a reuse): never a skip.
+          if [ "$kind" = ok ]; then echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV"; fi
       - name: Verdict
         if: ${{ !cancelled() }}
         env:
@@ -293,3 +324,16 @@ jobs:
           fi
           git show "origin/$DEFAULT_BRANCH:.github/codegenie-gate.mjs" > "$RUNNER_TEMP/codegenie-gate.mjs"
           node "$RUNNER_TEMP/codegenie-gate.mjs" "$RUNNER_TEMP/review.json" "${CODEGENIE_EXIT:-1}"
+      # Only once the job has passed: what this head's review covered, for the next push's Prior review step. A commit
+      # status, not a comment: only this workflow's token sets it, and it points at this run, which that step checks.
+      # None after a partial review (its uncovered hunks must be reviewed again). Failing to set it costs only a full
+      # review next time, never this verdict.
+      - name: Record
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${CODE_REVIEW_DONE:-}" != 1 ] || [ "${CODE_REVIEW_PARTIAL:-}" = 1 ] || [ "${REVIEW_MB:--}" = - ]; then exit 0; fi
+          curl -sSf -o /dev/null -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+            -d "{\"state\":\"success\",\"context\":\"code-review/state\",\"description\":\"$REVIEW_MODE n=$REVIEW_N lines=$REVIEW_LINES mb=$REVIEW_MB\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
+            || echo "::warning::Couldn't record this review for the next push: it will review the whole PR."

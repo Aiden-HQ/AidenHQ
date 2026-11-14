@@ -4,7 +4,7 @@
 // never passes. Keeps one PR comment with every finding, updated in place on each push. No dependencies; Node 22+.
 //   node codegenie-gate.mjs <review.json> <codegenie exit code>
 // Env: GITHUB_TOKEN (pull-requests: write), GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, GITHUB_API_URL (optional).
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const MARKER = "<!-- ci:code-review -->";
@@ -27,9 +27,21 @@ const FALLBACK = "See the job log, fix the cause and re-run the check.";
 /**
  * { block, body, quiet } from codegenie's exit code and its stdout. quiet: nothing worth a new comment. The workflow's
  * reading of a run with no verdict: failure (budget, transient, permanent), cause (the specific reason it found in
- * codegenie's output, stderr or telemetry), attempts (how many runs it made).
+ * codegenie's output, stderr or telemetry), attempts (how many runs it made). What it reviewed (codegenie-prior.mjs):
+ * mode (full, delta: only the changes since `from`, the n-th delta since a full review; reuse: `from`'s verdict stands).
  */
-export function verdict(exitCode, stdout, sha = "", { failure, cause, attempts } = {}) {
+export function verdict(exitCode, stdout, sha = "", opts = {}) {
+  const { mode, from, n } = opts;
+  const at = sha ? ` on \`${sha.slice(0, 7)}\`` : "";
+  const old = `\`${String(from).slice(0, 7)}\``;
+  if (mode === "reuse") return { block: false, quiet: true, body: `${MARKER}\n**Code review reused${at}** from ${old}: the PR's patch is the same as at that green review (a rebase), so it isn't reviewed again.` };
+  const v = judge(exitCode, stdout, sha, opts);
+  const scope = mode === "delta" ? `_Reviewed only the changes since ${old}, this PR's last green review (delta ${n} of at most 3 before a full review). codegenie saw that diff alone, not the rest of the PR's._`
+    : mode === "full" ? "_Reviewed the whole PR._" : "";
+  return scope ? { ...v, body: `${v.body}\n\n${scope}` } : v;
+}
+
+function judge(exitCode, stdout, sha, { failure, cause, attempts }) {
   let review;
   try { review = JSON.parse(stdout); } catch { review = null; }
   const at = sha ? ` on \`${sha.slice(0, 7)}\`` : "";
@@ -59,7 +71,7 @@ export function verdict(exitCode, stdout, sha = "", { failure, cause, attempts }
   if (rest.length) parts.push(`**Not blocking${blocking.length || incomplete ? "" : at}** (for a follow-up change, not this PR):`, rest.map(line).join("\n"));
   if (questions.length) parts.push("**Questions the review couldn't settle** (for a human to check; not blocking):", questions.map((q) => `- ${clip(q.question, 300)}${q.files?.length ? ` (${q.files.slice(0, 3).map((f) => `\`${f}\``).join(", ")})` : ""}`).join("\n"));
   if (!all.length && !incomplete && !questions.length) parts.push(`**Code review: no findings${at}.**`);
-  return { block: blocking.length > 0 || incomplete, body: parts.join("\n\n"), quiet: !all.length && !incomplete && !questions.length };
+  return { block: blocking.length > 0 || incomplete, partial: Boolean(partial), body: parts.join("\n\n"), quiet: !all.length && !incomplete && !questions.length };
 }
 
 async function upsertComment(body, { quiet }) {
@@ -88,8 +100,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const [file, code] = process.argv.slice(2);
   let stdout = "";
   try { stdout = readFileSync(file, "utf8"); } catch {}
-  const v = verdict(Number(code ?? 1), stdout, process.env.HEAD_SHA, { failure: process.env.CODEGENIE_FAILURE, cause: process.env.CODEGENIE_CAUSE, attempts: process.env.CODEGENIE_ATTEMPTS });
+  const v = verdict(Number(code ?? 1), stdout, process.env.HEAD_SHA, {
+    failure: process.env.CODEGENIE_FAILURE, cause: process.env.CODEGENIE_CAUSE, attempts: process.env.CODEGENIE_ATTEMPTS,
+    mode: process.env.REVIEW_MODE, from: process.env.REVIEW_FROM, n: process.env.REVIEW_N,
+  });
   console.log(v.body);
+  // A partial pass is no baseline for the next push's delta (the workflow's Record step).
+  if (v.partial && process.env.GITHUB_ENV) appendFileSync(process.env.GITHUB_ENV, "CODE_REVIEW_PARTIAL=1\n");
   // The comment is a courtesy: failing to post it never changes the verdict.
   try { await upsertComment(v.body, v); } catch (err) { console.error(`couldn't update the PR comment: ${err.message}`); }
   process.exit(v.block ? 1 : 0);

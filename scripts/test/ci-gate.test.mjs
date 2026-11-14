@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import { verdict } from "../../modules/core/templates/ci/.github/codegenie-gate.mjs";
+import { decide, STATE } from "../../modules/core/templates/ci/.github/codegenie-prior.mjs";
 
 const finding = (severity, title) => ({ severity, title, path: "src/a.ts", anchor: { line: 3 }, finalBody: `${title} body` });
 const review = (findings, extra = {}) => JSON.stringify({ findings, summaryOnlyFindings: [], coverage: { partial: false }, health: { status: "completed" }, ...extra });
@@ -53,7 +54,7 @@ test("questions the reviewer couldn't settle (health unresolved) don't block: th
 });
 
 // The workflow's Review and Verdict steps, run as bash in a scratch repo (npx is a stub that records being called).
-test("the Review step skips a tiny change (and Verdict passes it); Verdict runs the gate from the default branch tip, not the PR's base", () => {
+test("the Review step skips a tiny PR, never a delta; Verdict runs the gate from the default branch tip; Record needs a review", () => {
   const steps = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps;
   const script = (name) => steps.find((s) => s.name === name).run;
   // One scratch repo: main holds the gate as it was at the PR's base, then a newer one; the PR branch is a 5-line change.
@@ -87,6 +88,19 @@ test("the Review step skips a tiny change (and Verdict passes it); Verdict runs 
   const out = verdictStep({ HEAD_SHA: base });
   assert.match(out, /gate from default branch tip/);
   assert.doesNotMatch(out, /gate from base/);
+  // A tiny delta of a PR is still reviewed (sleep: the stub's empty output gets one retry).
+  writeFileSync(join(bin, "sleep"), "#!/bin/sh\n");
+  chmodSync(join(bin, "sleep"), 0o755);
+  execFileSync("bash", ["-e", "-c", script("Review")], { cwd: dir, env: { ...env, REVIEW_MODE: "delta", REVIEW_FROM: base }, stdio: "pipe" });
+  assert.ok(existsSync(join(bin, "called")), "a delta is never skipped");
+  // Record marks a head reviewed only when a review came out, never after a skip.
+  writeFileSync(join(bin, "curl"), `#!/bin/sh\necho "$*" >> "${join(bin, "posted")}"\n`);
+  chmodSync(join(bin, "curl"), 0o755);
+  const record = (extra) => execFileSync("bash", ["-e", "-c", script("Record")], { env: { ...env, REVIEW_MODE: "full", REVIEW_N: "0", REVIEW_LINES: "0", REVIEW_MB: base, ...extra } });
+  record({ CODE_REVIEW_SKIPPED: "1" });
+  assert.ok(!existsSync(join(bin, "posted")), "no state after a skip");
+  record({ CODE_REVIEW_DONE: "1" });
+  assert.match(readFileSync(join(bin, "posted"), "utf8"), /code-review\/state/);
 });
 
 // The Review step's one retry when codegenie leaves no verdict (npx and sleep are stubs; each run plays the next response).
@@ -166,4 +180,59 @@ test("a review that never came out says what to do next: split the PR after a bu
   const incomplete = verdict(0, review([], { coverage: { unavailable: true, reasons: ["budget exhausted"] } }), "abcdef123", { failure: "budget", attempts: "2" });
   assert.equal(incomplete.block, true);
   assert.match(incomplete.body, /\*\*Code review incomplete on `abcdef1`\.\*\*.*stacked PRs/);
+});
+
+// codegenie-prior.mjs on a scratch repo, with GitHub's records of this workflow faked.
+test("prior review: delta, reuse of a byte-identical rebase, else full; the guard; only trusted records and CI count", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ci-prior-"));
+  const git = (...a) => {
+    const opts = typeof a.at(-1) === "object" ? a.pop() : {};
+    return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir, encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], ...opts }).trim();
+  };
+  const commit = (file, text) => { writeFileSync(join(dir, file), text); git("add", "."); git("commit", "-qm", file); return git("rev-parse", "HEAD"); };
+  const lines = (k) => Array.from({ length: k }, (_, i) => `line ${i}\n`).join("");
+  git("init", "-q", "-b", "main");
+  mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
+  for (const f of ["workflows/ci.yml", "codegenie-gate.mjs", "codegenie-prior.mjs"]) writeFileSync(join(dir, ".github", f), `${f}\n`);
+  const base = commit("README.md", "x\n");
+  git("checkout", "-qb", "pr");
+  const green = commit("a.txt", lines(10));
+  const pushed = commit("a.txt", lines(15));
+  const sneaky = commit(".github/codegenie-gate.mjs", "pass everything\n"); // a push that edits its own CI
+  git("checkout", "-q", "main");
+  const base2 = commit("other.txt", "y\n");
+  git("checkout", "-q", "-b", "rebased", base2);
+  git("cherry-pick", green);
+  const rebased = git("rev-parse", "HEAD");
+  const spaced = commit("a.txt", lines(10).replace("line 0", "line  0")); // the same patch to patch-id, not to the bytes
+  git("checkout", "-q", "-b", "ci-moved", base2);
+  commit(".github/workflows/ci.yml", "a newer ci.yml\n");
+
+  const decideOn = (head, b, state, { creator = "github-actions[bot]", defaultRef = "main", redAfter = false, setAt = "2026-01-01T00:30:00Z" } = {}) => decide({
+    git, repo: "acme/app", pr: 1, headRef: "pr", base: b, head, defaultRef,
+    api: async (path) => {
+      assert.doesNotMatch(path, /comments/, "PR comments are never read");
+      const run = (id) => ({ id, head_sha: green, pull_requests: [{ number: 1 }], run_started_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T01:00:00Z" });
+      if (path.includes("/workflows/ci.yml/runs")) return { workflow_runs: [...(redAfter ? [run(8)] : []), run(7)] };
+      if (path.includes("/runs/")) return { jobs: [{ name: "code-review", conclusion: path.includes("/runs/8/") ? "failure" : "success" }] };
+      return [{ context: STATE, state: "success", creator: { login: creator }, target_url: "https://github.com/acme/app/actions/runs/7", created_at: setAt, description: `${state} mb=${base}` }];
+    },
+  });
+  assert.deepEqual(await decideOn(pushed, base, "full n=0 lines=0"), { mode: "delta", from: green, n: 1, lines: 5, mb: base });
+  assert.deepEqual(await decideOn(rebased, base2, "delta n=1 lines=40"), { mode: "reuse", from: green, n: 1, lines: 40, mb: base2 });
+  const fulls = [
+    [spaced, base2, "full n=0 lines=0", {}], // a rebase that isn't byte-identical
+    [pushed, base, "delta n=3 lines=40", {}], // after 3 deltas
+    [pushed, base, "delta n=1 lines=1998", {}], // past 2,000 delta lines
+    [pushed, base, "full n=0 lines=0", { creator: "acme-agents[bot]" }], // a status anyone else set
+    [pushed, base, "full n=0 lines=0", { setAt: "2026-01-01T02:00:00Z" }], // set after its run ended
+    [pushed, base, "full n=0 lines=0", { redAfter: true }], // a later failed review of that head
+    [sneaky, base, "full n=0 lines=0", {}], // a PR diff that touches .github/
+    [pushed, base, "full n=0 lines=0", { defaultRef: "ci-moved" }], // CI that isn't the default branch's
+  ];
+  for (const [i, c] of fulls.entries()) assert.equal((await decideOn(...c)).mode, "full", `case ${i}`);
+  // The PR comment names the mode.
+  assert.match(verdict(0, review([]), pushed, { mode: "delta", from: green, n: "1" }).body, new RegExp(`only the changes since \`${green.slice(0, 7)}\``));
+  const reused = verdict(1, "", rebased, { mode: "reuse", from: green });
+  assert.deepEqual([reused.block, reused.body.includes(`reused on \`${rebased.slice(0, 7)}\`** from \`${green.slice(0, 7)}\``)], [false, true]);
 });
