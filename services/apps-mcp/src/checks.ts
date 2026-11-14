@@ -9,6 +9,8 @@
 // kind off). Inferred probes are lenient (a default `/` that 404s or isn't HTML, or a guessed schema path, is a warning);
 // declared ones are strict. One attempt each, short timeouts. Only hard findings fail a deploy; warnings are reported.
 // Everything a page says is app-authored: findings carry generated text, and page text only as a short sanitized sample.
+import { checkPath, plainPath } from "./api.js";
+import type { Scope } from "./identity.js";
 import type { App } from "./registry.js";
 
 export type Kind = "health" | "render" | "agent";
@@ -36,12 +38,15 @@ export function plan(app: App, declared: Declared = {}): { render: { path: strin
 }
 
 /**
- * app_check on demand: the agent probe sends the app's bearer with role admin, so it runs only for an agent in the app's
- * `api.callers` (as app_api would). Anyone else gets those probes reported as not checked. Deploys run them all.
+ * The agent probe's identity, the same on every deploy and every app_check whoever asks: the platform's own `deploy-check`,
+ * never the caller's, so any agent granted app_check gets a real signed answer without being one of the app's api.callers.
+ * It can only read: GET alone, bound to the one probe path (the running commit's manifest `checks.agent`, or the guessed
+ * schema path; never the caller's), which must sit under the app's agent API paths. Only the status and whether it was JSON
+ * come back (judgeAgent), never the body.
  */
-export function forCaller(app: App, declared: Declared, callerKey: string): { declared: Declared; skipped: ProbeResult[] } {
-  if (!app.api || app.api.callers.includes(callerKey)) return { declared, skipped: [] };
-  return { declared: { ...declared, agent: [] }, skipped: plan(app, declared).agent.map((x) => probeResult("agent", x.path, [{ hard: false, what: "not checked (no agent access: not one of the app's api.callers)" }])) };
+export function agentProbeScope(app: App, path: string): Scope {
+  checkPath(app, path); // the bearer goes only under the app's agent API paths
+  return { role: "admin", methods: ["GET"], path: plainPath(path) };
 }
 
 /** What the render script reports for one page (all of it page data, bounded by the script). */

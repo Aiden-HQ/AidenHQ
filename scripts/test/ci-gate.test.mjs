@@ -70,7 +70,9 @@ test("a tiny change in non-sensitive files skips the code review and passes; a s
     g("commit", "-qm", "change");
     const bin = mkdtempSync(join(tmpdir(), "ci-bin-"));
     writeFileSync(join(bin, "npx"), `#!/bin/sh\ntouch "${join(bin, "called")}"\n`);
+    writeFileSync(join(bin, "sleep"), "#!/bin/sh\n"); // no review out of the stub: its retry would wait a minute
     chmodSync(join(bin, "npx"), 0o755);
+    chmodSync(join(bin, "sleep"), 0o755);
     const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: g("rev-parse", "HEAD"), PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin };
     writeFileSync(env.GITHUB_ENV, "");
     execFileSync("bash", ["-e", "-c", script("Review")], { cwd: dir, env });
@@ -111,4 +113,81 @@ test("the Verdict step runs the gate from the default branch tip, not the PR's r
   const out = execFileSync("bash", ["-e", "-c", script], { cwd: work, env }).toString();
   assert.match(out, /gate from default branch tip/);
   assert.doesNotMatch(out, /gate from base/);
+});
+
+// The Review step's one retry when codegenie leaves no verdict (npx and sleep are stubs; each run plays the next response).
+test("no verdict: a budget stop retries with double the budget, a provider error after a wait, a permanent error never", () => {
+  const steps = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps;
+  const script = steps.find((s) => s.name === "Review").run;
+  const ok = `echo '${review([])}'; exit 0`;
+  const run = (...responses) => {
+    const dir = mkdtempSync(join(tmpdir(), "ci-retry-"));
+    const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
+    g("init", "-q");
+    writeFileSync(join(dir, "README.md"), "x\n");
+    g("add", ".");
+    g("commit", "-qm", "base");
+    const base = g("rev-parse", "HEAD");
+    writeFileSync(join(dir, "a.ts"), Array.from({ length: 50 }, (_, i) => `line ${i}\n`).join(""));
+    g("add", ".");
+    g("commit", "-qm", "change");
+    const bin = mkdtempSync(join(tmpdir(), "ci-bin-"));
+    responses.forEach((r, i) => writeFileSync(join(bin, `resp${i + 1}`), r));
+    writeFileSync(join(bin, "npx"), `#!/bin/sh\nn=$(( $(cat "${bin}/count" 2>/dev/null || echo 0) + 1 )); echo $n > "${bin}/count"\necho "$*" >> "${bin}/args"\n. "${bin}/resp$n"\n`);
+    writeFileSync(join(bin, "sleep"), `#!/bin/sh\ntouch "${bin}/slept"\n`);
+    chmodSync(join(bin, "npx"), 0o755);
+    chmodSync(join(bin, "sleep"), 0o755);
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: g("rev-parse", "HEAD"), PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin };
+    writeFileSync(env.GITHUB_ENV, "");
+    execFileSync("bash", ["-e", "-c", script], { cwd: dir, env, stdio: "pipe" });
+    const out = Object.fromEntries(readFileSync(env.GITHUB_ENV, "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+    const boosts = readFileSync(join(bin, "args"), "utf8").trim().split("\n").map((a) => a.match(/--budget-boost (\d+)/)[1]);
+    return { ...out, boosts, slept: existsSync(join(bin, "slept")), stdout: readFileSync(join(bin, "review.json"), "utf8") };
+  };
+  const budget = run(`echo "llm_call_failed: LLM provider call budget exhausted" >&2; exit 1`, ok);
+  assert.deepEqual([budget.boosts, budget.slept, budget.CODEGENIE_EXIT, budget.CODEGENIE_FAILURE], [["1", "2"], false, "0", "ok"]);
+  const transient = run(`echo "llm_call_failed: LLM provider call failed" >&2; echo "502 Bad Gateway" >&2; exit 1`, ok);
+  assert.deepEqual([transient.boosts, transient.slept, transient.CODEGENIE_EXIT], [["1", "1"], true, "0"]);
+  const permanent = run(`echo "llm_call_failed: LLM provider authentication failed" >&2; exit 1`);
+  assert.deepEqual([permanent.boosts, permanent.CODEGENIE_EXIT, permanent.CODEGENIE_FAILURE], [["1"], "1", "permanent"]);
+  const failed = `echo '${review([], { health: { status: "failed", diagnostics: [{ reason: "x" }] }, coverage: { budgetStopped: true } })}'; exit 1`;
+  const twice = run(failed, failed);
+  assert.deepEqual([twice.boosts, twice.CODEGENIE_EXIT, twice.CODEGENIE_FAILURE, twice.CODEGENIE_ATTEMPTS], [["1", "2"], "1", "budget", "2"]);
+  // #131/#134: the review JSON says only "not captured"; codegenie's telemetry has the real cause.
+  const uncaptured = `echo '${review([], { health: { status: "failed", diagnostics: [{ reason: "The underlying cause was not captured." }] } })}'
+    mkdir -p "$CODEGENIE_HOME/../codegenie-runs/r1"; grep -q "enabled = true" "$CODEGENIE_HOME/config.toml" &&
+    echo '{"level":"warn","message":"packet_review_not_dispatched","data":{"error":"LLM provider call budget exhausted","errorCode":"llm_call_failed","context":{"reason":"budget_exhausted"}}}' > "$CODEGENIE_HOME/../codegenie-runs/r1/events.jsonl"; exit 1`;
+  const traced = run(uncaptured, uncaptured);
+  assert.deepEqual([traced.boosts, traced.CODEGENIE_FAILURE], [["1", "2"], "budget"]);
+  assert.equal(traced.CODEGENIE_CAUSE, "budget (llm_call_failed, budget_exhausted)");
+  // #141: exit 0 but stray output around the JSON: cut back to the review, which passes on the first run.
+  const stray = run(`echo "some library notice"; echo '${JSON.stringify(JSON.parse(review([])), null, 2)}'; exit 0`);
+  assert.deepEqual([stray.boosts, stray.CODEGENIE_FAILURE, stray.CODEGENIE_EXIT], [["1"], "ok", "0"]);
+  // Exit 0 with no review at all is no verdict: retried, then named.
+  const empty = run("exit 0", "exit 0");
+  assert.deepEqual([empty.boosts, empty.slept, empty.CODEGENIE_FAILURE], [["1", "1"], true, "transient"]);
+  assert.equal(empty.CODEGENIE_CAUSE, "no-review-output");
+  // Provider text can echo a key: it stays in the job log; the PR comment gets only the class and codegenie's codes.
+  const leaky = `echo '${review([], { health: { status: "failed", diagnostics: [{ code: "llm_call_failed", reason: "LLM provider call failed: HTTP 502: bad key sk-or-v1-abc123" }] } })}'
+    printf 'llm_call_failed: LLM provider call failed\\nHTTP 502: upstream echoed sk-or-v1-abc123\\n' >&2; exit 1`;
+  const leak = run(leaky, leaky);
+  assert.equal(leak.CODEGENIE_CAUSE, "provider-5xx (llm_call_failed, HTTP 502)");
+  const body = verdict(Number(leak.CODEGENIE_EXIT), leak.stdout, "abcdef123", { failure: leak.CODEGENIE_FAILURE, cause: leak.CODEGENIE_CAUSE, attempts: leak.CODEGENIE_ATTEMPTS }).body;
+  assert.doesNotMatch(body, /sk-or-v1-abc/);
+  assert.match(body, /provider-5xx/);
+  // A gate run from an older workflow (no cause) still masks what it posts from the review's diagnostics.
+  assert.doesNotMatch(verdict(1, leak.stdout, "abcdef123").body, /sk-or-v1-abc/);
+});
+
+test("a review that never came out says what to do next: split the PR after a budget stop, re-run after a provider error", () => {
+  const budget = verdict(1, "", "abcdef123", { failure: "budget", attempts: "2" });
+  assert.equal(budget.block, true);
+  assert.match(budget.body, /\*\*Code review failed on `abcdef1`\*\* \(codegenie exit 1, 2 attempts\)\. .*Split it into stacked PRs/);
+  assert.match(verdict(1, "", "abcdef123", { failure: "transient", attempts: "2" }).body, /Re-run the check/);
+  assert.match(verdict(2, "", "abcdef123", { failure: "permanent" }).body, /fix the cause and re-run/);
+  const named = verdict(1, review([], { health: { status: "failed", diagnostics: [{ reason: "The underlying cause was not captured." }] } }), "abcdef123", { failure: "transient", cause: "llm_call_failed: LLM provider call failed: HTTP 502" });
+  assert.match(named.body, /codegenie exit 1: llm_call_failed: LLM provider call failed: HTTP 502\)/);
+  const incomplete = verdict(0, review([], { coverage: { unavailable: true, reasons: ["budget exhausted"] } }), "abcdef123", { failure: "budget", attempts: "2" });
+  assert.equal(incomplete.block, true);
+  assert.match(incomplete.body, /\*\*Code review incomplete on `abcdef1`\.\*\*.*stacked PRs/);
 });

@@ -1144,9 +1144,22 @@ function gradeDeps(issue) {
     app: async (name) => (/^[a-z0-9-]{1,63}$/.test(name) ? (await boardApi.get(`/internal/grades/app/${name}`)).app : null),
     appOfRepo: async (repo) => (await boardApi.get(`/internal/grades/app-of/${repo}`)).app,
     view: (name, path) => boardApi.post("/internal/grades/view", { name, path }),
+    assignee: issue.assigneeAgentId, // whose comments are the task agent's own (wordsEvidence)
     comments: () => pc.comments(issue.id),
     attachments: () => pc.attachments(issue.id),
     content: (id) => pc.attachmentContent(id),
+    identifier: issue.identifier,
+    // Another task the rubric names: its file list only (never contents), and only in this company; null when there is none.
+    otherTask: async (ident) => {
+      const t = await pc.issue(ident).catch((err) => {
+        if (/→ 404\b/.test(String(err.message))) return null;
+        throw err;
+      });
+      // The identifier's prefix is the company's (namedTasks asks only for the graded task's own); a row naming another
+      // company, or a different task, is not this one.
+      if (!t || t.identifier !== ident || (t.companyId && t.companyId !== pc.company)) return null;
+      return { identifier: t.identifier, files: await pc.attachments(t.id), agents: Object.fromEntries((await pc.agents()).map((a) => [a.id, a.metadata?.persona?.name ?? a.name])) };
+    },
   };
 }
 

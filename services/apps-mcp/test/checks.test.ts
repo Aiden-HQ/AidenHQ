@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { CHECK_SCRIPT, forCaller, judgeAgent, judgePage, plan, probeResult, summary, type PageFacts } from "../src/checks.js";
+import { agentProbeScope, CHECK_SCRIPT, judgeAgent, judgePage, plan, probeResult, summary, type PageFacts } from "../src/checks.js";
 import { parseApp } from "../src/registry.js";
 import { renderArgs, VIEW_IMAGE } from "../src/view.js";
 
@@ -79,12 +79,11 @@ describe("judging", () => {
     expect(plan(app({ expose: false }))).toEqual({ render: [], agent: [] });
   });
 
-  it("app_check runs the signed-identity agent probe only for the app's api.callers", () => {
+  it("the agent probe's identity can only read its one path under the agent API, whoever runs app_check", () => {
     const a = app({ port: 8080, health: { url: "http://app:8080/health" }, api: { callers: ["keeper"], paths: ["/api/agent/x"] } });
-    expect(forCaller(a, {}, "keeper")).toEqual({ declared: {}, skipped: [] });
-    const other = forCaller(a, {}, "ui-designer");
-    expect(plan(a, other.declared).agent).toEqual([]);
-    expect(other.skipped).toEqual([{ probe: "agent", path: "/api/agent/x/schema", ok: true, findings: [{ hard: false, what: expect.stringMatching(/^not checked \(no agent access/) }] }]);
+    expect(agentProbeScope(a, "/api/agent/x/schema?v=1")).toEqual({ role: "admin", methods: ["GET"], path: "/api/agent/x/schema" });
+    expect(() => agentProbeScope(a, "/admin/delete")).toThrow(/isn't under/);
+    expect(() => agentProbeScope(a, "/api/agent/x/../y")).toThrow(/bad path/);
   });
 
   it("inferred probes are lenient, declared ones strict; summaries carry no page text", () => {

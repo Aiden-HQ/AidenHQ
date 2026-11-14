@@ -147,7 +147,7 @@ jobs:
   # passes unreviewed; changes under .github/ get a human review anyway.
   code-review:
     runs-on: [self-hosted, aidenhq]
-    timeout-minutes: 60
+    timeout-minutes: 90 # a first review (up to ~45 min) and a retry; the Review step stops retrying at 85
     permissions:
       contents: read
       pull-requests: write
@@ -191,9 +191,89 @@ jobs:
             exit 0
           fi
           echo "Changed lines: $lines, review depth: $depth"
-          npx -y @0xsequence/codegenie@0.7.0 review --base "$BASE_SHA" --head "$HEAD_SHA" --model "$MODEL" --depth "$depth" \
-            --format json --ci --no-progress --max-time 40 --budget-boost "$boost" > "$RUNNER_TEMP/review.json"
-          echo "CODEGENIE_EXIT=$?" >> "$GITHUB_ENV"
+          # codegenie's own telemetry (events.jsonl) is where a failed run's cause is: its review JSON can carry only "The
+          # underlying cause was not captured" (roadmap-keeper#131, #134). On only for this job, outside the checkout.
+          export CODEGENIE_HOME="$RUNNER_TEMP/codegenie"
+          mkdir -p "$CODEGENIE_HOME"
+          printf '[telemetry]\nenabled = true\nlogLevel = "warn"\nrunDir = "%s"\n' "$RUNNER_TEMP/codegenie-runs" > "$CODEGENIE_HOME/config.toml"
+          review() { # $1: --max-time in minutes. Sets $code; stderr is kept for failure() and still shown in the log.
+            rm -rf "$RUNNER_TEMP/codegenie-runs"
+            npx -y @0xsequence/codegenie@0.7.0 review --base "$BASE_SHA" --head "$HEAD_SHA" --model "$MODEL" --depth "$depth" \
+              --format json --ci --no-progress --max-time "$1" --budget-boost "$boost" > "$RUNNER_TEMP/review.json" 2> "$RUNNER_TEMP/review.err"
+            code=$?
+            cat "$RUNNER_TEMP/review.err" >&2
+          }
+          # Reads a run: prints "<kind>\t<cause>". kind: ok (it has a verdict), permanent (exit 2: arguments, config or git
+          # refs; a bad key; the provider's usage limit), budget (its call budget ran out; an unexplained failure on an
+          # already boosted diff counts too: #131, #134 at 13-17k lines) or transient (no review output, a provider error or
+          # timeout, anything else). cause goes into a PR comment, so it is only a fixed class (config, auth, usage-limit,
+          # no-review-output, budget, rate-limit, provider-5xx, timeout, unknown) and codegenie's own error codes, masked;
+          # the detail (stderr, telemetry errors) goes to the job log only, where GitHub masks secrets.
+          # Output with stray lines around codegenie's JSON is cut back to the JSON (#141: exit 0, yet no readable review).
+          failure() {
+            node -e '
+              const fs = require("fs");
+              const [code, file, errFile, runs, boost] = process.argv.slice(1);
+              const read = (f) => { try { return fs.readFileSync(f, "utf8"); } catch { return ""; } };
+              const out = read(file), err = read(errFile);
+              const parse = (s) => { try { return JSON.parse(s); } catch { return undefined; } };
+              let r = parse(out);
+              if (!r) { const json = out.match(/^\{$[\s\S]*^\}$/m)?.[0]; if ((r = json && parse(json))) fs.writeFileSync(file, json); }
+              const ok = code === "0" && Array.isArray(r?.findings) && r.health?.status !== "failed" && !r.coverage?.unavailable;
+              let events = [];
+              try { for (const d of fs.readdirSync(runs)) events.push(...read(`${runs}/${d}/events.jsonl`).split("\n").map(parse).filter(Boolean)); } catch {}
+              events = events.filter((e) => e.level === "error" || e.level === "warn");
+              const said = (e) => [e.data?.errorCode, e.data?.error || e.message, e.data?.context?.providerMessage].filter(Boolean).join(": ");
+              if (!ok) for (const s of new Set(events.map(said))) console.error(`codegenie ${s}`);
+              // Signals: codegenie error codes (fixed words), and the fatal error text (its rendered error, the review
+              // diagnostics, error-level events) for the few headlines it has no code for.
+              const diags = r?.health?.diagnostics ?? [];
+              const codes = [...diags.map((d) => d.code), ...events.flatMap((e) => [e.data?.errorCode, e.data?.context?.reason]), r?.coverage?.budgetStop?.reason]
+                .filter((c) => /^[a-z_]{2,40}$/.test(c ?? ""));
+              const has = (...c) => c.some((x) => codes.includes(x));
+              const fatal = [...err.split("\n").filter((l) => /^[a-z_]+: /.test(l)), ...diags.map((d) => d.reason),
+                ...events.filter((e) => e.level === "error").map(said)].join("\n");
+              const [kind, cls] = ok ? ["ok", ""] : code === "2" || has("invalid_args", "config_error", "not_git_worktree", "git_ref_missing", "diff_parse_failed") ? ["permanent", "config"]
+                : has("auth") || /authentication failed/i.test(fatal) ? ["permanent", "auth"]
+                : has("usage_limit") || /usage limit reached/i.test(fatal) ? ["permanent", "usage-limit"]
+                : r?.coverage?.budgetStopped || has("budget_exhausted", "max_model_calls", "max_budget_tokens") || /budget exhausted/i.test(fatal) ? ["budget", "budget"]
+                : !Array.isArray(r?.findings) ? ["transient", "no-review-output"]
+                : /\b429\b|rate.?limit/i.test(fatal) ? ["transient", "rate-limit"]
+                : /HTTP 5\d\d|overloaded|bad gateway|service unavailable/i.test(fatal) ? ["transient", "provider-5xx"]
+                : has("timeout", "hard_timeout", "runtime_reserved_tail") || /timed out/i.test(fatal) ? ["transient", "timeout"]
+                : Number(boost) > 1 ? ["budget", "unknown"] : ["transient", "unknown"];
+              const http = fatal.match(/HTTP [1-5]\d\d/)?.[0];
+              const why = [...new Set([...codes, ...(http ? [http] : [])])].slice(0, 4).join(", ");
+              console.log(ok ? "ok\t" : `${kind}\t${cls}${why ? ` (${why})` : ""}`);
+            ' "$code" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/review.err" "$RUNNER_TEMP/codegenie-runs" "$boost"
+          }
+          # No verdict is never a pass: the gate fails it. But one retry here, inside the job, recovers most of them: with
+          # double the budget after a budget stop, else after a short wait. The retry gets a --max-time whose hard stop
+          # (twice it) still ends before the job's timeout, and none when under 10 minutes are left.
+          review 40
+          attempts=1
+          IFS=$'\t' read -r kind cause < <(failure)
+          if [ "$kind" = budget ] || [ "$kind" = transient ]; then
+            if [ "$kind" = budget ]; then
+              boost=$((boost * 2))
+              echo "::warning::codegenie ran out of its review budget (${cause:-no cause given}): retrying with --budget-boost $boost."
+            else
+              echo "::warning::codegenie ended without a review (${cause:-no cause given}): retrying in 60 seconds."
+              sleep 60
+            fi
+            left=$(( (85 * 60 - SECONDS) / 120 ))
+            if [ "$left" -ge 5 ]; then
+              review $(( left < 40 ? left : 40 ))
+              attempts=2
+              IFS=$'\t' read -r kind cause < <(failure)
+            else
+              echo "::warning::Not enough of the job's time is left for a retry."
+            fi
+          fi
+          echo "CODEGENIE_EXIT=$code" >> "$GITHUB_ENV"
+          echo "CODEGENIE_ATTEMPTS=$attempts" >> "$GITHUB_ENV"
+          echo "CODEGENIE_FAILURE=$kind" >> "$GITHUB_ENV"
+          [ "$kind" = ok ] || echo "CODEGENIE_CAUSE=$cause" >> "$GITHUB_ENV"
       - name: Verdict
         if: ${{ !cancelled() }}
         env:

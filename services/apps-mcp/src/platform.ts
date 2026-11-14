@@ -5,8 +5,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { provisionDatabase, WAREHOUSE } from "./database.js";
 import { createEngine, type Engine } from "./deploy.js";
-import { apiTarget, checkPath, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, type Resolve, type Send } from "./api.js";
-import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, forCaller, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type ProbeResult } from "./checks.js";
+import { apiTarget, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, type Resolve, type Send } from "./api.js";
+import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type ProbeResult } from "./checks.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { RENDER_TIMEOUT_MS, renderArgs, VIEW_IMAGE, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
@@ -260,13 +260,13 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
         out.push(probeResult("agent", x.path, [{ hard: true, what: "checks.agent is declared but the app has no agent API (api: in the registry)" }]));
         continue;
       }
+      let token: string;
       try {
-        checkPath(app, x.path); // the bearer goes only under the app's agent API paths
+        token = sign(app.name, "deploy-check", agentProbeScope(app, x.path));
       } catch (e) {
         out.push(probeResult("agent", x.path, [{ hard: true, what: String((e as Error).message) }]));
         continue;
       }
-      const token = sign(app.name, "deploy-check", { role: "admin", methods: ["GET"], path: x.path.split("?")[0] });
       const req: ApiRequest = { url: base + x.path, method: "GET", headers: { [IDENTITY_HEADER]: token, accept: "application/json" }, timeout: AGENT_TIMEOUT_MS };
       const r = await sendRaw(req, container).catch(() => ({ status: -1, body: "" }));
       out.push(probeResult("agent", x.path, r.status < 0 ? [{ hard: false, what: "not checked: the probe container didn't run" }] : judgeAgent(r, x.declared)));
@@ -274,16 +274,18 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     return out;
   }
 
-  /** app_check: the probes now, with the running commit's declared paths (its manifest; unreadable: the inferred ones). */
-  async function checkNow(app: App, callerKey: string): Promise<ProbeResult[]> {
+  /**
+   * app_check: the probes now, with the running commit's declared paths (its manifest; unreadable: the inferred ones). The
+   * caller picks only the app: the probes and their identity are the deploy's own (agentProbeScope), whoever asks.
+   */
+  async function checkNow(app: App): Promise<ProbeResult[]> {
     const sha = store.running(app.name);
     const text = sha ? await show(cfg.git, app, sha, posix.join(app.path, MANIFEST_FILE)).catch(() => undefined) : undefined;
     let declared: Declared = {};
     try {
       declared = parseManifest(text).checks ?? {};
     } catch {}
-    const c = forCaller(app, declared, callerKey); // the signed-identity agent probe only for the app's api.callers
-    return [...(await engine.check(app, c.declared)), ...c.skipped];
+    return engine.check(app, declared);
   }
   const lookup: Lookup = (host) => dnsLookup(host, { all: true });
   const auditView = (o: object) => log.info(o, "view");

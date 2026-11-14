@@ -2,6 +2,7 @@
 // the duplicate-card guard (item 4). Facts here were checked by code and are trusted; anything an agent wrote is returned
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
+import { RUNNER_MARKER } from "./commands.mjs";
 import { findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
 import { MAX_DIFF } from "./review.mjs";
 import { downscalePng, imageInfo } from "./images.mjs";
@@ -71,18 +72,133 @@ export function applyEvidence(cards) {
   return { version: applied.id, facts, data: { APPLY_OUTCOME: applied.outcomeText ?? "", APPLY_CHANGE: applied.details ?? "" } };
 }
 
+const NEWEST = 4; // the newest comments, anyone's, always go first (an owner's reopening word among them)
+const COMMENT_MAX = 8_000; // one comment's characters
+export const COMMENTS_TOTAL = 18_000; // all comments' characters (the prompt fences a block at 20,000)
+const COMMON = new Set("about above after again agent along also another because before being below between could does doing done during each every final first found from have having here into itself just latest least made make more most much must never only other over posted result same should shows since some still such than that their them then there these they this those through under until very were what when where which while will with within would your".split(" "));
+/** A text's distinctive words (4+ characters, file names and paths whole), for matching a comment to what names it. */
+const termsOf = (text) => new Set((String(text).toLowerCase().match(/[a-z0-9][a-z0-9._/-]{3,}/g) ?? []).map((w) => w.replace(/[._/-]+$/, "")).filter((w) => w.length >= 4 && !COMMON.has(w)));
+
 /**
- * The task's own words (the latest comments other than the grader's) and its files: the evidence for file and report, context
- * for the rest. File names and types are the agents' own strings: the trusted facts call each file by a code-made label
- * (file_1, file_2, ... in the attachments' order) and its name and type go in the fenced FILE_NAMES block, as data.
+ * The comments the grader reads, within COMMENTS_TOTAL: the NEWEST newest (anyone's but the grader's), then the task agent's
+ * own earlier ones (`own(c)`), ranked: those whose id the rubric or the agent's latest result names, then by how many of
+ * their distinctive words those name, then the newest. A report posted in parts, or evidence posted before a short closing
+ * note, is read this way, not lost behind the last few comments. Each is cut to COMMENT_MAX; they go in the task's order.
+ * { text, fact }: the fact says what was sent, cut or left out.
  */
-export async function wordsEvidence(deps) {
-  const comments = (await deps.comments()).filter((c) => !String(c.body ?? "").includes(GRADER_MARKER)).slice(-4);
+export function pickComments(all, own, rubric = "") {
+  const newest = all.slice(-NEWEST);
+  const earlier = all.slice(0, -NEWEST).filter(own);
+  const latest = [...all].reverse().find(own);
+  const named = `${rubric}\n${latest?.body ?? ""}`;
+  const want = termsOf(named);
+  const score = (c) => (c.id && named.includes(c.id) ? 1e6 : [...termsOf(c.body)].filter((w) => want.has(w)).length);
+  const ranked = earlier.map((c, i) => ({ c, i, s: score(c) })).sort((a, b) => b.s - a.s || b.i - a.i).map((x) => x.c);
+  let left = COMMENTS_TOTAL;
+  const shown = new Map();
+  let cut = 0;
+  let out = 0;
+  const head = (c) => `--- comment ${String(c.createdAt ?? "").slice(0, 25)} ---\n`;
+  for (const c of [...newest].reverse().concat(ranked)) {
+    const body = String(c.body ?? "");
+    left -= head(c).length + 2; // the header and separator count too, so the fence never cuts the block
+    if (left <= 0) {
+      out++;
+      continue;
+    }
+    const s = body.slice(0, Math.min(COMMENT_MAX, left));
+    if (s.length < body.length) cut++;
+    left -= s.length;
+    shown.set(c, s);
+  }
+  const text = all.filter((c) => shown.has(c)).map((c) => `${head(c)}${shown.get(c)}`).join("\n\n");
+  const extra = [...shown.keys()].filter((c) => !newest.includes(c)).length;
+  const fact = `TASK_COMMENTS holds ${shown.size} of the task's ${all.length} comments (the grader's own not counted): the newest${extra ? `, and ${extra} earlier one${extra > 1 ? "s" : ""} by the task's agent picked by what the rubric and its latest result name` : ""}${cut ? `; ${cut} cut to fit (each at most ${COMMENT_MAX} characters, all at most ${COMMENTS_TOTAL})` : ""}${out ? `; ${out} more left out over that budget` : ""}`;
+  return { text, fact };
+}
+
+/**
+ * The task's own words (the newest comments other than the grader's, and the agent's earlier ones that bear on the rubric:
+ * pickComments) and its files: the evidence for file and report, context for the rest. The task's agent is deps.assignee
+ * (its own comments) or the runner posting an Engineer's (its marker). File names and types are the agents' own strings: the
+ * trusted facts call each file by a code-made label (file_1, file_2, ... in the attachments' order) and its name and type go
+ * in the fenced FILE_NAMES block, as data. The version stays the newest comments' and the files' ids.
+ */
+export async function wordsEvidence(deps, rubric = []) {
+  const all = (await deps.comments()).filter((c) => !String(c.body ?? "").includes(GRADER_MARKER));
+  const comments = all.slice(-NEWEST);
+  const own = (c) => String(c.body ?? "").includes(RUNNER_MARKER) || (deps.assignee ? c.authorAgentId === deps.assignee : c.authorType === "agent");
+  const picked = pickComments(all, own, rubric.join("\n"));
   const files = (await deps.attachments().catch(() => [])).map((f, i) => ({ ...f, label: `file_${i + 1}` }));
   const facts = files.length ? [`${files.length} file${files.length > 1 ? "s" : ""} attached: ${files.map((f) => f.label).join(", ")} (their names and types, as the agent gave them, are in FILE_NAMES)`] : ["no files attached"];
+  if (all.length) facts.push(picked.fact);
   const version = comments.length || files.length ? hash([...comments.map((c) => c.id), ...files.map((f) => f.id)].join(" ")) : "";
   const names = files.map((f) => `${f.label}: ${String(f.originalFilename ?? f.name ?? "").slice(0, 200)} (${String(f.contentType ?? "").slice(0, 100)})`).join("\n");
-  return { version, facts, files, data: { TASK_COMMENTS: comments.map((c) => String(c.body ?? "")).join("\n\n---\n\n"), ...(files.length ? { FILE_NAMES: names } : {}) } };
+  return { version, facts, files, data: { TASK_COMMENTS: picked.text, ...(files.length ? { FILE_NAMES: names } : {}) } };
+}
+
+const MAX_OTHER_TASKS = 3;
+const MAX_OTHER_FILES = 20; // per task, the newest
+
+/**
+ * The other tasks a rubric or a deliverable's ref names by identifier ("put the mockups onto ACME-12"): the graded task's own
+ * prefix (its company's), never itself, at most MAX_OTHER_TASKS. Only these trusted texts, never the request or comments.
+ */
+export function namedTasks(texts, own) {
+  const prefix = /^([A-Z][A-Z0-9]*)-\d+$/.exec(String(own ?? ""))?.[1];
+  const out = [];
+  if (!prefix) return out;
+  for (const t of texts) {
+    for (const m of String(t ?? "").matchAll(/\b([A-Z][A-Z0-9]*)-(\d{1,7})\b/g)) {
+      if (m[1] !== prefix || m[0] === own || out.includes(m[0])) continue;
+      if (out.push(m[0]) >= MAX_OTHER_TASKS) return out;
+    }
+  }
+  return out;
+}
+
+/**
+ * Other tasks' attached files as evidence, read-only and never their contents: for each identifier, deps.otherTask(ident)
+ * resolves { identifier, files, agents } (Paperclip's attachment rows; agents: id → name, Paperclip's own) or null when no such task is in this company. Code states as
+ * trusted facts each file's label (<ident>/file_<n>), size, upload time and uploader, and whether it matches one of this
+ * task's own files (`own`, labelled by wordsEvidence) by name and size; the names and types, the agents' strings, go in the
+ * fenced OTHER_TASK_FILES block. A read that fails waits for the next look (missing evidence is never a pass).
+ * { awaiting } or { facts, data, version } (version: the files' ids, "" with none).
+ */
+export async function otherTaskEvidence(idents, deps, own = []) {
+  const facts = [];
+  const names = [];
+  const ids = [];
+  const nameOf = (f) => String(f.originalFilename ?? f.name ?? "");
+  const when = (t) => (/^\d{4}-\d\d-\d\dT[\d:.]+Z?$/.test(String(t ?? "")) ? String(t) : "an unknown time");
+  for (const ident of idents) {
+    let t;
+    try {
+      t = await deps.otherTask(ident);
+    } catch (err) {
+      return { awaiting: `the files on ${ident} could not be read yet (${String(err.message ?? err).replace(/[^\w .:/()-]/g, "").slice(0, 160)})` };
+    }
+    if (!t) {
+      facts.push(`${ident}: no such task in this company (nothing read from it)`);
+      continue;
+    }
+    const files = [...(t.files ?? [])].sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""))).slice(-MAX_OTHER_FILES);
+    if (!files.length) {
+      facts.push(`${ident} (another task the rubric names; its file list read now): no files attached`);
+      continue;
+    }
+    const lines = files.map((f, i) => {
+      const label = `${ident}/file_${i + 1}`;
+      ids.push(f.id);
+      names.push(`${label}: ${nameOf(f).slice(0, 200)} (${String(f.contentType ?? "").slice(0, 100)})`);
+      const agent = String(t.agents?.[f.createdByAgentId] ?? "").replace(/[^\w .()-]/g, "").slice(0, 60);
+      const by = f.createdByAgentId ? (f.createdByAgentId === deps.assignee ? "this task's agent" : agent ? `agent ${agent}` : "another agent") : f.createdByUserId ? "the board key (the owner, or the runner for an Engineer)" : "an unknown uploader";
+      const same = own.find((o) => nameOf(o) && nameOf(o) === nameOf(f) && Number(o.byteSize) === Number(f.byteSize));
+      return `${label}: ${Number(f.byteSize) || 0} bytes, uploaded at ${when(f.createdAt)} by ${by}${same ? `, the same name and size as this task's ${same.label}` : ""}`;
+    });
+    facts.push(`${ident} (another task the rubric names; its file list read now, not the files' contents): ${files.length} file${files.length > 1 ? "s" : ""} attached${(t.files ?? []).length > files.length ? ` (the newest ${files.length} of ${t.files.length})` : ""}: ${lines.join("; ")} (their names and types are in OTHER_TASK_FILES)`);
+  }
+  return { facts, data: names.length ? { OTHER_TASK_FILES: names.join("\n") } : {}, version: ids.length ? hash(ids.join(" ")) : "" };
 }
 
 /** A content type as code may state it among the trusted facts: a plain type/subtype, or "unknown type". */
