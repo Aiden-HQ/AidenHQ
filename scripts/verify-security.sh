@@ -486,10 +486,13 @@ grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-set
 # The Engineer's own tools (docs/design/conversational-engineers.md): a fixed command list on the per-run loopback
 # endpoint, every write tiered (tiers.mjs) or checked against the user's words, and the check given nothing else.
 # `close` is tiered only: Tier 0 for agents-org PRs outside the instance repo and for the product repo's Dependabot PRs
-# (the Platform Engineer's line), refused anywhere else.
+# (the Platform Engineer's line), refused anywhere else. A repository is created only by an approved create_repo card
+# (`create-repo` files it, the panel's): one call, in createRepoApproved, never from naming or cloning one.
 tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelper.mjs)"
-[ "$tools" = 'export const TOOLS = ["repo", "status", "push", "pr", "merge", "close", "apply", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks"]' ] \
+[ "$tools" = 'export const TOOLS = ["repo", "status", "push", "pr", "merge", "close", "create-repo", "apply", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks"]' ] \
   && grep -qF 'close: agentClose,' "$rmain" \
+  && [ "$(grep -c 'createRepo(' "$rmain")" = 1 ] && awk '/^async function createRepoApproved/,/^}/' "$rmain" | grep -qF 'await app.createRepo(slug)' \
+  && ! grep -qE 'POST.*/repos\b|/user/repos' services/runner/src/repos.mjs \
   && [ "$(awk '/^async function agentTasks?\(/,/^}/' services/runner/src/main.mjs | grep -c '^  requireTaskReads(ctx);')" = 2 ] \
   && [ "$(awk '/^async function agentMerge/,/^}/' "$rmain" | grep -n 'tierFor(ctx.issue, "merge"' | head -1 | cut -d: -f1)" -lt "$(awk '/^async function agentMerge/,/^}/' "$rmain" | grep -n 'await fileApproval(ctx.issue, { action: "merge"' | cut -d: -f1)" ] \
   && awk '/^async function agentMerge/,/^}/' "$rmain" | grep -qF 'const now = bound.filter((_, i) => tiers[i].tier === 0);' \

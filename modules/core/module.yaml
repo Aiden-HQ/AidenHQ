@@ -12,7 +12,7 @@ settings:
     required: true
   company_name:
     default: work
-  # Short name of this AidenHQ; the agents org (where the runner creates repos) is aidenhq-<instance_name>
+  # Short name of this AidenHQ; the agents org (where an approved create_repo card creates repos) is aidenhq-<instance_name>
   # unless github_agents_org names another.
   instance_name:
   github_agents_org:

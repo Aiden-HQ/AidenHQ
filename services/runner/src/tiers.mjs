@@ -72,6 +72,7 @@ export function highest(parts) {
  * - close: prs [{ repo, dependabot? }] (`dependabot`: a product PR whose author the runner read from the API as dependabot[bot])
  * - apply: { sha, files, base, head (path → text, absent when missing), pin: null | { forward, back }, roles (agent key → roles),
  *   ownerStarted (the task chain began with the owner), trialNoTap (today's trial-handbook rule) }
+ * - create_repo: { repo } (the runner checked it doesn't exist yet)
  */
 export function classify(action, s) {
   // Raising a spend cap (the board's raise_cap card, filed by the model gateway) is always the owner's tap.
@@ -79,7 +80,7 @@ export function classify(action, s) {
   if (["cancelled", "done"].includes(s.taskStatus)) return REJECT("closed-task", `the task is ${s.taskStatus}: a leftover request runs nothing`);
   // Fail closed: without knowing which repos are the product and the instance, nothing can be told apart from them.
   if (!s.productRepo || !s.instanceRepo || !s.agentsOrg) return T(2, "unknown-repos", "the product repo, instance repo or agents org isn't known here");
-  const t = highest(action === "push" || action === "pr" ? publishParts(action, s) : action === "merge" ? mergeParts(s) : action === "close" ? closeParts(s) : action === "apply" ? applyParts(s) : []);
+  const t = highest(action === "push" || action === "pr" ? publishParts(action, s) : action === "merge" ? mergeParts(s) : action === "close" ? closeParts(s) : action === "apply" ? applyParts(s) : action === "create_repo" ? createRepoParts(s) : []);
   // Earlier decisions on this task (owner, 2026-11-14; replaced "sticky"): the owner's own no holds until they say yes; the
   // reviewer's no holds for the same content and bounds the retries.
   const prior = t.reject ? undefined : priorPart(priorDecisions(s.records, action, s.also, requestKey(action, s), requestPatches(action, s)));
@@ -144,6 +145,7 @@ export function requestKey(action, s) {
   if (action === "push" || action === "pr") return keyOf((s.branches ?? []).map((b) => b.sha));
   if (action === "merge") return keyOf((s.prs ?? []).map((p) => p.head));
   if (action === "apply") return s.sha ? `apply:${s.sha}` : undefined;
+  if (action === "create_repo") return s.repo ? `create_repo:${String(s.repo).toLowerCase()}` : undefined;
   return s.digest ? `digest:${s.digest}` : undefined;
 }
 /**
@@ -163,6 +165,7 @@ export function recordKey(r) {
   if (r.action === "push" || r.action === "pr") return keyOf((r.args?.only ?? []).map((b) => b.sha));
   if (r.action === "merge") return keyOf((r.args?.prs ?? []).map((p) => p.head));
   if (r.action === "apply") return r.args?.sha ? `apply:${r.args.sha}` : undefined;
+  if (r.action === "create_repo") return r.args?.repo ? `create_repo:${String(r.args.repo).toLowerCase()}` : undefined;
   return r.digest ? `digest:${r.digest}` : undefined;
 }
 const keyOf = (list) => (list.length && list.every((x) => typeof x === "string" && /^[0-9a-f]{7,64}$/i.test(x)) ? list.map((x) => x.toLowerCase()).sort().join(",") : undefined);
@@ -257,6 +260,23 @@ function closeParts(s) {
     if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close", `${p.repo} is the instance repo: its PRs are the owner's`);
     return T(0, "agents-org-close", `closing a PR of ${p.repo} is reversible and changes no code`);
   });
+}
+
+/** A new repository's name: lowercase words joined by hyphens, as an app's name (never `.github` or a path). */
+const NEW_REPO_NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+/**
+ * create_repo: { repo }. A new private repository in the agents org, asked for only by `aidenhq create-repo` (naming, adding or
+ * detecting a missing repo never creates one). It grows the org (owner, 2026-11-14): authority-expanding, so the panel
+ * decides it against the request chain. Anywhere else, or a name that isn't one, code refuses it.
+ */
+function createRepoParts(s) {
+  const repo = String(s.repo ?? "");
+  const name = repo.split("/")[1] ?? "";
+  if (!same(orgOf(repo), s.agentsOrg)) return [REJECT("outside-create-repo", `${repo} is outside the agents org: repositories are created only in ${s.agentsOrg}`)];
+  if (same(repo, s.productRepo) || same(repo, s.instanceRepo)) return [REJECT("core-repo-create", `${repo} is the product or instance repo`)];
+  if (name.length > 63 || !NEW_REPO_NAME.test(name)) return [REJECT("new-repo-name", `\`${name}\` isn't a new repository's name: lowercase letters, digits and single hyphens, starting with a letter, 63 at most`)];
+  return [PANEL("agents-org-create-repo", `creating ${repo} adds a repository to the agents org`)];
 }
 
 /**

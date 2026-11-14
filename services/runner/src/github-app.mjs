@@ -1,5 +1,5 @@
 // GitHub access through the instance's GitHub App, whose key only the runner holds. It is owned by the agents org
-// (where the runner creates repos) and public, so other orgs can install it on selected repos. Per action the runner
+// (where an approved create_repo card creates repos) and public, so other orgs can install it on selected repos. Per action the runner
 // mints a short-lived installation token narrowed to one repo and the permissions it needs, hands it to that one git or
 // gh child (credential helper / GH_TOKEN env). An agent gets only a read token (READ) for its task's repos, for its gh.
 // Repos no App covers keep the old path.
@@ -79,13 +79,26 @@ export function appClient({ appId, key, fetch = globalThis.fetch, log = () => {}
     return yes;
   }
 
-  /** "exists" | "created" for org/name in an org this App is installed on; "missing" anywhere else (never created). */
-  async function ensureRepo(slug) {
+  /**
+   * Whether org/name exists, in an org this App is installed on. Read only: naming, adding or detecting a repo never creates
+   * it. Anything but 200 or 404 throws, so a bad minute on GitHub is never read as "doesn't exist".
+   */
+  async function repoExists(slug) {
     const [org, name] = slug.split("/");
-    if (!(await installationId(org))) return "missing";
-    // An un-narrowed metadata token: a repo-narrowed one can't be minted for a repo that doesn't exist yet.
-    if ((await api("GET", `/repos/${org}/${name}`, await token(org, { permissions: { metadata: "read" } }))).status === 200) return "exists";
-    // A creation-only token; if GitHub refuses that permission, fail loudly rather than widen the token.
+    // An un-narrowed metadata token: a repo-narrowed one can't be minted for a repo that doesn't exist.
+    const r = await api("GET", `/repos/${org}/${name}`, await token(org, { permissions: { metadata: "read" } }));
+    if (r.status === 200) return true;
+    if (r.status === 404) return false;
+    throw new Error(`couldn't check ${slug} on GitHub (GitHub said ${r.status} ${r.body?.message ?? ""})`.trim());
+  }
+
+  /**
+   * Create org/name, private, with a README: only for an approved create_repo card (the runner's one caller). "exists" |
+   * "created". A creation-only token; if GitHub refuses that permission, fail loudly rather than widen the token.
+   */
+  async function createRepo(slug) {
+    if (await repoExists(slug)) return "exists";
+    const [org, name] = slug.split("/");
     const creator = await token(org, { permissions: { repository_creation: "write" } });
     const r = await api("POST", `/orgs/${org}/repos`, creator, { name, private: true, auto_init: true });
     if (r.status !== 201) throw new Error(`couldn't create ${org}/${name}: GitHub said ${r.status} ${r.body?.message ?? ""}`.trim());
@@ -106,7 +119,7 @@ export function appClient({ appId, key, fetch = globalThis.fetch, log = () => {}
     return (bot = { name, email: `${id}+${name}@users.noreply.github.com` });
   }
 
-  return { installations, token, covers, ensureRepo, identity };
+  return { installations, token, covers, repoExists, createRepo, identity };
 }
 
 /** Commit identity without the App: never the owner's. */

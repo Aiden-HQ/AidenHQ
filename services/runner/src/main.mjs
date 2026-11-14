@@ -1803,6 +1803,12 @@ async function currentTier(issue, a, { withDiff = false } = {}) {
     if (diff !== a.details) throw new UserError("the change no longer matches the card's diff");
     return { ...t, diff };
   }
+  if (a.action === "create_repo") {
+    if (!app) throw new UserError("the GitHub App isn't set up here");
+    if (await app.repoExists(a.args.repo)) throw new UserError(`${a.args.repo} already exists`);
+    const t = await tierFor(issue, "create_repo", { repo: a.args.repo });
+    return withDiff ? { ...t, diff: createRepoText(a.args.repo) } : t;
+  }
   throw new UserError(`no tier rule for ${a.action}`);
 }
 
@@ -2226,6 +2232,7 @@ async function executeApproval(a) {
   }
   if (a.action === "push" || a.action === "pr") return publishApproved(issue, a);
   if (a.action === "apply") return applyApproved(issue, a);
+  if (a.action === "create_repo") return createRepoApproved(issue, a);
   if (a.action === "merge") {
     await startMerges(issue, { prs: a.args.prs, gapMinutes: a.args.gap, strict: Boolean(a.decidedBy?.startsWith("reviewer:")) });
     const design = await cardDesignReviews(a.args.prs).catch((err) => (log("card design reviews failed", { err: String(err.message ?? err).slice(0, 300) }), ""));
@@ -2683,6 +2690,36 @@ async function agentClose(ctx, args) {
   return lines.join("\n");
 }
 
+/**
+ * `aidenhq create-repo <org/name>`: a new app's repository in the agents org, the only way the runner creates one. It grows
+ * the org, so it is an approval card (tiers.mjs: the panel); once approved the runner creates it, private with a README, and
+ * it joins the task's workspace on its next run.
+ */
+async function agentCreateRepo(ctx, args) {
+  const repo = normalizeRepo(String(args.repo ?? ""));
+  if (!repo) throw new UserError("Name the new repository as org/name.");
+  if (!app || !cfg.agentsOrg) throw new UserError("Creating repositories needs the instance's GitHub App, which isn't set up here.");
+  if (!inOrg(cfg.agentsOrg, repo.slug)) throw new UserError(`Not done: repositories are created only in the agents org (${cfg.agentsOrg}).`);
+  if (await app.repoExists(repo.slug)) return `${repo.slug} already exists: \`aidenhq repo ${repo.slug}\` clones it into the workspace.`;
+  const t = await tierFor(ctx.issue, "create_repo", { repo: repo.slug });
+  if (t.reject) throw new UserError(`Not done: ${t.reason}.`);
+  const a = await fileApproval(ctx.issue, { action: "create_repo", args: { repo: repo.slug }, tier: t.tier === 1 ? 1 : 2, reason: t.reason, baseTier: baseOf(t), rule: t.rule, panel: Boolean(t.panel) });
+  return `${waitingFor(a, ctx.issue)} Once approved, ${repo.slug} is created (private, with a README) and is in the workspace on this task's next run.`;
+}
+
+/** What a create_repo card does, for the reviewer: exactly the one repository, nothing else. */
+const createRepoText = (slug) => `Create a new GitHub repository: ${slug}\n- private, in the agents org ${slug.split("/")[0]}, with a README on its default branch\n- created by the instance's GitHub App; no code, settings or access change anywhere else`;
+
+/** An approved create_repo card: the repo is created (or already there) and remembered for the task's next run. */
+async function createRepoApproved(issue, a) {
+  const slug = a.args.repo;
+  if (!app || !inOrg(cfg.agentsOrg, slug)) throw new UserError(`${slug} is outside the agents org`);
+  const done = await app.createRepo(slug);
+  log("repo created", { issue: issue.identifier, repo: slug, approval: a.id, result: done });
+  rememberRepos(issue.id, [slug]);
+  return { ok: true, text: done === "created" ? `Created ${slug} (private, with a README). It is in the workspace on this task's next run (\`aidenhq repo ${slug}\` clones it now).` : `${slug} already exists; nothing was created.` };
+}
+
 /** The user's task an Engineer's part belongs to, or undefined. */
 async function crewParent(full) {
   if (!full.parentId) return undefined;
@@ -2805,7 +2842,16 @@ async function startJob({ issue, instructions }) {
     // Every repository the request, the task and the task it is part of name joins the workspace
     //; the first leads. None named: the workspace starts empty, and the agent clones what it needs.
     const parent = await crewParent(full).catch(() => undefined);
-    const candidates = await repoCandidates(`${instructions}\n${full.title}\n${withParent(full.description, parent)}`);
+    const named = await repoCandidates(`${instructions}\n${full.title}\n${withParent(full.description, parent)}`);
+    // A name in the text that isn't a repository on GitHub (a path such as `org/apps`, a new app's repo not created yet)
+    // never joins the workspace, and is never created: the agent is told.
+    const missing = [];
+    for (const c of named) if (await missingRepo(c)) missing.push(c);
+    const candidates = named.filter((c) => !missing.includes(c));
+    if (missing.length) {
+      log("named repos missing", { issue: issue.identifier, repos: missing });
+      instructions = `(Runner note: ${missing.map((m) => `\`${m}\``).join(", ")} ${missing.length === 1 ? "is" : "are"} named here but ${missing.length === 1 ? "doesn't" : "don't"} exist on GitHub, so ${missing.length === 1 ? "it isn't" : "they aren't"} in the workspace. Naming a repository never creates it. Only when this task asks you to build a new app in a new repository, \`aidenhq create-repo <org/name>\` asks for it on an approval card.)\n\n${instructions}`;
+    }
     let task = state.task(issue.id);
     if (!task.repo && candidates.length) task = await setMainRepo(issue, candidates[0]);
     rememberRepos(issue.id, candidates.filter((c) => c.toLowerCase() !== String(task.repo).toLowerCase()));
@@ -3448,17 +3494,21 @@ function rememberRepos(issueId, slugs) {
   return list;
 }
 
-/** New repos and their push access, with the vault's admin token (read on each use, so adding it needs no restart). */
+/** Push access for repos no App covers, with the vault's admin token (read on each use, so adding it needs no restart). */
 const access = () => repoAccess({ token: existsSync(cfg.githubAdminTokenFile) ? readFileSync(cfg.githubAdminTokenFile, "utf8").trim() : "", script: cfg.repoAccessScript });
+
+/** True when slug is an agents-org repo that doesn't exist on GitHub (the App reads it; nothing is created). */
+const missingRepo = async (slug) => Boolean(app && inOrg(cfg.agentsOrg, slug) && !cfg.repo_sources?.[slug]) && !(await app.repoExists(slug));
+const missingRepoText = (slug) =>
+  `\`${slug}\` doesn't exist on GitHub. Naming or adding a repository never creates it: check the name your task gives, and never try made-up names. Only when your task asks you to build a new app in a new repository, \`aidenhq create-repo ${slug}\` asks for it on an approval card.`;
 
 /** Clone one repository into a workspace (from the runner's cache clone). */
 async function addRepo(workspace, slug, { copy = false } = {}) {
   const repo = normalizeRepo(slug);
   const local = cfg.repo_sources?.[repo.slug];
-  // A repo the task names that doesn't exist yet (a new app's) is created, private: in the agents org with its App
-  //, else in the admin token's own account.
-  const created = !local && app && inOrg(cfg.agentsOrg, repo.slug) ? await app.ensureRepo(repo.slug) : !local && repoAllowed(repo, cfg.allowed_orgs) ? await access().ensureExists(repo.slug) : "";
-  if (created === "created") log("repo created", { repo: repo.slug });
+  // Never created here: a repo named in a task, added by the agent or detected in text that doesn't exist (a typo, a path,
+  // a probe) is an error. A new app's repo comes only from an approved create_repo card (`aidenhq create-repo`).
+  if (await missingRepo(repo.slug)) throw new UserError(missingRepoText(repo.slug));
   // A repo an App covers goes over HTTPS with its tokens.
   const source = local ?? ((await appFor(repo.slug)) ? appRemoteUrl(repo.slug) : undefined);
   const cache = await ensureClone(cfg.workDir, repo, source);
@@ -3506,6 +3556,7 @@ const repoHelper = startRepoHelper(async ({ issue, workspace, box }, raw) => {
   pr: (ctx, args) => agentPublish(ctx, "pr", args),
   merge: agentMerge,
   close: agentClose,
+  "create-repo": agentCreateRepo,
   apply: agentApply,
   engine: async (ctx, args) => agentEngine(ctx, args).finally(() => saveTools(ctx)),
   primer: agentPrimer,

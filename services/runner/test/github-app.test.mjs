@@ -11,7 +11,7 @@ import { git, setGitAuth } from "../src/git.mjs";
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
 
 // Installed on aidenhq-demo (all repos) and Acme (only `selected`).
-function fakeGitHub({ repos = [], refuseCreationPerm = false } = {}) {
+function fakeGitHub({ repos = [], refuseCreationPerm = false, status } = {}) {
   const calls = [];
   let n = 0;
   const fetch = async (url, init) => {
@@ -27,7 +27,7 @@ function fakeGitHub({ repos = [], refuseCreationPerm = false } = {}) {
       if (path.includes("/7/") && body?.repositories?.some((r) => r !== "selected")) return res(422, { message: "not installed" });
       return res(201, { token: `ghs_${++n}`, expires_at: new Date(Date.now() + 3600_000).toISOString() });
     }
-    if (init.method === "GET" && path.startsWith("/repos/")) return res(repos.includes(path.slice(7)) ? 200 : 404, {});
+    if (init.method === "GET" && path.startsWith("/repos/")) return res(status ?? (repos.includes(path.slice(7)) ? 200 : 404), {});
     if (path === "/orgs/aidenhq-demo/repos") return res(201, {});
     return res(404, {});
   };
@@ -62,21 +62,35 @@ describe("GitHub App", () => {
     assert.equal(await app.covers("someone/else"), false);
   });
 
-  it("creates a missing repo only in an installed org, private, with a creation-only token", async () => {
+  it("never creates a repo it is only asked about; only createRepo (an approved card) creates one", async () => {
+    const creates = (calls) => calls.filter((c) => (c.method === "POST" && c.path.endsWith("/repos")) || c.body?.permissions?.repository_creation);
+    // Naming, adding or detecting a repo only checks it (WOR-4611, WOR-4650: twelve repos were created that way).
+    const missing = fakeGitHub();
+    for (const name of ["apps", "nonexistent-probe-xyz", "zzz-fake-8f3a2b"]) assert.equal(await missing.app.repoExists(`aidenhq-demo/${name}`), false);
+    assert.deepEqual(creates(missing.calls), [], "no create call, no creation token");
+    assert.equal(await fakeGitHub({ repos: ["aidenhq-demo/old"] }).app.repoExists("aidenhq-demo/old"), true);
+    // GitHub having a bad minute is never "doesn't exist".
+    await assert.rejects(fakeGitHub({ status: 502 }).app.repoExists("aidenhq-demo/old"), /502/);
+    // The approved card's one path: private, with a creation-only token; an existing repo is left alone.
     const { app, calls } = fakeGitHub();
-    assert.equal(await app.ensureRepo("aidenhq-demo/new-app"), "created");
+    assert.equal(await app.createRepo("aidenhq-demo/new-app"), "created");
     assert.deepEqual(calls.find((c) => c.method === "POST" && c.path.endsWith("/repos")).body, { name: "new-app", private: true, auto_init: true });
     assert.deepEqual(calls.filter((c) => c.path.endsWith("/access_tokens")).at(-1).body, { permissions: { repository_creation: "write" } });
-    const other = fakeGitHub();
-    assert.equal(await other.app.ensureRepo("nobody/new-app"), "missing");
-    assert.ok(!other.calls.some((c) => c.method === "POST"));
     const old = fakeGitHub({ repos: ["aidenhq-demo/old"] });
-    assert.equal(await old.app.ensureRepo("aidenhq-demo/old"), "exists");
-    assert.ok(!old.calls.some((c) => c.method === "POST" && c.path.endsWith("/repos")));
+    assert.equal(await old.app.createRepo("aidenhq-demo/old"), "exists");
+    assert.deepEqual(creates(old.calls), []);
     // A refused creation permission fails loudly; never a wider token.
     const refused = fakeGitHub({ refuseCreationPerm: true });
-    await assert.rejects(refused.app.ensureRepo("aidenhq-demo/new-app"), /422/);
+    await assert.rejects(refused.app.createRepo("aidenhq-demo/new-app"), /422/);
     assert.ok(!refused.calls.some((c) => c.method === "POST" && c.path.endsWith("/repos")));
+  });
+
+  it("the runner creates a repo only in createRepoApproved; cloning a missing one is an error", () => {
+    const main = readFileSync(join(import.meta.dirname, "../src/main.mjs"), "utf8");
+    const fn = (name) => main.slice(main.indexOf(`async function ${name}(`)).split("\n}\n")[0];
+    assert.equal(main.split("\n").filter((l) => l.includes("createRepo(")).length, 1);
+    assert.ok(fn("createRepoApproved").includes("await app.createRepo(slug)"));
+    assert.ok(fn("addRepo").includes("if (await missingRepo(repo.slug)) throw new UserError(missingRepoText(repo.slug));"));
   });
 
   it("commits as the App's bot, resolved once; never the owner's identity", async () => {

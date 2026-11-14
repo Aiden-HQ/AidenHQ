@@ -174,6 +174,20 @@ tool it already holds in a new way is not automatically safe: reject one that se
 to an outside address or channel the chain did not name. A role holder's handbook or memory that changes what it may
 approve, delegate or send, or whom it obeys, is authority-expanding.
 
+## New repositories (create_repo)
+
+A create_repo card asks to create one new private repository in the agents org, holding only a README (GitHub's initial
+commit, so it has a default branch); its diff is the description of that one repository. It grows the org, so it is
+authority-expanding (set `second_review`). Code already refused any other org and any name that isn't a plain lowercase
+name, and checked that the repository doesn't exist yet.
+
+- Approve when the request chain asks for a new app or a new repository and the card names the repository the chain
+  gives (or plainly that app's own name).
+- Reject when the chain doesn't ask for a new repository: a name taken from a path, folder or file the chain mentions
+  (`apps`, `docs`, `board`, a template being copied), a test, probe or placeholder name (`nonexistent-probe-xyz`,
+  `zzz-fake-…`), a repository the chain says already exists, or a chain about other work. Say that naming a repository
+  never asks for it to be created.
+
 ## Migrations and deploys
 
 Escalate a migration that contains `DROP`, `TRUNCATE`, `DELETE` without a `WHERE`, or `ALTER ... DROP`, even when it

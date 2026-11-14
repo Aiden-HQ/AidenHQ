@@ -8,7 +8,7 @@ import { z } from "zod";
 import type { Events } from "./events.js";
 import { TIER_RULE, type ReviewCode } from "./reason-codes.js";
 
-export const ACTIONS = ["apply", "push", "pr", "merge", "deploy_app", "app_run", "raise_cap"] as const;
+export const ACTIONS = ["apply", "push", "pr", "merge", "create_repo", "deploy_app", "app_run", "raise_cap"] as const;
 export type Action = (typeof ACTIONS)[number];
 /** Applied by the board on the tap; the rest by the runner, which claims approved records on its poll. */
 export const BOARD_ACTIONS: readonly Action[] = ["deploy_app", "app_run", "raise_cap"];
@@ -132,6 +132,8 @@ export const ARGS = {
   pr: z.object({ only: z.array(BRANCH).min(1).max(30), text: z.object({ title: z.string().max(300), body: z.string().max(60_000) }).strict().optional(), merge: z.literal(true).optional() }).strict(),
   merge: z.object({ prs: z.array(z.object({ repo: REPO, number: z.number().int().positive(), url: z.string().regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/), head: z.string().regex(/^[0-9a-f]{40}$/).optional(), noReview: z.literal(true).optional(), patch: PATCH.optional() }).strict()).min(1).max(30), gap: z.number().int().min(0).max(720).optional() }).strict(),
   apply: z.object({ repo: REPO, branch: z.string().min(1).max(200).regex(/^[^\s`]+$/), sha: SHA, files: z.array(z.string().max(300)).min(1).max(200) }).strict(),
+  // A new app's repository in the agents org (the runner's tiers.mjs refuses any other org or name before filing).
+  create_repo: z.object({ repo: z.string().regex(/^[\w.-]+\/[a-z][a-z0-9-]{0,62}$/) }).strict(),
 };
 export type RunnerAction = keyof typeof ARGS;
 
@@ -154,6 +156,10 @@ export function card(action: RunnerAction, args: any, diff = ""): Pick<Request, 
     const urls = prs.map((p) => p.url);
     const lines = prs.map((p) => `${p.url}${p.head ? ` at ${p.head.slice(0, 12)}` : ""}${p.noReview ? " (your tap is its only review)" : " (also needs GitHub approval)"}`);
     return { ...base, target: urls.join(", ").slice(0, 500), sentence: `Merge ${urls.length} pull request${urls.length === 1 ? "" : "s"}, one at a time${args.gap ? `, ${args.gap} minutes apart` : ""}.`, changes: `Merges, in this order, only at these commits and with green checks:\n${lines.join("\n")}`, details: lines.join("\n") };
+  }
+  if (action === "create_repo") {
+    const what = `Creates the private repository ${args.repo} (with a README) through the instance's GitHub App. It adds a repository to the agents org; nothing else changes.`;
+    return { ...base, target: args.repo, sentence: `Create the repository ${args.repo}.`, changes: what, details: what };
   }
   return { ...base, target: `${args.repo} ${args.branch}`, sentence: `Apply a change to the fleet's configuration (commit ${args.sha.slice(0, 12)}).`, changes: `Lands ${args.sha.slice(0, 12)} on ${args.repo}'s main and re-applies the live fleet. Files: ${args.files.join(", ")}`, cost: "No model cost; services restart.", details: diff };
 }

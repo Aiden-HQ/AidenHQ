@@ -11,7 +11,8 @@
 //   aidenhq merge <PR link>... [--gap <minutes>]     merge PRs one at a time, after this turn
 //   aidenhq close <PR link>... --reason "<one line>"  close superseded or duplicate PRs in the agents org
 //   aidenhq apply                                  (Platform Engineer) nothing to run: the runner files the approval card
-//   aidenhq repo <org/name>                          clone another repository into the workspace
+//   aidenhq repo <org/name>                          clone another repository into the workspace (never creates one)
+//   aidenhq create-repo <org/name>                   ask for a new app's repository in the agents org (an approval card)
 //   aidenhq engine <engine> [model]                   run this request again on another engine/model
 //   aidenhq primer [<Primer link>]                   publish .aidenhq/primer.md on Primer after runs (a new
 //                                                       document, or new versions of the one linked)
@@ -22,7 +23,7 @@
 //   aidenhq tasks [<words>] [--agent <name>]         find tasks, closed ones too
 import { readFileSync } from "node:fs";
 
-const usage = `usage: aidenhq status | wait [--minutes <n>] | push [<org/repo> <branch>]... | pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>] | merge <PR link>... [--gap <minutes>] | close <PR link>... --reason "<one line>" | apply | repo <org/name> | engine <claude|codex|openrouter> [model] | primer [<Primer link>] | pass <name> | reset | cleanup | task <PEN-N> | tasks [<words>] [--agent <name>]`;
+const usage = `usage: aidenhq status | wait [--minutes <n>] | push [<org/repo> <branch>]... | pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>] | merge <PR link>... [--gap <minutes>] | close <PR link>... --reason "<one line>" | apply | repo <org/name> | create-repo <org/name> | engine <claude|codex|openrouter> [model] | primer [<Primer link>] | pass <name> | reset | cleanup | task <PEN-N> | tasks [<words>] [--agent <name>]`;
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -33,7 +34,7 @@ if (!command || ["help", "-h", "--help"].includes(command) || rest.some((w) => w
   console.log(usage);
   process.exit(0);
 }
-if (!["status", "wait", "push", "pr", "merge", "close", "apply", "repo", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks"].includes(command)) fail(usage, 2);
+if (!["status", "wait", "push", "pr", "merge", "close", "apply", "repo", "create-repo", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks"].includes(command)) fail(usage, 2);
 if (!process.env.AIDENHQ_REPO_URL) fail("only available inside a task run", 2);
 
 const flags = {};
@@ -44,7 +45,7 @@ for (let i = 0; i < rest.length; i++) {
   else words.push(rest[i]);
 }
 let body;
-if (command === "repo") {
+if (command === "repo" || command === "create-repo") {
   if (words.length !== 1) fail(usage, 2);
   body = { repo: words[0] };
 } else if (command === "engine") {

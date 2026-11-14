@@ -79,4 +79,12 @@ describe("card contract", () => {
     }
     expect(new Set(Object.keys(entry))).toEqual(new Set(runnerCards.BRANCH_CARD_FIELDS));
   });
+
+  it("a create_repo card (the runner's `aidenhq create-repo`) names exactly one plain repo, and the card says it grows the org", async () => {
+    const filed = await post("/internal/approvals", { issue: "WOR-184", action: "create_repo", args: { repo: "acme-agents/expense-tracker" }, tier: 1, panel: true, rule: "agents-org-create-repo" });
+    expect(filed.status, filed.json?.error).toBe(200);
+    expect(filed.json.args).toEqual({ repo: "acme-agents/expense-tracker" });
+    expect(filed.json.sentence).toBe("Create the repository acme-agents/expense-tracker.");
+    for (const repo of ["acme-agents/.github", "acme-agents/Apps", "acme-agents"]) expect((await post("/internal/approvals", { issue: "WOR-184", action: "create_repo", args: { repo } })).status, repo).toBe(400);
+  });
 });

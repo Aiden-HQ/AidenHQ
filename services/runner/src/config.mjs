@@ -79,7 +79,7 @@ export function loadConfig() {
     reviewerKeyFile: join(secrets, "reviewer_key"),
     // The product repo (owner/name): AIDENHQ_PRODUCT_REPO, else this checkout's origin. Tiering treats it apart.
     productRepo: env.AIDENHQ_PRODUCT_REPO || productRepoOf(REPO_ROOT),
-    /** GitHub token that may create repos and add deploy keys (src/repos.mjs); optional, never in an agent's sandbox. */
+    /** GitHub token that adds deploy keys (src/repos.mjs); optional, never in an agent's sandbox. */
     githubAdminTokenFile: join(secrets, "github_admin_token"),
     repoAccessScript: join(REPO_ROOT, "ops/vm/add-deploy-key.sh"),
     boardInternalUrl: env.BOARD_INTERNAL_URL ?? cfg.recurring?.board_url ?? "http://127.0.0.1:3122",
