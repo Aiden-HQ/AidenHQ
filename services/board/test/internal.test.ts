@@ -11,7 +11,7 @@ import { Store } from "../src/store.js";
 
 // The grants table setup writes: the Research Assistant may change the board; the Scout holds the tool but not the role.
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-writeFileSync(grantsFile, JSON.stringify({ agents: { ra: { key: "assistant", roles: ["board-writer"], tools: { paperclip_tasks: ["task_schedule"] } }, scout: { key: "scout", roles: [], tools: { paperclip_tasks: ["task_schedule"] } } } }));
+writeFileSync(grantsFile, JSON.stringify({ agents: { ra: { key: "assistant", roles: ["board-writer", "fleet-read"], tools: { paperclip_tasks: ["task_schedule"] } }, scout: { key: "scout", roles: [], tools: { paperclip_tasks: ["task_schedule"] } } } }));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 describe("internal listener", () => {
@@ -71,6 +71,38 @@ describe("internal listener", () => {
   it("serves only /internal/ routes: not the user's API or the page", async () => {
     expect((await post("/api/issues", { title: "x" })).status).toBe(404);
     expect((await call("GET", "/", undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}` })).status).toBe(404);
+  });
+
+  it("fleet_status answers with detector.open and detector.recovered readable, even behind long lists", async () => {
+    const big = "t".repeat(200);
+    const row = (k: number) => ({ id: `i${k}`, identifier: `PEN-${k}`, title: big, status: "blocked", priority: "medium", assigneeUserId: null, assigneeAgentId: "a1", assigneeAdapterOverrides: null, createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:00Z" });
+    store.setMeta("fleet_ops_detector", JSON.stringify({
+      open: { "routine:daily-brief": { reason: "routine daily brief: its last 3 runs failed", at: "2026-11-13T10:00:00Z", fired: true } },
+      recovered: [{ key: "source:slack", reason: "source src_slack: last good pass 20 min ago", at: "2026-11-13T11:00:00Z", fired: true }],
+    }));
+    (pc as any).request = async (m: string, path: string) => (path.includes("/issues?") ? Array.from({ length: 500 }, (_, k) => row(k)) : []);
+    // The summary's own reads (a failed one is allowed to be null, but it must not outlive the stub above).
+    (pc as any).closedSince = async () => [];
+    (pc as any).recentRuns = async () => [];
+    try {
+      // The body as it goes over the wire, not the object a caller happened to build.
+      const res = await post("/internal/fleet/status", {});
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { detector: unknown; truncated?: string[] } & Record<string, unknown>;
+      const text = JSON.stringify(body);
+      expect(text.length).toBeLessThanOrEqual(24_000);
+      expect(body.detector).toEqual({
+        open: { "routine:daily-brief": { reason: "routine daily brief: its last 3 runs failed", at: "2026-11-13T10:00:00Z", fired: true } },
+        recovered: [{ key: "source:slack", reason: "source src_slack: last good pass 20 min ago", at: "2026-11-13T11:00:00Z", fired: true }],
+      });
+      expect(Object.keys(body)[0]).toBe("detector");
+      expect(body.truncated?.some((t) => /^(stuck|agents): \d+ of 500$/.test(t))).toBe(true);
+    } finally {
+      delete (pc as any).request;
+      delete (pc as any).closedSince;
+      delete (pc as any).recentRuns;
+      store.delMeta("fleet_ops_detector");
+    }
   });
 
   it("schedules a move on the user's task, and rejects bad dates", async () => {

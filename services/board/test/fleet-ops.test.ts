@@ -24,8 +24,12 @@ describe("Fleet Ops detector", () => {
     }) as unknown as { detector: ReturnType<typeof detectorState>; stuck: unknown[]; truncated: string[] };
     const text = JSON.stringify(reply);
     expect(text.length).toBeLessThanOrEqual(24_000);
-    expect(JSON.parse(text).detector.open["routine:daily-brief"].reason).toBe("routine daily brief: its last 3 runs failed");
-    expect(reply.detector.recovered.map((r) => r.key)).toEqual(["source:slack"]);
+    // Whole entries, not just a field scraped out of them: what Fleet Ops reads keyed by incident, and each recovery
+    // with its reason and time. Nothing under `open` or `recovered` may be left out or cut.
+    const parsed = JSON.parse(text).detector;
+    expect(parsed.open).toEqual({ "routine:daily-brief": { reason: "routine daily brief: its last 3 runs failed", at: "2026-11-13T10:00:00Z", fired: true } });
+    expect(parsed.recovered).toEqual([{ key: "source:slack", reason: "source src_slack: last good pass 20 min ago", at: "2026-11-13T11:00:00Z", fired: true }]);
+    expect(parsed).toEqual({ open: expect.any(Object), recovered: expect.any(Array) }); // and nothing else rides along
     expect(reply.truncated.some((t) => /^(stuck|summary\.shipped\.tasks): \d+ of 500$/.test(t))).toBe(true);
     expect(JSON.parse(text)).not.toHaveProperty("failed"); // the old history is not part of a reply
   });
