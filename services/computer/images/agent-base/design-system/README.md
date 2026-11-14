@@ -7,14 +7,15 @@ components wear, the rules, and the review checklist.
 | File | What it is |
 |---|---|
 | `tokens.css` | Every colour, size, space, radius and duration: four palettes (`neutral`, `warm`, `contrast`, `data`) from Radix Colors, each in light and dark, all AA (`scripts/test/design-system.test.mjs`). |
+| `presets/` | Theme presets, one file each (`crisp`, `polished`, `editorial`, `dense`, `ops`, `indigo`, `soft`, `slate`, `minimal`, `graphite`): palette in light and dark, accent, radius, fonts and density. An app imports one after `shadcn.css` and sets `<html data-palette="<name>">`. A starting point, not a rule; all AA. |
 | `shadcn.css` | Maps the tokens onto shadcn's variables (`--background`, `--primary`, `--muted-foreground`, `--sidebar`…) and Tailwind's colour names, plus status (`ok`, `warn`, `danger`, `info`), `link`, `page` and `chart-1…6`. Points Tailwind's `dark:` at `<html data-theme>`. |
 | `guidelines.md` | The floors every app meets (behaviour, states, accessibility, the stack) and craft guidance (layout, navigation, emphasis, colour, type, motion, data views), with the generic tells to avoid. |
 | `review-checklist.md` | What blocks a UI pull request and what goes to the backlog, plus the Engineer's self-review. |
 | `components.css`, `kit.js` | **Deprecated:** the plain-CSS kit (version 2), kept only for apps that still vendor it until they migrate (below). Don't use it in new work. |
 
-The catalog is the starter's own `/catalog` page: every component in use, themed, with palette and mode pickers
-(`?palette=warm&mode=dark`). The product repo is the source. The starter vendors `tokens.css` and `shadcn.css` in
-`src/styles/`, and the agent computers carry this folder at `/opt/aidenhq/design-system/` and the starter at
+The catalog is the starter's dev-only `catalog.html` (`npm run catalog`): every block, component, variant, shell and
+preset, themed, with palette and mode pickers (`?palette=crisp&mode=dark`). Apps never ship it. The product repo is the
+source. The starter vendors `tokens.css`, `shadcn.css` and `presets/` in `src/styles/`, and the agent computers carry this folder at `/opt/aidenhq/design-system/` and the starter at
 `/opt/aidenhq/app-starter/` (byte-identical copies, `node scripts/sync-shared.mjs`; a test fails on drift).
 
 ## A new app

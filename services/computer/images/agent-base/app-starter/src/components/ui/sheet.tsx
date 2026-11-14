@@ -45,10 +45,13 @@ function SheetContent({
   className,
   children,
   side = "right",
+  size = "sm",
   showCloseButton = true,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left"
+  /** A left or right sheet's width from the `sm` breakpoint up (phones get three quarters of the screen). */
+  size?: "sm" | "md" | "lg" | "xl"
   showCloseButton?: boolean
 }) {
   return (
@@ -66,6 +69,7 @@ function SheetContent({
             "inset-x-0 top-0 h-auto border-b data-[state=closed]:slide-out-to-top data-[state=open]:slide-in-from-top",
           side === "bottom" &&
             "inset-x-0 bottom-0 h-auto border-t data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom",
+          (side === "left" || side === "right") && { sm: "", md: "sm:max-w-md", lg: "sm:max-w-lg", xl: "sm:max-w-2xl" }[size],
           className
         )}
         {...props}

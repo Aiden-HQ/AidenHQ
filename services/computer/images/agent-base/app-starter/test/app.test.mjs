@@ -32,9 +32,16 @@ test("built app: page, CSP, assets, routes, health and API", async () => {
       const a = await fetch(base + src[1]);
       assert.equal(a.status, 200, src[1]);
       assert.match(a.headers.get("content-type"), /javascript|css/);
+      // The library is a menu: only what the app imports is built. The example page doesn't use these.
+      if (src[1].endsWith(".js")) {
+        const slots = new Set([...(await a.text()).matchAll(/"data-slot":[`"']([\w-]+)/g)].map((m) => m[1]));
+        assert.ok(slots.has("sheet-content") && slots.has("table"), "the components the page uses are built");
+        for (const unused of ["tabs-list", "card-header", "breadcrumb", "sidebar-wrapper", "dialog-content", "toggle-group", "avatar"])
+          assert.ok(!slots.has(unused), `the bundle carries ${unused}, which the example page doesn't import`);
+      }
     }
     assert.equal((await fetch(`${base}/theme.js`)).status, 200);
-    assert.equal((await fetch(`${base}/catalog`)).status, 200);
+    assert.equal((await fetch(`${base}/catalog`)).status, 404, "the catalog is a dev-only preview, never an app route");
     assert.equal((await fetch(`${base}/no-such-page`)).status, 404);
 
     assert.deepEqual(await (await fetch(`${base}/api/health`)).json(), { ok: true, checks: [] });

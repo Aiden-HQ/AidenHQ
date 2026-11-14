@@ -180,6 +180,10 @@ jobs:
           depth=light
           if [ -z "$stat" ] || [ "$lines" -gt 800 ] || printf '%s\n' "$stat" | grep -qiE 'package(-lock)?\.json|lock|\.github/|dockerfile|auth|secur|token|session|permission'; then depth=normal; fi
           case ",$PR_LABELS," in *,deep-review,*) depth=deep ;; esac
+          # A large diff spends codegenie's per-packet call budget before it finishes ("LLM provider call budget
+          # exhausted"), which fails the check without a single finding: scale the budget with the diff's size.
+          boost=1
+          if [ "$lines" -gt 6000 ]; then boost=4; elif [ "$lines" -gt 2000 ]; then boost=2; fi
           # Tiny changes in non-sensitive files (still light: no sensitive path, no deep-review label) skip the review.
           if [ "$depth" = light ] && [ "$lines" -lt 20 ]; then
             echo "::notice::$lines changed lines, no sensitive files: no code review needed."
@@ -188,7 +192,7 @@ jobs:
           fi
           echo "Changed lines: $lines, review depth: $depth"
           npx -y @0xsequence/codegenie@0.7.0 review --base "$BASE_SHA" --head "$HEAD_SHA" --model "$MODEL" --depth "$depth" \
-            --format json --ci --no-progress --max-time 40 > "$RUNNER_TEMP/review.json"
+            --format json --ci --no-progress --max-time 40 --budget-boost "$boost" > "$RUNNER_TEMP/review.json"
           echo "CODEGENIE_EXIT=$?" >> "$GITHUB_ENV"
       - name: Verdict
         if: ${{ !cancelled() }}

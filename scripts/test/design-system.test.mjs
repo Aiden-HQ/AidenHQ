@@ -13,9 +13,9 @@ const lum = (h) => {
 const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
 
 /** Every rule block's hex custom properties, keyed by selector (media-wrapped dark blocks included). */
-function blocks() {
+function blocks(css = tokens) {
   const out = {};
-  for (const m of tokens.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const sel = m[1].trim().split("\n").pop().trim();
     for (const [, k, v] of m[2].matchAll(/(--[\w-]+):\s*(#[0-9a-f]{6})/g)) (out[sel] ??= {})[k] = v;
   }
@@ -40,6 +40,33 @@ test("every palette in light and dark passes AA for text, controls and focus", (
     }
   }
   assert.equal(checked, 492);
+});
+
+test("every theme preset passes AA in light and dark, over the tokens it doesn't set", () => {
+  const base = blocks();
+  const presets = readdirSync(new URL("presets/", dir)).filter((f) => f.endsWith(".css"));
+  assert.ok(presets.length >= 8, "the curated presets are there");
+  for (const f of presets) {
+    const name = f.replace(/\.css$/, "");
+    const b = blocks(readFileSync(new URL(`presets/${f}`, dir), "utf8"));
+    const sel = `:root[data-palette="${name}"]`;
+    assert.ok(b[sel]?.["--accent"], `${f}: no light block ${sel}`);
+    // Loaded after tokens.css: the preset's light block overrides the base dark one, and its dark blocks override both.
+    for (const [mode, t] of [
+      ["light", { ...base[":root"], ...b[sel] }],
+      ["dark", { ...base[":root"], ...base[':root[data-theme="dark"]'], ...b[sel], ...b[`${sel}[data-theme="dark"]`] }],
+      ["dark (system)", { ...base[":root"], ...base[':root:not([data-theme="light"])'], ...b[sel], ...b[`${sel}:not([data-theme="light"])`] }],
+    ]) {
+      const need = (fg, bg, min) => { const r = ratio(t[fg], t[bg]); assert.ok(r >= min, `${name} ${mode}: ${fg} on ${bg} is ${r.toFixed(2)}:1, needs ${min}`); };
+      for (const bg of ["--bg", "--surface", "--surface-2"]) for (const fg of ["--text", "--text-muted", "--accent-ink", "--ok", "--warn", "--danger", "--info"]) need(fg, bg, 4.5);
+      for (const k of ["accent", "ok", "warn", "danger", "info"]) need(k === "accent" ? "--accent-ink" : `--${k}`, `--${k}-soft`, 4.5);
+      need("--accent-text", "--accent", 4.5);
+      for (const bg of ["--bg", "--surface"]) { need("--line-strong", bg, 3); need("--focus", bg, 3); }
+      for (let i = 1; i <= 6; i++) need(`--chart-${i}`, "--surface", 3);
+      if (t["--accent-2"]) need("--accent-text", "--accent-2", 4.5);
+      if (t["--sidebar-bg"]) for (const [fg, bg] of [["--sidebar-text", "--sidebar-bg"], ["--sidebar-muted", "--sidebar-bg"], ["--sidebar-text-strong", "--sidebar-hover"]]) need(fg, bg, 4.5);
+    }
+  }
 });
 
 test("the default palette's deep sidebar and primary gradient are AA in light and dark", () => {

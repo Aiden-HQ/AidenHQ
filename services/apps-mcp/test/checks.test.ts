@@ -63,7 +63,7 @@ describe.skipIf(!ready)("render check, in the real renderer", () => {
   const starter = fileURLToPath(new URL("../../../modules/core/templates/app/", import.meta.url));
   it.skipIf(!existsSync(join(starter, "dist", "index.html")))("the app starter template renders clean under its own CSP", async () => {
     const c = start(["-v", `${starter}:/app:ro`, "-w", "/app", VIEW_IMAGE, "node", "server.mjs"]);
-    const pages = await check(c, ["/", "/catalog"]);
+    const pages = await check(c, ["/"]);
     for (const p of pages) expect(judgePage(p, true), p.path).toEqual([]);
     expect(pages[0]!.sheets!.length).toBeGreaterThan(0);
   }, 120_000);

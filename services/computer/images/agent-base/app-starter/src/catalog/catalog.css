@@ -1,0 +1,21 @@
+/* The catalog's styles: the same as src/index.css (which leaves this folder out of the app's build), plus every theme
+   preset (an app imports only the one it picks). Keep the first lines in step with index.css. */
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/inter";
+@import "../styles/tokens.css";
+@import "../styles/shadcn.css";
+@import "../styles/presets/crisp.css";
+@import "../styles/presets/polished.css";
+@import "../styles/presets/editorial.css";
+@import "../styles/presets/dense.css";
+@import "../styles/presets/ops.css";
+@import "../styles/presets/indigo.css";
+@import "../styles/presets/soft.css";
+@import "../styles/presets/slate.css";
+@import "../styles/presets/minimal.css";
+@import "../styles/presets/graphite.css";
+
+:root {
+  --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}

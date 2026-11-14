@@ -1,0 +1,77 @@
+/* AidenHQ design system preset "crisp". Crisp: a cool neutral with a muted indigo, tight corners and compact spacing (Linear-like).
+   Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="crisp">.
+   A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
+   (scripts/test/design-system.test.mjs). Statuses come from tokens.css. */
+
+:root[data-palette="crisp"] {
+  --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 8px;
+  --spacing: 0.24rem;
+  --bg: #fbfbfc;
+  --surface: #ffffff;
+  --surface-2: #f3f3f5;
+  --surface-hover: #ececef;
+  --surface-active: #e4e4e8;
+  --line: #e3e3e8;
+  --line-strong: #8a8c96;
+  --text: #17181c;
+  --text-muted: #5f616b;
+  --accent: #5e6ad2;
+  --accent-hover: #4f5ac4;
+  --accent-text: #ffffff;
+  --accent-soft: #eef0fc;
+  --accent-line: #c6cbf2;
+  --accent-ink: #4651b8;
+  --focus: #5e6ad2;
+  --chart-1: #5e6ad2;
+}
+
+@media (pointer: coarse) {
+  :root[data-palette="crisp"] { --spacing: 0.25rem; }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-palette="crisp"]:not([data-theme="light"]) {
+    --bg: #0f1012;
+    --surface: #151619;
+    --surface-2: #1c1d21;
+    --surface-hover: #23242a;
+    --surface-active: #2a2c32;
+    --line: #2b2d33;
+    --line-strong: #6b6e78;
+    --text: #ececef;
+    --text-muted: #a1a3ad;
+    --accent: #5e6ad2;
+    --accent-hover: #6f7ae0;
+    --accent-text: #ffffff;
+    --accent-soft: #1d2040;
+    --accent-line: #363c7a;
+    --accent-ink: #a7aeff;
+    --focus: #7b86ec;
+    --chart-1: #7b86ec;
+  }
+}
+
+:root[data-palette="crisp"][data-theme="dark"] {
+  --bg: #0f1012;
+  --surface: #151619;
+  --surface-2: #1c1d21;
+  --surface-hover: #23242a;
+  --surface-active: #2a2c32;
+  --line: #2b2d33;
+  --line-strong: #6b6e78;
+  --text: #ececef;
+  --text-muted: #a1a3ad;
+  --accent: #5e6ad2;
+  --accent-hover: #6f7ae0;
+  --accent-text: #ffffff;
+  --accent-soft: #1d2040;
+  --accent-line: #363c7a;
+  --accent-ink: #a7aeff;
+  --focus: #7b86ec;
+  --chart-1: #7b86ec;
+}

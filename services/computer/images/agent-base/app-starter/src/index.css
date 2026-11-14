@@ -5,6 +5,8 @@
 @import "@fontsource-variable/inter";
 @import "./styles/tokens.css";
 @import "./styles/shadcn.css";
+/* The dev-only component catalog (src/catalog/, `npm run catalog`) is not part of the app: its classes stay out of the build. */
+@source not "./catalog";
 
 :root {
   --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;

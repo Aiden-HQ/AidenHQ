@@ -1,0 +1,102 @@
+/* AidenHQ design system preset "indigo". Indigo: a bold, saturated indigo on cool white, a deep indigo sidebar and gradient, rounder cards.
+   Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="indigo">.
+   A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
+   (scripts/test/design-system.test.mjs). Statuses come from tokens.css. */
+
+:root[data-palette="indigo"] {
+  --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --bg: #f7f7fd;
+  --surface: #ffffff;
+  --surface-2: #efeffa;
+  --surface-hover: #e7e7f6;
+  --surface-active: #dedef2;
+  --line: #dcdcef;
+  --line-strong: #7f80a0;
+  --text: #14142b;
+  --text-muted: #55567a;
+  --accent: #4338ca;
+  --accent-hover: #3730a3;
+  --accent-text: #ffffff;
+  --accent-soft: #eceafd;
+  --accent-line: #c3bff5;
+  --accent-ink: #3b31b8;
+  --focus: #4f46e5;
+  --chart-1: #4f46e5;
+  --chart-2: #0891b2;
+  --chart-3: #ea580c;
+  --chart-4: #db2777;
+  --chart-5: #16a34a;
+  --chart-6: #9333ea;
+  --accent-2: #7c3aed;
+  --sidebar-bg: #1e1b4b;
+  --sidebar-text: #c7c6ec;
+  --sidebar-text-strong: #ffffff;
+  --sidebar-muted: #9897c8;
+  --sidebar-hover: #2e2a6b;
+  --sidebar-line: #2e2a6b;
+}
+
+:root[data-palette="indigo"] { --accent-grad: linear-gradient(135deg, var(--accent-2) 0%, var(--accent) 100%); }
+
+@media (prefers-color-scheme: dark) {
+  :root[data-palette="indigo"]:not([data-theme="light"]) {
+    --bg: #0d0d1f;
+    --surface: #13132a;
+    --surface-2: #1a1a36;
+    --surface-hover: #212142;
+    --surface-active: #29294f;
+    --line: #2b2b52;
+    --line-strong: #7072a3;
+    --text: #ecebff;
+    --text-muted: #a9a9d0;
+    --accent: #5a5de8;
+    --accent-hover: #6b6ef0;
+    --accent-text: #ffffff;
+    --accent-soft: #22205a;
+    --accent-line: #3f3c9e;
+    --accent-ink: #b4b5ff;
+    --focus: #818cf8;
+    --chart-1: #818cf8;
+    --chart-2: #22b8d6;
+    --chart-3: #fb923c;
+    --chart-4: #f472b6;
+    --chart-5: #4ade80;
+    --chart-6: #c084fc;
+    --sidebar-bg: #0b0a24;
+    --sidebar-hover: #1d1b45;
+    --sidebar-line: #23214f;
+  }
+}
+
+:root[data-palette="indigo"][data-theme="dark"] {
+  --bg: #0d0d1f;
+  --surface: #13132a;
+  --surface-2: #1a1a36;
+  --surface-hover: #212142;
+  --surface-active: #29294f;
+  --line: #2b2b52;
+  --line-strong: #7072a3;
+  --text: #ecebff;
+  --text-muted: #a9a9d0;
+  --accent: #5a5de8;
+  --accent-hover: #6b6ef0;
+  --accent-text: #ffffff;
+  --accent-soft: #22205a;
+  --accent-line: #3f3c9e;
+  --accent-ink: #b4b5ff;
+  --focus: #818cf8;
+  --chart-1: #818cf8;
+  --chart-2: #22b8d6;
+  --chart-3: #fb923c;
+  --chart-4: #f472b6;
+  --chart-5: #4ade80;
+  --chart-6: #c084fc;
+  --sidebar-bg: #0b0a24;
+  --sidebar-hover: #1d1b45;
+  --sidebar-line: #23214f;
+}

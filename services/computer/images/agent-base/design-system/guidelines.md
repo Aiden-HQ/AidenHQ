@@ -56,9 +56,10 @@ layout.
   colour that a screen is easy to scan, never decoration that competes with the content.
 - **Colours come from the theme's names** (`bg-background`, `text-muted-foreground`, `bg-primary`, `text-danger`,
   `bg-chart-1`…), never literal colours or Tailwind palette colours, so light and dark both work. Pick the palette that
-  fits the app (`<html data-palette>`: `neutral`, `warm`, `contrast`, `data`) or give the app its own in a `theme.css`
-  that overrides tokens (`--accent*`, `--focus`, `--font`) or shadcn's variables, in light and dark, checked for
-  contrast.
+  fits the app (`<html data-palette>`: `neutral`, `warm`, `contrast`, `data`), or a theme preset (`presets/`: palette,
+  accent, radius, fonts and density in one file; import it and set `data-palette` to its name), or give the app its own
+  in a `theme.css` that overrides tokens (`--accent*`, `--focus`, `--font`) or shadcn's variables, in light and dark,
+  checked for contrast. A preset is a starting point to adapt, not a rule.
 - **Status by meaning:** finished is the brand colour, on track `ok`, at risk `warn`, late or blocked `danger`, not
   started grey. A status is a dot or icon plus a word, never colour alone. When every row in a view shares a status,
   drop the status column.
@@ -157,12 +158,15 @@ really calls for one.
   `shadcn.css` vendored unchanged (re-theme in `theme.css`), and the strict CSP (no inline scripts, no CDN, no
   `'unsafe-inline'`).
 - **The blocks are optional.** `src/components/blocks/` (page header, stat strip, sortable table pieces, board,
-  activity list, states, detail list, form layout, charts, a sidebar shell for apps with many destinations) and the starter's shell and example page are there to use,
-  adapt or ignore. They save time and already meet the floors; they are not the required design.
+  activity list, states, detail list, form layout, charts, pickers, timeline, stepper, settings rows, KPI cards, shells)
+  are a menu with variants, and nothing in it is required: an app imports only what it uses, and only that is built. Pick
+  the shell that fits the app's navigation (top bar, sidebar, bare, or your own). They save time and already meet the
+  floors; they are not the required design.
 - When shadcn lacks a component, take it from Origin UI (`originui.com`, MIT, Radix + Tailwind source through the
   shadcn CLI). No animation or effects libraries, and no second chart library while the starter's charts cover the need.
-- A component two apps change the same way moves into the starter. Every theme change keeps all four palettes AA in
-  light and dark (`scripts/test/design-system.test.mjs`) and the starter's `/catalog` clean in `ui-review`.
+- A component two apps change the same way moves into the starter. Every theme change keeps all palettes and presets AA
+  in light and dark (`scripts/test/design-system.test.mjs`) and the starter's catalog (`npm run catalog`, dev-only;
+  apps have no catalog page) clean in `ui-review`.
 
 ## The owner tends to like
 

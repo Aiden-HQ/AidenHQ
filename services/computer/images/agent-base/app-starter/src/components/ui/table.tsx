@@ -3,7 +3,15 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+const TABLE_VARIANTS = {
+  default: "",
+  // Shorter rows for dense data: 32px headers, 4px above and below each cell.
+  compact: "[&_td]:py-1 [&_th]:h-8",
+  // Every other body row on a faint fill, for wide rows the eye has to follow.
+  striped: "[&_tbody_tr:nth-child(even)]:bg-muted/50",
+} as const
+
+function Table({ className, variant = "default", ...props }: React.ComponentProps<"table"> & { variant?: keyof typeof TABLE_VARIANTS }) {
   return (
     <div
       data-slot="table-container"
@@ -11,7 +19,8 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
     >
       <table
         data-slot="table"
-        className={cn("w-full caption-bottom text-sm", className)}
+        data-variant={variant}
+        className={cn("w-full caption-bottom text-sm", TABLE_VARIANTS[variant], className)}
         {...props}
       />
     </div>

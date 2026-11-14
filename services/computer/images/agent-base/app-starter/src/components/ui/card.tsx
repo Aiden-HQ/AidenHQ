@@ -1,17 +1,23 @@
 import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
-function Card({ className, ...props }: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="card"
-      className={cn(
-        "flex flex-col gap-6 rounded-xl border bg-card py-6 text-card-foreground shadow-sm",
-        className
-      )}
-      {...props}
-    />
-  )
+const cardVariants = cva("flex flex-col gap-6 rounded-xl bg-card py-6 text-card-foreground", {
+  variants: {
+    variant: {
+      default: "border shadow-sm",
+      // A muted fill with no line or shadow: a group that sits within the page rather than above it.
+      flat: "bg-muted",
+      bordered: "border",
+      // Lifted off the page: the one object a view is about.
+      elevated: "shadow-(--shadow)",
+    },
+  },
+  defaultVariants: { variant: "default" },
+})
+
+function Card({ className, variant = "default", ...props }: React.ComponentProps<"div"> & VariantProps<typeof cardVariants>) {
+  return <div data-slot="card" data-variant={variant} className={cn(cardVariants({ variant }), className)} {...props} />
 }
 
 function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
@@ -82,6 +88,7 @@ function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
 
 export {
   Card,
+  cardVariants,
   CardHeader,
   CardFooter,
   CardTitle,

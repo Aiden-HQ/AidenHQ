@@ -1,14 +1,11 @@
 import * as React from "react"
-import { AlertTriangleIcon, FolderKanbanIcon, KanbanIcon, LinkIcon, RotateCwIcon, SearchIcon, SearchXIcon, TableIcon, XIcon } from "lucide-react"
+import { AlertTriangleIcon, FolderKanbanIcon, LinkIcon, RotateCwIcon, SearchIcon, SearchXIcon, XIcon } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { StatusBadge } from "@/components/status-badge"
-import { Board } from "@/components/blocks/board"
 import { Page, PageHeader } from "@/components/blocks/page"
 import { StatStrip } from "@/components/blocks/stat-strip"
 import { Pagination, paginate, SortHead } from "@/components/blocks/data-table"
@@ -21,7 +18,6 @@ import { useUrlState } from "@/hooks/use-url-state"
 import {
   applyFilters,
   formatDate,
-  initials,
   inScope,
   isOverdue,
   isSort,
@@ -36,9 +32,9 @@ import {
 import { cn } from "@/lib/utils"
 
 // The example page: a page header, a summary that counts what the filters show, filters that apply as they change and
-// live in the URL, a sortable, paged table or a board of status lanes (`?view=board`), details in a sheet, and every
-// state (loading, error, empty, no match, unknown value). Built from the blocks in src/components/blocks/: copy the
-// composition, not the data.
+// live in the URL, a sortable, paged table, details in a sheet, and every state (loading, error, empty, no match, unknown
+// value). It imports only what it uses; the other blocks and components (src/components/) are there when a page needs
+// them. Copy the composition, not the data.
 
 // Rows per page. 10 so the sample shows paging; real tables show 25 to 50 (guidelines: Data views).
 const PAGE_SIZE = 10
@@ -48,7 +44,6 @@ export function ProjectsPage() {
   const { status, items, error, reload, setStatus } = useProjects()
   const f: Filters = { q: url.get("q"), status: url.get("status"), team: url.get("team"), sort: url.get("sort") }
   const openId = url.get("item")
-  const board = url.get("view") === "board"
   const pushed = React.useRef(false)
 
   const teams = React.useMemo(() => [...new Set(items.map((p) => p.team))].sort(), [items])
@@ -182,21 +177,6 @@ export function ProjectsPage() {
           <p className="w-full text-sm text-muted-foreground tabular-nums sm:ml-auto sm:w-auto" aria-live="polite">
             {ready && `${rows.length} of ${items.length} projects`}
           </p>
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            aria-label="View"
-            value={board ? "board" : "table"}
-            onValueChange={(v) => v && url.set({ view: v === "board" ? "board" : null, page: null })}
-            className="max-sm:hidden"
-          >
-            <ToggleGroupItem value="table" aria-label="Table">
-              <TableIcon /> Table
-            </ToggleGroupItem>
-            <ToggleGroupItem value="board" aria-label="Board">
-              <KanbanIcon /> Board
-            </ToggleGroupItem>
-          </ToggleGroup>
         </div>
 
         {unknown.length > 0 && (
@@ -237,33 +217,6 @@ export function ProjectsPage() {
               Clear filters
             </Button>
           </StatePanel>
-        ) : rows.length > 0 && board ? (
-          <Board
-            label="Projects by status"
-            selected={openId}
-            lanes={(["late", "at-risk", "on-track", "done"] as Status[]).map((s) => ({
-              id: s,
-              title: STATUS[s].label,
-              dot: STATUS[s].dot,
-              empty: `No ${STATUS[s].label.toLowerCase()} projects`,
-              items: rows
-                .filter((p) => p.status === s)
-                .map((p) => ({
-                  id: p.id,
-                  title: p.name,
-                  href: itemHref(p.id),
-                  onOpen: () => openItem(p.id),
-                  meta: `${p.team} · ${p.status === "done" ? "Done" : "Due"} ${formatDate(p.due)}`,
-                  aside: (
-                    <Avatar className="size-6">
-                      <AvatarFallback className="text-xs">{initials(p.owner)}</AvatarFallback>
-                    </Avatar>
-                  ),
-                })),
-            }))
-              // A status filter shows its own lane only, so the other lanes don't read as "nothing there".
-              .filter((lane) => !f.status || lane.id === f.status)}
-          />
         ) : rows.length > 0 ? (
           <>
           <div className="overflow-hidden rounded-xl border">
@@ -314,12 +267,7 @@ export function ProjectsPage() {
                       <StatusBadge status={p.status} />
                     </TableCell>
                     <TableCell className="hidden md:table-cell">
-                      <span className="flex items-center gap-2">
-                        <Avatar className="size-6">
-                          <AvatarFallback className="text-xs">{initials(p.owner)}</AvatarFallback>
-                        </Avatar>
-                        {p.owner}
-                      </span>
+                      {p.owner}
                     </TableCell>
                     <TableCell className="pr-4 text-right tabular-nums">
                       <div>{formatDate(p.due)}</div>

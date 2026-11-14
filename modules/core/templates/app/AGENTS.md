@@ -3,14 +3,17 @@
 This app was started from the AidenHQ app starter: Vite + React + TypeScript, Tailwind CSS 4 and shadcn/ui, themed by
 the AidenHQ design system. `README.md` says what's where. These rules keep its pages consistent and working.
 
-- **Building blocks, not a template.** `src/components/blocks/` (Page, PageHeader, PageSection and PageSplit,
-  StatStrip, SortHead and Pagination, Board, ActivityList, StatePanel and TableSkeleton, DetailList,
-  Field/FormSection/FormActions, BarList, TrendChart and ScheduleChart, SidebarShell) and `src/components/ui/` (shadcn/ui) are there
-  to use, adapt or ignore; `/catalog` shows each one. The top-bar shell in `src/App.tsx` and the example page are one
-  sample: fit the navigation to the app (many destinations or nested groups: the `SidebarShell` block). Need a control? Add the shadcn
-  component (README) before writing your own.
+- **A menu, not a template.** `src/components/blocks/` and `src/components/ui/` (shadcn/ui) are a library with
+  variants (props such as `variant`, `size`, `side`); nothing is required, and an app's build carries only what it
+  imports. The README lists every piece. Pick the shell that fits the app's navigation (`TopBarShell`, `SidebarShell`,
+  `BareShell`, or none). The example page is one sample. Need a control? Use or add a shadcn component (README) before
+  writing your own.
+- **Theme:** keep the default palette, pick a preset (`src/styles/presets/`: import it after `shadcn.css` and set
+  `<html data-palette="<name>">`), or adapt one in a `theme.css`. Presets are starting points, not rules.
+- **The catalog is dev-only:** `npm run catalog` (`catalog.html`, `src/catalog/`) shows every block, component,
+  variant, shell and preset. It is never an app route or part of a build; leave it out of the app's repo.
 - **What always holds** (the design system's `guidelines.md`): filters, sort and page in the URL (`useUrlState`),
-  applied as they change; details open over the list (a `Sheet` at `?item=`) and Back closes them; every data view has
+  applied as they change; details keep the list's place (a `Sheet` at `?item=`, say) and Back closes them; every data view has
   its empty, loading, error and no-match states; usable at 390px; colours only from the theme's names (`bg-background`,
   `text-muted-foreground`, `bg-primary`, `text-danger`, `bg-chart-1`…), never literal colours; what people could see
   and do stays when restyling.

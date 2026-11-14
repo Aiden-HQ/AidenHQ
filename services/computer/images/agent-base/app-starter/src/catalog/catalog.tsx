@@ -42,11 +42,13 @@ import { StatePanel, TableSkeleton } from "@/components/blocks/states"
 import { useThemeMode } from "@/components/theme-toggle"
 import { toast } from "@/hooks/use-toast"
 import { useUrlState } from "@/hooks/use-url-state"
+import { MoreBlocks, MoreComponents, PresetGallery, PRESETS, ShellGallery, Variants } from "./more"
 
-// Every building block and component the starter has, themed, in one page: copy from here. ?palette= and ?mode= pick the theme (the
-// pickers set them), so `ui-review <url>/catalog --palettes neutral,warm,contrast,data` covers every palette.
+// Every building block and component the starter has, themed, in one page (dev-only: `npm run catalog`). ?palette= and
+// ?mode= pick the theme (the pickers set them), so `ui-review <dev url>/catalog.html --palettes neutral,crisp` covers any
+// palette or preset. Nothing here is required: apps import what they need.
 
-const PALETTES = ["neutral", "warm", "contrast", "data"] as const
+const PALETTES = ["neutral", "warm", "contrast", "data", ...PRESETS.map(([id]) => id)] as const
 
 export function CatalogPage() {
   const url = useUrlState()
@@ -94,7 +96,11 @@ export function CatalogPage() {
         </div>
       </header>
 
+      <PresetGallery mode={document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"} />
+      <ShellGallery mode={document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"} palette={palette} />
       <Blocks />
+      <MoreBlocks />
+      <Variants />
 
       <Section title="Colour" note="Surfaces, text and the status colours. Status is always a dot plus a word.">
         <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
@@ -401,6 +407,8 @@ export function CatalogPage() {
         </Breadcrumb>
         <Separator className="max-w-md" />
       </Section>
+
+      <MoreComponents />
     </div>
   )
 }

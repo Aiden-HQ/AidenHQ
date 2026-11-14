@@ -51,6 +51,13 @@ export const SHARED = {
       [...(f === "tokens.css" || f === "shadcn.css" ? [`modules/core/templates/app/src/styles/${f}`] : []), `services/computer/images/agent-base/design-system/${f}`],
     ]),
   ),
+  // The theme presets (one file each): an app imports the one it picks; the starter's catalog imports them all.
+  ...Object.fromEntries(
+    readdirSync(join(repo, "modules/core/design-system/presets")).map((f) => [
+      `modules/core/design-system/presets/${f}`,
+      [`modules/core/templates/app/src/styles/presets/${f}`, `services/computer/images/agent-base/design-system/presets/${f}`],
+    ]),
+  ),
 };
 
 // Whole folders, copied after the files above (so a folder's copy carries what was synced into it). Each copy is replaced

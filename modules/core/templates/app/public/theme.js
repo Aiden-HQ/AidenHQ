@@ -1,11 +1,11 @@
 // Sets <html data-theme> (light or dark) and data-palette before the first paint, so nothing flashes. A separate file
 // because the CSP allows no inline script. The mode is ?mode=, else the viewer's saved choice, else the system setting,
-// and it follows the system while the choice is "system". ?palette= picks a palette (ui-review --palettes uses both).
+// and it follows the system while the choice is "system". ?palette= picks a palette or preset (ui-review --palettes uses both).
 (function () {
   var root = document.documentElement;
   var q = new URLSearchParams(location.search);
   var palette = q.get("palette");
-  if (/^(neutral|warm|contrast|data)$/.test(palette || "")) root.setAttribute("data-palette", palette);
+  if (/^[a-z][a-z-]*$/.test(palette || "")) root.setAttribute("data-palette", palette); // a palette or a preset the page imports
   var dark = matchMedia("(prefers-color-scheme: dark)");
   function apply() {
     var saved = null;

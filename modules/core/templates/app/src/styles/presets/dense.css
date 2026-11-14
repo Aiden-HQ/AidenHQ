@@ -1,0 +1,85 @@
+/* AidenHQ design system preset "dense". Dense: high contrast, black on white, a strong blue, small type and tight rows for data-heavy screens.
+   Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="dense">.
+   A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
+   (scripts/test/design-system.test.mjs). Statuses come from tokens.css. */
+
+:root[data-palette="dense"] {
+  --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --radius-sm: 2px;
+  --radius: 4px;
+  --radius-lg: 4px;
+  --radius-xl: 6px;
+  --spacing: 0.22rem;
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 28px;
+  --leading: 1.45;
+  --bg: #f5f5f5;
+  --surface: #ffffff;
+  --surface-2: #f0f0f0;
+  --surface-hover: #e6e6e6;
+  --surface-active: #dcdcdc;
+  --line: #c8c8c8;
+  --line-strong: #5c5c5c;
+  --text: #000000;
+  --text-muted: #3d3d3d;
+  --accent: #0050c8;
+  --accent-hover: #003f9e;
+  --accent-text: #ffffff;
+  --accent-soft: #e3edfc;
+  --accent-line: #8fb3ea;
+  --accent-ink: #003f9e;
+  --focus: #0050c8;
+  --chart-1: #0050c8;
+}
+
+@media (pointer: coarse) {
+  :root[data-palette="dense"] { --spacing: 0.25rem; }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-palette="dense"]:not([data-theme="light"]) {
+    --bg: #000000;
+    --surface: #0d0d0d;
+    --surface-2: #1a1a1a;
+    --surface-hover: #242424;
+    --surface-active: #2e2e2e;
+    --line: #4a4a4a;
+    --line-strong: #a8a8a8;
+    --text: #ffffff;
+    --text-muted: #d6d6d6;
+    --accent: #4d94ff;
+    --accent-hover: #75acff;
+    --accent-text: #000000;
+    --accent-soft: #0b2348;
+    --accent-line: #23508f;
+    --accent-ink: #9cc3ff;
+    --focus: #4d94ff;
+    --chart-1: #4d94ff;
+  }
+}
+
+:root[data-palette="dense"][data-theme="dark"] {
+  --bg: #000000;
+  --surface: #0d0d0d;
+  --surface-2: #1a1a1a;
+  --surface-hover: #242424;
+  --surface-active: #2e2e2e;
+  --line: #4a4a4a;
+  --line-strong: #a8a8a8;
+  --text: #ffffff;
+  --text-muted: #d6d6d6;
+  --accent: #4d94ff;
+  --accent-hover: #75acff;
+  --accent-text: #000000;
+  --accent-soft: #0b2348;
+  --accent-line: #23508f;
+  --accent-ink: #9cc3ff;
+  --focus: #4d94ff;
+  --chart-1: #4d94ff;
+}

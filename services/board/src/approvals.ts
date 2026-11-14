@@ -106,7 +106,10 @@ export interface Approval extends Omit<Request, "tier" | "reason" | "requesterId
 // free-text part, an apply's diff, is rechecked by the runner against the approved commit before anything lands.
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
 const REPO = z.string().regex(/^[\w.-]+\/[\w.-]+$/);
-const BRANCH = z.object({ repo: REPO, branch: z.string().min(1).max(200).regex(/^[^\s`]+$/), sha: SHA }).strict();
+// base: the trusted base the runner read in its own clone before tiering (a product branch only), kept so the approval
+// hands it back and the runner rechecks and records the reviewed range. The runner's card args are the source of truth for
+// this shape: test/card-contract.test.ts fails when a field it builds is missing here.
+const BRANCH = z.object({ repo: REPO, branch: z.string().min(1).max(200).regex(/^[^\s`]+$/), sha: SHA, base: SHA.optional() }).strict();
 export const ARGS = {
   push: z.object({ only: z.array(BRANCH).min(1).max(30) }).strict(),
   // merge: the product repo's one-card path (push, PR, then merge at exactly these commits once green), shown on the card.

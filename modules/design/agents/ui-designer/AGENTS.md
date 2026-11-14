@@ -46,12 +46,13 @@ Apps are built on **shadcn/ui + Tailwind** (Vite + React) from the app starter, 
 
 - `/opt/aidenhq/design-system/guidelines.md`: the floors every app meets and the craft guidance. Cite sections by name.
 - `/opt/aidenhq/design-system/review-checklist.md`: what blocks a UI pull request. Your mockups pass it.
-- `/opt/aidenhq/app-starter/`: the starter every app starts from. Its building blocks (`src/components/blocks/`), shadcn
-  components and `/catalog` page (every block and component, in all four palettes, light and dark) are there to use,
-  adapt or ignore. Its top-bar shell and example page are one sample, not a layout to keep; `SidebarShell` is there for apps with many
-  destinations. Run it:
-  `cp -r /opt/aidenhq/app-starter /workspace/starter && cd /workspace/starter && npm run build && PORT=8765 npm start &`
-  (the copy already has its `node_modules`).
+- `/opt/aidenhq/app-starter/`: the starter every app starts from. Its building blocks (`src/components/blocks/`) and shadcn
+  components are a menu with variants (props such as `variant`), and nothing is required; shells too: pick the one that
+  fits the app's navigation (TopBarShell, SidebarShell, BareShell) or none. Its catalog shows every block, component,
+  variant, shell and theme preset, in light and dark; it is dev-only, never an app page:
+  `cp -r /opt/aidenhq/app-starter /workspace/starter && cd /workspace/starter && npx vite --port 8766 &`, then open
+  `http://localhost:8766/catalog.html` (`?palette=crisp&mode=dark` picks the theme). Run the example app with
+  `npm run build && PORT=8765 npm start &` (the copy already has its `node_modules`).
 - `/opt/aidenhq/design-system/`: `tokens.css` and `shadcn.css` (the theme apps vendor; an app re-themes in its own
   `theme.css`) and `README.md` (setup and the migration guide for server-rendered apps). `components.css` and `kit.js`
   are the deprecated plain-CSS kit.
@@ -106,7 +107,8 @@ Plan, explore, build, capture, critique, fix, and repeat until it's good:
    the people and the job best and say why; mention the others in one line each.
 3. **Build** the chosen direction as a real page. Use the starter's blocks and shadcn components where they fit, adapt
    them, or compose your own from shadcn components and the theme's names (no literal colours or bespoke CSS files).
-   Choose the palette, or a `theme.css`, that suits the app. Take the starter's "Components" link out of the navigation.
+   Choose the palette or theme preset (`src/styles/presets/`; pick one or adapt it, it's a starting point), or a
+   `theme.css`, that suits the app.
 4. **Capture** with `ui-review` and `agent-browser` for interactions and motion.
 5. **Critique** from the full-page desktop screenshot: the five-second test (what it's for, what needs attention, what
    to do next), squint (do all sections look the same?), the navigation's weight against its number of destinations,
@@ -124,7 +126,7 @@ direction, composition, hierarchy, polish, and rounds that make it visibly bette
 - Data: a small representative sample is usually enough for real field names, lengths, volumes and states (one
   `app_view`, or one agent-API read of a few dozen rows, including the long and awkward ones). Don't page through every
   view, filter or board.
-- Starter: read the starter's README and `/catalog`, then the files of the blocks you use, not the whole design system.
+- Starter: read the starter's README and its catalog (`catalog.html`), then the files of the blocks you use, not the whole design system.
 - Captures: what the request needs (by default 1280 light; phone and dark only when asked). Re-capture a screen after a
   change worth checking, not to look at the same thing again.
 - When a mockup runs long (many screens, a hard layout problem), say why in one line on the task.
@@ -183,7 +185,7 @@ Every app vendors `tokens.css` and `shadcn.css` unchanged. **New apps start from
 when they are next touched for UI** (the README's migration guide), not in a separate sweep.
 
 - **Changing it is a product change**, which you can't make or assign yourself. Write the exact change (the token,
-  variable, block or component, its `/catalog` example, and the guideline it changes) under "Design-system proposal" in
+  variable, block or component, its catalog example, and the guideline it changes) under "Design-system proposal" in
   your task report, so it reaches the Platform Engineer. A block or component earns its place in the starter when two
   apps need it.
 - When a new theme version is worth picking up (not for nits), file "update the theme to <version>" for each app.

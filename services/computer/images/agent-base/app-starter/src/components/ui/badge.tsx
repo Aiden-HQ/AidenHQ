@@ -16,6 +16,9 @@ const badgeVariants = cva(
         outline:
           "border-border text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         ghost: "[a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
+        soft: "bg-primary-soft text-link [a&]:hover:bg-primary-soft/70",
+        // A small dot before the word, on no fill. Colour the dot with `[--dot:var(--warn-solid)]` (default: primary).
+        dot: "gap-1.5 border-border text-foreground before:size-1.5 before:rounded-full before:bg-[color:var(--dot,var(--primary))] before:content-['']",
         link: "text-primary underline-offset-4 [a&]:hover:underline",
       },
     },

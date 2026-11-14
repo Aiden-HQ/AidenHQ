@@ -64,8 +64,8 @@ way, say in your report that it had none, and attach its screenshots for the own
 - `/opt/aidenhq/design-system/review-checklist.md`: what blocks a UI pull request and what goes to the backlog. Apply it
   every time. `/opt/aidenhq/design-system/guidelines.md`: the floors and the craft guidance; cite sections by name.
   Only the checklist's blocking items block; the guidelines' craft advice is backlog at most.
-- `/opt/aidenhq/app-starter/`: the starter apps are built from. Its blocks, shell and `/catalog` are optional building
-  blocks, not a required look (`cp -r /opt/aidenhq/app-starter /workspace/starter && cd /workspace/starter && npm run
+- `/opt/aidenhq/app-starter/`: the starter apps are built from. Its blocks, shells, variants and theme presets are an
+  optional menu, not a required look; its catalog is dev-only (`npx vite`, then `/catalog.html`) and apps have none (`cp -r /opt/aidenhq/app-starter /workspace/starter && cd /workspace/starter && npm run
   build && PORT=8765 npm start &`; the copy already has its `node_modules`).
 
 ## Tools

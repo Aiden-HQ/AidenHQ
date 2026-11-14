@@ -1,5 +1,6 @@
 import * as React from "react"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Sparkline } from "@/components/blocks/sparkline"
 import { cn } from "@/lib/utils"
 
 // A summary of numbers: one surface split into cells, never a row of floating cards (guidelines: Data views). A cell with
@@ -27,16 +28,38 @@ export type Stat = {
   dot?: string
   /** Highlight a figure that needs attention: its cell takes that status's soft tint and its number the status ink. */
   tone?: "hero" | "primary" | "ok" | "warn" | "danger" | "info"
+  /** Recent values, oldest first: a small trend line beside the number (a few points; no chart library). */
+  trend?: number[]
   pressed?: boolean
   onPick?: () => void
 }
 
-export function StatStrip({ stats, loading, label = "Summary" }: { stats: Stat[]; loading?: boolean; label?: string }) {
+// The strip's look: `divided` (one bordered surface split into cells), `plain` (figures on the page, no box), `tinted`
+// (each figure on a muted fill, small gaps between).
+const STRIP = {
+  divided: { strip: "gap-px overflow-hidden rounded-xl border bg-border", cell: "bg-background p-4" },
+  plain: { strip: "gap-x-8 gap-y-4", cell: "py-1" },
+  tinted: { strip: "gap-2", cell: "rounded-lg bg-muted p-4" },
+} as const
+
+export function StatStrip({
+  stats,
+  loading,
+  label = "Summary",
+  variant = "divided",
+}: {
+  stats: Stat[]
+  loading?: boolean
+  label?: string
+  variant?: keyof typeof STRIP
+}) {
   return (
     <section
       aria-label={label}
+      data-variant={variant}
       className={cn(
-        "grid grid-cols-2 gap-px overflow-hidden rounded-xl border bg-border",
+        "grid grid-cols-2",
+        STRIP[variant].strip,
         stats.length === 3 ? "lg:grid-cols-3" : stats.length >= 4 && "lg:grid-cols-4"
       )}
     >
@@ -50,12 +73,15 @@ export function StatStrip({ stats, loading, label = "Summary" }: { stats: Stat[]
             {loading ? (
               <Skeleton className="my-1 h-8 w-12" />
             ) : (
-              <span className={cn("text-3xl font-bold tracking-tight tabular-nums", s.tone && TONE[s.tone].value)}>{s.value}</span>
+              <span className="flex w-full items-end justify-between gap-3">
+                <span className={cn("text-3xl font-bold tracking-tight tabular-nums", s.tone && TONE[s.tone].value)}>{s.value}</span>
+                {s.trend && s.trend.length > 1 && <Sparkline values={s.trend} className={cn("mb-1", s.tone ? TONE[s.tone].value : "text-chart-1")} />}
+              </span>
             )}
             {s.note && <span className={cn("text-xs text-muted-foreground", s.tone && TONE[s.tone].value)}>{s.note}</span>}
           </>
         )
-        const cell = cn("flex flex-col items-start gap-1 bg-background p-4 text-left", s.tone && TONE[s.tone].cell)
+        const cell = cn("flex flex-col items-start gap-1 text-left", STRIP[variant].cell, s.tone && TONE[s.tone].cell, s.tone && variant === "plain" && "rounded-lg px-3")
         return s.onPick ? (
           <button
             key={s.label}

@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, ENGINES, openrouterKind, repoAllowed, resolveEngine, stripHidden } from "./commands.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
+import { branchCardArgs } from "./cards.mjs";
 import { adoptRun, boxLastFile, codexHome, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.mjs";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
@@ -2163,7 +2164,6 @@ async function agentPublish(ctx, command, args) {
         // A PR on the product repo is one card for push, PR and merge (owner, 2026-11-13): approving it also merges each PR at
         // exactly these commits once every named check and the base branch are green (mergeAfterPublish); the card says so.
         const merge = command === "pr" && Boolean(cfg.productRepo) && ordered.every((r) => sameRepo(r.repo, cfg.productRepo));
-        const cardArgs = { only: branches, ...(text ? { text: { title: text.title.slice(0, 300), body: text.body.slice(0, 60_000) } } : {}), ...(merge ? { merge: true } : {}) };
         // Every branch already satisfied on its repo's current default branch (after a fresh fetch): no card, evidence instead.
         if (dupGuardOn()) {
           for (const r of new Map(ordered.map((r) => [r.path, r])).values()) await git(r.path, "fetch", "--quiet", "origin", r.defaultBase).catch(() => "");
@@ -2175,6 +2175,8 @@ async function agentPublish(ctx, command, args) {
           const base = await bindBase(r, branches[i].sha);
           if (base) branches[i].base = base;
         }
+        // The card's args, built from the branches as bound: the board's schema decides what a card may carry (cards.mjs).
+        const cardArgs = branchCardArgs(branches, { text, merge });
         const off = autonomyNow() === "off";
         // Computed here, right before anything is published, from the branches as git sees them. With autonomy off only
         // as the card's base tier (best effort: unknown on a failed read).

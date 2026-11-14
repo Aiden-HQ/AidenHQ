@@ -1,0 +1,72 @@
+/* AidenHQ design system preset "minimal". Minimal (colours adapted from tweakcn's Modern Minimal preset, Apache-2.0, github.com/jnsahaj/tweakcn): plain white and near-black, a clear blue, 6px corners.
+   Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="minimal">.
+   A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
+   (scripts/test/design-system.test.mjs). Statuses come from tokens.css. */
+
+:root[data-palette="minimal"] {
+  --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --radius-sm: 3px;
+  --radius: 6px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f9fafb;
+  --surface-hover: #f3f4f6;
+  --surface-active: #e5e7eb;
+  --line: #e5e7eb;
+  --line-strong: #858b96;
+  --text: #333333;
+  --text-muted: #5f646d;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-text: #ffffff;
+  --accent-soft: #e0f2fe;
+  --accent-line: #93c5fd;
+  --accent-ink: #1d4ed8;
+  --focus: #3b82f6;
+  --chart-1: #2563eb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-palette="minimal"]:not([data-theme="light"]) {
+    --bg: #171717;
+    --surface: #1c1c1c;
+    --surface-2: #242424;
+    --surface-hover: #2b2b2b;
+    --surface-active: #333333;
+    --line: #404040;
+    --line-strong: #7a7a7a;
+    --text: #e5e5e5;
+    --text-muted: #a8a8a8;
+    --accent: #2563eb;
+    --accent-hover: #3b82f6;
+    --accent-text: #ffffff;
+    --accent-soft: #172554;
+    --accent-line: #1e3a8a;
+    --accent-ink: #93c5fd;
+    --focus: #3b82f6;
+    --chart-1: #3b82f6;
+  }
+}
+
+:root[data-palette="minimal"][data-theme="dark"] {
+  --bg: #171717;
+  --surface: #1c1c1c;
+  --surface-2: #242424;
+  --surface-hover: #2b2b2b;
+  --surface-active: #333333;
+  --line: #404040;
+  --line-strong: #7a7a7a;
+  --text: #e5e5e5;
+  --text-muted: #a8a8a8;
+  --accent: #2563eb;
+  --accent-hover: #3b82f6;
+  --accent-text: #ffffff;
+  --accent-soft: #172554;
+  --accent-line: #1e3a8a;
+  --accent-ink: #93c5fd;
+  --focus: #3b82f6;
+  --chart-1: #3b82f6;
+}

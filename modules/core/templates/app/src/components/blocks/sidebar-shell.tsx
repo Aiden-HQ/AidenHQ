@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils"
 
 // An optional app shell for apps with many destinations or nested groups (guidelines: Layout and navigation): a
 // collapsible sidebar on desktop and a bottom bar of up to five destinations on phones. An app with a few destinations
-// uses a top bar instead (the starter's App.tsx). Swap it in for that shell's markup when the app outgrows a top bar.
+// may use TopBarShell instead, or BareShell for no chrome. `variant`: `sidebar` (flush, the default), `floating` or `inset`.
 export type NavItem = { href: string; label: string; icon: LucideIcon }
 
 export function SidebarShell({
@@ -29,6 +29,7 @@ export function SidebarShell({
   path,
   title,
   actions,
+  variant = "sidebar",
   children,
 }: {
   appName: string
@@ -37,11 +38,12 @@ export function SidebarShell({
   path: string
   title: string
   actions?: ReactNode
+  variant?: "sidebar" | "floating" | "inset"
   children: ReactNode
 }) {
   return (
     <SidebarProvider>
-      <Sidebar collapsible="icon">
+      <Sidebar collapsible="icon" variant={variant}>
         <SidebarHeader>
           <SidebarMenu>
             <SidebarMenuItem>

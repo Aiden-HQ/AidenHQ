@@ -1,0 +1,72 @@
+/* AidenHQ design system preset "slate". Slate (colours adapted from tweakcn's Clean Slate preset, Apache-2.0, github.com/jnsahaj/tweakcn): slate greys and indigo, 8px corners.
+   Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="slate">.
+   A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
+   (scripts/test/design-system.test.mjs). Statuses come from tokens.css. */
+
+:root[data-palette="slate"] {
+  --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --surface-hover: #e9eef5;
+  --surface-active: #e2e8f0;
+  --line: #d1d5db;
+  --line-strong: #7b8494;
+  --text: #1e293b;
+  --text-muted: #526077;
+  --accent: #5b5be6;
+  --accent-hover: #4f46e5;
+  --accent-text: #ffffff;
+  --accent-soft: #e0e7ff;
+  --accent-line: #a5b4fc;
+  --accent-ink: #4338ca;
+  --focus: #6366f1;
+  --chart-1: #6366f1;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-palette="slate"]:not([data-theme="light"]) {
+    --bg: #0f172a;
+    --surface: #152032;
+    --surface-2: #1c2940;
+    --surface-hover: #23314b;
+    --surface-active: #2b3a56;
+    --line: #334155;
+    --line-strong: #75849b;
+    --text: #e2e8f0;
+    --text-muted: #a4b0c2;
+    --accent: #818cf8;
+    --accent-hover: #a5b4fc;
+    --accent-text: #0f172a;
+    --accent-soft: #25275a;
+    --accent-line: #4549a0;
+    --accent-ink: #c7d2fe;
+    --focus: #818cf8;
+    --chart-1: #818cf8;
+  }
+}
+
+:root[data-palette="slate"][data-theme="dark"] {
+  --bg: #0f172a;
+  --surface: #152032;
+  --surface-2: #1c2940;
+  --surface-hover: #23314b;
+  --surface-active: #2b3a56;
+  --line: #334155;
+  --line-strong: #75849b;
+  --text: #e2e8f0;
+  --text-muted: #a4b0c2;
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-text: #0f172a;
+  --accent-soft: #25275a;
+  --accent-line: #4549a0;
+  --accent-ink: #c7d2fe;
+  --focus: #818cf8;
+  --chart-1: #818cf8;
+}
