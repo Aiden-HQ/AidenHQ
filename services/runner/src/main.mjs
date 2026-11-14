@@ -811,11 +811,11 @@ async function runAutoMerges() {
       const early = Date.now() - Date.parse(want.since) < 5 * 60_000;
       const ready = read.map((p, i) => [p, states[i]]).filter(([, s]) => !(early && s.headMatches && !s.checks.length));
       if (!ready.length && !gone.length) continue;
-      // A UI PR's Tier 0 merge waits for the design review (merges.mjs eachDecision) when the fleet has a design reviewer.
+      // A UI PR's Tier 0 merge waits for the design review (merges.mjs eachDecision) when the fleet has a design reviewer; the
+      // flag is set either way, so a fleet without one merges as before. `ui` is the queue's own flag, never the board's: the
+      // card's args are its schema, which knows only repo, number, url, head and noReview.
       const reviewer = designReviewer();
-      // `ui` is the queue's own flag, never the board's: the card's args are its schema, which knows only repo, number, url,
-      // head and noReview.
-      const bound = ready.map(([p, s]) => ({ ...p, ...(reviewer && merges.touchesUi(s.files) ? { ui: true } : {}) }));
+      const bound = ready.map(([p, s]) => ({ ...p, ui: Boolean(reviewer) && merges.touchesUi(s.files) }));
       // Each PR on its own (owner, 2026-11-12): one red or carded PR doesn't hold the others back.
       const tiers = off ? ready.map(() => ({ tier: 2, rule: "autonomy-off", reason: "autonomy is off" })) : await Promise.all(ready.map(([, s]) => tierFor(issue, "merge", { prs: [s] })));
       // The base tier on its merits, also with autonomy off (best effort there: unknown on a failed read).

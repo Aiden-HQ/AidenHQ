@@ -79,7 +79,7 @@ if (step === "commit") {
   git("commit", "-qm", "feat: a card style");
 } else if (step === "ui-card-more") {
   git("switch", "-q", "feat/ui-card");
-  writeFileSync(join(repo, "web/card.css"), `.card { padding: ${Date.now() % 5}rem }\n`);
+  writeFileSync(join(repo, "web/card.css"), `.card { padding: ${2 + (Date.now() % 4)}rem }\n`);
   git("add", "web/card.css");
   git("commit", "-qm", "feat: a card style, tidied");
 } else if (step === "ui-next") {

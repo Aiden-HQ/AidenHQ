@@ -605,6 +605,38 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
       assert.deepEqual(backend.writes, [{ merge: 1, sha: "head1", method: "squash" }]);
     });
 
+    it("decides UI from the PR's own files, so a queue without the flag still waits, then merges once the verdict lands", async () => {
+      const files = (paths) => ({ pageInfo: { hasNextPage: false }, nodes: paths.map((path) => ({ path })) });
+      const codeOnly = [build];
+      const gh = fakeGithub({ 1: own(1, { ...head({ state: "SUCCESS", contexts: { nodes: codeOnly } }), files: files(["src/web/render.ts", "src/web/styles.ts"]) }) });
+      const q = queue(1); // no `ui` flag: tiering never ran, as for a request that reached the queue some other way
+      const first = await advance(q, { github: gh, now: at(0) });
+      assert.deepEqual(gh.writes, [], "green code checks alone never merge a UI PR");
+      assert.equal(q.prs[0].status, "pending");
+      assert.deepEqual(first.wake.map((w) => w.head), ["head1"], "the reviewer is asked for this head");
+
+      // The same head's verdict: success, and the next poll merges it.
+      gh.prs[1] = own(1, { ...head({ state: "SUCCESS", contexts: { nodes: [build, review("SUCCESS")] } }), files: files(["src/web/render.ts", "src/web/styles.ts"]) });
+      const second = await advance(q, { github: gh, now: at(1) });
+      assert.deepEqual(gh.writes, [{ merge: 1, sha: "head1", method: "squash" }]);
+      assert.equal(second.done, "done");
+
+      // A backend-only PR with the same green checks needs no design review.
+      const backend = fakeGithub({ 1: own(1, { ...head({ state: "SUCCESS", contexts: { nodes: codeOnly } }), files: files(["src/store/postgres.ts", "package.json"]) }) });
+      assert.equal((await advance(queue(1), { github: backend, now: at(0) })).done, "done");
+      assert.deepEqual(backend.writes, [{ merge: 1, sha: "head1", method: "squash" }]);
+      // Tiering says so itself when the fleet has no design reviewer: that fleet's UI PRs merge as before.
+      assert.equal(eachDecision(own(1, { files: files(["src/web/styles.ts"]) }), { head: "head1", ui: false }).do, "merge");
+    });
+
+    it("a file list past its first page counts as UI: fail closed, never a blind merge", async () => {
+      const files = { pageInfo: { hasNextPage: true }, nodes: [{ path: "src/store/postgres.ts" }] };
+      const gh = fakeGithub({ 1: own(1, { ...head({ state: "SUCCESS", contexts: { nodes: [build] } }), files }) });
+      const step = await advance(queue(1), { github: gh, now: at(0) });
+      assert.deepEqual(gh.writes, []);
+      assert.deepEqual(step.wake.map((w) => w.head), ["head1"]);
+    });
+
     it("a failed design review stops it with the reviewer's reason", async () => {
       const gh = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("FAILURE")]) }) });
       const step = await advance(ui(1), { github: gh, now: at(0) });

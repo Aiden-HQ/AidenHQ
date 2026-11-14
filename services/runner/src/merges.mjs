@@ -154,6 +154,18 @@ export const isUiFile = (f) => UI_EXT.test(f) || UI_DIR.test(f) || UI_PAGE_CODE.
 /** A PR's changed files touch UI (an unknown file list never counts here: tiering sends that to the owner anyway). */
 export const touchesUi = (files) => Array.isArray(files) && files.some(isUiFile);
 
+/**
+ * Whether the PR itself changes UI files, from the file list the merge query carries (so the queue decides, not only the
+ * tiering caller). A list cut off at the first page counts as UI: a design review costs a wait, an unreviewed page ships
+ * blind. No list at all (another query's shape) leaves the decision to the caller's `ui`.
+ */
+export function prTouchesUi(pr) {
+  const files = pr?.files?.nodes;
+  if (!Array.isArray(files)) return false;
+  if (pr.files.pageInfo?.hasNextPage) return true;
+  return files.some((f) => isUiFile(f.path ?? ""));
+}
+
 /** On a UI PR's Tier 0 merge: the design review's check, and how long after the other checks went green it may take. */
 export const DESIGN_REVIEW = { name: "design-review", minutes: 120 };
 
@@ -588,10 +600,11 @@ export function eachDecision(pr, p) {
   const ci = ciState(rollup);
   if (ci === "red") return { do: "fail", why: "GitHub reports failing checks", red: true };
   if (ci !== "green") return { do: "wait", why: "checks are running" };
-  // A UI PR (p.ui, from its files when it was tiered) merges at Tier 0 only once the UI Reviewer's design review passed on
-  // this head. Missing counts as pending (the reviewer is woken for it); still none 2 hours after the checks went green: the
-  // owner's card (`escalate`), never a silent merge and never an endless wait.
-  if (p.ui) {
+  // A UI PR merges at Tier 0 only once the UI Reviewer's design review passed on this head: `p.ui` when tiering decided it,
+  // else the PR's own files here, so a queue without the flag can't skip the gate. Missing counts as pending (the reviewer
+  // is woken for it); still none 2 hours after the checks went green: the owner's card (`escalate`), never a silent merge
+  // and never an endless wait.
+  if (p.ui ?? prTouchesUi(pr)) {
     const dr = designReview(rollup);
     if (dr.state === "failure") return { do: "fail", why: `the UI Reviewer's design review failed on its head${dr.description ? ` ("${dr.description}")` : ""}` };
     if (dr.state !== "success") return { do: "wait", why: "waiting for the UI Reviewer's design review", limit: DESIGN_REVIEW.minutes, escalate: true };
