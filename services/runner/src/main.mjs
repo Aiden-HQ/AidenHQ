@@ -16,6 +16,7 @@ import { outputs, shareOutputs, syncFiles } from "./files.mjs";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg } from "./github-app.mjs";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.mjs";
+import { splitAnswered } from "./answered.mjs";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.mjs";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.mjs";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.mjs";
@@ -1552,8 +1553,10 @@ async function commonTierState(issue, action, also = []) {
   const creator = grants?.agents?.[full.createdByAgentId];
   // A task the runner filed itself (a Dependabot PR's) carries the board key's user, but is never the owner's.
   const ownerMade = ownerMadeTask(full);
-  const records = boardApi ? ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(full.identifier)}`)).approvals ?? []) : [];
+  const all = boardApi ? ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(full.identifier)}`)).approvals ?? []) : [];
+  const { records, answers } = splitAnswered(all, await pc.comments(full.id).catch(() => []), cfg.selfName);
   return {
+    answers,
     agentsOrg: cfg.agentsOrg,
     productRepo: cfg.productRepo,
     instanceRepo: cfg.apply?.repo,
@@ -1745,7 +1748,7 @@ async function tierFor(issue, action, own, also = []) {
   const t = classify(action, s);
   log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject), panel: Boolean(t.panel) });
   // The reviewer's earlier rejections on this task, attached to a fresh review of the changed request.
-  return { ...t, full: common.full, previous: priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s)).findings };
+  return { ...t, full: common.full, previous: [...common.answers, ...priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s)).findings] };
 }
 
 /**
@@ -1878,7 +1881,7 @@ async function reviewOne(a, mode) {
       const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }));
       const veto = priorPart(prior);
       // The board's own panel flag (a deploy touching a migration or schema): two reviewers, as the board requires.
-      input = veto ?? { tier: 1, rule: `${a.action}`, reason: a.reason, previous: prior.findings, panel: a.panel === true, ...boardCardInput(a) };
+      input = veto ?? { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], panel: a.panel === true, ...boardCardInput(a) };
       if (common.routineAutonomy && common.routineAutonomy !== "full") input = { tier: 2, rule: "routine-autonomy", reason: `a routine's run started this task and that routine's autonomy is ${common.routineAutonomy}` };
     } else input = await currentTier(issue, a, { withDiff: true });
   } catch (err) {
