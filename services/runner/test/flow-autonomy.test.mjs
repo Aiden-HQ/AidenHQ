@@ -1,4 +1,4 @@
-// End to end (see flow-harness.mjs): one runner, one conversation on the task, several things the owner does in it.
+// End to end (see flow-harness.mjs): the owner's autonomy setting at work, in three conversations.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -6,12 +6,10 @@ import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
 import { State } from "../src/state.mjs";
 
-describe("flow-autonomy", () => {
-  const t = flow();
-
-  // End to end (see flow-harness.mjs). PEN-3024: Ada's description was swapped for a generated one over Claude Code's
-  // footer, and an open PR's description couldn't be changed at all.
-  describe("changing an open PR's description, end to end", () => {
+// Three independent conversations, each its own runner on its own fake GitHub, side by side.
+describe("flow-autonomy", { concurrency: true }, () => {
+  describe("changing an open PR's description, end to end", { concurrency: 1 }, () => {
+    const t = flow();
     const { waitFor, partComments, fakeLog, toolRuns, step, turn, settled, publish } = t;
 
     it("updates an open PR's description with the agent's own, and sends a leaky one back to it", async () => {
@@ -47,22 +45,17 @@ describe("flow-autonomy", () => {
 
   // End to end (see flow-harness.mjs). With no autonomy setting every push is a card (flow-push). With tier0, an
   // ordinary branch of an agents-org repo goes out at once, with an audit row (the runner's key) and no card.
-  describe("autonomy tier0, end to end", () => {
+  // A runner at autonomy tier0 that knows the agents org, the product repo and the instance repo (tiering fails closed otherwise).
+  const tier0 = () => flow({ grants: { autonomy: "tier0", agents: {} }, env: { AIDENHQ_GITHUB_AGENTS_ORG: "acme", AIDENHQ_PRODUCT_REPO: "acme/aidenhq" }, runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n" });
+  const reviewerKey = (t) => writeFileSync(join(t.dir, "secrets/reviewer_key"), `${"r".repeat(64)}\n`, { mode: 0o600 });
+
+  describe("autonomy tier0, end to end", { concurrency: 1 }, () => {
+    const t = tier0();
     const { toolRuns, step, turn, githubTip, settled } = t;
 
     it("a safe agents-org push runs at once, without a card", async () => {
       await settled();
-      const exited = new Promise((r) => t.runner.once("exit", r));
-      t.runner.kill("SIGTERM");
-      await exited;
-      mkdirSync(join(t.dir, "config/grants"), { recursive: true });
-      writeFileSync(join(t.dir, "config/grants/grants.json"), JSON.stringify({ autonomy: "tier0", agents: {} }));
-      writeFileSync(join(t.dir, "secrets/reviewer_key"), `${"r".repeat(64)}\n`, { mode: 0o600 });
-      t.runnerEnv.AIDENHQ_GITHUB_AGENTS_ORG = "acme";
-      // Tiering fails closed unless it knows the product and instance repos.
-      t.runnerEnv.AIDENHQ_PRODUCT_REPO = "acme/aidenhq";
-      writeFileSync(join(t.dir, "config/runner.yaml"), `${readFileSync(join(t.dir, "config/runner.yaml"), "utf8")}apply:\n  repo: acme/aidenhq-instance\n`);
-      t.startRunner();
+      reviewerKey(t);
       const cards = t.paperclip.approvals.size;
       step("third\naidenhq push acme/app feat/third");
       await turn("Add the third change and push it.");
@@ -113,10 +106,18 @@ describe("flow-autonomy", () => {
       await waitFor("the reply", () => reviews().length > n);
     });
 
+    it("never errors or asks for a repository along the way", () => t.noErrors());
+  });
+
+  describe("autonomy tier0 with a design reviewer, end to end", { concurrency: 1 }, () => {
+    const t = tier0();
+
     // Owner, 2026-11-13: with a design reviewer in the fleet, a green UI PR's Tier 0 merge waits for design-review, and the
     // reviewer gets a task for that head.
     it("a green UI PR isn't merged without its design review; the UI Reviewer is asked for it", async () => {
-      const { waitFor, fakeLog, step, turn, toolRuns } = t;
+      const { waitFor, fakeLog, step, turn, toolRuns, settled } = t;
+      await settled();
+      reviewerKey(t);
       writeFileSync(join(t.dir, "config/grants/grants.json"), JSON.stringify({ autonomy: "tier0", agents: { "designer-1": { key: "ui-designer", roles: ["design-review"] } } }));
       step("ui\naidenhq push acme/app feat/ui");
       await turn("Restyle the page and push it.");
@@ -142,11 +143,40 @@ describe("flow-autonomy", () => {
       assert.match(again.description, /This is a re-review: your reviews of earlier heads are PEN-\d+ \(head `[0-9a-f]{40}`\)\. If any of them failed, check only the blocking items it named/);
     });
 
+    // A UI PR merged on the owner's tap never got its review: the card's path asks for it too, and its outcome says where it stands.
+    it("an approved merge card of a UI PR asks the UI/UX Engineer for its review and says it's pending", async () => {
+      const { waitFor, step, turn, toolRuns } = t;
+      writeFileSync(join(t.dir, "config/grants/grants.json"), JSON.stringify({ autonomy: "off", agents: { "designer-1": { key: "ui-designer", roles: ["design-review"] } } }));
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 9: { branch: "feat/ui", files: ["web/app.css"], checks: "SUCCESS" }, 10: { branch: "feat/ui", files: ["web/page.html"], checks: "SUCCESS" } }));
+      step("none\naidenhq merge https://github.com/acme/app/pull/9 https://github.com/acme/app/pull/10");
+      await turn("Merge it.");
+      assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
+      const card = t.paperclip.decide("merge", "approved");
+      await waitFor("the card's outcome", () => t.paperclip.approvals.get(card.id).outcome);
+      assert.match(t.paperclip.approvals.get(card.id).outcome.text, /Design review \(the merge doesn't wait for it\): https:\/\/github.com\/acme\/app\/pull\/9 pending; https:\/\/github.com\/acme\/app\/pull\/10 pending\./);
+      const asked = t.paperclip.created.filter((c) => c.title === "Design review: acme/app#10");
+      assert.equal(asked.length, 1);
+      assert.equal(asked[0].assigneeAgentId, "designer-1");
+      assert.match(asked[0].description, /approved its merge at head `[0-9a-f]{40}`, which doesn't wait for you/);
+      assert.equal(t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9").length, 2, "#9's head (the fix) was asked for on the Tier 0 path already");
+    });
+
+    it("never errors or asks for a repository along the way", () => t.noErrors());
+  });
+
+  // A UI PR on its card (autonomy off), on a runner set up like the tier0 one: its own conversation.
+  describe("a UI PR's merge card, end to end", { concurrency: 1 }, () => {
+    const t = flow({
+      grants: { autonomy: "off", agents: { "designer-1": { key: "ui-designer", roles: ["design-review"] } } },
+      env: { AIDENHQ_GITHUB_AGENTS_ORG: "acme", AIDENHQ_PRODUCT_REPO: "acme/aidenhq" },
+      runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n",
+    });
+
     // A UI PR on its card (autonomy off): the runner's own `ui` flag used to ride along in the card's args, and the board's
     // strict schema refused the whole request (400 "prs.0: Unrecognized key: ui"), leaving the task looking like it waited on a tap.
     it("a UI PR's merge card is filed with the board's fields", async () => {
-      const { waitFor, partComments, step, turn, toolRuns } = t;
-      writeFileSync(join(t.dir, "config/grants/grants.json"), JSON.stringify({ autonomy: "off", agents: { "designer-1": { key: "ui-designer", roles: ["design-review"] } } }));
+      const { waitFor, partComments, step, turn, toolRuns, settled } = t;
+      await settled();
       step("ui-card\naidenhq push acme/app feat/ui-card");
       await turn("Restyle the card and push it.");
       assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
@@ -170,7 +200,7 @@ describe("flow-autonomy", () => {
       const state = new State(join(t.dir, "state"));
       state.updateBranch("part", "acme/app", "feat/ui-card", { pr_url: "https://github.com/acme/app/pull/11" });
       state.db.close();
-      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 9: { branch: "feat/ui", files: ["web/app.css"], checks: "SUCCESS" }, 11: { branch: "feat/ui-card", files: ["web/card.css"], checks: "SUCCESS" } }));
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 11: { branch: "feat/ui-card", files: ["web/card.css"], checks: "SUCCESS" } }));
       step("ui-card-more\naidenhq push acme/app feat/ui-card");
       await turn("One more tweak to it, and push.");
       assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
@@ -187,26 +217,6 @@ describe("flow-autonomy", () => {
       await waitFor("quiet", () => !t.running()); // the next test's turn must not meet this one's tail
     });
 
-    // A UI PR merged on the owner's tap never got its review: the card's path asks for it too, and its outcome says where it stands.
-    it("an approved merge card of a UI PR asks the UI/UX Engineer for its review and says it's pending", async () => {
-      const { waitFor, step, turn, toolRuns } = t;
-      writeFileSync(join(t.dir, "config/grants/grants.json"), JSON.stringify({ autonomy: "off", agents: { "designer-1": { key: "ui-designer", roles: ["design-review"] } } }));
-      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 9: { branch: "feat/ui", files: ["web/app.css"], checks: "SUCCESS" }, 10: { branch: "feat/ui", files: ["web/page.html"], checks: "SUCCESS" } }));
-      step("none\naidenhq merge https://github.com/acme/app/pull/9 https://github.com/acme/app/pull/10");
-      await turn("Merge it.");
-      assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
-      const card = t.paperclip.decide("merge", "approved");
-      await waitFor("the card's outcome", () => t.paperclip.approvals.get(card.id).outcome);
-      assert.match(t.paperclip.approvals.get(card.id).outcome.text, /Design review \(the merge doesn't wait for it\): https:\/\/github.com\/acme\/app\/pull\/9 pending; https:\/\/github.com\/acme\/app\/pull\/10 pending\./);
-      const asked = t.paperclip.created.filter((c) => c.title === "Design review: acme/app#10");
-      assert.equal(asked.length, 1);
-      assert.equal(asked[0].assigneeAgentId, "designer-1");
-      assert.match(asked[0].description, /approved its merge at head `[0-9a-f]{40}`, which doesn't wait for you/);
-      assert.equal(t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9").length, 2, "#9's head (the fix) was asked for on the Tier 0 path already");
-    });
-
     it("never errors or asks for a repository along the way", () => t.noErrors());
   });
-
-  it("never errors or asks for a repository along the way", () => t.noErrors());
 });
