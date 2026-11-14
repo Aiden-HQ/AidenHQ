@@ -10,7 +10,7 @@ import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, is
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
 import { branchCardArgs } from "./cards.mjs";
-import { adoptRun, boxLastFile, codexHome, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
+import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.mjs";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
@@ -50,6 +50,13 @@ const jailIssue = jailProblem(cfg);
 if (jailIssue) {
   cfg.pasta = undefined;
   log("WARNING: Engineer jobs share the host's network (every loopback service, the LAN)", { reason: jailIssue });
+}
+// The build caches (sandbox.extra_writable_roots) are copy-on-write per task. A bwrap without overlay support (before
+// 0.11, e.g. Ubuntu 24.04's) binds them read-write and shared as before: loudly.
+const overlayIssue = cfg.sandbox?.extra_writable_roots?.length && cfg.gcp ? overlayProblem(cfg) : undefined;
+if (overlayIssue) {
+  cfg.noOverlay = true;
+  log("WARNING: Engineer jobs share their build caches read-write (bwrap can't mount overlays; bubblewrap 0.11+ can)", { reason: overlayIssue });
 }
 // The instance's GitHub App: its key stays in this process; tokens go only to the git/gh child that needs one,
 // and a read-only one for its task's repos to each job's gh (jobGhToken).
@@ -130,6 +137,9 @@ async function stopClosedRuns() {
   }
 }
 
+/** Issue id → the updatedAt it was last handled at, this process's lifetime (a restart handles each once more). */
+const handledAt = new Map();
+
 async function poll() {
   const since = state.get("last_poll");
   const now = new Date().toISOString();
@@ -144,7 +154,17 @@ async function poll() {
   if (engineers.length) agentCaps = new Map(engineers.filter((a) => Number.isInteger(a.metadata?.maxParallel)).map((a) => [a.id, a.metadata.maxParallel]));
   for (const a of engineers) for (const i of await pc.assignedIssues(a.id, updatedSince)) byId.set(i.id, i);
   const engineerIds = new Set(engineers.map((a) => a.id));
-  for (const issue of byId.values()) await handleIssue(issue, engineerIds).catch((err) => reportError(issue, err));
+  // The overlap window lists each update for about seven polls: an issue already handled at this updatedAt (a comment
+  // bumps it) is skipped, which saves Paperclip a comments read (and often an issue read) per issue per poll.
+  for (const issue of byId.values()) {
+    if (issue.updatedAt && handledAt.get(issue.id) === issue.updatedAt) continue;
+    try {
+      await handleIssue(issue, engineerIds);
+      handledAt.set(issue.id, issue.updatedAt);
+    } catch (err) {
+      await reportError(issue, err);
+    }
+  }
   await stopClosedRuns().catch((err) => log("closed-task check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Replies: all of your open tasks (comments don't reliably bump "updated"), at most once a minute.
   if (cfg.replies?.enabled !== false && Date.now() - lastReplyCheck >= 60_000) {
@@ -336,11 +356,12 @@ async function closeReviewedTasks() {
     if (issue.descriptionTruncated) issue = await pc.issue(issue.id);
     const target = reviewTarget(issue);
     if (!target) continue;
-    // Read-only GraphQL queries with your gh login; nothing is written to GitHub.
+    // Read-only GraphQL queries; nothing is written to GitHub.
     githubLogin ??= (await execFileP(gh, ["api", "user", "--jq", ".login"])).stdout.trim();
     let pr;
     try {
-      const { stdout } = await execFileP(gh, ["api", "graphql", "-f", `query=${PR_QUERY}`, "-f", `owner=${target.owner}`, "-f", `repo=${target.repo}`, "-F", `number=${target.number}`]);
+      // The App's read token where it covers the repo (the agents org: the owner's own login may not see it), else your login.
+      const { stdout } = await execFileP(gh, ["api", "graphql", "-f", `query=${PR_QUERY}`, "-f", `owner=${target.owner}`, "-f", `repo=${target.repo}`, "-F", `number=${target.number}`], await gho(`${target.owner}/${target.repo}`, READ));
       pr = JSON.parse(stdout).data?.repository?.pullRequest;
     } catch (err) {
       log("pr review check failed", { issue: issue.identifier, pr: `${target.owner}/${target.repo}#${target.number}`, err: String(err.stderr || err.message).slice(0, 200) });
@@ -917,6 +938,9 @@ async function advanceMerges({ minute = true } = {}) {
     }
     // A head that is neither the runner's nor GitHub's update of it: requested again, so it is tiered anew.
     if (step.retier?.length) requestAutoMerge({ id: issueId }, step.retier);
+    // A PR its checks kept from merging: the task's Engineer is woken to fix it, once per head and three times per PR at most
+    // (its turn may have ended on the runner's word that green PRs merge on their own).
+    for (const f of step.fixes ?? []) await wakeForRedChecks(issueId, queue, f).catch((err) => log("red checks wake failed", { pr: f.url, err: String(err.message ?? err).slice(0, 200) }));
     // A UI PR now waiting on its design review: the reviewer gets a task for that head (and, none in time, once more; then the
     // queue parks it with a note).
     for (const pr of step.wake ?? []) await fileDesignReviewTask(pr).catch((err) => log("design review task failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 300) }));
@@ -928,6 +952,20 @@ async function advanceMerges({ minute = true } = {}) {
     if (step.say.length || step.done) log("merges advanced", { issue: queue.identifier, state: step.queue.state, merged: step.queue.prs.filter((p) => p.status === "merged").length });
     if (step.done) reportActivity();
   }
+}
+
+/** Wake the task that asked for a merge when its PR's checks failed: once per head, at most RED_WAKES times per PR. */
+const RED_WAKES = 3;
+async function wakeForRedChecks(issueId, queue, f) {
+  const key = `red-wake:${f.url.toLowerCase()}`;
+  const seen = JSON.parse(state.get(key) || "[]");
+  if (seen.includes(f.head) || seen.length >= RED_WAKES) return;
+  state.set(key, JSON.stringify([...seen, f.head]));
+  const issue = await pc.issue(issueId);
+  if (!issue || ["done", "cancelled"].includes(issue.status)) return;
+  log("red checks wake", { issue: queue.identifier, pr: f.url, head: f.head.slice(0, 12) });
+  // A fixed reason in the runner's own words (never the repository's check names): the agent reads them with gh.
+  await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${f.url} wasn't merged: its checks failed on \`${f.head.slice(0, 12)}\`. Run \`gh pr checks ${f.number}\` and read the failing runs' logs (and the code-review comment, if that check failed), fix the cause on the PR's branch, rerun the tests, then \`aidenhq pr\` and \`aidenhq merge ${f.url}\` again.` });
 }
 
 /** A finished queue: the task's status (with `say`, unless already posted), the parent's note, and the tasks that opened its PRs. */
@@ -955,7 +993,7 @@ const mergeGithub = {
   async pr(repo, number) {
     const [owner, name] = repo.split("/");
     const { stdout } = await execFileP(await findRealGh(), ["api", "graphql", "-f", `query=${merges.PR_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${name}`, "-F", `number=${number}`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }));
-    return JSON.parse(stdout).data;
+    return merges.withGate(JSON.parse(stdout).data);
   },
   async commit(repo, oid) {
     const [owner, name] = repo.split("/");
@@ -3174,6 +3212,11 @@ async function runCommand(issue, task, command) {
     // Local branches stay in the runner's cache clones (refs/kept/<task>/…), in case they're needed again.
     for (const r of repos) await keepBranches(r.path, join(cfg.workDir, "repos", r.org, r.name), issue.identifier);
     rmSync(workspace, { recursive: true, force: true });
+    try {
+      removeLayers(cowRoot(cfg, workspace)); // its copy-on-write cache layers
+    } catch (err) {
+      log("cache layers not removed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
+    }
     const kept = state.branches(issue.id).length;
     for (const b of state.branches(issue.id)) state.deleteBranch(issue.id, b.repo, b.branch);
     state.updateTask(issue.id, { workspace: null, session_id: null });

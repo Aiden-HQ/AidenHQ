@@ -555,15 +555,20 @@ To enable it:
    { "runtimes": { "runsc": { "path": "/usr/bin/runsc", "runtimeArgs": ["--platform=kvm"] } } }
    ```
 
-3. Restart Docker with `sudo systemctl restart docker`. This restarts every container, so do it in a quiet moment.
-4. Test: `docker run --rm --runtime=runsc <pinned small image> true` succeeds, and an agent computer run completes.
+3. Reload Docker with `sudo systemctl reload docker` (SIGHUP: runtimes are reloaded live, no container restarts).
+   Running boxes keep their platform; new ones get KVM. A second runtime without `runtimeArgs` (say `runsc-systrap`)
+   keeps systrap at hand for comparing.
+4. Test: `docker run --rm --runtime=runsc <pinned small image> true` succeeds, `ps -eo args | grep runsc-sandbox` shows
+   `--platform=kvm`, and an agent computer run completes.
 
 `ops/vm/setup.sh` merges only `.runtimes.runsc.path`, so a rerun keeps `runtimeArgs`. To undo, remove the line and
 restart Docker.
 
 **Whether to:** not during the migration. Change one thing at a time. After the soak, try it for a day, and compare
-an agent computer's run time and an app's response time against systrap. Keep it if it is faster and nothing breaks;
-the gain is real but modest for the light apps most instances run.
+an agent computer's run time and an app's response time against systrap. Keep it if it is faster and nothing breaks.
+Measured on a dedicated host (computer-engineer image, 4 CPUs, 3 runs each): box start 330 to 270 ms, an `agent-browser`
+screenshot 1.9 to 1.3 s, a headless Chrome screenshot 1.1 to 0.65 s, `tsc` -22%, `git add` of 300 files -30%, a Vite
+build -10%; copying a large tree was 35% slower. Overall about 13% faster on a build-and-screenshot pass.
 
 ## Gaps in the product scripts (as of this runbook)
 

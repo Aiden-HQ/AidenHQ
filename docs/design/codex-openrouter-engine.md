@@ -59,8 +59,11 @@ Jobs used to run under `bwrap --dev-bind / /` with a list of masked paths: a job
 (other tasks' folders, the product checkout, logs, the home directory). Now `layout()` in `engines.mjs` binds only:
 
 - read-write: the task folder, the engine's state (this engine's Codex home; opencode's and Claude Code's dirs for the
-  others; the host's `~/.codex` for `codex`, whose login lives there), the job's gcloud dir, the shared build caches
-  (`sandbox.extra_writable_roots`) and the run's last-message file;
+  others; the host's `~/.codex` for `codex`, whose login lives there), the job's gcloud dir and the run's last-message
+  file;
+- copy-on-write: the shared build caches (`sandbox.extra_writable_roots`), each an overlay of the host dir with the
+  task's own layer (`<work_dir>/.cache-layers/<task>`), so a job's writes never reach another's (read-write and shared
+  when bwrap can't mount overlays, before 0.11; the runner logs a warning);
 - read-only: `/usr` (merged-/usr links recreated), `/etc`, `/opt`, the home's toolchains (`~/.local/bin`, `~/.local/lib`,
   `~/.cargo`, `~/go/bin`, … plus `sandbox.read_only_roots`), node's own prefix, the runner's wrappers
   (`services/runner/bin`), and `/run/systemd/resolve` for DNS;

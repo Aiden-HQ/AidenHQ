@@ -8,9 +8,10 @@ ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
 ExecStartPre=/usr/bin/docker network inspect aidenhq-ci
 ExecStart=%h/aidenhq/ops/ci-runner.sh %i
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-# A finished job ends the container (and this run); the next one starts a new container.
+# A finished job ends the container (and this run); the next one starts a new container at once (a 10s delay left
+# runners idle ~20s between jobs while the queue grew).
 Restart=always
-RestartSec=10
+RestartSec=1
 
 [Install]
 WantedBy=default.target

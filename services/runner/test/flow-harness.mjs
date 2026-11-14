@@ -51,7 +51,13 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const autos = [];
   const created = []; // tasks the runner filed (POST …/issues), as the board key
   let n = 0;
-  const addComment = (issueId, body) => comments.get(issueId).push({ id: `comment-${++n}`, authorType: "user", authorUserId: USER, body, createdAt: new Date(Date.now() + n).toISOString() });
+  // Like Paperclip, a comment bumps its task's updatedAt (the runner skips a task it already handled at the same one).
+  const addComment = (issueId, body) => {
+    const createdAt = new Date(Date.now() + ++n).toISOString();
+    comments.get(issueId).push({ id: `comment-${n}`, authorType: "user", authorUserId: USER, body, createdAt });
+    const i = issues.get(issueId);
+    if (i) i.updatedAt = createdAt;
+  };
   const find = (ref) => issues.get(ref) ?? [...issues.values()].find((i) => i.identifier === ref);
   // The board's args schema is strict: a merge card's PR entries take these fields only, and any other is a 400 naming it.
   const strictArgs = (args) => (args?.prs ?? []).flatMap((p, i) => Object.keys(p ?? {}).filter((k) => !["repo", "number", "url", "head", "noReview"].includes(k)).map((k) => `prs.${i}: Unrecognized key: "${k}"`));

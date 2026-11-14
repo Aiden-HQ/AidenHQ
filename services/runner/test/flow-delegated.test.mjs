@@ -17,7 +17,9 @@ describe("flow-delegated", () => {
     assert.equal(reviews().length, 0);
     // The repository exists now; the delegator asks again.
     git(t.dir, "clone", "-q", "--bare", join(t.dir, "src/acme/app"), join(t.dir, "github/acme/late.git"));
-    t.paperclip.comments.get("part").push({ id: "agent-note", authorType: "agent", authorAgentId: "assistant", body: "Retry it please.", createdAt: new Date().toISOString() });
+    const at = new Date().toISOString();
+    t.paperclip.comments.get("part").push({ id: "agent-note", authorType: "agent", authorAgentId: "assistant", body: "Retry it please.", createdAt: at });
+    t.paperclip.issues.get("part").updatedAt = at; // as Paperclip does on a comment
     await waitFor("the retry's reply", () => reviews().length > 0);
     assert.match(claudeRuns()[0].prompt, /Retry it please/);
   });

@@ -87,32 +87,14 @@ jobs:
 
   test:
     name: ${{ matrix.dir }}
+    # The packages this change needs tested (image-changes' `tests` step): all of them on a push to main.
+    needs: image-changes
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      # --ignore-scripts: better-sqlite3 ships a linux prebuild, which it loads, but npm's implicit node-gyp step for it
-      # still needs make, which the runner image hasn't (no package here needs an install script).
       matrix:
-        include:
-          - { dir: scripts, run: "npm ci && npm test" }
-          - { dir: services/runner, run: "npm ci && npm test" }
-          - { dir: services/computer, run: "node --test test/*.test.mjs" }
-          - { dir: modules/core/templates/app, run: "npm ci && npm test && npm run build" }
-          - { dir: services/gate, run: "npm test && npm run typecheck" }
-          - { dir: services/board, run: "npm ci && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build" }
-          - { dir: services/apps-mcp, run: "npm ci --ignore-scripts && npm test && npm run typecheck" }
-          - { dir: modules/clickhouse/connections/clickhouse-mcp, run: "npm ci && npm test && npm run typecheck" }
-          - { dir: modules/github/connections/github-mcp, run: "npm ci && npm test && npm run typecheck" }
-          - { dir: modules/glean/connections/glean-mcp, run: "npm ci && npm test && npm run typecheck" }
-          - { dir: modules/google/connections/google-workspace-mcp, run: "npm ci && npm test && npm run typecheck" }
-          - { dir: modules/grafana/connections/grafana-mcp, run: "npm ci && npm test && npm run typecheck" }
-          - { dir: modules/jira/connections/jira-mcp, run: "npm ci && npm test && npm run typecheck" }
-          - { dir: modules/meetings/connections/ops-mcp, run: "npm ci && npm test && npm run typecheck" }
-          - { dir: modules/owner-channel/connections/slack-live-mcp, run: "npm ci --ignore-scripts && npm test && npm run typecheck" }
-          - { dir: modules/primer/connections/primer-mcp, run: "npm ci && npm test && npm run typecheck" }
-          - { dir: modules/slack/connections/slack-mcp, run: "npm ci && npm test && npm run typecheck" }
-          - { dir: modules/security/scanner, run: "npm ci && npm test && npm run typecheck" }
+        include: ${{ fromJSON(needs.image-changes.outputs.tests) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -133,6 +115,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       dockerfiles: ${{ steps.find.outputs.dockerfiles }}
+      tests: ${{ steps.tests.outputs.tests }}
     env:
       PR_BASE: ${{ github.event.pull_request.base.sha }}
       PUSH_BEFORE: ${{ github.event.before }}
@@ -142,6 +125,63 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # The packages to test: on a pull request, each whose directory or a path it reads changed; every one on a push to
+      # main or when CI itself, shared code or a root manifest changed. `scripts` always runs (fast; it checks the lot).
+      # --ignore-scripts: better-sqlite3 ships a linux prebuild, which it loads, but npm's implicit node-gyp step for it
+      # still needs make, which the runner image hasn't (no package here needs an install script).
+      - id: tests
+        run: |
+          base="${PR_BASE:-$PUSH_BEFORE}"
+          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
+          fi
+          changed=$(git diff --name-only "$base" "$HEAD_SHA")
+          all=""
+          [ "$GITHUB_EVENT_NAME" = pull_request ] || all=1
+          grep -qE '^(\.github/|services/shared/)' <<< "$changed" && all=1
+          packages=$(cat <<'PACKAGES'
+          scripts|npm ci && npm test|*
+          services/runner|npm ci && npm test|services/runner services/computer services/gateway services/shared modules scripts
+          services/computer|node --test test/*.test.mjs|services/computer services/runner/src services/runner/bin modules/core/design-system modules/design
+          modules/core/templates/app|npm ci && npm test && npm run build|modules/core/templates/app modules/core/design-system
+          services/gate|npm test && npm run typecheck|services/gate services/shared scripts/identity.mjs
+          services/board|npm ci && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build|services/board services/gate services/runner/src services/shared scripts/identity.mjs modules/core/design-system
+          services/apps-mcp|npm ci --ignore-scripts && npm test && npm run typecheck|services/apps-mcp services/shared modules/core/templates/app modules/core/design-system scripts/identity.mjs
+          modules/clickhouse/connections/clickhouse-mcp|npm ci && npm test && npm run typecheck|modules/clickhouse
+          modules/github/connections/github-mcp|npm ci && npm test && npm run typecheck|modules/github
+          modules/glean/connections/glean-mcp|npm ci && npm test && npm run typecheck|modules/glean
+          modules/google/connections/google-workspace-mcp|npm ci && npm test && npm run typecheck|modules/google
+          modules/grafana/connections/grafana-mcp|npm ci && npm test && npm run typecheck|modules/grafana
+          modules/jira/connections/jira-mcp|npm ci && npm test && npm run typecheck|modules/jira
+          modules/meetings/connections/ops-mcp|npm ci && npm test && npm run typecheck|modules/meetings
+          modules/owner-channel/connections/slack-live-mcp|npm ci --ignore-scripts && npm test && npm run typecheck|modules/owner-channel
+          modules/primer/connections/primer-mcp|npm ci && npm test && npm run typecheck|modules/primer
+          modules/slack/connections/slack-mcp|npm ci && npm test && npm run typecheck|modules/slack
+          modules/security/scanner|npm ci && npm test && npm run typecheck|modules/security
+          PACKAGES
+          )
+          # A changed file under no package's paths (ops/, compose files, root files, a new directory…) runs them all:
+          # the filter never fails open. Docs and Markdown alone change no test.
+          known=$(cut -d'|' -f3 <<< "$packages" | tr ' ' '\n' | grep -v '^\*$' | sort -u)
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in docs/*|*.md) continue ;; esac
+            hit=""
+            while IFS= read -r p; do case "$f" in "$p"|"$p"/*) hit=1; break ;; esac; done <<< "$known"
+            [ -n "$hit" ] || { echo "Not under any package: $f (testing everything)"; all=1; break; }
+          done <<< "$changed"
+          picked=""
+          while IFS='|' read -r dir run paths; do
+            [ -n "$dir" ] || continue
+            want="$all"
+            [ "$paths" = "*" ] && want=1
+            for p in $paths; do grep -q "^$p\(/\|$\)" <<< "$changed" && want=1; done
+            [ -n "$want" ] && picked="$picked$(jq -nc --arg dir "$dir" --arg run "$run" '{dir: $dir, run: $run}')"$'\n'
+          done <<< "$packages"
+          tests=$(printf '%s' "$picked" | jq -sc .)
+          echo "Packages to test: $(jq -r 'map(.dir) | join(" ")' <<< "$tests")"
+          echo "tests=$tests" >> "$GITHUB_OUTPUT"
+
       - id: find
         run: |
           base="${PR_BASE:-$PUSH_BEFORE}"
@@ -198,3 +238,18 @@ jobs:
             echo "::endgroup::"
           done
           exit $status
+
+  # The one result a merge waits for: every job above passed (image-scan may be skipped when no image changed). Jobs that
+  # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
+  # exist; the runner treats this check as required once the base branch has it (services/runner/src/merges.mjs withGate).
+  ci-required:
+    if: always()
+    needs: [supply-chain, image-changes, test, image-scan]
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e '(.["supply-chain"].result == "success") and (.["image-changes"].result == "success") and (.test.result == "success") and (.["image-scan"].result | IN("success", "skipped"))' >/dev/null

@@ -243,7 +243,7 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 `allowed_orgs` (the organizations it may implement, push and open PRs in; public repositories elsewhere are read-only),
 optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, the engines
 (`codex-openrouter`, `codex`, `claude`, `openrouter`) and the job sandbox (`sandbox.extra_writable_roots` for shared
-build caches, `sandbox.read_only_roots` for toolchains outside the defaults).
+build caches, copy-on-write per task so a job's writes never reach another's, `sandbox.read_only_roots` for toolchains outside the defaults).
 
 An Engineer agent picks its engine with `engine:` in its `module.yaml` (default: its adapter's). The Software and Platform
 Engineers run `codex-openrouter` (Codex on OpenRouter models through the model gateway, DeepSeek at medium effort, no

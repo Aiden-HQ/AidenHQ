@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it, test } from "node:test";
 import { classify } from "../src/tiers.mjs";
-import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, findPrs, finishedStatus, newQueue, prDecision, startOrResume, supersededDesignReview, touchesUi, WRITES } from "../src/merges.mjs";
+import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, findPrs, finishedStatus, newQueue, prDecision, startOrResume, supersededDesignReview, touchesUi, WRITES, withGate, ciState, namedChecks } from "../src/merges.mjs";
 
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
 const red = { state: "FAILURE", contexts: { nodes: [{ __typename: "StatusContext", context: "buildkite/deploy", state: "FAILURE" }] } };
@@ -438,6 +438,14 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     assert.match(step.say[0], /^Merged https:\/\/github.com\/o\/r\/pull\/1\.\nMerged https:\/\/github.com\/o\/r\/pull\/2\.$/);
   });
 
+  it("a PR its checks kept from merging is reported in fixes, with its head, so the task's Engineer is woken", async () => {
+    const failing = { state: "FAILURE", contexts: { nodes: [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "FAILURE" }] } };
+    const gh = fakeGithub({ 1: own(1, head(failing)), 2: own(2) });
+    const step = await advance(queue(1, 2), { github: gh, now: at(0) });
+    assert.deepEqual(step.fixes.map((f) => [f.number, f.head]), [[1, "head1"]]);
+    assert.equal(step.fixes[0].number, 1);
+  });
+
   it("a PR stacked on a merged parent is retargeted and sent back to tiering, never merged into the old base", async () => {
     const merged = [{ state: "MERGED", headRefOid: "tip", isCrossRepository: false }];
     const gh = fakeGithub({ 1: own(1, { baseRefName: "feat/a" }) }, {}, { "feat/a": { tip: "tip", merged } });
@@ -713,4 +721,23 @@ describe("aidenhq close", () => {
     assert.deepEqual(calls, [["comment", 5, "superseded by #6"], ["close", 5]]);
     assert.deepEqual(lines, ["Closed https://github.com/acme-agents/roadmap-keeper/pull/5: superseded by #6"]);
   });
+});
+
+test("withGate: a head without the base branch's ci-required check is pending, not green", () => {
+  const run = (name, conclusion = "SUCCESS") => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion });
+  const data = (head, base) => ({ repository: { pullRequest: {
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes: head } } } }] },
+    baseRef: { target: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes: base } } } },
+  } } });
+  const rollup = (d) => d.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup;
+  // The window: supply-chain and image-changes green, the test jobs and the gate not created yet.
+  const early = withGate(data([run("supply-chain"), run("image-changes")], [run("scripts"), run("ci-required")]));
+  assert.equal(ciState(rollup(early)), "pending");
+  assert.ok(namedChecks(rollup(early)).some((c) => c.name === "ci-required" && c.pending));
+  // The gate done on the head: unchanged and green.
+  const done = withGate(data([run("scripts"), run("ci-required")], [run("ci-required")]));
+  assert.equal(ciState(rollup(done)), "green");
+  // A repository whose CI has no gate: unchanged.
+  const none = withGate(data([run("tests")], [run("tests")]));
+  assert.deepEqual(namedChecks(rollup(none)).map((c) => c.name), ["tests"]);
 });

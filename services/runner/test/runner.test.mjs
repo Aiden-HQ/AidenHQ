@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { crewNames, findRepos, mentionedRepos, normalizeRepo, parseCommand, repoAllowed, resolveEngine } from "../src/commands.mjs";
-import { buildCommand } from "../src/engines.mjs";
+import { buildCommand, cowRoot, removeLayers } from "../src/engines.mjs";
 import { staleRoutineRuns } from "../src/recurring.mjs";
 import { firstPrompt, followUpPrompt, latestReport, observeSection } from "../src/prompt.mjs";
 import { accessToken, gcpSession } from "../src/gcp.mjs";
@@ -1146,6 +1146,31 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     } finally {
       other.kill();
     }
+  });
+
+  // The shared build caches are copy-on-write per task: a job's writes stay in its task's layer, never in the seed others read.
+  it("a real job's cache writes stay with its task: the shared seed and other tasks never see them", { skip: spawnSync("bwrap", ["--ro-bind", "/", "/", "true"]).status !== 0 && "bwrap unavailable" }, () => {
+    const { dir, c } = setup();
+    const seed = join(dir, "npm-cache");
+    mkdirSync(seed);
+    writeFileSync(join(seed, "pkg"), "seed\n");
+    const tasks = join(dir, "tasks");
+    for (const t of ["WOR-1", "WOR-2"]) mkdirSync(join(tasks, t), { recursive: true });
+    const cc = { ...c, workDir: dir, sandbox: { extra_writable_roots: [seed] } };
+    const sh = (task, cmd) => {
+      const { argv } = buildCommand({ cfg: cc, engine: { kind: "codex" }, worktree: join(tasks, task), lastMessageFile: "/x" });
+      const inner = argv.indexOf("--") + 1;
+      return spawnSync(argv[0], [...argv.slice(1, inner), "sh", "-c", cmd], { encoding: "utf8" });
+    };
+    assert.equal(sh("WOR-1", `cat ${seed}/pkg && echo poisoned > ${seed}/pkg && echo mine > ${seed}/new`).status, 0);
+    assert.equal(readFileSync(join(seed, "pkg"), "utf8"), "seed\n", "the seed is unchanged");
+    assert.ok(!existsSync(join(seed, "new")));
+    assert.equal(sh("WOR-2", `cat ${seed}/pkg; ls ${seed}`).stdout, "seed\npkg\n", "another task reads the seed only");
+    assert.equal(sh("WOR-1", `cat ${seed}/pkg ${seed}/new`).stdout, "poisoned\nmine\n", "the task keeps its own writes");
+    // Its layers go with its workspace, read-only folders (Go's module cache) included.
+    assert.equal(sh("WOR-1", `mkdir -p ${seed}/mod/x && touch ${seed}/mod/x/f && chmod -R a-w ${seed}/mod`).status, 0);
+    removeLayers(cowRoot(cc, join(tasks, "WOR-1")));
+    assert.ok(!existsSync(cowRoot(cc, join(tasks, "WOR-1"))));
   });
 
   it("with pasta, a job gets its own network: of the host's loopback only its helper and the MCP endpoints it is wired to", () => {

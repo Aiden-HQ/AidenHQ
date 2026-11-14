@@ -1,9 +1,9 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { DEFAULT_IDENTITY, identityEnv } from "./github-app.mjs";
-import { appendFileSync, closeSync, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
-import { homedir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { progressTracker } from "./progress.mjs";
 import { mintToken } from "../../gateway/token.mjs";
 import { CODEX_CONFIG_SCRUB } from "../../computer/lib.mjs";
@@ -92,12 +92,13 @@ const inside = (p, root) => p === root || p.startsWith(root.endsWith(sep) ? root
 /**
  * What a job sees of the host's files (bwrap): an allowlist, not the whole host. Read-only: the toolchains (/usr and its
  * links, /etc, /opt, the home's toolchains, node's own prefix), the runner's wrappers (cfg.ghWrapperDir), the pinned
- * headless browser (cfg.browserDir, for bin/aidenhq-browse) and `ro`. Read-write: `rw` (the task folder, the engine's state dirs, the build caches). A private /tmp and an empty home
+ * headless browser (cfg.browserDir, for bin/aidenhq-browse) and `ro`. Read-write: `rw` (the task folder, the engine's state dirs). Copy-on-write:
+ * `cow` (the build caches, each over the task's own layer; read-write binds when cfg.noOverlay). A private /tmp and an empty home
  * under them; the host's /dev and /sys, a procfs of the job's own. Nothing else exists in the job: other tasks' folders, the product
  * checkout, the services' data, the secrets, the runner's state and logs, the sockets. What cfg.gcp.hidden names inside
  * an allowed path is still masked: a directory gets an empty tmpfs, a file or socket /dev/null.
  */
-export function layout(cfg, { rw = [], ro = [] } = {}) {
+export function layout(cfg, { rw = [], ro = [], cow = [] } = {}) {
   const home = homedir();
   const node = dirname(dirname(process.execPath));
   const roPaths = [...SYSTEM_RO, ...HOME_RO.map(expand), ...(cfg.sandbox?.read_only_roots ?? []).map(expand), ...(node.startsWith(home + sep) ? [node] : []), cfg.ghWrapperDir, cfg.browserDir, ...ro];
@@ -112,10 +113,19 @@ export function layout(cfg, { rw = [], ro = [] } = {}) {
   // /run: only the host's resolver (the jail replaces it with its own tmpfs; without the jail it links into /run/systemd/resolve).
   if (existsSync("/run/systemd/resolve")) args.push("--ro-bind", "/run/systemd/resolve", "/run/systemd/resolve");
   // Shallower paths first, so a deeper bind lands on top of its parent's.
-  const mounts = [...roPaths.filter(Boolean).map((p) => ["--ro-bind", resolve(p)]), ...rw.filter(Boolean).map((p) => ["--bind", resolve(p)])]
+  // `cow`: [host dir, the task's own upper dir] pairs, copy-on-write (overlayfs): the job reads the host dir and writes go
+  // to the task's upper dir, so one job can't change what another reads (shared build caches).
+  const mounts = [...roPaths.filter(Boolean).map((p) => ["--ro-bind", resolve(p)]), ...rw.filter(Boolean).map((p) => ["--bind", resolve(p)]), ...cow.map(([p, up]) => (cfg.noOverlay ? ["--bind", resolve(p)] : ["--overlay", resolve(p), up]))]
     .filter(([, p]) => existsSync(p))
     .sort((a, b) => a[1].split(sep).length - b[1].split(sep).length);
-  for (const [how, p] of mounts) args.push(how, p, p);
+  for (const [how, p, up] of mounts) {
+    if (how !== "--overlay") args.push(how, p, p);
+    else {
+      mkdirSync(join(up, "upper"), { recursive: true });
+      mkdirSync(join(up, "work"), { recursive: true });
+      args.push("--overlay-src", p, "--overlay", join(up, "upper"), join(up, "work"), p);
+    }
+  }
   const allowed = mounts.map(([, p]) => p);
   for (const p of (cfg.gcp?.hidden ?? []).filter((d) => existsSync(d) && allowed.some((a) => inside(d, a)))) {
     args.push(...(statSync(p).isDirectory() ? ["--tmpfs", p] : ["--ro-bind", "/dev/null", p]));
@@ -137,6 +147,24 @@ export function jailProblem(cfg) {
   const [cmd, ...args] = hiding(cfg, ["true"]);
   const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 20000 });
   return r.status === 0 ? undefined : `a trial job failed (exit ${r.status ?? r.signal}): ${(r.stderr || r.error?.message || "").trim().slice(0, 300)}`;
+}
+
+/** Why this bwrap can't mount the copy-on-write cache layers (--overlay needs bubblewrap 0.11+), or undefined when it can. */
+export function overlayProblem(cfg) {
+  const dir = mkdtempSync(join(tmpdir(), "aidenhq-overlay-"));
+  try {
+    for (const d of ["lower", "upper", "work"]) mkdirSync(join(dir, d));
+    const r = spawnSync(cfg.bwrap ?? "bwrap", ["--ro-bind", "/", "/", "--overlay-src", join(dir, "lower"), "--overlay", join(dir, "upper"), join(dir, "work"), join(dir, "lower"), "true"], { encoding: "utf8", timeout: 20000 });
+    return r.status === 0 ? undefined : `${(r.stderr || r.error?.message || "").trim().slice(0, 200) || `exit ${r.status ?? r.signal}`}`;
+  } finally {
+    removeLayers(dir);
+  }
+}
+
+/** Remove a copy-on-write layer folder: Go's module cache and overlayfs's work dir are read-only, so made writable first. */
+export function removeLayers(dir) {
+  spawnSync("chmod", ["-R", "u+rwx", dir]);
+  rmSync(dir, { recursive: true, force: true });
 }
 
 /** Host loopback ports of the given URLs (127.0.0.1 / localhost only): what a jailed job may reach on the host. */
@@ -199,13 +227,18 @@ export function buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile
   const mcp = [primer(cfg)?.url, ...(observes(engine) ? privateReads(cfg).map((r) => r.url) : []), ...(viaGateway(engine.kind) ? [gatewayUrl(cfg)] : [])];
   // The engine writes its last message there (-o): the file alone is bound, made beforehand (bwrap binds what exists).
   if (lastMessageFile && !existsSync(lastMessageFile)) try { writeFileSync(lastMessageFile, ""); } catch {}
-  const rw = [worktree, ...(built.rw ?? []), ...(cfg.sandbox?.extra_writable_roots ?? []).map(expand), lastMessageFile];
+  const rw = [worktree, ...(built.rw ?? []), lastMessageFile];
+  // The shared build caches (sandbox.extra_writable_roots: ~/.npm, ~/.cache): copy-on-write per task, never written back,
+  // so no job can poison another's packages or build outputs. The task's writes stay in its own layer outside the jail.
+  const cow = (cfg.sandbox?.extra_writable_roots ?? []).map(expand).map((p, i) => [p, join(cowRoot(cfg, worktree), `${i}-${basename(p)}`)]);
   // The clones' core.hooksPath (git.mjs ensureGuardHooks: a pre-push that refuses), read-only.
   const ro = cfg.workDir ? [join(cfg.workDir, ".guard-hooks")] : [];
-  return { ...built, argv: hiding(cfg, built.argv, [...mcp, ...loopback], { rw, ro }) };
+  return { ...built, argv: hiding(cfg, built.argv, [...mcp, ...loopback], { rw, ro, cow }) };
 }
 
 const gatewayUrl = (cfg) => cfg.gatewayUrl ?? "http://127.0.0.1:8201";
+/** A task's copy-on-write cache layers: beside the task folders, never inside one (no job sees another's, or its own raw). */
+export const cowRoot = (cfg, worktree) => join(cfg.workDir ?? dirname(dirname(worktree)), ".cache-layers", basename(worktree));
 
 // ------------------------------------------------------------------ box jobs (the App Engineer)
 /** A box job's last message: a folder of the launcher's mounted at /aidenhq-out (outDir on the host), never the workspace. */

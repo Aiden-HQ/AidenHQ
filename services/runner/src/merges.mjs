@@ -343,6 +343,23 @@ export async function awaitChecks(read, { every = 10_000, until = 90_000, sleep 
   return state;
 }
 
+/**
+ * The aggregate gate check a repository's CI may end with (the product's ci.yml): its jobs that depend on others appear
+ * only once those finish, so a PR can look all green for a moment before them. When the base branch's own rollup has
+ * the gate, a PR head without it is still pending: the gate is added to the head's rollup as queued.
+ */
+export const GATE_CHECK = "ci-required";
+export function withGate(data) {
+  const pr = data?.repository?.pullRequest;
+  const head = pr?.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+  const base = pr?.baseRef?.target?.statusCheckRollup;
+  const has = (rollup) => (rollup?.contexts?.nodes ?? []).some((n) => (n.name ?? n.context) === GATE_CHECK);
+  if (!head || !has(base) || has(head)) return data;
+  head.contexts = { ...(head.contexts ?? {}), nodes: [...(head.contexts?.nodes ?? []), { __typename: "CheckRun", name: GATE_CHECK, status: "QUEUED", conclusion: null }] };
+  if (head.state === "SUCCESS") head.state = "PENDING";
+  return data;
+}
+
 /** "green", "red" or "pending" for a status rollup, advisory checks left out. No checks at all counts as green. */
 export function ciState(rollup) {
   rollup = required(rollup);
@@ -629,6 +646,7 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
   const say = [];
   const retier = [];
   const wake = [];
+  const fixes = []; // PRs not merged because their checks failed on this head: the caller wakes the task's Engineer
   const t = now.getTime();
   for (const p of queue.prs.filter((x) => x.status === "pending")) {
     const fail = (why) => {
@@ -682,7 +700,10 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
       else if (d.do === "fail") {
         const retry = d.red ? await retryInfra(github, p.repo, p.number, pr) : undefined;
         if (retry) wait(`${pr.headRefOid}:${retry.key}`, RERUN_WAIT[retry.key], retry.limit);
-        else fail(d.why);
+        else {
+          fail(d.why);
+          if (d.red) fixes.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid, why: d.why });
+        }
       } else if (d.do === "wait") {
         wait(`${pr.headRefOid}:${d.why}`, d.why, d.limit, d.again);
         // The design reviewer is asked once per head, when the merge starts waiting on it (the caller files its task).
@@ -726,12 +747,12 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
     }
   }
   const out = say.length ? [say.join("\n")] : [];
-  if (queue.prs.some((x) => x.status === "pending")) return { queue, say: out, retier, wake };
+  if (queue.prs.some((x) => x.status === "pending")) return { queue, say: out, retier, wake, fixes };
   const merged = queue.prs.filter((x) => x.status === "merged").length;
   const failed = queue.prs.filter((x) => x.status === "failed" || x.status === "escalated").length;
   Object.assign(queue, { state: failed ? "stopped" : "done", finishedAt: now.toISOString(), ...(failed ? { reason: `${failed} not merged` } : {}) });
   const headline = failed ? `**Merges finished:** ${merged} merged, ${failed} not.` : `**Done:** ${merged} merged, ${minutes(t - Date.parse(queue.startedAt))} minutes in all.`;
-  return { queue, say: [...out, summary(queue, headline)], done: queue.state, retier, wake };
+  return { queue, say: [...out, summary(queue, headline)], done: queue.state, retier, wake, fixes };
 }
 
 /**

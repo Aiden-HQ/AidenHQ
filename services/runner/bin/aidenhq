@@ -3,6 +3,8 @@
 // runner does the work and checks each write against the user's words; this only forwards the request.
 //
 //   aidenhq status                                   branches, PRs, reviews, checks, merge queue (live)
+//   aidenhq wait [--minutes <n>]                     status again once it changes (a check, review or merge settles),
+//                                                       nothing is running any more, or after n minutes (default 20)
 //   aidenhq push [<org/repo> <branch>]...            push the task's branches (or the ones named)
 //   aidenhq pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>]
 //                                                       push, and open a draft PR for each
@@ -20,7 +22,7 @@
 //   aidenhq tasks [<words>] [--agent <name>]         find tasks, closed ones too
 import { readFileSync } from "node:fs";
 
-const usage = `usage: aidenhq status | push [<org/repo> <branch>]... | pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>] | merge <PR link>... [--gap <minutes>] | close <PR link>... --reason "<one line>" | apply | repo <org/name> | engine <claude|codex|openrouter> [model] | primer [<Primer link>] | pass <name> | reset | cleanup | task <PEN-N> | tasks [<words>] [--agent <name>]`;
+const usage = `usage: aidenhq status | wait [--minutes <n>] | push [<org/repo> <branch>]... | pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>] | merge <PR link>... [--gap <minutes>] | close <PR link>... --reason "<one line>" | apply | repo <org/name> | engine <claude|codex|openrouter> [model] | primer [<Primer link>] | pass <name> | reset | cleanup | task <PEN-N> | tasks [<words>] [--agent <name>]`;
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -31,13 +33,13 @@ if (!command || ["help", "-h", "--help"].includes(command) || rest.some((w) => w
   console.log(usage);
   process.exit(0);
 }
-if (!["status", "push", "pr", "merge", "close", "apply", "repo", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks"].includes(command)) fail(usage, 2);
+if (!["status", "wait", "push", "pr", "merge", "close", "apply", "repo", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks"].includes(command)) fail(usage, 2);
 if (!process.env.AIDENHQ_REPO_URL) fail("only available inside a task run", 2);
 
 const flags = {};
 const words = [];
 for (let i = 0; i < rest.length; i++) {
-  if (rest[i] === "--title" || rest[i] === "--body-file" || rest[i] === "--gap" || rest[i] === "--reason" || rest[i] === "--agent") flags[rest[i].slice(2)] = rest[++i];
+  if (rest[i] === "--title" || rest[i] === "--body-file" || rest[i] === "--gap" || rest[i] === "--reason" || rest[i] === "--agent" || rest[i] === "--minutes") flags[rest[i].slice(2)] = rest[++i];
   else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
   else words.push(rest[i]);
 }
@@ -59,6 +61,9 @@ if (command === "repo") {
   body = { task: words[0] };
 } else if (command === "tasks") {
   body = { query: words.join(" "), agent: flags.agent };
+} else if (command === "wait") {
+  if (words.length || (flags.minutes !== undefined && !(Number(flags.minutes) > 0))) fail("usage: aidenhq wait [--minutes <n>]", 2);
+  body = {};
 } else if (command === "merge") {
   if (!words.length) fail("name the pull requests to merge, in order", 2);
   body = { prs: words, gap: flags.gap === undefined ? undefined : Number(flags.gap) };
@@ -81,19 +86,41 @@ if (command === "repo") {
 // The runner restarts on deploys (its runs keep going): while it's down the request is retried for up to two
 // minutes. Only a refused connection, never a request it may have taken in.
 const send = () =>
-  fetch(`${process.env.AIDENHQ_REPO_URL}/${command}`, {
+  fetch(`${process.env.AIDENHQ_REPO_URL}/${command === "wait" ? "status" : command}`, {
     method: "POST",
     headers: { authorization: `Bearer ${process.env.AIDENHQ_REPO_TOKEN ?? ""}`, "content-type": "application/json" },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(20 * 60_000),
   });
-let res;
-for (const end = Date.now() + 120_000; !res; ) {
-  res = await send().catch(async (err) => {
-    if (err.cause?.code !== "ECONNREFUSED" || Date.now() > end) fail(`the runner didn't answer (${err.message})`);
-    await new Promise((r) => setTimeout(r, 2000));
-  });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function ask() {
+  let res;
+  for (const end = Date.now() + 120_000; !res; ) {
+    res = await send().catch(async (err) => {
+      if (err.cause?.code !== "ECONNREFUSED" || Date.now() > end) fail(`the runner didn't answer (${err.message})`);
+      await sleep(2000);
+    });
+  }
+  const text = await res.text();
+  if (!res.ok) fail(text);
+  return text;
 }
-const text = await res.text();
-if (!res.ok) fail(text);
-console.log(text);
+if (command !== "wait") {
+  console.log(await ask());
+  process.exit(0);
+}
+// wait: one model turn instead of a sleep-and-poll loop. The status is read every minute (each read is one live GitHub call per PR; 12 waiting jobs stay well inside the App's hourly budget) and printed once it changes
+// or nothing is in flight (no check running, no PR waiting in the merge queue).
+const POLL_MS = Number(process.env.AIDENHQ_WAIT_POLL_MS) || 60_000;
+const started = Date.now();
+// A PR whose checks haven't started yet ("none") counts as in flight for its first 5 minutes: CI starts a little after a push.
+const inFlight = (t) => /\b\d+ running\b|\| waiting/.test(t) || (Date.now() - started < 5 * 60_000 && /#\d+ (open|draft) \|[^|\n]*\| none \|/.test(t));
+const first = await ask();
+const deadline = Date.now() + Number(flags.minutes ?? 20) * 60_000;
+let now = first;
+while (now === first && inFlight(now) && Date.now() < deadline) {
+  await sleep(Math.min(POLL_MS, Math.max(0, deadline - Date.now())));
+  now = await ask();
+}
+if (now === first && inFlight(now)) console.log(`No change after ${flags.minutes ?? 20} minutes; still in flight:\n`);
+console.log(now);
