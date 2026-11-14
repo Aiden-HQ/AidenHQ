@@ -17,6 +17,7 @@
  * after the change (the agent saw it, or made it itself: reopening a child in its own run never wakes it). Otherwise,
  * after 3 minutes' grace for the primary paths, the board posts one notice on the task naming what changed (ids and
  * states only), which wakes the agent through Paperclip's comment wake; a recovery-held task's agent is woken directly.
+ * Paperclip's suppressed disposition repairs leave such holds on tasks; each tick releases them (the run did nothing).
  * Cursors advance only once the notice is posted. The notice is on the agent's own task and nothing here reads comments,
  * so a wake never causes another. At most 4 wakes per agent per hour, and each counts against the task's daily limit
  * (brake.ts). Kill switch: instance setting `wake_ups: off`.
@@ -25,7 +26,7 @@ import { readFileSync } from "node:fs";
 import { takeWake } from "./brake.js";
 import { NOTICE_MARKER } from "./chats.js";
 import { appsApi } from "./fleet.js";
-import { OPEN, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
+import { OPEN, REPAIR_SUPPRESSED, REPAIR_SUPPRESSED_WHY, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
 import type { Store } from "./store.js";
 
 const MIN = 60_000;
@@ -36,7 +37,7 @@ const STATE_KEY = "wake_cursors";
 export const WAKE_MARKER = "<!-- aidenhq-wake -->";
 const OPEN_STATUSES = new Set(OPEN.split(","));
 
-type PaperclipPart = Pick<Paperclip, "routines" | "agents" | "openIssues" | "closedSince" | "liveRuns" | "recentRuns" | "addComment" | "issue" | "wakeAgent">;
+type PaperclipPart = Pick<Paperclip, "routines" | "agents" | "openIssues" | "closedSince" | "liveRuns" | "recentRuns" | "addComment" | "issue" | "wakeAgent" | "releaseCancelledRun">;
 export interface PrState {
   repo: string;
   number: number;
@@ -166,6 +167,18 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
 
   const live = await pc.liveRuns();
   const runs = await pc.recentRuns(200);
+  // Paperclip cancels its own disposition-repair run before dispatch when the task already has a disposition, yet holds the
+  // task (legacy_execution_requires_reconciliation), parking every later wake on it: a finished, graded result's note on
+  // the owner's chat woke nobody until this reconciler's notice 5 minutes later (WOR-4626). The run did nothing: release it.
+  for (const r of runs) {
+    if (r.errorCode !== REPAIR_SUPPRESSED || !r.issueId) continue;
+    const held = await pc.issue(r.issueId).catch(() => undefined);
+    if (held?.executionBlocker?.runId !== r.id) continue;
+    await pc.releaseCancelledRun(held, r.id, REPAIR_SUPPRESSED_WHY).then(
+      () => log.info({ issue: held.identifier, run: r.id }, "released the hold Paperclip's suppressed repair left"),
+      (err) => log.warn({ issue: held.identifier, err: String(err) }, "couldn't release the hold Paperclip's suppressed repair left"),
+    );
+  }
   // Busy: a run queued or going. Seen: a run that succeeded after the change (a failed or cancelled one may never have
   // looked, and some cancelled runs never get a finish time).
   const busy = new Set([...live, ...runs].filter((r) => ["queued", "scheduled_retry", "running"].includes(r.status)).map((r: LiveRun | PastRun) => `${r.agentId}:${r.issueId}`));

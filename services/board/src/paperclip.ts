@@ -73,6 +73,22 @@ export interface Routine {
 }
 
 /** A finished (or failed) agent run, from heartbeat-runs. */
+/** Why a cancelled run did nothing, for releasing the recovery hold it left (releaseCancelledRun). */
+export interface ReleaseWhy {
+  note: string;
+  evidence: string;
+}
+const BRAKE_CANCEL: ReleaseWhy = {
+  note: "The board's loop brake cancelled this run as it started; it did nothing.",
+  evidence: "Cancelled by the board's loop brake, which only cancels a run it saw still queued; it was stopped as it started, before any action.",
+};
+/** Paperclip's own disposition repair, cancelled before dispatch because the task already had a disposition. */
+export const REPAIR_SUPPRESSED = "legacy_disposition_repair_suppressed";
+export const REPAIR_SUPPRESSED_WHY: ReleaseWhy = {
+  note: "Paperclip suppressed its own disposition repair run before dispatch; it did nothing.",
+  evidence: "The run ended with legacy_disposition_repair_suppressed: Paperclip cancels it before the adapter starts, so no action ran.",
+};
+
 export interface PastRun {
   id: string;
   status: string;
@@ -229,10 +245,11 @@ export class Paperclip {
   }
 
   /**
-   * Clears the recovery hold Paperclip puts on a task when a run we cancelled had just started: it did nothing (the brake
-   * cancels only runs it saw queued), so the hold is resolved as restored with no action performed.
+   * Clears the recovery hold Paperclip puts on a task when a cancelled run had just started and did nothing (the brake
+   * cancels only runs it saw queued; Paperclip's suppressed repair stops before dispatch), so the hold is resolved as
+   * restored with no action performed.
    */
-  releaseCancelledRun(issue: Pick<Issue, "id" | "status" | "executionBlocker">, runId: string): Promise<unknown> {
+  releaseCancelledRun(issue: Pick<Issue, "id" | "status" | "executionBlocker">, runId: string, why = BRAKE_CANCEL): Promise<unknown> {
     const b = issue.executionBlocker;
     if (!b?.recoveryActionId || b.runId !== runId) return Promise.resolve(undefined);
     const status = ["todo", "done", "in_review"].includes(issue.status) ? issue.status : "todo";
@@ -240,8 +257,8 @@ export class Paperclip {
       actionId: b.recoveryActionId,
       outcome: "restored",
       sourceIssueStatus: status,
-      resolutionNote: "The board's loop brake cancelled this run as it started; it did nothing.",
-      executionReconciliation: { runId, providerStopped: true, actionOutcome: "not_performed", outcomeEvidence: "Cancelled by the board's loop brake, which only cancels a run it saw still queued; it was stopped as it started, before any action." },
+      resolutionNote: why.note,
+      executionReconciliation: { runId, providerStopped: true, actionOutcome: "not_performed", outcomeEvidence: why.evidence },
     });
   }
 

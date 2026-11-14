@@ -14,7 +14,9 @@ type T = { id: string; identifier: string; title: string; status: string; assign
 /** A Paperclip with two heartbeat agents (Aiden "a", the Architect "b") and one Engineer ("e"), tasks and runs set by the test. */
 function fake() {
   const tasks = new Map<string, T>();
-  const runs: { id: string; status: string; agentId: string; issueId: string; startedAt: string; finishedAt: string | null }[] = [];
+  const runs: { id: string; status: string; agentId: string; issueId: string; startedAt: string; finishedAt: string | null; errorCode?: string }[] = [];
+  const holds = new Map<string, { runId: string; recoveryActionId: string; cause: string }>();
+  const released: string[] = [];
   const comments: { issue: string; body: string }[] = [];
   const pc = {
     routines: async () => [
@@ -30,11 +32,15 @@ function fake() {
       comments.push({ issue, body });
       return { id: `c${comments.length}` };
     },
-    issue: async (id: string) => ({ ...tasks.get(id), executionBlocker: null }),
+    issue: async (id: string) => ({ ...tasks.get(id), executionBlocker: holds.get(id) ?? null }),
     wakeAgent: async () => ({}),
+    releaseCancelledRun: async (issue: { id: string }, runId: string) => {
+      if (holds.get(issue.id)?.runId === runId) holds.delete(issue.id);
+      released.push(issue.id);
+    },
   };
   const put = (t: Partial<T> & { id: string }, at: number) => tasks.set(t.id, { identifier: `WOR-${t.id}`, title: t.id, status: "todo", assigneeAgentId: null, ...tasks.get(t.id), ...t, updatedAt: iso(at) });
-  return { pc, tasks, runs, comments, put };
+  return { pc, tasks, runs, comments, put, holds, released };
 }
 
 function deps(f: ReturnType<typeof fake>, store: Store) {
@@ -162,5 +168,22 @@ describe("event wake-ups", () => {
     writeFileSync(off, JSON.stringify({ wake_ups: "off" }));
     merged = null; // (a reopen would be news)
     expect(await wakeTick({ ...d, grantsFile: off }, recent, t0 + 10 * MIN)).toEqual([]);
+  });
+
+  it("releases the hold Paperclip's suppressed disposition repair leaves, so the task's own wakes work again", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    f.put({ id: "1", assigneeAgentId: "a", status: "in_progress" }, t0);
+    f.runs.push({ id: "rep", status: "cancelled", agentId: "a", issueId: "1", startedAt: iso(t0), finishedAt: iso(t0), errorCode: "legacy_disposition_repair_suppressed" });
+    f.holds.set("1", { runId: "rep", recoveryActionId: "ra1", cause: "legacy_execution_requires_reconciliation" });
+    // Another cause of a hold (a run that may have acted) stays for a person to look at.
+    f.put({ id: "2", assigneeAgentId: "a", status: "in_progress" }, t0);
+    f.runs.push({ id: "other", status: "cancelled", agentId: "a", issueId: "2", startedAt: iso(t0), finishedAt: iso(t0), errorCode: "cancelled" });
+    f.holds.set("2", { runId: "other", recoveryActionId: "ra2", cause: "legacy_execution_requires_reconciliation" });
+    await wakeTick(deps(f, store), new Map(), t0 + MIN);
+    expect(f.released).toEqual(["1"]);
+    expect(f.holds.has("1")).toBe(false);
+    await wakeTick(deps(f, store), new Map(), t0 + 3 * MIN);
+    expect(f.released).toEqual(["1"]); // once
   });
 });
