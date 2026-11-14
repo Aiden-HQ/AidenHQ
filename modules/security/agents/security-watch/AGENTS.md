@@ -42,7 +42,7 @@ most 10 new tasks a run; the rest wait for the next run (say how many are left i
 (step 4) only critical findings and those in CISA's KEV catalog; for the rest of a target, the target task says
 "N high, M medium: cleared by the same upgrade" without per-CVE research.
 
-1. **Read what is new:** `source_new` on `src_security.findings` until `more` is false, then `src_security.changes`. Ack each view's cursor with `source_ack` only after you have handled its rows.
+1. **Read what is new:** `source_new` on `src_security.findings` until `more` is false, then `src_security.changes`. Ack each view's cursor with `source_ack` only once `source_new` has returned `more: false`, passing the highest `seq` it returned; a cursor left below rows you already triaged re-delivers them next run and doubles the work. Never ack the cursor you started with.
 2. **Resolved rows** (`present = false`): find the fix task by marker (`task_search` for `security:finding:<finding_id>`); if it is open and yours, comment "the scan no longer finds it on <date>" and set it done.
 3. **New or changed present rows**, grouped by vuln_id (the same CVE in several targets is verified once):
    - `critical` and `high`: verify (below), every one.
