@@ -139,6 +139,7 @@ test("parseable criteria still take the genuine satisfied and needs_revision pat
 });
 
 test("a pr on an app's repo also gets that app's deploy facts", async () => {
+  const m = "m".repeat(40);
   const app = { name: "keeper", sha: "d".repeat(40), state: "healthy", healthy: true };
   const asked = [];
   const merged = { pr: async () => pr({ state: "MERGED" }) };
@@ -146,14 +147,33 @@ test("a pr on an app's repo also gets that app's deploy facts", async () => {
   assert.deepEqual(asked, ["acme/app"]);
   assert.ok(ev.facts.some((f) => f.includes(`app keeper: deployed commit ${app.sha}`) && f.includes("healthy")));
   assert.match(ev.version, /^acme\/app#7@m+\+d{12}$/);
-  assert.ok(ev.facts.includes("acme/app#7 deployed_at_merge_commit: false"), "deployed sha d.. is not the merge commit m..");
-  const same = await gather({ kind: "pr", ref }, deps({ ...merged, appOfRepo: async () => ({ ...app, sha: "m".repeat(40) }) }));
-  assert.ok(same.facts.includes("acme/app#7 deployed_at_merge_commit: true"));
+  assert.match(ev.facts.find((f) => f.includes("deployed_at_merge_commit")), /deployed_at_merge_commit: false \(no deploy of merge commit m{12}/);
+  // The PR's own merge commit in the app's deploy history: true, with who deployed it, even when a later commit is running.
+  const history = { ...app, deploys: [{ sha: m, at: 1_700_000_000_000, by: "auto-deploy", status: "healthy" }, { sha: "d".repeat(40), at: 1_700_000_100_000, by: "auto-deploy", status: "healthy" }] };
+  const same = await gather({ kind: "pr", ref }, deps({ ...merged, appOfRepo: async () => history }));
+  assert.ok(same.facts.includes(`acme/app#7 deployed_at_merge_commit: true (${"m".repeat(12)} deployed at 2023-11-14T22:13:20.000Z by auto-deploy, status healthy)`), same.facts.join("\n"));
+  assert.ok(same.facts.some((f) => /recent deploys \(newest first\): m{12} deployed .* by auto-deploy \(healthy\); d{12}/.test(f)), "the history is a fact");
   // Two repos in scope: no app lookup at all.
   const two = [own, { repo: "acme/other", number: 2, url: "https://github.com/acme/other/pull/2" }];
   assert.equal((await gather({ kind: "pr", ref: "" }, deps({ ...merged, taskPrs: async () => two, appOfRepo: async () => assert.fail("looked up") }))).facts.length, 2);
   const [plain, none] = [await gather({ kind: "pr", ref }, deps(merged)), await gather({ kind: "pr", ref }, deps({ ...merged, appOfRepo: async () => null }))];
   assert.deepEqual(none, plain, "no app: exactly as today");
+});
+
+test("an auto-deploying app's just-merged PR waits for its deploy instead of grading it not deployed", async () => {
+  const m = "m".repeat(40);
+  const auto = { name: "keeper", sha: "d".repeat(40), deployed_by: "auto-deploy", auto_deploy: true, state: "healthy", healthy: true };
+  const depsOf = (mergedAt, app = auto) => deps({ pr: async () => ({ repository: { pullRequest: { ...pr({ state: "MERGED" }).repository.pullRequest, mergedAt } } }), appOfRepo: async () => app });
+  // Merged just now: the reconcile loop has not deployed it yet, so this look waits (and never asks the agent to change anything).
+  const waiting = await gather({ kind: "pr", ref }, depsOf(new Date().toISOString()));
+  assert.match(waiting.awaiting, /has not auto-deployed acme\/app#7 yet/);
+  assert.equal(waiting.busy, true);
+  // Past the poll window, a missing deploy is real: it is graded, as not deployed, not waited on forever.
+  const old = await gather({ kind: "pr", ref }, depsOf(new Date(Date.now() - 3_600_000).toISOString()));
+  assert.ok(old.facts.some((f) => /deployed_at_merge_commit: false/.test(f)), "a real gap is graded");
+  // Already deployed, or an app that does not auto-deploy: graded at once.
+  assert.ok((await gather({ kind: "pr", ref }, depsOf(new Date().toISOString(), { ...auto, deploys: [{ sha: m, at: 1, by: "auto-deploy", status: "healthy" }] }))).facts);
+  assert.ok((await gather({ kind: "pr", ref }, depsOf(new Date().toISOString(), { ...auto, auto_deploy: false }))).facts);
 });
 
 test("a live-page criterion is judged from the deployed app's captured page; a redeploy mid-capture waits", async () => {

@@ -116,13 +116,17 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     const state = !last ? "not deployed" : last.status === "failed" ? "failed" : (healthy.get(app.name) ?? (await engine.containersHealthy(app).catch(() => false))) ? "healthy" : "unhealthy";
     const stats = last && last.status !== "failed" ? await engine.stats(app).catch(() => undefined) : undefined;
     return {
-      name: app.name, repo: app.repo, healthy: state === "healthy", state, sha: last?.sha, deployed_at: last?.at, owner: app.owner, url: url(app),
+      name: app.name, repo: app.repo, healthy: state === "healthy", state, sha: last?.sha, deployed_at: last?.at, deployed_by: last?.by, auto_deploy: app.auto_deploy, owner: app.owner, url: url(app),
+      // Recent deploys (newest first): who deployed which commit and how it ended, so a reader can check a merged commit was
+      // deployed by the platform's own auto-deploy rather than by hand. Deep enough that a graded commit hasn't scrolled out.
+      deploys: store.recentDeploys(app.name, 20).map(({ sha, at, by, status }) => ({ sha, at, by, status })),
       ...(inc ? { incident: { opened_at: inc.opened_at, kind: inc.kind, detail: inc.detail } } : {}),
       ...(stats ? { stats } : {}),
     };
   }
 
-  const cached = (app: App) => cache.get(app.name) ?? { name: app.name, healthy: false, state: "unknown" };
+  // Before the first health tick the row is still identified (repo and auto_deploy), so a reader can match it to its app.
+  const cached = (app: App) => cache.get(app.name) ?? { name: app.name, repo: app.repo, auto_deploy: app.auto_deploy, healthy: false, state: "unknown" };
   const refresh = async (app: App) => void cache.set(app.name, await status(app));
 
   /** Registry plus (cached) status, for the catalog. */

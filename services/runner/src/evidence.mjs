@@ -48,7 +48,7 @@ export async function prEvidence(prs, ref, deps) {
     const merged = pr.state === "MERGED";
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     versions.push(`${p.repo}#${p.number}@${sha}`);
-    prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "" });
+    prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "" });
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${checkState(pr, c)}`).join(", ") : "none"}`);
     diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)")).slice(0, MAX_DIFF)}\n`;
   }
@@ -57,11 +57,24 @@ export async function prEvidence(prs, ref, deps) {
   return { version, facts, prs: prs_, data: { DIFF: diff.slice(0, MAX_DIFF) } };
 }
 
-/** A deployed app (apps-mcp status row, or null) as evidence: its commit, state, health and incident. */
+/** An epoch-millis deploy time as ISO, or the value as given (an apps-mcp row may already carry a string). */
+export const stamp = (at) => (typeof at === "number" ? new Date(at).toISOString() : String(at ?? ""));
+
+/** The newest deploy record of one commit, whatever it ended as, or undefined. */
+export const deployRecordOf = (app, sha) => (sha ? (Array.isArray(app.deploys) ? app.deploys : []).find((d) => d.sha === sha) : undefined);
+
+/** The newest deploy of one commit that ended healthy (its containers are what runs), or undefined. */
+export const deployOf = (app, sha) => (deployRecordOf(app, sha)?.status === "healthy" ? deployRecordOf(app, sha) : undefined);
+
+/** A deployed app (apps-mcp status row, or null) as evidence: its commit, state, health, incident and recent deploys. */
 export function appEvidence(app, name) {
   if (!app) return { awaiting: `no app named ${name || "(none)"} is deployed yet` };
   if (!app.sha) return { awaiting: `${app.name} is not deployed yet` };
-  const facts = [`app ${app.name}: deployed commit ${app.sha}${app.deployed_at ? ` at ${app.deployed_at}` : ""}; state ${app.state}; ${app.healthy ? "healthy" : "not healthy"}; ${app.incident ? `open incident (${app.incident.kind})` : "no open incident"}`];
+  const facts = [`app ${app.name}: deployed commit ${app.sha}${app.deployed_at ? ` at ${stamp(app.deployed_at)}` : ""}${app.deployed_by ? ` by ${app.deployed_by}` : ""}; state ${app.state}; ${app.healthy ? "healthy" : "not healthy"}; ${app.incident ? `open incident (${app.incident.kind})` : "no open incident"}`];
+  // The history, newest first: which commits were deployed, by whom, and how each ended. `by: auto-deploy` is the
+  // platform's own deploy of a moved origin branch (loops.ts), never an agent or the owner.
+  const seen = (Array.isArray(app.deploys) ? app.deploys : []).slice(0, 5);
+  if (seen.length) facts.push(`app ${app.name}: recent deploys (newest first): ${seen.map((d) => `${d.sha.slice(0, 12)} deployed ${stamp(d.at)} by ${d.by} (${d.status})`).join("; ")}`);
   return { version: `${app.name}@${app.sha}`, facts, data: {} };
 }
 

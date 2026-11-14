@@ -423,6 +423,10 @@ export interface AppRow {
   state: string;
   sha?: string;
   deployed_at?: string;
+  deployed_by?: string;
+  auto_deploy?: boolean;
+  /** Newest first: which commits were deployed, by whom, and how each ended. */
+  deploys?: { sha: string; at: string; by: string; status: string }[];
   owner?: string;
   url?: string;
   incident?: { opened_at: string; kind: string; detail: string };
