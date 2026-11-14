@@ -18,7 +18,7 @@ the AidenHQ design system. `README.md` says what's where. These rules keep its p
   applied as they change; details keep the list's place (a `Sheet` at `?item=`, say) and Back closes them; every data view has
   its empty, loading, error and no-match states; usable at 390px; colours only from the theme's names (`bg-background`,
   `text-muted-foreground`, `bg-primary`, `text-danger`, `bg-chart-1`…), never literal colours; what people could see
-  and do stays when restyling.
+  and do stays when only restyling (a redesign's mockup decides what changes).
 - **A mockup is the spec.** When a change comes with a mockup (a page's `.tsx` and screenshots), build from it: its
   layout, components and states, wired to the real data.
 - **The CSP stays strict:** `script-src 'self'; style-src 'self' 'nonce-…'`. No inline scripts, no CDN, no

@@ -44,11 +44,17 @@ polished, modern UI with it by default (it is what v0, Lovable and Bolt generate
 - **Light review (2026-11-14).** The owner wants no QA and no long back-and-forth: a UI review is one quick look that
   blocks only obvious, major breakage the PR introduced (the page doesn't render or errors, a core flow it touches is
   broken, data missing or wrong, unusable at desktop width, a severe accessibility blocker on the primary flow, a
-  structural departure from a named, agreed mockup); everything else is a non-blocking note, and when unsure it passes.
+  structural departure from the mockup a task names); everything else is a non-blocking note, and when unsure it passes.
   A PR gets at most one failing verdict: the runner files the fix's head as a re-review naming the earlier review, which
   checks only the blockers it named and passes with any left noted for a follow-up unless the page is broken outright.
-- **Toolkit and process** are unchanged: `ui-review` (agent-browser with axe, vitals, layout checks and diffs) and the
-  UI/UX Designer's plan, explore, build, capture, critique, fix loop, iterated while it improves.
+- **Wireframe first (2026-11-14).** Rules that made a redesign keep everything only ever added: one redesign stacked
+  every old view on one page, and nobody with taste saw its layout before the build. Now the requester (the human a
+  request traces back to, else the owner) picks one of the Designer's low-fidelity wireframes once, early, and nothing
+  is approved after that; a redesign may drop, merge or add functions, listed on the wireframe; the owning agent gives
+  input (what people need, what the data means), not approval. The Designer's craft loop borrows the frontend-design
+  skill's ideas in our words: a token plan checked against generic defaults, emphasis in one place, a critique that
+  names what it removed. The model is unchanged.
+- **Toolkit** is unchanged: `ui-review` (agent-browser with axe, vitals, layout checks and diffs).
 
 ## Pieces
 

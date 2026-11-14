@@ -52,7 +52,7 @@ gate check and migrations stay as they are: only the UI moves.
 3. **Rebuild one page at a time,** most-used first, following its mockup when it has one: navigation that fits the
    number of destinations, filters in the URL (`useUrlState`) with the same parameter names as before so old links keep
    working, details in a `Sheet` at `?item=`, and every state. Everything people could see and do before (every lane,
-   group and view) stays. Until a page moves, its old server-rendered route keeps working;
+   group and view) stays unless the page's mockup changes it. Until a page moves, its old server-rendered route keeps working;
    switch routes over as they land.
 4. **Fix composition as you go,** not by porting markup: drop nested panels, boxed rows, stripes, eyebrow labels and
    provenance pills (guidelines, "Generic tells"). Move long feeds out of the way of the main content, and history into

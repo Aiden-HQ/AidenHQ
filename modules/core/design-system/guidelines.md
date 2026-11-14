@@ -4,7 +4,7 @@ How AidenHQ apps should work and feel. Apps are built on **shadcn/ui + Tailwind 
 from the app starter (`modules/core/templates/app/`), themed by this design system's `tokens.css` and `shadcn.css`.
 
 Two kinds of rule live here. **Floors** (behaviour, states, accessibility, the stack) hold in every app; only the
-review checklist's "Blocking" items (obvious, major breakage) and structural departures from a task's named, agreed mockup block a review. **Craft** (layout, navigation, colour, type, motion) is guidance and examples, not a template:
+review checklist's "Blocking" items (obvious, major breakage) and structural departures from the mockup a task names as its spec block a review. **Craft** (layout, navigation, colour, type, motion) is guidance and examples, not a template:
 each app gets the design that fits its people and its job. Nothing here mandates a shell, a palette, a gradient or a page
 layout.
 
@@ -21,11 +21,15 @@ layout.
   when people need it.
 - **Truthful.** Show only what the data supports: no invented dates, placeholder arrows, internal labels or charts that
   say nothing. A derived fact links to its source when the source exists.
-- **Keep what people rely on.** A redesign may change the layout freely, but what people could see and do (the stages,
-  groups, views and fields they use) stays possible unless the request says to drop it. Five stages people track stay
-  five visible stages, however they are drawn.
-- **Mockup first for anything new.** A new app, a new screen or a major UI change starts from the UI/UX Designer's
-  agreed mockup, and the build matches it. Small edits don't need one.
+- **Change what doesn't serve the job.** A redesign may drop, merge or add functions, views and sections when that
+  serves the people and the job better; today's screen is evidence, not a spec. What changes is listed on the
+  wireframe the requester picks. The data stays truthful whatever the layout: unknown stays unknown, sources stay
+  linked.
+- **Wireframe first, then mockup.** A new app, a new screen or a major UI change starts with the UI/UX Designer's
+  low-fidelity wireframes; the requester picks one, the Designer turns it into a mockup, and the build matches the
+  mockup. Small edits need neither.
+- **Plan before pixels.** Decide a handful of named colours from the theme, the type roles, the layout in a sentence
+  and the one place that gets emphasis, then check the plan against the generic tells below before building.
 
 ## Layout and navigation
 
@@ -38,6 +42,10 @@ layout.
   things, editing while reading); it never squeezes the main view. A full page is for long, multi-part detail.
 - **Hierarchy from size, weight and space,** then colour, then boxes. One clear page title, a visible type scale, and
   the important thing on each screen obvious at a glance. Squint: the sections shouldn't all look the same.
+- **Show each thing once.** The same items in a summary wall, a board and a list on one page triple the reading and
+  answer nothing new; pick the one form that answers the screen's question and link to the others.
+- **Structure carries meaning.** Borders, dividers, numbering and labels say something about the content; numbered
+  markers only for a real sequence, a label only where it tells people something.
 - **Surfaces stay flat.** Group with space, dividers and headings rather than boxes inside boxes.
 - **Dense without clutter.** Everything fits comfortably with little wasted space: no large empty patches, no oversized
   type or controls, nothing cramped. Density comes from compact rows and tight grouping, not tiny text.
@@ -151,6 +159,8 @@ really calls for one.
 - Big gradient tiles or banners; colour everywhere so nothing stands out; grey on grey so nothing does either.
 - Decoration as information: coloured stripes, uppercase eyebrow labels or provenance pills on every item.
 - Raw data on screen: ISO timestamps, internal markers, arrows between raw dates.
+- Chrome that would appear on any app: one coloured word in a title, identical rounded cards with the same shadow,
+  an arrow after every link, a stagger of entrance animations.
 
 ## The stack and its building blocks
 
