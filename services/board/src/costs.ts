@@ -27,7 +27,7 @@ const Attribution = {
   runId: z.string().min(1).max(80).nullable().optional(),
   issueId: z.string().min(1).max(80).nullable().optional(),
   rev: z.string().regex(/^[0-9a-f]{1,64}$/).nullable().optional(),
-  kind: z.enum(["agent", "advisor", "grader", "reviewer", "fanout", "source"]).nullable().optional(),
+  kind: z.enum(["agent", "advisor", "grader", "reviewer", "fanout", "source", "ci-code-review"]).nullable().optional(),
   ms: z.number().int().min(0).nullable().optional(),
   status: z.string().regex(/^[a-z0-9_]{1,40}$/).nullable().optional(),
 };
@@ -358,6 +358,8 @@ const PulledRecord = z.object({
   output: z.number().int().min(0),
   costUsd: z.number().min(0).nullable(),
   ...Attribution,
+  /** App CI code review: `<owner>/<repo>#<pr>`, from the job's GitHub OIDC token (services/gateway/ci.mjs). */
+  subject: z.string().regex(/^[\w.-]{1,100}\/[\w.-]{1,100}#\d{1,9}$/).nullable().optional(),
 });
 
 /** Gateway records, each checked on its own: a bad one is skipped, never the batch (it must not hold the pull back). */

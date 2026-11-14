@@ -139,6 +139,20 @@ function resolveEnabled(all, wanted) {
 const agentsOrg = (settings) => settings.github_agents_org || (settings.instance_name ? `aidenhq-${settings.instance_name}` : "");
 
 /**
+ * The gateway's CI code review switches (config/gateway.json `ci`, services/gateway/ci.mjs): only the agents org's app repos;
+ * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped).
+ */
+function ciReview(settings) {
+  const usd = (k) => {
+    const v = Number(settings[k]);
+    if (!(v > 0 && v <= 1000)) fail(`settings.${k}: USD per day, above 0 and at most 1000`);
+    return v;
+  };
+  const models = [settings.ci_review_models ?? []].flat().map((m) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "")).filter(Boolean);
+  return { enabled: String(settings.ci_review ?? "on") !== "off", orgs: [agentsOrg(settings)].filter(Boolean), models, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
+}
+
+/**
  * Replaces ${settings.x} in every string. `compose`: the result is a compose file, which expands `$` itself, so a setting
  * holding one (`${SOME_SECRET}`) fails rather than smuggle another variable in.
  */
@@ -480,7 +494,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const generatedSecrets = enabled.flatMap((name) => all.get(name).def.generated_secrets ?? []);
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
   // The model gateway's switches (config/gateway.json, re-read per call): spend_caps off stops refusals, tracking stays.
-  const gateway = { enforce_caps: String(settings.spend_caps ?? "on") !== "off" };
+  const gateway = { enforce_caps: String(settings.spend_caps ?? "on") !== "off", ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}) };
   return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, gateway, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 

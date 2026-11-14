@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { asConfiguredModel, billedRatios, bounds, costRows, pulledRecords, resumedOvercount, withResolvedPrices, withoutResumedOvercount, type Prices } from "../src/costs.js";
+import { ledgerSummary } from "../src/cost-ledger.js";
 import { Store } from "../src/store.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -127,5 +128,17 @@ describe("usage run attribution", () => {
       { key: "job:0", run_key: null, issue_id: null, rev: null, kind: null, ms: null, status: null },
     ]);
     expect(store.usage("2026-11-12T00:00:00.000Z", "2026-11-13T00:00:00.000Z")).toHaveLength(2);
+  });
+
+  it("keeps an app CI code review's repo, PR and head, on its own line under By kind", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "usage-ci-")), "board.db");
+    const store = new Store(path);
+    const head = "ab".repeat(20);
+    const records = pulledRecords({ records: [{ key: "gen-ci", at: "2026-11-12T01:00:00.000Z", agentId: null, component: "ci-code-review", model: "deepseek/v4", input: 5, cached: 0, output: 2, costUsd: 0.04, runKey: "c".repeat(64), runId: null, issueId: null, rev: head, kind: "ci-code-review", ms: 10, status: "ok", subject: "acme-agents/app#12" }] });
+    expect(records).toHaveLength(1);
+    store.addUsage({ ...records[0]!, component: records[0]!.component ?? "agent" });
+    expect({ ...new DatabaseSync(path).prepare("SELECT subject, rev, kind, agent_id AS agentId FROM usage").get() }).toEqual({ subject: "acme-agents/app#12", rev: head, kind: "ci-code-review", agentId: null });
+    const r = await ledgerSummary({ store, agents: async () => [], key: async () => "no key" }, { from: "2026-11-12T00:00:00.000Z", to: "2026-11-13T00:00:00.000Z", bucket: "day" }, Date.parse("2026-11-13T12:00:00.000Z"));
+    expect(r.lanes).toEqual([expect.objectContaining({ lane: "ci-code-review", calls: 1, usd: 0.04 })]);
   });
 });

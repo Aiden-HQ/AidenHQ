@@ -20,7 +20,7 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
 - **After changing a connection service:** `docker compose up -d --force-recreate <svc>`.
 - **After changing runner code:** `ops/apply-config.sh` sends `systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`: the runner takes nothing new, exits as soon as nothing is half done (a reply being posted, a publish, an apply), and systemd starts it again 5s later. Running agent jobs are not touched (`KillMode=process`; each runs in its own process group, writing its log and exit status under the runner's state dir): the new runner adopts them, keeps their `aidenhq` tools working (same helper port and token) and reports each turn once. A plain `systemctl --user restart aidenhq-runner` does the same. A job that died while no runner was up (no exit status) resumes in the same session. apply-config installs the unit (and daemon-reloads) when `ops/units/aidenhq-runner.service` changes.
 
-- **The model gateway** (`services/gateway`, user unit `aidenhq-gateway`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `services/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (runner jobs through their jail, the AI reviewer, the intake, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull). Ledger: `data/gateway/usage.db`. Kill switch for caps: `settings.spend_caps: off`. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
+- **The model gateway** (`services/gateway`, user unit `aidenhq-gateway`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `services/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (runner jobs through their jail, the AI reviewer, the intake, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Ledger: `data/gateway/usage.db`. Kill switch for caps: `settings.spend_caps: off`. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
 - **Agent memory** (`agent_memory`): `memory_note` writes to the agent's own inbox task; the Librarian's daily pass curates it into `agents/<key>/memory.md`, landed by an apply card. To clear one agent's memory, apply a change that empties its file. Kill switch: `agent_memory: off`.
 - **Advisor and fan-out** (`services/paperclip-tasks-mcp/models.mjs`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Not yet in agent computers. Kill switch: `settings.model_tools: off`, then apply.
 
@@ -224,18 +224,34 @@ org) or `aidenhq-ci-runner@<org>-<n>` unit (another org the App is installed on)
 (`ops/ci-runner-token.mjs [org]`, installation token narrowed to `organization_self_hosted_runners`), then
 `docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
 the unit then starts the next. Nothing carries between jobs. The container has no host mounts, no docker socket and none
-of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: public Internet only, no LAN, tailnet,
-host or other containers). Limits per runner: 2 CPUs, 4 GB.
+of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host,
+only the model gateway's CI listener `10.231.4.1:8201`; no LAN, tailnet, other host ports or other containers). Limits
+per runner: 2 CPUs, 4 GB.
+
+**Code review spend (the model gateway).** The template's `code-review` job needs no model key: on our runners
+(`AIDENHQ_GATEWAY_URL`, set on the runner container) it asks GitHub for its OIDC token (`id-token: write`, that job only)
+and trades it at the gateway's `POST /ci/token` for an opaque CI token that lives 2 hours. The gateway
+(`services/gateway/ci.mjs`) checks GitHub's signature and that the job is a `pull_request` run of the repo's own
+`.github/workflows/ci.yml` for that PR, on a self-hosted runner in the agents org; each run attempt trades its token
+once. The repo and PR come from that signed token. The CI token works only on the CI listener, only for
+`chat/completions` with the models in `settings.ci_review_models` and no fallbacks, plugins or server tools, under CI's
+own caps (`ci_review_repo_day_usd`, `ci_review_day_usd`; always on, whatever `spend_caps` says; a refusal fails the
+review, no retry). Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job
+sent (advisory): the Costs tab's "App CI code review" line. codegenie has no base-URL option, so the job loads a small
+preload that sends its OpenRouter calls to the gateway. Revoke: `settings.ci_review: off` refuses every CI token at once.
+A same-repo PR can edit the workflow and spend up to its repo's day cap on the allowed models: the cap and scope are the
+boundary, not the job name. Instances without the gateway (no `AIDENHQ_GATEWAY_URL`) use the repo secret
+`OPENROUTER_API_KEY` instead; where the gateway is on, delete that secret from the app repos (an edited workflow could
+read it).
 
 **Register (once).**
 1. GitHub App: add the organization permission *Self-hosted runners: Read and write* in the App's settings (GitHub →
    the agents org → Settings → Developer settings → GitHub Apps → the App → Permissions), save, then accept the new
    permission on each installation (every org that installed the App is asked). New Apps get it from the manifest.
-2. Agents org → Settings → Actions → Runner groups → Default: allow private repositories (and public if any).
-   Secret `OPENROUTER_API_KEY` (Settings → Secrets and variables → Actions): an org secret on a paid plan; on GitHub
-   Free, org secrets don't reach private repos, so set it on each app repo. Optional variable `CODEGENIE_MODEL`
-   (default `openrouter/~deepseek/deepseek-flash-latest`; `openrouter/deepseek/deepseek-v4-flash-0731` gets codegenie's
-   DeepSeek routing workaround if the `~` alias misbehaves).
+2. Agents org → Settings → Actions → Runner groups → Default: allow private repositories (and public if any). No model
+   secret: code review spends through the gateway (above). Optional variable `CODEGENIE_MODEL` (default
+   `openrouter/~deepseek/deepseek-flash-latest`; `openrouter/deepseek/deepseek-v4-flash-0731` gets codegenie's DeepSeek
+   routing workaround if the `~` alias misbehaves: add it to `settings.ci_review_models` first).
 3. Instance repo: add `ci` to `modules:` in `instance.yaml`; deploy (`ops/apply-config.sh`).
 4. On the VM (sudo, once): `sudo install -m0755 ops/vm/computer-net.sh /usr/local/sbin/aidenhq-computer-net && sudo install
    -m0644 ops/units/aidenhq-ci-net.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable

@@ -11,6 +11,6 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning gateway.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs",
-    "typecheck": "node --check gateway.mjs && node --check lib.mjs && node --check token.mjs"
+    "typecheck": "node --check gateway.mjs && node --check lib.mjs && node --check ci.mjs && node --check token.mjs"
   }
 }

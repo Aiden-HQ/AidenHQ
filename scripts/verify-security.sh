@@ -366,6 +366,38 @@ if net_probe="$(node --input-type=module -e '
 else
   fail "runner: job network: ${net_probe:-the probe failed to run}"
 fi
+# Live, from a container on the CI runners' network (modules/ci): the model gateway's CI listener (10.231.4.1:8201) is the
+# only host listener it reaches, and it takes CI tokens only and serves no other route; the Internet works.
+if docker network inspect aidenhq-ci >/dev/null 2>&1 && docker image inspect aidenhq/ci-runner:local >/dev/null 2>&1; then
+  ci_on="$(node -e 'try { process.stdout.write(String(require("./config/gateway.json").ci?.enabled === true)) } catch { process.stdout.write("false") }')"
+  ci_targets=""
+  for a in $(ip -4 -o addr | awk '{ split($4, x, "/"); print x[1] }' | grep -v '^127\.'); do
+    for p in $(ss -ltnH | awk '{ n = split($4, x, ":"); print x[n] }' | sort -un); do
+      [ "$a:$p" = "10.231.4.1:8201" ] || ci_targets="$ci_targets $a:$p"
+    done
+  done
+  ci_probe="$(docker run --rm --network aidenhq-ci --cap-drop ALL --security-opt no-new-privileges -e CI_ON="$ci_on" -e TARGETS="$ci_targets" \
+    --entrypoint bash aidenhq/ci-runner:local -c '
+      gw=http://10.231.4.1:8201
+      code() { curl -s -o /dev/null -m 5 -w "%{http_code}" "$@"; }
+      [ "$(code https://api.github.com)" != 000 ] || echo "no Internet"
+      if [ "$CI_ON" = true ]; then
+        [ "$(code $gw/health)" = 200 ] || echo "the CI listener does not answer"
+        [ "$(code -X POST -H "Authorization: Bearer xxxxxxxx" -d "{}" $gw/api/v1/chat/completions)" = 401 ] || echo "the CI listener took another credential"
+        [ "$(code -X POST -d "{}" $gw/usage)" = 404 ] || echo "the CI listener serves /usage"
+        [ "$(code -X POST -H "Authorization: Bearer x.y.z" $gw/ci/token)" = 401 ] || echo "the CI listener issued a token for a forged OIDC token"
+      fi
+      for t in $TARGETS; do (timeout 2 bash -c "exec 3<>/dev/tcp/${t%:*}/${t##*:}" 2>/dev/null && echo "reaches $t") & done
+      wait
+      echo probe-done' 2>&1)"
+  if [ "$(printf '%s\n' "$ci_probe" | grep -vx probe-done)" = "" ] && printf '%s' "$ci_probe" | grep -q probe-done; then
+    pass "ci: runners reach the Internet and, on the host, only the gateway's CI listener (CI tokens and routes only; the listener $([ "$ci_on" = true ] && echo on || echo off))"
+  else
+    fail "ci: runner network: $(printf '%s' "$ci_probe" | grep -vx probe-done | tr '\n' ' ')"
+  fi
+else
+  pass "ci: no CI runner network or image on this host"
+fi
 # GitHub: the user's gh token can push and delete; the guard allows fixed reads plus issue comments, new issues,
 # fixed GraphQL documents whose only mutations add an issue to a project and set its status, and
 # issue state/labels/assignees, pull request reviews and failed-job re-runs.

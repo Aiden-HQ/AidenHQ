@@ -17,7 +17,7 @@ const pct = (x: number) => (x > 0 && x < 0.005 ? "<1%" : `${Math.round(x * 100)}
 const secs = (ms: number | null) => (ms == null ? "—" : ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 1e4 ? 0 : 1)} s` : `${ms} ms`);
 const short = (model: string) => model.replace(/^openrouter\//, "").split("/").pop()!.replace(/^~/, "");
 const cacheHit = (m: LedgerMetrics) => (m.input + m.cached ? m.cached / (m.input + m.cached) : null);
-const LANES: Record<string, string> = { agent: "Agent runs", engineer: "Engineer jobs", advisor: "Advisor", fanout: "Fan-out", grader: "Grader", reviewer: "AI reviewer", source: "Sources and intake" };
+const LANES: Record<string, string> = { agent: "Agent runs", engineer: "Engineer jobs", advisor: "Advisor", fanout: "Fan-out", grader: "Grader", reviewer: "AI reviewer", source: "Sources and intake", "ci-code-review": "App CI code review" };
 const lane = (k: string) => LANES[k] ?? k;
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
@@ -537,7 +537,7 @@ function AgentTable({ d, focus, onOpen }: { d: CostLedger; focus: string | null;
           </button>
         ))}
       </div>
-      {system > 0 && <p className="cost-foot">System calls (reviewer, grader, sources) are not any agent's: {usd(system)} in this range, under By kind.</p>}
+      {system > 0 && <p className="cost-foot">System calls (reviewer, grader, sources, app CI code review) are not any agent's: {usd(system)} in this range, under By kind.</p>}
     </section>
   );
 }

@@ -4,8 +4,8 @@
 # starts (aidenhq-computer-net.service, installed by ops/vm/setup.sh), so it survives reboots and Docker restarts.
 #   ops/vm/computer-net.sh            apply
 #   ops/vm/computer-net.sh --remove   take the rule and the network away
-# Env: NET, BRIDGE, SUBNET, GATEWAY, GATEWAY_PORT, TABLE. The CI runners' network reuses it with its own values and an empty
-# GATEWAY_PORT, so nothing on the host is reachable from there (ops/units/aidenhq-ci-net.service).
+# Env: NET, BRIDGE, SUBNET, GATEWAY, GATEWAY_PORT, TABLE. The CI runners' network reuses it with its own values, its port
+# being the model gateway's CI listener (ops/units/aidenhq-ci-net.service); an empty GATEWAY_PORT opens nothing on the host.
 set -euo pipefail
 NET="${NET:-aidenhq-computers}"
 BRIDGE="${BRIDGE:-ahq-computers}"

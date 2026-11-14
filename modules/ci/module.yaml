@@ -3,3 +3,18 @@ description: "Self-hosted GitHub Actions runners (labels self-hosted, aidenhq) f
 # No agents and no connections: the runner service (compose.yaml) is started per job by the host's
 # aidenhq-ci-runner@[<org>-]<n> units (ops/ci-runner.sh), never by `docker compose up`. docs/operations.md, "CI runners".
 compose: compose.yaml
+settings:
+  # App CI code review through the model gateway (services/gateway/ci.mjs): "on" = the template's code-review job trades its
+  # GitHub OIDC token for a short-lived CI token bound to its repo and PR, and spends through the gateway (ledger, caps
+  # below); "off" = refused, every CI token at once (a review then fails; no repo falls back to a key on its own).
+  ci_review:
+    default: "on"
+    values: ["on", "off"]
+  # Models a CI review may call: OpenRouter ids as the code-review job names them (vars.CODEGENIE_MODEL, default below).
+  ci_review_models:
+    default: ["~deepseek/deepseek-flash-latest"]
+  # CI review spend caps, USD per UTC day: each repo's, and all repos' together. Past one, reviews fail until the next day.
+  ci_review_repo_day_usd:
+    default: 5
+  ci_review_day_usd:
+    default: 20

@@ -2,7 +2,8 @@
 # build-and-scan on a GitHub-hosted runner when a PR could change the image (the self-hosted containers have no Docker).
 # The job names `tests`, `code-review` and `image-scan` are the check names graders and rubrics cite: don't rename them,
 # don't add a matrix.
-# Secret OPENROUTER_API_KEY (code-review only); optional variable CODEGENIE_MODEL (default below).
+# code-review's model key: on AidenHQ's runners none (it spends through the instance's model gateway, below); elsewhere the
+# secret OPENROUTER_API_KEY. Optional variable CODEGENIE_MODEL (default below).
 # Code-review depth: light by default, whatever the size; normal when the PR touches a critical path; deep with the PR's
 # `deep-review` label. Critical paths are built in (dependency manifests and lock files, .github/, Dockerfiles, and paths
 # naming auth, security, tokens, sessions or permissions) plus the app's own `.github/code-review-critical`: one glob per
@@ -159,6 +160,7 @@ jobs:
       pull-requests: write
       actions: read # Prior review: this workflow's earlier runs on the PR
       statuses: write # Record: the code-review/state status on a head that passed
+      id-token: write # Review: GitHub's OIDC token for this job, traded at the model gateway for a CI token
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -246,6 +248,39 @@ jobs:
             exit 0
           fi
           echo "Changed lines: $lines, review depth: $depth${critical:+ (touches $critical)}"
+          # The model key. On AidenHQ's runners (AIDENHQ_GATEWAY_URL, set on the runner container) the review spends through
+          # the instance's model gateway: this job's GitHub OIDC token is traded there for a CI token bound to this repo and
+          # PR, which may call only the review models, under the gateway's CI caps, into its cost ledger; the gateway holds the
+          # OpenRouter key. codegenie has no base-URL option, so a preload sends its OpenRouter calls to the gateway. Without
+          # the gateway: the repo secret. A gateway refusal never falls back to the secret.
+          node_opts=""
+          if [ -n "${AIDENHQ_GATEWAY_URL:-}" ]; then
+            unset OPENROUTER_API_KEY
+            gateway_fail() {
+              echo "::error::The model gateway gave no CI token${1:+: $1}. See the job log."
+              printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=gateway\n' >> "$GITHUB_ENV"
+              exit 0
+            }
+            oidc=$(curl -sSf -m 30 --retry 2 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" "${ACTIONS_ID_TOKEN_REQUEST_URL:-}&audience=aidenhq-gateway" | jq -r '.value // empty') || oidc=""
+            [ -n "$oidc" ] || gateway_fail "no GitHub OIDC token (the job needs id-token: write)"
+            echo "::add-mask::$oidc"
+            answer=$(curl -sS -m 30 --retry 2 --retry-connrefused -X POST -H "Authorization: Bearer $oidc" -H 'content-type: application/json' \
+              -d "{\"head\":\"$HEAD_SHA\"}" "$AIDENHQ_GATEWAY_URL/ci/token") || answer=""
+            tok=$(printf '%s' "$answer" | jq -r '.token // empty' 2>/dev/null) || tok=""
+            [ -n "$tok" ] || gateway_fail "$(printf '%s' "$answer" | jq -r '.error.message // empty' 2>/dev/null | head -c 300)"
+            echo "::add-mask::$tok"
+            export OPENROUTER_API_KEY="$tok" AIDENHQ_CI_GATEWAY_BASE="$AIDENHQ_GATEWAY_URL/api/v1"
+            cat > "$RUNNER_TEMP/codegenie-gateway.mjs" <<'JS'
+          const to = process.env.AIDENHQ_CI_GATEWAY_BASE, from = "https://openrouter.ai/api/v1/", real = globalThis.fetch;
+          globalThis.fetch = (input, init) => {
+            const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+            if (!url.startsWith(from)) return real(input, init);
+            const dest = `${to}/${url.slice(from.length)}`;
+            return real(input instanceof Request ? new Request(dest, input) : dest, init);
+          };
+          JS
+            node_opts="--import=file://$RUNNER_TEMP/codegenie-gateway.mjs"
+          fi
           # codegenie's own telemetry (events.jsonl) is where a failed run's cause is: its review JSON can carry only "The
           # underlying cause was not captured" (roadmap-keeper#131, #134). On only for this job, outside the checkout.
           export CODEGENIE_HOME="$RUNNER_TEMP/codegenie"
@@ -253,7 +288,7 @@ jobs:
           printf '[telemetry]\nenabled = true\nlogLevel = "warn"\nrunDir = "%s"\n' "$RUNNER_TEMP/codegenie-runs" > "$CODEGENIE_HOME/config.toml"
           review() { # $1: --max-time in minutes. Sets $code; stderr is kept for failure() and still shown in the log.
             rm -rf "$RUNNER_TEMP/codegenie-runs"
-            npx -y @0xsequence/codegenie@0.7.0 review --base "$from" --head "$HEAD_SHA" --model "$MODEL" --depth "$depth" \
+            NODE_OPTIONS="$node_opts" npx -y @0xsequence/codegenie@0.7.0 review --base "$from" --head "$HEAD_SHA" --model "$MODEL" --depth "$depth" \
               --format json --ci --no-progress --max-time "$1" --budget-boost "$boost" > "$RUNNER_TEMP/review.json" 2> "$RUNNER_TEMP/review.err"
             code=$?
             cat "$RUNNER_TEMP/review.err" >&2
