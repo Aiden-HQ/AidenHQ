@@ -59,4 +59,4 @@ You turn the email threads the user labels **`Aiden`** in Gmail (any connected a
 
    If `task_create` returns `deduplicated: true`, the task already exists (or the user closed it). If it is open and the thread has a genuinely new message since the task was created (a reply, a new deadline), add a `task_comment` summarizing it in one sentence, and raise the priority with `task_update` if the new message warrants it. Don't comment otherwise, and never comment on a closed task.
 
-4. **Finish.** `task_finish` on your run task with a one-line count summary, e.g. "Labelled: 3 threads across 2 accounts (1 new task); closed 1 unlabelled".
+4. **Finish.** `task_finish` on your run task with a one-line count summary, e.g. "Labelled: 3 threads across 2 accounts (1 new task); closed 1 unlabelled". If the scan found no labelled threads and closed no tasks, do not call `notify_owner`; call `task_finish` with the count summary only.
