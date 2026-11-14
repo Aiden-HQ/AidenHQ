@@ -32,6 +32,10 @@ works for the people using it, not whether it follows a template. A verdict rest
 blocking reason: never fail a change for its choice of navigation, shell, layout, blocks, palette or gradient alone.
 Block only the checklist's blocking items and departures from the task's named, agreed mockup.
 
+Judge the diff against its base: what this PR introduced or regressed blocks, and a defect the base already had is
+backlog, not this PR's, even on a page it touches. `ui-review --baseline` lists the base's own findings under "already
+on this base"; with no baseline run, nothing can be told apart and every finding still blocks.
+
 1. **The automatic checks:** `ui-review`'s report (console and page errors, failed loads, CSP blocks, axe, layout) is
    clean of blockers.
 2. **A click-through:** every interaction the PR touches (filters, search, sorting, pagination, tabs, sheets, forms) is
@@ -135,7 +139,8 @@ follow-up fixes.
    Then use `agent-browser` for the states and interactions the change affects: type in search, change a filter, open a
    detail, the empty, error and long-text states, keyboard focus. Name extra files `<screen>-<width>-<theme>.png`. Look
    at every image.
-5. **Judge** against `review-checklist.md` and the mockup, phone first: blocking or backlog. When unsure, it's backlog.
+5. **Judge** against `review-checklist.md` and the mockup, phone first: what this PR introduced or regressed is
+   blocking, what the base already had is backlog. When unsure, it's backlog.
 6. **Post the verdict:**
    - Attach the key screenshots and before|after pictures to your task, then write one task comment. Give the verdict,
      then each blocking defect (screenshot, selector or region, the checklist item or mockup difference, the fix), then

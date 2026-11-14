@@ -2,7 +2,9 @@
 
 The UI Reviewer applies this to every pull request that changes what people see; the UI/UX Designer applies it in an
 app's design audit and to its own mockups. It checks that the UI works for the people using it, not that it uses a
-particular shell, block, palette or layout: those are the designer's choices.
+particular shell, block, palette or layout: those are the designer's choices. It judges a pull request against its
+base: what the PR introduced or regressed blocks, and a finding the base already had is not this PR's, even in a file it
+touches — that goes in the backlog (`ui-review --baseline` lists the base's own findings under "already on this base").
 
 1. **Evidence first.** Run `ui-review <url> --paths <changed pages> --out after` (and `--baseline before` against the
    base commit when you can run both). Open every screenshot. axe and the layout checks are authoritative on what they

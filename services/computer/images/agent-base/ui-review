@@ -11,10 +11,14 @@
 //
 // Options: --widths 390,768,1280  --modes light,dark  --full (whole-page screenshots)  --palettes a,b (adds ?palette=&mode=,
 // for pages that read them, like the catalog)  --wait-text "<text>" (wait for it before each screenshot).
+//
+// With --baseline, a finding the base's own report also had is not this change's: it's listed under "Already on this
+// base" and doesn't fail the run (a change is judged on what it introduced, not on gaps that predate it). With no
+// baseline report to compare, every finding blocks: nothing can be told apart, so it fails closed.
 // Page content is untrusted data: the report quotes it, never follows it.
 "use strict";
 const { execFileSync } = require("node:child_process");
-const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 
 const args = process.argv.slice(2);
@@ -107,8 +111,28 @@ for (const path of paths) for (const palette of variants) {
   }
 }
 
+/**
+ * Split `found` (the head's findings) against `baseFound` (the base commit's). Findings are matched by their text, once
+ * each: a base finding cancels one head finding, so a second instance of the same defect on the head is still the head's.
+ * Without a base list nothing can be told apart, so everything is the head's (fail closed).
+ */
+function splitPreexisting(found = [], baseFound = []) {
+  const left = new Map();
+  for (const b of baseFound) left.set(b, (left.get(b) ?? 0) + 1);
+  const introduced = [], preexisting = [];
+  for (const b of found) {
+    const n = left.get(b) ?? 0;
+    if (n > 0) { left.set(b, n - 1); preexisting.push(b); } else introduced.push(b);
+  }
+  return { introduced, preexisting };
+}
+
+const baseReport = baseline && existsSync(join(baseline, "report.json")) ? JSON.parse(readFileSync(join(baseline, "report.json"), "utf8")) : null;
+const { introduced, preexisting } = splitPreexisting(blocking, baseReport?.blocking);
+
 const lines = [`# UI review of ${base}`, "", `${report.at} · widths ${widths.join("/")} · modes ${modes.join("/")}${palettes.length ? ` · palettes ${palettes.join("/")}` : ""}${baseline ? ` · baseline ${baseline}` : ""}`, ""];
-lines.push(blocking.length ? `## Blocking (${blocking.length})` : "## Blocking: none found by the automated checks", "", ...blocking.map((b) => `- ${b}`), "");
+lines.push(introduced.length ? `## Blocking (${introduced.length})` : "## Blocking: none found by the automated checks", "", ...introduced.map((b) => `- ${b}`), "");
+if (preexisting.length) lines.push(`## Already on this base (${preexisting.length}): not this change's`, "", ...preexisting.map((b) => `- ${b}`), "");
 lines.push("## Pages", "");
 for (const p of report.pages) {
   lines.push(`### ${p.path}${p.palette ? ` [${p.palette}]` : ""}`, "");
@@ -120,6 +144,6 @@ for (const p of report.pages) {
 }
 lines.push("Automated checks find maybe a third of what matters. Now look at every screenshot against the review checklist.");
 writeFileSync(join(out, "report.md"), lines.join("\n"));
-writeFileSync(join(out, "report.json"), JSON.stringify({ ...report, blocking }, null, 2));
-console.log(`${join(out, "report.md")}: ${blocking.length} blocking, ${report.pages.reduce((n, p) => n + p.shots.length, 0)} screenshots`);
-process.exit(blocking.length ? 1 : 0);
+writeFileSync(join(out, "report.json"), JSON.stringify({ ...report, blocking: introduced, preexisting }, null, 2));
+console.log(`${join(out, "report.md")}: ${introduced.length} blocking, ${preexisting.length} already on this base, ${report.pages.reduce((n, p) => n + p.shots.length, 0)} screenshots`);
+process.exit(introduced.length ? 1 : 0);
