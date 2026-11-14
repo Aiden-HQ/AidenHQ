@@ -85,28 +85,117 @@ jobs:
             }
           '
 
-  test:
-    name: ${{ matrix.name }}
-    # The packages this change needs tested (image-changes' `tests` step): all of them on a push to main.
+  # The packages this change needs tested (image-changes' `tests` step; all of them on a push to main). The small ones
+  # share one job, four at a time: alone, each spent ~14 s of setup and about a minute of queue on 1-9 s of tests.
+  packages:
     needs: image-changes
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Git identity (the tests make commits)
+        run: git config --global user.name ci && git config --global user.email ci@example.com
+      - name: Test
+        env:
+          TESTS: ${{ needs.image-changes.outputs.tests }}
+        run: |
+          logs="$RUNNER_TEMP/packages"; mkdir -p "$logs"
+          jq -r '.[] | select(.name | IN("services/runner", "services/runner#flows", "services/board") | not) | "\(.dir)\t\(.run)"' <<< "$TESTS" > "$logs/list"
+          # One line per package, run in its directory: its output goes to <log>, its exit code to <log>.rc.
+          one() { dir="${1%%$'\t'*}"; cmd="${1#*$'\t'}"; log="$logs/$(tr / _ <<< "$dir")"; (cd "$dir" && bash -eo pipefail -c "$cmd") > "$log" 2>&1; echo $? > "$log.rc"; }
+          export -f one; export logs
+          tr '\n' '\0' < "$logs/list" | xargs -0 -r -P 4 -I{} bash -c 'one "$1"' _ {}
+          status=0
+          while IFS=$'\t' read -r dir cmd; do
+            log="$logs/$(tr / _ <<< "$dir")"; rc=$(cat "$log.rc")
+            echo "::group::$dir (exit $rc)"; cat "$log"; echo "::endgroup::"
+            [ "$rc" = 0 ] || { echo "::error::$dir failed"; status=1; }
+          done < "$logs/list"
+          exit $status
+
+  # The runner's unit tests, and its end-to-end flows in two shards side by side (each only when selected).
+  runner-unit:
+    needs: image-changes
+    if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/runner')
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Git identity (the tests make commits)
+        run: git config --global user.name ci && git config --global user.email ci@example.com
+      - name: Test
+        working-directory: services/runner
+        run: npm ci && npm run test:unit
+
+  runner-flows:
+    name: runner-flows (${{ matrix.shard }}/2)
+    needs: image-changes
+    if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/runner#flows')
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.image-changes.outputs.tests) }}
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      - name: Git identity (the runner's tests make commits)
+      - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
-        working-directory: ${{ matrix.dir }}
-        run: ${{ matrix.run }}
+        working-directory: services/runner
+        env:
+          SHARD: ${{ matrix.shard }}
+          # Seconds each file took alone (14-core dedicated host, 2026-11-14), for balancing; a file not listed counts 30.
+          WEIGHTS: '{"test/flow-merge-path.test.mjs": 43, "test/flow-approvals.test.mjs": 38, "test/flow-autonomy.test.mjs": 30, "test/flow-graded.test.mjs": 25, "test/flow-product.test.mjs": 23, "test/flow-running.test.mjs": 21, "test/flow-design-review.test.mjs": 18, "test/box.test.mjs": 14, "test/flow-conversation.test.mjs": 14, "test/flow-workspace.test.mjs": 8, "test/flow-delegated.test.mjs": 6, "test/adopt.test.mjs": 3}'
+        run: |
+          # The files test:flows runs, split greedily by weight, heaviest first, into the lighter shard.
+          files=$(node -e '
+            const w = JSON.parse(process.env.WEIGHTS), shard = Number(process.env.SHARD) - 1;
+            const files = require("fs").readdirSync("test").filter((f) => /^(flow-.*|box|adopt)\.test\.mjs$/.test(f)).map((f) => `test/${f}`);
+            const load = [0, 0], out = [[], []];
+            for (const f of files.sort((a, b) => (w[b] ?? 30) - (w[a] ?? 30) || a.localeCompare(b))) { const i = load[0] <= load[1] ? 0 : 1; load[i] += w[f] ?? 30; out[i].push(f); }
+            console.log(out[shard].join(" "));')
+          echo "Shard $SHARD: $files"
+          npm ci && node --disable-warning=ExperimentalWarning --test $files
+
+  board:
+    needs: image-changes
+    if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/board')
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Git identity (the tests make commits)
+        run: git config --global user.name ci && git config --global user.email ci@example.com
+      - name: Test
+        working-directory: services/board
+        # build runs `tsc -p tsconfig.build.json` (src alone, stricter than the full project) and then Vite; typecheck
+        # checks the full project and web. A separate `tsc -p tsconfig.build.json --noEmit` only repeated build's.
+        run: npm ci && npx vitest run && npm run typecheck && npm run build
 
   # Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed dependency manifest
   # or lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the scan, never skips it.
@@ -141,12 +230,12 @@ jobs:
           grep -qE '^(\.github/|services/shared/)' <<< "$changed" && all=1
           packages=$(cat <<'PACKAGES'
           scripts|npm ci && npm test|*
-          services/runner|npm ci && npm run test:unit|services/runner services/computer services/gateway services/shared modules scripts
-          services/runner#flows|npm ci && npm run test:flows|services/runner services/shared|services/runner/src/prompt.mjs services/runner/codex-home/AGENTS.md
+          services/runner|(its own job)|services/runner services/computer services/gateway services/shared modules scripts
+          services/runner#flows|(its own jobs)|services/runner services/shared|services/runner/src/prompt.mjs services/runner/codex-home/AGENTS.md
           services/computer|node --test test/*.test.mjs|services/computer services/runner/src services/runner/bin modules/core/design-system modules/design
           modules/core/templates/app|npm ci && npm test && npm run build|modules/core/templates/app modules/core/design-system
           services/gate|npm test && npm run typecheck|services/gate services/shared scripts/identity.mjs
-          services/board|npm ci && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build|services/board services/gate services/runner/src services/shared scripts/identity.mjs modules/core/design-system
+          services/board|(its own job)|services/board services/gate services/runner/src services/shared scripts/identity.mjs modules/core/design-system
           services/apps-mcp|npm ci --ignore-scripts && npm test && npm run typecheck|services/apps-mcp services/shared modules/core/templates/app modules/core/design-system scripts/identity.mjs
           modules/clickhouse/connections/clickhouse-mcp|npm ci && npm test && npm run typecheck|modules/clickhouse
           modules/github/connections/github-mcp|npm ci && npm test && npm run typecheck|modules/github
@@ -246,12 +335,13 @@ jobs:
           done
           exit $status
 
-  # The one result a merge waits for: every job above passed (image-scan may be skipped when no image changed). Jobs that
+  # The one result a merge waits for: every job above passed (pr-title, the runner, board and image-scan jobs may be
+  # skipped: not a pull request, or the change doesn't touch them). Jobs that
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
   # exist; the runner treats this check as required once the base branch has it (services/runner/src/merges.mjs withGate).
   ci-required:
     if: always()
-    needs: [supply-chain, image-changes, test, image-scan]
+    needs: [supply-chain, pr-title, image-changes, packages, runner-unit, runner-flows, board, image-scan]
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
     timeout-minutes: 5
     steps:
@@ -259,4 +349,4 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$RESULTS" | jq -e '(.["supply-chain"].result == "success") and (.["image-changes"].result == "success") and (.test.result == "success") and (.["image-scan"].result | IN("success", "skipped"))' >/dev/null
+          echo "$RESULTS" | jq -e '(.["supply-chain"].result == "success") and (.["image-changes"].result == "success") and (.packages.result == "success") and ([.["pr-title"], .["runner-unit"], .["runner-flows"], .board, .["image-scan"]] | all(.result | IN("success", "skipped")))' >/dev/null
