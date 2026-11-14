@@ -59,6 +59,7 @@ On the "Prepare daily brief" run ("Heartbeat" runs follow "Heartbeats" only):
    - **Failed:** runs or tasks that failed since the last brief, with the reason and what happens next. Never leave one out.
    - **Fleet:** at most 5 lines from `fleet_status` `summary`: what shipped (count, the notable ones), what failed, what waits on the owner (cards, blocked tasks) and spend yesterday against the 7-day average (the top agent if it stands out). Leave out any empty line and the whole part when all are empty. Each item with its `link`.
    - **Next:** today's meetings (with related tasks), waiting-on (count and the overdue ones), meeting actions, and at most 3 suggestions ("PEN-15 open 12 days at low priority: still needed?").
+     Render every time in the `Next` block in Indian/Mauritius (UTC+4), converting any calendar source in another timezone; before publishing, compare the first and last entries with the day's calendar.
    One line per item, no copied descriptions or transcript text.
 4. **Publish:** `task_create` titled `Daily Brief — <date>`, marker `brief:<date>`, label `daily-brief`, priority `high`; if `deduplicated: true`, `task_update` it. Close every other open `daily-brief` task ("Superseded by <identifier>").
 5. `notify_owner` (no `task`, so their reply lands in today's chat) with a two-line summary and the brief's identifier, then `task_finish` your run task with one line ("Brief PEN-31: 3 priorities, 4 meetings, 2 waiting-on").
