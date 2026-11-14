@@ -45,6 +45,7 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
    - Post a short draft message in your part, addressed to the person, in the owner's plain, direct voice.
    - Add the label `chase-draft` to the parent with `task_update`.
    - Call `notify_owner` (normal, `task` = the chase draft task): "Chase draft ready: <person>, <thing>".
+   - Call `task_handoff` on your part: the wait now sits on the owner's send/edit. Do not reopen the part or post another sweep comment while that draft is pending.
 
 4. **When the owner replies in your part** (you are woken by their comment):
    - "send": resolve the person's DM with the Slack read tools and call `slack_send_message_draft` with the draft text, then comment that it's in their Slack drafts. They press send themselves. Remove `chase-draft`.
