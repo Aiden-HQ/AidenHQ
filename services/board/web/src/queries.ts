@@ -23,6 +23,7 @@ export const QUERIES = {
   needsYou: q("needs-you", api.needsYou, false),
   // The chat list is kept on the device without any message text (titles, states, times, unread), so a reload paints it
   // at once; the preview of the last message and the failure reason come only from the network. Chats stay memory only.
+  lane: q("lane", api.lane, false),
   chats: q("chats", api.chats, chatListForDevice),
 };
 

@@ -456,6 +456,19 @@ export interface ChatAgent {
   front?: boolean;
 }
 
+/** A fast-lane agent (slack-live-mcp /lane) and a message in its conversation (`at`: ms). */
+export interface LaneAgent {
+  key: string;
+  id: string;
+  name: string;
+}
+export interface LaneMessage {
+  id: string;
+  role: "owner" | "agent" | "wake";
+  text: string;
+  at: number;
+}
+
 export type ChatMessage =
   | { kind: "owner"; id: string; text: string; at: string; via?: string; correction?: boolean; by?: string }
   | { kind: "reply"; id: string; agent: string; text: string; at: string; actions?: string[]; questions?: Question[] }

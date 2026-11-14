@@ -9,12 +9,13 @@ import { load as loadCached } from "./cache";
 import { QUERIES, chatQuery, peekingChat, prefetchChat, useQuery } from "./queries";
 import { ChatListSkeleton, SkeletonLines } from "./Skeleton";
 import { ApprovalCard, StateChip } from "./Chat";
+import { LaneChat } from "./LaneChat";
 import { useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
 import { anyLive, groupChats, groupTasks, showsChip, taskSummary, type AgentGroup } from "./sidebar";
 import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conversation";
-import type { Approval, Assignee, ChatAgent, ChatDetail, ChatMessage, ChatRow, ChatState, FileView, Question, Working } from "./types";
+import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, ChatState, FileView, Question, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
 import { openQuestions } from "./questions";
 
@@ -54,6 +55,7 @@ function usePoll(load: () => Promise<unknown>, fast: boolean, idleMs: number) {
 }
 
 const NO_AGENTS: ChatAgent[] = [];
+const NO_LANE: LaneAgent[] = [];
 
 export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, onSignIn, toast }: Props) {
   // From the cache (queries.ts): coming back to Chat paints the last list at once while it refreshes.
@@ -63,6 +65,9 @@ export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, o
   const error = chats.error;
   const load = chats.reload;
   usePoll(load, anyLive(rows ?? []), 6_000);
+  // Fast-lane agents (LaneChat.tsx): pinned on top; none on an instance without the lane.
+  const laneAgents = useQuery(QUERIES.lane, onSignIn).data?.agents ?? NO_LANE;
+  const laneAgent = selected?.startsWith("lane:") ? laneAgents.find((a) => a.key === selected.slice(5)) : undefined;
   useEvents(["chat", "approvals"], load);
   const [panel, setPanel] = useState(() => {
     try {
@@ -80,8 +85,10 @@ export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, o
       return !p;
     });
 
-  const list = <Sidebar rows={rows} agents={agents} crew={crew} selected={selected} go={go} error={error} retry={load} />;
-  const main = selected ? (
+  const list = <Sidebar lane={laneAgents} rows={rows} agents={agents} crew={crew} selected={selected} go={go} error={error} retry={load} />;
+  const main = laneAgent ? (
+    <LaneChat key={laneAgent.key} agent={laneAgent} mobile={mobile} crew={crew} go={go} />
+  ) : selected ? (
     <Conversation key={selected} refId={selected} row={rows?.find((r) => r.identifier === selected)} mobile={mobile} crew={crew} prefix={prefix} go={go} onSignIn={onSignIn} toast={toast} panel={panel} togglePanel={togglePanel} reloadList={load} />
   ) : (
     <NewChat agents={agents} crew={crew} mobile={mobile} go={go} toast={toast} reloadList={load} />
@@ -97,7 +104,7 @@ export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, o
 
 // ------------------------------------------------------------------ sidebar
 
-function Sidebar({ rows, agents, crew, selected, go, error, retry }: { rows: ChatRow[] | null; agents: ChatAgent[]; crew: Assignee[]; selected: string | null; go: (h: string) => void; error: string; retry: () => void }) {
+function Sidebar({ lane, rows, agents, crew, selected, go, error, retry }: { lane: LaneAgent[]; rows: ChatRow[] | null; agents: ChatAgent[]; crew: Assignee[]; selected: string | null; go: (h: string) => void; error: string; retry: () => void }) {
   const groups = useMemo(() => groupChats(rows ?? [], agents), [rows, agents]);
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
@@ -127,6 +134,18 @@ function Sidebar({ rows, agents, crew, selected, go, error, retry }: { rows: Cha
         <ChatListSkeleton />
       ) : (
         <nav className="side-scroll">
+          {lane.length > 0 && (
+            <ul className="side-lane">
+              {lane.map((a) => (
+                <li key={a.key}>
+                  <button className={`side-agent-btn${selected === `lane:${a.key}` ? " on" : ""}`} onClick={() => go(`#/c/lane:${a.key}`)} title={`${a.name}: fast chat`}>
+                    <Monogram name={a.name} size={26} avatar={portraitOf(crew, a.key)} />
+                    <span className="side-agent-name">{a.name}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           {groups.front && <Group g={filter(groups.front)} crew={crew} selected={selected} go={go} front searching={!!q} />}
           {groups.others.length > 0 && <h3 className="side-h">Agents</h3>}
           {groups.others.map((g) => (
@@ -269,7 +288,7 @@ function NewChat({ agents, crew, mobile, go, toast, reloadList }: { agents: Chat
   const name = agents.find((a) => a.key === agent)?.name ?? front?.name ?? "Aiden";
   const send = async (text: string, files: File[]) => {
     const { identifier } = await api.newChat(text || `Files: ${files.map((f) => f.name).join(", ")}`, agent || undefined);
-    for (const f of files) await api.attach(identifier, f).catch((e: Error) => toast(`Couldn't attach ${f.name}: ${e.message}`));
+    for (const f of identifier.startsWith("lane:") ? [] : files) await api.attach(identifier, f).catch((e: Error) => toast(`Couldn't attach ${f.name}: ${e.message}`));
     await reloadList();
     go(`#/c/${identifier}`);
   };
@@ -1010,7 +1029,7 @@ function FileRow({ f, chatId }: { f: FileView; chatId: string }) {
 
 // ------------------------------------------------------------------ the composer
 
-function Composer({ initialText, placeholder, draftKey, mobile, crew = [], autoFocus, onSend, starters = [], dropZone }: { initialText?: string; placeholder: string; draftKey: string; mobile: boolean; crew?: Assignee[]; autoFocus?: boolean; onSend: (text: string, files: File[]) => Promise<void>; starters?: string[]; dropZone?: boolean }) {
+export function Composer({ initialText, placeholder, draftKey, mobile, crew = [], autoFocus, onSend, starters = [], dropZone }: { initialText?: string; placeholder: string; draftKey: string; mobile: boolean; crew?: Assignee[]; autoFocus?: boolean; onSend: (text: string, files: File[]) => Promise<void>; starters?: string[]; dropZone?: boolean }) {
   const [text, setText] = useState(() => {
     if (initialText) return initialText;
     try {

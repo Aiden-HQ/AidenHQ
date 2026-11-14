@@ -36,6 +36,7 @@ import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
+import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { APPROVAL_MARKER, NOTICE_MARKER, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
 import { activityDays } from "./days.js";
 import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
@@ -67,6 +68,8 @@ export interface AppOptions {
   /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
   lan?: { url: string; googleConnect?: boolean };
   internalToken?: string;
+  /** The fast chat lane (slack-live-mcp /lane); without it the lane routes answer empty. */
+  lane?: LaneOptions;
   /** Shared by the listeners: the runner reports to the internal one, the board reads it on the others. */
   activity?: { runner?: RunnerReport };
   /** Where a Codex agent's session log is (see live-activity.ts): without it, a working agent shows no steps. */
@@ -235,6 +238,11 @@ export function createApp(opts: AppOptions): Server {
   async function bylines(): Promise<Map<string, string>> {
     if (!opts.accounts) return new Map();
     return new Map((await opts.accounts.list()).filter((a) => !a.owner).map((a) => [a.id, a.name || a.email]));
+  }
+  /** The signed-in admin's name when that admin is not the owner (what the lane labels "by <name>"). */
+  async function laneByline(_req: IncomingMessage): Promise<string | undefined> {
+    const s = perRequest.getStore()?.session;
+    return s && s !== OPERATOR ? (await bylines()).get(s.accountId) : undefined;
   }
   /** `{ by }` for something an admin other than the owner wrote (a task or comment id), else nothing. */
   const byOf = (names: Map<string, string>, id: string) => {
@@ -1610,17 +1618,35 @@ export function createApp(opts: AppOptions): Server {
       // A new chat: with the agent named (body.agent or a leading @name), else Aiden.
       method: "POST",
       path: /^\/api\/chats$/,
-      handle: async (_m, body) => {
+      handle: async (_m, body, _u, req) => {
         const ctx = await context();
         const input = parse(z.object({ text: z.string().trim().min(1).max(8000), agent: z.string().max(200).optional() }).strict(), body);
         const crew = ctx.agents;
         const named = input.agent ? crew.find((a) => a.id === input.agent || a.metadata?.setupKey === `aidenhq:${input.agent}` || a.name.toLowerCase() === input.agent!.toLowerCase()) : undefined;
         const { agent, note } = named && named.status !== "paused" ? { agent: named, note: undefined } : pickAgent(input.text, crew);
+        // A fast-lane agent answers in the lane, not in a task: the board opens its lane chat (`lane:<key>`).
+        const lane = (await laneAgents(opts.lane)).find((l) => l.id === agent.id);
+        if (lane) {
+          await laneSend(opts.lane, lane.key, input.text, await laneByline(req));
+          return { identifier: `lane:${lane.key}` };
+        }
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         const title = input.text.split("\n")[0]!.replace(/^@\S+\s*/, "").slice(0, 80) || "New chat";
         const issue = await pc.createIssue({ title, description: `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id], executionWorkspacePreference: "agent_default", executionWorkspaceSettings: { mode: "agent_default" } });
         log.info({ issue: issue.identifier, agent: agent.name }, "chat started");
         return { identifier: issue.identifier };
+      },
+    },
+    // The fast chat lane's agents and conversations (lane.ts): proxied with the internal token.
+    { method: "GET", path: /^\/api\/lane$/, handle: async () => ({ agents: await laneAgents(opts.lane) }) },
+    { method: "GET", path: /^\/api\/lane\/([^/]+)\/messages$/, handle: async (m, _b, url) => laneMessages(opts.lane, decodeURIComponent(m[1]!), url.searchParams.get("after") ?? "") },
+    {
+      method: "POST",
+      path: /^\/api\/lane\/([^/]+)\/messages$/,
+      handle: async (m, body, _u, req) => {
+        const { text } = parse(z.object({ text: z.string().trim().min(1).max(8000) }).strict(), body);
+        await laneSend(opts.lane, decodeURIComponent(m[1]!), text, await laneByline(req));
+        return { ok: true };
       },
     },
     {

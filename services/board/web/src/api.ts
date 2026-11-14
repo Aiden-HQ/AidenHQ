@@ -1,4 +1,4 @@
-import type { ActivityItem, Agents, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
+import type { ActivityItem, Agents, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -110,6 +110,10 @@ export const api = {
   /** `peek`: a prefetch, which leaves the chat unread. */
   chat: (ref: string, peek = false) => call<ChatDetail>("GET", `/api/chats/${encodeURIComponent(ref)}${peek ? "?peek" : ""}`),
   newChat: (text: string, agent?: string) => call<{ identifier: string }>("POST", "/api/chats", { text, ...(agent ? { agent } : {}) }),
+  /** The fast chat lane (LaneChat.tsx): its agents (empty without a lane), and one agent's conversation after message `after`. */
+  lane: () => call<{ agents: LaneAgent[] }>("GET", "/api/lane"),
+  laneMessages: (key: string, after: string) => call<{ messages: LaneMessage[]; busy: boolean }>("GET", `/api/lane/${encodeURIComponent(key)}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`),
+  laneSend: (key: string, text: string) => call<{ ok: boolean }>("POST", `/api/lane/${encodeURIComponent(key)}/messages`, { text }),
   stopChat: (ref: string) => call<{ stopped: number }>("POST", `/api/chats/${encodeURIComponent(ref)}/stop`, {}),
   notRight: (ref: string, text: string) => call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/not-right`, { text }),
   activity: (days = 7) => call<{ days: { day: string; items: ActivityItem[] }[] }>("GET", `/api/activity?days=${days}`),
