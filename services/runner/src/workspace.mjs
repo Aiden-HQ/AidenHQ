@@ -76,6 +76,59 @@ function refFiles(path) {
   }
 }
 
+// What a turn asks about every branch is answered from facts that never change (how many commits one commit has that another
+// lacks) or from one read of the refs, so a clone with many old branches costs a turn nothing for the ones that didn't move.
+const relations = new Map(); // `${clone}\0${a}\0${b}` -> commits reachable from a and not from b
+const related = new Map(); // clone -> commit ids whose relation to every branch and remote branch has been read
+let aheadBehind = true;
+const relKey = (path, a, b) => `${path}\0${a}\0${b}`;
+
+/** In one git process: how each branch and remote branch of the clone stands against commit `c`, remembered for good. */
+async function readRelations(path, c) {
+  const done = related.get(path) ?? related.set(path, new Set()).get(path);
+  if (!aheadBehind || done.has(c)) return;
+  let out;
+  try {
+    out = await git(path, "for-each-ref", `--format=%(objectname) %(ahead-behind:${c})`, "refs/heads", "refs/remotes/origin");
+  } catch {
+    aheadBehind = false; // git before 2.41: each count is its own process below
+    return;
+  }
+  if (relations.size > 50_000) {
+    relations.clear();
+    related.clear();
+  }
+  for (const line of out.split("\n")) {
+    const [sha, ahead, behind] = line.split(" ");
+    if (!behind) continue;
+    relations.set(relKey(path, sha, c), Number(ahead));
+    relations.set(relKey(path, c, sha), Number(behind));
+  }
+  (related.get(path) ?? related.set(path, new Set()).get(path)).add(c);
+}
+
+/** Commits reachable from `a` and not from `b` (commit ids). */
+async function commitsNotIn(path, a, b) {
+  const key = relKey(path, a, b);
+  if (!relations.has(key)) relations.set(key, Number(await git(path, "rev-list", "--count", a, "--not", b).catch(() => "1000000")));
+  return relations.get(key);
+}
+
+// A clone's refs as of now, read once per change of them (the key costs no git process for an ordinary clone).
+const snapshots = new Map();
+async function snapshot(path) {
+  const key = refFiles(path) ?? (await git(path, "for-each-ref", "--format=%(refname) %(objectname)"));
+  const hit = snapshots.get(path);
+  if (hit?.key === key) return hit;
+  const lines = (await git(path, "for-each-ref", "--format=%(refname) %(objectname)")).split("\n").filter(Boolean);
+  const refs = new Map(lines.map((l) => l.split(" ")));
+  const remotes = createHash("sha256").update(lines.filter((l) => l.startsWith("refs/remotes/")).join("\n")).digest("hex");
+  const made = { key, refs, remotes };
+  if (snapshots.size >= 200) snapshots.clear();
+  snapshots.set(path, made);
+  return made;
+}
+
 // A clone's slug, remembered against its .git/config exactly as it was read (any write replaces the file, so a
 // changed remote or a clone re-created at the same path never reads a stale slug).
 const slugs = new Map();
@@ -185,7 +238,7 @@ export function readManifest(workspace) {
 /** The pushed tip of a branch per the last fetch, or "". */
 const remoteTip = (path, branch) => git(path, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`).catch(() => "");
 
-const count = async (path, tip, not) => Number(await git(path, "rev-list", "--count", tip, "--not", not).catch(() => "1000000"));
+const countAgainst = async (path, tip, not) => Number(await git(path, "rev-list", "--count", tip, "--not", not).catch(() => "1000000"));
 
 /**
  * The task's branches in one clone, each with its base: the branch it was made from. That's the
@@ -197,21 +250,27 @@ const count = async (path, tip, not) => Number(await git(path, "rev-list", "--co
 export const findBranches = (path, { base, manifest = [], slug, known = [] }) => sameRefs(findBranchesNow, path, { base, manifest, slug, known });
 
 async function findBranchesNow(path, { base, manifest, slug, known }) {
-  const onBase = await hasRef(path, `origin/${base}`);
-  const heads = (await git(path, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads")).split("\n").filter(Boolean).map((l) => l.split(" "));
+  const { refs } = await snapshot(path);
+  const heads = [...refs].filter(([r]) => r.startsWith("refs/heads/")).map(([r, sha]) => [r.slice(11), sha]);
+  const remoteTip = new Map([...refs].filter(([r]) => r.startsWith("refs/remotes/origin/")).map(([r, sha]) => [r.slice(20), sha]));
+  const onBase = remoteTip.has(base);
   // Branches on GitHub that could be a base: the default one first, then the most recently updated.
   const remotes = (await git(path, "for-each-ref", "--sort=-committerdate", "--count=60", "--format=%(refname:lstrip=3)", "refs/remotes/origin")).split("\n").filter((r) => r && r !== "HEAD");
   const bases = [...new Set([...(onBase ? [base] : []), ...remotes])];
+  // Every branch against every candidate base, in one process per commit not read before (new branch or new base).
+  for (const [, tip] of heads) await readRelations(path, tip);
+  for (const r of bases) if (remoteTip.has(r)) await readRelations(path, remoteTip.get(r));
+  const count = (tip, r) => (remoteTip.has(r) ? commitsNotIn(path, tip, remoteTip.get(r)) : countAgainst(path, tip, `origin/${r}`));
   const found = [];
   for (const [branch, tip] of heads) {
     if (branch === base) continue;
     // A checkout of a branch on GitHub with nothing new (a local `v2`) is only the task's if the task
     // made it (pushed, maybe with a PR).
-    if (!known.includes(branch) && (await hasRef(path, `origin/${branch}`)) && !(await count(path, tip, `origin/${branch}`))) continue;
+    if (!known.includes(branch) && remoteTip.has(branch) && !(await count(tip, branch))) continue;
     let best;
     for (const r of bases) {
       if (r === branch) continue; // its own pushed copy is not its base
-      const n = await count(path, tip, `origin/${r}`);
+      const n = await count(tip, r);
       if (!best || n < best.n) best = { base: r, n };
     }
     const own = best ? best.n : Number(await git(path, "rev-list", "--count", tip));
@@ -225,14 +284,14 @@ async function findBranchesNow(path, { base, manifest, slug, known }) {
     let pick = { base: b.remoteBase, n: b.own };
     for (const o of found) {
       if (o.branch === b.branch || o.tip === b.tip || o.branch === base) continue;
-      if (!(await git(path, "merge-base", "--is-ancestor", o.tip, b.tip).then(() => true, () => false))) continue;
-      const n = await count(path, b.tip, o.tip);
+      if ((await commitsNotIn(path, o.tip, b.tip)) !== 0) continue; // o is not an ancestor of b
+      const n = await commitsNotIn(path, b.tip, o.tip);
       b.counts.set(o.branch, n);
       if (n < pick.n) pick = { base: o.branch, n };
     }
     // The manifest's base, if it is one of the candidates and as close as the best one.
     if (named?.base && named.base !== b.branch && (bases.includes(named.base) || found.some((o) => o.branch === named.base))) {
-      const n = b.counts.get(named.base) ?? (found.some((o) => o.branch === named.base) ? await count(path, b.tip, named.base) : await count(path, b.tip, `origin/${named.base}`));
+      const n = b.counts.get(named.base) ?? (found.some((o) => o.branch === named.base) ? await countAgainst(path, b.tip, named.base) : await countAgainst(path, b.tip, `origin/${named.base}`));
       if (n <= pick.n) pick = { base: named.base, n };
     }
     b.base = pick.base;
@@ -245,15 +304,31 @@ async function findBranchesNow(path, { base, manifest, slug, known }) {
  * What a branch's base is in git: the task branch of that name when there is one (stacked), else the
  * branch on GitHub (`origin/<base>`), else nothing (an empty repository).
  */
-export const baseRef = (path, { branch, base, taskBranches = [] }) => sameRefs(baseRefNow, path, { branch, base, taskBranches });
-
-async function baseRefNow(path, { branch, base, taskBranches = [] }) {
-  if (base !== branch && taskBranches.includes(base) && (await hasRef(path, `refs/heads/${base}`))) return base;
-  return (await hasRef(path, `origin/${base}`)) ? `origin/${base}` : "";
+export async function baseRef(path, { branch, base, taskBranches = [] }) {
+  const { refs } = await snapshot(path);
+  if (base !== branch && taskBranches.includes(base) && refs.has(`refs/heads/${base}`)) return base;
+  return refs.has(`refs/remotes/origin/${base}`) ? `origin/${base}` : "";
 }
 
+/** Whether the clone has a local branch of that name. */
+export const hasBranch = async (path, branch) => (await snapshot(path)).refs.has(`refs/heads/${branch}`);
+
 /** Commits on `branch` that aren't on GitHub yet (oldest first), and the diffstat against its base. */
-export const branchChanges = (path, { branch, base, taskBranches = [] }) => sameRefs(branchChangesNow, path, { branch, base, taskBranches });
+const changes = new Map();
+export async function branchChanges(path, { branch, base, taskBranches = [] }) {
+  const snap = await snapshot(path);
+  const from = await baseRef(path, { branch, base, taskBranches });
+  const own = snap.refs.get(`refs/remotes/origin/${branch}`);
+  // Answered again only when this branch, its base or its own pushed copy moved. What isn't published also depends on the
+  // other remote branches (pushing a branch stacked on this one publishes its commits), so that answer waits for them too.
+  const key = [path, branch, snap.refs.get(`refs/heads/${branch}`), from && snap.refs.get(from.startsWith("origin/") ? `refs/remotes/${from}` : `refs/heads/${from}`), own].join("\0");
+  const hit = changes.get(key);
+  if (hit && (hit.remotes === snap.remotes || (hit.answer.onGitHub && !hit.answer.unpublished.length))) return structuredClone(hit.answer);
+  const answer = await branchChangesNow(path, { branch, base, taskBranches });
+  if (changes.size >= 2000) changes.clear();
+  changes.set(key, { answer, remotes: snap.remotes });
+  return structuredClone(answer);
+}
 
 async function branchChangesNow(path, { branch, base, taskBranches = [] }) {
   const from = (await baseRef(path, { branch, base, taskBranches })) || EMPTY_TREE;

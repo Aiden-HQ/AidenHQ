@@ -22,7 +22,7 @@ import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, 
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine } from "./prompt.mjs";
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
 import { startRepoHelper } from "./repohelper.mjs";
-import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, keepBranches, messagesSince, moveOffDefault, readManifest, repairWorkspaceGit, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
+import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, messagesSince, moveOffDefault, readManifest, repairWorkspaceGit, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.mjs";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.mjs";
 import * as merges from "./merges.mjs";
@@ -3605,7 +3605,7 @@ async function branchRows(issue, workspace) {
     }
     const taskBranches = state.branches(issue.id).filter((k) => k.repo === r.slug).map((k) => k.branch);
     for (const b of state.branches(issue.id).filter((k) => k.repo === r.slug)) {
-      if (!(await git(r.path, "rev-parse", "--verify", "--quiet", `refs/heads/${b.branch}`).catch(() => ""))) continue;
+      if (!(await hasBranch(r.path, b.branch))) continue;
       const c = await branchChanges(r.path, { branch: b.branch, base: b.base, taskBranches });
       rows.push({ repo: r.slug, path: r.path, branch: b.branch, base: b.base, baseRef: await baseRef(r.path, { branch: b.branch, base: b.base, taskBranches }), defaultBase: base, purpose: b.purpose, unpublished: c.unpublished, stat: c.stat, onGitHub: c.onGitHub, pushed: b.pushed, prUrl: b.pr_url ?? undefined, merged: b.merged, writable: writable(r.slug), readOnly: !writable(r.slug) });
     }
