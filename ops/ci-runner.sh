@@ -14,4 +14,5 @@ args=(-e RUNNER_TOKEN)
 [ -n "$org" ] && args+=(-e "RUNNER_URL=https://github.com/$org") # else compose's default, the agents org
 name="aidenhq-ci-runner-$id"
 docker rm -f "$name" >/dev/null 2>&1 || true # left over from a crash or reboot: run would refuse the name forever
-exec docker compose run --rm -T --no-deps --quiet-pull --name "$name" "${args[@]}" ci-runner
+# --build: the runner image (modules/ci/runner) is rebuilt when its Dockerfile changed; cached, it takes about a second.
+exec docker compose run --build --rm -T --no-deps --quiet-pull --name "$name" "${args[@]}" ci-runner

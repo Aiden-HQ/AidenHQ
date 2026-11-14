@@ -8,8 +8,10 @@ services:
   ci-runner:
     profiles: [ ci ]
     extends: { file: ../../compose.base.yaml, service: hardened }
-    # The official runner image (actions/runner images/Dockerfile): git, curl, jq; setup-node fetches Node per job.
-    image: ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300
+    # The official runner image (actions/runner images/Dockerfile: git, curl, jq; setup-node fetches Node per job), less
+    # what our jobs never run and what carries known vulnerabilities (runner/Dockerfile).
+    build: ./runner
+    image: aidenhq/ci-runner:local
     restart: "no"
     environment:
       RUNNER_URL: https://github.com/${settings.agents_org} # ops/ci-runner.sh sets another org's URL for @<org>-<n> units
