@@ -2,7 +2,7 @@
 // the duplicate-card guard (item 4). Facts here were checked by code and are trusted; anything an agent wrote is returned
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
-import { findPrs, namedChecks } from "./merges.mjs";
+import { findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
 import { MAX_DIFF } from "./review.mjs";
 import { downscalePng, imageInfo } from "./images.mjs";
 
@@ -13,6 +13,17 @@ export const GRADER_MARKER = "<!-- aidenhq:grader -->";
 export const ALREADY_APPLIED = "already_applied";
 
 const hash = (s) => createHash("sha256").update(s).digest("hex").slice(0, 16);
+
+/**
+ * A check's state as the trusted facts state it. The merge gate treats one skip as green: the `image-scan` job never ran
+ * because the change cannot alter an image (`.github/workflows/ci.yml`), which `skippedImageScan` decides, so that skip is
+ * reported green with its reason. A scan skipped where an image could change, or with its file list unread, is not proof and
+ * stays "skipped", as does every other skipped check.
+ */
+function checkState(pr, c) {
+  if (!c.skipped) return c.ok ? "green" : "red";
+  return c.name === "image-scan" && !skippedImageScan(pr) ? "green (no image could change)" : "skipped";
+}
 
 /**
  * The task's PRs as evidence: { awaiting } or { version, facts, data }. `prs` are the runner's own PRs for the task, narrowed
@@ -36,7 +47,7 @@ export async function prEvidence(prs, ref, deps) {
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     versions.push(`${p.repo}#${p.number}@${sha}`);
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "" });
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${c.skipped ? "skipped" : c.ok ? "green" : "red"}`).join(", ") : "none"}`);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${checkState(pr, c)}`).join(", ") : "none"}`);
     diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)")).slice(0, MAX_DIFF)}\n`;
   }
   // The board keeps a version in 200 characters: several PRs are bound by their hash.

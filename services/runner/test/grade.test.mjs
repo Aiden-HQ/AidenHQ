@@ -8,9 +8,18 @@ import { fileEvidence } from "../src/evidence.mjs";
 import { GRADE_SCHEMA, gather, grade, gradeNote, graderModels, rubricPaths } from "../src/grade.mjs";
 import { DEEPSEEK, LUNA, openRouterAsk } from "../src/review.mjs";
 
-const pr = ({ state = "OPEN", check = "SUCCESS", head = "h".repeat(40), merge = "m".repeat(40) } = {}) => ({
-  repository: { pullRequest: { state, headRefOid: head, baseRefName: "main", mergeCommit: state === "MERGED" ? { oid: merge } : null, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "test", status: check === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: check }] } } } }] } } },
-});
+const pr = ({ state = "OPEN", check = "SUCCESS", head = "h".repeat(40), merge = "m".repeat(40), imageScan = null, files = undefined } = {}) => {
+  const scan = imageScan ? [{ __typename: "CheckRun", name: "image-scan", status: "COMPLETED", conclusion: imageScan }] : [];
+  return {
+    repository: {
+      pullRequest: {
+        state, headRefOid: head, baseRefName: "main", mergeCommit: state === "MERGED" ? { oid: merge } : null,
+        ...(files ? { files: { pageInfo: { hasNextPage: false }, nodes: files.map((path) => ({ path })) } } : {}),
+        commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "test", status: check === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: check }, ...scan] } } } }] },
+      },
+    },
+  };
+};
 const ref = "https://github.com/acme/app/pull/7";
 const own = { repo: "acme/app", number: 7, url: ref };
 const deps = (over = {}) => ({ busy: () => "", approvals: async () => [], taskPrs: async () => [own], pr: async () => pr(), diff: async () => "+x", comments: async () => [], attachments: async () => [], ...over });
@@ -23,11 +32,28 @@ test("pending evidence waits; a merged PR is bound to its merge commit", async (
   const merged = await gather({ kind: "pr", ref }, deps({ pr: async () => pr({ state: "MERGED" }) }));
   assert.equal(merged.version, `acme/app#7@${"m".repeat(40)}`);
   assert.match(merged.facts[0], /merged into main.*checks: test green/);
-  // A skipped check (e.g. image-scan when no image could change) is reported as skipped, never as green evidence.
+  // A skipped check other than an inapplicable image-scan is reported as skipped, never as green evidence.
   assert.match((await gather({ kind: "pr", ref }, deps({ pr: async () => pr({ state: "MERGED", check: "SKIPPED" }) }))).facts[0], /checks: test skipped/);
   const long = [1, 2, 3, 4].map((n) => ({ repo: "acme/a-rather-long-repository-name", number: n, url: `https://github.com/acme/a-rather-long-repository-name/pull/${n}` }));
   const many = await gather({ kind: "pr", ref: "acme/a-rather-long-repository-name" }, deps({ taskPrs: async () => long }));
   assert.match(many.version, /^prs:[0-9a-f]{16}$/);
+});
+
+test("an image-scan skipped because no image could change reads green, as the merge gate has it; any other skip does not", async () => {
+  const facts = async (options) => (await gather({ kind: "pr", ref }, deps({ pr: async () => pr({ state: "MERGED", ...options }) }))).facts[0];
+  // CI skips image-scan when no Dockerfile's build inputs changed (`.github/workflows/ci.yml`): the merge gate merges on it.
+  assert.match(await facts({ imageScan: "SKIPPED", files: ["src/app.ts", "README.md"] }), /checks: test green, image-scan green \(no image could change\)/);
+  // Nothing was scanned, so it is not proof when an image could change, or when the file list is unread or past its first page.
+  assert.match(await facts({ imageScan: "SKIPPED", files: ["src/app.ts", "Dockerfile"] }), /image-scan skipped/);
+  assert.match(await facts({ imageScan: "SKIPPED", files: ["images/web/Containerfile.prod"] }), /image-scan skipped/);
+  assert.match(await facts({ imageScan: "SKIPPED" }), /image-scan skipped/);
+  const paged = pr({ imageScan: "SKIPPED" });
+  paged.repository.pullRequest.files = { pageInfo: { hasNextPage: true }, nodes: [{ path: "src/app.ts" }] };
+  assert.match((await gather({ kind: "pr", ref }, deps({ pr: async () => paged }))).facts[0], /image-scan skipped/);
+  // Only image-scan's inapplicable skip is green: another check skipped reads skipped even with the same clean files.
+  assert.match(await facts({ check: "SKIPPED", files: ["src/app.ts"] }), /checks: test skipped/);
+  // A scan that ran and passed is simply green.
+  assert.match(await facts({ imageScan: "SUCCESS", files: ["src/app.ts"] }), /image-scan green(?! \()/);
 });
 
 test("only the task's own PRs are read; an open PR the runner can't merge waits", async () => {
