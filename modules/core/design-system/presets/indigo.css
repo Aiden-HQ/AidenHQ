@@ -1,7 +1,7 @@
 /* AidenHQ design system preset "indigo". Indigo: a bold, saturated indigo on cool white, a deep indigo sidebar and gradient, rounder cards.
    Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="indigo">.
    A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
-   (scripts/test/design-system.test.mjs). Statuses come from tokens.css. */
+   (scripts/test/design-system.test.mjs). Statuses (ok, warn, danger, info and their tints) are this preset's own. */
 
 :root[data-palette="indigo"] {
   --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -39,6 +39,26 @@
   --sidebar-muted: #9897c8;
   --sidebar-hover: #2e2a6b;
   --sidebar-line: #2e2a6b;
+  --ok: #1b4d3e;
+  --ok-soft: #e3f5ee;
+  --ok-line: #8fd0b8;
+  --ok-solid: #237a5f;
+  --ok-solid-text: #ffffff;
+  --warn: #5b3a0c;
+  --warn-soft: #fff3d4;
+  --warn-line: #ebc572;
+  --warn-solid: #a3600a;
+  --warn-solid-text: #ffffff;
+  --danger: #a3224f;
+  --danger-soft: #fdeaf0;
+  --danger-line: #f0a3be;
+  --danger-solid: #c02a5c;
+  --danger-solid-text: #ffffff;
+  --info: #2a3d8f;
+  --info-soft: #e8ecff;
+  --info-line: #a5b4f5;
+  --info-solid: #4455c8;
+  --info-solid-text: #ffffff;
 }
 
 :root[data-palette="indigo"] { --accent-grad: linear-gradient(135deg, var(--accent-2) 0%, var(--accent) 100%); }
@@ -70,6 +90,26 @@
     --sidebar-bg: #0b0a24;
     --sidebar-hover: #1d1b45;
     --sidebar-line: #23214f;
+    --ok: #7fe0c0;
+    --ok-soft: #0b2a22;
+    --ok-line: #276b55;
+    --ok-solid: #3dc09a;
+    --ok-solid-text: #05150f;
+    --warn: #f5cd7a;
+    --warn-soft: #2e2008;
+    --warn-line: #745418;
+    --warn-solid: #e8ac3a;
+    --warn-solid-text: #1a1204;
+    --danger: #ff9ab8;
+    --danger-soft: #3d1020;
+    --danger-line: #8c2e50;
+    --danger-solid: #ee5a88;
+    --danger-solid-text: #1c0510;
+    --info: #aab8ff;
+    --info-soft: #151c45;
+    --info-line: #3a4aa0;
+    --info-solid: #7f8dff;
+    --info-solid-text: #0a0e2a;
   }
 }
 
@@ -99,4 +139,24 @@
   --sidebar-bg: #0b0a24;
   --sidebar-hover: #1d1b45;
   --sidebar-line: #23214f;
+  --ok: #7fe0c0;
+  --ok-soft: #0b2a22;
+  --ok-line: #276b55;
+  --ok-solid: #3dc09a;
+  --ok-solid-text: #05150f;
+  --warn: #f5cd7a;
+  --warn-soft: #2e2008;
+  --warn-line: #745418;
+  --warn-solid: #e8ac3a;
+  --warn-solid-text: #1a1204;
+  --danger: #ff9ab8;
+  --danger-soft: #3d1020;
+  --danger-line: #8c2e50;
+  --danger-solid: #ee5a88;
+  --danger-solid-text: #1c0510;
+  --info: #aab8ff;
+  --info-soft: #151c45;
+  --info-line: #3a4aa0;
+  --info-solid: #7f8dff;
+  --info-solid-text: #0a0e2a;
 }

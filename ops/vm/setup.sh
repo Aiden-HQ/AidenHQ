@@ -108,7 +108,7 @@ case "$codename" in
       docker-compose-plugin=5.7.0-1~ubuntu.26.04~resolute fail2ban=1.1.0-9 ;;
 esac
 # The same builds on every release. runsc: gVisor's, never resolute's own (universe carries a 2024 build).
-apt-get -y install --allow-downgrades --allow-change-held-packages nodejs=24.22.3-1nodesource1 tailscale=1.104.5 runsc=20261102.0
+apt-get -y install --allow-downgrades --allow-change-held-packages nodejs=24.22.3-1nodesource1 tailscale=1.104.7 runsc=20261102.0
 # GitHub CLI: its apt repo keeps only the newest build, so the release .deb (v2.103.3, released 2026-10-26), checksummed.
 if [ "$(dpkg-query -W -f='${Version}' gh 2>/dev/null)" != 2.103.3 ]; then
   curl -fsSLo /tmp/gh.deb https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_linux_amd64.deb

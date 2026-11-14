@@ -1,7 +1,7 @@
 /* AidenHQ design system preset "editorial". Editorial: warm paper, ink-dark text, a terracotta accent and serif headings, square-ish corners.
    Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="editorial">.
    A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
-   (scripts/test/design-system.test.mjs). Statuses come from tokens.css. */
+   (scripts/test/design-system.test.mjs). Statuses (ok, warn, danger, info and their tints) are this preset's own. */
 
 :root[data-palette="editorial"] {
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -33,6 +33,26 @@
   --chart-4: #8c4a7a;
   --chart-5: #5b7f2e;
   --chart-6: #4a5f8c;
+  --ok: #2f4a1f;
+  --ok-soft: #eef3df;
+  --ok-line: #b4c98a;
+  --ok-solid: #4f7a22;
+  --ok-solid-text: #ffffff;
+  --warn: #6b3f08;
+  --warn-soft: #fdf0d0;
+  --warn-line: #e5be76;
+  --warn-solid: #a35f06;
+  --warn-solid-text: #ffffff;
+  --danger: #9b2c1c;
+  --danger-soft: #fbe7df;
+  --danger-line: #e9a995;
+  --danger-solid: #b3361f;
+  --danger-solid-text: #ffffff;
+  --info: #2e4467;
+  --info-soft: #e6ecf4;
+  --info-line: #a9bad6;
+  --info-solid: #3f5f95;
+  --info-solid-text: #ffffff;
 }
 
 :root[data-palette="editorial"] :is(h1, h2, h3) { font-family: var(--font-heading); }
@@ -61,6 +81,26 @@
     --chart-4: #c47fb0;
     --chart-5: #93b85e;
     --chart-6: #8ea2d0;
+    --ok: #b5d58a;
+    --ok-soft: #1f2a14;
+    --ok-line: #4a6a2a;
+    --ok-solid: #8fc05a;
+    --ok-solid-text: #11170a;
+    --warn: #f0c36a;
+    --warn-soft: #33230a;
+    --warn-line: #7a5518;
+    --warn-solid: #e5a43a;
+    --warn-solid-text: #1c1204;
+    --danger: #f2a08c;
+    --danger-soft: #3a1812;
+    --danger-line: #8a3a28;
+    --danger-solid: #e8715a;
+    --danger-solid-text: #1c0a06;
+    --info: #a5bde8;
+    --info-soft: #18233a;
+    --info-line: #3d5a8c;
+    --info-solid: #7b9bd8;
+    --info-solid-text: #0a1220;
   }
 }
 
@@ -87,4 +127,24 @@
   --chart-4: #c47fb0;
   --chart-5: #93b85e;
   --chart-6: #8ea2d0;
+  --ok: #b5d58a;
+  --ok-soft: #1f2a14;
+  --ok-line: #4a6a2a;
+  --ok-solid: #8fc05a;
+  --ok-solid-text: #11170a;
+  --warn: #f0c36a;
+  --warn-soft: #33230a;
+  --warn-line: #7a5518;
+  --warn-solid: #e5a43a;
+  --warn-solid-text: #1c1204;
+  --danger: #f2a08c;
+  --danger-soft: #3a1812;
+  --danger-line: #8a3a28;
+  --danger-solid: #e8715a;
+  --danger-solid-text: #1c0a06;
+  --info: #a5bde8;
+  --info-soft: #18233a;
+  --info-line: #3d5a8c;
+  --info-solid: #7b9bd8;
+  --info-solid-text: #0a1220;
 }

@@ -1,7 +1,7 @@
 /* AidenHQ design system preset "ops". Ops: calm slate and teal, moderate corners, for monitoring, queues and run-books.
    Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="ops">.
    A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
-   (scripts/test/design-system.test.mjs). Statuses come from tokens.css. */
+   (scripts/test/design-system.test.mjs). Statuses (ok, warn, danger, info and their tints) are this preset's own. */
 
 :root[data-palette="ops"] {
   --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -32,6 +32,26 @@
   --chart-4: #c2417a;
   --chart-5: #4d7c0f;
   --chart-6: #7c5cc4;
+  --ok: #0f4a40;
+  --ok-soft: #e0f4ef;
+  --ok-line: #7fcfbf;
+  --ok-solid: #0f7d6c;
+  --ok-solid-text: #ffffff;
+  --warn: #5a3a05;
+  --warn-soft: #fff4cc;
+  --warn-line: #e6c25a;
+  --warn-solid: #a35f00;
+  --warn-solid-text: #ffffff;
+  --danger: #b3262b;
+  --danger-soft: #fdebec;
+  --danger-line: #f2a3a5;
+  --danger-solid: #c42b31;
+  --danger-solid-text: #ffffff;
+  --info: #0f3d66;
+  --info-soft: #e4f1fb;
+  --info-line: #8cc3ee;
+  --info-solid: #0b6bb8;
+  --info-solid-text: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -58,6 +78,26 @@
     --chart-4: #e472a4;
     --chart-5: #8cc24a;
     --chart-6: #a48cec;
+    --ok: #5ee0c4;
+    --ok-soft: #0a2a25;
+    --ok-line: #1f6b5c;
+    --ok-solid: #2bc4a4;
+    --ok-solid-text: #05161a;
+    --warn: #ffcc3d;
+    --warn-soft: #2e2005;
+    --warn-line: #6e5012;
+    --warn-solid: #f5b800;
+    --warn-solid-text: #161000;
+    --danger: #ff8f8c;
+    --danger-soft: #3a1115;
+    --danger-line: #8a2f35;
+    --danger-solid: #ef5a5f;
+    --danger-solid-text: #1a0507;
+    --info: #7cc0ff;
+    --info-soft: #0c2640;
+    --info-line: #1f5a94;
+    --info-solid: #4aa3f0;
+    --info-solid-text: #06121f;
   }
 }
 
@@ -84,4 +124,24 @@
   --chart-4: #e472a4;
   --chart-5: #8cc24a;
   --chart-6: #a48cec;
+  --ok: #5ee0c4;
+  --ok-soft: #0a2a25;
+  --ok-line: #1f6b5c;
+  --ok-solid: #2bc4a4;
+  --ok-solid-text: #05161a;
+  --warn: #ffcc3d;
+  --warn-soft: #2e2005;
+  --warn-line: #6e5012;
+  --warn-solid: #f5b800;
+  --warn-solid-text: #161000;
+  --danger: #ff8f8c;
+  --danger-soft: #3a1115;
+  --danger-line: #8a2f35;
+  --danger-solid: #ef5a5f;
+  --danger-solid-text: #1a0507;
+  --info: #7cc0ff;
+  --info-soft: #0c2640;
+  --info-line: #1f5a94;
+  --info-solid: #4aa3f0;
+  --info-solid-text: #06121f;
 }

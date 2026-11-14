@@ -1,7 +1,7 @@
 /* AidenHQ design system preset "soft". Soft: friendly but professional, a gentle violet on a lavender-tinted page, rounder corners and roomier spacing.
    Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="soft">.
    A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
-   (scripts/test/design-system.test.mjs). Statuses come from tokens.css. */
+   (scripts/test/design-system.test.mjs). Statuses (ok, warn, danger, info and their tints) are this preset's own. */
 
 :root[data-palette="soft"] {
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -33,6 +33,26 @@
   --chart-4: #d6457f;
   --chart-5: #5a9e3a;
   --chart-6: #3d7ad6;
+  --ok: #2a5a3a;
+  --ok-soft: #e8f7ec;
+  --ok-line: #a8dbb4;
+  --ok-solid: #3b8553;
+  --ok-solid-text: #ffffff;
+  --warn: #7a4a0a;
+  --warn-soft: #fff0d6;
+  --warn-line: #f2cc88;
+  --warn-solid: #a85f08;
+  --warn-solid-text: #ffffff;
+  --danger: #b23a3a;
+  --danger-soft: #ffebe6;
+  --danger-line: #f6b3a6;
+  --danger-solid: #c0443d;
+  --danger-solid-text: #ffffff;
+  --info: #3a5f9a;
+  --info-soft: #e9f0fd;
+  --info-line: #b3c9f0;
+  --info-solid: #4a6fb5;
+  --info-solid-text: #ffffff;
 }
 
 @media (pointer: coarse) {
@@ -63,6 +83,26 @@
     --chart-4: #ec7aa8;
     --chart-5: #86c262;
     --chart-6: #74a3f0;
+    --ok: #a6dbb4;
+    --ok-soft: #14241a;
+    --ok-line: #3b6a4a;
+    --ok-solid: #74b98a;
+    --ok-solid-text: #0a150e;
+    --warn: #f6d092;
+    --warn-soft: #2c200c;
+    --warn-line: #7a5a22;
+    --warn-solid: #e8b050;
+    --warn-solid-text: #1a1206;
+    --danger: #f8b0a4;
+    --danger-soft: #33191a;
+    --danger-line: #8a4440;
+    --danger-solid: #ec7c70;
+    --danger-solid-text: #1c0c0a;
+    --info: #b0c8f2;
+    --info-soft: #161f35;
+    --info-line: #3f5a94;
+    --info-solid: #86a6e6;
+    --info-solid-text: #0b1226;
   }
 }
 
@@ -89,4 +129,24 @@
   --chart-4: #ec7aa8;
   --chart-5: #86c262;
   --chart-6: #74a3f0;
+  --ok: #a6dbb4;
+  --ok-soft: #14241a;
+  --ok-line: #3b6a4a;
+  --ok-solid: #74b98a;
+  --ok-solid-text: #0a150e;
+  --warn: #f6d092;
+  --warn-soft: #2c200c;
+  --warn-line: #7a5a22;
+  --warn-solid: #e8b050;
+  --warn-solid-text: #1a1206;
+  --danger: #f8b0a4;
+  --danger-soft: #33191a;
+  --danger-line: #8a4440;
+  --danger-solid: #ec7c70;
+  --danger-solid-text: #1c0c0a;
+  --info: #b0c8f2;
+  --info-soft: #161f35;
+  --info-line: #3f5a94;
+  --info-solid: #86a6e6;
+  --info-solid-text: #0b1226;
 }

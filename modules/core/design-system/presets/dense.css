@@ -1,7 +1,7 @@
 /* AidenHQ design system preset "dense". Dense: high contrast, black on white, a strong blue, small type and tight rows for data-heavy screens.
    Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="dense">.
    A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
-   (scripts/test/design-system.test.mjs). Statuses come from tokens.css. */
+   (scripts/test/design-system.test.mjs). Statuses (ok, warn, danger, info and their tints) are this preset's own. */
 
 :root[data-palette="dense"] {
   --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -36,6 +36,26 @@
   --accent-ink: #003f9e;
   --focus: #0050c8;
   --chart-1: #0050c8;
+  --ok: #0b4a1e;
+  --ok-soft: #dcfce7;
+  --ok-line: #6fdc8c;
+  --ok-solid: #16803c;
+  --ok-solid-text: #ffffff;
+  --warn: #5c3500;
+  --warn-soft: #fff0b3;
+  --warn-line: #f5c518;
+  --warn-solid: #b45309;
+  --warn-solid-text: #ffffff;
+  --danger: #a31515;
+  --danger-soft: #fee2e2;
+  --danger-line: #fca5a5;
+  --danger-solid: #dc2626;
+  --danger-solid-text: #ffffff;
+  --info: #0a3d91;
+  --info-soft: #dbeafe;
+  --info-line: #7fb2ff;
+  --info-solid: #1d5fd6;
+  --info-solid-text: #ffffff;
 }
 
 @media (pointer: coarse) {
@@ -61,6 +81,26 @@
     --accent-ink: #9cc3ff;
     --focus: #4d94ff;
     --chart-1: #4d94ff;
+    --ok: #4ade80;
+    --ok-soft: #06280f;
+    --ok-line: #166534;
+    --ok-solid: #22c55e;
+    --ok-solid-text: #03140a;
+    --warn: #fcd34d;
+    --warn-soft: #2e2100;
+    --warn-line: #8a6500;
+    --warn-solid: #fbbf24;
+    --warn-solid-text: #1a1200;
+    --danger: #ff8a8a;
+    --danger-soft: #3f0a0a;
+    --danger-line: #991b1b;
+    --danger-solid: #f05252;
+    --danger-solid-text: #1c0404;
+    --info: #7db4ff;
+    --info-soft: #0a1f4d;
+    --info-line: #1e4fa8;
+    --info-solid: #4a8dff;
+    --info-solid-text: #04102a;
   }
 }
 
@@ -82,4 +122,24 @@
   --accent-ink: #9cc3ff;
   --focus: #4d94ff;
   --chart-1: #4d94ff;
+  --ok: #4ade80;
+  --ok-soft: #06280f;
+  --ok-line: #166534;
+  --ok-solid: #22c55e;
+  --ok-solid-text: #03140a;
+  --warn: #fcd34d;
+  --warn-soft: #2e2100;
+  --warn-line: #8a6500;
+  --warn-solid: #fbbf24;
+  --warn-solid-text: #1a1200;
+  --danger: #ff8a8a;
+  --danger-soft: #3f0a0a;
+  --danger-line: #991b1b;
+  --danger-solid: #f05252;
+  --danger-solid-text: #1c0404;
+  --info: #7db4ff;
+  --info-soft: #0a1f4d;
+  --info-line: #1e4fa8;
+  --info-solid: #4a8dff;
+  --info-solid-text: #04102a;
 }
