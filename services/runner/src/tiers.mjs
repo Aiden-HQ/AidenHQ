@@ -1,67 +1,76 @@
 // Which tier a write is (the tiered-approvals design), from verified state only: the requester the runner looked up,
 // the repos, branches and files git and GitHub report, the instance diff it computed. Pure: no I/O. Tier 0 runs at once,
-// Tier 1 goes to the AI reviewer, Tier 2 to the owner; `reject: true` is refused by code before any review. A request
-// with several parts takes its highest part; anything not recognised is Tier 2.
+// Tier 1 goes to the AI reviewer, and `panel: true` on Tier 1 (authority-expanding) to it and a second reviewer, who must
+// both approve; Tier 2 is the owner's: their own veto, a split panel, or nothing recognised. Friction (checks red, a head
+// that moved, an unreadable file) is never the owner's: `reject: true` refuses it by code and tells the agent why. A
+// request with several parts takes its highest part (Tier 1 with the panel above plain Tier 1).
 import YAML from "yaml";
 
 /**
- * Gate code in the product repo: changing it is always the owner's decision (owner, 2026-11-13: only the actual gates; the
- * rest of the product is Tier 1 for the Platform Engineer's line, with module.yaml and compose files judged by content below).
+ * The gate's own core and anything that can bypass or widen it (owner, 2026-11-14): authority-expanding, so the AI reviewer
+ * and a second, independent reviewer on another model family must both approve (`panel`); a split goes to the owner. The
+ * approval path (tiers, the reviewer, its policy and its eval cases, the owner's-words check, the merge queue's writes,
+ * apply), the state classify() trusts and the runner's GitHub writes (main, state, config, github-app, host git on agent
+ * clones), the job jail, who an agent is and what it may call (agent-auth, the compiler's grants, setup), the board's
+ * approval records, decision routes, tier rules and sign-in, the sandboxes, the model gateway (key and spend caps), host
+ * privileges, the security checks, and the product's CI (the checks a merge waits on).
  */
-const PRODUCT_GATES = [
-  // The approval path: tiers, the reviewer and its policy, the owner's-words check, the merge queue's writes, apply; the job jail.
-  /^services\/runner\/src\/(tiers|review|authorize|merges|apply|netjail|state|config|github-app|engines)\.mjs$/,
-  // What the runner trusts in an agent-writable workspace: host git on its clones (config scrub, .git checks), the files it
-  // reads and writes there (outputs, Primer, attachments), the box/jail choice per Engineer, and the computer box rules.
-  /^services\/runner\/src\/(git|files|workspace|commands|primer)\.mjs$/,
+const GATE_CORE = [
+  /^services\/runner\/src\/(tiers|review|authorize|merges|apply|netjail|state|config|github-app|git|main|engines|workspace|files|commands)\.mjs$/,
+  // What a job can reach: its sandbox and launch (engines: the bwrap allowlist, writable roots, env), what lands in its
+  // workspace and what the runner reads back from it (workspace, files), and the computer box rules (computers).
   /^scripts\/computers\.mjs$/,
-  // The runner's main: it builds the verified state classify() trusts (requester, chain, repos) and holds the GitHub write paths.
-  /^services\/runner\/src\/main\.mjs$/,
+  /^services\/runner\/test\/reviewer-cases\//,
+  /^services\/runner\/scripts\/reviewer-eval\.mjs$/,
   /^modules\/core\/security\//,
-  // Who an agent is and what it may call: agent-auth.ts and every synced copy, and the compiler's grants (tools, models, caps).
   /(^|\/)agent-auth\.ts$/,
-  // Setup: writes the grants table and `autonomy`, builds each agent's adapter config and calls the no-shell guard.
-  /^scripts\/(modules|paperclip-setup)\.mjs$/,
-  // The board's approval records and decision routes, its own tier rules (deploy_app, app_run), and who signs in to decide.
+  /^scripts\/(modules|paperclip-setup|no-shell)\.mjs$/,
   /^services\/board\/src\/(approvals|app|fleet|accounts|session)\.ts$/,
-  // Tool-only agents get no shell (setup refuses one); the computer sandbox: the whole service (launcher, lib, plugin, images).
-  /^scripts\/no-shell\.mjs$/,
   /^services\/computer\//,
-  // The model gateway: the only holder of the OpenRouter key, and the spend caps.
   /^services\/gateway\//,
-  // Host privileges: setup, apply, systemd units, the vault, the VM and box networks.
   /^ops\//,
-  // The security tripwire and the supply-chain checks CI runs (the workflows themselves are .github/, below).
   /^scripts\/verify-security\.sh$|^scripts\/supply-chain\/|^\.gitleaks\.toml$/,
+  /(^|\/)\.github\//,
 ];
+/**
+ * Gate code that is not the core: the runner's Primer publishing. The AI reviewer decides (Tier 1) and may flag it for the
+ * second reviewer when it weakens a control. (commands.mjs is core: repo access, the owner's words, private reads.)
+ */
+const GATE_CODE = [/^services\/runner\/src\/primer\.mjs$/];
 const GITHUB = /(^|\/)\.github\//;
 /** Module agents that hold roles (besides any agent whose grants list roles). */
 const ROLE_AGENTS = new Set(["chief-of-staff", "architect", "fleet-engineer"]);
 
 const T = (tier, rule, reason) => ({ tier, rule, reason });
+/** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
+const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });
 const REJECT = (rule, reason) => ({ tier: 2, rule, reason, reject: true });
 const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 const orgOf = (repo) => String(repo).split("/")[0];
 
-/** The highest part (a reject beats everything); no parts is Tier 2. */
+const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);
+/** The highest part (a reject beats everything; Tier 1 with the panel beats plain Tier 1); no parts is Tier 2. */
 export function highest(parts) {
   if (!parts.length) return T(2, "unrecognised", "nothing recognised in the request");
-  return parts.find((p) => p.reject) ?? parts.reduce((a, b) => (b.tier > a.tier ? b : a));
+  return parts.find((p) => p.reject) ?? parts.reduce((a, b) => (rank(b) > rank(a) ? b : a));
 }
 
 /**
  * The tier of one request. `s` is the verified state:
- * - every action: { agentsOrg, productRepo, instanceRepo, requester: { platform }, sticky, routineAutonomy }
+ * - every action: { agentsOrg, productRepo, instanceRepo, requester: { platform }, records (the task's approval records,
+ *   from the board: earlier decisions, see priorDecisions), also (the actions the request also carries), routineAutonomy }
  * - routineAutonomy: the cap of the routine whose run the task chain started from (routineCap); absent when none
  * - connections: each connection's tool tags from the compiled config ({ name: { tools: { read, write, destructive } } })
  * - every action's requester.platform: the Platform Engineer's line (the Platform Engineer itself, a task the Agent
  *   Architect made, or the owner's own task), the only one that writes to the product repo below Tier 2
- * - push/pr: branches [{ repo, branch, defaultBranch, deployBranch?, empty, files, texts? }]
- * - merge: prs [{ repo, files, texts?, checks: [{ name, ok, pending }] (advisory checks such as design-review left out), headMatches, ownHead (a commit the runner pushed to a same-repo branch), sensitive, dependabot?, designReviewOverdue? (a UI PR whose design review never came) }]
+ * - push/pr: branches [{ repo, branch, sha, defaultBranch, deployBranch?, empty, files, texts?, ciTemplate? }]
+ * - merge: prs [{ repo, number, head, files, texts?, checks: [{ name, ok, pending }] (advisory checks such as design-review left out), headMatches, ownHead (a commit the runner pushed to a same-repo branch), sensitive, dependabot?, ciTemplate? }]
+ *   (ciTemplate: the runner checked in its own clone that the commit's `.github/` tree is exactly the product's CI template's
+ *   at the deployed product commit: same paths, modes and bytes, no symlink, nothing extra)
  *   (texts, product repo only: { path: { base, head } } for each changed module.yaml and compose file, and for every changed
  *   file of a PR the runner verified as Dependabot's from the API: its author and every commit; then `dependabot: true`)
  * - close: prs [{ repo, dependabot? }] (`dependabot`: a product PR whose author the runner read from the API as dependabot[bot])
- * - apply: { files, base, head (path → text, absent when missing), pin: null | { forward, back }, roles (agent key → roles),
+ * - apply: { sha, files, base, head (path → text, absent when missing), pin: null | { forward, back }, roles (agent key → roles),
  *   ownerStarted (the task chain began with the owner), trialNoTap (today's trial-handbook rule) }
  */
 export function classify(action, s) {
@@ -71,8 +80,10 @@ export function classify(action, s) {
   // Fail closed: without knowing which repos are the product and the instance, nothing can be told apart from them.
   if (!s.productRepo || !s.instanceRepo || !s.agentsOrg) return T(2, "unknown-repos", "the product repo, instance repo or agents org isn't known here");
   const t = highest(action === "push" || action === "pr" ? publishParts(action, s) : action === "merge" ? mergeParts(s) : action === "close" ? closeParts(s) : action === "apply" ? applyParts(s) : []);
-  // Sticky: after the owner or the reviewer rejected this action on this task, it is the owner's from then on.
-  if (s.sticky && !t.reject && t.tier < 2) return T(2, "sticky", `rejected before on this task (was: ${t.reason})`);
+  // Earlier decisions on this task (owner, 2026-11-14; replaced "sticky"): the owner's own no holds until they say yes; the
+  // reviewer's no holds for the same content and bounds the retries.
+  const prior = t.reject ? undefined : priorPart(priorDecisions(s.records, action, s.also, requestKey(action, s), requestPatches(action, s)));
+  if (prior) return prior.reject ? prior : { ...prior, reason: `${prior.reason} (was: ${t.reason})` };
   // A routine's cap (its `autonomy`): the stricter of it and the instance's wins. tier0: Tier 1 is the owner's; off: Tier 0 too.
   if (!t.reject && ((s.routineAutonomy === "off" && t.tier < 2) || (s.routineAutonomy === "tier0" && t.tier === 1)))
     return T(2, "routine-autonomy", `a routine's run started this task and that routine's autonomy is ${s.routineAutonomy} (was: ${t.reason})`);
@@ -96,37 +107,134 @@ export function routineCap(origins, complete, routines = {}) {
   return caps.length ? AUTONOMY[Math.min(...caps.map((c) => AUTONOMY.indexOf(c)))] : undefined;
 }
 
+/** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
+const carried = (r) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
+
 /**
- * `sticky` for a request from the task's approval records: a rejected card of the same action, or of one the request also
- * carries (`also`). A product PR card with `args.merge` carries a merge, so its reject makes later merges sticky, and a
- * rejected merge makes a merge-carrying PR card sticky: neither can be refiled as the other to dodge it.
+ * The rebuild path's check (an earlier yes is never replayed over a later no; the request gets a fresh card instead):
+ * whether a no outranks the approvals being replayed. The owner's veto on the task does; so does a judged rejection (not
+ * code's refusal) of the action, or of one the request carries, decided after the earliest of those approvals (`since`),
+ * that names one of these branches, is a merge card, or carries the same patch under another name (`samePatch`: record ids
+ * the runner matched by content; one it couldn't read counts as the same). A rejection of another branch on the same task never does: it
+ * disabled the carry-over for every later rebase (PR #36, WOR-4253).
  */
-export function stickyFrom(records, action, also = []) {
-  const carried = (r) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
+export function rejectedSince(records, action, also = [], branches = [], since = "", samePatch = new Set()) {
+  if (priorDecisions(records, action, also).ownerVeto) return true;
+  const mine = (b) => branches.some((x) => same(x.repo, b.repo) && x.branch === b.branch);
+  return laterRejections(records, action, also, since).some((r) => r.action === "merge" || (r.args?.only ?? []).some(mine) || samePatch.has(r.id));
+}
+
+/**
+ * The judged rejections (not code's refusals) of the action, or of one the request carries, decided at or after `since`.
+ * The runner checks those on other branches by patch (rebuild): the same change renamed and rebased is still rejected.
+ */
+export function laterRejections(records, action, also = [], since = "") {
   const want = [action, ...also];
-  return (records ?? []).some((r) => r.state === "rejected" && carried(r).some((x) => want.includes(x)));
+  return (records ?? []).filter((r) => r.state === "rejected" && carried(r).some((x) => want.includes(x)) && !CODE_REJECTS.includes(r.reviewCode) && String(r.decidedAt ?? "") >= String(since));
+}
+
+/**
+ * What a request changes, as a key two requests share only when their content is identical: the commits (push, PR), the
+ * PR heads (merge), the fleet commit (apply), a board card's digest. Never a branch name or PR number: renaming a branch
+ * doesn't make a rejected change new.
+ */
+export function requestKey(action, s) {
+  if (action === "push" || action === "pr") return keyOf((s.branches ?? []).map((b) => b.sha));
+  if (action === "merge") return keyOf((s.prs ?? []).map((p) => p.head));
+  if (action === "apply") return s.sha ? `apply:${s.sha}` : undefined;
+  return s.digest ? `digest:${s.digest}` : undefined;
+}
+/**
+ * A branch or PR request's patch keys (each branch's or PR's change, git.mjs patchKey), sorted and joined: the same however
+ * the commits are rebased or the branch named. null when any is missing (fails closed against an owner veto); undefined for
+ * actions keyed otherwise.
+ */
+export function requestPatches(action, s) {
+  const list = action === "push" || action === "pr" ? s.branches : action === "merge" ? s.prs : undefined;
+  if (!list) return undefined;
+  return list.length && list.every((x) => typeof x.patch === "string") ? list.map((x) => x.patch).sort().join(",") : null;
+}
+const recordPatches = (r) => requestPatches(r.action, { branches: r.args?.only ?? [], prs: r.args?.prs ?? [] }) ?? undefined;
+
+/** The same key for an approval record (its args; a board-applied card's digest is its content). */
+export function recordKey(r) {
+  if (r.action === "push" || r.action === "pr") return keyOf((r.args?.only ?? []).map((b) => b.sha));
+  if (r.action === "merge") return keyOf((r.args?.prs ?? []).map((p) => p.head));
+  if (r.action === "apply") return r.args?.sha ? `apply:${r.args.sha}` : undefined;
+  return r.digest ? `digest:${r.digest}` : undefined;
+}
+const keyOf = (list) => (list.length && list.every((x) => typeof x === "string" && /^[0-9a-f]{7,64}$/i.test(x)) ? list.map((x) => x.toLowerCase()).sort().join(",") : undefined);
+
+/** Reviewer rejections a task's retries are bounded by: past this many (since the owner's last yes), the action is parked. */
+export const MAX_REJECTS = 3;
+/** Rejections code made without judging the change (it moved, couldn't be read, too large): they are never findings. */
+export const CODE_REJECTS = ["refused_by_code", "check_failed", "too_large", "files_not_shown", "no_diff", "reviewer_failed"];
+const byOwner = (r) => Boolean(r.decidedBy) && !/^(reviewer|auto):/.test(r.decidedBy);
+// An approved card a newer request replaced is `expired`, still decided (a yes).
+const decided = (r) => ["approved", "used", "expired", "rejected"].includes(r.state) && Boolean(r.decidedBy);
+
+/**
+ * Earlier decisions on a task for a request (owner, 2026-11-14), from its approval records of the action (or of one the
+ * request also carries; only decided records, never a Tier 0 audit row):
+ * - ownerVeto: the owner's latest decision on it was a no (their later yes withdraws that), or the owner rejected exactly
+ *   this content and hasn't approved that same content since (an approval of other content doesn't lift it).
+ * - rejects: the AI reviewer's rejections on the task since the owner's last yes, task-wide (any branch, PR or name),
+ *   except those whose exact content was approved later. At MAX_REJECTS the action is parked.
+ * - same: one of those rejected exactly this content (requestKey): it stays rejected (its note).
+ * - findings: every one of those notes, attached to the next review.
+ */
+export function priorDecisions(records, action, also = [], key, patches) {
+  const want = [action, ...(also ?? [])];
+  const mine = (records ?? []).filter((r) => decided(r) && carried(r).some((x) => want.includes(x))).sort((a, b) => String(a.decidedAt ?? "").localeCompare(String(b.decidedAt ?? "")));
+  const lastOwner = mine.filter(byOwner).at(-1);
+  const ownerYes = mine.filter((r) => byOwner(r) && r.state !== "rejected").at(-1);
+  const approvedLater = (r) => mine.some((y) => y.state !== "rejected" && String(y.decidedAt) > String(r.decidedAt) && recordKey(y) !== undefined && recordKey(y) === recordKey(r));
+  const since = mine.filter((r) => r.state === "rejected" && r.decidedBy.startsWith("reviewer:") && !CODE_REJECTS.includes(r.reviewCode) && (!ownerYes || String(r.decidedAt) > String(ownerYes.decidedAt)) && !approvedLater(r));
+  const same = key ? since.find((r) => recordKey(r) === key) : undefined;
+  // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
+  // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed
+  // (null) fail closed: any owner rejection of the action on the task makes it theirs.
+  const sameContent = (r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
+  const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: same ? same.review || "no note" : undefined, rejects: since.length, findings: since.map((r) => r.review).filter(Boolean) };
+}
+
+/** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */
+export function priorPart(p) {
+  if (!p) return undefined;
+  if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
+  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this change on this task (its note: ${String(p.same).slice(0, 400)}). Fix what it found and ask again with the changed commits`);
+  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on this task, so it isn't reviewed again here. Report what it found to whoever asked for this work`);
+  return undefined;
 }
 
 function publishParts(action, s) {
   return (s.branches ?? []).map((b) => {
     const inAgents = Boolean(s.agentsOrg) && same(orgOf(b.repo), s.agentsOrg);
-    if (same(b.repo, s.instanceRepo)) return T(2, "instance-repo", "the instance repo changes only through apply");
-    if (!Array.isArray(b.files)) return T(2, "unknown-files", `couldn't tell which files ${b.repo} \`${b.branch}\` changes`);
+    if (same(b.repo, s.instanceRepo)) return REJECT("instance-repo", "the instance repo changes only through apply");
+    if (!Array.isArray(b.files)) return REJECT("unknown-files", `couldn't tell which files ${b.repo} \`${b.branch}\` changes; try again`);
     if (same(b.repo, s.productRepo)) {
       if (action === "pr" && !s.requester?.platform) return REJECT("product-pr-requester", "only the Platform Engineer (or a task the owner or the Agent Architect made) may open PRs on the product repo");
-      if (b.empty || b.branch === b.defaultBranch) return T(2, "product-default-branch", `\`${b.branch}\` is the product repo's default branch`);
-      if (!s.requester?.platform) return T(2, "product-push", "a push to the product repo from outside the Platform Engineer's line");
-      const parts = productFileParts(b.files, b.texts, s);
-      return parts.some((p) => p.tier === 2) ? highest(parts) : T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo from the Platform Engineer's line, no gate code`);
+      if (b.empty || b.branch === b.defaultBranch) return REJECT("product-default-branch", `\`${b.branch}\` is the product repo's default branch: publish a branch and open a PR`);
+      if (!s.requester?.platform) return REJECT("product-push", "only the Platform Engineer's line pushes to the product repo: hand product changes to the Platform Engineer");
+      const what = T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo from the Platform Engineer's line`);
+      return highest([...productFileParts(b.files, b.texts, s), what]);
     }
     const workflow = (b.files ?? []).find((f) => GITHUB.test(f));
-    if (workflow) return T(2, "github-dir", `it changes ${workflow}`);
+    const parts = [];
+    // A byte-identical copy of the product's CI template (checked in the runner's own clone) is Tier 0; any other `.github/`
+    // change is the reviewer's (who flags one that weakens a check for the second reviewer).
+    if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir", `it changes ${workflow}`));
     if (inAgents) {
-      if (b.empty) return T(2, "empty-repo", `${b.repo} is empty: the first push lands on its default branch`);
-      if (b.branch === b.defaultBranch || (b.deployBranch && b.branch === b.deployBranch)) return T(2, "default-branch", `\`${b.branch}\` is ${b.repo}'s default or deploy branch`);
-      return T(0, "agents-org-branch", `an ordinary branch of ${b.repo} in the agents org`);
+      if (b.empty) parts.push(T(1, "empty-repo", `${b.repo} is empty: the first push lands on its default branch`));
+      // Straight onto the branch apps deploy from or merge into, past the PR and its checks: weakens the merge gate.
+      else if (b.branch === b.defaultBranch || (b.deployBranch && b.branch === b.deployBranch)) parts.push(PANEL("default-branch", `\`${b.branch}\` is ${b.repo}'s default or deploy branch, past its PR checks`));
+      else parts.push(T(0, workflow ? "ci-template-copy" : "agents-org-branch", workflow ? `${b.repo}'s \`.github/\` is exactly the product's CI template` : `an ordinary branch of ${b.repo} in the agents org`));
+      return highest(parts);
     }
-    return action === "pr" ? T(1, "outside-pr", `a draft PR to ${b.repo}, outside the agents org`) : T(2, "outside-push", `a push to ${b.repo}, outside the agents org`);
+    if (b.empty || b.branch === b.defaultBranch) return REJECT("outside-default-branch", `\`${b.branch}\` is ${b.repo}'s default branch, outside the agents org: publish a branch and open a PR`);
+    parts.push(action === "pr" ? T(1, "outside-pr", `a draft PR to ${b.repo}, outside the agents org`) : T(1, "outside-push", `a branch push to ${b.repo}, outside the agents org`));
+    return highest(parts);
   });
 }
 
@@ -149,28 +257,42 @@ function closeParts(s) {
   });
 }
 
+/**
+ * Friction is the agent's, never the owner's (owner, 2026-11-14): a head that moved, no named checks, or a red one is
+ * refused by code with the reason, so the agent fixes it and asks again. Still running is not red: those merges wait.
+ */
+function mergeFriction(p, ref) {
+  if (!p.headMatches) return REJECT("head-moved", `${ref} moved since it was asked for: ask again for its new head`);
+  if (!(p.checks ?? []).length) return REJECT("no-checks", `${ref} has no named checks on its head: its repo needs CI (a copy of the product's CI template runs at once), or CI didn't start; fix that and ask again`);
+  const red = p.checks.filter((c) => !c.ok && !c.pending);
+  // A count, never the names: check names are repo-controlled text, and this reason reaches the agent as the runner's.
+  if (red.length) return REJECT("checks-not-green", `${ref}: ${red.length} named check(s) failed on the head (\`gh pr checks ${p.number ?? ""}\` names them). Fix it and publish again`);
+  return undefined;
+}
+
 function mergeParts(s) {
   return (s.prs ?? []).map((p) => {
     const ref = `${p.repo}#${p.number ?? "?"}`;
     if (same(p.repo, s.productRepo)) return productMergePart(p, ref, s);
-    if (!s.agentsOrg || !same(orgOf(p.repo), s.agentsOrg)) return T(2, "outside-merge", `${ref} is outside the agents org`);
-    if (same(p.repo, s.instanceRepo) || same(p.repo, s.productRepo)) return T(2, "core-repo-merge", `${ref} is the instance or product repo`);
-    if (!Array.isArray(p.files)) return T(2, "unknown-files", `couldn't list every file ${ref} changes`);
-    const workflow = (p.files ?? []).find((f) => GITHUB.test(f));
-    if (workflow) return T(2, "github-dir", `${ref} changes ${workflow}`);
-    if (p.sensitive) return T(2, "sensitive-app", `${ref} is a sensitive app's repo (access, caps or connects to paperclip)`);
-    if (!p.headMatches) return T(2, "head-moved", `${ref} moved since the card`);
-    if (!(p.checks ?? []).length) return T(2, "no-checks", `${ref} has no named checks`);
-    const red = p.checks.filter((c) => !c.ok && !c.pending);
-    if (red.length) return T(2, "checks-not-green", `${ref}: ${red.map((c) => c.name).join(", ")} failed on the head`);
-    // A UI PR whose design review never came within its time after the checks went green (merges.mjs DESIGN_REVIEW).
-    if (p.designReviewOverdue) return T(2, "design-review-missing", `${ref} changes UI files and the UI/UX Designer's design review never came within 2 hours of its checks going green`);
+    if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`);
+    if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
+    const friction = mergeFriction(p, ref);
+    if (friction) return friction;
+    const parts = [];
+    // Outside the agents org: a write into someone else's repo (its own GitHub review applies too), the panel's.
+    const outside = !s.agentsOrg || !same(orgOf(p.repo), s.agentsOrg);
+    if (outside) parts.push(PANEL("outside-merge", `${ref} is outside the agents org (its own GitHub review applies too)`));
+    const workflow = p.files.find((f) => GITHUB.test(f));
+    if (workflow && !(p.ciTemplate === true && !outside)) parts.push(T(1, "github-dir", `${ref} changes ${workflow}`));
+    // Existing sensitivity alone doesn't make every merge the owner's: the reviewer reads it (and flags new reach).
+    if (p.sensitive) parts.push(T(1, "sensitive-app", `${ref} is a sensitive app's repo (access, caps or connects to paperclip)`));
     // A head the runner didn't push (a fork, someone else's push): the reviewer reads the diff first.
-    if (!p.ownHead) return T(1, "agents-org-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo}`);
+    if (!p.ownHead) parts.push(T(1, "agents-org-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo}`));
     // Merged at once when CI is green (owner, 2026-11-12): the PR merges on its own (an independent queue), strict and bound to
     // this head, only once every named check passed on it; red leaves it unmerged. Still running is not red.
-    if (p.checks.some((c) => c.pending)) return T(0, "agents-org-merge-checks-running", `${ref}: ${p.checks.length} named check${p.checks.length === 1 ? "" : "s"}, still running on the exact head (merged only once green)`);
-    return T(0, "agents-org-merge", `${ref}: ${p.checks.length} named check${p.checks.length === 1 ? "" : "s"}, all green on the exact head`);
+    const n = `${p.checks.length} named check${p.checks.length === 1 ? "" : "s"}`;
+    if (!outside) parts.push(p.checks.some((c) => c.pending) ? T(0, "agents-org-merge-checks-running", `${ref}: ${n}, still running on the exact head (merged only once green)`) : T(0, "agents-org-merge", `${ref}: ${n}, all green on the exact head`));
+    return highest(parts);
   });
 }
 
@@ -181,21 +303,19 @@ function mergeParts(s) {
  * that exact head. Never Tier 0: the product reaches every instance through the pin.
  */
 function productMergePart(p, ref, s) {
-  if (!s.requester?.platform) return T(2, "product-merge-requester", `${ref}: a product merge from outside the Platform Engineer's line`);
-  if (!Array.isArray(p.files)) return T(2, "unknown-files", `couldn't list every file ${ref} changes`);
-  // A Dependabot pin bump: the reviewer's when every condition holds; otherwise the rules below (a head not the runner's: Tier 2).
+  if (!s.requester?.platform) return REJECT("product-merge-requester", `${ref}: only the Platform Engineer's line merges product PRs`);
+  if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
+  // A Dependabot pin bump: the reviewer's alone when every condition holds; otherwise the rules below.
   if (p.dependabot === true) {
     const d = dependabotMergePart(p, ref);
-    if (d.tier === 1 || !p.ownHead) return d;
+    if (d.tier === 1) return d;
   }
-  const parts = productFileParts(p.files, p.texts, s);
-  if (parts.some((x) => x.tier === 2)) return highest(parts);
-  if (!p.headMatches) return T(2, "head-moved", `${ref} moved since the card`);
-  if (!p.ownHead) return T(2, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo`);
-  if (!(p.checks ?? []).length) return T(2, "no-checks", `${ref} has no named checks`);
-  const red = p.checks.filter((c) => !c.ok && !c.pending);
-  if (red.length) return T(2, "checks-not-green", `${ref}: ${red.map((c) => c.name).join(", ")} failed on the head`);
-  return T(1, "product-merge", `${ref}: a product PR from the Platform Engineer's line, no gate code, merged only once its ${p.checks.length} named check${p.checks.length === 1 ? "" : "s"} are green on the exact head`);
+  const friction = mergeFriction(p, ref);
+  if (friction) return friction;
+  const what = p.ownHead
+    ? T(1, "product-merge", `${ref}: a product PR from the Platform Engineer's line, merged only once its ${p.checks.length} named check${p.checks.length === 1 ? "" : "s"} are green on the exact head`)
+    : T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
+  return highest([...productFileParts(p.files, p.texts, s), what]);
 }
 
 /**
@@ -359,7 +479,7 @@ function workflowWhy(base, head) {
 
 /** A compose file: the image-bump rule (composeParts), and no major jump in any service's image. */
 function composeWhy(base, head) {
-  if (composeParts("", base, head)[0].tier !== 1) return "changes more than image tags or digests";
+  if (composeParts("", base, head)[0].rule !== "product-image-bump") return "changes more than image tags or digests";
   const [b, h] = [parse(base), parse(head)];
   for (const [name, svc] of Object.entries(h.services ?? {})) {
     const was = b.services?.[name]?.image;
@@ -370,19 +490,21 @@ function composeWhy(base, head) {
 }
 
 /**
- * The product files that need more than the reviewer: gate code, `.github/`, the handbook of a module agent that holds a
- * role, and module.yaml or a compose file (root or a module's fragment) judged by content. `texts` maps those config files to { base, head } (text,
- * or undefined when absent on that side); a config file without an entry couldn't be read: the owner's.
+ * The product files that need more than one reviewer's plain read: the gate's core (panel), other gate code and a role
+ * holder's handbook (Tier 1, named), and module.yaml or a compose file (root or a module's fragment) judged by content.
+ * `texts` maps those config files to { base, head } (text, or undefined when absent on that side); a config file without
+ * an entry couldn't be read: refused, to ask again.
  */
 function productFileParts(files, texts = {}, s) {
   const parts = [];
   for (const f of files) {
     let m;
-    if (PRODUCT_GATES.some((g) => g.test(f)) || GITHUB.test(f)) parts.push(T(2, "product-gate", `it changes gate code (${f})`));
-    else if ((m = /^modules\/[^/]+\/agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f)) && (ROLE_AGENTS.has(m[1]) || (s.roles?.[m[1]] ?? []).length)) parts.push(T(2, "role-handbook", `handbook of ${m[1]}, which holds a role`));
+    if (GATE_CORE.some((g) => g.test(f))) parts.push(PANEL("gate-core", `it changes the gate's own core (${f})`));
+    else if (GATE_CODE.some((g) => g.test(f))) parts.push(T(1, "product-gate", `it changes gate code (${f})`));
+    else if ((m = /^modules\/[^/]+\/agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f)) && (ROLE_AGENTS.has(m[1]) || (s.roles?.[m[1]] ?? []).length)) parts.push(T(1, "role-handbook", `handbook of ${m[1]}, which holds a role`));
     else if (/^modules\/[^/]+\/module\.yaml$/.test(f) || COMPOSE.test(f)) {
       const t = texts?.[f];
-      if (!t) parts.push(T(2, "unknown-content", `couldn't read ${f} on both sides`));
+      if (!t) parts.push(REJECT("unknown-content", `couldn't read ${f} on both sides; try again`));
       else parts.push(...(COMPOSE.test(f) ? composeParts(f, t.base, t.head) : moduleParts(f, t.base, t.head, s.connections)));
     }
   }
@@ -400,30 +522,31 @@ const imageRepo = (ref) => String(ref ?? "").replace(/@sha256:[0-9a-f]+$/, "").r
  */
 function composeParts(f, baseText, headText) {
   const [b, h] = [parse(baseText), parse(headText)];
-  if (!b || !h) return [T(2, "product-compose", `${f} doesn't parse, or is added or removed`)];
+  if (!b || !h) return [PANEL("product-compose", `${f} doesn't parse, or is added or removed`)];
   const noImages = (c) => ({ ...c, services: Object.fromEntries(Object.entries(c.services ?? {}).map(([k, v]) => [k, { ...(v ?? {}), image: imageRepo(v?.image) }])) });
-  return eq(noImages(b), noImages(h)) ? [T(1, "product-image-bump", `${f}: image tags or digests only`)] : [T(2, "product-compose", `${f} changes more than image tags or digests (volumes, privileges, network, env, services or another image)`)];
+  return eq(noImages(b), noImages(h)) ? [T(1, "product-image-bump", `${f}: image tags or digests only`)] : [PANEL("product-compose", `${f} changes more than image tags or digests (volumes, privileges, network, env, services or another image)`)];
 }
 
-/** What a module agent may change without the owner: everything else (model, connections, roles, image, a new agent) is Tier 2. */
+/** What a module agent may change with one reviewer: everything else (model, connections, roles, image, a new agent) is the panel's. */
 const MODULE_AGENT_SAFE = new Set(["reasoning_effort", "timeout_sec", "heartbeat", "persona", "max_parallel", "graded", "brief"]);
 /**
  * Module keys that are the reviewer's (text, labels, schedules without a model); agents, routines, connections and apps are
- * checked below; the rest (settings and their defaults such as autonomy, compose, codex_args, isolation, secrets) are Tier 2.
+ * checked below; the rest (settings and their defaults such as autonomy, compose, codex_args, isolation, secrets) are the panel's.
  */
 const MODULE_SAFE = new Set(["name", "description", "requires", "labels", "company"]);
 
 /**
  * A module.yaml change, by content (the instance apply's rules, applied to the product): new or wider grants, new tools,
- * models, roles, images, new agents, credentials, the tool-only sandbox (codex_args) and sensitive apps stay the owner's.
+ * models, roles, images, new agents, credentials, the tool-only sandbox (codex_args) and sensitive apps are authority-
+ * expanding: the panel's.
  */
 function moduleParts(f, baseText, headText, connections = {}) {
   const b = baseText === undefined ? {} : parse(baseText);
   const h = headText === undefined ? undefined : parse(headText);
-  if (b === null || h === null) return [T(2, "unparseable", `${f} doesn't parse`)];
-  if (h === undefined) return [T(2, "module-removed", `removes ${f}`)];
+  if (b === null || h === null) return [REJECT("unparseable", `${f} doesn't parse`)];
+  if (h === undefined) return [PANEL("module-removed", `removes ${f}`)];
   const parts = [];
-  const why = (rule, reason) => parts.push(T(2, rule, `${f}: ${reason}`));
+  const why = (rule, reason) => parts.push(PANEL(rule, `${f}: ${reason}`));
   for (const k of changedKeys(b, h)) {
     if (MODULE_SAFE.has(k)) continue;
     if (k === "agents") {
@@ -459,7 +582,7 @@ function moduleParts(f, baseText, headText, connections = {}) {
       }
     } else if (k === "apps") {
       const ps = appsParts(b.apps ?? [], h.apps ?? []);
-      parts.push(...ps.filter((x) => x.tier === 2).map((x) => ({ ...x, reason: `${f}: ${x.reason}` })));
+      parts.push(...ps.filter((x) => x.panel || x.tier === 2).map((x) => ({ ...x, reason: `${f}: ${x.reason}` })));
     } else why("module-key", `changes ${k}`);
   }
   return parts.length ? parts : [T(1, "module-config", `${f}: no new grants, tools, models, roles or credentials`)];
@@ -509,51 +632,52 @@ function applyParts(s) {
     if (f === "instance.yaml") parts.push(...instanceParts(s));
     else if (f === "apps.yaml") {
       const [b, h] = [parse(s.base?.[f]), parse(s.head?.[f])];
-      parts.push(...(b === null || h === null ? [T(2, "unparseable", "apps.yaml doesn't parse")] : appsParts(b?.apps ?? [], h?.apps ?? [], s.moduleApps)));
+      parts.push(...(b === null || h === null ? [REJECT("unparseable", "apps.yaml doesn't parse")] : appsParts(b?.apps ?? [], h?.apps ?? [], s.moduleApps)));
     } else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/agent\.yaml$/.exec(f))) parts.push(agentDefPart(m[1], parse(def(m[1], "base")), parse(def(m[1], "head")), s));
-    // A curated memory (the Librarian's proposal; compiled into the agent's handbook as facts, never instructions): the reviewer decides for an agent without a role, the owner for one that holds one.
-    else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/memory\.md$/.exec(f))) parts.push(ROLE_AGENTS.has(m[1]) || (s.roles?.[m[1]] ?? []).length ? T(2, "role-memory", `memory of ${m[1]}, which holds a role`) : T(1, "agent-memory", `memory of ${m[1]}, an agent without a role`));
+    // A curated memory (the Librarian's proposal; compiled into the agent's handbook as facts, never instructions): the
+    // reviewer decides, for a role holder too (owner, 2026-11-14), and flags one that redirects authority.
+    else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/memory\.md$/.exec(f))) parts.push(ROLE_AGENTS.has(m[1]) || (s.roles?.[m[1]] ?? []).length ? T(1, "role-memory", `memory of ${m[1]}, which holds a role`) : T(1, "agent-memory", `memory of ${m[1]}, an agent without a role`));
     else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f))) {
       const key = m[1];
       const base = parse(def(key, "base"));
       const head = parse(def(key, "head"));
-      if (ROLE_AGENTS.has(key) || (s.roles?.[key] ?? []).length) parts.push(T(2, "role-handbook", `handbook of ${key}, which holds a role`));
+      if (ROLE_AGENTS.has(key) || (s.roles?.[key] ?? []).length) parts.push(T(1, "role-handbook", `handbook of ${key}, which holds a role`));
       else if (base === undefined) {
-        // A new agent's handbook: only alongside its new agent.yaml, in trial, in this same change; anything else is unrecognised.
+        // A new agent's handbook: only alongside its new agent.yaml, in trial, in this same change; anything else is refused.
         const added = (s.files ?? []).includes(`agents/${key}/agent.yaml`) && head?.trial === true;
-        parts.push(!added ? T(2, "handbook-without-agent", `${key}'s handbook, without a new trial agent.yaml in the change`) : s.ownerStarted ? T(0, "trial-agent-new", `${key}'s handbook, with its new trial agent, on a task the owner started`) : T(1, "trial-agent-new-agent-task", `${key}'s handbook, with its new trial agent, on an agent-origin task`));
-      } else if (base === null) parts.push(T(2, "unparseable", `agents/${key}/agent.yaml doesn't parse`));
+        parts.push(!added ? REJECT("handbook-without-agent", `${key}'s handbook, without a new trial agent.yaml in the change`) : s.ownerStarted ? T(0, "trial-agent-new", `${key}'s handbook, with its new trial agent, on a task the owner started`) : T(1, "trial-agent-new-agent-task", `${key}'s handbook, with its new trial agent, on an agent-origin task`));
+      } else if (base === null) parts.push(REJECT("unparseable", `agents/${key}/agent.yaml doesn't parse`));
       else if (base.trial === true) parts.push(s.trialNoTap ? T(0, "trial-handbook", `handbook of ${key}, an agent in trial`) : T(1, "trial-handbook-agent-task", `handbook of ${key}, an agent in trial, on an agent-origin task`));
       else parts.push(T(1, "agent-handbook", `handbook of ${key}, a graduated agent without a role`));
     } else if ((m = /^agents\/([\w.-]+)\.md$/.exec(f))) {
       const roles = s.roles?.[m[1]] ?? [];
-      parts.push(ROLE_AGENTS.has(m[1]) || roles.length ? T(2, "role-handbook", `handbook of ${m[1]}, which holds a role`) : T(1, "module-handbook", `handbook additions for ${m[1]}, an agent without a role`));
-    } else parts.push(T(2, "unrecognised-file", `${f} isn't a file apply recognises`));
+      parts.push(ROLE_AGENTS.has(m[1]) || roles.length ? T(1, "role-handbook", `handbook of ${m[1]}, which holds a role`) : T(1, "module-handbook", `handbook additions for ${m[1]}, an agent without a role`));
+    } else parts.push(PANEL("unrecognised-file", `${f} isn't a file apply recognises`));
   }
   return parts;
 }
 
 function agentDefPart(key, base, head, s) {
-  if (base === null || head === null) return T(2, "unparseable", `agents/${key}/agent.yaml doesn't parse`);
-  if (head === undefined) return T(2, "agent-removed", `removes agent ${key}`);
+  if (base === null || head === null) return REJECT("unparseable", `agents/${key}/agent.yaml doesn't parse`);
+  if (head === undefined) return T(1, "agent-removed", `removes agent ${key}`);
   const caps = routineAutonomyChanges(base?.routines, head.routines);
-  if (caps.length) return T(2, "routine-autonomy", `${key}: routine autonomy changes (${caps.join(", ")})`);
+  if (caps.length) return PANEL("routine-autonomy", `${key}: routine autonomy changes (${caps.join(", ")})`);
   if (base === undefined) {
-    if (head.trial !== true) return T(2, "untrialed-agent", `new agent ${key} isn't in trial`);
+    if (head.trial !== true) return PANEL("untrialed-agent", `new agent ${key} isn't in trial`);
     // Only the safe fields (no roles, image or other privileges); any write grant goes to the reviewer at least.
     const other = Object.keys(head).filter((k) => k !== "trial" && k !== "connections" && !AGENT_SAFE.has(k));
-    if (other.length) return T(2, "new-agent-fields", `new agent ${key} sets ${other.join(", ")}`);
+    if (other.length) return PANEL("new-agent-fields", `new agent ${key} sets ${other.join(", ")}`);
     if (Object.values(head.connections ?? {}).some((g) => g !== "read")) return T(1, "trial-agent-new-writes", `adds ${key} in trial, with write or tool-level grants`);
     return s.ownerStarted ? T(0, "trial-agent-new", `adds ${key} in trial, on a task the owner started`) : T(1, "trial-agent-new-agent-task", `adds ${key} in trial, on an agent-origin task`);
   }
   const keys = changedKeys(base, head);
   const wider = newGrants(base.connections, head.connections, s.connections);
-  if (wider.length) return T(2, "new-grants", `${key} gets new grants: ${wider.join(", ")}`);
+  if (wider.length) return PANEL("new-grants", `${key} gets new grants: ${wider.join(", ")}`);
   const other = keys.filter((k) => k !== "connections" && k !== "trial" && !AGENT_SAFE.has(k));
-  if (other.length) return T(2, "agent-fields", `${key} changes ${other.join(", ")}`);
+  if (other.length) return PANEL("agent-fields", `${key} changes ${other.join(", ")}`);
   if (keys.includes("trial")) {
     if (base.trial === true && head.trial !== true) return T(1, "graduation", `${key} graduates, keeping only the tools and connections it had in trial`);
-    return T(2, "agent-into-trial", `${key}'s trial flag changes`);
+    return T(1, "agent-into-trial", `${key}'s trial flag changes`);
   }
   return T(1, "agent-tuning", `${key}: ${keys.join(", ") || "no field"} changes`);
 }
@@ -561,25 +685,26 @@ function agentDefPart(key, base, head, s) {
 function instanceParts(s) {
   const base = parse(s.base?.["instance.yaml"]);
   const head = parse(s.head?.["instance.yaml"]);
-  if (!base || !head) return [T(2, "unparseable", "instance.yaml doesn't parse")];
+  if (!base || !head) return [REJECT("unparseable", "instance.yaml doesn't parse")];
   const parts = [];
   for (const k of changedKeys(base, head)) {
-    if (k === "product") parts.push(s.pin?.forward ? T(1, "pin-forward", "the product pin moves forward along product main") : s.pin?.back ? T(2, "pin-backwards", "the product pin moves backwards (a rollback)") : T(2, "pin-unknown", "the product pin moves, and not forward"));
+    // A rollback can undo a security fix: the panel's. A pin off product main is refused.
+    if (k === "product") parts.push(s.pin?.forward ? T(1, "pin-forward", "the product pin moves forward along product main") : s.pin?.back ? PANEL("pin-backwards", "the product pin moves backwards (a rollback)") : REJECT("pin-unknown", "the product pin moves, and not along product main"));
     else if (k === "settings") {
       for (const sk of changedKeys(base.settings, head.settings)) {
         const was = [base.settings?.[sk] ?? []].flat();
         const now = [head.settings?.[sk] ?? []].flat();
-        parts.push(sk === "slack_post_channels" && was.every((c) => now.includes(c)) ? T(1, "slack-channels", `adds Slack channels agents may post to`) : T(2, "settings", `changes the setting ${sk}`));
+        parts.push(sk === "slack_post_channels" && was.every((c) => now.includes(c)) ? T(1, "slack-channels", `adds Slack channels agents may post to`) : PANEL("settings", `changes the setting ${sk}`));
       }
     } else if (k === "overrides") {
       for (const kind of changedKeys(base.overrides, head.overrides)) {
         const safe = OVERRIDE_SAFE[kind];
         for (const name of changedKeys(base.overrides?.[kind], head.overrides?.[kind])) {
           const fields = changedKeys(base.overrides?.[kind]?.[name], head.overrides?.[kind]?.[name]);
-          parts.push(safe && fields.every((x) => safe.has(x)) ? T(1, kind === "agents" ? "model-change" : "routine-schedule", `${kind} ${name}: ${fields.join(", ")}`) : T(2, "overrides", `overrides ${kind} ${name}: ${fields.join(", ")}`));
+          parts.push(safe && fields.every((x) => safe.has(x)) ? T(1, kind === "agents" ? "model-change" : "routine-schedule", `${kind} ${name}: ${fields.join(", ")}`) : PANEL("overrides", `overrides ${kind} ${name}: ${fields.join(", ")}`));
         }
       }
-    } else parts.push(T(2, "instance-key", `changes ${k} in instance.yaml`));
+    } else parts.push(PANEL("instance-key", `changes ${k} in instance.yaml`));
   }
   return parts;
 }
@@ -609,9 +734,10 @@ export function sensitiveTraits(app, all) {
 }
 
 /**
- * The registry change, per app: everything apps-mcp calls sensitive is Tier 2, except the spec's one carve-out (an app whose
- * only sensitive trait is `database: warehouse`, ordinary DB provisioning: Tier 1). New secrets (after the schema's
- * additions) and an API write path are Tier 2 too. `moduleApps`: the module apps, for restricted-app lookups.
+ * The registry change, per app: everything apps-mcp calls sensitive is authority-expanding (the panel's), except the spec's
+ * one carve-out (an app whose only sensitive trait is `database: warehouse`, ordinary DB provisioning: Tier 1). New secrets
+ * (after the schema's additions) and an API write path are the panel's too. Removing an app is the reviewer's.
+ * `moduleApps`: the module apps, for restricted-app lookups.
  */
 function appsParts(base, head, moduleApps = []) {
   const list = (l) => (Array.isArray(l) ? l : []).map(normalizeApp);
@@ -619,7 +745,7 @@ function appsParts(base, head, moduleApps = []) {
   const now = new Map(list(head).map((a) => [a.name, a]));
   const all = [...now.values(), ...list(moduleApps)];
   const parts = [];
-  for (const name of [...was.keys()].filter((n) => !now.has(n))) parts.push(T(2, "app-removed", `removes app ${name}`));
+  for (const name of [...was.keys()].filter((n) => !now.has(n))) parts.push(T(1, "app-removed", `removes app ${name}`));
   for (const [name, a] of now) {
     const b = was.get(name);
     if (eq(a, b)) continue;
@@ -627,7 +753,7 @@ function appsParts(base, head, moduleApps = []) {
     const secrets = a.secrets.filter((x) => !(b?.secrets ?? []).includes(x) && !(x === "DATABASE_URL" && a.database === "warehouse"));
     const warehouseOnly = traits.length === 1 && traits[0] === "database" && a.database === "warehouse";
     const why = [...(warehouseOnly ? [] : traits), a.api && "an API write path", secrets.length && `new secrets ${secrets.join(", ")}`].filter(Boolean);
-    if (why.length) parts.push(T(2, "sensitive-app", `app ${name}: ${why.join(", ")}`));
+    if (why.length) parts.push(PANEL("sensitive-app", `app ${name}: ${why.join(", ")}`));
     else parts.push(T(1, warehouseOnly ? "app-warehouse" : "app-registry", `${b ? "changes" : "adds"} app ${name}${warehouseOnly ? " (a warehouse database)" : ""}`));
   }
   return parts;

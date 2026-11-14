@@ -45,7 +45,7 @@ describe("tiered approvals", () => {
   let n = 0;
   // The runner files with its key; the internal token alone (agents can reach it) files nothing.
   const file = async (tier: 1 | 2, action = "push", headers: Record<string, string> = { "x-reviewer-key": REVIEWER }) =>
-    (await call("POST", "/internal/approvals", { issue: "WOR-7", action, tier, reason: "r", args: { only: [{ repo: "org/app", branch: `b${++n}`, sha: "a".repeat(40) }] } }, headers)).json;
+    (await call("POST", "/internal/approvals", { issue: "WOR-7", action, tier, reason: "r", args: { only: [{ repo: "org/app", branch: `b${++n}`, sha: "a".repeat(40), patch: n.toString(16).padStart(64, "0") }] } }, headers)).json;
   const verdict = (id: string, body: object, key = REVIEWER) => call("POST", `/internal/approvals/${id}/review`, { model: "~openai/gpt-luna-latest", reason: "fine", ...body }, { "x-reviewer-key": key });
   const decide = (body: object, key: string) => call("POST", "/internal/owner/approvals/decide", body, { "x-owner-key": key });
   const pendingIds = async () => (await call("GET", "/internal/approvals?state=pending", undefined, { "x-owner-key": OWNER })).json.approvals.map((a: any) => a.id);
@@ -88,14 +88,79 @@ describe("tiered approvals", () => {
     expect((await verdict(one.id, { digest: one.digest, decision: "approve" })).json).toMatchObject({ state: "approved", decidedBy: "reviewer:~openai/gpt-luna-latest" });
   });
 
-  it("tier0 (shadow): the reviewer may only escalate, which makes it the owner's card; a reject makes the action sticky", async () => {
+  it("tier0 (shadow): the reviewer may only escalate, which makes it the owner's card; the owner's reject is their veto", async () => {
     setAutonomy("tier0");
     const one = await file(1);
     expect((await verdict(one.id, { digest: one.digest, decision: "approve" })).status).toBe(409);
     expect((await verdict(one.id, { digest: one.digest, decision: "escalate", reason: "shadow: would approve" })).json).toMatchObject({ tier: 2, review: "shadow: would approve" });
     expect(await pendingIds()).toContain(one.id);
     expect((await decide({ id: one.id, decision: "reject" }, OWNER)).json).toMatchObject({ state: "rejected", decidedBy: "owner:telegram" });
-    expect((await file(1)).tier).toBe(2); // sticky after a reject on (task, push)
+    expect((await file(1)).tier).toBe(2); // the owner's veto on (task, push)
+    setAutonomy("full");
+    const lifted = await file(2);
+    expect((await decide({ id: lifted.id, decision: "approve" }, OWNER)).json).toMatchObject({ state: "approved" });
+    expect((await file(1)).tier).toBe(1); // their later yes lifts it
+  });
+
+  it("an authority-expanding (panel) card takes the reviewer's approval only with a second reviewer of another model", async () => {
+    setAutonomy("full");
+    const panel = (await call("POST", "/internal/approvals", { issue: "WOR-7", action: "pr", tier: 1, panel: true, reason: "gate core", args: { only: [{ repo: "org/app", branch: `p${++n}`, sha: "c".repeat(40) }] } }, { "x-reviewer-key": REVIEWER })).json;
+    expect(panel).toMatchObject({ tier: 1, panel: true });
+    expect((await verdict(panel.id, { digest: panel.digest, decision: "approve" })).status).toBe(409); // one reviewer
+    expect((await verdict(panel.id, { digest: panel.digest, decision: "approve", second: "~openai/gpt-luna-latest" })).status).toBe(409); // the same model twice
+    expect((await verdict(panel.id, { digest: panel.digest, decision: "approve", second: "~z-ai/glm-flash-latest" })).json).toMatchObject({ state: "approved", decidedBy: "reviewer:~openai/gpt-luna-latest+~z-ai/glm-flash-latest" });
+    // A card the first reviewer flagged (marked before the second reviewer is asked): one reviewer's yes is refused after it.
+    const flaggedCard = (await call("POST", "/internal/approvals", { issue: "WOR-7", action: "pr", tier: 1, reason: "r", args: { only: [{ repo: "org/app", branch: `p${++n}`, sha: "9".repeat(40) }] } }, { "x-reviewer-key": REVIEWER })).json;
+    expect(flaggedCard.panel).toBe(false);
+    expect((await call("POST", `/internal/approvals/${flaggedCard.id}/panel`, { digest: flaggedCard.digest }, { "x-reviewer-key": TOKEN })).status).toBe(403);
+    expect((await call("POST", `/internal/approvals/${flaggedCard.id}/panel`, { digest: "0".repeat(40) }, { "x-reviewer-key": REVIEWER })).status).toBe(409);
+    expect((await call("POST", `/internal/approvals/${flaggedCard.id}/panel`, { digest: flaggedCard.digest }, { "x-reviewer-key": REVIEWER })).json.panel).toBe(true);
+    expect((await verdict(flaggedCard.id, { digest: flaggedCard.digest, decision: "approve" })).status).toBe(409);
+    const reject = (await call("POST", "/internal/approvals", { issue: "WOR-7", action: "pr", tier: 1, panel: true, reason: "gate core", args: { only: [{ repo: "org/app", branch: `p${++n}`, sha: "d".repeat(40) }] } }, { "x-reviewer-key": REVIEWER })).json;
+    expect((await verdict(reject.id, { digest: reject.digest, decision: "reject" })).json).toMatchObject({ state: "rejected" }); // a no needs one reviewer
+    // A reviewer's no never makes the next request the owner's.
+    expect((await call("POST", "/internal/approvals", { issue: "WOR-7", action: "pr", tier: 1, reason: "r", args: { only: [{ repo: "org/app", branch: `p${++n}`, sha: "e".repeat(40) }] } }, { "x-reviewer-key": REVIEWER })).json.tier).toBe(1);
+  });
+
+  it("the owner's no on content X holds after a yes on Y, until they approve X itself", async () => {
+    setAutonomy("full");
+    const fileArgs = async (sha: string, tier: 1 | 2 = 1) => (await call("POST", "/internal/approvals", { issue: "WOR-7", action: "merge", tier, reason: "r", args: { prs: [{ repo: "org/app", number: 9, url: "https://github.com/org/app/pull/9", head: sha.repeat(40), patch: sha.repeat(64) }] } }, { "x-reviewer-key": REVIEWER })).json;
+    const x = await fileArgs("1", 2);
+    expect((await decide({ id: x.id, decision: "reject" }, WATCHER)).json).toMatchObject({ state: "rejected" });
+    const y = await fileArgs("2", 2);
+    expect((await decide({ id: y.id, decision: "approve" }, WATCHER)).json).toMatchObject({ state: "approved" });
+    expect((await fileArgs("3")).tier).toBe(1); // other content: the reviewer's again
+    expect((await fileArgs("1")).tier).toBe(2); // X resubmitted: still the owner's
+  });
+
+  it("the owner's veto binds to the patch: a rebased X (new commits) is still theirs; no patch key fails closed", async () => {
+    setAutonomy("full");
+    const P = (c: string) => c.repeat(64);
+    const pushArgs = (sha: string, patch?: string) => ({ only: [{ repo: "org/app", branch: `rb${sha}`, sha: sha.repeat(40), ...(patch ? { patch } : {}) }] });
+    const fileP = async (args: object, tier: 1 | 2 = 1) => (await call("POST", "/internal/approvals", { issue: "WOR-8", action: "pr", tier, reason: "r", args }, { "x-reviewer-key": REVIEWER })).json;
+    const x = await fileP(pushArgs("1", P("a")), 2);
+    expect((await decide({ id: x.id, decision: "reject" }, OWNER)).json).toMatchObject({ state: "rejected" });
+    const y = await fileP(pushArgs("2", P("b")), 2);
+    expect((await decide({ id: y.id, decision: "approve" }, OWNER)).json).toMatchObject({ state: "approved" });
+    expect((await fileP(pushArgs("3", P("a")))).tier).toBe(2); // X rebased: new commit, same patch
+    expect((await fileP(pushArgs("4", P("c")))).tier).toBe(1); // other content
+    expect((await fileP(pushArgs("5"))).tier).toBe(2); // no patch key: fails closed
+  });
+
+  // A content key is lossy: it may only restrict (an owner veto), never grant. A rebased card asks again (owner, 2026-11-14).
+  it("an approved card replaced by the same change rebased never inherits its approval", async () => {
+    setAutonomy("full");
+    const P = (c: string) => c.repeat(64);
+    const pr = (sha: string, patch: string, title = "t") => call("POST", "/internal/approvals", { issue: "WOR-9", action: "pr", tier: 1, reason: "r", args: { only: [{ repo: "org/app", branch: "carry", sha: sha.repeat(40), patch }], text: { title, body: "" } } }, { "x-reviewer-key": REVIEWER }).then((r) => r.json);
+    const a = await pr("1", P("e"));
+    expect((await verdict(a.id, { digest: a.digest, decision: "approve" })).json).toMatchObject({ state: "approved" });
+    const b = await pr("2", P("e")); // rebased: new commit, same patch
+    expect(b).toMatchObject({ state: "pending", decidedBy: null });
+    expect(b.id).not.toBe(a.id);
+    const c = await pr("3", P("e"), "another title"); // the same patch, but the PR text changed: a new request
+    expect(c.state).toBe("pending");
+    const d = await pr("4", P("f"));
+    expect(d.state).toBe("pending");
   });
 
   it("a Tier 0 run is an audit row only: never claimable", async () => {

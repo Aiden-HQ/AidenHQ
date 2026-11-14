@@ -4,9 +4,10 @@
 /**
  * What one branch entry carries. `base` is the trusted base the runner read in its own clone before tiering (bindBase): the
  * card keeps it, so the approval hands it back, the runner rechecks that the branch still leaves GitHub's default branch
- * there, and records it to replay the approved commits from later.
+ * there, and records it to replay the approved commits from later. `patch` is the change's content key (git.mjs patchKey):
+ * the owner's veto binds to it, whatever the branch is called or rebased onto.
  */
-export const BRANCH_CARD_FIELDS = ["repo", "branch", "sha", "base"];
+export const BRANCH_CARD_FIELDS = ["repo", "branch", "sha", "base", "patch"];
 
 /** A push or PR card's args: the branches at their exact commits, plus the PR text and the product repo's merge request. */
 export function branchCardArgs(branches, { text, merge } = {}) {

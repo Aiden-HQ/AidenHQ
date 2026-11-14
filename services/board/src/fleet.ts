@@ -286,7 +286,7 @@ async function requestDeploy(pc: Paperclip, caller: Agent, a: z.infer<typeof Con
   if (!c.sha || !/^[0-9a-f]{40}$/.test(c.sha)) throw new Refused(`refused: ${c.error ?? `no commit ${a.sha} on ${app}'s branch`}`);
   // Written by whoever made the commit: shown only in its own labelled field, printable and capped, never in the headline.
   const subject = String(c.subject ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 120);
-  // The reviewer's (Tier 1), unless it touches a migration or schema (fail closed) or is too large to read whole (Tier 2).
+  // The reviewer's (Tier 1); refused when it is too large to read whole.
   // Computed here from apps-mcp's diff; nothing an agent sends sets it.
   const diff = String(c.diff ?? "");
   // The duplicate-card guard: the app already runs this commit, healthy. No card; the evidence goes back to the agent (a
@@ -295,13 +295,18 @@ async function requestDeploy(pc: Paperclip, caller: Agent, a: z.infer<typeof Con
     const running = await appsApi<{ name: string; sha?: string; healthy?: boolean }[]>("/internal/status").then((apps) => apps.find((x) => x.name === app), () => undefined);
     if (running?.sha === c.sha && running.healthy) return { ok: true, reason: ALREADY_APPLIED, done: `no card filed: ${app} already runs ${c.sha.slice(0, 12)} and is healthy (${ALREADY_APPLIED}). Nothing to deploy; say so in one line` };
   }
+  // Too large (or missing) to review is friction, not the owner's: back to the agent (owner, 2026-11-14). A migration or
+  // schema change can lose data: the panel's (two reviewers, both approving; the policy escalates a destructive one).
+  if (c.truncated || !diff) throw new Refused(`refused: the change to ${app} since its running commit is too large (or couldn't be read) to review; deploy it in smaller steps, or try again`);
   // The tier on its merits (the base tier, for batching), then the autonomy override.
-  const [baseTier, baseReason, baseCode] = c.truncated || !diff ? [2 as const, "the change is too large (or missing) to review", "deploy-unreviewable"] : touchesMigrations(diff) ? [2 as const, "it touches a migration or schema file", "deploy-migration"] : [1 as const, "a stateful deploy with no migration or schema change", "deploy-stateful"];
+  const migration = touchesMigrations(diff);
+  const [baseTier, baseReason, baseCode] = migration ? [1 as const, "a stateful deploy that touches a migration or schema file", "deploy-migration"] : [1 as const, "a stateful deploy with no migration or schema change", "deploy-stateful"];
   const [tier, reason, reasonCode] = autonomy() === "off" ? [2 as const, "autonomy is off", "autonomy-off"] : [baseTier, baseReason, baseCode];
   const rec = store.approvals.request({
     tier,
     reason,
     reasonCode,
+    panel: migration,
     requesterId: caller.id,
     baseTier,
     issueId: task.id,

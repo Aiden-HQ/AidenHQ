@@ -13,7 +13,7 @@ import { branchCardArgs } from "./cards.mjs";
 import { adoptRun, boxLastFile, codexHome, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.mjs";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
-import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, setGitAuth, setUntrusted } from "./git.mjs";
+import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg } from "./github-app.mjs";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.mjs";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.mjs";
@@ -31,7 +31,7 @@ import { State } from "./state.mjs";
 import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.mjs";
 import { authorize } from "./authorize.mjs";
 import YAML from "yaml";
-import { classify, dependabotCommits, highest, normalizeApp, routineCap, sensitiveTraits, stickyFrom } from "./tiers.mjs";
+import { CODE_REJECTS, MAX_REJECTS, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
 import { LUNA, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
 import { GRADE_SCHEMA, gather, grade, gradeNote, template } from "./grade.mjs";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.mjs";
@@ -426,13 +426,14 @@ const designReviewer = () => Object.entries(readGrants()?.agents ?? {}).find(([,
 async function fileDesignReviewTask(pr, { waits = true } = {}) {
   const reviewer = designReviewer();
   if (!reviewer) return;
-  const marker = `design-review:${pr.repo.toLowerCase()}/${pr.number}@${pr.head}`;
+  // `again`: no verdict came within its time, so it is asked once more (its own task), before the merge is parked.
+  const marker = `design-review:${pr.repo.toLowerCase()}/${pr.number}@${pr.head}${pr.again ? "#again" : ""}`;
   if (state.get(`asked:${marker}`)) return;
-  const title = `Design review: ${pr.repo}#${pr.number}`;
+  const title = `Design review${pr.again ? " (asked again)" : ""}: ${pr.repo}#${pr.number}`;
   const then = waits
     ? `its checks are green on head \`${pr.head}\`, and its merge waits for your \`design-review\` verdict on that exact head`
     : `${cfg.selfName} approved its merge at head \`${pr.head}\`, which doesn't wait for you, so your \`design-review\` verdict on that head says whether it needs a follow-up fix`;
-  const after = waits ? ` With no verdict ${DESIGN_REVIEW_HOURS} hours after its checks went green, the merge goes to ${cfg.selfName}.` : "";
+  const after = waits ? ` With no verdict ${DESIGN_REVIEW_HOURS} hours after ${pr.again ? "this request" : "its checks went green"}, ${pr.again ? "the merge is parked" : "you are asked once more, and then the merge is parked"}.` : "";
   const prKey = `design-review:${pr.repo.toLowerCase()}/${pr.number}`;
   const earlier = state.get(`reviewed:${prKey}`);
   const how = earlier
@@ -495,29 +496,11 @@ async function cardDesignReviews(prs) {
     if (!pr || pr.state !== "OPEN" || pr.headRefOid !== head || !merges.touchesUi(await prFiles(p.repo, p.number).catch(() => null))) continue;
     const dr = merges.designReview(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
     if (dr.state !== "success" && dr.state !== "failure") await fileDesignReviewTask({ ...p, head }, { waits: false });
-    said.push(`${p.url} ${DESIGN_SAID[dr.state]}${dr.state === "failure" && dr.description ? ` ("${dr.description}")` : ""}`);
+    said.push(`${p.url} ${DESIGN_SAID[dr.state]}`);
   }
   return said.length ? `\n\nDesign review (the merge doesn't wait for it): ${said.join("; ")}.` : "";
 }
 const DESIGN_REVIEW_HOURS = merges.DESIGN_REVIEW.minutes / 60;
-
-/**
- * UI PRs whose design review never came: tiered again with that fact (tiers.mjs design-review-missing, Tier 2) and put on the
- * owner's card. Approved, the card's own queue merges without waiting for the review again.
- */
-async function escalateDesignReview(issueId, prs) {
-  const issue = await pc.issue(issueId);
-  const states = (await mergeTierState(prs)).map((s) => ({ ...s, designReviewOverdue: true }));
-  const tiers = await Promise.all(states.map((s) => tierFor(issue, "merge", { prs: [s] })));
-  const said = prs.filter((_, i) => tiers[i].reject || tiers[i].rule === "checks-not-green");
-  if (said.length) await pc.comment(issueId, said.map((p) => `**Not merged:** ${tiers[prs.indexOf(p)].reason}.`).join("\n"));
-  const carded = prs.filter((p) => !said.includes(p));
-  if (!carded.length) return;
-  const ts = carded.map((p) => tiers[prs.indexOf(p)]);
-  const reason = ts.map((t) => t.reason).join("; ");
-  const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(({ repo, number, url, head }) => ({ repo, number, url, head, noReview: true })) }, tier: 2, reason, baseTier: baseOf(...ts), rule: highest(ts).rule });
-  await pc.comment(issueId, `The merge waits for ${cfg.selfName}'s tap (${a.id}): ${reason}.`);
-}
 
 /** The Platform Engineer's task for one Dependabot PR: the runner's own fixed text (the PR's own text is never in it). */
 async function fileDependabotTask(repo, pr, pe) {
@@ -546,7 +529,7 @@ async function wakeForRebase(issueId, pr, why, main) {
   const issue = await pc.issue(issueId);
   const what = why === "conflict"
     ? `${pr.url} now conflicts with \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`).`
-    : `${pr.url}'s checks failed (${redChecks(pr).join(", ")}) while it is behind \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`, green): perhaps only because \`${main.name}\` moved.`;
+    : `${pr.url}'s checks failed (\`gh pr checks ${pr.url}\` names them) while it is behind \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`, green): perhaps only because \`${main.name}\` moved.`;
   if (["done", "cancelled"].includes(issue.status)) {
     const once = `rebase-note:${pr.url.toLowerCase()}`;
     if (!state.get(once)) {
@@ -796,7 +779,7 @@ function requestAutoMerge(issue, prs, gap) {
 }
 
 /** A queue entry as the board takes it: the fields its merge args schema has, never the runner's own flags (`ui`). */
-const cardPr = ({ repo, number, url, head, noReview }) => ({ repo, number, url, ...(head ? { head } : {}), ...(noReview ? { noReview } : {}) });
+const cardPr = ({ repo, number, url, head, noReview, patch }) => ({ repo, number, url, ...(head ? { head } : {}), ...(noReview ? { noReview } : {}), ...(patch ? { patch } : {}) });
 
 async function runAutoMerges() {
   const box = JSON.parse(state.get("auto_merges") || "{}");
@@ -834,7 +817,7 @@ async function runAutoMerges() {
       // flag is set either way, so a fleet without one merges as before. `ui` is the queue's own flag, never the board's: the
       // card's args are its schema, which knows only repo, number, url, head and noReview.
       const reviewer = designReviewer();
-      const bound = ready.map(([p, s]) => ({ ...p, ui: Boolean(reviewer) && merges.touchesUi(s.files) }));
+      const bound = ready.map(([p, s]) => ({ ...p, ...(s.patch ? { patch: s.patch } : {}), ui: Boolean(reviewer) && merges.touchesUi(s.files) }));
       // Each PR on its own (owner, 2026-11-12): one red or carded PR doesn't hold the others back.
       const tiers = off ? ready.map(() => ({ tier: 2, rule: "autonomy-off", reason: "autonomy is off" })) : await Promise.all(ready.map(([, s]) => tierFor(issue, "merge", { prs: [s] })));
       // The base tier on its merits, also with autonomy off (best effort there: unknown on a failed read).
@@ -858,13 +841,13 @@ async function runAutoMerges() {
         await recordAuto(issue, "merge", { prs: zero.map(cardPr) }, "", { rule: zt[0].rule, reason: zt.map((t) => t.reason).join("; ") }, { ok: true, text: `Merging ${zero.map((p) => p.url).join(", ")}, each once green on the head shown.` });
       }
       if (busy || !rest.length) continue;
-      const said = rest.filter(([, t]) => t.reject || t.rule === "checks-not-green");
-      if (said.length) await pc.comment(issueId, said.map(([, t]) => `**Not merged:** ${t.reason}.${t.reject ? "" : " Fix it and publish again: the merge is requested again then."}`).join("\n"));
+      const said = rest.filter(([, t]) => t.reject);
+      if (said.length) await pc.comment(issueId, said.map(([, t]) => `**Not merged:** ${t.reason}.${["checks-not-green", "no-checks", "head-moved"].includes(t.rule) ? " The merge is requested again when you publish again." : ""}`).join("\n"));
       const carded = rest.filter(([p]) => !said.some(([s]) => s === p));
       if (carded.length) {
         const tier = carded.some(([, t]) => t.tier !== 1) ? 2 : 1;
         const reason = carded.map(([, t]) => t.reason).join("; ");
-        const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(([p]) => cardPr(p)), ...(want.gap !== undefined ? { gap: want.gap } : {}) }, tier, reason, baseTier: baseOf(...carded.map(([, , b]) => b)), rule: highest(carded.map(([, t]) => t)).rule });
+        const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(([p]) => cardPr(p)), ...(want.gap !== undefined ? { gap: want.gap } : {}) }, tier, reason, baseTier: baseOf(...carded.map(([, , b]) => b)), rule: highest(carded.map(([, t]) => t)).rule, panel: carded.some(([, t]) => t.panel) });
         await pc.comment(issueId, `The merge waits for ${a.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${a.id}): ${reason}.`);
       }
     } catch (err) {
@@ -934,14 +917,9 @@ async function advanceMerges({ minute = true } = {}) {
     }
     // A head that is neither the runner's nor GitHub's update of it: requested again, so it is tiered anew.
     if (step.retier?.length) requestAutoMerge({ id: issueId }, step.retier);
-    // A UI PR now waiting on its design review: the reviewer gets a task for that head. None in time: the owner's card.
+    // A UI PR now waiting on its design review: the reviewer gets a task for that head (and, none in time, once more; then the
+    // queue parks it with a note).
     for (const pr of step.wake ?? []) await fileDesignReviewTask(pr).catch((err) => log("design review task failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 300) }));
-    if (step.escalate?.length) {
-      await escalateDesignReview(issueId, step.escalate).catch(async (err) => {
-        log("design review escalation failed", { issue: queue.identifier, err: String(err.message ?? err).slice(0, 300) });
-        await pc.comment(issueId, `**Not merged:** ${step.escalate.map((p) => p.url).join(", ")} got no design review in time, and the card for ${cfg.selfName} couldn't be filed. Request the merge again to retry.`).catch(() => {});
-      });
-    }
     // Finished while the task's run goes on: said now, but the task's status stays the run's until it ends.
     if (step.done && running.has(issueId)) step.queue.held = step.say;
     saveMerges(issueId, step.queue);
@@ -1452,11 +1430,11 @@ const waitingFor = (a, issue) =>
  * File (or find, when the same request is already open) the approval record for one exact request. The board writes the
  * card from `args`; `diff` (apply only) is what the user reads, and applyApproved() rechecks it before landing.
  */
-async function fileApproval(issue, { action, args, diff, tier = 2, reason = "", baseTier, rule }) {
+async function fileApproval(issue, { action, args, diff, tier = 2, reason = "", baseTier, rule, panel = false }) {
   if (!boardApi) throw new UserError("Not done: approvals need the board, which isn't set up here.");
   // rule: the classifier's rule, the card's reason code (the board keeps it only in kebab-case).
-  const a = await boardApi.post("/internal/approvals", { issue: issue.identifier, action, args, ...(diff ? { diff } : {}), ...(tier === 1 ? { tier } : {}), ...(reason ? { reason: reason.slice(0, 1000) } : {}), ...(baseTier !== undefined ? { baseTier } : {}), ...(rule ? { rule } : {}) }, runnerKey());
-  log("approval filed", { issue: issue.identifier, approval: a.id, action, state: a.state, tier: a.tier });
+  const a = await boardApi.post("/internal/approvals", { issue: issue.identifier, action, args, ...(diff ? { diff } : {}), ...(tier === 1 ? { tier } : {}), ...(reason ? { reason: reason.slice(0, 1000) } : {}), ...(baseTier !== undefined ? { baseTier } : {}), ...(rule ? { rule } : {}), ...(panel && tier === 1 ? { panel: true } : {}) }, runnerKey());
+  log("approval filed", { issue: issue.identifier, approval: a.id, action, state: a.state, tier: a.tier, panel: Boolean(panel) });
   return a;
 }
 
@@ -1522,8 +1500,9 @@ function connectionTags() {
 }
 
 /**
- * What every tier check needs: the requester (looked up, never claimed), the task chain, the sticky rejects (of `action`, and
- * of the `also` actions the request carries: a product PR card that also merges is sticky after a rejected merge too).
+ * What every tier check needs: the requester (looked up, never claimed), the task chain, and the task's approval records
+ * (earlier decisions of `action` and of the `also` actions the request carries: a product PR card that also merges counts
+ * a rejected merge too; tiers.mjs priorDecisions).
  */
 async function commonTierState(issue, action, also = []) {
   const full = await pc.issue(issue.id);
@@ -1544,7 +1523,8 @@ async function commonTierState(issue, action, also = []) {
     // Only these write to the product repo below Tier 2; an Engineer's product push stays the owner's.
     requester: { platform: key === "fleet-engineer" || (creator?.roles ?? []).includes("architect") || ownerMade },
     taskStatus: full.status,
-    sticky: stickyFrom(records, action, also),
+    records,
+    also,
     // The cap of the routine whose run started this chain (its `autonomy`, in the grants table by Paperclip routine id).
     routineAutonomy: await traceOrigins(full).then(({ issues, complete }) => routineCap(issues, complete, grants?.routines)),
     connections: connectionTags(),
@@ -1565,7 +1545,56 @@ async function branchTierState(r, sha, bound) {
   const files = base ? (await git(r.path, "diff", "--no-renames", "--name-only", base, sha).catch(() => null))?.split("\n").filter(Boolean) ?? null : null;
   const app = appsRegistry().all.find((a) => String(a.repo).toLowerCase() === r.repo.toLowerCase());
   const texts = sameRepo(r.repo, cfg.productRepo) && files ? await productTexts(files, (rev, f) => git(r.path, "show", `${rev}:${f}`), base, sha) : undefined;
-  return { repo: r.repo, branch: r.branch, defaultBranch: r.defaultBase, deployBranch: app?.branch ?? (app ? "main" : undefined), empty, files: empty ? [] : files, ...(texts ? { texts } : {}), base, path: r.path, sha };
+  const ciTemplate = files?.some((f) => /(^|\/)\.github\//.test(f)) && inAgentsOrg(r.repo) ? await ciTemplateCopy(r.repo, sha, { from: r.path }) : undefined;
+  // The change's content key (the owner's veto binds to it), in the runner's own clone; unread, it fails closed against a veto.
+  const patch = await trustedPatch(r.repo, sha, { from: r.path });
+  return { repo: r.repo, branch: r.branch, ...(patch ? { patch } : {}), defaultBranch: r.defaultBase, deployBranch: app?.branch ?? (app ? "main" : undefined), empty, files: empty ? [] : files, ...(texts ? { texts } : {}), ...(ciTemplate ? { ciTemplate } : {}), base, path: r.path, sha };
+}
+
+/**
+ * A commit's content key (git.mjs patchKey) computed in the runner's own clone, never the agent's workspace: the commit is
+ * sent there from the workspace `from` (git's transfer hashes every object) or fetched as PR `pr`'s head, and used only if
+ * it is exactly `sha`; keyed from where it leaves GitHub's default branch. Undefined when anything fails.
+ */
+async function trustedPatch(slug, sha, { from, pr } = {}) {
+  try {
+    if (!/^[0-9a-f]{40}$/.test(sha ?? "")) return undefined;
+    const main = await githubDefault(slug);
+    return await withTrusted(slug, [main], async (path, [tip], out) => {
+      if (from) await git(from, "push", "--quiet", "--no-verify", "--force", path, `${sha}:${out}`);
+      else await git(path, "fetch", "--quiet", "origin", `+refs/pull/${Number(pr)}/head:${out}`);
+      return patchKeyAt(path, out, sha, tip);
+    });
+  } catch (err) {
+    log("patch key unread", { repo: slug, sha, err: String(err.message ?? err).slice(0, 200) });
+    return undefined;
+  }
+}
+
+const inAgentsOrg = (repo) => Boolean(cfg.agentsOrg) && String(repo).split("/")[0].toLowerCase() === cfg.agentsOrg.toLowerCase() && !sameRepo(repo, cfg.apply?.repo ?? "") && !sameRepo(repo, cfg.productRepo ?? "");
+
+/**
+ * Whether commit `sha` of `slug` carries exactly the product's CI template as its `.github/` (tiers.mjs `ciTemplate`, Tier 0):
+ * its `.github` tree, read in the runner's own clone (sent there from the workspace `from`, or fetched from GitHub's PR head
+ * `pr`: git's transfer hashes every object), is the same tree object as `modules/core/templates/ci/.github` at the product
+ * commit this host runs (the runner's own checkout's HEAD, never anything an agent wrote). Equal trees: the same paths, modes
+ * and bytes, so no symlink, no extra or missing workflow file. False on anything else, or when it can't be read.
+ */
+async function ciTemplateCopy(slug, sha, { from, pr } = {}) {
+  try {
+    if (!/^[0-9a-f]{40}$/.test(sha ?? "")) return false;
+    const want = await git(REPO_ROOT, "rev-parse", "--verify", "HEAD:modules/core/templates/ci/.github");
+    const main = await githubDefault(slug);
+    return await withTrusted(slug, [main], async (path, _, out) => {
+      if (from) await git(from, "push", "--quiet", "--no-verify", "--force", path, `${sha}:${out}`);
+      else await git(path, "fetch", "--quiet", "origin", `+refs/pull/${Number(pr)}/head:${out}`);
+      if ((await git(path, "rev-parse", "--verify", `${out}^{commit}`)) !== sha) return false;
+      return treeIs(path, sha, ".github", want);
+    });
+  } catch (err) {
+    log("ci template check failed", { repo: slug, sha, err: String(err.message ?? err).slice(0, 200) });
+    return false;
+  }
 }
 
 /**
@@ -1619,7 +1648,11 @@ async function mergeTierState(prs) {
       // A product PR that is Dependabot's (its author and every commit, from the API): every changed file is read for tiering by content.
       const dependabot = sameRepo(p.repo, cfg.productRepo) && files && pr ? await dependabotPr(p.repo, p.number, pr).catch(() => false) : false;
       const texts = sameRepo(p.repo, cfg.productRepo) && files && pr ? await productMergeTexts(p.repo, files, pr, dependabot).catch(() => ({})) : undefined;
-      return { repo: p.repo, number: p.number, url: p.url, files, ...(texts ? { texts } : {}), checks, headMatches: Boolean(p.head) && pr?.headRefOid === p.head, ownHead, sensitive, ...(dependabot ? { dependabot } : {}) };
+      const ciTemplate = files?.some((f) => /(^|\/)\.github\//.test(f)) && inAgentsOrg(p.repo) && pr?.headRefOid === p.head ? await ciTemplateCopy(p.repo, p.head, { pr: p.number }) : undefined;
+      // The PR's content key at exactly the card's head, fetched into the runner's own clone (the owner's veto binds to it);
+      // a head that moved or can't be read gives none, which fails closed against a veto.
+      const patch = pr && p.head ? await trustedPatch(p.repo, p.head, { pr: p.number }) : undefined;
+      return { repo: p.repo, number: p.number, url: p.url, head: p.head, ...(patch ? { patch } : {}), files, ...(texts ? { texts } : {}), ...(ciTemplate ? { ciTemplate } : {}), checks, headMatches: Boolean(p.head) && pr?.headRefOid === p.head, ownHead, sensitive, ...(dependabot ? { dependabot } : {}) };
     }),
   );
 }
@@ -1664,15 +1697,17 @@ async function dependabotPr(repo, number, pr) {
 async function applyTierState(b, bump, baseRev = b.base) {
   const paths = [...new Set([...b.files, ...definitionsOf(b.files)])];
   const at = async (rev) => Object.fromEntries((await Promise.all(paths.map(async (p) => [p, await git(b.r.path, "show", `${rev}:${p}`).catch(() => undefined)]))).filter(([, t]) => t !== undefined));
-  return { files: b.files, base: await at(baseRev), head: await at(b.sha), pin: bump && !bump.error ? { forward: Boolean(bump.forward), back: Boolean(bump.back) } : null };
+  return { sha: b.sha, files: b.files, base: await at(baseRev), head: await at(b.sha), pin: bump && !bump.error ? { forward: Boolean(bump.forward), back: Boolean(bump.back) } : null };
 }
 
 /** The tier of a request now: classify() over the common state plus the action's own. Logged. */
 async function tierFor(issue, action, own, also = []) {
   const common = await commonTierState(issue, action, also);
-  const t = classify(action, { ...common, ...own });
-  log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject) });
-  return { ...t, full: common.full };
+  const s = { ...common, ...own };
+  const t = classify(action, s);
+  log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject), panel: Boolean(t.panel) });
+  // The reviewer's earlier rejections on this task, attached to a fresh review of the changed request.
+  return { ...t, full: common.full, previous: priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s)).findings };
 }
 
 /**
@@ -1781,36 +1816,69 @@ async function runReviews() {
   }
 }
 
+/** Transient review failures (the model gateway, GitHub on a bad minute): card id → { n, next }. Retried with backoff, then refused. */
+const reviewRetries = new Map();
+const REVIEW_TRIES = 6;
+
 async function reviewOne(a, mode) {
+  const wait = reviewRetries.get(a.id);
+  if (wait && Date.now() < wait.next) return;
   const issue = await pc.issue(a.issueId);
   const board = BOARD_APPLIED.includes(a.action);
   let input;
   try {
-    input = board ? { tier: 1, rule: `${a.action}`, reason: a.reason, ...boardCardInput(a) } : await currentTier(issue, a, { withDiff: true });
-    // The board files deploy_app and app_run at Tier 1 without classify(): a routine's cap (tier0 or off) still makes them the owner's.
-    const cap = board ? (await commonTierState(issue, a.action)).routineAutonomy : undefined;
-    if (cap && cap !== "full") input = { tier: 2, rule: "routine-autonomy", reason: `a routine's run started this task and that routine's autonomy is ${cap}` };
+    if (board) {
+      // The board files deploy_app and app_run at Tier 1 without classify(): a routine's cap (tier0 or off) still makes them
+      // the owner's, and earlier decisions on the task count as for any request (the card's digest is its content).
+      const common = await commonTierState(issue, a.action);
+      const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }));
+      const veto = priorPart(prior);
+      // The board's own panel flag (a deploy touching a migration or schema): two reviewers, as the board requires.
+      input = veto ?? { tier: 1, rule: `${a.action}`, reason: a.reason, previous: prior.findings, panel: a.panel === true, ...boardCardInput(a) };
+      if (common.routineAutonomy && common.routineAutonomy !== "full") input = { tier: 2, rule: "routine-autonomy", reason: `a routine's run started this task and that routine's autonomy is ${common.routineAutonomy}` };
+    } else input = await currentTier(issue, a, { withDiff: true });
   } catch (err) {
-    input = { error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300) };
+    input = { error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300), lasting: err instanceof UserError };
   }
-  const v = input.error
-    ? { decision: "escalate", code: "check_failed", reason: `couldn't check the change (${input.error})`, model: LUNA }
-    : input.reject || input.tier > 1
-      ? { decision: "escalate", code: "tier_raised", reason: `code now puts it at Tier 2: ${input.reason}`, model: LUNA }
-      : await review({
-          card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
-          diff: input.diff,
-          files: input.files,
-          chain: await prRequest(await pc.issue(issue.id)).catch(() => ""),
-          requesterModel: state.task(issue.id)?.engine?.model ?? "",
-          ask: reviewerAsk(),
-        });
+  let v = input.error
+    ? input.lasting
+      ? { decision: "reject", code: "refused_by_code", reason: `${input.error}. Ask again.`, model: LUNA }
+      : { decision: "escalate", code: "reviewer_failed", reason: `couldn't check the change (${input.error})`, model: LUNA }
+    : input.reject
+      ? { decision: "reject", code: "refused_by_code", reason: `${input.reason}.`, model: LUNA }
+      : input.tier > 1
+        ? { decision: "escalate", code: "tier_raised", reason: `code now puts it at Tier 2: ${input.reason}`, model: LUNA }
+        : await review({
+            card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
+            diff: input.diff,
+            files: input.files,
+            chain: await prRequest(await pc.issue(issue.id)).catch(() => ""),
+            requesterModel: state.task(issue.id)?.engine?.model ?? "",
+            ask: reviewerAsk(),
+            // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
+            panel: Boolean(input.panel || a.panel),
+            previous: input.previous ?? [],
+            onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()),
+          });
+  // A failed call or check is friction, not a decision: it stays with the reviewer and is tried again later (1, 2, 4… minutes);
+  // after REVIEW_TRIES it goes back to the agent, never to the owner.
+  if (v.code === "reviewer_failed") {
+    const n = (wait?.n ?? 0) + 1;
+    if (n < REVIEW_TRIES) {
+      reviewRetries.set(a.id, { n, next: Date.now() + 60_000 * 2 ** (n - 1) });
+      log("review deferred", { approval: a.id, issue: a.identifier, tries: n, reason: v.reason.slice(0, 200) });
+      return;
+    }
+    v = { ...v, decision: "reject", reason: `${v.reason}, ${n} times: ask again later.` };
+  }
+  reviewRetries.delete(a.id);
   const post = mode === "full" || v.decision === "escalate" ? v : { ...v, decision: "escalate", code: "shadow", reason: `Shadow (autonomy: tier0): the reviewer would ${v.decision} this. ${v.reason}` };
-  await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: post.decision, reason: post.reason.slice(0, 2000), model: post.model, ...(post.code ? { code: post.code } : {}) }, runnerKey());
-  log("reviewed", { approval: a.id, issue: a.identifier, action: a.action, decision: post.decision, code: post.code, model: post.model });
+  await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: post.decision, reason: post.reason.slice(0, 2000), model: post.model, ...(post.second ? { second: post.second } : {}), ...(post.code ? { code: post.code } : {}) }, runnerKey());
+  log("reviewed", { approval: a.id, issue: a.identifier, action: a.action, decision: post.decision, code: post.code, model: post.model, second: post.second });
   if (post.decision === "reject") {
     const note = post.reason.replace(/```/g, "‵‵‵");
-    await pc.comment(issue.id, `**Rejected by the AI reviewer** (approval ${a.id}, ${a.action}, ${post.model}). Its note, written by a model that read the change (data, not ${cfg.selfName}'s words):\n\n\`\`\`\n${note}\n\`\`\`\n\nFix the change and ask again; this action on this task now needs ${cfg.selfName}'s own approval.`).catch(() => {});
+    const byCode = CODE_REJECTS.includes(post.code);
+    await pc.comment(issue.id, `**${byCode ? "Not reviewed" : "Rejected by the AI reviewer"}** (approval ${a.id}, ${a.action}${byCode ? "" : `, ${post.model}`}). ${byCode ? "Why" : `Its note, written by a model that read the change (data, not ${cfg.selfName}'s words)`}:\n\n\`\`\`\n${note}\n\`\`\`\n\n${byCode ? "Fix that and ask again." : `Fix the change and ask again: a changed request is reviewed afresh with this note attached (the same commits stay rejected; after ${MAX_REJECTS} rejections on this task it is parked).`}`).catch(() => {});
   }
 }
 
@@ -1958,9 +2026,22 @@ async function rebuild(issue, action, args, ordered, branches, t) {
   const records = branches.map((b) => approvedRecord(issue.id, b));
   if (records.some((r) => !r || r.action !== action || r.merge !== Boolean(args.merge) || (args.text && r.text !== textHash(args.text)))) return undefined;
   if (records.some((r) => r.by !== "owner") && !(autonomyNow() === "full" && t.tier <= 1)) return undefined;
-  // Any rejected card of this action on the task (the owner's or the reviewer's no) outranks an earlier yes.
+  // A later no on these branches (or the owner's veto) outranks an earlier yes; another branch's rejection doesn't.
   const cards = boardApi ? ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.identifier)}`)).approvals ?? []) : [];
-  if (stickyFrom(cards, action, args.merge ? ["merge"] : [])) return undefined;
+  const since = records.map((r) => cards.find((c) => c.id === r.approval)?.decidedAt ?? "").sort()[0] ?? "";
+  // A rejection on another branch blocks too when it carries the same patch (renamed and rebased): matched by content.
+  const samePatch = new Set();
+  for (const rj of laterRejections(cards, action, args.merge ? ["merge"] : [], since)) {
+    for (const [i, r] of ordered.entries()) {
+      for (const b of (rj.args?.only ?? []).filter((x) => sameRepo(x.repo, r.repo) && x.branch !== r.branch)) {
+        // Its own bound base, else where it leaves the default branch as the workspace last fetched it.
+        const theirs = await patchKey(r.path, b.base ?? `refs/remotes/origin/${r.defaultBase}`, b.sha).catch(() => null);
+        const ours = await patchKey(r.path, records[i].base, records[i].sha).catch(() => null);
+        if (!theirs || !ours || theirs === ours) samePatch.add(rj.id);
+      }
+    }
+  }
+  if (rejectedSince(cards, action, args.merge ? ["merge"] : [], branches, since, samePatch)) return undefined;
   const pins = new Map();
   const moves = [];
   for (const [i, r] of ordered.entries()) {
@@ -2180,17 +2261,22 @@ async function runApprovals() {
 
 /** One claimed record: run it and report the outcome on the card and the task. */
 async function runClaimed(claimed) {
-  // The AI reviewer approved it: recompute the tier just before running. If it rose (or can't be checked), this
-  // record runs nothing and a fresh card goes to the owner.
+  // The AI reviewer approved it: recompute the tier just before running. Refused by code now (it moved, say): it runs
+  // nothing and the agent is told. Owner's now (autonomy off, a veto): a fresh card for the owner. The panel's now while one
+  // reviewer approved it, or not checkable this minute: a fresh card for the reviewers.
   if (claimed.decidedBy?.startsWith("reviewer:")) {
     const issue = await pc.issue(claimed.issueId);
     const t =
       autonomyNow() !== "full"
         ? { tier: 2, reason: "autonomy is no longer full" }
-        : await currentTier(issue, claimed).catch((err) => ({ tier: 2, reason: `couldn't recheck it (${String(err.message ?? err).slice(0, 200)})` }));
-    if (t.reject || t.tier > 1) {
-      const refiled = await fileApproval(issue, { action: claimed.action, args: claimed.args, diff: claimed.action === "apply" ? claimed.details : undefined, baseTier: t.rule ? baseOf(t) : undefined, rule: t.rule }).catch(() => undefined);
-      const text = `Not run: since the reviewer approved it, code puts it at Tier 2 (${t.reason}).${refiled ? ` ${cfg.selfName} decides on a new card (${refiled.id}).` : ""}`;
+        : await currentTier(issue, claimed).catch((err) => (err instanceof UserError ? { reject: true, tier: 2, reason: err.message } : { tier: 1, rule: "recheck", reason: `couldn't recheck it (${String(err.message ?? err).slice(0, 200)}), so it is reviewed again` }));
+    const panelMissing = (t.panel || claimed.panel) && !claimed.decidedBy.includes("+");
+    if (t.reject || t.tier > 1 || panelMissing || t.rule === "recheck") {
+      const tier = t.reject || t.tier > 1 ? 2 : 1;
+      const refiled = t.reject ? undefined : await fileApproval(issue, { action: claimed.action, args: claimed.args, diff: claimed.action === "apply" ? claimed.details : undefined, tier, reason: t.reason, baseTier: t.rule ? baseOf(t) : undefined, rule: t.rule, panel: Boolean(t.panel) }).catch(() => undefined);
+      const text = t.reject
+        ? `Not run: since the reviewer approved it, code refuses it (${t.reason}). Ask again.`
+        : `Not run yet: ${panelMissing ? "it is authority-expanding now, so a second reviewer must approve it too" : tier === 2 ? `since the reviewer approved it, code puts it at Tier 2 (${t.reason})` : t.reason}.${refiled ? ` A new card (${refiled.id}) goes to ${tier === 2 ? cfg.selfName : "the reviewers"}.` : ""}`;
       log("tier rose before running", { approval: claimed.id, issue: claimed.identifier, reason: t.reason });
       queueOutcome(claimed.id, claimed.nonce, { ok: false, text });
       await pc.comment(claimed.issueId, text).catch(() => {});
@@ -2269,6 +2355,9 @@ async function agentPublish(ctx, command, args) {
         for (const [i, r] of ordered.entries()) {
           const base = await bindBase(r, branches[i].sha);
           if (base) branches[i].base = base;
+          // The change's content key on the card (the owner's veto binds to it, however the branch is renamed or rebased).
+          const patch = await trustedPatch(r.repo, branches[i].sha, { from: r.path });
+          if (patch) branches[i].patch = patch;
         }
         // The card's args, built from the branches as bound: the board's schema decides what a card may carry (cards.mjs).
         const cardArgs = branchCardArgs(branches, { text, merge });
@@ -2295,7 +2384,7 @@ async function agentPublish(ctx, command, args) {
           carried = { ...built, args: { ...cardArgs, only: branches.map((b, i) => ({ ...b, sha: built.pins.get(pinKey(b.repo, b.branch)), base: built.moves[i].base })) } };
           return built.pins;
         }
-        const a = await fileApproval(ctx.issue, { action: command, args: cardArgs, tier: t.tier, reason: t.reason, baseTier: baseOf(computed), rule: off ? "autonomy-off" : t.rule });
+        const a = await fileApproval(ctx.issue, { action: command, args: cardArgs, tier: t.tier, reason: t.reason, baseTier: baseOf(computed), rule: off ? "autonomy-off" : t.rule, panel: Boolean(t.panel) });
         throw new AwaitingApproval(waitingFor(a, ctx.issue));
       },
     });
@@ -2407,7 +2496,7 @@ async function showFleetDiff(issue, workspace) {
   if (bump?.error) return `**Can't be applied:** ${bump.error}.`;
   // The base tier on its merits, also with autonomy off (best effort there: unknown on a failed read).
   const base = mode === "off" ? await applyTierState(b, bump).then((s) => tierFor(issue, "apply", s)).catch(() => null) : tier;
-  const card = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), tier: tier?.tier === 1 ? 1 : 2, reason: tier?.reason, baseTier: baseOf(base), rule: tier?.rule ?? "autonomy-off" }).catch((err) => ({ error: String(err.message ?? err).slice(0, 300) }));
+  const card = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), tier: tier?.tier === 1 ? 1 : 2, reason: tier?.reason, baseTier: baseOf(base), rule: tier?.rule ?? "autonomy-off", panel: Boolean(tier?.panel) }).catch((err) => ({ error: String(err.message ?? err).slice(0, 300) }));
   const upgrade = bump ? `\n\n**${bump.title}:**\n\n\`\`\`\n${bump.log.replaceAll("```", "‵‵‵")}\n\`\`\`` : "";
   const ask = card.error
     ? `**Couldn't file the approval card:** ${card.error}. Nothing will be applied until it is filed; ask the agent to try again.`
@@ -2519,6 +2608,7 @@ async function agentMerge(ctx, args) {
   if (autonomyNow() !== "off") {
     const states = await merges.awaitChecks(() => mergeTierState(bound)); // CI may not have started yet
     tiers = bases = await Promise.all(states.map((s) => tierFor(ctx.issue, "merge", { prs: [s] })));
+    states.forEach((s, i) => s.patch && (bound[i].patch = s.patch)); // the card carries each PR's content key
     const bad = tiers.find((t) => t.reject);
     if (bad) throw new UserError(`Not done: ${bad.reason}.`);
   } else {
@@ -2532,7 +2622,7 @@ async function agentMerge(ctx, args) {
   const merging = now.length ? `Merging ${now.map((p) => `#${p.number}`).join(", ")} now, each as soon as its named checks are green on its current head; results are posted on this task.` : "";
   if (!card.length) return `${merging} No card is needed.`;
   const rest = tiers.filter((t) => t.tier !== 0);
-  const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, tier: rest.some((t) => t.tier !== 1) ? 2 : 1, reason: rest.map((t) => t.reason).filter(Boolean).join("; "), baseTier: baseOf(...bases.filter((_, i) => tiers[i].tier !== 0)), rule: highest(rest).rule ?? "autonomy-off" });
+  const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, tier: rest.some((t) => t.tier !== 1) ? 2 : 1, reason: rest.map((t) => t.reason).filter(Boolean).join("; "), baseTier: baseOf(...bases.filter((_, i) => tiers[i].tier !== 0)), rule: highest(rest).rule ?? "autonomy-off", panel: rest.some((t) => t.panel) });
   return `${merging ? `${merging} ` : ""}${waitingFor(a, ctx.issue)} Once approved, ${card.map((p) => `#${p.number}`).join(", ")} merge one at a time${gap !== undefined ? `, ${gap} minutes apart` : ""}, each only at the commit the card shows, with green checks and a green base branch (outside ${cfg.agentsOrg ?? "the agents org"} also approved on GitHub), or the queue stops and says why on the task.`;
 }
 

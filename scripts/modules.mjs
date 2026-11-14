@@ -13,7 +13,7 @@ const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
 // caps: the agent's spend caps (grantEntry); not agent-safe (services/runner/src/tiers.mjs), so changing them is the owner's.
 // autonomy: a routine's cap on approvals (ROUTINE_AUTONOMY); changing it is always the owner's (tiers.mjs).
-const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "caps", "graded", "heartbeat", "max_parallel"], routines: ["schedules", "status", "model", "autonomy"] };
+const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "caps", "graded", "heartbeat"], routines: ["schedules", "status", "model", "autonomy"] };
 /**
  * A routine's `autonomy`: the cap on approvals for tasks its runs start (the run task and what it delegates), the stricter of
  * it and the instance's `autonomy` (services/runner/src/tiers.mjs). The default `full` adds no cap (owner, 2026-11-13), except
@@ -414,8 +414,6 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       const target = paperclip[kind][key] ?? fail(`unknown ${kind.slice(0, -1)}: ${key}`);
       for (const [f, v] of Object.entries(fields ?? {})) {
         if (!OVERRIDABLE[kind].includes(f)) fail(`override not allowed: ${kind}.${key}.${f}`);
-        // A bigger host runs more of one agent's work at once; the computer pool (AIDENHQ_COMPUTERS_MAX) must still cover box agents.
-        if (f === "max_parallel" && !(Number.isInteger(v) && v >= 1 && v <= 10)) fail(`override ${kind}.${key}.max_parallel must be 1 to 10`);
         target[f] = v;
       }
     }

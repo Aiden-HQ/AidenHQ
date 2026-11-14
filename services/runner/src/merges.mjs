@@ -386,7 +386,7 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
   if (pr.isDraft) return { do: "ready", why: `${ref} is an approved draft` };
   const checks = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
   const ci = ciState(checks);
-  if (ci === "red") return { do: "stop", why: `${ref} has failing checks: ${failedChecks(checks).join(", ") || "see the PR"}`, red: true };
+  if (ci === "red") return { do: "stop", why: `${ref} has failing checks (\`gh pr checks ${pr.number}\` names them)`, red: true };
   switch (pr.mergeStateStatus) {
     case "DIRTY":
       return { do: "stop", why: `${ref} has conflicts with \`${pr.baseRefName}\`` };
@@ -413,10 +413,10 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
     // CI starts a little after a push (a card's merge is stepped seconds after it): no checks yet waits, ten minutes at most.
     if (!named.length) return { do: "wait", why: `${ref} has no checks yet, and a merge without the owner's tap needs green checks`, limit: 10 };
     if (named.some((c) => c.pending)) return { do: "wait", why: `${ref}'s checks are running` };
-    if (named.some((c) => !c.ok)) return { do: "stop", why: `${ref}: ${named.filter((c) => !c.ok).map((c) => c.name).join(", ")} not green`, red: true };
+    if (named.some((c) => !c.ok)) return { do: "stop", why: `${ref}: ${named.filter((c) => !c.ok).length} named check(s) not green (\`gh pr checks ${pr.number}\` names them)`, red: true };
   }
   const base = ciState(pr.baseRef?.target?.statusCheckRollup);
-  if (base === "red") return { do: "stop", why: `\`${pr.baseRefName}\` is red before merging ${ref}: ${failedChecks(pr.baseRef.target.statusCheckRollup).join(", ")}` };
+  if (base === "red") return { do: "stop", why: `\`${pr.baseRefName}\` is red before merging ${ref} (its failing checks are on GitHub)` };
   if (base === "pending") return { do: "wait", why: `CI is running on \`${pr.baseRefName}\`` };
   return { do: "merge" };
 }
@@ -468,7 +468,7 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     }
     // Checks show up a little after the merge: no checks yet is only green after a short settle.
     const settled = t - Date.parse(last.mergedAt) >= settleMinutes * 60_000;
-    if (ci === "red") return stop(`CI failed on \`${last.base}\` after merging #${last.number}: ${failedChecks(rollup).join(", ") || "see the commit"}`);
+    if (ci === "red") return stop(`CI failed on \`${last.base}\` after merging #${last.number} (its failing checks are on GitHub)`);
     // A tip we moved to has no grace: without a check of its own it is still starting up.
     if (ci === "pending" || !settled || (head !== last.sha && !namedChecks(rollup).length)) return waiting(`ci:${head}`, `CI is running on \`${last.base}\` after #${last.number}`);
     last.ciAt = now.toISOString();
@@ -594,7 +594,8 @@ export function eachDecision(pr, p) {
   const named = namedChecks(rollup);
   if (!named.length) return { do: "wait", why: "no checks on its head yet", limit: 10 };
   const red = named.filter((c) => !c.ok && !c.pending);
-  if (red.length) return { do: "fail", why: `${red.map((c) => c.name).join(", ")} failed`, red: true };
+  // Check names and descriptions are set by whoever can push to the repo: never in the runner's own words (count only).
+  if (red.length) return { do: "fail", why: `${red.length} named check(s) failed on its head (\`gh pr checks ${pr.number}\` names them)`, red: true };
   if (named.some((c) => c.pending)) return { do: "wait", why: "checks are running" };
   if (skippedImageScan(pr)) return { do: "fail", why: "it changes an image but its image-scan check was skipped" };
   const ci = ciState(rollup);
@@ -602,12 +603,13 @@ export function eachDecision(pr, p) {
   if (ci !== "green") return { do: "wait", why: "checks are running" };
   // A UI PR merges at Tier 0 only once the UI Reviewer's design review passed on this head: `p.ui` when tiering decided it,
   // else the PR's own files here, so a queue without the flag can't skip the gate. Missing counts as pending (the reviewer
-  // is woken for it); still none 2 hours after the checks went green: the owner's card (`escalate`), never a silent merge
-  // and never an endless wait.
+  // is woken for it); still none 2 hours after the checks went green: the reviewer is asked once more, and after that the
+  // PR is parked with a note (`again`), never a silent merge, never the owner's card (owner, 2026-11-14) and never an
+  // endless wait.
   if (p.ui ?? prTouchesUi(pr)) {
     const dr = designReview(rollup);
-    if (dr.state === "failure") return { do: "fail", why: `the UI Reviewer's design review failed on its head${dr.description ? ` ("${dr.description}")` : ""}` };
-    if (dr.state !== "success") return { do: "wait", why: "waiting for the UI Reviewer's design review", limit: DESIGN_REVIEW.minutes, escalate: true };
+    if (dr.state === "failure") return { do: "fail", why: "the UI Reviewer's design review failed on its head (its findings are on the PR and its review task)" };
+    if (dr.state !== "success") return { do: "wait", why: "waiting for the UI Reviewer's design review", limit: DESIGN_REVIEW.minutes, again: true };
   }
   if (pr.mergeStateStatus === "BLOCKED") return { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
   // UNSTABLE: some context isn't green. Fine only when every such context is advisory (design-review).
@@ -626,7 +628,6 @@ const githubSays = (err) => String(err.stderr || err.message || err).trim().spli
 async function advanceEach(queue, { github, now, timeoutMinutes }) {
   const say = [];
   const retier = [];
-  const escalate = [];
   const wake = [];
   const t = now.getTime();
   for (const p of queue.prs.filter((x) => x.status === "pending")) {
@@ -635,14 +636,16 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
       delete p.wait;
       say.push(`**Not merged:** ${p.url}: ${why}.`);
     };
-    // escalate: past the limit the PR goes to the owner (the caller files the card) instead of failing.
-    const wait = (key, why, limit = timeoutMinutes, up = false) => {
+    // again: past the limit the design reviewer is asked once more for the same head (the caller files its task again), and
+    // the wait starts over; past it a second time the PR is parked (not merged, with a note to ask again).
+    const wait = (key, why, limit = timeoutMinutes, again = false) => {
       if (p.wait?.key !== key) p.wait = { key, since: now.toISOString() };
       if (t - Date.parse(p.wait.since) <= limit * 60_000) return;
-      if (!up) return fail(`stuck for ${limit} minutes: ${why}`);
-      Object.assign(p, { status: "escalated", note: `no design review ${limit / 60} hours after its checks went green: the owner decides` });
-      delete p.wait;
-      escalate.push({ repo: p.repo, number: p.number, url: p.url, head: p.head });
+      if (!again) return fail(`stuck for ${limit} minutes: ${why}`);
+      if (p.reviewAskedAgain === p.head) return fail(`parked: no design review on its head after asking the UI Reviewer twice (${(2 * limit) / 60} hours). Ask for the merge again once it has reviewed it`);
+      p.reviewAskedAgain = p.head;
+      p.wait = { key, since: now.toISOString() };
+      wake.push({ repo: p.repo, number: p.number, url: p.url, head: p.head, again: true });
     };
     try {
       const data = await github.pr(p.repo, p.number);
@@ -681,9 +684,9 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
         if (retry) wait(`${pr.headRefOid}:${retry.key}`, RERUN_WAIT[retry.key], retry.limit);
         else fail(d.why);
       } else if (d.do === "wait") {
-        wait(`${pr.headRefOid}:${d.why}`, d.why, d.limit, d.escalate);
+        wait(`${pr.headRefOid}:${d.why}`, d.why, d.limit, d.again);
         // The design reviewer is asked once per head, when the merge starts waiting on it (the caller files its task).
-        if (d.escalate && p.status === "pending" && p.reviewAsked !== pr.headRefOid) {
+        if (d.again && p.status === "pending" && p.reviewAsked !== pr.headRefOid) {
           p.reviewAsked = pr.headRefOid;
           wake.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid });
         }
@@ -723,12 +726,12 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
     }
   }
   const out = say.length ? [say.join("\n")] : [];
-  if (queue.prs.some((x) => x.status === "pending")) return { queue, say: out, retier, escalate, wake };
+  if (queue.prs.some((x) => x.status === "pending")) return { queue, say: out, retier, wake };
   const merged = queue.prs.filter((x) => x.status === "merged").length;
   const failed = queue.prs.filter((x) => x.status === "failed" || x.status === "escalated").length;
   Object.assign(queue, { state: failed ? "stopped" : "done", finishedAt: now.toISOString(), ...(failed ? { reason: `${failed} not merged` } : {}) });
   const headline = failed ? `**Merges finished:** ${merged} merged, ${failed} not.` : `**Done:** ${merged} merged, ${minutes(t - Date.parse(queue.startedAt))} minutes in all.`;
-  return { queue, say: [...out, summary(queue, headline)], done: queue.state, retier, escalate, wake };
+  return { queue, say: [...out, summary(queue, headline)], done: queue.state, retier, wake };
 }
 
 /**

@@ -35,6 +35,10 @@ export const REVIEW_CODES = [
   "tier_raised",
   "autonomy_off",
   "shadow",
+  // the panel's two reviewers disagreed (or the second couldn't decide): the owner decides
+  "panel_split",
+  // code refused the request at review time (it moved, it was rejected before, retries ran out): back to the agent
+  "refused_by_code",
 ] as const;
 export type ReviewCode = (typeof REVIEW_CODES)[number];
 

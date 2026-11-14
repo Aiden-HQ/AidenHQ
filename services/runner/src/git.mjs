@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -172,6 +172,39 @@ async function viaApp(cwd, args) {
   } finally {
     for (const ref of temp) await plain(cache, ["update-ref", "-d", ref]).catch(() => {});
   }
+}
+
+/**
+ * Whether `rev`'s `dir` in the repo at `path` is exactly the tree `want` (a tree id): the same paths, modes (so no symlink
+ * where the template has a file, no executable bit added) and bytes, nothing extra or missing. False when it can't be read.
+ */
+export async function treeIs(path, rev, dir, want) {
+  const got = await git(path, "rev-parse", "--verify", `${rev}:${dir}`).catch(() => "");
+  return Boolean(want) && got === want;
+}
+
+/**
+ * A change's content whatever its commits or branch are called (git patch-id's idea): the hash of its full diff from where
+ * `sha` leaves `base`'s history, minus only what a rebase shifts (blob ids and hunk line numbers). Modes, binary content
+ * and context stay in, and nothing in the repo shapes it: no attributes file, no textconv or external diff (git() adds
+ * those two for every diff). A content key only ever restricts (an owner veto, "already merged"); it never grants an
+ * approval. Throws when a commit isn't there.
+ */
+export async function patchKey(path, base, sha) {
+  const from = await git(path, "merge-base", base, sha);
+  return diffKey(await git(path, "-c", "core.attributesFile=/dev/null", "diff", "--no-renames", "--full-index", "--binary", from, sha));
+}
+/** The key of a diff's text: every line but the blob ids and hunk positions a rebase moves. */
+export const diffKey = (diff) => createHash("sha256").update(String(diff).split("\n").filter((l) => !/^(index |@@ )/.test(l)).join("\n")).digest("hex");
+
+/**
+ * patchKey of a commit fetched into the runner's own clone as `ref`, only when `ref` is exactly `sha` (a PR head that moved,
+ * or anything else, gives undefined: the request then fails closed against an owner veto). `tip`: the default branch there.
+ */
+export async function patchKeyAt(path, ref, sha, tip) {
+  const got = await git(path, "rev-parse", "--verify", `${ref}^{commit}`).catch(() => "");
+  if (!/^[0-9a-f]{40}$/.test(sha ?? "") || got !== sha) return undefined;
+  return patchKey(path, tip, sha).catch(() => undefined);
 }
 
 export async function git(cwd, ...args) {

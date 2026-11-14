@@ -45,6 +45,21 @@ test("already on main by ancestry or identical files; a real change is not", asy
   assert.equal((await onMain(git, work, "main", landed)).satisfied, true);
   assert.deepEqual(await guardBranch(git, empty, landed), { satisfied: false });
   assert.equal((await guardBranch(git, { ...empty, stat: " 1 file changed" }, dup)).satisfied, true, "a branch with its own commits is checked");
+
+  // The same change squash-merged as another PR, after which main moved on in that file: the patch is already merged.
+  run(work, "switch", "-qc", "again", "main");
+  const again = commit("c.txt", "c2\n", "feat: c2 (a repeat of a merged PR)");
+  run(work, "switch", "-q", "main");
+  const squash = commit("c.txt", "c2\n", "feat: c2 (#45)");
+  commit("c.txt", "c3\n", "later: c3");
+  run(work, "push", "-q", "origin", "main");
+  run(work, "fetch", "-q", "origin");
+  const repeat = await onMain(git, work, "main", again);
+  assert.equal(repeat.satisfied, true, "the same patch, merged as another commit");
+  assert.match(repeat.evidence, new RegExp(`already merged on \`main\` as \`${squash.slice(0, 12)}\``));
+  run(work, "switch", "-qc", "other", squash);
+  const other = commit("c.txt", "c9\n", "feat: something else in the same file");
+  assert.deepEqual(await onMain(git, work, "main", other), { satisfied: false }, "another change to the same file");
 });
 
 test("an apply is never guarded: the instance's main can be ahead of what the host runs", () => {

@@ -432,11 +432,11 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF 'cardIsReview: ownRepo });' "$rmain" \
   && grep -qF 'const ownRepo = (slug) =>inOrg(cfg.agentsOrg, slug) || (Boolean(cfg.productRepo) && String(slug).toLowerCase() === String(cfg.productRepo).toLowerCase());' "$rmain" \
   && grep -qF 'if (same(p.repo, s.productRepo)) return productMergePart(p, ref, s);' "$rtiers" \
-  && [ "$(awk '/^function productMergePart/,/^}/' "$rtiers" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 T(2 " ] \
+  && [ "$(awk '/^function productMergePart/,/^}/' "$rtiers" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 " ] \
   && [ "$(grep -c 'each: true' "$rmain")" = 1 ] && grep -qF 'startMerges(issue, { prs: zero, strict: true, each: true })' "$rmain" \
   && grep -qF 'const isZero = (t) => t.tier === 0 && !t.reject;' "$rmain" \
-  && grep -qF 'if (!s.agentsOrg || !same(orgOf(p.repo), s.agentsOrg)) return T(2, "outside-merge"' "$rtiers" \
-  && grep -qF 'if (same(p.repo, s.instanceRepo) || same(p.repo, s.productRepo)) return T(2, "core-repo-merge"' "$rtiers" \
+  && [ "$(awk '/^function mergeParts/,/^}/' "$rtiers" | grep -nE 'const friction = mergeFriction\(p, ref\);|if \(outside\) parts.push\(PANEL\("outside-merge"|return highest\(parts\);' | cut -d: -f2- | sed 's/^ *//' | cut -c1-30 | tr '\n' '|')" = 'const friction = mergeFriction|if (outside) parts.push(PANEL(|return highest(parts);|' ] \
+  && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge"' "$rtiers" \
   && [ "$(grep -c 'advanceEach(' "$rm_")" = 2 ] && grep -qF 'if (queue.independent) return advanceEach(' "$rm_" \
   && [ "$(grep -c 'independent: true' "$rm_")" = 1 ] && [ "$(grep -c 'independent: true' "$rmain")" = 0 ] \
   && [ "$(grep -c 'github\.comment(' "$rm_")" = 1 ] && [ "$(grep -c 'github\.close(' "$rm_")" = 1 ] && [ "$(grep -c 'merges\.closePrs(' "$rmain")" = 1 ] \
@@ -449,6 +449,35 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF 'if (!s.requester?.platform) return REJECT("product-close-requester"' "$rtiers" \
   && grep -qF '? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p' "$rmain" \
   && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues re-tier; reviewed queues replay the approved commits first, leased push), merged-head branch deletes (after any agents-org merge), one re-run of a queued PR's infrastructure-failed jobs, and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
+# Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
+# autonomy cap, a spend-cap raise or nothing recognised (the only Tier 2 rules left in tiers.mjs). The gate's own core is
+# authority-expanding: tiers, review, authorize, the reviewer policy and its eval cases, the board's approval routes and
+# sign-in, setup, the sandboxes and the product's CI all go to the panel (two reviewers of different model families, both
+# approving), enforced by the runner and again by the board. Code's panel flag reaches the reviewer and the board, the
+# reviewer's own flag can only add the second reviewer, a reviewer-approved card that is panel now is never run on one
+# reviewer's yes, and a CI template copy is Tier 0 only when its .github tree is the deployed product's template tree.
+rreview="services/runner/src/review.mjs"; bapprovals="services/board/src/approvals.ts"
+[ "$(grep -oE 'T\(2, "[a-z-]+"' "$rtiers" | sort -u | tr '\n' ' ')" = 'T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
+  && grep -qF '/^services\/runner\/src\/(tiers|review|authorize|merges|apply|netjail|state|config|github-app|git|main|engines|workspace|files|commands)\.mjs$/,' "$rtiers" && grep -qF '  /^scripts\/computers\.mjs$/,' "$rtiers" \
+  && grep -qF '/^services\/runner\/test\/reviewer-cases\//,' "$rtiers" && grep -qF '/^modules\/core\/security\//,' "$rtiers" \
+  && grep -qF '/^services\/board\/src\/(approvals|app|fleet|accounts|session)\.ts$/,' "$rtiers" && grep -qF '/(^|\/)agent-auth\.ts$/,' "$rtiers" \
+  && grep -qF '/^scripts\/(modules|paperclip-setup|no-shell)\.mjs$/,' "$rtiers" && grep -qF '/(^|\/)\.github\//,' "$rtiers" \
+  && grep -qF 'if (GATE_CORE.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rtiers" \
+  && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rtiers" \
+  && grep -qF 'const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);' "$rtiers" \
+  && grep -qF '  const second = v.second_review !== false;' "$rreview" \
+  && grep -qF '  if (v1.decision !== "approve" || !(panel || flagged)) return v1;' "$rreview" \
+  && grep -qF '  if (v2.decision === "approve") return { decision: "approve"' "$rreview" \
+  && grep -qF 'if (a.panel && v.decision === "approve" && !v.second) return { ok: false' "$bapprovals" \
+  && grep -qF 'if (v.second !== undefined && v.second === v.model) return { ok: false' "$bapprovals" \
+  && grep -qF 'const veto = req.tier === 1 && this.ownerVetoed(req.issueId, req.action, req.digest, req.args);' "$bapprovals" \
+  && grep -qF '            panel: Boolean(input.panel || a.panel),' "$rmain" && grep -qF 'const panelMissing = (t.panel || claimed.panel) && !claimed.decidedBy.includes("+");' "$rmain" \
+  && grep -qF 'UPDATE approvals SET panel = 1 WHERE id = ? AND digest = ?' "$bapprovals" && ! grep -q 'SET panel = 0' "$bapprovals" \
+  && grep -qF '    panel: migration,' services/board/src/fleet.ts && grep -qF 'const migration = touchesMigrations(diff);' services/board/src/fleet.ts \
+  && grep -qF '"HEAD:modules/core/templates/ci/.github"' "$rmain" && grep -qF 'return treeIs(path, sha, ".github", want);' "$rmain" && grep -qF 'return Boolean(want) && got === want;' services/runner/src/git.mjs \
+  && grep -qF 'if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir"' "$rtiers" \
+  && pass "runner and board: the owner decides only vetoes, panel splits, autonomy caps and spend caps; the gate's core goes to two reviewers of different families, checked by the runner and the board; a CI template copy is Tier 0 only by tree identity with the deployed product ($rtiers, $rreview, $bapprovals)" \
+  || fail "runner or board: who decides a write changed (tiers.mjs Tier 2 rules, the gate core list, the panel, or the board's panel check)"
 # Tool-only agents get no shell: setup (gate code too) must run the gate's check on every Codex agent without image:.
 grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-setup.mjs \
   && [ "$(grep -c 'assertNoShell(' scripts/paperclip-setup.mjs)" = 1 ] \

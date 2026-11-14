@@ -20,8 +20,8 @@ export type State = "pending" | "approved" | "rejected" | "expired" | "used" | "
  * A record filed without a tier is 2.
  */
 export type Tier = 0 | 1 | 2;
-/** The reviewer models a verdict may name (decided_by `reviewer:<model>`). */
-export const REVIEWER_MODELS = ["~openai/gpt-luna-latest", "~deepseek/deepseek-flash-latest"] as const;
+/** The reviewer models a verdict may name (decided_by `reviewer:<model>`, or `reviewer:<model>+<second>` for the panel). */
+export const REVIEWER_MODELS = ["~openai/gpt-luna-latest", "~deepseek/deepseek-flash-latest", "~z-ai/glm-flash-latest"] as const;
 const TTL_MS = 7 * 86_400_000;
 /** A record used this long ago with no outcome: the applier died mid-way. Shown as unknown, never retried. */
 const UNKNOWN_AFTER_MS = 2 * 3_600_000;
@@ -50,6 +50,17 @@ export interface Request {
   baseTier?: Tier | null;
   /** The tier's reason code: the classifier's rule (tiers.mjs `rule`, or the board's own), kebab-case; dropped unless it has that shape. */
   reasonCode?: string | null;
+  /** Authority-expanding (tiers.mjs `panel`): a reviewer approval must name a second reviewer too. */
+  panel?: boolean;
+}
+
+/** Actions whose content the runner keys by patch (args `patch` per branch or PR). */
+const CONTENT_KEYED = ["push", "pr", "merge"];
+/** A request's patch keys, sorted and joined, or undefined when any is missing. */
+export function patchesOf(action: string, args: unknown): string | undefined {
+  const a = args as { only?: { patch?: string }[]; prs?: { patch?: string }[] } | null;
+  const list = (action === "merge" ? a?.prs : action === "push" || action === "pr" ? a?.only : undefined) ?? [];
+  return list.length && list.every((x) => typeof x.patch === "string") ? list.map((x) => x.patch!).sort().join(",") : undefined;
 }
 
 /** A tier rule as a reason code: kebab-case words only (classifier output, never agent text); anything else is dropped. */
@@ -77,8 +88,10 @@ function targetKey(action: Action, target: string, args: unknown): string {
 /** The stable reason for a request whose change is already satisfied: no card is filed, the task gets the evidence. */
 export const ALREADY_APPLIED = "already_applied";
 
-export interface Approval extends Omit<Request, "tier" | "reason" | "requesterId" | "baseTier" | "reasonCode"> {
+export interface Approval extends Omit<Request, "tier" | "reason" | "requesterId" | "baseTier" | "reasonCode" | "panel"> {
   tier: Tier;
+  /** Authority-expanding: the board takes a reviewer's approval only with a second reviewer's. */
+  panel: boolean;
   reason: string;
   /** Null on records filed before it was recorded. */
   requesterId: string | null;
@@ -109,12 +122,15 @@ const REPO = z.string().regex(/^[\w.-]+\/[\w.-]+$/);
 // base: the trusted base the runner read in its own clone before tiering (a product branch only), kept so the approval
 // hands it back and the runner rechecks and records the reviewed range. The runner's card args are the source of truth for
 // this shape: test/card-contract.test.ts fails when a field it builds is missing here.
-const BRANCH = z.object({ repo: REPO, branch: z.string().min(1).max(200).regex(/^[^\s`]+$/), sha: SHA, base: SHA.optional() }).strict();
+// patch: the runner's content key of the branch's change (git.mjs patchKey), the same however the branch is named or rebased:
+// the owner's veto binds to it.
+const PATCH = z.string().regex(/^[0-9a-f]{64}$/);
+const BRANCH = z.object({ repo: REPO, branch: z.string().min(1).max(200).regex(/^[^\s`]+$/), sha: SHA, base: SHA.optional(), patch: PATCH.optional() }).strict();
 export const ARGS = {
   push: z.object({ only: z.array(BRANCH).min(1).max(30) }).strict(),
   // merge: the product repo's one-card path (push, PR, then merge at exactly these commits once green), shown on the card.
   pr: z.object({ only: z.array(BRANCH).min(1).max(30), text: z.object({ title: z.string().max(300), body: z.string().max(60_000) }).strict().optional(), merge: z.literal(true).optional() }).strict(),
-  merge: z.object({ prs: z.array(z.object({ repo: REPO, number: z.number().int().positive(), url: z.string().regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/), head: z.string().regex(/^[0-9a-f]{40}$/).optional(), noReview: z.literal(true).optional() }).strict()).min(1).max(30), gap: z.number().int().min(0).max(720).optional() }).strict(),
+  merge: z.object({ prs: z.array(z.object({ repo: REPO, number: z.number().int().positive(), url: z.string().regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/), head: z.string().regex(/^[0-9a-f]{40}$/).optional(), noReview: z.literal(true).optional(), patch: PATCH.optional() }).strict()).min(1).max(30), gap: z.number().int().min(0).max(720).optional() }).strict(),
   apply: z.object({ repo: REPO, branch: z.string().min(1).max(200).regex(/^[^\s`]+$/), sha: SHA, files: z.array(z.string().max(300)).min(1).max(200) }).strict(),
 };
 export type RunnerAction = keyof typeof ARGS;
@@ -338,6 +354,7 @@ interface Row {
   base_tier: number | null;
   reason_code: string | null;
   review_code: string | null;
+  panel: number | null;
 }
 
 const toApproval = (r: Row): Approval => ({
@@ -370,6 +387,7 @@ const toApproval = (r: Row): Approval => ({
   baseTier: r.base_tier as Tier | null,
   reasonCode: r.reason_code,
   reviewCode: r.review_code as ReviewCode | null,
+  panel: r.panel === 1,
 });
 
 /** One card as the owner saw it in a batch: its id and the digest of exactly what it runs. */
@@ -443,6 +461,7 @@ export class Approvals {
     if (!columns.includes("base_tier")) db.exec("ALTER TABLE approvals ADD COLUMN base_tier INTEGER");
     if (!columns.includes("reason_code")) db.exec("ALTER TABLE approvals ADD COLUMN reason_code TEXT");
     if (!columns.includes("review_code")) db.exec("ALTER TABLE approvals ADD COLUMN review_code TEXT");
+    if (!columns.includes("panel")) db.exec("ALTER TABLE approvals ADD COLUMN panel INTEGER NOT NULL DEFAULT 0");
     // A batch the owner channel showed in Telegram: the exact cards (id and digest), decided at most once within 24h.
     db.exec("CREATE TABLE IF NOT EXISTS approval_batches (id TEXT PRIMARY KEY, items TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)");
   }
@@ -451,9 +470,22 @@ export class Approvals {
     this.events?.emit("approvals", issueId);
   }
 
-  /** Sticky escalation: once the owner or the reviewer rejected this action on this task, every later request is Tier 2. */
-  rejectedBefore(ref: string, action: Action): boolean {
-    return Boolean(this.db.prepare("SELECT 1 FROM approvals WHERE (issue_id = ? OR identifier = ?) AND action = ? AND state = 'rejected' LIMIT 1").get(ref, ref.toUpperCase(), action));
+  /**
+   * The owner's veto (owner, 2026-11-14): their latest decision of this action on this task was a no, so every later request
+   * is theirs (Tier 2) until they say yes; and a no on exactly this content (digest) holds until they approve that same
+   * content, whatever else they approved since. The AI reviewer's rejections never make a request the owner's.
+   * (An approved card a newer request replaced is `expired` but still decided: it counts as their yes.)
+   */
+  ownerVetoed(ref: string, action: Action, digest?: string, args?: unknown): boolean {
+    const owner = "(issue_id = ? OR identifier = ?) AND action = ? AND decided_by IS NOT NULL AND decided_by NOT LIKE 'reviewer:%' AND decided_by NOT LIKE 'auto:%'";
+    const rows = (this.db.prepare(`SELECT * FROM approvals WHERE ${owner} AND state IN ('approved','used','expired','rejected') ORDER BY decided_at DESC, rowid DESC`).all(ref, ref.toUpperCase(), action) as unknown as Row[]).map(toApproval);
+    if (rows[0]?.state === "rejected") return true;
+    // The same content: the digest, or the patch keys whatever the commits (a rebased or renamed resubmission).
+    const patches = patchesOf(action, args);
+    // Fail closed: a branch or PR request without patch keys can't be told apart from a vetoed one.
+    if (CONTENT_KEYED.includes(action) && !patches && rows.some((r) => r.state === "rejected")) return true;
+    const same = rows.find((r) => (digest && r.digest === digest) || (patches && patchesOf(r.action, r.args) === patches));
+    return same?.state === "rejected";
   }
 
   get(id: string): Approval | undefined {
@@ -479,15 +511,15 @@ export class Approvals {
       }
       const key = targetKey(req.action, req.target, req.args);
       const replacing = open.filter((a) => targetKey(a.action, a.target, a.args) === key);
+      const veto = req.tier === 1 && this.ownerVetoed(req.issueId, req.action, req.digest, req.args);
+      const tier = veto ? 2 : (req.tier ?? 2);
       for (const a of replacing) this.db.prepare("UPDATE approvals SET state = 'expired', outcome_text = 'replaced by a newer request' WHERE id = ?").run(a.id);
       const id = `A${randomBytes(4).toString("hex")}`;
-      const sticky = req.tier === 1 && this.rejectedBefore(req.issueId, req.action);
-      const tier = sticky ? 2 : (req.tier ?? 2);
-      const reason = sticky ? `rejected before on this task, so the owner decides (was: ${req.reason ?? ""})` : (req.reason ?? "");
-      const code = sticky ? "sticky" : ruleCode(req.reasonCode);
+      const reason = veto ? `the owner rejected this action on this task, so they decide (was: ${req.reason ?? ""})` : (req.reason ?? "");
+      const code = veto ? "owner-veto" : ruleCode(req.reasonCode);
       this.db
-        .prepare("INSERT INTO approvals (id, issue_id, identifier, action, target, digest, args, sentence, reads, changes, cost, details, requested_by, state, created_at, expires_at, replaced, tier, reason, requester_id, base_tier, reason_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, req.issueId, req.identifier, req.action, req.target, req.digest, JSON.stringify(req.args ?? null), req.sentence, req.reads, req.changes, req.cost, req.details, req.requestedBy, iso, new Date(now.getTime() + TTL_MS).toISOString(), replacing.length ? 1 : 0, tier, reason.slice(0, 1000), req.requesterId ?? null, req.baseTier ?? null, code);
+        .prepare("INSERT INTO approvals (id, issue_id, identifier, action, target, digest, args, sentence, reads, changes, cost, details, requested_by, state, created_at, expires_at, replaced, tier, reason, requester_id, base_tier, reason_code, panel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, req.issueId, req.identifier, req.action, req.target, req.digest, JSON.stringify(req.args ?? null), req.sentence, req.reads, req.changes, req.cost, req.details, req.requestedBy, iso, new Date(now.getTime() + TTL_MS).toISOString(), replacing.length ? 1 : 0, tier, reason.slice(0, 1000), req.requesterId ?? null, req.baseTier ?? null, code, req.panel ? 1 : 0);
       this.db.exec("COMMIT");
       this.changed(req.issueId);
       return this.get(id)!;
@@ -510,22 +542,37 @@ export class Approvals {
 
   /**
    * The AI reviewer's verdict on a pending Tier 1 record, bound to its digest: approve or reject decides it (decided_by
-   * `reviewer:<model>`); escalate makes it Tier 2 (the owner's), with the note. Anything else is refused. `code` is the
-   * reviewer's reason code (reviewer_unsure: it couldn't tell, so the owner decides).
+   * `reviewer:<model>`, or `reviewer:<model>+<second>` when a second reviewer approved too); escalate makes it Tier 2 (the
+   * owner's), with the note. Anything else is refused, and so is an approval of a panel record (authority-expanding) that
+   * names no second reviewer of another model. `code` is the reviewer's reason code (reviewer_unsure: it couldn't tell, so
+   * the owner decides; panel_split: the two reviewers disagreed).
    */
-  review(id: string, v: { digest: string; decision: "approve" | "reject" | "escalate"; reason: string; model: string; code?: ReviewCode }, now = new Date()): { ok: true; approval: Approval } | { ok: false; reason: string } {
+  review(id: string, v: { digest: string; decision: "approve" | "reject" | "escalate"; reason: string; model: string; second?: string; code?: ReviewCode }, now = new Date()): { ok: true; approval: Approval } | { ok: false; reason: string } {
     const a = this.get(id);
     if (!a) return { ok: false, reason: "no such approval" };
     if (shown(a, now.getTime()) !== "pending") return { ok: false, reason: `this approval is ${shown(a, now.getTime())}` };
     if (a.tier !== 1) return { ok: false, reason: "only a Tier 1 record is the reviewer's" };
     if (a.digest !== v.digest) return { ok: false, reason: "the digest doesn't match this record" };
+    if (v.second !== undefined && v.second === v.model) return { ok: false, reason: "the second reviewer must be another model" };
+    if (a.panel && v.decision === "approve" && !v.second) return { ok: false, reason: "an authority-expanding record needs a second reviewer's approval too" };
+    const by = `reviewer:${v.model}${v.decision === "approve" && v.second ? `+${v.second}` : ""}`;
     const note = v.reason.slice(0, 2000);
     const r =
       v.decision === "escalate"
         ? this.db.prepare("UPDATE approvals SET tier = 2, review = ?, review_code = ? WHERE id = ? AND state = 'pending' AND tier = 1").run(note, v.code ?? null, id)
-        : this.db.prepare("UPDATE approvals SET state = ?, decided_by = ?, decided_at = ?, review = ?, review_code = ? WHERE id = ? AND state = 'pending' AND tier = 1").run(v.decision === "approve" ? "approved" : "rejected", `reviewer:${v.model}`, now.toISOString(), note, v.code ?? null, id);
+        : this.db.prepare("UPDATE approvals SET state = ?, decided_by = ?, decided_at = ?, review = ?, review_code = ? WHERE id = ? AND state = 'pending' AND tier = 1").run(v.decision === "approve" ? "approved" : "rejected", by, now.toISOString(), note, v.code ?? null, id);
     if (r.changes !== 1) return { ok: false, reason: "it changed meanwhile" };
     this.changed(a.issueId);
+    return { ok: true, approval: this.get(id)! };
+  }
+
+  /**
+   * The reviewer found a pending Tier 1 record authority-expanding: from now on it needs a second reviewer's approval too.
+   * Only ever set, never cleared; bound to the digest like a verdict.
+   */
+  markPanel(id: string, digest: string): { ok: true; approval: Approval } | { ok: false; reason: string } {
+    const r = this.db.prepare("UPDATE approvals SET panel = 1 WHERE id = ? AND digest = ? AND state = 'pending' AND tier = 1").run(id, digest);
+    if (r.changes !== 1) return { ok: false, reason: "no pending Tier 1 record with that digest" };
     return { ok: true, approval: this.get(id)! };
   }
 

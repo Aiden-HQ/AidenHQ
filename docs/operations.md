@@ -125,7 +125,7 @@ without the owner reaches Telegram once a day from 21:00.
   before, once the run is over. Card-approved merges, and everything in the product and instance repos, still use the
   one-at-a-time queue with the base branch green before and after each merge. The `design-review` status is advisory
   except on a Tier 0 merge of a UI PR: there it must be `success`, and with no verdict 2 hours after the other checks went
-  green the merge goes to the owner's card. In either queue a red check whose Actions job never judged the commit
+  green the reviewer is asked once more, and then the merge is parked with a note on the task. In either queue a red check whose Actions job never judged the commit
   (cancelled, timed out, failed to start, or `code-review`'s own "failed"/"incomplete" comment on that head) is re-run
   once per check and head before the merge fails; a second failure, or any real failure beside it, is final. The re-run
   needs the GitHub App's Actions: write permission (`ops/github-app-setup.mjs`); without it the failure stands as before.
@@ -139,7 +139,8 @@ without the owner reaches Telegram once a day from 21:00.
 cd ~/aidenhq && OPENROUTER_API_KEY="$(cat ~/.config/aidenhq/openrouter_key)" node services/runner/scripts/reviewer-eval.mjs
 ```
 
-- Pause: set `autonomy: off` and apply (that change is itself a Tier 2 card).
+- Pause: set `autonomy: off` and apply (a settings change: the AI reviewer and a second reviewer decide it; or edit the
+  grants table on the host for an immediate stop).
 
 ## Shared sources
 

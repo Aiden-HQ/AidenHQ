@@ -56,7 +56,7 @@ overrides:
 ```
 
 - **Overrides** change a fixed set of fields on things that exist: agents (`model`, `reasoning_effort`, `timeout_sec`,
-  `image`, `max_parallel` for a bigger host) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.
+  `image`) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.
 - **A model per routine:** `model: <id>` on a routine runs its tasks on that model instead of the agent's (e.g. a cheap
   model for a frequent sweep, the agent's stronger one for everything else). Setup puts it in the routine's env
   (`AIDENHQ_MODEL`), Paperclip passes that env to the routine's runs, and the agent's Codex is started through

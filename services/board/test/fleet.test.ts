@@ -47,7 +47,7 @@ describe("deploy_app files an approval for one exact commit", () => {
     process.env.APPS_INTERNAL_TOKEN_FILE = `${import.meta.dirname}/fixtures/apps_token`;
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       expect((init.headers as Record<string, string>).authorization).toBe("Bearer apps-token");
-      return new Response(JSON.stringify(url.includes("sha=0123456") ? { sha: FULL, subject: "fix: the import‮ evil" } : { error: "no single commit fffffff" }));
+      return new Response(JSON.stringify(url.includes("sha=0123456") ? { sha: FULL, subject: "fix: the import‮ evil", diff: "diff --git a/src/a.ts b/src/a.ts\n+x" } : { error: "no single commit fffffff" }));
     });
     const store = new Store(":memory:");
     const aiden = { id: "cos", name: "Aiden" } as Agent;
@@ -58,6 +58,9 @@ describe("deploy_app files an approval for one exact commit", () => {
     expect(a!.details).toContain("Commit message (written by the app's author): fix: the import evil"); // labelled, no bidi override
     await expect(fleetControl(pc, aiden, ask("fffffff"), store)).rejects.toThrow(/no single commit/);
     expect(store.approvals.pending()).toHaveLength(1);
+    // A change too large (or unreadable) to review goes back to the agent, never to the owner (2026-11-14).
+    vi.stubGlobal("fetch", async (url: string) => new Response(JSON.stringify(url.endsWith("/internal/status") ? [] : { sha: FULL, subject: "x", diff: "+x", truncated: true })));
+    await expect(fleetControl(pc, aiden, ask("0123456"), store)).rejects.toThrow(/too large/);
   });
   it("files no card when the app already runs that commit, healthy; otherwise stamps the requester and the base tier", async () => {
     process.env.APPS_INTERNAL_TOKEN_FILE = `${import.meta.dirname}/fixtures/apps_token`;
@@ -72,6 +75,16 @@ describe("deploy_app files an approval for one exact commit", () => {
     running = "f".repeat(40);
     await fleetControl(pc, aiden, ask("0123456"), store);
     // Autonomy off here: the card is the owner's (tier 2), but its base tier on the merits is 1 (no migration).
-    expect(store.approvals.pending()[0]).toMatchObject({ tier: 2, baseTier: 1, requesterId: "cos" });
+    expect(store.approvals.pending()[0]).toMatchObject({ tier: 2, baseTier: 1, requesterId: "cos", panel: false });
+  });
+  it("a deploy that touches a migration or schema file is the panel's: two reviewers must approve it", async () => {
+    process.env.APPS_INTERNAL_TOKEN_FILE = `${import.meta.dirname}/fixtures/apps_token`;
+    vi.stubGlobal("fetch", async (url: string) =>
+      new Response(JSON.stringify(url.endsWith("/internal/status") ? [] : { sha: FULL, subject: "feat: x", diff: "diff --git a/migrations/005.sql b/migrations/005.sql\n--- a/migrations/005.sql\n+++ b/migrations/005.sql\n@@ -0,0 +1 @@\n+ALTER TABLE t ADD COLUMN c int;\n" })),
+    );
+    const store = new Store(":memory:");
+    await fleetControl(pc, { id: "cos", name: "Aiden" } as Agent, ask("0123456"), store);
+    const [a] = store.approvals.pending();
+    expect(a).toMatchObject({ panel: true, baseTier: 1 });
   });
 });

@@ -229,7 +229,8 @@ describe("merge queue: a run through", () => {
     await advance(q, { github: gh, now: at(0) });
     const step = await advance(q, { github: gh, now: at(2) });
     assert.equal(step.done, "stopped");
-    assert.match(step.say[0], /CI failed on `master` after merging #1: buildkite\/deploy/);
+    assert.match(step.say[0], /CI failed on `master` after merging #1 \(its failing checks are on GitHub\)/);
+    assert.doesNotMatch(step.say[0], /buildkite/, "check names are repo-controlled: never in the runner's words");
     assert.match(step.say[0], /continue from #2/);
     assert.equal(gh.writes.length, 1);
     assert.deepEqual(await advance(q, { github: gh, now: at(30) }), { queue: q, say: [] }); // stays stopped
@@ -255,7 +256,8 @@ describe("merge queue: a run through", () => {
     await advance(q, { github: gh, now: at(0) });
     const step = await advance(q, { github: gh, now: at(2) });
     assert.equal(step.done, "stopped");
-    assert.match(step.say[0], /CI failed on `master` after merging #1: buildkite\/deploy/);
+    assert.match(step.say[0], /CI failed on `master` after merging #1 \(its failing checks are on GitHub\)/);
+    assert.doesNotMatch(step.say[0], /buildkite/, "check names are repo-controlled: never in the runner's words");
   });
 
   it("skips a PR someone else merged and stops on one that isn't approved", async () => {
@@ -474,7 +476,7 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     const gh = fakeGithub({ 1: own(1, head(red)), 2: own(2, head(pending)) });
     const q = queue(1, 2);
     let step = await advance(q, { github: gh, now: at(0) });
-    assert.deepEqual(step.say, ["**Not merged:** https://github.com/o/r/pull/1: buildkite/deploy failed."]);
+    assert.deepEqual(step.say, ["**Not merged:** https://github.com/o/r/pull/1: 1 named check(s) failed on its head (`gh pr checks 1` names them)."]);
     assert.equal(step.done, undefined);
     assert.deepEqual(await advance(q, { github: gh, now: at(1) }).then((s) => s.say), [], "said once");
     gh.prs[2] = own(2);
@@ -571,7 +573,7 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     await advance(q, { github: gh, now: at(2) });
     gh.prs[1] = at1(1, [tests, run("code-review", "FAILURE", 11)]);
     const step = await advance(q, { github: gh, now: at(9) });
-    assert.match(step.say[0], /Not merged:.*code-review failed/);
+    assert.match(step.say[0], /Not merged:.*1 named check\(s\) failed on its head/);
     assert.equal(gh.writes.length, 1, "re-run once");
 
     // A real reject (blocking findings) fails at once; so does a re-run GitHub refuses, and the next queue on that head tries again.
@@ -581,7 +583,7 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     assert.deepEqual(real.writes, []);
     const refused = fakeGithub({ 1: at1(1, [tests, run("code-review", "FAILURE", 10)]) });
     Object.assign(refused, { refuseRerun: true, reviewComments: { 1: timedOut } });
-    assert.match((await advance(each(), { github: refused, now: at(0) })).say[0], /Not merged:.*code-review failed/);
+    assert.match((await advance(each(), { github: refused, now: at(0) })).say[0], /Not merged:.*1 named check\(s\) failed on its head/);
     refused.refuseRerun = false;
     await advance(each(), { github: refused, now: at(1) });
     assert.deepEqual(refused.writes, [{ rerun: 100, checks: ["code-review"] }]);
@@ -660,20 +662,24 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
       const gh = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("FAILURE")]) }) });
       const step = await advance(ui(1), { github: gh, now: at(0) });
       assert.deepEqual(gh.writes, []);
-      assert.match(step.say[0], /Not merged:.*design review failed on its head \("2 blocking: dark mode text unreadable"\)/);
+      assert.match(step.say[0], /Not merged:.*design review failed on its head \(its findings are on the PR/);
+      assert.doesNotMatch(step.say[0], /dark mode/, "the status description is repo-controlled: never in the runner's words");
     });
 
-    it("no verdict 2 hours after the checks went green goes to the owner, whose card can then merge it", async () => {
+    it("no verdict 2 hours after the checks went green asks once more, then parks it (never the owner's card)", async () => {
       const gh = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("PENDING")]) }) });
       const q = ui(1);
       assert.equal((await advance(q, { github: gh, now: at(0) })).wake.length, 1);
       assert.equal((await advance(q, { github: gh, now: at(60) })).wake.length, 0, "asked once per head");
-      const step = await advance(q, { github: gh, now: at(121) });
-      assert.deepEqual(step.escalate, [{ repo: "o/r", number: 1, url: "u1", head: "head1" }]);
+      const again = await advance(q, { github: gh, now: at(121) });
+      assert.deepEqual(again.wake, [{ repo: "o/r", number: 1, url: "u1", head: "head1", again: true }], "asked again");
+      assert.equal(again.done, undefined);
+      const step = await advance(q, { github: gh, now: at(243) });
       assert.equal(step.done, "stopped");
+      assert.match(step.queue.prs[0].note, /^parked: no design review/);
       assert.deepEqual(gh.writes, []);
-      // The owner's approved card starts a card queue for it: not "merged already".
-      assert.equal(startOrResume(step.queue, [{ repo: "o/r", number: 1, url: "u1", head: "head1" }], { gapMinutes: 0, now: at(122) }).prs.filter((p) => p.status === "pending").length, 1);
+      // Asked for again later, it is merged then: not "merged already".
+      assert.equal(startOrResume(step.queue, [{ repo: "o/r", number: 1, url: "u1", head: "head1" }], { gapMinutes: 0, now: at(244) }).prs.filter((p) => p.status === "pending").length, 1);
     });
   });
 

@@ -126,6 +126,8 @@ const ApprovalRequestSchema = z
     baseTier: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
     /** classify()'s rule: the card's reason code. */
     rule: z.string().regex(TIER_RULE).optional(),
+    /** classify()'s panel: authority-expanding, so a reviewer approval needs a second reviewer's. */
+    panel: z.literal(true).optional(),
   })
   .strict();
 /** A Tier 0 run the runner already made: an audit row only. */
@@ -142,7 +144,7 @@ const AuditSchema = z
   })
   .strict();
 const ReviewSchema = z
-  .object({ digest: z.string().min(1).max(64), decision: z.enum(["approve", "reject", "escalate"]), reason: z.string().max(2000), model: z.enum(REVIEWER_MODELS), code: z.enum(REVIEW_CODES).optional() })
+  .object({ digest: z.string().min(1).max(64), decision: z.enum(["approve", "reject", "escalate"]), reason: z.string().max(2000), model: z.enum(REVIEWER_MODELS), second: z.enum(REVIEWER_MODELS).optional(), code: z.enum(REVIEW_CODES).optional() })
   .strict();
 
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
@@ -916,7 +918,7 @@ export function createApp(opts: AppOptions): Server {
         // Tier 1 only while autonomy is on: off means every card is the owner's, as before.
         const tier = autonomy() === "off" ? 2 : b.tier;
         // The requester is the task's agent, looked up here; the base tier is the runner's classify() (its key filed this).
-        const a = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: from, tier, reason: b.reason, requesterId: task.assigneeAgentId ?? null, baseTier: b.baseTier ?? null, reasonCode: b.rule ?? null, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
+        const a = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: from, tier, reason: b.reason, requesterId: task.assigneeAgentId ?? null, baseTier: b.baseTier ?? null, reasonCode: b.rule ?? null, panel: b.panel === true, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
         log.info({ approval: a.id, task: a.identifier, action: a.action, replaced: a.replaced, tier: a.tier, baseTier: a.baseTier, code: a.reasonCode }, "approval requested");
         return { ...approvalView(a), args: a.args };
       },
@@ -967,7 +969,19 @@ export function createApp(opts: AppOptions): Server {
           log.info({ approval: r.approval.id, task: r.approval.identifier, model: b.model, code: b.code }, "approval escalated by the reviewer");
           return approvalView(r.approval);
         }
-        return decided(r, `reviewer:${b.model}`);
+        return decided(r, r.ok ? (r.approval.decidedBy ?? `reviewer:${b.model}`) : `reviewer:${b.model}`);
+      },
+    },
+    {
+      // The reviewer found a pending Tier 1 card authority-expanding: it needs a second reviewer from now on (set, never cleared).
+      method: "POST",
+      path: /^\/internal\/approvals\/(A[0-9a-f]{8})\/panel$/,
+      handle: async (m, body, _u, req) => {
+        if (!runnerKeyed(req)) throw new HttpError(403, "only the reviewer marks a card for the panel");
+        const b = parse(z.object({ digest: z.string().min(1).max(64) }).strict(), body);
+        const r = store.approvals.markPanel(m[1]!, b.digest);
+        if (!r.ok) throw new HttpError(409, r.reason);
+        return approvalView(r.approval);
       },
     },
     {
@@ -980,7 +994,7 @@ export function createApp(opts: AppOptions): Server {
         const issue = url.searchParams.get("issue");
         if (issue) {
           if (!runnerKeyed(req)) await requireAgentTool(req, "task_approvals");
-          // The runner gets the args too: a rejected product PR card that carried the merge makes later merges sticky.
+          // The runner gets the args too: earlier decisions count by content and target, and a product PR card carries its merge.
           return { approvals: store.approvals.on(issue).map((a) => (runnerKeyed(req) ? { ...approvalView(a), args: a.args } : approvalView(a))) };
         }
         // pending and finished: the owner channel's (or the watcher's); review and approved: the runner's.

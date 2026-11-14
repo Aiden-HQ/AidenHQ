@@ -68,8 +68,6 @@ test("settings substitute and {{date}} passes through", () => {
 });
 test("overrides apply to allowed fields only", () => {
   assert.equal(compile(mods, inst(["a"], base, { overrides: { agents: { x: { model: "m2" } } } })).paperclip.agents.x.model, "m2");
-  assert.equal(compile(mods, inst(["a"], base, { overrides: { agents: { x: { max_parallel: 4 } } } })).paperclip.agents.x.max_parallel, 4);
-  assert.throws(() => compile(mods, inst(["a"], base, { overrides: { agents: { x: { max_parallel: 0 } } } })), /max_parallel must be 1 to 10/);
   assert.throws(() => compile(mods, inst(["a"], base, { overrides: { agents: { x: { mcp_servers: [] } } } })), /override not allowed: agents\.x\.mcp_servers/);
   assert.throws(() => compile(mods, inst(["a"], base, { overrides: { agents: { nope: { model: "m" } } } })), /unknown agent: nope/);
   assert.deepEqual(compile(mods, inst([], base, { overrides: { routines: { daily: { status: "paused" } } } })).paperclip.routines.daily.status, "paused");

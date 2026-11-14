@@ -3,6 +3,7 @@
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
 import { RUNNER_MARKER } from "./commands.mjs";
+import { patchKey } from "./git.mjs";
 import { findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
 import { MAX_DIFF } from "./review.mjs";
 import { downscalePng, imageInfo } from "./images.mjs";
@@ -314,7 +315,16 @@ export async function onMain(git, path, base, sha) {
     // No files: nothing to compare (an empty pathspec would diff the whole tree).
     if (!files.length) return { satisfied: false };
     const same = await git(path, "diff", "--quiet", "--no-renames", main, sha, "--", ...files.map((f) => `:(literal)${f}`)).then(() => true, () => false);
-    return same ? { satisfied: true, evidence: `every file \`${sha.slice(0, 12)}\` changes (${files.length}: ${files.slice(0, 5).join(", ")}${files.length > 5 ? ", …" : ""}) is already identical on \`${base}\` (at \`${tip.slice(0, 12)}\`)` } : { satisfied: false };
+    if (same) return { satisfied: true, evidence: `every file \`${sha.slice(0, 12)}\` changes (${files.length}: ${files.slice(0, 5).join(", ")}${files.length > 5 ? ", …" : ""}) is already identical on \`${base}\` (at \`${tip.slice(0, 12)}\`)` };
+    // The same change already merged (a squash of it, by patch: the same file headers and changed lines), though main moved
+    // on in those files since: one of the recent commits that touch them.
+    const want = await patchKey(path, mb, sha);
+    const recent = (await git(path, "log", "--format=%H", "-n", String(RECENT_COMMITS), main, "--", ...files.map((f) => `:(literal)${f}`))).split("\n").filter(Boolean);
+    for (const c of recent) {
+      const key = await patchKey(path, `${c}^`, c).catch(() => undefined);
+      if (key === want) return { satisfied: true, evidence: `the same change is already merged on \`${base}\` as \`${c.slice(0, 12)}\`` };
+    }
+    return { satisfied: false };
   } catch {
     return { satisfied: false };
   }
@@ -325,6 +335,9 @@ export async function onMain(git, path, base, sha) {
  * base, read before the guard's fetch): a branch with no commits of its own has nothing to be satisfied, so it is never
  * "already applied" (its tip is trivially an ancestor of main); otherwise onMain.
  */
+/** How far back on the default branch the guard looks for the same change merged (commits touching the same files). */
+const RECENT_COMMITS = 200;
+
 export async function guardBranch(git, row, sha) {
   if (!row.unpublished?.length && !row.stat) return { satisfied: false };
   return onMain(git, row.path, row.defaultBase, sha);
