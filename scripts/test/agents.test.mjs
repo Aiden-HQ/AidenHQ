@@ -68,7 +68,7 @@ test("instance agents are validated like module agents, and can't take roles or 
 test("the Architect: max effort, only its own role, no fleet tools, reads every source; it changes the fleet only by delegating", () => {
   const a = compile(product, withAgents({}, ["slack", "github"])).paperclip.agents.architect;
   assert.deepEqual([a.model, a.reasoning_effort], ["~deepseek/deepseek-flash-latest", "max"]);
-  assert.deepEqual(a.roles, ["architect"]);
+  assert.deepEqual(a.roles, ["architect", "repo-checkout"]);
   assert.deepEqual(a.enabled_tools.slack_live, ["notify_owner"]);
   assert.deepEqual(a.enabled_tools.apps, ["app_list", "app_status", "app_logs", "app_view", "web_view", "warehouse_query"]); // research reads only: no deploys, and the request and role reads would refuse it anyway
   assert.ok(a.enabled_tools.slack.includes("slack_read_thread") && !a.enabled_tools.slack.some((t) => /send|draft/.test(t)));

@@ -196,7 +196,8 @@ agents:
       paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, fleet_catalog, task_delegate, task_comment, task_handoff, task_set_status, task_finish ]
     heartbeat: true
     # architect: handbook-only edits to agents in trial on its Platform Engineer tasks land without a tap (the runner checks).
-    roles: [ architect ]
+    # repo-checkout: the instance repo's agents/ and handbooks, read-only, once the Architect has a computer (`image:`).
+    roles: [ architect, repo-checkout ]
   coach:
     department: agents
     # Reviews other agents' outcomes (output quality, misses, inputs, behaviour, feedback) and files fixes through the usual

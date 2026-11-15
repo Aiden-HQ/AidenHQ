@@ -62,6 +62,7 @@ const CFG = {
   idleMs: Number(env("AIDENHQ_COMPUTERS_IDLE_MIN", 10)) * 60_000,
   limits: { memory: env("AIDENHQ_COMPUTERS_MEMORY", "2g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "512m", pids: 1024 },
   grantsFile: path.join(configDir, "grants", "grants.json"),
+  catalogFile: path.join(path.resolve(repo, env("AIDENHQ_DATA_DIR", "data")), "paperclip", "catalog.static.json"),
   computersFile: env("AIDENHQ_COMPUTERS_FILE", path.join(configDir, "computers.json")),
   composeProject: env("COMPOSE_PROJECT_NAME", "aidenhq"),
   // The runner's work and state dirs (services/runner/src/config.mjs: work_dir and state_dir in config/runner.yaml): its cache
@@ -97,6 +98,8 @@ const MOUNTS = [
   // a mount of the whole folder at /opt/aidenhq would hide the image's own /opt/aidenhq (app-starter, design-system).
   ...readdirSync(path.join(repo, "services/paperclip-tasks-mcp")).map((f) => `${path.join(repo, "services/paperclip-tasks-mcp", f)}:/opt/aidenhq/${f}:ro`),
   `${path.dirname(CFG.grantsFile)}:/aidenhq-grants:ro`,
+  // fleet_catalog's static half (agents, tools, modules; no secrets): the one file, never the data dir around it.
+  ...(existsSync(CFG.catalogFile) ? [`${CFG.catalogFile}:/paperclip/catalog.static.json:ro`] : []),
 ];
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);

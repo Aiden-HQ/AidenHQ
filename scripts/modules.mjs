@@ -38,7 +38,7 @@ const ROLES = {
   librarian: ["librarian"], // read every handbook, decide proposed identity links, hand rule proposals to the Platform Engineer (tasks bridge, apps-mcp)
   "fleet-read": ["fleet-ops", "core"], // the board's fleet status only (never fleet_control or relaying the owner's words)
   "fleet-audit": ["core"], // read any agent's evidence (the board's coach routes) and keep a review log (tasks bridge coach_*)
-  "repo-checkout": ["design"], // a commit of an agents-org repo placed in its computer (services/computer/launcher.mjs POST /repo)
+  "repo-checkout": ["core", "design"], // a commit of an agents-org repo placed in its computer (services/computer/launcher.mjs POST /repo)
   "design-review": ["design"], // the design-review commit status on agents-org PRs (github-mcp commit_status_set)
 };
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
