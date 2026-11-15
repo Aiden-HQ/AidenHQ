@@ -290,15 +290,16 @@ describe("grade routes", () => {
     }
   });
 
-  it("cancelling a task while its evidence is awaited settles the row, and the detector raises no grade: key", async () => {
+  it("cancelling a task while its evidence is awaited settles the row and refuses the late close, and the detector raises no grade: key", async () => {
     const s = new Store(":memory:");
     const cancelled = { ...task, id: "55555555-5555-5555-5555-555555555555", identifier: "WOR-9", status: "cancelled", cancelledAt: "2026-11-14T09:00:00.000Z" } as unknown as typeof task;
+    const wrote: Record<string, unknown>[] = [];
     const own = {
       companyId: "co",
       agentMe: async (key: string) => agents.find((a) => a.id === key) ?? Promise.reject(new Error("401")),
       issue: async () => cancelled,
       labels: async () => [{ id: "lbl-grading", name: "grading" }],
-      updateIssue: async () => cancelled,
+      updateIssue: async (_id: string, body: Record<string, unknown>) => void wrote.push(body),
     } as unknown as Paperclip;
     const app3 = createApp({ paperclip: own, store: s, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY });
     await new Promise<void>((r) => app3.listen(0, "127.0.0.1", r));
@@ -317,9 +318,12 @@ describe("grade routes", () => {
       s.grades.file(cancelled.id, [], { kind: "report", ref: "" });
       completionGate(s.grades, cancelled.id, "task_finish");
       s.grades.record(cancelled.id, { version: "", outcome: "awaiting_evidence", model: "", criteria: [] }, Date.now() - 2 * 86_400_000);
-      // The runner's next look at the task: cancelled, so the close passes and the row ends settled.
-      expect((await post3(`/internal/grades/${cancelled.id}/gate`, { via: "finish_turn" })).json).toEqual({ pass: true });
+      // The runner's next look at the task: cancelled, so the close is refused (and with it the in_review patch that
+      // would reopen it) while the row still ends settled, never stuck work.
+      expect(await post3(`/internal/grades/${cancelled.id}/gate`, { via: "finish_turn" })).toEqual({ status: 409, json: { error: "the task is cancelled" } });
       expect(s.grades.get(cancelled.id)).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });
+      expect(wrote).toEqual([]); // no status, label or review-path write
+      expect(cancelled.status).toBe("cancelled");
       expect(await checks({ companyId: "co", issue: async () => cancelled } as never, s as never, () => Date.now(), {}).grade!()).toEqual([]);
     } finally {
       app3.close();

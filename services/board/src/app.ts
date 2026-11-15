@@ -1114,12 +1114,13 @@ export function createApp(opts: AppOptions): Server {
         const runner = via === "finish_turn" || via === "finish_merges";
         const agent = runner ? (requireRunner(req, `closes a task by ${via}`), undefined) : await requireAgentTool(req, via);
         const issue = await pc.issue(decodeURIComponent(m[1]!));
-        // A cancelled task is never graded: no deliverable is left to check, so its row settles and the path may close as an
-        // ungraded one would (the caller leaves a task that is already closed as it is). This comes before the delegator's
-        // acceptance: closing a cancelled task cancels it, it does not accept the work.
+        // A cancelled task is never graded or moved by a late close: no deliverable is left to check, so its row ends (never
+        // stuck work), and the close is refused before the gate runs and before the patch below (back to in_review, the
+        // grading label) would reopen it. This comes before the delegator's acceptance: closing a cancelled task cancels
+        // it, it does not accept the work.
         if (issue.status === "cancelled") {
           store.grades.settle(issue.id, "the task was cancelled before the grader settled it");
-          return { pass: true };
+          throw new HttpError(409, "the task is cancelled");
         }
         // Only the task's own assignee moves its grade: anyone else closing a graded task is refused, and an ungraded one
         // passes without touching anything. The one exception: an escalated grade is its delegator's call, and its close
