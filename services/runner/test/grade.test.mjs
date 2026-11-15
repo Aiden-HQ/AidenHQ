@@ -212,6 +212,8 @@ test("a live-page criterion is judged from the deployed app's captured page; a r
 test("rubric paths: plain page paths after /, never repo names, URLs' hosts or sizes", () => {
   assert.deepEqual(rubricPaths(["the /settings page shows it.", "`/items?tab=open` lists it", "acme/app#7 merged; works at 390/1280", "see https://example.com/x", "/a/../admin", "/settings again"]), ["/", "/settings", "/items?tab=open"]);
   assert.equal(rubricPaths(["/a /b /c /d /e /f"]).length, 5);
+  // The rule for an item on a list: the filtered path is captured, a full URL's host is not.
+  assert.deepEqual(rubricPaths(["the /slipped?q=CMBT page shows no moved marker", "https://app.example/slipped?q=CMBT"]), ["/", "/slipped?q=CMBT"]);
 });
 
 test("a file deliverable's attachments reach the model: an image part (a large PNG downscaled) and the text, within budget", async () => {
