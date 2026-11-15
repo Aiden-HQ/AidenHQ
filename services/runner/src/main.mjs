@@ -948,7 +948,7 @@ async function runAutoMerges() {
       if (busy || !rest.length) continue;
       const said = rest.filter(([, t]) => t.reject);
       if (said.length) await pc.comment(issueId, said.map(([, t]) => `**Not merged:** ${t.reason}.${["checks-not-green", "no-checks", "head-moved"].includes(t.rule) ? " The merge is requested again when you publish again." : ""}`).join("\n"));
-      for (const [p, t] of said) await wakeForTurnedAway(issueId, { ...p, why: t.reason, key: t.rule });
+      for (const [p, t] of said) await wakeForTurnedAway(issueId, { ...p, key: t.rule });
       const carded = rest.filter(([p]) => !said.some(([s]) => s === p));
       if (carded.length) {
         const tier = carded.some(([, t]) => t.tier !== 1) ? 2 : 1;
@@ -1140,6 +1140,12 @@ async function wakeForRedChecks(issueId, queue, f) {
  * the reason, since the "Not merged" comment alone starts no turn. Once per head and reason, three times per PR at most; never on
  * a stopped (breaker) or finished task.
  */
+const TURNED_WHY = {
+  "no-checks": "its head has no checks yet (CI may not have started, or the commits aren't published)",
+  "checks-not-green": "named checks failed on its head",
+  "head-moved": "its head isn't the commit that was reviewed, or isn't published",
+  queue: "the merge queue turned it away",
+};
 async function wakeForTurnedAway(issueId, f) {
   const key = `turned-wake:${f.url.toLowerCase()}`;
   const mark = `${f.head}:${f.key}`;
@@ -1149,7 +1155,7 @@ async function wakeForTurnedAway(issueId, f) {
   const issue = await pc.issue(issueId).catch(() => undefined);
   if (!issue || ["done", "cancelled"].includes(issue.status)) return;
   log("turned-away merge wake", { issue: issueId, pr: f.url, rule: f.key });
-  await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${f.url} wasn't merged: ${String(f.why).slice(0, 400)}. Fix the cause on the PR's branch, then \`aidenhq pr\` and \`aidenhq merge ${f.url}\` again.` }).catch((err) => log("turned-away wake failed", { pr: f.url, err: String(err.message ?? err).slice(0, 200) }));
+  await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${f.url} wasn't merged: ${TURNED_WHY[f.key] ?? `the runner's merge policy refused it (\`${f.key}\`)`}. Run \`gh pr checks ${f.number}\` and read the task's "Not merged" comment for the details. Fix the cause on the PR's branch, then \`aidenhq pr\` and \`aidenhq merge ${f.url}\` again.` }).catch((err) => log("turned-away wake failed", { pr: f.url, err: String(err.message ?? err).slice(0, 200) }));
 }
 
 /** A finished queue: the task's status (with `say`, unless already posted), the parent's note, and the tasks that opened its PRs. */

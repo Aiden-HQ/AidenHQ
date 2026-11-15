@@ -886,7 +886,7 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
       Object.assign(p, { status: "failed", note: why });
       delete p.wait;
       say.push(`**Not merged:** ${p.url}: ${why}.`);
-      turned.push({ repo: p.repo, number: p.number, url: p.url, head: p.head, why, key: why.slice(0, 40) });
+      turned.push({ repo: p.repo, number: p.number, url: p.url, head: p.head, key: "queue" });
     };
     // again: past the limit the design reviewer is asked once more for the same head (the caller files its task again), and
     // the wait starts over; past it a second time the PR is parked (not merged, with a note to ask again).
