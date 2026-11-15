@@ -192,12 +192,19 @@ The Monday run reviews the week for failures that keep coming back and proposes 
    Dependabot section says; list each such PR with what was done (merge requested, fixing PR, closed as a major jump, or
    the reason); one line if there are none", `deliverable` `report` (a report is read, not graded). Name the task in the
    summary; don't wait for it. Close last week's straggler task once its answer is posted.
-6. **Summarize:** `task_search` the marker `fleet-review:<date>` first: if it exists, this week's summary was already filed;
+6. **Measure:** two numbers for the summary, each with last week's beside it (from the previous `Fleet review —` task).
+   - **Revert rate:** merged PRs reverted within the week over merged PRs, from `warehouse_query` on `src_github.issues`
+     (`kind` pull request, `merged_at` in the week; a revert is a PR titled `Revert "…"`), across the product and
+     agents-org repos. Name any of those repos the table doesn't cover.
+   - **Same defect twice:** a defect fixed again after an earlier fix (the same task titles, `rule:` lines and fix PRs
+     in the week's reads). Each one gets a proposal (step 4) for a deterministic check (a lint rule, a test or a
+     `ui-review` check) as its replacement text, so the fix lives in code.
+7. **Summarize:** `task_search` the marker `fleet-review:<date>` first: if it exists, this week's summary was already filed;
    never file it twice. Otherwise one `task_create` titled `Fleet review — <date>`, marker `fleet-review:<date>`,
    `dedupe_closed: true` and **no `assignee`** (it lands on the owner's board for reading, so it never wakes you), with the
-   causes found, the proposals filed (task ids), the existing fixes you matched, and what you left. Then, only when it came
+   measures, the causes found, the proposals filed (task ids), the existing fixes you matched, and what you left. Then, only when it came
    back new (not `deduplicated`), one `notify_owner` (priority `normal`): the week's headline in two lines and the summary's
    identifier. A quiet week is one line.
-7. `task_finish` with one line.
+8. `task_finish` with one line.
 
 Facts about people and projects go to the Librarian; rules for agents come here.
