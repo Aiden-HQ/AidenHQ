@@ -148,3 +148,83 @@ test("a graduation card lists the handbook edits that landed during the trial; o
   assert.equal(await trialEditsText(w, base, [book], { base: same, head: same }), "", "a handbook-only edit isn't a graduation");
   assert.equal(await trialEditsText(w, base, [def], { base: same, head: same }), "", "still in trial");
 });
+
+// The host apply, from the runner's side: ops/apply-config.sh refuses at once while another apply holds data/apply.lock
+// ("another apply is running"), and a land must wait that out rather than report the change failed. The real lock is held
+// by a real process here, so "waited" and "timed out" are read from flock, not from a stub's opinion.
+const checkoutWithLock = async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "apply-wait-"));
+  mkdirSync(join(dir, "data"), { recursive: true });
+  writeFileSync(join(dir, "data/apply.lock"), "");
+  return dir;
+};
+/** Holds <dir>/data/apply.lock for `ms`, as a running apply does. */
+const holdLock = async (dir, ms) => {
+  const { spawn } = await import("node:child_process");
+  const { join } = await import("node:path");
+  const p = spawn("flock", [join(dir, "data/apply.lock"), "sleep", String(ms / 1000)], { stdio: "ignore" });
+  const exited = new Promise((r) => p.on("exit", r));
+  await new Promise((r) => setTimeout(r, 300));
+  return { p, exited };
+};
+
+test("a land that meets a held apply lock waits it out, then applies", async () => {
+  const { applyIsBusy, applyWaitingForLock } = await import("../src/apply.mjs");
+  const dir = await checkoutWithLock();
+  const holder = await holdLock(dir, 2500);
+  assert.equal(await applyIsBusy(dir), true, "the lock is held before the land starts");
+  const attempts = [];
+  const out = await applyWaitingForLock(async () => {
+    attempts.push(Date.now());
+    return (await applyIsBusy(dir))
+      ? { ok: false, text: "refusing: another apply is running (data/apply.lock is held)\n" }
+      : { ok: true, text: "apply timing: total 1.0s\n" };
+  }, dir, { boundMs: 20_000, pollMs: 100 });
+  await holder.exited;
+  assert.equal(out.ok, true, out.text);
+  assert.equal(out.timedOut, undefined, "a wait that cleared is not a timeout");
+  assert.match(out.text, /apply timing/, "the apply ran after the lock cleared");
+  assert.ok(attempts.length >= 2, `the apply was tried again once the lock was free (${attempts.length} attempts)`);
+  assert.ok(Date.now() - attempts[0] >= 2000, "it waited for the holder rather than refusing");
+});
+
+test("an apply lock not released within the bound stops waiting and says it timed out, naming the lock", async () => {
+  const { applyWaitingForLock } = await import("../src/apply.mjs");
+  const dir = await checkoutWithLock();
+  const holder = await holdLock(dir, 5000);
+  const start = Date.now();
+  const out = await applyWaitingForLock(async () => ({ ok: false, text: "refusing: another apply is running (data/apply.lock is held)\n" }), dir, { boundMs: 700, pollMs: 100 });
+  const waited = Date.now() - start;
+  assert.equal(out.ok, false);
+  assert.equal(out.timedOut, true, "a lock still held at the bound is its own outcome, not a plain failure");
+  assert.ok(waited >= 700 && waited < 4000, `it stopped at its bound (waited ${waited}ms)`);
+  assert.match(out.text, /timed out: data\/apply\.lock was still being refused after waiting 0\.\ds/);
+  assert.match(out.text, /was not re-applied on this host/);
+  holder.p.kill();
+});
+
+test("an apply that fails for its own reason is neither waited on nor relabelled", async () => {
+  const { applyWaitingForLock } = await import("../src/apply.mjs");
+  const dir = await checkoutWithLock();
+  const out = await applyWaitingForLock(async () => ({ ok: false, text: "refusing: .env has no AIDENHQ_INSTANCE_DIR\n" }), dir, { boundMs: 5000, pollMs: 50 });
+  assert.deepEqual(out, { ok: false, text: "refusing: .env has no AIDENHQ_INSTANCE_DIR\n" });
+});
+
+test("the bound alone ends the wait: a lock that keeps being refused is not retried forever because a probe saw it free", async () => {
+  const { applyWaitingForLock } = await import("../src/apply.mjs");
+  // No holder at all: every probe reports the lock free, and the apply refuses on the lock each time anyway -- another
+  // apply took it between the probe and the attempt. The bound has to end it, not the probe.
+  const dir = await checkoutWithLock();
+  let attempts = 0;
+  const out = await applyWaitingForLock(async () => {
+    attempts += 1;
+    return { ok: false, text: "refusing: another apply is running (data/apply.lock is held)\n" };
+  }, dir, { boundMs: 600, pollMs: 50 });
+  assert.equal(out.ok, false);
+  assert.equal(out.timedOut, true, "the bound is spent, so it is a timeout even though the probe says free");
+  assert.match(out.text, /timed out: data\/apply\.lock was still being refused after waiting 0\.\ds/);
+  assert.ok(attempts < 40, `it stopped at its bound instead of retrying without limit (${attempts} attempts)`);
+});

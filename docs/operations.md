@@ -6,7 +6,9 @@
 locked entry point: it opens `data/apply.lock` at that fixed path (before `.env` is read, so nothing the apply reads
 decides what it locks), holds the lock on fd 9 and execs `ops/apply-config-work.sh`, which takes no lock of its own. One
 apply runs at a time; a second one exits at once with `another apply is running` rather than queueing behind a whole
-apply. The lock is held across the hand-over to a newer script too.
+apply. The lock is held across the hand-over to a newer script too. A land (the runner applying an approved change) reads
+that refusal as "wait": it tries the apply again once `data/apply.lock` is free, waiting up to 15 minutes, and reports the
+wait plainly when the lock does not clear in that time, instead of the change as failed.
 
 `ops/apply-config-work.sh` is the body:
 

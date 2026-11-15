@@ -1,6 +1,9 @@
 // What `aidenhq apply` may land: the instance repo's config only (instance.yaml, apps.yaml, handbook additions).
 // Product code and module handbooks change through Engineer PRs; the instance pins the product (`product: <sha>`), so
 // upgrading the product is itself an instance change that the owner sees with its commit log.
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import YAML from "yaml";
 import { git } from "./git.mjs";
 
@@ -104,6 +107,62 @@ export function bumpTitle({ from, to, forward, back }) {
   if (!from) return `Product pinned at ${s(to)}`;
   if (forward) return `Product upgrade ${s(from)} → ${s(to)}, adding these commits`;
   if (back) return `Product DOWNGRADE (rollback) ${s(from)} → ${s(to)}, removing these commits`;
+}
+
+// The host's apply lock, seen from the runner. ops/apply-config.sh opens data/apply.lock, holds it for the whole apply and
+// refuses a second one at once with "another apply is running" (ops/lib/apply-lock.sh). That refusal is right for the lock
+// and wrong for a land: the commit is already on main and the apply holding the lock is about to finish, so reporting the
+// change as failed is a spurious failure. A land waits the lock out instead, bounded, and then applies; a lock that
+// outlasts the bound is reported as that, naming the lock and the time waited, never as the change having failed.
+export const APPLY_LOCK = "data/apply.lock";
+export const APPLY_LOCK_WAIT_MS = 15 * 60_000;
+export const APPLY_LOCK_POLL_MS = 2_000;
+/** The apply's own words when another process holds the lock (ops/apply-config.sh). */
+export const applySaysLocked = (text) => /another apply is running/.test(String(text ?? ""));
+// flock's -E status for "somebody else holds it", so a probe's other failures stay failures.
+const FLOCK_BUSY = 75;
+
+/** Whether another process holds <repo>/data/apply.lock now: a probe that locks the file itself, so a free lock stays free. */
+export function applyIsBusy(repoPath) {
+  const lock = join(repoPath, APPLY_LOCK);
+  // The entry point creates it before it locks; no file is no apply running (and flock won't open one that isn't there).
+  if (!existsSync(lock)) return Promise.resolve(false);
+  return new Promise((resolve, reject) => {
+    execFile("flock", ["-n", "-E", String(FLOCK_BUSY), lock, "true"], (err) => {
+      if (!err) return resolve(false);
+      if (err.code === FLOCK_BUSY) return resolve(true);
+      reject(new Error(`couldn't check whether ${lock} is held (${err.message})`));
+    });
+  });
+}
+
+/** A wait as the operator reads it: "0.6s", "9m05s". */
+const waitedText = (ms) => (ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m${String(Math.round((ms % 60_000) / 1000)).padStart(2, "0")}s`);
+
+/**
+ * One host apply, waiting out a lock another apply holds: `run` is one attempt (ops/apply-config.sh), tried again once the
+ * lock is free, while the bound still has room. A lock that does not clear within the bound comes back `timedOut`, naming
+ * the lock and the wait, and the apply is not run again on top of it. Any other failure is the apply's own and comes back
+ * untouched.
+ */
+export async function applyWaitingForLock(run, repoPath, { boundMs = APPLY_LOCK_WAIT_MS, pollMs = APPLY_LOCK_POLL_MS } = {}) {
+  const start = Date.now();
+  const deadline = start + boundMs;
+  const outOfTime = (out) => {
+    const waitedMs = Date.now() - start;
+    return { ...out, ok: false, timedOut: true, waitedMs, text: `${out.text}\ntimed out: ${APPLY_LOCK} was still being refused after waiting ${waitedText(waitedMs)}, so the instance was not re-applied on this host` };
+  };
+  for (;;) {
+    const out = await run();
+    if (out.ok || !applySaysLocked(out.text)) return out;
+    // The apply refused on the lock: wait it out, polling by trying the lock itself so nothing is held meanwhile. The first
+    // sleep spaces the attempts too: a probe can see the lock free a moment before another apply takes it.
+    do {
+      await new Promise((r) => setTimeout(r, Math.max(Math.min(pollMs, deadline - Date.now()), 1)));
+    } while (Date.now() < deadline && (await applyIsBusy(repoPath)));
+    // The bound is spent: that is the outcome, and nothing is tried on top of it. The clock decides, never the probe alone.
+    if (Date.now() >= deadline) return outOfTime(out);
+  }
 }
 
 // `node apply.mjs product-pin <instance.yaml>`: the pin, for ops/apply-config.sh (one parser for both).

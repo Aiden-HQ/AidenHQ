@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, ENGINES, openrouterKind, repoAllowed, resolveEngine, stripHidden } from "./commands.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
-import { architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
+import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
 import { branchCardArgs, cardText } from "./cards.mjs";
 import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.mjs";
@@ -2530,11 +2530,17 @@ function landFleet(issue, r, approvedSha, files, why, message, guard) {
     await git(r.path, "fetch", "--quiet", "origin");
     state.updateBranch(issue.id, r.repo, r.branch, { pushed: 1 });
     log("fleet config applied: pushed", { issue: issue.identifier, sha, why, files });
-    const out = await execFileP("bash", [join(REPO_ROOT, "ops/apply-config.sh"), sha], { maxBuffer: 8 * 1024 * 1024, timeout: 30 * 60_000 }).then((o) => ({ ok: true, text: o.stdout + o.stderr }), (e) => ({ ok: false, text: `${e.stdout ?? ""}${e.stderr ?? e.message}` }));
+    // The apply waits out a lock another apply holds (a concurrent land, or an operator running one): it is refused at
+    // once with "another apply is running" (ops/apply-config.sh), which is a reason to wait, not a failed change.
+    const out = await applyWaitingForLock(
+      () => execFileP("bash", [join(REPO_ROOT, "ops/apply-config.sh"), sha], { maxBuffer: 8 * 1024 * 1024, timeout: 30 * 60_000 }).then((o) => ({ ok: true, text: o.stdout + o.stderr }), (e) => ({ ok: false, text: `${e.stdout ?? ""}${e.stderr ?? e.message}` })),
+      REPO_ROOT,
+    );
     // Done with the branch only once it is live: after a failed apply the next turn shows it again, for a retry.
     if (out.ok) state.updateBranch(issue.id, r.repo, r.branch, { merged: 1 });
     const tail = out.text.replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(-40).join("\n");
-    const said = `${out.ok ? "Applied" : "**Pushed to main, but the apply script failed**"} (${why}): \`${r.defaultBase}\` is now \`${sha.slice(0, 9)}\`.\n\n\`\`\`\n${tail}\n\`\`\``;
+    const head = out.ok ? "Applied" : out.timedOut ? "**Pushed to main, but the apply waited out its bound on the lock and stopped**" : "**Pushed to main, but the apply script failed**";
+    const said = `${head} (${why}): \`${r.defaultBase}\` is now \`${sha.slice(0, 9)}\`.\n\n\`\`\`\n${tail}\n\`\`\``;
     await pc.comment(issue.id, said);
     return { ok: out.ok, text: said };
   });
