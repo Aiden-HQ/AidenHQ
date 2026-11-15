@@ -331,25 +331,18 @@ export function namedChecks(rollup) {
 }
 
 /**
- * A check name as the receipt may print it. Whoever can push to the repo sets it, so it can't break the receipt: control
- * characters (newlines included) and backslashes come out, and every Markdown metacharacter is backslash-escaped, so a
- * name can't open a link, an image, a code span, emphasis or raw HTML and render from a host of its choosing. The name is
- * always mid-line, so block markers (`-`, `.`, `#`, `+`) need nothing. Capped, then escaped, so the cap can't split an escape.
+ * A check name as the receipt may print it. Whoever can push to the repo sets the name and agents read the receipt, so a name
+ * is untrusted text: it prints only when it is short and plain (no brackets, backticks, angle brackets or newlines, so nothing
+ * to render or fence), anything else is "an unnamed check". `gh pr checks <n>` names every check in full.
  */
-const checkName = (n) =>
-  String(n ?? "")
-    .replace(/[\p{Cc}\\]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80)
-    .replace(/[\\`*_{}[\]()!|<>~]/g, "\\$&");
+const checkName = (n) => (/^[A-Za-z0-9 ._\/()-]{1,40}$/.test(n) ? n : "an unnamed check");
 
 /**
  * The checks still running on a PR's head, named: " (still running: test, build)". A stall then says which check is stuck
  * without opening GitHub. Listed at most six, then a count.
  */
 function runningChecks(rollup) {
-  const names = namedChecks(rollup).filter((c) => c.pending).map((c) => checkName(c.name)).filter(Boolean);
+  const names = namedChecks(rollup).filter((c) => c.pending).map((c) => checkName(c.name));
   if (!names.length) return "";
   const shown = names.slice(0, 6).join(", ");
   return ` (still running: ${shown}${names.length > 6 ? `, and ${names.length - 6} more` : ""})`;

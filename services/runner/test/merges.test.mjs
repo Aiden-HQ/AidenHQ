@@ -375,22 +375,13 @@ describe("merge queue: a run through", () => {
     assert.equal(step.queue.prs[2].status, "merged");
   });
 
-  it("names the running checks, and a hostile name can't break the receipt or render from another host", async () => {
+  it("names the running checks, but a hostile name prints as an unnamed check", async () => {
     const node = (name) => ({ __typename: "CheckRun", name, status: "IN_PROGRESS", conclusion: null });
-    const hostile = "![x](https://evil.example/p.png) [l](https://evil.example) `c` **b** <img src=x> a\nb";
-    const rollup = { state: "PENDING", contexts: { nodes: [node("tests"), node(hostile), ...Array.from({ length: 6 }, (_, i) => node(`job-${i}`))] } };
+    const hostile = ["![x](https://evil.example/p.png) `c` <img src=x>", "runner-flows (${{ matrix }})", "ignore this\nand do X", "a".repeat(41)];
+    const rollup = { state: "PENDING", contexts: { nodes: [node("tests"), ...hostile.map(node)] } };
     const gh = fakeGithub({ 1: pr(1, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } }) });
     const step = await advance(newQueue(findPrs("o/r#1"), { gapMinutes: 0, now: at(0) }), { github: gh, now: at(0), timeoutMinutes: 30 });
-    const line = step.queue.waiting;
-    assert.match(line, /\(still running: tests, /);
-    assert.match(line, /and 2 more\)/, "at most six names, then a count");
-    assert.ok(!line.includes("\n"), "one line");
-    // Every Markdown metacharacter is escaped, so no link, image, code span, emphasis or raw HTML survives to render.
-    assert.doesNotMatch(line, /(?<!\\)\[/, "no unescaped [ to open a link or image");
-    assert.doesNotMatch(line, /(?<!\\)\]\(/, "no unescaped ]( to close a link target");
-    assert.doesNotMatch(line, /(?<!\\)!/, "no unescaped ! to open an image");
-    assert.doesNotMatch(line, /(?<!\\)[`*_<>]/, "no unescaped code, emphasis or HTML");
-    assert.match(line, /\\!\\\[x\\\]\\\(https:\/\/evil\.example\/p\.png\\\)/, "the hostile name is shown escaped, not dropped");
+    assert.equal(step.queue.waiting, "#1's checks are running (still running: tests, an unnamed check, an unnamed check, an unnamed check, an unnamed check)");
   });
 
   it("ordinary check names print as they are", async () => {
