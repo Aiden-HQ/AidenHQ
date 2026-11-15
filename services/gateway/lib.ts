@@ -440,7 +440,8 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     const who = await identify(bearer(req), routeKind, ci);
     let body: Record<string, unknown>;
     try { body = JSON.parse(await readBody(req, ci ? CI_MAX_BODY : MAX_BODY)); } catch (e) { throw (e as GatewayError).status ? e : fail(400, "bad_request", "the body must be JSON"); }
-    if (routeKind === "advisor" && body && typeof body === "object") body.model = ADVISOR_MODEL; // the owner's advisor, set in models.mjs
+    // The owner's advisor (set in models.mjs), with no fallback list of other models.
+    if (routeKind === "advisor" && body && typeof body === "object") { body.model = ADVISOR_MODEL; delete body.models; }
     if (!body || typeof body !== "object" || typeof body.model !== "string") throw fail(400, "bad_request", "a model call needs a model");
     if (who.ci) {
       // CI's own gates, whatever the kill switch says: the models and fields it may use, calls in flight, its day caps. A

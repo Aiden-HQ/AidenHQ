@@ -28,7 +28,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
       const body = JSON.parse(b);
       seen.push({ auth: req.headers.authorization, zdr: body.provider?.zdr, url: req.url });
-      asked.push(body.model);
+      asked.push(body.models ? [body.model, body.models] : body.model);
       const id = `gen-${seen.length}`;
       if (body.model === "breaks") { res.writeHead(200, { "content-type": "text/event-stream" }); res.write(`data: {"id":"${id}"}\n\n`); return setTimeout(() => res.destroy(), 20); }
       if (req.url.endsWith("/chat/completions")) {
@@ -63,8 +63,8 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { for (const x of [upstream, paperclip, board, front]) x.s.close(); gw.close(); });
 
-  const call = async (cred, { path = "/api/v1/chat/completions", model = "~deepseek/deepseek-flash-latest" } = {}) => {
-    const res = await fetch(front.url + path, { method: "POST", headers: { authorization: `Bearer ${cred}`, "content-type": "application/json" }, body: JSON.stringify({ model, stream: true, messages: [] }) });
+  const call = async (cred, { path = "/api/v1/chat/completions", model = "~deepseek/deepseek-flash-latest", models } = {}) => {
+    const res = await fetch(front.url + path, { method: "POST", headers: { authorization: `Bearer ${cred}`, "content-type": "application/json" }, body: JSON.stringify({ model, models, stream: true, messages: [] }) });
     return { status: res.status, text: await res.text() };
   };
   const usage = async (since = "") => (await (await fetch(`${front.url}/usage`, { method: "POST", headers: { authorization: "Bearer gw-board" }, body: JSON.stringify({ since }) })).json()).records;
@@ -167,7 +167,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
   assert.equal(rows.filter((r) => r.kind === "source").length, 1);
 
   // The advisor route runs every call on the configured advisor model, whatever the caller asked for, as kind advisor.
-  assert.equal((await call(mintToken("job-secret", { agentId: "ag2", issueId: "iss9" }, now), { path: "/advisor/api/v1/chat/completions", model: "moonshotai/kimi-k3.1-pro" })).status, 200);
+  assert.equal((await call(mintToken("job-secret", { agentId: "ag2", issueId: "iss9" }, now), { path: "/advisor/api/v1/chat/completions", model: "moonshotai/kimi-k3.1-pro", models: ["moonshotai/kimi-k3.1-pro"] })).status, 200);
   assert.equal(asked.at(-1), ADVISOR_MODEL);
   const last = (await usage()).at(-1);
   assert.deepEqual([last.kind, last.agentId, last.issueId], ["advisor", "ag2", "iss9"]);
