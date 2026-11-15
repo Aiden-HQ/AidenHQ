@@ -133,4 +133,19 @@ describe("post-deploy watch", () => {
     expect(store.recentDeploys("demo")).toHaveLength(3); // one rollback, no loop
     expect(store.recentDeploys("demo")[0]).toMatchObject({ sha: "v1", by: "watch-rollback", status: "failed" });
   });
+
+  it("keeps a failed deploy's incident open through healthy checks on the old version, until a fixed deploy is healthy", async () => {
+    const { p, st, store, ticks, deployed } = setup();
+    await deployed();
+    st.app = { ...st.app, pin: "v3" }; // v3 fails its deploy and is rolled back to v2
+    await reconcileTick(p, quiet);
+    expect(st.running).toBe("v2");
+    expect(store.openIncident("demo")?.kind).toBe("deploy_failed");
+    await ticks(3); // v2 is healthy again, but the bad commit is not fixed
+    expect(store.openIncident("demo")?.kind).toBe("deploy_failed");
+    st.app = { ...st.app, pin: FIX };
+    st.good.add(FIX);
+    await reconcileTick(p, quiet);
+    expect(store.openIncident("demo")).toBeUndefined();
+  });
 });
