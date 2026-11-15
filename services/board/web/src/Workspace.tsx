@@ -65,7 +65,7 @@ export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, o
   const error = chats.error;
   const load = chats.reload;
   usePoll(load, anyLive(rows ?? []), 6_000);
-  // Fast-lane agents (LaneChat.tsx): pinned on top; none on an instance without the lane.
+  // Fast-lane agents (LaneChat.tsx): their one conversation is listed under the agent; none on an instance without the lane.
   const laneAgents = useQuery(QUERIES.lane, onSignIn).data?.agents ?? NO_LANE;
   const laneAgent = selected?.startsWith("lane:") ? laneAgents.find((a) => a.key === selected.slice(5)) : undefined;
   useEvents(["chat", "approvals"], load);
@@ -88,6 +88,9 @@ export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, o
   const list = <Sidebar lane={laneAgents} rows={rows} agents={agents} crew={crew} selected={selected} go={go} error={error} retry={load} />;
   const main = laneAgent ? (
     <LaneChat key={laneAgent.key} agent={laneAgent} mobile={mobile} crew={crew} go={go} />
+  ) : selected?.startsWith("lane:") ? (
+    // A lane chat is not a Paperclip task: until the lane's agents load (a reload on its URL) show nothing, never open it as a task ref.
+    <section className="ws-main" />
   ) : selected ? (
     <Conversation key={selected} refId={selected} row={rows?.find((r) => r.identifier === selected)} mobile={mobile} crew={crew} prefix={prefix} go={go} onSignIn={onSignIn} toast={toast} panel={panel} togglePanel={togglePanel} reloadList={load} />
   ) : (
@@ -134,22 +137,10 @@ function Sidebar({ lane, rows, agents, crew, selected, go, error, retry }: { lan
         <ChatListSkeleton />
       ) : (
         <nav className="side-scroll">
-          {lane.length > 0 && (
-            <ul className="side-lane">
-              {lane.map((a) => (
-                <li key={a.key}>
-                  <button className={`side-agent-btn${selected === `lane:${a.key}` ? " on" : ""}`} onClick={() => go(`#/c/lane:${a.key}`)} title={`${a.name}: fast chat`}>
-                    <Monogram name={a.name} size={26} avatar={portraitOf(crew, a.key)} />
-                    <span className="side-agent-name">{a.name}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {groups.front && <Group g={filter(groups.front)} crew={crew} selected={selected} go={go} front searching={!!q} />}
+          {groups.front && <Group g={filter(groups.front)} lane={lane.find((l) => l.key === groups.front!.agent.key)} crew={crew} selected={selected} go={go} front searching={!!q} />}
           {groups.others.length > 0 && <h3 className="side-h">Agents</h3>}
           {groups.others.map((g) => (
-            <Group key={g.agent.key} g={filter(g)} crew={crew} selected={selected} go={go} searching={!!q} />
+            <Group key={g.agent.key} g={filter(g)} lane={lane.find((l) => l.key === g.agent.key)} crew={crew} selected={selected} go={go} searching={!!q} />
           ))}
         </nav>
       )}
@@ -157,21 +148,22 @@ function Sidebar({ lane, rows, agents, crew, selected, go, error, retry }: { lan
   );
 }
 
-function Group({ g, crew, selected, go, front, searching }: { g: AgentGroup; crew: Assignee[]; selected: string | null; go: (h: string) => void; front?: boolean; searching?: boolean }) {
+function Group({ g, lane, crew, selected, go, front, searching }: { g: AgentGroup; lane?: LaneAgent; crew: Assignee[]; selected: string | null; go: (h: string) => void; front?: boolean; searching?: boolean }) {
   const inMore = g.more.some((c) => c.identifier === selected);
   const inEarlier = g.earlier.some((c) => c.identifier === selected);
   const inTests = g.tests.some((c) => c.identifier === selected);
   const holds = g.chats.some((c) => c.identifier === selected) || inMore || inEarlier || inTests || [...g.handedOut.values()].flat().some((c) => c.identifier === selected);
-  const [open, setOpen] = useState(front || holds || g.chats.length > 0);
+  const laneOn = selected === `lane:${g.agent.key}`;
+  const [open, setOpen] = useState(front || holds || laneOn || !!lane || g.chats.length > 0);
   const [showMore, setShowMore] = useState(inMore);
   const [showEarlier, setShowEarlier] = useState(inEarlier);
   const [showTests, setShowTests] = useState(inTests);
   useEffect(() => {
-    if (holds) setOpen(true);
+    if (holds || laneOn) setOpen(true);
     if (inMore) setShowMore(true);
     if (inEarlier) setShowEarlier(true);
     if (inTests) setShowTests(true);
-  }, [holds, inMore, inEarlier, inTests]);
+  }, [holds, laneOn, inMore, inEarlier, inTests]);
   const row = (c: ChatRow) => (
     <li key={c.identifier}>
       <ChatLink c={c} selected={selected} go={go} tasks={g.handedOut.get(c.identifier)} />
@@ -196,7 +188,16 @@ function Group({ g, crew, selected, go, front, searching }: { g: AgentGroup; cre
       </div>
       {open && (
         <ul className="side-chats">
-          {!g.chats.length && !g.earlier.length && !g.tests.length && <li className="side-empty muted small">{searching ? "No matches." : "No chats yet."}</li>}
+          {lane && !searching && (
+            <li>
+              <button className={`side-chat${laneOn ? " on" : ""}`} onClick={() => go(`#/c/lane:${lane.key}`)} title={`${lane.name}: fast chat`}>
+                <span className="side-chat-top">
+                  <span className="side-chat-title">Fast chat</span>
+                </span>
+              </button>
+            </li>
+          )}
+          {!lane && !g.chats.length && !g.earlier.length && !g.tests.length && <li className="side-empty muted small">{searching ? "No matches." : "No chats yet."}</li>}
           {g.chats.map(row)}
           {showMore && g.more.map(row)}
           {g.more.length > 0 && !showMore && (
