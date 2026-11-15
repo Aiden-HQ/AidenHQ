@@ -5,9 +5,15 @@
 // and checks the layout (horizontal overflow, small tap targets, tiny text). With --baseline <dir of an earlier run> it also writes pixel diffs and
 // before|after pictures. Writes <out>/report.md (read this first) and report.json; exits 1 when it finds blocking problems.
 //
-//   ui-review http://127.0.0.1:8080 --paths /,/items --out review
+//   ui-review http://127.0.0.1:8080 --out review                  (the app's feature-map.json, or "/" without one)
+//   ui-review http://127.0.0.1:8080 --paths /,/items --out review  (an explicit list wins over the map)
 //   ui-review http://127.0.0.1:8080 --paths / --out after --baseline before
 //   ui-review http://127.0.0.1:8080 --paths /catalog --palettes neutral,warm,contrast,data   (the app starter's catalog)
+//
+// The app's feature map (feature-map.json, next to server.mjs's PAGES) lists its pages and a few stateful URLs, each with
+// what should be visible there. When it is in the folder ui-review runs from, those paths are reviewed by default, so a
+// filtered view, an open detail sheet or a deep link is seen without naming it; --paths replaces the list, and an app
+// without a map is reviewed at "/" as before.
 //
 // Options: --widths 390,768,1280  --modes light,dark  --full (whole-page screenshots)  --palettes a,b (adds ?palette=&mode=,
 // for pages that read them, like the catalog)  --wait-text "<text>" (wait for it before each screenshot)  --no-routes (skip
@@ -31,7 +37,22 @@ const args = process.argv.slice(2);
 const opt = (name, dflt) => { const i = args.indexOf(`--${name}`); return i < 0 ? dflt : args[i + 1]; };
 const base = args.find((a) => /^https?:\/\//.test(a));
 if (!base) { console.error("usage: ui-review <base url> [--paths /,/x] [--out dir] [--baseline dir] [--widths 390,768,1280] [--modes light,dark] [--palettes a,b] [--full] [--wait-text t] [--no-routes] [--commit sha]"); process.exit(2); }
-const paths = opt("paths", "/").split(",");
+// The app's feature map: {"pages": [{"path": "/?item=x", "shows": "what should be visible there"}]}. A missing map is not
+// a failure (the review is of "/"); a map that is there but unreadable stops the run, so it is fixed rather than ignored.
+const MAP_FILE = "feature-map.json";
+function featureMap() {
+  if (!existsSync(MAP_FILE)) return null;
+  let map;
+  try { map = JSON.parse(readFileSync(MAP_FILE, "utf8")); } catch (e) { console.error(`ui-review: ${MAP_FILE} is not valid JSON: ${e.message}`); process.exit(2); }
+  const pages = Array.isArray(map?.pages) ? map.pages : [];
+  // Same origin only: a protocol-relative path ("//host/…") would take the browser (and its signed-in cookies) elsewhere.
+  const appRelative = (p) => typeof p === "string" && p.startsWith("/") && new URL(p, base).origin === new URL(base).origin;
+  if (!pages.length || pages.some((p) => !appRelative(p?.path)))
+    { console.error(`ui-review: ${MAP_FILE} needs {"pages": [{"path": "/…", "shows": "what should be visible"}]}, at least one, each a path on this app`); process.exit(2); }
+  return pages;
+}
+const map = featureMap();
+const paths = (opt("paths", null) ?? (map ? map.map((p) => p.path).join(",") : "/")).split(",");
 const out = opt("out", "ui-review");
 const baseline = opt("baseline", null);
 const widths = opt("widths", "390,768,1280").split(",").map(Number);
@@ -99,7 +120,7 @@ function compare(name) {
   return r;
 }
 
-const report = { base, at: new Date().toISOString(), pages: [] };
+const report = { base, at: new Date().toISOString(), featureMap: map, pages: [] };
 const blocking = [];
 const variants = palettes.length ? palettes : [null];
 for (const path of paths) for (const palette of variants) {
@@ -251,7 +272,8 @@ lines.push(introduced.length ? `## Blocking (${introduced.length})` : "## Blocki
 if (preexisting.length) lines.push(`## Already on this base (${preexisting.length}): not this change's`, "", ...preexisting.map((b) => `- ${b}`), "");
 lines.push("## Pages", "");
 for (const p of report.pages) {
-  lines.push(`### ${p.path}${p.palette ? ` [${p.palette}]` : ""}`, "");
+  const shows = map?.find((m) => m.path === p.path)?.shows;
+  lines.push(`### ${p.path}${p.palette ? ` [${p.palette}]` : ""}${typeof shows === "string" && shows ? ` — ${shows}` : ""}`, "");
   if (p.vitals) lines.push(`Vitals: LCP ${p.vitals.lcp_ms ?? "–"} ms · CLS ${p.vitals.cls ?? "–"} · FCP ${p.vitals.fcp_ms ?? "–"} ms · TTFB ${p.vitals.ttfb_ms ?? "–"} ms`);
   for (const [mode, a] of Object.entries(p.a11y)) lines.push(`Accessibility (${mode}): ${a.violations.length ? a.violations.map((v) => `${v.id} ${v.impact} ×${v.nodes}`).join(", ") : "no violations"}${a.incomplete.length ? `; check by eye: ${a.incomplete.join(", ")}` : ""}`);
   const small = Object.entries(p.layout).filter(([k, l]) => k.startsWith(String(Math.min(...widths))) && l.small).map(([, l]) => l.small)[0];

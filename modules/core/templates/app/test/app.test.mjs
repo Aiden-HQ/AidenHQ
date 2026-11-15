@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,14 @@ test("built app: page, CSP, assets, routes, health and API", async () => {
     assert.equal((await fetch(`${base}/catalog`)).status, 404, "the catalog is a dev-only preview, never an app route");
     for (const route of ["/teams"]) assert.equal((await fetch(base + route)).status, 200, `${route} is a client route, so a reload of it answers 200`);
     assert.equal((await fetch(`${base}/no-such-page`)).status, 404);
+    // The feature map ui-review reviews by default: its pages and stateful URLs all load (200), not the 404 page.
+    const map = JSON.parse(readFileSync(join(root, "feature-map.json"), "utf8"));
+    assert.ok(map.pages.length >= 3, "the starter's feature map lists its pages and stateful URLs");
+    for (const { path } of map.pages) {
+      assert.match(path, /^\//, `feature-map.json path ${path} is app-relative`);
+      assert.equal((await fetch(base + path)).status, 200, `feature-map.json ${path} loads`);
+    }
+    assert.ok(map.pages.filter((p) => p.path.includes("?")).length >= 2, "at least two stateful URLs");
 
     assert.deepEqual(await (await fetch(`${base}/api/health`)).json(), { ok: true, checks: [] });
     const { items } = await (await fetch(`${base}/api/items`)).json();

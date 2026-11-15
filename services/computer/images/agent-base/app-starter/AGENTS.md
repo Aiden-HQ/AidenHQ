@@ -27,6 +27,9 @@ the AidenHQ design system. `README.md` says what's where. These rules keep its p
   `useLocation().path` (as `src/App.tsx` does), link with `Link`, move from code with `navigate`, and keep page state in
   the query with `useUrlState`. Every route is also in `server.mjs` `PAGES`. Then every page works on a link click, on
   Back and Forward, and on a reload or a shared link, with the state its URL carries.
+- **Keep `feature-map.json` current:** it lists the app's pages and a few stateful URLs (`?status=…`, `?item=…`), each
+  with what should be visible there, and `ui-review` reviews those paths by default (README, "The feature map"). Add an
+  entry when a page or a view that lives at a URL changes.
 - **The CSP stays strict:** `script-src 'self'; style-src 'self' 'nonce-…'`. No inline scripts, no CDN, no
   `'unsafe-inline'`. A `<style>` tag a component renders takes `nonce={cspNonce}` (`@/lib/csp`); a library that injects
   styles without one isn't used.

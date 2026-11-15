@@ -25,6 +25,7 @@ npm run catalog   # the starter's dev-only component catalog (catalog.html): eve
 | Path | What |
 |---|---|
 | `server.mjs` | Serves `dist/`, `/api/health` (`{ok: true, checks: []}`) and the example API (`/api/items`), with the CSP and the identity check (`aidenhq-identity.mjs`, copied unchanged: `req.user` is the signed-in person or agent). Replace `ITEMS` with the app's store. |
+| `feature-map.json` | The app's pages and a few stateful URLs, each with what should be visible there, so a UI review sees the filtered view, the open detail sheet and the deep link, not just `/`. See "The feature map" below. |
 | `src/App.tsx` | The example's shell (`TopBarShell`) and routes (`ROUTES`, picked by `useLocation().path`; each one is also in `server.mjs` `PAGES`, so a reload answers 200). Pick the shell that fits the app's navigation: `TopBarShell` (variants `plain`, `brand`), `SidebarShell` (`sidebar`, `floating`, `inset`), `BareShell` (`full`, `centered`), or your own. |
 | `src/pages/projects.tsx` | The example page (list, filters, summary, paged table, detail sheet, every state). Copy its patterns, not its data. |
 | `src/pages/teams.tsx` | A second route: a small table whose team links open the projects page filtered (`/?team=…`). |
@@ -37,6 +38,32 @@ npm run catalog   # the starter's dev-only component catalog (catalog.html): eve
 | `THIRD_PARTY.md` | Where vendored component code comes from, and its licence. |
 | `src/lib/navigation.tsx` | The app's navigation: `useLocation()` (path and query; re-renders on every change), `Link` (an `<a href>` that moves without a page load), `navigate(href)`, and `useUrlState()` for state in the query (`set` replaces, `push` adds a history entry for details). A link click, Back/Forward and a reload all render the page the URL names. |
 | `src/lib/csp.ts`, `public/theme.js` | The CSP nonce for Radix's run-time styles, and light/dark/palette before first paint. |
+
+## The feature map
+
+`feature-map.json` sits next to `server.mjs` and lists the app's pages plus a few stateful URLs, with a note on what
+should be visible at each: the filtered view, the open detail sheet, the empty state, a deep link. `ui-review` runs from
+the app's folder and reviews these paths by default, so the states where dead clicks and broken pages hide are covered
+without anyone naming them. An explicit `--paths` still wins.
+
+```json
+{
+  "pages": [
+    { "path": "/", "shows": "Projects: the summary counts, the filter bar and the first page of the table" },
+    { "path": "/?status=late", "shows": "Projects filtered to Late: only late rows and a Clear filters button" },
+    { "path": "/?item=search-v2", "shows": "The Search v2 detail sheet open over the list; Back closes it" }
+  ]
+}
+```
+
+- One entry per page (a `path` starting `/`), then two to four stateful URLs that matter for that page; `shows` says
+  what a reviewer should see there, and it is printed as the heading of that path in the review report.
+- Every path's pathname belongs in `server.mjs` `PAGES`, so a reload of it answers 200 rather than the 404 page.
+- Sample ids and filter values are fine (`?item=search-v2`); use ones the sample data always has, and replace them
+  with the app's own seed data.
+- No map is not a failure: an app without one is reviewed at `/` as before. A map that exists but isn't valid JSON, or
+  has no `pages` with a `path` on the app itself (a `/…` path; `//host/…` is refused), stops `ui-review` with an error so
+  it gets fixed.
 
 ## The library
 

@@ -7,8 +7,9 @@ spec fixes them for the build. It judges a pull request against its
 base: only what the PR introduced blocks, and a finding the base already had is not this PR's, even in a file it touches
 (`ui-review --baseline` lists the base's own findings under "already on this base").
 
-1. **Evidence:** run `ui-review <url> --paths <changed pages> --out after` (and `--baseline before` against the base
-   when you can run both), read `report.md` and look at the screenshots of the changed pages once. With a named mockup,
+1. **Evidence:** run `ui-review <url> --out after` from the app's folder, which reviews the app's `feature-map.json` (its
+   pages and stateful URLs); `--paths <changed pages>` replaces that list. Run it with `--baseline before` against the
+   base when you can run both, read `report.md` and look at the screenshots of the changed pages once. With a named mockup,
    also put the head beside the mockup's screenshots (`ui-review --baseline <dir of the mockup's screenshots>`, named
    as `ui-review` names its own, writes before|after pictures). Try the main flow the PR touches once; that is enough.
    Only screenshots taken now, of the app built from the head under review, are evidence: images committed in the

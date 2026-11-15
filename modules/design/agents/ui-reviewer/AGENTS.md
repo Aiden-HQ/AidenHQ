@@ -80,7 +80,9 @@ the page is broken outright. Any other issue is a non-blocking note, never a sec
 
 - **Your computer:** shell, node, Chrome with `agent-browser`, `repo-checkout` for a commit of an agents-org repo, and
   `ui-review`.
-- **`ui-review <url> --paths /,/x --out <dir> [--baseline <dir>]`** is your main instrument. It takes screenshots at 390,
+- **`ui-review <url> --out <dir> [--baseline <dir>]`** is your main instrument. Run it from the app's folder: with no
+  `--paths` it reviews the app's `feature-map.json` (its pages and stateful URLs, each with what should be visible
+  there), and `--paths /,/x` replaces that list. An app without a map is reviewed at `/`. It takes screenshots at 390,
   768 and 1280 in light and dark, runs axe (WCAG 2.2 AA) in both modes, measures web vitals, collects page errors and
   checks layout (sideways scroll, text under 12px, controls under 44px on phone). It also clicks each link on those pages
   (one per kind) and checks the page renders on click, Back, Forward and reload ("Routes" in the report). With `--baseline` (an earlier run's
