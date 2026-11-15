@@ -142,8 +142,22 @@ export async function resolveCommit(env: GitEnv, app: App, sha: string): Promise
  * the running commit (or the empty tree, for a first deploy) to `sha`, in the bare repo resolveCommit fetched. Capped.
  */
 export async function diffSince(env: GitEnv, app: App, from: string | undefined, sha: string, max = 60_000): Promise<{ diff: string; truncated: boolean }> {
+  return diffRange(env, app, from, sha, max);
+}
+
+/**
+ * What deploying `sha` changes: the same diff as diffSince, limited to the app's own directory — the only thing the
+ * deploy rebuilds (deploy.ts builds from `${checkout}/${app.path}`), so a repo-wide change elsewhere must not decide
+ * whether the card can be reviewed. Same cap and `truncated` meaning, so an over-cap app change is still refused.
+ */
+export async function diffForDeploy(env: GitEnv, app: App, from: string | undefined, sha: string, max = 60_000): Promise<{ diff: string; truncated: boolean }> {
+  // Anchored at the repo root and literal, so the app's path is taken as it is, whatever the process's cwd.
+  return diffRange(env, app, from, sha, max, [app.path === "." ? ":(top)" : `:(top,literal)${app.path}`]);
+}
+
+async function diffRange(env: GitEnv, app: App, from: string | undefined, sha: string, max: number, paths: string[] = []): Promise<{ diff: string; truncated: boolean }> {
   const base = from && /^[0-9a-f]{40}$/.test(from) ? from : "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-  const diff = await git(env, [`--git-dir=${env.gitDir}/${app.name}.git`, "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", base, sha]);
+  const diff = await git(env, [`--git-dir=${env.gitDir}/${app.name}.git`, "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", base, sha, ...(paths.length ? ["--", ...paths] : [])]);
   return { diff: diff.slice(0, max), truncated: diff.length > max };
 }
 

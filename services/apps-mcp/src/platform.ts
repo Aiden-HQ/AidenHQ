@@ -10,7 +10,7 @@ import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, judg
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { RENDER_TIMEOUT_MS, renderArgs, VIEW_IMAGE, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
-import { checkout, diffSince, resolveCommit, show, type GitEnv } from "./git.js";
+import { checkout, diffForDeploy, resolveCommit, show, type GitEnv } from "./git.js";
 import { loadRegistry, type App } from "./registry.js";
 import { pickService, scriptCommand } from "./run.js";
 import { posix } from "node:path";
@@ -162,8 +162,9 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   // The commit a deploy card names, and what deploying it changes from the running commit.
   const commit = async (app: App, sha: string) => {
     const c = await resolveCommit(cfg.git, app, sha);
-    // A diff that can't be read (too big, an object missing) never blocks the card: it just can't be reviewed (Tier 2).
-    return { ...c, ...(await diffSince(cfg.git, app, store.lastDeploy(app.name)?.sha, c.sha).catch(() => ({ diff: "", truncated: true }))) };
+    // Only the app's own directory: that is all the deploy rebuilds. A diff that can't be read (too big, an object
+    // missing) never blocks the card: it just can't be reviewed (Tier 2).
+    return { ...c, ...(await diffForDeploy(cfg.git, app, store.lastDeploy(app.name)?.sha, c.sha).catch(() => ({ diff: "", truncated: true }))) };
   };
 
   /** What an app_run would run now: the healthy deployed commit, the service, and the script's command at that commit. */
