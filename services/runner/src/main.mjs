@@ -2333,6 +2333,18 @@ async function runApprovals() {
 
 /** One claimed record: run it and report the outcome on the card and the task. */
 async function runClaimed(claimed) {
+  // A task closed since its card was approved runs nothing: what the card would publish or merge was asked for before
+  // someone finished or cancelled the task, and the outcome on the task would reopen it. Done and cancelled alike, as the
+  // classifier says (tiers.mjs); the card carries the outcome, the task hears nothing. A status we can't read is no proof
+  // the task is open, so it refuses too (as the board's applyOnBoard does): an unreadable task runs nothing.
+  const status = await pc.issue(claimed.issueId).then((i) => i.status, () => undefined);
+  if (!status || CLOSED.includes(status)) {
+    const text = `Not run: the task is ${status ?? "unreadable"}: a leftover request runs nothing.`;
+    log("approval skipped: its task is closed", { approval: claimed.id, issue: claimed.identifier, status });
+    queueOutcome(claimed.id, claimed.nonce, { ok: false, text });
+    await flushOutcomes();
+    return;
+  }
   // The AI reviewer approved it: recompute the tier just before running. Refused by code now (it moved, say): it runs
   // nothing and the agent is told. Owner's now (autonomy off, a veto): a fresh card for the owner. The panel's now while one
   // reviewer approved it, or not checkable this minute: a fresh card for the reviewers.

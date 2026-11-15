@@ -43,6 +43,8 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const activity = [];
   // Requests held open and never answered: a tick that never finishes (a stuck read), so only a pass before it can act.
   const hang = new Set();
+  // How many of a task's next single reads fail (a 503): a board that can't say what a task's status is.
+  const failRead = new Map();
   const held = [];
   const passed = [];
   const attached = [];
@@ -105,6 +107,10 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     }
     if (issue && find(decodeURIComponent(issue))) {
       const i = find(decodeURIComponent(issue));
+      if (req.method === "GET" && !path.endsWith("/comments") && (failRead.get(i.id) ?? 0) > 0) {
+        failRead.set(i.id, failRead.get(i.id) - 1);
+        return send({ error: "temporarily unavailable" }, 503);
+      }
       if (req.method === "GET" && path.endsWith("/comments")) return send(comments.get(i.id));
       if (req.method === "GET" && path.endsWith("/attachments")) return send([]);
       if (req.method === "POST" && path.endsWith("/comments")) {
@@ -211,7 +217,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     a.state = state;
     return a;
   };
-  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created, hang };
+  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created, hang, failRead };
 }
 
 /**

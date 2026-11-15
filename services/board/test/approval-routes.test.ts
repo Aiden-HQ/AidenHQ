@@ -2,6 +2,7 @@ import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { raiseCapRequest } from "../src/approvals.js";
 import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
@@ -217,5 +218,62 @@ describe("raise_cap from the model gateway", () => {
     expect(calls).toEqual([{ url: "http://gateway:8201/internal/caps", auth: `Bearer ${GATEWAY_KEY}`, body: { scope: "task", agentId: "fe", subject: issue.id, cap: 40 } }]);
     expect(store.approvals.get(id)!.outcomeText).toBe("Raised the task spend cap from $20.00 to $40.00 ($20.40 spent). Carry on where the cap stopped you.");
     await vi.waitFor(() => expect(posted.at(-1)!.body).toContain("Carry on where the cap stopped you."));
+  });
+});
+
+// A task closed since its card was filed acts on nothing: a leftover card runs nothing, and a rejection decided on it
+// posts nothing and patches nothing. Done and cancelled alike: a finished task isn't reopened by either.
+describe("cards on a closed task", () => {
+  const GATEWAY_KEY = "g".repeat(48);
+  const closed = { ...issue, status: "in_review", labels: [] as { id: string; name: string }[], parentId: null as string | null };
+  const closedPosted: { id: string; body: string }[] = [];
+  const closedPatches: Record<string, unknown>[] = [];
+  const closedPc = {
+    ...pc,
+    addComment: async (id: string, body: string) => void closedPosted.push({ id, body }),
+    updateIssue: async (id: string, body: Record<string, unknown>) => void closedPatches.push({ id, ...body }),
+    issue: async (ref: string) => (ref === "WOR-1" ? aidens : closed),
+  } as unknown as Paperclip;
+  const store = new Store(":memory:");
+  const internal = listen(createApp({ paperclip: closedPc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, decideKey: DECIDE_KEY, gatewayKey: GATEWAY_KEY, gateway: { url: "http://gateway:8201", token: GATEWAY_KEY } }));
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) => internal("POST", path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...headers });
+  const decide = (id: string, decision: string) => post("/internal/owner/approvals/decide", { id, decision, via: "telegram" }, { "x-owner-key": DECIDE_KEY });
+
+  for (const status of ["done", "cancelled"]) {
+    it(`an approved raise_cap on a ${status} task runs nothing, and the task keeps its status, labels and comments`, async () => {
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", async (url: string) => (calls.push(String(url)), new Response("{}", { status: 200 })));
+      try {
+        const id = store.approvals.request(raiseCapRequest({ id: closed.id, identifier: closed.identifier }, { scope: "task", agentId: "fe", subject: closed.id, cap: 10, spent: 10.02 }, "Fleet Engineer")).id;
+        Object.assign(closed, { status, labels: [{ id: "lbl-grading", name: "grading" }] });
+        expect((await decide(id, "approve")).status).toBe(200);
+        await vi.waitFor(() => expect(store.approvals.get(id)!.outcome).toBe("failed"));
+        await new Promise((r) => setTimeout(r, 50));
+        expect(calls).toEqual([]); // the gateway's cap is untouched
+        expect(store.approvals.get(id)!.outcomeText).toBe(`Not run: the task is ${status}: a leftover request runs nothing.`);
+        expect(closedPosted).toEqual([]); // no outcome comment on the task
+        expect(closedPatches).toEqual([]); // no label or status change
+        expect(closed).toMatchObject({ status, labels: [{ id: "lbl-grading", name: "grading" }] });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it(`a rejection decided on a ${status} task posts nothing and patches nothing`, async () => {
+      const id = store.approvals.request({ issueId: closed.id, identifier: closed.identifier, action: "apply", target: "x", digest: "f".repeat(40), args: {}, sentence: "s", reads: "", changes: "c", cost: "", details: "", requestedBy: "r" }).id;
+      Object.assign(closed, { status, labels: [{ id: "lbl-grading", name: "grading" }], parentId: "parent-1" });
+      expect((await decide(id, "reject")).json).toMatchObject({ state: "rejected" });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(closedPosted).toEqual([]); // neither the task nor its parent hears of it
+      expect(closedPatches).toEqual([]);
+      expect(closed).toMatchObject({ status, labels: [{ id: "lbl-grading", name: "grading" }] });
+    });
+  }
+
+  it("an open task still hears both: the refusal is a closed task's alone", async () => {
+    Object.assign(closed, { status: "in_review", labels: [], parentId: null });
+    const id = store.approvals.request({ issueId: closed.id, identifier: closed.identifier, action: "apply", target: "x", digest: "e".repeat(40), args: {}, sentence: "s", reads: "", changes: "c", cost: "", details: "", requestedBy: "r" }).id;
+    expect((await decide(id, "reject")).json).toMatchObject({ state: "rejected" });
+    await vi.waitFor(() => expect(closedPosted.some((c) => c.id === closed.id && /^\*\*Rejected\*\*/.test(c.body))).toBe(true));
   });
 });

@@ -394,6 +394,10 @@ export function createApp(opts: AppOptions): Server {
 
   /** A rejection reaches the asking task (and the chat above an agent's sub-task), so nobody waits on a card that won't run. */
   async function toldRejected(a: Approval) {
+    // A task closed since the card was filed hears nothing: a comment on it reopens it in Paperclip, so a leftover
+    // rejection would bring a finished or cancelled task back. An unreadable task counts as closed here too.
+    const issue = await pc.issue(a.issueId).catch(() => undefined);
+    if (!issue || ["done", "cancelled"].includes(issue.status)) return;
     // Fixed text and ids only: never the card's agent-supplied fields in a comment posted as the owner. It names the AI
     // reviewer's no as the reviewer's: posted with the board key it would otherwise read as the owner's, and agents told
     // the owner about Tier 1 cards they never saw ("You rejected my card").
@@ -408,12 +412,20 @@ export function createApp(opts: AppOptions): Server {
         ? `**Rejected by the AI reviewer** (approval ${a.id}, ${a.action}): not the owner's decision. Its note is on the card (\`task_approvals\`): fix what it names and file again; never unchanged.\n\n${APPROVAL_MARKER}`
         : `**Rejected** (approval ${a.id}, ${a.action}). Don't file it again unchanged; if it isn't clear why, ask what to change.\n\n${APPROVAL_MARKER}`;
     await pc.addComment(a.issueId, text).catch((err) => log.warn({ err: String(err) }, "couldn't post the rejection"));
-    const parentId = await pc.issue(a.issueId).then((i) => (i as { parentId?: string | null }).parentId, () => undefined);
-    if (parentId) await pc.addComment(parentId, `**${unsure ? "Sent back (two AI reviewers were unsure)" : `Rejected${reviewer ? " by the AI reviewer" : ""}`}** on ${a.identifier} (approval ${a.id}, ${a.action})${reviewer ? ": not the owner's decision, and not news for them" : ""}.\n\n${APPROVAL_MARKER}`).catch(() => {});
+    if (issue.parentId) await pc.addComment(issue.parentId, `**${unsure ? "Sent back (two AI reviewers were unsure)" : `Rejected${reviewer ? " by the AI reviewer" : ""}`}** on ${a.identifier} (approval ${a.id}, ${a.action})${reviewer ? ": not the owner's decision, and not news for them" : ""}.\n\n${APPROVAL_MARKER}`).catch(() => {});
   }
 
   /** Approve = apply, once: claimed before acting; the outcome (or the failure) goes on the card and the task. Never retried. */
   async function applyOnBoard(a: Approval) {
+    // A card on a closed task applies nothing: its work was asked for before someone finished or cancelled the task, and
+    // the outcome on the task would reopen it. The card says so; the task is left alone. An unreadable task counts as closed.
+    const status = await pc.issue(a.issueId).then((i) => i.status, () => undefined);
+    if (!status || ["done", "cancelled"].includes(status)) {
+      const closed = store.approvals.claim(a.id);
+      if (closed) store.approvals.finish(a.id, closed.nonce, false, `Not run: the task is ${status ?? "unreadable"}: a leftover request runs nothing.`);
+      log.info({ approval: a.id, task: a.identifier, status }, "approval runs nothing: its task is closed");
+      return;
+    }
     const used = store.approvals.claim(a.id);
     if (!used) return;
     const args = used.args as { name: string; sha: string; script: string; service: string };
