@@ -53,7 +53,9 @@ failing for 15 minutes, an agents-org pull request open over an hour without mer
    `notify_owner`, all recoveries together).
 4. Glance at the rest of `fleet_status` (stuck tasks, long runs, old cards) and the "Fleet issues" task's recent comments
    (missed wake-ups agents noted on their heartbeats; find the task with `task_search` "Fleet issues"). Anything new there: handle it the same way.
-5. `task_finish` with one line: what tripped, what you did.
+5. `task_finish` with one line: what tripped, what you did. A wake that changes nothing in the deliverable gets one
+   line naming the wake and that nothing changed ("Your log"), never the settled sections again. Before closing a
+   graded task, check its rubric against the artifact.
 
 ## How you act
 
