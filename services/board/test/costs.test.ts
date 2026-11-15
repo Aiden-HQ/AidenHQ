@@ -138,7 +138,7 @@ describe("usage run attribution", () => {
     expect(records).toHaveLength(1);
     store.addUsage({ ...records[0]!, component: records[0]!.component ?? "agent" });
     expect({ ...new DatabaseSync(path).prepare("SELECT subject, rev, kind, agent_id AS agentId FROM usage").get() }).toEqual({ subject: "acme-agents/app#12", rev: head, kind: "ci-code-review", agentId: null });
-    const r = await ledgerSummary({ store, agents: async () => [], key: async () => "no key" }, { from: "2026-11-12T00:00:00.000Z", to: "2026-11-13T00:00:00.000Z", bucket: "day" }, Date.parse("2026-11-13T12:00:00.000Z"));
+    const r = await ledgerSummary({ store, agents: async () => [], key: async () => "no key" }, { from: "2026-11-12T00:00:00.000Z", to: "2026-11-13T00:00:00.000Z", bucket: "day", offset: 0 }, Date.parse("2026-11-13T12:00:00.000Z"));
     expect(r.lanes).toEqual([expect.objectContaining({ lane: "ci-code-review", calls: 1, usd: 0.04 })]);
   });
 });

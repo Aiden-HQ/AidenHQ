@@ -371,6 +371,8 @@ export interface CostLedger {
   from: string;
   to: string;
   bucket: "hour" | "day";
+  /** Minutes east of UTC the time chart was bucketed by (the viewer's own). */
+  offset: number;
   earliest: string | null;
   overview: {
     today: LedgerPeriod;

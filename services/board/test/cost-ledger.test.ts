@@ -20,10 +20,16 @@ function fixture() {
   s.addUsage(call("2026-11-13T00:00:00.000Z", { agentId: "a1", kind: "agent", costUsd: 7 }));
   return s;
 }
-const range = { from: "2026-11-12T00:00:00.000Z", to: "2026-11-13T00:00:00.000Z", bucket: "day" as const };
+const range = { from: "2026-11-12T00:00:00.000Z", to: "2026-11-13T00:00:00.000Z", bucket: "day" as const, offset: 0 };
 const deps = (store: Store) => ({ store, agents: async () => [{ id: "a1", name: "Aiden", status: "idle", adapterType: "codex_local" }], key: async () => "no key" });
 
 describe("ledger aggregates", () => {
+  it("buckets the time series by the viewer's clock when given an offset", async () => {
+    const r = await ledgerSummary(deps(fixture()), { ...range, bucket: "hour", offset: 330 }, NOW);
+    expect(r.series.map((x) => x.t)).toContain("2026-11-12T06");
+    expect(r.series.map((x) => x.t)).not.toContain("2026-11-12T01");
+  });
+
   it("groups the range by model, kind and agent in SQL, half-open at both ends", async () => {
     const r = await ledgerSummary(deps(fixture()), range, NOW);
     expect(r.totals).toMatchObject({ calls: 6, errors: 1 });
@@ -65,6 +71,8 @@ describe("ledger aggregates", () => {
   it("parses ranges and refuses ones it can't serve", () => {
     expect(ledgerRange(new URLSearchParams({ from: range.from, to: range.to }), NOW).bucket).toBe("hour");
     expect(ledgerRange(new URLSearchParams(), NOW)).toMatchObject({ bucket: "day", to: "2026-11-13T12:00:00.000Z" });
+    expect(ledgerRange(new URLSearchParams({ offset: "330" }), NOW).offset).toBe(330);
+    expect(() => ledgerRange(new URLSearchParams({ offset: "9999" }), NOW)).toThrow(/offset/);
     expect(() => ledgerRange(new URLSearchParams({ from: "2026-01-01T00:00:00Z", to: range.to }), NOW)).toThrow(/62 days/);
     expect(() => ledgerRange(new URLSearchParams({ from: range.to, to: range.from }), NOW)).toThrow(/after/);
   });

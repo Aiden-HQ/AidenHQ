@@ -141,7 +141,8 @@ export function CostsView({ onSignIn }: { onSignIn: () => void }) {
   const { from, to } = bounds(view);
   const bucket = bucketOf(view, to - from);
   const rangeKey = `${view.range}|${view.from}|${view.to}|${bucket}|${tick}`;
-  const query = () => new URLSearchParams({ from: new Date(from).toISOString(), to: new Date(to).toISOString(), bucket });
+  // The time chart buckets by the viewer's clock; the caps, "today" and the custom dates stay UTC.
+  const query = () => new URLSearchParams({ from: new Date(from).toISOString(), to: new Date(to).toISOString(), bucket, offset: String(-new Date().getTimezoneOffset()) });
   const ledger = useLoad<CostLedger>(rangeKey, () => api.costLedger(query()), onSignIn);
   const focus: Record<string, string> | null = view.agent ? { agent: view.agent } : view.model ? { model: view.model } : null;
   const topKey = focus ? `${rangeKey}|${view.agent}|${view.model}` : null;
@@ -241,7 +242,7 @@ function Overview({ d }: { d: CostLedger }) {
   const o = d.overview;
   const key = "error" in o.key ? null : o.key;
   const tiles: [string, LedgerPeriod, string][] = [
-    ["Today so far (UTC)", o.today, "yesterday by now"],
+    ["Today so far", o.today, "yesterday by now"],
     ["Last 7 days", o.week, "the 7 before"],
     ["Last 30 days", o.month, "the 30 before"],
   ];
@@ -251,7 +252,7 @@ function Overview({ d }: { d: CostLedger }) {
     <section className="cost-overview" aria-label="Overview">
       {tiles.map(([label, p, vs]) => (
         <div key={label} className="cost-tile">
-          <span className="cost-tile-label">{label}</span>
+          <span className="cost-tile-label" title={label.startsWith("Today") ? "The UTC day so far: the same day OpenRouter and the daily spend caps count" : undefined}>{label}</span>
           <span className="cost-tile-value">{usd(p.usd)}</span>
           <Delta cur={p.usd} prev={p.prev} vs={vs} />
           {label.startsWith("Today") && key && <span className="cost-tile-note" title="OpenRouter's own figure for the key: every caller of it, itemised here or not">OpenRouter shows {usd(key.today)} today</span>}
@@ -293,15 +294,22 @@ function Meter({ label, used, cap }: { label: string; used: number; cap: number 
 }
 
 /* ----------------------------------------------------------------------------- time chart */
+/** Bucket keys (YYYY-MM-DD[THH]) are the viewer's wall-clock hours or days: the server shifted them by d.offset minutes. */
 function buckets(d: CostLedger): string[] {
   const step = d.bucket === "hour" ? 36e5 : DAY;
   const len = d.bucket === "hour" ? 13 : 10;
+  const shift = d.offset * 6e4;
   const out: string[] = [];
-  for (let t = Math.floor(Date.parse(d.from) / step) * step; t < Date.parse(d.to); t += step) out.push(new Date(t).toISOString().slice(0, len));
+  for (let t = Math.floor((Date.parse(d.from) + shift) / step) * step; t < Date.parse(d.to) + shift; t += step) out.push(new Date(t).toISOString().slice(0, len));
   return out;
 }
-const bucketLabel = (t: string, hour: boolean) => (hour ? `${new Date(`${t}:00:00Z`).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" })} UTC` : new Date(`${t}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" }));
-const tickLabel = (t: string, hour: boolean) => (hour ? (t.endsWith("T00") ? new Date(`${t}:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" }) : `${t.slice(11)}:00`) : new Date(`${t}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" }));
+const wallMs = (t: string, hour: boolean) => Date.parse(hour ? `${t}:00:00Z` : `${t}T00:00:00Z`);
+const fmtDay = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+const fmtHour = (ms: number) => new Date(ms).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+/** The bucket's start in UTC, for hover. */
+const utcStart = (t: string, hour: boolean, offset: number) => `${fmtHour(wallMs(t, hour) - offset * 6e4)} UTC`;
+const bucketLabel = (t: string, hour: boolean) => (hour ? fmtHour(wallMs(t, hour)) : fmtDay(wallMs(t, hour)));
+const tickLabel = (t: string, hour: boolean) => (hour && !t.endsWith("T00") ? `${t.slice(11)}:00` : fmtDay(wallMs(t, hour)));
 /** A round axis maximum and its steps: 1, 2 or 5 × a power of ten. */
 function niceMax(v: number): number[] {
   if (v <= 0) return [0, 0.01];
@@ -393,7 +401,7 @@ function TimeChart({ d }: { d: CostLedger }) {
                 height={plotH}
                 fill="transparent"
                 tabIndex={0}
-                aria-label={`${bucketLabel(t, hour)}: ${usd(totals[i]!)}`}
+                aria-label={`${bucketLabel(t, hour)}, ${utcStart(t, hour, d.offset)}: ${usd(totals[i]!)}`}
                 onPointerEnter={() => setHover(i)}
                 onFocus={() => setHover(i)}
                 onBlur={() => setHover(null)}
@@ -401,6 +409,7 @@ function TimeChart({ d }: { d: CostLedger }) {
               />
               {i % every === 0 && (
                 <text x={left + band * i + band / 2} y={H - 6} textAnchor="middle" className="cost-tick">
+                  <title>{utcStart(t, hour, d.offset)}</title>
                   {tickLabel(t, hour)}
                 </text>
               )}
@@ -411,7 +420,10 @@ function TimeChart({ d }: { d: CostLedger }) {
       {tip != null && hover != null && (
         // Beside the hovered column, never over it: right of it when there's room, else left.
         <div className="cost-tip" style={{ left: left + band * (hover + 1) + 8 + 220 <= w ? left + band * (hover + 1) + 8 : Math.max(0, left + band * hover - 228) }} role="status">
-          <div className="cost-tip-head">{bucketLabel(tip, hour)}</div>
+          <div className="cost-tip-head">
+            {bucketLabel(tip, hour)}
+            <span className="cost-tip-utc">{hour ? "" : "from "}{utcStart(tip, hour, d.offset)}</span>
+          </div>
           <div className="cost-tip-total">
             <strong>{usd(totals[hover]!)}</strong> total
           </div>

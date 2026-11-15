@@ -41,6 +41,8 @@ export interface LedgerRange {
   from: string;
   to: string;
   bucket: Bucket;
+  /** The viewer's offset from UTC in minutes (east positive): the time chart buckets by their clock. Caps and "today" stay UTC. */
+  offset: number;
 }
 
 /** from/to (ISO instants, to exclusive) and bucket from the query; defaults to the last 7 days by day. Fails loudly on nonsense. */
@@ -53,7 +55,9 @@ export function ledgerRange(q: URLSearchParams, now = Date.now()): LedgerRange {
   const bucket = (q.get("bucket") ?? (to - from <= 2 * DAY ? "hour" : "day")) as Bucket;
   if (bucket !== "hour" && bucket !== "day") throw new BadRequest("bucket is hour or day");
   if (bucket === "hour" && to - from > 7 * DAY) throw new BadRequest("hourly buckets cover at most 7 days");
-  return { from: new Date(from).toISOString(), to: new Date(to).toISOString(), bucket };
+  const offset = Number(q.get("offset") ?? 0);
+  if (!Number.isInteger(offset) || Math.abs(offset) > 14 * 60) throw new BadRequest("offset is whole minutes from UTC");
+  return { from: new Date(from).toISOString(), to: new Date(to).toISOString(), bucket, offset };
 }
 
 /** Each agent's day cap: grants caps.day_usd (setup writes them, keyed by Paperclip id), else the gateway's default. */
@@ -91,7 +95,7 @@ export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.no
   const midnight = Math.floor(now / DAY) * DAY;
   const today = store.spendByAgent(iso(midnight), iso(now));
 
-  const cube = store.ledgerCube(r.from, r.to, r.bucket);
+  const cube = store.ledgerCube(r.from, r.to, r.bucket, r.offset);
   const all = (c: LedgerMetrics) => c;
   const total = rollup(cube, () => "", all)[0]?.[1];
   const byAgentModel = rollup(cube.filter((c) => c.agentId), (c) => `${c.agentId}\n${c.model}`, all);
@@ -107,6 +111,7 @@ export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.no
     from: r.from,
     to: r.to,
     bucket: r.bucket,
+    offset: r.offset,
     earliest,
     overview: {
       // Today is the UTC day so far (as OpenRouter and the gateway's day caps count), set against yesterday up to the same hour.

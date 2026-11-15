@@ -271,9 +271,11 @@ export class Store {
    * The Costs tab's range in one pass over [from, to): spend and the rest per time bucket, model, lane and agent. The tab rolls it up
    * (by model, lane, agent, over time); a 30-day range is a few thousand cells, never raw rows.
    */
-  ledgerCube(from: string, to: string, bucket: "day" | "hour"): LedgerCell[] {
+  ledgerCube(from: string, to: string, bucket: "day" | "hour", offset = 0): LedgerCell[] {
+    // offset: minutes east of UTC; buckets are then wall-clock hours or days at that offset (t reads as local time).
+    const t = offset ? `strftime('${bucket === "hour" ? "%Y-%m-%dT%H" : "%Y-%m-%d"}', at, '${Math.trunc(offset)} minutes')` : `substr(at, 1, ${bucket === "hour" ? 13 : 10})`;
     return this.db
-      .prepare(`SELECT substr(at, 1, ${bucket === "hour" ? 13 : 10}) AS t, model, ${LANE} AS lane, agent_id AS agentId, ${METRICS} FROM usage WHERE at >= ? AND at < ? GROUP BY 1, 2, 3, 4`)
+      .prepare(`SELECT ${t} AS t, model, ${LANE} AS lane, agent_id AS agentId, ${METRICS} FROM usage WHERE at >= ? AND at < ? GROUP BY 1, 2, 3, 4`)
       .all(from, to) as unknown as LedgerCell[];
   }
 

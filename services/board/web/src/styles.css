@@ -1183,7 +1183,9 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .costs-page .cost-stale { opacity: 0.55; }
 
 /* Overview: the three periods, then the limits. The figure is the hero; the delta reads as a sentence. */
-.cost-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.5fr); gap: 12px; align-items: start; }
+/* The three stat tiles stack in one column and share the height of the Limits card beside them; below 1100px they sit in a row above it. */
+.cost-overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2.2fr); grid-template-rows: repeat(3, 1fr); gap: 12px; align-items: stretch; }
+.cost-limits { grid-column: 2; grid-row: 1 / span 3; }
 .cost-tile { display: grid; align-content: start; gap: 4px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); min-width: 0; }
 .cost-tile-label { font-size: 12.5px; color: var(--muted); font-weight: 550; }
 .cost-tile-value { font-size: 30px; line-height: 1.1; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
@@ -1221,6 +1223,7 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .cost-hit:focus-visible { stroke: var(--accent); stroke-width: 2; }
 .cost-tip { position: absolute; top: 34px; width: 220px; padding: 8px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-lg); font-size: 12px; pointer-events: none; z-index: 2; font-variant-numeric: tabular-nums; }
 .cost-tip-head { color: var(--muted); margin-bottom: 2px; }
+.cost-tip-utc { display: block; color: var(--faint); font-size: 11px; }
 .cost-tip-total { margin-bottom: 6px; }
 .cost-tip-total strong { font-size: 14px; }
 .cost-tip-row { display: grid; grid-template-columns: 12px auto 1fr; align-items: center; gap: 6px; }
@@ -1329,8 +1332,8 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
 @media (max-width: 1100px) {
   .cost-insights { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cost-waste-grid { grid-template-columns: minmax(0, 1fr); }
-  .cost-overview { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .cost-limits { grid-column: 1 / -1; }
+  .cost-overview { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: auto; }
+  .cost-limits { grid-column: 1 / -1; grid-row: auto; }
   .cost-split, .cost-drill-grid { grid-template-columns: minmax(0, 1fr); }
   .ct-models .ct-wide { display: none; }
   .ct-models .ct-row { grid-template-columns: minmax(120px, 2fr) 76px 52px 60px 70px 52px; }
