@@ -1,7 +1,9 @@
 import { failed, summary } from "./checks.js";
-import { NOTE } from "./deploy.js";
+import { NOTE, type Result } from "./deploy.js";
 import { remoteHead } from "./git.js";
 import type { Platform } from "./platform.js";
+import type { App } from "./registry.js";
+import type { Deploy } from "./store.js";
 
 type Log = { warn: (o: object, m: string) => void };
 
@@ -17,7 +19,11 @@ export async function healthTick(p: Platform, log: Log): Promise<void> {
         else {
           // The webhook and incident carry only short text generated here, never app output (logs stay behind app_logs).
           const exited = await p.engine.exitedContainer(app);
-          await p.raise(app.name, exited ? "exited" : "unhealthy", exited ?? "health check failing");
+          const why = exited ?? "health check failing";
+          if (!(await watchRollback(p, app, last, why, log))) {
+            p.store.closeIncident(app.name, ["rolled_back"]); // a new outage after a watch rollback is its own incident
+            await p.raise(app.name, exited ? "exited" : "unhealthy", why);
+          }
         }
       }
       await p.refresh(app);
@@ -25,6 +31,34 @@ export async function healthTick(p: Platform, log: Log): Promise<void> {
       log.warn({ app: app.name, err: String(err) }, "health tick failed");
     }
   }
+}
+
+/** How long after a healthy auto-deploy a failed health check rolls it back by itself (watchRollback). */
+export const WATCH_MS = 30 * 60_000;
+
+/**
+ * The post-deploy watch: a healthy auto-deploy whose health check fails within WATCH_MS is rolled back to the previous good
+ * deploy, marked rolled_back (so no later rollback picks it) and raised as a `rolled_back` incident, which stays open until a
+ * healthy deploy (the fix) closes it. Once per deploy: the rollback's own record is then the last deploy. A rollback target
+ * that is unhealthy too is raised as the outage, never retried. Stateful apps keep the owner's approval. Whether it handled it.
+ */
+async function watchRollback(p: Platform, app: App, last: Deploy, why: string, log: Log): Promise<boolean> {
+  if (app.stateful || last.by !== "auto-deploy" || last.status !== "healthy" || Date.now() - last.at > WATCH_MS) return false;
+  let r: Result;
+  try {
+    r = await p.engine.rollback(app, { by: "watch-rollback" });
+  } catch (err) {
+    log.warn({ app: app.name, err: String(err) }, "watch rollback refused"); // e.g. no earlier good deploy: the plain incident
+    return false;
+  }
+  const what = `${last.sha.slice(0, 8)}: ${why} ${Math.max(1, Math.round((Date.now() - last.at) / 60_000))} min after its auto-deploy`;
+  p.store.markRolledBack(last.id, `${why}; rolled back by the post-deploy watch to ${r.sha.slice(0, 8)}`);
+  if (r.status !== "healthy") await p.raise(app.name, "unhealthy", `${what}; rollback to ${r.sha.slice(0, 8)} also unhealthy`);
+  else {
+    p.store.closeIncident(app.name, ["unhealthy", "exited"]); // an earlier tick's outage incident (a refused rollback): this one says more
+    await p.raise(app.name, "rolled_back", `${what}; rolled back to ${r.sha.slice(0, 8)}; ${NOTE}`);
+  }
+  return true;
 }
 
 const paged = new Set<string>(); // app@sha already paged for a failure before anything started

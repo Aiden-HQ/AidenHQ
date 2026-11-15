@@ -21,6 +21,7 @@ export function openStore(path: string) {
   const seen = db.prepare(`SELECT 1 FROM deploys WHERE app = ? AND sha = ? LIMIT 1`);
   const goodDeploys = db.prepare(`SELECT * FROM deploys WHERE app = ? AND status = 'healthy' ORDER BY id DESC`);
   const recent = db.prepare(`SELECT * FROM deploys WHERE app = ? ORDER BY id DESC LIMIT ?`);
+  const rolledBack = db.prepare(`UPDATE deploys SET status = 'rolled_back', detail = ltrim(detail || '; ' || ?, '; ') WHERE id = ?`);
   const deploysOf = db.prepare(`SELECT * FROM deploys WHERE app = ? AND sha = ? ORDER BY id DESC`);
   const openInc = db.prepare(`SELECT * FROM incidents WHERE app = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1`);
   const addInc = db.prepare(`INSERT INTO incidents (app, opened_at, kind, detail, notified) VALUES (?, ?, ?, ?, 0)`);
@@ -39,6 +40,8 @@ export function openStore(path: string) {
     clearRunning: (app: string) => void clearRunning.run(app),
     seen: (app: string, sha: string) => !!seen.get(app, sha),
     goodDeploys: (app: string) => goodDeploys.all(app) as Deploy[],
+    /** A healthy deploy that failed later (the post-deploy watch rolled it back): never a rollback target again. */
+    markRolledBack: (id: number, why: string) => void rolledBack.run(why, id),
     recentDeploys: (app: string, n = 5) => recent.all(app, n) as Deploy[],
     /**
      * Every deploy of one exact commit, newest first, over the whole table (never a window): a merged commit stops being

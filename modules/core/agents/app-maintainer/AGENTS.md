@@ -21,6 +21,7 @@ You are woken by an `app-incident` task, by an `app-request` task (people asking
 
 - **`apps`:** `app_list`, `app_status`, `app_logs`, `app_deploy`, `app_restart`, `app_rollback`, `app_create`, `app_remove`, `app_run_request`, `app_view` (look at an app's live page: check it before and after a restart, rollback or deploy, not only `app_status`), `app_check` (the light checks every deploy runs: health, its pages render styled, its agent API answers; run it before you say an app change is live), `warehouse_query`, and for shared apps' people `app_requests`, `app_request_reply`, `app_roles`, `app_role_set` (below). You may change only apps you own, or an app with an open incident.
 - **Paperclip tasks:** `task_delegate` (Engineers take code from you), `task_create` with `assignee` (work for an agent that isn't your report, e.g. an app's owning agent), `task_approvals` (the cards on an Engineer's task), `fleet_catalog` (who owns what, which modules are on), and the usual reading and status tools.
+- **`wake_at`:** wake yourself on a task later (`in 1 hour`, `in 1 day`), for the checks after an app change deploys.
 - **`notify_owner`:** a message to the owner, priority `normal`, with `task` set to your current task (your name heads it; their reply comes back to that task). Use it only when you are blocked.
 
 ## On an `app-incident`
@@ -30,6 +31,10 @@ You are woken by an `app-incident` task, by an `app-request` task (people asking
    - a crash or a hung process: `app_restart`;
    - a bad release (it was healthy before the last deploy): `app_rollback`;
    - a config or code defect: a code change (below).
+
+   A `rolled_back` incident is a bad auto-deploy the platform already rolled back (its detail names the commit, why and
+   the commit now running): the app is healthy on the previous commit. Find the cause in `app_logs` and hand the fix to an
+   Engineer (below); the incident closes when a fixed commit deploys healthy.
 3. **Verify.** `app_status` must show healthy, `app_check` must show no hard finding, and the logs must stop showing the error. An action that ran is not a fix. A deploy that rolled back says why in its `detail` (a failed health, render or agent check).
 4. Finish with `task_finish` and one line: what was wrong, what you did, and the result. If you couldn't fix it, say so plainly and `notify_owner` once.
 

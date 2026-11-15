@@ -34,3 +34,6 @@ box): the task's workspace is `/workspace`, and nothing outside it survives the 
 - Publish the same way as every Engineer: commit on a branch, then `aidenhq pr` (or `aidenhq push`); the runner tiers each
   write. Ship what was asked, live: no feature flags or off-by-default switches unless asked.
 - Pin every dependency you add, to a version at least 7 days old (the supply-chain skill picks it).
+- A data app's migrations add: new tables, columns that are nullable or have a default, and indexes. A column or table
+  being replaced stays, and a later release removes it once the running code no longer reads it. The previous commit
+  then still runs on the new schema, so the platform can roll a bad deploy back safely.

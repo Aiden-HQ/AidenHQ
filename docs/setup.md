@@ -177,6 +177,10 @@ data on `sub`, and treats a role it doesn't know as no more than `member`. Agent
   error or no stylesheet applied; `agent` GETs `<first api path>/schema` on an app with `api:` and expects 200 with JSON.
   A failure rolls the deploy back. `checks: { render: [/, /audit], agent: [/api/agent/x/schema] }` in `aidenhq-app.yaml`
   sets the paths (declared paths are strict; `[]` turns a kind off).
+- **Post-deploy watch:** for 30 minutes after a healthy auto-deploy, a failed health check rolls the app back to the
+  previous good deploy (once; code only, as `app_rollback`) and raises a `rolled_back` incident naming the commit and why.
+  It stays open until a healthy deploy (the fix). Stateful apps are left to the owner. Data apps stay safe to roll back
+  because their migrations only add (expand now, contract in a later release).
 - **Admin screens:** link to `/.aidenhq/access` (the app's Access page). Settings the app has are its own screen, shown
   to `admin`.
 - **Requests to the app's agent:** `fetch("/.aidenhq/request", { method: "POST", headers: { "content-type":

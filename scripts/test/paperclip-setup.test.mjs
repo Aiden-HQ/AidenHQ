@@ -9,18 +9,17 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "../paperclip-setup.mjs");
-const PREFIX = "const DELEGATING_SECTION = ";
 
 test("paperclip-setup.mjs passes a syntax check", () => {
   execFileSync(process.execPath, ["--check", script], { encoding: "utf8" });
 });
 
 /** The section setup emits, built from the declaration the script carries (and checked to parse first). */
-function section() {
-  const declaration = readFileSync(script, "utf8").split("\n").find((l) => l.startsWith(PREFIX));
-  assert.ok(declaration, "DELEGATING_SECTION is missing");
+function section(name = "DELEGATING_SECTION") {
+  const declaration = readFileSync(script, "utf8").split("\n").find((l) => l.startsWith(`const ${name} = `));
+  assert.ok(declaration, `${name} is missing`);
   const out = join(mkdtempSync(join(tmpdir(), "setup-section-")), "section.mjs");
-  writeFileSync(out, `${declaration}\nprocess.stdout.write(DELEGATING_SECTION);\n`);
+  writeFileSync(out, `${declaration}\nprocess.stdout.write(${name});\n`);
   execFileSync(process.execPath, ["--check", out], { encoding: "utf8" });
   return execFileSync(process.execPath, [out], { encoding: "utf8" });
 }
@@ -36,4 +35,13 @@ test("a merge job's rubric is worded on the merge, never on a card id", () => {
   const text = section();
   assert.ok(text.includes("never on a card or merge-request id"));
   assert.ok(text.includes("No card is needed."));
+});
+
+test("an app change is checked live an hour and a day after it deploys, and data-app migrations only add", () => {
+  const followup = section("APP_FOLLOWUP_SECTION");
+  assert.match(followup, /\n\n## Checking an app change once it is live\n\n/);
+  for (const t of ["`in 1 hour`", "`in 1 day`", "`app_logs`", "`warehouse_query`", "`rolled_back` incident"]) assert.ok(followup.includes(t), t);
+  assert.ok(section().includes("migrates its schema by adding"));
+  const engineer = readFileSync(join(dirname(script), "../modules/engineering/agents/app-engineer/AGENTS.md"), "utf8");
+  assert.match(engineer, /A data app's migrations add: new tables/);
 });
