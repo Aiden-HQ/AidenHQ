@@ -60,7 +60,7 @@ test("grafana_source: local points grafana-mcp at the monitoring module's Grafan
 });
 
 test("alert rules: identifier names, a severity each, and only the critical ones the board has an owner sentence for", () => {
-  const rules = YAML.parse(readFileSync(join(product, "modules/monitoring/prometheus/rules.yml"), "utf8")).groups.flatMap((g) => g.rules);
+  const rules = YAML.parse(readFileSync(join(product, "modules/monitoring/prometheus/rules.yml"), "utf8")).groups.flatMap((g) => g.rules).filter((r) => r.alert); // recording rules (record:) are not alerts
   for (const r of rules) {
     assert.match(r.alert, /^[A-Za-z][A-Za-z0-9_]*$/);
     assert.ok(["warning", "critical"].includes(r.labels?.severity), r.alert);

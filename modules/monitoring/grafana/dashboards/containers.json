@@ -16,7 +16,7 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "CPU by container (cores)",
+      "title": "CPU by source (cores, stacked)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -24,6 +24,87 @@
       "gridPos": {
         "x": 0,
         "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "stacking": {
+              "mode": "normal"
+            },
+            "fillOpacity": 40
+          }
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "aidenhq:cpu_cores:by_source",
+          "legendFormat": "{{source}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "CPU pressure: host and apps (share of time waiting)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(node_pressure_cpu_waiting_seconds_total[5m])",
+          "legendFormat": "host"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(container_pressure_cpu_waiting_seconds_total[5m]) * on (id) group_left (name) max by (id, name) (aidenhq_container_running{project=~\"app-.+\"})",
+          "legendFormat": "{{name}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CPU by container (cores)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
         "w": 12,
         "h": 8
       },
@@ -47,7 +128,7 @@
       ]
     },
     {
-      "id": 2,
+      "id": 4,
       "type": "timeseries",
       "title": "Memory by container",
       "datasource": {
@@ -56,7 +137,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 0,
+        "y": 8,
         "w": 12,
         "h": 8
       },
@@ -80,7 +161,7 @@
       ]
     },
     {
-      "id": 3,
+      "id": 5,
       "type": "timeseries",
       "title": "Restarts (30 min)",
       "datasource": {
@@ -89,7 +170,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 8,
+        "y": 16,
         "w": 12,
         "h": 8
       },
@@ -113,7 +194,7 @@
       ]
     },
     {
-      "id": 4,
+      "id": 6,
       "type": "timeseries",
       "title": "Running / unhealthy",
       "datasource": {
@@ -122,7 +203,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 8,
+        "y": 16,
         "w": 12,
         "h": 8
       },
@@ -155,7 +236,7 @@
       ]
     },
     {
-      "id": 5,
+      "id": 7,
       "type": "timeseries",
       "title": "systemd units not active",
       "datasource": {
@@ -164,7 +245,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 16,
+        "y": 24,
         "w": 24,
         "h": 8
       },
