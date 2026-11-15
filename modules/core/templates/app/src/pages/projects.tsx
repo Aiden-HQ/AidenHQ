@@ -36,7 +36,7 @@ import { cn } from "@/lib/utils"
 // value). It imports only what it uses; the other blocks and components (src/components/) are there when a page needs
 // them. Copy the composition, not the data.
 
-// Rows per page. 10 so the sample shows paging; real tables show 25 to 50 (guidelines: Data views).
+// Rows per page. 10 so the sample shows paging; real tables show 25 to 50.
 const PAGE_SIZE = 10
 
 export function ProjectsPage() {

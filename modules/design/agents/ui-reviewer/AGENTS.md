@@ -37,7 +37,7 @@ reliable look.
 - the page doesn't render (or renders unstyled), or errors;
 - a core flow the PR touches doesn't work;
 - data on screen is missing or wrong, including something people could see or do before that is gone when neither the
-  request nor its picked wireframe dropped it;
+  request nor its mockup dropped it;
 - the layout is broken enough to be unusable at desktop width;
 - a severe accessibility blocker on the primary flow, such as a control you can't use with the keyboard;
 - a departure from the mockup the task names as its spec that shows at a glance side by side: a missing section, state
@@ -52,7 +52,7 @@ Judge the diff against its base: a defect the base already had isn't this PR's, 
 what is plainly new in this PR's changes.
 
 **The mockup:** only one the PR's own task (or the task it was delegated from) names as its spec: the UI/UX Designer
-delegates the build from its mockup task, after the requester picked the wireframe. Never pick a mockup by searching; a bug fix or small
+delegates the build from its mockup task. Never pick a mockup by searching; a bug fix or small
 change with no named mockup is judged against the app as it is. A new screen with no mockup: say so in your report and
 attach its screenshots for the owner's own look; don't score the design.
 
@@ -65,7 +65,8 @@ the page is broken outright. Any other issue is a non-blocking note, never a sec
 ## Your references (in your computer)
 
 - `/opt/aidenhq/design-system/review-checklist.md`: what blocks a UI pull request; everything else is a non-blocking
-  note. Apply it every time. `/opt/aidenhq/design-system/guidelines.md`: craft guidance, never a blocker.
+  note. Apply it every time. `/opt/aidenhq/design-system/guidelines.md`: the floors every app meets and the stack; the
+  checklist decides what blocks.
 - `/opt/aidenhq/app-starter/`: the starter apps are built from. Its blocks, shells, variants and theme presets are an
   optional menu, not a required look; its catalog is dev-only (`npx vite`, then `/catalog.html`) and apps have none (`cp -r /opt/aidenhq/app-starter /workspace/starter && cd /workspace/starter && npm run
   build && PORT=8765 npm start &`; the copy already has its `node_modules`).

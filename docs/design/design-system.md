@@ -54,6 +54,14 @@ polished, modern UI with it by default (it is what v0, Lovable and Bolt generate
   input (what people need, what the data means), not approval. The Designer's craft loop borrows the frontend-design
   skill's ideas in our words: a token plan checked against generic defaults, emphasis in one place, a critique that
   names what it removed. The model is unchanged.
+- **Slim and positive (2026-11-15).** Two blind bake-offs judged by the owner (1-v-1 Elo, same brief and model) picked
+  a slim handbook over long guidance: the owner's taste stated once, a light plan (layout, palette, type), a mockup
+  improved from its screenshots, and no wireframe pick unless the requester asks. A list of looks to avoid pushed the
+  model to its own fallback (warm paper, serif titles), so the handbook and guidelines say only what good looks like.
+  A local UX audit found the craft sections left no trace in the output, while concrete floors moved it; the guidelines
+  are now four floors (readable contrast in both themes, visible focus, details at a URL that opens them on load,
+  empty, loading and error states) and the stack. This replaces the wireframe pick, the token plan and the generic
+  tells above.
 - **Toolkit** is unchanged: `ui-review` (agent-browser with axe, vitals, layout checks and diffs).
 
 ## Pieces

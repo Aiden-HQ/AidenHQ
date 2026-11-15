@@ -9,7 +9,7 @@ components wear, the rules, and the review checklist.
 | `tokens.css` | Every colour, size, space, radius and duration: four palettes (`neutral`, `warm`, `contrast`, `data`) from Radix Colors, each in light and dark, all AA (`scripts/test/design-system.test.mjs`). |
 | `presets/` | Theme presets, one file each (`crisp`, `polished`, `editorial`, `dense`, `ops`, `indigo`, `soft`, `slate`, `minimal`, `graphite`): palette in light and dark, accent, radius, fonts and density. An app imports one after `shadcn.css` and sets `<html data-palette="<name>">`. A starting point, not a rule; all AA. |
 | `shadcn.css` | Maps the tokens onto shadcn's variables (`--background`, `--primary`, `--muted-foreground`, `--sidebar`…) and Tailwind's colour names, plus status (`ok`, `warn`, `danger`, `info`), `link`, `page` and `chart-1…6`. Points Tailwind's `dark:` at `<html data-theme>`. |
-| `guidelines.md` | The floors every app meets (behaviour, states, accessibility, the stack) and craft guidance (layout, navigation, emphasis, colour, type, motion, data views), with the generic tells to avoid. |
+| `guidelines.md` | The floors every app meets (readable contrast in both themes, visible focus, details at a URL that opens them on load, empty, loading and error states) and the stack. The look is the UI/UX Designer's, per app. |
 | `review-checklist.md` | What blocks a UI pull request (obvious, major breakage only; the rest is a non-blocking note), plus the Engineer's self-review. |
 | `components.css`, `kit.js` | **Deprecated:** the plain-CSS kit (version 2), kept only for apps that still vendor it until they migrate (below). Don't use it in new work. |
 
@@ -54,9 +54,8 @@ gate check and migrations stay as they are: only the UI moves.
    working, details in a `Sheet` at `?item=`, and every state. Everything people could see and do before (every lane,
    group and view) stays unless the page's mockup changes it. Until a page moves, its old server-rendered route keeps working;
    switch routes over as they land.
-4. **Fix composition as you go,** not by porting markup: drop nested panels, boxed rows, stripes, eyebrow labels and
-   provenance pills (guidelines, "Generic tells"). Move long feeds out of the way of the main content, and history into
-   the detail sheet or its own paged view.
+4. **Compose each page afresh** from its mockup or the starter's blocks rather than porting markup: the main content
+   first, long feeds beside or below it, and history in the detail sheet or its own paged view.
 5. **Retire the old UI:** delete the templates, the vendored kit (`components.css`, `kit.js`) and its copy script once the
    last page has moved. Run `ui-review` at 390 and 1280 in light and dark on every page and fix anything blocking,
    then ask the UI/UX Designer for the app's design audit (one task naming the app and its repository).

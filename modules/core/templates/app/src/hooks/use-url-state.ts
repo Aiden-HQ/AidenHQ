@@ -1,6 +1,6 @@
 import * as React from "react"
 
-// State that lives in the URL's query string, so a view can be shared and survives a refresh (guidelines: Filters, search and updates).
+// State that lives in the URL's query string, so a view can be shared and survives a refresh.
 // `set` replaces the entry (filters: Back doesn't step through every keystroke); `push` adds one (opening a detail:
 // Back closes it). Empty values are dropped from the URL.
 

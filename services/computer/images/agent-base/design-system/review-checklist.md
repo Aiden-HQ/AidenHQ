@@ -1,8 +1,8 @@
 # UI review checklist
 
 The UI Reviewer applies this to every pull request that changes what people see; the UI/UX Designer applies it in an
-app's design audit and to its own mockups. A review is a quick look for obvious, major breakage, not QA and not a
-judgement of taste: shell, blocks, palette and layout are the designer's choices, and a mockup the task names as its
+app's design audit and to its own mockups. A review is a quick look for obvious, major breakage; taste is the
+designer's: shell, blocks, palette and layout are the designer's choices, and a mockup the task names as its
 spec fixes them for the build. It judges a pull request against its
 base: only what the PR introduced blocks, and a finding the base already had is not this PR's, even in a file it touches
 (`ui-review --baseline` lists the base's own findings under "already on this base").
@@ -10,40 +10,39 @@ base: only what the PR introduced blocks, and a finding the base already had is 
 1. **Evidence:** run `ui-review <url> --paths <changed pages> --out after` (and `--baseline before` against the base
    when you can run both), read `report.md` and look at the screenshots of the changed pages once. With a named mockup,
    also put the head beside the mockup's screenshots (`ui-review --baseline <dir of the mockup's screenshots>`, named
-   as `ui-review` names its own, writes before|after pictures). Try the main flow the PR touches once. Don't explore
-   every state or width.
+   as `ui-review` names its own, writes before|after pictures). Try the main flow the PR touches once; that is enough.
 2. **Report:** the verdict, each blocker (screenshot or region, what is broken, the fix), then one short non-blocking
    list. When unsure, it is non-blocking.
 
-## Blocking: obvious, major, user-facing breakage this PR introduced
+## Blocking: what must still hold on the pages the PR changes
 
-- [ ] The page doesn't render, renders unstyled, or shows errors (page errors, failed loads, CSP blocks).
-- [ ] A core flow the PR touches doesn't work: the action does nothing, fails silently, or gives the wrong result.
-- [ ] Data on screen is missing or wrong: `NaN`, `undefined`, `[object Object]`, wrong counts or totals, or something
-      people could see or do before that is gone when neither the request nor its picked wireframe dropped it.
-- [ ] The layout is broken enough to be unusable at desktop width (1280px): content cut off, overlapping or unreachable.
-- [ ] A severe accessibility blocker on the primary flow: a control you can't use with the keyboard, or text you can't
-      read (axe critical).
-- [ ] A departure from the mockup the task names as its spec that shows at a glance side by side: a missing section,
-      state or view, or a different look (its theme colours, type scale, density, depth, or an interaction it lists).
-      Never pixel-level nudges or differences that come from the real data.
+A PR that breaks one of these, where its base held it, is blocked.
 
-## Non-blocking: one short list, never a failure
+- [ ] The page renders, styled, loads every resource and runs cleanly under the CSP.
+- [ ] Each core flow the PR touches works and gives the right result.
+- [ ] The data on screen is present and right (real values, the right counts and totals), and everything people could
+      see or do before is still there unless the request or the mockup changes it.
+- [ ] The layout is usable at desktop width: content fits, sits clear of other content, and can be reached.
+- [ ] The primary flow works from the keyboard and its text is readable (axe reports nothing critical).
+- [ ] With a mockup the task names as its spec, the build matches it at a glance side by side: its sections, states
+      and views, and its look (theme colours, type scale, density, depth, and the interactions it lists). Pixel-level
+      nudges and differences that come from the real data are notes.
+
+## Non-blocking: one short list of notes
 
 Everything else: polish, spacing, copy, craft, minor inconsistencies, edge states (empty, loading, long text), phone
-and tablet nits, lesser axe findings, things the base already had. A screen that works but looks generic or is hard to
-follow: suggest a mockup from the UI/UX Designer.
+and tablet nits, lesser axe findings, things the base already had. For a screen that works but could serve its people
+better, suggest a mockup from the UI/UX Designer.
 
 ## Self-review before any UI PR (Engineers)
 
-- [ ] On the starter's stack; colours from theme names; `tokens.css` and `shadcn.css` unchanged.
+- [ ] On the starter's stack; colours from theme names; `tokens.css` and `shadcn.css` as vendored.
 - [ ] Matches its mockup when it had one, side by side at the mockup's width and mode: same theme colours, type scale,
-      spacing, depth and detail, and the hover, focus and open/close motion it lists; anything it drops is dropped by
-      the request or its picked wireframe.
-- [ ] Checked at 1280 and 390, light and dark, with no console errors or CSP violations, and `npm test` passes (it
-      checks the CSP). Engineer jobs: `aidenhq-browse` screenshots the changed pages and clicks through the changed
-      flow; its screenshots are attached to the task.
-- [ ] Filters apply on change and live in the URL, details open over the list and Back closes them, updates happen in
-      place.
-- [ ] Empty, loading and error states are present, and the copy is in plain words.
+      spacing, depth and detail, and the hover, focus and open/close motion it lists; what it drops is what the request
+      or the mockup drops.
+- [ ] Checked at desktop and phone width, light and dark, with a clean console and CSP, and `npm test` passes (it checks
+      the CSP). Engineer jobs: `aidenhq-browse` screenshots the changed pages and clicks through the changed flow; its
+      screenshots are attached to the task.
+- [ ] Meets the guidelines' floors: readable contrast in both themes, visible focus, details at a URL that opens them on
+      load, and empty, loading and error states.
 - [ ] A seed or fixture mode runs the app locally with realistic data, so a reviewer can screenshot it.

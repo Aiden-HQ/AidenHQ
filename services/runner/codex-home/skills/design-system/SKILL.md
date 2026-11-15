@@ -7,8 +7,8 @@ description: Build or change the UI of an AidenHQ app (or the board) with the ap
 
 Two folders, copied from the product at the start of this run:
 
-- `$CODEX_HOME/skills/design-system/files/`: the design system. Read `files/guidelines.md` (the floors every app meets, craft
-  guidance, and the generic tells to avoid) and `files/review-checklist.md` (what blocks a UI PR).
+- `$CODEX_HOME/skills/design-system/files/`: the design system. Read `files/guidelines.md` (the floors every app meets and the
+  stack) and `files/review-checklist.md` (what blocks a UI PR).
 - `$CODEX_HOME/skills/design-system/starter/`: the app starter. Its `README.md` says what's where; its `AGENTS.md` is the
   short version of how to build on it.
 
@@ -19,9 +19,9 @@ UI library.
 **Building blocks, not a template.** `src/components/blocks/` (page header, stat strip, sortable headers, pagination,
 board, activity list, empty/loading/error states, detail list, form section, charts), `src/components/ui/` (shadcn/ui),
 the example page (`src/pages/projects.tsx`) and `/catalog` are there to use, adapt or ignore; the top-bar shell in
-`src/App.tsx` is a sample (many destinations or nested groups: the `SidebarShell` block). What always holds: filters, sort and page in the
-URL (`useUrlState`), applied as they change; details open over the list in a `Sheet` at `?item=`; every data view's
-states. Colours only from the theme's names (`bg-background`, `text-muted-foreground`, `bg-primary`,
+`src/App.tsx` is a sample (many destinations or nested groups: the `SidebarShell` block). What always holds (the guidelines' floors): readable
+contrast in both themes; a visible focus ring on everything interactive; details in a `Sheet` at `?item=` that the URL
+opens on load; every data view's empty, loading and error states. Colours only from the theme's names (`bg-background`, `text-muted-foreground`, `bg-primary`,
 `text-danger`, `bg-chart-1`…), never literal colours or Tailwind palette colours.
 
 **A mockup is the spec.** When the task comes with a mockup (a page's `.tsx` file, often a `theme.css`, and screenshots in
@@ -58,7 +58,7 @@ passing (it builds, serves and checks the CSP), and an existing app's server mus
   each one beside the mockup's: fix every difference a person would see at a glance that isn't the real data (greyer,
   flatter, sparser, smaller or bigger type, missing hover or detail), and say in your report what still differs and why.
 - Go through the checklist's "Self-review" by reading your code: the mockup matched when there is one, every data
-  view's empty, loading, error and no-match states, plain-word copy, phone layout (`max-md:`/`md:` classes, nothing
+  view's empty, loading and error states, details that reopen from the URL, plain-word copy, phone layout (`max-md:`/`md:` classes, nothing
   wider than the screen).
 - A seed or sample-data mode still runs the app locally (you and the reviewer screenshot it), and new states are reachable with
   `?preview=loading|error|empty` or the seed.

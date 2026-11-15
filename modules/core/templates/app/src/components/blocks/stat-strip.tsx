@@ -3,7 +3,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Sparkline } from "@/components/blocks/sparkline"
 import { cn } from "@/lib/utils"
 
-// A summary of numbers: one surface split into cells, never a row of floating cards (guidelines: Data views). A cell with
+// A summary of numbers: one surface split into cells, never a row of floating cards. A cell with
 // `onPick` is a toggle that filters the view (`pressed` when its filter is on); the figures count what the filters show.
 // The `hero` tone is optional, for the one figure the page is about when one deserves it; a figure that needs attention
 // takes its status tone; leave the rest plain. A toned cell writes in its

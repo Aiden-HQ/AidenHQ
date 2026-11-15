@@ -14,11 +14,11 @@ the AidenHQ design system. `README.md` says what's where. These rules keep its p
   `<html data-palette="<name>">`), or adapt one in a `theme.css`. Presets are starting points, not rules.
 - **The catalog is dev-only:** `npm run catalog` (`catalog.html`, `src/catalog/`) shows every block, component,
   variant, shell and preset. It is never an app route or part of a build; leave it out of the app's repo.
-- **What always holds** (the design system's `guidelines.md`): filters, sort and page in the URL (`useUrlState`),
-  applied as they change; details keep the list's place (a `Sheet` at `?item=`, say) and Back closes them; every data view has
-  its empty, loading, error and no-match states; usable at 390px; colours only from the theme's names (`bg-background`,
-  `text-muted-foreground`, `bg-primary`, `text-danger`, `bg-chart-1`…), never literal colours; what people could see
-  and do stays when only restyling (a redesign's mockup decides what changes).
+- **What always holds** (the design system's `guidelines.md`): readable contrast in both themes; a visible focus ring
+  on everything interactive; details at a URL (a `Sheet` at `?item=`, say) that opens them on load and that Back
+  closes; empty, loading and error states in every data view; colours from the theme's names (`bg-background`,
+  `text-muted-foreground`, `bg-primary`, `text-danger`, `bg-chart-1`…) so light and dark both work; what people could
+  see and do stays when only restyling (a redesign's mockup decides what changes).
 - **A mockup is the spec.** When a change comes with a mockup (a page's `.tsx`, often a `theme.css`, and screenshots),
   start from its files and wire them to the real data: its layout, components and states, and its finish (theme
   colours, type scale, spacing, depth, the interactions it lists). Compare your screenshots with its own, side by side

@@ -27,8 +27,8 @@ box): the task's workspace is `/workspace`, and nothing outside it survives the 
 
 - New apps start from the app starter (shadcn/ui on Vite + React, the design system's theme) at
   `/opt/aidenhq/app-starter`; an existing app moves to it when you next touch its UI. Follow
-  `/opt/aidenhq/design-system/guidelines.md` and the mockup when there is one: filters that apply in place and live in
-  the URL, details in a sheet, and empty, loading and error states. A mockup is matched in its finish too (colours,
+  `/opt/aidenhq/design-system/guidelines.md` and the mockup when there is one: readable contrast in both themes,
+  visible focus, details in a sheet at a URL that opens them on load, and empty, loading and error states. A mockup is matched in its finish too (colours,
   type, spacing, depth, hover and motion): start from its files and compare your screenshots with its own, side by
   side at its width and mode, before you publish. The starter's blocks and shell are optional.
 - Publish the same way as every Engineer: commit on a branch, then `aidenhq pr` (or `aidenhq push`); the runner tiers each

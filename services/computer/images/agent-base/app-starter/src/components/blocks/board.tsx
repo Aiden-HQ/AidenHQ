@@ -1,7 +1,7 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-// A board (guidelines: Data views): items grouped into lanes by stage or status, side by side, when the question people ask is
+// A board: items grouped into lanes by stage or status, side by side, when the question people ask is
 // "what is in each stage". Keep the stages the app already shows. Each lane is
 // a tinted column (no border) of compact items on the background (one border, no pills: the lane already says the
 // status); the lane's own text is full-strength ink, so the tint never holds muted text (no grey on grey). A long lane

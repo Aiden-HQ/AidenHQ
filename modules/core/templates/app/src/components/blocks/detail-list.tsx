@@ -1,6 +1,6 @@
 import * as React from "react"
 
-// A detail view's facts as label-value pairs (guidelines: Detail views, forms and dialogs): after the status and next step, before history. Empty
+// A detail view's facts as label-value pairs: after the status and next step, before history. Empty
 // values are left out rather than shown as "—"; put the source link in the value when the fact came from somewhere.
 
 export function DetailList({ items }: { items: { label: string; value?: React.ReactNode }[] }) {

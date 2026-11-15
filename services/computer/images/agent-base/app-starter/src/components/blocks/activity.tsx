@@ -1,7 +1,7 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-// What changed, newest first (guidelines: Data views): a recent-changes feed in a page's side rail, or an item's history in its
+// What changed, newest first: a recent-changes feed in a page's side rail, or an item's history in its
 // detail. One line of what happened, an optional line of why, then when and the source, on a quiet rail of dots: no box
 // per entry, no pills. Cap it (`limit`) and link the rest; a long history belongs in the detail sheet or its own page.
 

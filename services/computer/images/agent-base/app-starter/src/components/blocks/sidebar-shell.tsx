@@ -18,7 +18,7 @@ import {
 import { PoweredBy } from "@/components/powered-by"
 import { cn } from "@/lib/utils"
 
-// An optional app shell for apps with many destinations or nested groups (guidelines: Layout and navigation): a
+// An optional app shell for apps with many destinations or nested groups: a
 // collapsible sidebar on desktop and a bottom bar of up to five destinations on phones. An app with a few destinations
 // may use TopBarShell instead, or BareShell for no chrome. `variant`: `sidebar` (flush, the default), `floating` or `inset`.
 export type NavItem = { href: string; label: string; icon: LucideIcon }
