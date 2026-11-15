@@ -216,6 +216,8 @@ PROBES
       # The gate sees the board's account map and nothing else of data/ (never data/board: sessions, hashes, TOTP).
       echo "$mounts" | tr ';' '\n' | grep -q '|/accounts/accounts.json|false' && ! echo "$mounts" | grep -q '/board' \
         && pass "gate: only accounts.json from data/, read-only" || fail "gate: unexpected data mounts: $mounts"
+      # PR previews (settings.edge.previews): apps-mcp's list of running previews, read-only.
+      ! echo "$mounts" | grep -q '|/previews|true' && pass "gate: the previews list, if any, is read-only" || fail "gate: /previews is writable: $mounts"
       # Host networking: its port is whatever it binds. Only cloudflared (on the host) may reach it, so CF-Connecting-IP,
       # which the gate passes to the sign-in listener as the visitor's address, can't come from anyone else.
       binds="$(ss -Hltn 'sport = :3130' 2>/dev/null | awk '{print $4}' | sort -u | tr '\n' ' ')"

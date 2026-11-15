@@ -213,6 +213,43 @@ test("without its signing key the gate refuses (503) rather than proxy", async (
   }
 });
 
+test("a PR preview host: its parent's Access audience and roles, its own identity, and no cookie leaves its host", async () => {
+  // The app sets a cookie for the whole domain: through the gate it stays on the host that set it.
+  const tosser = createServer((q, s) => s.writeHead(200, { "content-type": "application/json", "set-cookie": ["toss=1; Domain=example.com; Path=/", "plain=1; Path=/"] }).end(JSON.stringify(q.headers)));
+  const port = await listen(tosser);
+  const file = join(secrets, "previews.json");
+  writeFileSync(file, JSON.stringify({ "roadmap-pr-3": port, "other-pr-3": 3120 }));
+  const cfg = {
+    login: "access", issuer: ISSUER, certs_url: `http://127.0.0.1:${jwksSrv.address().port}/cdn-cgi/access/certs`, owner_email: "owner@example.com",
+    accounts_file: ACCOUNTS, identity_key_file: KEY, my_apps: { host: "apps.example.com", aud: "aud-apps" },
+    hosts: { "roadmap.example.com": { app: "roadmap", port, aud: AUD }, "other.example.com": { app: "other", port, aud: "aud-other" } },
+    previews: { file, ports: [port, port] },
+  };
+  const g = createGate({ config: () => cfg, log: () => {} });
+  const gp = await listen(g);
+  const get = (host, email, aud = [AUD]) => new Promise((resolve, reject) => {
+    request({ host: "127.0.0.1", port: gp, path: "/", headers: { host, "cf-access-jwt-assertion": token({ email, aud }) } }, (r) => {
+      let body = "";
+      r.on("data", (c) => (body += c));
+      r.on("end", () => resolve({ status: r.statusCode, body, cookies: r.headers["set-cookie"] ?? [] }));
+    }).on("error", reject).end();
+  });
+  try {
+    const r = await get("pr-3.roadmap.example.com", "viewer@example.com");
+    assert.equal(r.status, 200);
+    assert.equal(who(r.body, "roadmap-pr-3").role, "member"); // roadmap's role, for the preview only
+    assert.throws(() => who(r.body, "roadmap"), /not for this app/);
+    assert.deepEqual(r.cookies, ["toss=1; Path=/", "plain=1; Path=/"]);
+    assert.deepEqual((await get("roadmap.example.com", "viewer@example.com")).cookies, ["toss=1; Path=/", "plain=1; Path=/"]); // nor reaches its previews
+    assert.equal((await get("pr-3.roadmap.example.com", "viewer@example.com", ["aud-other"])).status, 403); // only the parent's Access
+    assert.equal((await get("pr-3.roadmap.example.com", "nobody@example.com")).status, 403); // blocked on roadmap: blocked here
+    assert.equal((await get("pr-3.other.example.com", "viewer@example.com", ["aud-other"])).status, 404); // a port outside the band
+    assert.equal((await get("pr-4.roadmap.example.com", "viewer@example.com")).status, 404); // not running
+  } finally {
+    for (const s of [g, tosser]) { s.close(); s.closeAllConnections(); }
+  }
+});
+
 test("an unknown host is a 404", async () => {
   assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "owner@example.com" }) }, { host: "board.example.com" })).status, 404);
 });

@@ -1,6 +1,6 @@
 // Shared wiring: registry, engine, health probe, status rows, incident webhook.
 import { createHmac, randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dropPreviewDatabase, provisionDatabase, WAREHOUSE } from "./database.js";
@@ -23,6 +23,15 @@ import { previewApp } from "./previews.js";
 
 const run = promisify(execFile);
 
+/** Writes a file other services read, when it changed; atomic (a reader never sees half of it). */
+function writeAtomic(file: string, text: string): void {
+  try {
+    if (readFileSync(file, "utf8") === text) return;
+  } catch {}
+  writeFileSync(`${file}.tmp`, text, { mode: 0o644 });
+  renameSync(`${file}.tmp`, file);
+}
+
 export interface PlatformConfig {
   registryPath: string;
   modulesRegistryPath: string;
@@ -37,6 +46,8 @@ export interface PlatformConfig {
   healthImage: string;
   git: GitEnv;
   webhookDir?: string; // holds apps_incident_webhook_url and _secret
+  gateFile?: string; // the gate's compiled config (config/gate.json): its `previews` turns on shared apps' previews
+  previewsFile?: string; // which shared apps' previews run, for the gate (scripts/edge.mjs PREVIEWS_FILE)
 }
 
 export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: string) => void; info: (o: object, m: string) => void }) {
@@ -120,6 +131,12 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       if (t) want.set(`app-${app.name}`, t);
     }
     writeServeConfig(cfg.edgeDir, [...want.values()]);
+    // The gate's view: shared apps' healthy previews and their loopback ports (it checks each against its own config).
+    try {
+      if (cfg.previewsFile) writeAtomic(cfg.previewsFile, `${JSON.stringify(Object.fromEntries(previews.filter((p) => p.share?.host).map((p) => [p.name, p.port])), null, 1)}\n`);
+    } catch (err) {
+      log.warn({ err: String(err) }, "previews file not written");
+    }
     const joined = Object.keys(JSON.parse(await exec(["inspect", EDGE_CONTAINER, "--format", "{{json .NetworkSettings.Networks}}"])) ?? {}).filter((n) => n.startsWith("app-"));
     const changes = [
       ...joined.filter((n) => !want.has(n)).map((n) => ["disconnect", n]),
@@ -129,8 +146,17 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   }
 
   const url = (app: App): string | undefined => (app.share?.host ? `https://${app.share.host}` : exposes(app) ? `${cfg.urlBase}:${app.port}` : undefined);
-  /** A preview's URL (previews.ts): only on the apps' tailnet node for now, and only when that node is configured. */
-  const previewUrl = (app: App): string | undefined => (cfg.urlBase && exposes(app) ? `${cfg.urlBase}:${app.port}` : undefined);
+  /** Does the gate serve previews (settings.edge.previews)? Re-read on use, as apply rewrites it. */
+  const gatePreviews = (): boolean => {
+    try {
+      return !!cfg.gateFile && !!JSON.parse(readFileSync(cfg.gateFile, "utf8")).previews;
+    } catch {
+      return false;
+    }
+  };
+  /** A preview's URL (previews.ts): its gate host when the gate serves previews, else the apps' tailnet node. */
+  const previewUrl = (app: App): string | undefined =>
+    app.share?.host ? (gatePreviews() ? `https://${app.share.host}` : undefined) : cfg.urlBase && exposes(app) ? `${cfg.urlBase}:${app.port}` : undefined;
 
   async function status(app: App) {
     const last = store.lastDeploy(app.name);

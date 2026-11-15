@@ -49,6 +49,8 @@ const p = createPlatform(
     healthImage: process.env.APPS_HEALTH_IMAGE ?? "aidenhq/apps-mcp:local",
     git: { appsData, gitDir: "/data/git", productDir: repoDir, ...(tokenFile ? { tokenFile } : {}), orgs, ...(agentsOrg ? { agentsOrg } : {}), ...(appToken ? { appToken } : {}), sshCommand: "ssh -i /secrets/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts" },
     webhookDir: "/run/secrets",
+    gateFile: `${repoDir}/config/gate.json`,
+    previewsFile: process.env.APPS_PREVIEWS_FILE ?? "/previews/previews.json",
   },
   log,
 );

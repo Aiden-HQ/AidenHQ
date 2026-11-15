@@ -47,7 +47,8 @@ loopback ports. `scripts/edge.mjs` generates its
 config and cloudflared's ingress (every `share.host` to the gate, then a 404), and apply refuses any ingress rule whose
 target is not the gate. Per request the gate:
 
-1. Maps `Host` to an app (unknown host: 404). The upstream comes only from the compiled config.
+1. Maps `Host` to an app (unknown host: 404). The upstream comes only from the compiled config (a PR preview's port:
+   from apps-mcp's previews file, only inside the compiled band; see Pull request previews).
 2. Signs the visitor in through its sign-in adapters (next section) and resolves their role.
 3. Strips every inbound `x-aidenhq-*`, `tailscale-*` and `cf-access-*` header, the Access token and cookie, and auth
    cookies, so one app cannot replay a visitor's identity at another.
@@ -57,6 +58,25 @@ target is not the gate. Per request the gate:
    every route but its health path. Streaming passes unbuffered.
 
 Anything the gate cannot read or verify (keys, accounts, sessions) refuses with a 503.
+
+## Pull request previews
+
+With `settings.edge.previews: true`, each open PR on a shared app's repo also runs as a preview
+([previews.ts](../../services/apps-mcp/src/previews.ts)) at `pr-<n>.<share.host>`, with exactly the app's access:
+
+- Compile adds one ingress rule `*.<share.host>` → the gate per shared app, after the exact hosts, behind that app's own
+  `aud`; the app's Access application must list `*.<share.host>` as a second domain, so the same policy admits the same
+  people. The gate verifies the parent's `aud` on a preview host.
+- The upstream is the one place the gate reads something besides the compiled config: apps-mcp's
+  `data/previews/previews.json` (`{ "<app>-pr-<n>": <port> }`, mounted read-only) says which previews run and where. The gate
+  takes a host only when its parent is a compiled host, and a port only inside the compiled preview band (39100-39399),
+  so the file can't point it at the board, Paperclip or a live app.
+- The visitor's role is the parent's (blocked stays blocked); the identity token's `aud` is the preview's own name, so
+  preview code can't replay a visitor's token at the live app. `/.aidenhq/request(s)` stay the live app's (404 on a
+  preview); My apps doesn't list previews. In password mode the board hands off to a preview host like an app host.
+- A preview runs unreviewed code under its parent's host, so with previews on the gate makes every cookie an app sets
+  host-only (drops its `Domain`): a preview can't toss cookies at the live app or any sibling, and a live app's cookies
+  never reach its previews.
 
 ## App login modes
 

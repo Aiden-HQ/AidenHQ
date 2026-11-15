@@ -69,18 +69,31 @@ export interface GateInfo {
   password: boolean;
   myAppsHost?: string;
   appHosts: string[];
+  /** The gate serves pull request previews of the app hosts (settings.edge.previews): pr-<n>.<host>. */
+  previews?: boolean;
   /** The shared apps by name: their host and the registry's default role (share.default_role), if any. */
   apps?: Record<string, SharedApp>;
 }
 
 export function readGate(file: string): GateInfo | undefined {
   try {
-    const g = JSON.parse(readFileSync(file, "utf8")) as { login?: string; my_apps?: { host?: string }; hosts?: Record<string, { app?: string; default_role?: string }> };
+    const g = JSON.parse(readFileSync(file, "utf8")) as { login?: string; my_apps?: { host?: string }; hosts?: Record<string, { app?: string; default_role?: string }>; previews?: unknown };
     const apps = Object.fromEntries(Object.entries(g.hosts ?? {}).map(([host, h]) => [String(h.app), { host: host.toLowerCase(), ...(h.default_role ? { defaultRole: h.default_role } : {}) }]));
-    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: Object.keys(g.hosts ?? {}).map((h) => h.toLowerCase()), apps };
+    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: Object.keys(g.hosts ?? {}).map((h) => h.toLowerCase()), previews: !!g.previews, apps };
   } catch {
     return undefined;
   }
+}
+
+/**
+ * An app host the gate serves: one of gate.json's, or (with previews) a preview of one, `pr-<n>.<host>`, as
+ * services/gate/gate.mjs derives it. Whether that preview runs is the gate's to check.
+ */
+export function isAppHost(g: GateInfo | undefined, host: string): boolean {
+  if (!g) return false;
+  if (g.appHosts.includes(host)) return true;
+  const m = /^pr-[1-9][0-9]{0,5}\.(.+)$/.exec(host);
+  return !!g.previews && !!m && g.appHosts.includes(m[1]!);
 }
 
 /** `next` after sign-in: a path on the same host (the gate sends `/.auth/go?…` or `/`), else nothing (no open redirect). */
@@ -520,7 +533,7 @@ export async function createAccounts(o: AccountsOptions) {
       const who = await accounts.sessionOf(req);
       if (!who || (who.account.role === "admin" && !who.ready)) throw new AccountError(401, "sign in first");
       const target = host.toLowerCase();
-      if (!o.gate?.()?.appHosts.includes(target)) throw new AccountError(400, "not an app host");
+      if (!isAppHost(o.gate?.(), target)) throw new AccountError(400, "not an app host");
       const now = Date.now();
       for (const [k, h] of handoffs) if (h.until < now) handoffs.delete(k);
       const code = randomBytes(32).toString("base64url");

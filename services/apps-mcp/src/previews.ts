@@ -11,8 +11,9 @@
 // - the parent's resource limits, at most PER_APP previews per app (the newest PRs), host ports from PREVIEW_PORTS.
 // It is removed (containers, volumes, built images, checkout, secrets, schema and login) when the PR closes or merges,
 // falls out of the newest PER_APP, or its app leaves the registry. The PR gets one comment with the URL, edited as it
-// changes. Tailnet apps' previews are served by the apps' tailnet node at <APPS_URL_BASE>:<port>; shared apps (share.host)
-// get none yet (they need the gate's preview hosts).
+// changes. Tailnet apps' previews are served by the apps' tailnet node at <APPS_URL_BASE>:<port>. A shared app's is at
+// https://pr-<n>.<share.host> through the gate, with the app's own access, once the instance sets settings.edge.previews
+// (scripts/edge.mjs); apps-mcp tells the gate which previews run (platform.ts).
 import { randomBytes } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { put } from "./database.js";
@@ -20,10 +21,11 @@ import { PREVIEW_NAME, PREVIEW_PORTS, type App } from "./registry.js";
 import type { Engine } from "./deploy.js";
 import type { RepoToken } from "./github-app.js";
 import type { PreviewRow, Store } from "./store.js";
-import { exposes } from "./tailnet.js";
 
 export const PER_APP = 3;
 export const previewName = (app: string, pr: number): string => `${app}-pr-${pr}`;
+/** A shared app's preview host, under its own (services/gate/gate.mjs derives it back the same way). */
+export const previewHost = (host: string, pr: number): string => `pr-${pr}.${host}`;
 
 /** The parent app as its PR's preview runs it (see the top of this file). */
 export function previewApp(app: App, pr: number, port: number): App {
@@ -36,6 +38,8 @@ export function previewApp(app: App, pr: number, port: number): App {
     caps: [],
     connects: app.database ? [app.database] : [],
     api: undefined,
+    // Still shared, at its own host: never served on the tailnet, where the gate's access rules don't apply.
+    ...(app.share?.host ? { share: { ...app.share, host: previewHost(app.share.host, pr) } } : {}),
     preview: { of: app.name, pr, published: app.port! },
   };
 }
@@ -79,11 +83,11 @@ export interface PreviewDeps {
   github: GitHub;
   /** Is this repo in the instance's agents org? */
   agentsRepo: (repo: string) => boolean;
-  /** Where a preview answers (the apps' tailnet node); undefined when it can't be served. */
+  /** Where a preview answers (the apps' tailnet node, or the gate); undefined when it can't be served. */
   url: (app: App) => string | undefined;
   secretsDir: string; // the vault's apps/ dir
   gitDir: string;
-  /** The apps' tailnet node: serves exactly the healthy previews (platform.ts syncEdge). */
+  /** The apps' tailnet node and the gate's previews file: exactly the healthy previews (platform.ts syncEdge). */
   syncEdge: () => Promise<void>;
   /** database: warehouse: drops a preview's login and schema (database.ts dropPreviewDatabase). */
   dropDb: (name: string) => Promise<void>;
@@ -91,8 +95,8 @@ export interface PreviewDeps {
   log: { warn: (o: object, m: string) => void; info: (o: object, m: string) => void };
 }
 
-/** Apps that get previews: agents-org repos, local, served on the tailnet (not shared: the gate has no preview hosts yet). */
-const eligible = (d: PreviewDeps, a: App): boolean => d.agentsRepo(a.repo) && !a.module && a.host === "local" && exposes(a) && !!d.url(a);
+/** Apps that get previews: agents-org repos, local, with a URL a preview can have (the tailnet node, or the gate's previews). */
+const eligible = (d: PreviewDeps, a: App): boolean => d.agentsRepo(a.repo) && !a.module && a.host === "local" && !!a.port && !!d.url(a);
 
 const short = (e: unknown) => String((e as Error)?.message ?? e).replace(/\s+/g, " ").slice(0, 200);
 const body = (app: App, pr: OpenPr, url: string | undefined, why?: string) =>

@@ -26,7 +26,7 @@ describe("the gate, the sign-in listener and app access", () => {
   const accountsFile = join(dir, "accounts.json");
   const apps = { crm: { host: "crm.example.com" }, wiki: { host: "wiki.example.com" } };
   let password = true;
-  const gateInfo = () => ({ password, myAppsHost: MY, appHosts: Object.values(apps).map((a) => a.host), apps });
+  const gateInfo = () => ({ password, myAppsHost: MY, appHosts: Object.values(apps).map((a) => a.host), previews: true, apps });
   const manifests: Record<string, Manifest> = {};
   let accounts: Accounts;
   let signin: Server, gate: Server, app: Server;
@@ -124,6 +124,39 @@ describe("the gate, the sign-in listener and app access", () => {
     // Signing out on the app host ends that session.
     expect((await through("crm.example.com", "POST", "/.auth/sign-out", { cookie: appSession, body: {} })).status).toBe(303);
     expect((await through("crm.example.com", "GET", "/deals", { cookie: appSession })).status).toBe(302);
+  });
+
+  it("a PR preview host has its app's access and its own identity; only previews apps-mcp names, in the band", async () => {
+    const appPort = (app.address() as AddressInfo).port;
+    const file = join(dir, "previews.json");
+    writeFileSync(file, "{}");
+    const config = { port: 0, login: "password", auth_url: `http://127.0.0.1:${authPort}`, auth_secret_file: join(dir, "board-secret"), accounts_file: accountsFile, identity_key_file: join(dir, "identity", "gate.pem"), owner_email: "owner@example.com", my_apps: { host: MY }, hosts: hostsConfig(), previews: { file, ports: [appPort, appPort] } };
+    const g = await startGate(config);
+    const port = (g.address() as AddressInfo).port;
+    try {
+      const uma = cookieOf((await through(MY, "POST", "/.auth/api/sign-in/email", { body: { email: "uma@example.com", password: PASSWORD } })).cookies, "__Host-better-auth.session_token");
+      expect((await through("pr-4.crm.example.com", "GET", "/", { port })).status).toBe(404); // not running
+      writeFileSync(file, JSON.stringify({ "crm-pr-4": appPort, "wiki-pr-2": appPort, "crm-pr-5": 3120 }));
+      expect((await through("pr-5.crm.example.com", "GET", "/", { port })).status).toBe(404); // outside the band: never the board
+      expect((await through("pr-4.nope.example.com", "GET", "/", { port })).status).toBe(404); // no such app host
+
+      // The one-time handoff to the preview host (the board accepts it beside crm's), then crm's role, for the preview only.
+      const first = await through("pr-4.crm.example.com", "GET", "/", { port });
+      const state = cookieOf(first.cookies, "__Host-better-auth.handoff_state");
+      const go = await through(MY, "GET", new URL(first.location).pathname + new URL(first.location).search, { cookie: uma, port });
+      const handoff = await through("pr-4.crm.example.com", "GET", new URL(go.location).pathname + new URL(go.location).search, { cookie: state, port });
+      const session = cookieOf(handoff.cookies, "__Host-better-auth.session_token");
+      expect((await through("pr-4.crm.example.com", "GET", "/", { cookie: session, port })).body).toBe("app");
+      expect(who(seen.at(-1)!)).toMatchObject({ email: "uma@example.com", role: "member", aud: "crm-pr-4" });
+      expect((await through("pr-4.crm.example.com", "POST", "/.aidenhq/request", { cookie: session, port, body: { text: "hi" } })).status).toBe(404);
+      // The wiki is blocked for Uma: so is its preview.
+      const w = await through("pr-2.wiki.example.com", "GET", "/", { port });
+      const wgo = await through(MY, "GET", new URL(w.location).pathname + new URL(w.location).search, { cookie: uma, port });
+      const wh = await through("pr-2.wiki.example.com", "GET", new URL(wgo.location).pathname + new URL(wgo.location).search, { cookie: cookieOf(w.cookies, "__Host-better-auth.handoff_state"), port });
+      expect((await through("pr-2.wiki.example.com", "GET", "/", { cookie: cookieOf(wh.cookies, "__Host-better-auth.session_token"), port })).status).toBe(403);
+    } finally {
+      g.close();
+    }
   });
 
   it("blocked is hidden and refused; an app admin assigns roles and names another admin; a dropped role resolves to blocked", async () => {
