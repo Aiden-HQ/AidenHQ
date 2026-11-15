@@ -270,8 +270,9 @@ export function codeReviewInfra(body, head) {
 }
 
 /**
- * The Actions job of a check run among its workflow run's jobs. A check run's own `databaseId` is not an Actions job id: the
- * job is listed under its run and links back through `check_run_url`, so that link decides, and the job's name is the fallback.
+ * The Actions job of a check run among its workflow run's jobs. For an Actions check, GitHub gives the check run and its job
+ * the same id (checked 2026-11-15 on failed and re-run jobs; the breaker's `failedChecks` reads job logs by it), and the job
+ * links back through `check_run_url`, so that link decides; the job's name is the fallback.
  */
 export function jobFor(jobs, check) {
   const id = check?.databaseId;

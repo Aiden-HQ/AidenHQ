@@ -1065,7 +1065,8 @@ async function redHead(issue, f) {
 
 /**
  * The failed check runs on a commit, with GitHub's text for each: its title and summary, its failure annotations, and the
- * error lines of its Actions job log (timestamps and colour codes cut). [{ name, lines }]; empty when nothing failed or a
+ * error lines of its Actions job log (timestamps and colour codes cut; an Actions check run's id is its job's id, so the log is
+ * read by it). [{ name, lines }]; empty when nothing failed or a
  * log couldn't be read (a check outside Actions has none), so the breaker never stops on a guess.
  */
 async function failedChecks(repo, head, environment = []) {
@@ -1200,8 +1201,8 @@ const mergeGithub = {
   },
   /**
    * A check's Actions job: its steps (empty when GitHub never started it: no runner, billing) and its failure annotations
-   * (GitHub's own words about why). The job is listed under the check's workflow run, where it links back to the check run: a
-   * check run's `databaseId` is not a job id. Reads only when a red check has to be classified; an unlisted job is unreadable.
+   * (GitHub's own words about why). The job is listed under the check's workflow run, where it links back to the check run
+   * (`merges.jobFor`). Reads only when a red check has to be classified; an unlisted job is unreadable.
    */
   async job(repo, check) {
     const run = check.checkSuite?.workflowRun?.databaseId;
