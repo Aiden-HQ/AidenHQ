@@ -30,4 +30,18 @@ describe("status row", () => {
       ["a", "reconcile", "healthy"],
     ]);
   });
+
+  // The row's list is bounded, so the grader looks a merge commit up by exact sha: that read is over every deploy the app
+  // ever had, not the newest few, or a merge that deployed would stop being provable once later deploys pushed it out.
+  it("looks one exact commit's deploys up over the whole table, past the row's bounded list", async () => {
+    const p = setup();
+    const old = "c".repeat(40);
+    p.store.addDeploy({ app: "notes", sha: old, images_json: "[]", by: "auto-deploy", at: 1, status: "healthy", detail: "" });
+    for (let i = 0; i < 10; i++) p.store.addDeploy({ app: "notes", sha: `${i}`.repeat(40), images_json: "[]", by: "auto-deploy", at: 100 + i, status: i === 9 ? "failed" : "healthy", detail: "" });
+    expect(p.store.recentDeploys("notes", 20).some((d) => d.sha === old)).toBe(true);
+    expect(p.store.recentDeploys("notes").map((d) => d.sha)).not.toContain(old);
+    expect(p.store.deploysOf("notes", old).map((d) => [d.sha.slice(0, 1), d.by, d.status])).toEqual([["c", "auto-deploy", "healthy"]]);
+    // A commit that was never deployed has no row at all: the reader can tell that from aged-out.
+    expect(p.store.deploysOf("notes", "f".repeat(40))).toEqual([]);
+  });
 });

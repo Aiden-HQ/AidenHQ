@@ -1182,6 +1182,8 @@ function gradeDeps(issue) {
     diff: async (repo, number) => (await execFileP(await findRealGh(), ["api", "-H", "Accept: application/vnd.github.diff", `repos/${repo}/pulls/${number}`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }))).stdout,
     app: async (name) => (/^[a-z0-9-]{1,63}$/.test(name) ? (await boardApi.get(`/internal/grades/app/${name}`)).app : null),
     appOfRepo: async (repo) => (await boardApi.get(`/internal/grades/app-of/${repo}`)).app,
+    // Every deploy of one exact commit, over apps-mcp's whole deploy table (the status row's list is bounded).
+    deployHistory: async (name, sha) => (await boardApi.get(`/internal/grades/deploys/${name}/${sha}`)).deploys,
     view: (name, path) => boardApi.post("/internal/grades/view", { name, path }),
     assignee: issue.assigneeAgentId, // whose comments are the task agent's own (wordsEvidence)
     comments: () => pc.comments(issue.id),

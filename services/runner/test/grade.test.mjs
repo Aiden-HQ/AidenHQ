@@ -150,7 +150,7 @@ test("a pr on an app's repo also gets that app's deploy facts", async () => {
   assert.match(ev.facts.find((f) => f.includes("deployed_at_merge_commit")), /deployed_at_merge_commit: false \(no deploy of merge commit m{12}/);
   // The PR's own merge commit in the app's deploy history: true, with who deployed it, even when a later commit is running.
   const history = { ...app, deploys: [{ sha: m, at: 1_700_000_000_000, by: "auto-deploy", status: "healthy" }, { sha: "d".repeat(40), at: 1_700_000_100_000, by: "auto-deploy", status: "healthy" }] };
-  const same = await gather({ kind: "pr", ref }, deps({ ...merged, appOfRepo: async () => history }));
+  const same = await gather({ kind: "pr", ref }, deps({ ...merged, appOfRepo: async () => history, deployHistory: async () => history.deploys.filter((d) => d.sha === m) }));
   assert.ok(same.facts.includes(`acme/app#7 deployed_at_merge_commit: true (${"m".repeat(12)} deployed at 2023-11-14T22:13:20.000Z by auto-deploy, status healthy)`), same.facts.join("\n"));
   assert.ok(same.facts.some((f) => /recent deploys \(newest first\): m{12} deployed .* by auto-deploy \(healthy\); d{12}/.test(f)), "the history is a fact");
   // Two repos in scope: no app lookup at all.
@@ -158,6 +158,30 @@ test("a pr on an app's repo also gets that app's deploy facts", async () => {
   assert.equal((await gather({ kind: "pr", ref: "" }, deps({ ...merged, taskPrs: async () => two, appOfRepo: async () => assert.fail("looked up") }))).facts.length, 2);
   const [plain, none] = [await gather({ kind: "pr", ref }, deps(merged)), await gather({ kind: "pr", ref }, deps({ ...merged, appOfRepo: async () => null }))];
   assert.deepEqual(none, plain, "no app: exactly as today");
+});
+
+test("a merge the bounded deploy list has moved past is still deployed; a merge that was never deployed is not", async () => {
+  const m = "m".repeat(40);
+  const five = ["a", "b", "c", "d", "e"].map((c, i) => ({ sha: c.repeat(40), at: 1_700_000_500_000 + i * 60_000, by: "auto-deploy", status: "healthy" }));
+  const app = { name: "keeper", sha: five[4].sha, deployed_by: "auto-deploy", auto_deploy: true, state: "healthy", healthy: true, deploys: five };
+  // Merged a day before the oldest deploy the status row still keeps (the newest 5): #127's case.
+  const mergedAt = new Date(1_700_000_000_000).toISOString();
+  const merged = { pr: async () => ({ repository: { pullRequest: { ...pr({ state: "MERGED" }).repository.pullRequest, mergedAt } } }) };
+  const gatherWith = async (history, over = {}) => gather({ kind: "pr", ref }, deps({ ...merged, appOfRepo: async () => app, deployHistory: async () => history, ...over }));
+  const fact = (ev) => ev.facts.find((f) => f.includes("deployed_at_merge_commit"));
+  // Aged out of the 5-entry list, but the whole deploy table still has its healthy auto-deploy: deployed, not undeployed.
+  assert.ok(!app.deploys.some((d) => d.sha === m), "the merge is not in the bounded list");
+  const aged = await gatherWith([{ sha: m, at: 1_700_000_400_000, by: "auto-deploy", status: "healthy" }]);
+  assert.match(fact(aged), /deployed_at_merge_commit: true \(m{12} deployed .* by auto-deploy, status healthy\)/);
+  // Genuinely never deployed: the whole table has no row for the merge, so the criterion still fails.
+  assert.match(fact(await gatherWith([])), /deployed_at_merge_commit: false \(no deploy of merge commit m{12} in any of the app's deploys\)/);
+  // Deployed and then rolled back off (its newest deploy ended unhealthy) is not a healthy deploy either.
+  assert.match(fact(await gatherWith([{ sha: m, at: 1_700_000_400_000, by: "auto-deploy", status: "failed" }])), /deployed_at_merge_commit: false \(the newest deploy of merge commit m{12} ended failed/);
+  // Without the deeper read (it failed), only the bounded list is evidence: a merge inside its window is still a real false.
+  const recent = await gatherWith([], { deployHistory: async () => assert.fail("unreadable"), pr: async () => ({ repository: { pullRequest: { ...pr({ state: "MERGED" }).repository.pullRequest, mergedAt: new Date(1_700_000_900_000).toISOString() } } }) });
+  assert.match(fact(recent), /deployed_at_merge_commit: false \(no deploy of merge commit m{12} in the app's recent deploys, back past its merge time\)/);
+  // ...and one older than the window is unknown: never a false that time alone produced, and never a pass either.
+  assert.match(fact(await gatherWith([], { deployHistory: async () => assert.fail("unreadable") })), /deployed_at_merge_commit: unknown \(no deploy of merge commit m{12} in the app's recent deploys, and its deeper history could not be read/);
 });
 
 test("an auto-deploying app's just-merged PR waits for its deploy instead of grading it not deployed", async () => {

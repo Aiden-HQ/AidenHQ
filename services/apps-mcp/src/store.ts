@@ -21,6 +21,7 @@ export function openStore(path: string) {
   const seen = db.prepare(`SELECT 1 FROM deploys WHERE app = ? AND sha = ? LIMIT 1`);
   const goodDeploys = db.prepare(`SELECT * FROM deploys WHERE app = ? AND status = 'healthy' ORDER BY id DESC`);
   const recent = db.prepare(`SELECT * FROM deploys WHERE app = ? ORDER BY id DESC LIMIT ?`);
+  const deploysOf = db.prepare(`SELECT * FROM deploys WHERE app = ? AND sha = ? ORDER BY id DESC`);
   const openInc = db.prepare(`SELECT * FROM incidents WHERE app = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1`);
   const addInc = db.prepare(`INSERT INTO incidents (app, opened_at, kind, detail, notified) VALUES (?, ?, ?, ?, 0)`);
   const pending = db.prepare(`SELECT * FROM incidents WHERE closed_at IS NULL AND notified = 0`);
@@ -39,6 +40,11 @@ export function openStore(path: string) {
     seen: (app: string, sha: string) => !!seen.get(app, sha),
     goodDeploys: (app: string) => goodDeploys.all(app) as Deploy[],
     recentDeploys: (app: string, n = 5) => recent.all(app, n) as Deploy[],
+    /**
+     * Every deploy of one exact commit, newest first, over the whole table (never a window): a merged commit stops being
+     * provable as deployed once the bounded list has moved past it, which is not the same as never having deployed.
+     */
+    deploysOf: (app: string, sha: string) => deploysOf.all(app, sha) as Deploy[],
     openIncident: (app: string) => openInc.get(app) as Incident | undefined,
     addIncident: (app: string, kind: string, detail: string, at = Date.now()) => addInc.run(app, at, kind, detail).lastInsertRowid as number,
     /** Open incidents whose webhook hasn't gone through yet. */

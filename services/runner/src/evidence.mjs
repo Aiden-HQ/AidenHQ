@@ -60,11 +60,24 @@ export async function prEvidence(prs, ref, deps) {
 /** An epoch-millis deploy time as ISO, or the value as given (an apps-mcp row may already carry a string). */
 export const stamp = (at) => (typeof at === "number" ? new Date(at).toISOString() : String(at ?? ""));
 
-/** The newest deploy record of one commit, whatever it ended as, or undefined. */
-export const deployRecordOf = (app, sha) => (sha ? (Array.isArray(app.deploys) ? app.deploys : []).find((d) => d.sha === sha) : undefined);
+/**
+ * Every deploy of one exact commit, newest first. `deps.deployHistory(app, sha)` reads apps-mcp's whole deploy table, which is
+ * never pruned, so a commit the bounded status row (`app.deploys`) has moved past is still found. Without that read (a
+ * failure) only the row is available: `complete: false` says a missing deploy there may simply predate the window it keeps.
+ */
+export async function deploysOf(app, sha, deps) {
+  if (!sha) return { rows: [], complete: true };
+  const rows = await deps.deployHistory?.(app.name, sha).catch(() => undefined);
+  if (Array.isArray(rows)) return { rows, complete: true };
+  return { rows: (Array.isArray(app.deploys) ? app.deploys : []).filter((d) => d.sha === sha), complete: false };
+}
 
-/** The newest deploy of one commit that ended healthy (its containers are what runs), or undefined. */
-export const deployOf = (app, sha) => (deployRecordOf(app, sha)?.status === "healthy" ? deployRecordOf(app, sha) : undefined);
+/** Whether a merge predates the oldest deploy the status row still lists: then a miss there proves nothing either way. */
+export const predatesDeploys = (app, mergedAt) => {
+  const at = (Array.isArray(app?.deploys) ? app.deploys : []).map((d) => Date.parse(stamp(d.at))).filter((t) => Number.isFinite(t));
+  const merged = Date.parse(mergedAt || "");
+  return at.length > 0 && Number.isFinite(merged) && merged < Math.min(...at);
+};
 
 /** A deployed app (apps-mcp status row, or null) as evidence: its commit, state, health, incident and recent deploys. */
 export function appEvidence(app, name) {

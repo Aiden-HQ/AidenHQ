@@ -1214,6 +1214,16 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
+      // Every deploy of one exact commit over the app's whole deploy table, for the grader's "deployed at the merged commit":
+      // the status row's list is bounded, so a commit it has moved past is looked up here instead of read as undeployed.
+      method: "GET",
+      path: /^\/internal\/grades\/deploys\/([a-z0-9-]{1,63})\/([0-9a-f]{40})$/,
+      handle: async (m, _b, _u, req) => {
+        requireRunner(req, "reads app deploy history");
+        return appsApi<{ deploys?: unknown[] }>(`/internal/deploys/${m[1]}/${m[2]}`, undefined, { auth: true }).then((r) => ({ deploys: r.deploys ?? [] }));
+      },
+    },
+    {
       // The grader's live view of one page of a deployed app (apps-mcp graderView): rendered text plus the running commit
       // before and after. A POST for the long timeout: one render can take up to 45 s.
       method: "POST",
