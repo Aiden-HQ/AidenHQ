@@ -69,7 +69,7 @@ writeFileSync(join(repo, "config/modules.json"), JSON.stringify(out.catalog, nul
 writeFileSync(join(repo, "config/computers.json"), JSON.stringify(computers, null, 2) + "\n");
 writeFileSync(join(repo, "config/gateway.json"), JSON.stringify(out.gateway, null, 2) + "\n");
 if (out.edge) {
-  try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die(e.message); }
+  if (out.edge.cloudflared) try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die(e.message); }
   // The board's account map for the gate: the board rewrites it on every account change. It starts
   // empty so compose can bind it (a missing bind source becomes a directory); the gate refuses everyone it can't read.
   const accounts = join(resolve(repo, env("AIDENHQ_DATA_DIR") ?? "./data"), "gate", "accounts.json");
@@ -81,9 +81,10 @@ if (out.edge) {
   // The gate's signing key is made with the other identity keys above, before compose binds it.
   if (!secretsDir) die("AIDENHQ_SECRETS_DIR is needed with settings.edge (the tunnel credentials and the gate's signing key)");
   const creds = join(secretsDir, "cloudflared_credentials.json");
-  if (!existsSync(creds) || !statSync(creds).isFile() || !statSync(creds).size) die(`settings.edge is set, but ${creds} is missing or empty: put the tunnel's credentials file there (docs/setup.md, Shared access)`);
+  if (out.edge.cloudflared && (!existsSync(creds) || !statSync(creds).isFile() || !statSync(creds).size)) die(`settings.edge is set, but ${creds} is missing or empty: put the tunnel's credentials file there (docs/setup.md, Shared access)`);
   writeFileSync(join(repo, "config/gate.json"), JSON.stringify(out.edge.gate, null, 2) + "\n");
-  writeFileSync(join(repo, "config/cloudflared.yml"), dump(out.edge.cloudflared));
+  if (out.edge.cloudflared) writeFileSync(join(repo, "config/cloudflared.yml"), dump(out.edge.cloudflared));
+  else rmSync(join(repo, "config/cloudflared.yml"), { force: true }); // header-jwt: a front door, no tunnel
 } else for (const f of ["config/gate.json", "config/cloudflared.yml"]) rmSync(join(repo, f), { force: true });
 for (const w of out.warnings) console.log(`  warning: ${w}`);
 const on = out.catalog.filter((m) => m.enabled).map((m) => m.name);

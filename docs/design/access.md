@@ -95,6 +95,17 @@ new identity provider is one more adapter.
   code bound to that host; there is no shared cookie. The gate calls 3129 with `gate_board_secret`, caches
   `get-session` for 60 seconds, and a membership is an enabled account. A host that also has an `aud` still needs Access:
   password mode adds sign-in and never removes Access.
+- **`header-jwt`.** For a front door in front of the gate: a hosting service's identity-aware proxy (for example Depoly)
+  that signs people in and forwards over the tailnet. The gate verifies the proxy's signed ES256 token in
+  `edge.identity.header` against `edge.identity.issuer` and its JWKS (`jwks_url`): signature (the key must be an EC key,
+  never RSA), issuer, the host's `aud` (required on every host), expiry, an email, and `auth_method` when configured (so
+  a magic-link sign-in is refused where only SSO is meant). A missing or invalid token is a 401; a valid identity that is
+  blocked is a 403; unreachable keys are a 503. The header is stripped before the app (HTTP and WebSocket), `/.auth` is a
+  404 (the front door does sign-in), and app cookies are always host-only (`Domain` removed), since sibling apps share a
+  parent domain. There is no tunnel and no Access team: the gate also listens on `edge.front` (a tailnet address and
+  port), so the server has zero public inbound ports; the front listener accepts tailnet traffic, so a tailnet policy
+  should let only the front door's tag reach that address and port. The login is instance-wide. The gate's `sub` is
+  derived from the verified email by design (as in every mode); a provider may advise keying on its own `sub` instead.
 
 The my-apps host (`edge.my_apps.host`, required with `edge`) serves the catalog of apps the visitor is not blocked from,
 and each app's Access page. A user invite link lands there to set a password.

@@ -9,6 +9,10 @@
 // (AUTH_URL) and Access becomes optional per host (a host with an `aud` still needs it: password never removes Access).
 // In password mode sign-in lives only on the my-apps host; each app host gets its own host-only session cookie through a
 // one-time handoff code (services/gate/gate.ts), and the gate strips auth cookies before any app.
+// `header-jwt` = a front door in front of the gate (a hosting service's identity-aware proxy, reaching the gate over the
+// tailnet): the gate verifies its signed ES256 token (settings.edge.identity: header, issuer, jwks_url, auth_method?) for the
+// host's `aud`, and also listens on settings.edge.front (a tailnet address and port). No tunnel, no Access team, no
+// cloudflared; every host needs its aud. The login is instance-wide.
 // settings.edge.previews: true: pull request previews of shared apps (services/apps-mcp/src/previews.ts) at
 // pr-<n>.<host> under each share.host, through the gate, with the parent's access: one ingress rule *.<host> per shared
 // app behind the parent's own aud (its Access application must cover *.<host> too). apps-mcp writes which previews run
@@ -25,7 +29,7 @@ export const AUTH_PORT = 3129; // the board's auth listener: sign-in (password m
 export const AUTH_URL = `http://127.0.0.1:${AUTH_PORT}`;
 export const ACCOUNTS_FILE = "/accounts/accounts.json"; // the board's account map (email, role, disabled), mounted read-only
 export const AUTH_SECRET_FILE = "/secrets/auth_listener"; // gate_board_secret in the gate: X-AidenHQ-Gate to 3129 (sign-in, app access)
-export const LOGINS = ["access", "password"];
+export const LOGINS = ["access", "password", "header-jwt"];
 export const IDENTITY_KEY_FILE = "/secrets/identity_key"; // the vault's identity/gate.pem in the gate: it mints app identity tokens
 export const PREVIEWS_FILE = "/previews/previews.json"; // apps-mcp's running previews (data/previews), mounted read-only
 export const PREVIEW_PORTS = [39100, 39399]; // services/apps-mcp/src/registry.ts PREVIEW_PORTS
@@ -54,11 +58,13 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
   }
   const login = settings.app_login ?? "access";
   if (!LOGINS.includes(login)) fail(`settings.app_login must be ${LOGINS.join(" or ")}`);
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(edge.tunnel_id ?? ""))) fail("settings.edge.tunnel_id must be the tunnel's UUID");
-  for (const k of Object.keys(edge)) if (!["team_domain", "tunnel_id", "my_apps", "previews"].includes(k)) fail(`settings.edge.${k} is not a setting`);
+  const front = login === "header-jwt";
+  if (!front && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(edge.tunnel_id ?? ""))) fail("settings.edge.tunnel_id must be the tunnel's UUID");
+  for (const k of Object.keys(edge)) if (!["team_domain", "tunnel_id", "my_apps", "previews", "identity", "front"].includes(k)) fail(`settings.edge.${k} is not a setting`);
   // An Access application's audience tag: required on every host with app_login access, optional with password.
   const audOf = (aud, where) => {
     if (aud == null && login === "password") return undefined;
+    if (login === "header-jwt" && !aud) fail(`${where} needs ${where.startsWith("app") ? "share.aud" : "aud"} (the front door's audience for that host)`);
     if (!aud || typeof aud !== "string") fail(`${where} needs ${where.startsWith("app") ? "share.aud" : "aud"} (its Access application's audience tag)`);
     return aud;
   };
@@ -95,19 +101,37 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
     if (edge.previews !== true) fail("settings.edge.previews is true or absent (previews take each app's own Access audience)");
     previews = { file: PREVIEWS_FILE, ports: PREVIEW_PORTS };
   }
+  // header-jwt: the front door's token settings and the tailnet listener it reaches (docs/design/access.md).
+  let identity, frontDoor;
+  if (front) {
+    const i = edge.identity ?? fail("settings.edge.identity is required with app_login header-jwt");
+    for (const k of Object.keys(i)) if (!["header", "issuer", "jwks_url", "auth_method"].includes(k)) fail(`settings.edge.identity.${k} is not a setting`);
+    if (!/^[a-z0-9-]+$/.test(String(i.header ?? ""))) fail("settings.edge.identity.header must be a lowercase header name");
+    for (const k of ["issuer", "jwks_url"]) if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(String(i[k] ?? ""))) fail(`settings.edge.identity.${k} must be an https URL`);
+    if (i.auth_method !== undefined && (typeof i.auth_method !== "string" || !i.auth_method)) fail("settings.edge.identity.auth_method must be a non-empty string");
+    identity = { header: i.header, issuer: i.issuer, jwks_url: i.jwks_url, ...(i.auth_method ? { auth_method: i.auth_method } : {}) };
+    const f = edge.front ?? fail("settings.edge.front is required with app_login header-jwt: { address: <tailnet IP>, port }");
+    for (const k of Object.keys(f)) if (!["address", "port"].includes(k)) fail(`settings.edge.front.${k} is not a setting`);
+    const o = String(f.address ?? "").split(".").map(Number);
+    if (o.length !== 4 || !o.every((n, k) => Number.isInteger(n) && n >= 0 && n <= 255 && String(n) === String(f.address).split(".")[k]) || o[0] !== 100 || o[1] < 64 || o[1] > 127) fail("settings.edge.front.address must be a tailnet IPv4 address (100.64.0.0/10)");
+    if (!Number.isInteger(f.port) || f.port < 1024 || f.port > 65535 || f.port === AUTH_PORT || f.port === GATE_PORT) fail(`settings.edge.front.port must be 1024-65535, never ${AUTH_PORT} or ${GATE_PORT}`);
+    frontDoor = { address: f.address, port: f.port };
+  } else for (const k of ["identity", "front"]) if (edge[k] !== undefined) fail(`settings.edge.${k} is only for app_login header-jwt`);
   const gateHosts = [...Object.entries(hosts), ...(myApps ? [[myApps.host, myApps]] : [])];
   const anyAud = gateHosts.some(([, h]) => h.aud);
   const team = /^([a-z0-9-]+)\.cloudflareaccess\.com$/.exec(String(edge.team_domain ?? ""))?.[1];
-  if (!team && (login === "access" || anyAud || edge.team_domain != null)) fail("settings.edge.team_domain must be <team>.cloudflareaccess.com");
+  if (front && edge.team_domain != null) fail("settings.edge.team_domain isn't used with app_login header-jwt");
+  if (!front && !team && (login === "access" || anyAud || edge.team_domain != null)) fail("settings.edge.team_domain must be <team>.cloudflareaccess.com");
   const issuer = team && `https://${team}.cloudflareaccess.com`;
   const gate = {
     port: GATE_PORT, login, ...(issuer ? { issuer, certs_url: `${issuer}/cdn-cgi/access/certs` } : {}),
+    ...(identity ? { identity, front: frontDoor } : {}),
     auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE, owner_email: owner,
     ...(myApps ? { my_apps: myApps } : {}), hosts, ...(previews ? { previews } : {}),
   };
   // Previews: *.<host> for each shared app, behind that app's aud, after every exact host (cloudflared takes the first match).
   const wild = previews ? Object.entries(hosts).map(([h, x]) => [`*.${h}`, x]) : [];
-  const cloudflared = {
+  const cloudflared = front ? null : {
     tunnel: edge.tunnel_id,
     "credentials-file": "/run/secrets/cloudflared_credentials",
     ingress: [
@@ -139,9 +163,9 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
       board: { volumes: ["./config/gate.json:/config/gate.json:ro", "${AIDENHQ_DATA_DIR:-./data}/gate:/data/gate"] },
       // Outbound only; locally managed, so its ingress is this file and the dashboard can't change it.
       // The label carries the ingress's hash: compose recreates cloudflared exactly when its config changes (it reads it once).
-      cloudflared: { ...hardening, labels: { "aidenhq.ingress-sha256": createHash("sha256").update(JSON.stringify(cloudflared)).digest("hex") }, image: CLOUDFLARED_IMAGE, network_mode: "host", command: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run"], volumes: ["./config/cloudflared.yml:/etc/cloudflared/config.yml:ro"], secrets: ["cloudflared_credentials"], depends_on: ["gate"] },
+      ...(front ? {} : { cloudflared: { ...hardening, labels: { "aidenhq.ingress-sha256": createHash("sha256").update(JSON.stringify(cloudflared)).digest("hex") }, image: CLOUDFLARED_IMAGE, network_mode: "host", command: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run"], volumes: ["./config/cloudflared.yml:/etc/cloudflared/config.yml:ro"], secrets: ["cloudflared_credentials"], depends_on: ["gate"] } }),
     },
-    secrets: { cloudflared_credentials: { file: "${AIDENHQ_SECRETS_DIR}/cloudflared_credentials.json" } },
+    secrets: front ? {} : { cloudflared_credentials: { file: "${AIDENHQ_SECRETS_DIR}/cloudflared_credentials.json" } },
   };
   return { gate, cloudflared, compose };
 }

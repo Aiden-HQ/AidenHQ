@@ -1,5 +1,6 @@
 // The gate's process: reads the compiled config (GATE_CONFIG, mounted read-only) again whenever it changes and listens on
-// 127.0.0.1 only (host networking: cloudflared and the apps' loopback ports are on the host).
+// 127.0.0.1 (host networking: cloudflared and the apps' loopback ports are on the host), plus `front` (the tailnet address a
+// front door reaches) when the config has one.
 import { readFileSync, statSync } from "node:fs";
 import { createGate, type GateConfig } from "./gate.ts";
 
@@ -13,5 +14,6 @@ const config = (): GateConfig => {
   }
   return cfg;
 };
-const { port } = config();
+const { port, front } = config();
 createGate({ config }).listen(port, "127.0.0.1", () => console.log(JSON.stringify({ msg: "gate listening", port })));
+if (front) createGate({ config }).listen(front.port, front.address, () => console.log(JSON.stringify({ msg: "gate listening (front)", address: front.address, port: front.port })));
