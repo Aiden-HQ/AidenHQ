@@ -13,6 +13,7 @@ blocks are a starting point, not a required look.
 
 ```sh
 npm ci
+npm run lint     # ESLint (about a second): nav, header, colour and effect rules; each message says the fix
 npm test          # builds, serves and checks the page, its CSP, the health check and the API
 npm run build     # typecheck + production build into dist/
 npm start         # serves dist/ and the API on PORT (8080)
