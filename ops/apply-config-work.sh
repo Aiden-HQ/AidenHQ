@@ -36,7 +36,7 @@ main() {
 
   # The product commit the instance pins. It must be on product main: nothing unmerged runs here.
   local product
-  product="$(node services/runner/src/apply.mjs product-pin "$inst/instance.yaml")"
+  product="$(node services/runner/src/apply.ts product-pin "$inst/instance.yaml")"
   [ -n "$product" ] || { echo "refusing: instance.yaml has no full-sha 'product:' line" >&2; exit 1; }
   git fetch --quiet origin main
   git merge-base --is-ancestor "$product" origin/main || { echo "refusing: product $product is not on origin/main" >&2; exit 1; }

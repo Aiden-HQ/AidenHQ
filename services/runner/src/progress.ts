@@ -6,14 +6,20 @@ const SAID_MAX = 600;
 const PLAN_MAX = 20;
 const ITEM_MAX = 200;
 
-const clip = (s, n) => {
+const clip = (s: unknown, n: number): string => {
   const t = String(s ?? "").replace(/\s+/g, " ").trim();
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
-const STATE = { completed: "done", in_progress: "doing", pending: "todo" };
+type PlanState = "todo" | "doing" | "done";
+interface PlanItem {
+  id?: string;
+  text: string;
+  state: PlanState;
+}
+const STATE: Record<string, PlanState> = { completed: "done", in_progress: "doing", pending: "todo" };
 const STEPS_MAX = 30;
 // Steps show command lines on the board: blank the usual secret shapes first.
-const redact = (t) =>
+const redact = (t: string) =>
   t
     .replace(/(Bearer|Basic|token)\s+[^\s'"]+/gi, "$1 …")
     .replace(/:\/\/[^/\s@]+@/g, "://…@")
@@ -22,12 +28,12 @@ const redact = (t) =>
     .replace(/\b(sk-|ghp_|gho_|github_pat_|xox[abp]-|AKIA)[A-Za-z0-9_-]+/g, "$1…");
 // The argument that says what a tool call is about, in order of how well it reads.
 const ARG_KEYS = ["command", "query", "q", "file_path", "filePath", "path", "pattern", "url", "description", "name"];
-function firstArg(args) {
+function firstArg(args: any): string {
   if (!args || typeof args !== "object") return "";
   for (const k of ARG_KEYS) if (typeof args[k] === "string" && args[k]) return clip(args[k], 120);
   return "";
 }
-const withArg = (label, args) => {
+const withArg = (label: string, args?: any) => {
   const a = firstArg(args);
   return a ? `${label}: ${a}` : label;
 };
@@ -36,30 +42,30 @@ const withArg = (label, args) => {
 export function progressTracker() {
   let said = "";
   let saidAt = "";
-  let plan = []; // [{ id?, text, state: "todo" | "doing" | "done" }]
-  const creating = new Map(); // Claude Code: TaskCreate tool_use id → subject, until its result names the task
-  const setSaid = (text) => {
+  let plan: PlanItem[] = [];
+  const creating = new Map<string, string>(); // Claude Code: TaskCreate tool_use id → subject, until its result names the task
+  const setSaid = (text: unknown) => {
     const t = clip(text, SAID_MAX);
     if (!t || t === said || t === "NO_REPLY") return false;
     said = t;
     saidAt = new Date().toISOString();
     return true;
   };
-  const setPlan = (items) => {
+  const setPlan = (items: PlanItem[]) => {
     const next = items.filter((i) => i.text).slice(0, PLAN_MAX);
     if (JSON.stringify(next) === JSON.stringify(plan)) return false;
     plan = next;
     return true;
   };
-  const steps = []; // [{ at, kind: "tool", text }], the newest STEPS_MAX
-  const step = (text, at) => {
+  const steps: { at: string; kind: "tool"; text: string }[] = [];
+  const step = (text: string, at?: any) => {
     steps.push({ at: at ? new Date(at).toISOString() : new Date().toISOString(), kind: "tool", text: clip(redact(text), ITEM_MAX) });
     if (steps.length > STEPS_MAX) steps.shift();
     return true;
   };
-  const todos = (list) => setPlan((Array.isArray(list) ? list : []).map((t) => ({ text: clip(t.activeForm && t.status === "in_progress" ? t.activeForm : t.content, ITEM_MAX), state: STATE[t.status] ?? "todo" })));
+  const todos = (list: any) => setPlan((Array.isArray(list) ? list : []).map((t: any) => ({ text: clip(t.activeForm && t.status === "in_progress" ? t.activeForm : t.content, ITEM_MAX), state: STATE[t.status as string] ?? "todo" })));
 
-  function take(e) {
+  function take(e: any): boolean {
     if (!e || typeof e !== "object") return false;
     let changed = false;
     // Claude Code: text between tool calls, and its task tools (TaskCreate/TaskUpdate; TodoWrite in older versions).
@@ -92,11 +98,11 @@ export function progressTracker() {
       if (e.type === "item.started" && e.item.type === "command_execution" && e.item.command) changed = step(`Running ${clip(e.item.command, 120)}`) || changed;
       if (e.type === "item.started" && e.item.type === "mcp_tool_call") changed = step(withArg(`${e.item.server} · ${e.item.tool}`, e.item.arguments)) || changed;
       if (e.type === "item.started" && e.item.type === "web_search" && e.item.query) changed = step(`Searching the web: ${clip(e.item.query, 120)}`) || changed;
-      if (e.type === "item.completed" && e.item.type === "file_change") changed = step(`Editing ${(e.item.changes ?? []).map((c) => c.path).join(", ") || "files"}`) || changed;
+      if (e.type === "item.completed" && e.item.type === "file_change") changed = step(`Editing ${(e.item.changes ?? []).map((c: any) => c.path).join(", ") || "files"}`) || changed;
       if (e.item.type === "agent_message" && e.type === "item.completed") changed = setSaid(e.item.text) || changed;
       if (e.item.type === "todo_list" && Array.isArray(e.item.items)) {
-        const open = e.item.items.findIndex((t) => !t.completed);
-        changed = setPlan(e.item.items.map((t, i) => ({ text: clip(t.text, ITEM_MAX), state: t.completed ? "done" : i === open ? "doing" : "todo" }))) || changed;
+        const open = e.item.items.findIndex((t: any) => !t.completed);
+        changed = setPlan(e.item.items.map((t: any, i: number): PlanItem => ({ text: clip(t.text, ITEM_MAX), state: t.completed ? "done" : i === open ? "doing" : "todo" }))) || changed;
       }
     }
     // opencode

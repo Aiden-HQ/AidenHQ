@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { git } from "../src/git.mjs";
 import { advance, newQueue } from "../src/merges.mjs";
-import { ensureRepo, keepReviewedHead, pruneReviewedRefs } from "../src/workspace.mjs";
+import { ensureRepo, keepReviewedHead, pruneReviewedRefs } from "../src/workspace.ts";
 
 const id = ["-c", "user.email=a@b", "-c", "user.name=a"];
 

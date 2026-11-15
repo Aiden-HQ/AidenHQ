@@ -10,7 +10,7 @@ import { buildCommand, cowRoot, removeLayers } from "../src/engines.mjs";
 import { staleRoutineRuns } from "../src/recurring.ts";
 import { firstPrompt, followUpPrompt, latestReport, observeSection } from "../src/prompt.ts";
 import { accessToken, gcpSession } from "../src/gcp.ts";
-import { diskName, plan, syncFiles } from "../src/files.mjs";
+import { diskName, plan, syncFiles } from "../src/files.ts";
 
 const cfg = {
   allowed_orgs: ["initech", "Acme", "example-org"],
@@ -656,7 +656,7 @@ describe("recurring tasks: direct pushes", async () => {
 });
 
 describe("task workspaces", async () => {
-  const { ensureRepo, findBranches, branchChanges, signUnsigned, moveOffDefault, carryOver, workspaceRepos, readManifest } = await import("../src/workspace.mjs");
+  const { ensureRepo, findBranches, branchChanges, signUnsigned, moveOffDefault, carryOver, workspaceRepos, readManifest } = await import("../src/workspace.ts");
   const { git } = await import("../src/git.mjs");
   const id = ["-c", "user.email=a@b", "-c", "user.name=a"];
   const setup = async () => {
@@ -702,7 +702,7 @@ describe("task workspaces", async () => {
   // A resumed task's workspace kept the empty, read-only `.git` a job's sandbox mounts over the workspace root (its mount
   // point survives the restart): the runner's own git refused every command in the task, so every clone failed.
   it("clears the empty .git a job's sandbox leaves at the workspace root, so the task clones again", async (t) => {
-    const { repairWorkspaceGit, workspaceRepos } = await import("../src/workspace.mjs");
+    const { repairWorkspaceGit, workspaceRepos } = await import("../src/workspace.ts");
     const { scrubFor, setUntrusted } = await import("../src/git.mjs");
     const dir = mkdtempSync(join(tmpdir(), "pw-rootgit-"));
     const tasks = join(dir, "tasks");
@@ -746,14 +746,14 @@ describe("task workspaces", async () => {
   // runner's git refuses the task while it is there; with the mount attached the repair refuses (an explicit, retryable
   // error); once the job's namespace is gone the empty mount point bwrap left is cleared and the task clones again.
   it("repairs a workspace whose root .git is a read-only tmpfs mount point, and reports one still attached", async (t) => {
-    const { repairWorkspaceGit } = await import("../src/workspace.mjs");
+    const { repairWorkspaceGit } = await import("../src/workspace.ts");
     const dir = mkdtempSync(join(tmpdir(), "pw-tmpfs-"));
     const ws = join(dir, "tasks/PEN-8");
     mkdirSync(join(ws, ".git"), { recursive: true });
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     // A host without unprivileged user namespaces can't show the mount; the repair itself is covered above.
     if (spawnSync("unshare", ["-Ur", "-m", "--", "true"]).status !== 0) return t.skip("no private mount namespace on this host");
-    const moduleUrl = new URL("../src/workspace.mjs", import.meta.url).href;
+    const moduleUrl = new URL("../src/workspace.ts", import.meta.url).href;
     // Inside the job's namespace the mount is there: git sees no repository, and the mount point can't be removed.
     const inside = spawnSync("unshare", ["-Ur", "-m", "--", "sh", "-c", `mount -t tmpfs -o ro,mode=555 none '${join(ws, ".git")}' && cd '${ws}' && git rev-parse --git-dir; echo "---"; ${JSON.stringify(process.execPath)} -e 'import(${JSON.stringify(moduleUrl)}).then(({ repairWorkspaceGit }) => { try { repairWorkspaceGit(process.argv[1]); console.log("removed"); } catch (err) { console.log(err.message); } })' '${ws}'`], { encoding: "utf8" });
     const output = `${inside.stdout}${inside.stderr}`;
@@ -906,7 +906,7 @@ describe("files on a task", () => {
   });
 
   it("shares what the Engineer made: its Primer document and .aidenhq/out, again only when changed", async () => {
-    const { outputs, shareOutputs } = await import("../src/files.mjs");
+    const { outputs, shareOutputs } = await import("../src/files.ts");
     const ws = mkdtempSync(join(tmpdir(), "pw-out-"));
     mkdirSync(join(ws, ".aidenhq", "out", "nested"), { recursive: true });
     writeFileSync(join(ws, ".aidenhq", "primer.md"), "# Copy map\n");
@@ -929,7 +929,7 @@ describe("files on a task", () => {
 });
 
 describe("publishing a task's document to Primer", async () => {
-  const { PRIMER_FILE, publishDocument, readDocument } = await import("../src/primer.mjs");
+  const { PRIMER_FILE, publishDocument, readDocument } = await import("../src/primer.ts");
   const workspace = () => {
     const dir = mkdtempSync(join(tmpdir(), "primer-"));
     mkdirSync(join(dir, ".aidenhq"));
@@ -965,7 +965,7 @@ describe("publishing a task's document to Primer", async () => {
   });
 
   it("publishes an HTML page as HTML, titled from <title> or <h1>, whichever file was written last", async () => {
-    const { PRIMER_HTML } = await import("../src/primer.mjs");
+    const { PRIMER_HTML } = await import("../src/primer.ts");
     const { utimesSync } = await import("node:fs");
     const dir = workspace();
     const { calls, endpoint } = fake();
@@ -985,7 +985,7 @@ describe("publishing a task's document to Primer", async () => {
   });
 
   it("reads a Primer document link the user gives, and nothing else", async () => {
-    const { primerLink } = await import("../src/primer.mjs");
+    const { primerLink } = await import("../src/primer.ts");
     assert.deepEqual(primerLink("https://primer.example.com/d/01a18df6-3960-7660-a346-483bf50104f7"), { url: "https://primer.example.com/d/01a18df6-3960-7660-a346-483bf50104f7", documentId: "01a18df6-3960-7660-a346-483bf50104f7" });
     assert.deepEqual(primerLink("https://primer.example/d/01a1-doc-xyz/?v=2#c"), { url: "https://primer.example/d/01a1-doc-xyz", documentId: "01a1-doc-xyz" });
     for (const bad of ["--help", "http://primer.example/d/01a1-doc-xyz", "https://primer.example/x/01a1-doc", "https://primer.example/d/short", "PEN-12"]) assert.equal(primerLink(bad), undefined, bad);
@@ -1122,7 +1122,7 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     process.env.PATH = `${join(dir, "bin")}:${path}`;
     try {
       const jailed = buildCommand({ cfg: { ...jc, pasta: "/usr/bin/pasta" }, engine: { kind: "codex", model: "m" }, worktree: join(dir, "WOR-1"), lastMessageFile: "/x", job: { issueId: "i1" } }).argv;
-      assert.equal(jailed[5], "/opt/aidenhq/bwrap/bwrap"); // netjail.mjs <pasta> <ports> <link> <bwrap> …
+      assert.equal(jailed[5], "/opt/aidenhq/bwrap/bwrap"); // netjail.ts <pasta> <ports> <link> <bwrap> …
     } finally {
       process.env.PATH = path;
     }
@@ -1221,7 +1221,7 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     const or = buildCommand({ cfg: jc, engine: { kind: "openrouter", model: "m" }, worktree: "/w", loopback }).argv;
     process.env.PATH = path;
     assert.equal(claude[0], process.execPath);
-    assert.ok(claude[1].endsWith("/netjail.mjs"));
+    assert.ok(claude[1].endsWith("/netjail.ts"));
     assert.deepEqual([...claude.slice(2, 4), ...claude.slice(5, 8)], ["/usr/bin/pasta", "3123,3124,41000", "bwrap", "--unshare-pid", "--unshare-ipc"]);
     assert.equal(claude[4], "192.168.254"); // pasta's link: apart from the host's 10.0.2.0/24 and the routed 172.31.254.0/24
     assert.ok(claude.includes("--unshare-net") && claude.includes("--die-with-parent"));

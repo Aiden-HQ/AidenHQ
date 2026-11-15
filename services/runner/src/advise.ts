@@ -10,7 +10,7 @@ import { gatewayUrl, jobToken } from "./engines.mjs";
  * start time, so it is the job's own token, and a runner that adopted the job after a restart uses the same run key and
  * carries on the same count. `save(ctx)` persists the count (main.mjs saveTools). Resolves with the text to print.
  */
-export async function jobAdvise(ctx, brief, { cfg, save = () => {}, fetchFn = fetch }) {
+export async function jobAdvise(ctx: any, brief: unknown, { cfg, save = (_ctx: any) => {}, fetchFn = fetch }: { cfg: any; save?: (ctx: any) => void; fetchFn?: typeof fetch }): Promise<string> {
   if (!ctx.agentId || !ctx.run?.startedAt) throw new Error("the advisor isn't available on this run (it has no Engineer on record); it is again from your next turn");
   ctx.advised ??= { advisor: ctx.run.advised ?? 0 };
   ctx.advisor ??= modelTools({

@@ -5,7 +5,7 @@ import { createVerify, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_IDENTITY, WRITE, identityEnv, appClient, appSlugOf, appJwt, appRemoteUrl, ghOptions, withGitToken } from "../src/github-app.mjs";
+import { DEFAULT_IDENTITY, WRITE, identityEnv, appClient, appSlugOf, appJwt, appRemoteUrl, ghOptions, withGitToken } from "../src/github-app.ts";
 import { git, setGitAuth } from "../src/git.mjs";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });

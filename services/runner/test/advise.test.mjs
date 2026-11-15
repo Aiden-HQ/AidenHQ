@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { startRepoHelper } from "../src/repohelper.ts";
-import { jobAdvise } from "../src/advise.mjs";
+import { jobAdvise } from "../src/advise.ts";
 import { jobToken } from "../src/engines.mjs";
 import { verifyToken } from "../../gateway/token.ts";
 import { ADVISOR_MODEL } from "../../paperclip-tasks-mcp/models.mjs";

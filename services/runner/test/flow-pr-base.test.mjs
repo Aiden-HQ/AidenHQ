@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
-import { State } from "../src/state.mjs";
+import { State } from "../src/state.ts";
 
 describe("flow-pr-base", () => {
   // dup_guard off: a head already on main is the point of the second case, so the guard must not answer for it.

@@ -10,8 +10,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { readLog } from "./fakes/lib.mjs";
 import { fakePaperclip } from "./flow-harness.mjs";
-import { State } from "../src/state.mjs";
-import { ensureRepo } from "../src/workspace.mjs";
+import { State } from "../src/state.ts";
+import { ensureRepo } from "../src/workspace.ts";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
 const FAKES = join(import.meta.dirname, "fakes");

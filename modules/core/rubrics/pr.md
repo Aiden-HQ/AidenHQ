@@ -1,6 +1,6 @@
 # Standard rubric: a pull request
 
-The grader (services/runner/src/grade.mjs) uses these lines when a delegation names a `pr` deliverable without its own
+The grader (services/runner/src/grade.ts) uses these lines when a delegation names a `pr` deliverable without its own
 rubric. The delegating agent adapts them to the request (DELEGATING_SECTION in scripts/paperclip-setup.mjs).
 
 - Merged into the default branch (in the AidenHQ product repo the owner merges: there an open PR is the deliverable).

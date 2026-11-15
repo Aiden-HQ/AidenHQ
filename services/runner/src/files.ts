@@ -4,19 +4,20 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, relative, sep } from "node:path";
+import type { Log } from "./types.ts";
 
 export const FILES_DIR = join(".aidenhq", "files");
 /** Files an Engineer makes for the user and the other agents: attached to its part after each run. */
 export const OUT_DIR = join(".aidenhq", "out");
 const MAX_SHARED = 10 * 1024 * 1024; // Paperclip's limit for one file
 const MAX_SHARED_FILES = 20;
-const TYPES = { md: "text/markdown", html: "text/html", txt: "text/plain", csv: "text/csv", json: "application/json", yaml: "text/plain", yml: "text/plain", log: "text/plain", pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+const TYPES: Record<string, string> = { md: "text/markdown", html: "text/html", txt: "text/plain", csv: "text/csv", json: "application/json", yaml: "text/plain", yml: "text/plain", log: "text/plain", pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
 
 /**
  * Whether `rel` under the workspace has no symlink on the way (the parts that exist). The workspace is the agent's to write
  * (the jail's or a box's), so a link in `.aidenhq/…` could point the runner's reads and writes at any host file.
  */
-export function noLink(workspace, rel) {
+export function noLink(workspace: string, rel: string): boolean {
   let p = workspace;
   for (const part of rel.split(sep).filter(Boolean)) {
     p = join(p, part);
@@ -28,7 +29,7 @@ export function noLink(workspace, rel) {
 }
 
 /** A file name that is safe on disk: no paths, control characters or leading dots. */
-export function diskName(name) {
+export function diskName(name: unknown): string {
   const base = String(name ?? "").split(/[\\/]/).pop() ?? "";
   const clean = base.replace(/[\u0000-\u001f\u007f<>"`|*?:]/g, "").replace(/\s+/g, " ").replace(/^\.+/, "").trim().slice(0, 200);
   return clean || "file";
@@ -38,11 +39,11 @@ export function diskName(name) {
  * The files to copy, with their names in the workspace: the task's own, then its parent's, each
  * oldest first. Names stay the same from run to run; a clash gets the file's short id.
  */
-export function plan(own, parent = []) {
-  const taken = new Map();
-  const byAge = (a, b) => String(a.createdAt).localeCompare(String(b.createdAt));
-  const out = [];
-  for (const [from, list] of [["task", own], ["parent", parent]]) {
+export function plan(own: any[], parent: any[] = []) {
+  const taken = new Map<string, any>();
+  const byAge = (a: any, b: any) => String(a.createdAt).localeCompare(String(b.createdAt));
+  const out: { id: any; name: string; type: any; size: any; from: string }[] = [];
+  for (const [from, list] of [["task", own], ["parent", parent]] as const) {
     for (const a of [...list].sort(byAge)) {
       let name = diskName(a.originalFilename);
       if (taken.has(name.toLowerCase())) {
@@ -60,9 +61,9 @@ export function plan(own, parent = []) {
  * Copy the task's files (and its parent's) into the workspace. Returns what's there, for the prompt.
  * `skip`: the IDs of files the Engineer shared itself (`shareOutputs`), which aren't the user's.
  */
-export async function syncFiles(pc, issue, workspace, log = () => {}, skip = new Set()) {
-  const list = (id) => pc.attachments(id).catch((err) => (log("couldn't list a task's files", { issue: id, err: String(err.message ?? err).slice(0, 200) }), []));
-  const files = plan((await list(issue.id)).filter((a) => !skip.has(a.id)), issue.parentId ? await list(issue.parentId) : []);
+export async function syncFiles(pc: any, issue: any, workspace: string, log: Log = () => {}, skip: Set<string> = new Set()) {
+  const list = (id: string): Promise<any[]> => pc.attachments(id).catch((err: any) => (log("couldn't list a task's files", { issue: id, err: String(err.message ?? err).slice(0, 200) }), []));
+  const files = plan((await list(issue.id)).filter((a: any) => !skip.has(a.id)), issue.parentId ? await list(issue.parentId) : []);
   if (!files.length) return [];
   const dir = join(workspace, FILES_DIR);
   if (!noLink(workspace, FILES_DIR)) {
@@ -70,7 +71,7 @@ export async function syncFiles(pc, issue, workspace, log = () => {}, skip = new
     return [];
   }
   mkdirSync(dir, { recursive: true });
-  const out = [];
+  const out: any[] = [];
   for (const f of files) {
     const path = join(dir, f.name);
     try {
@@ -84,7 +85,7 @@ export async function syncFiles(pc, issue, workspace, log = () => {}, skip = new
         writeFileSync(path, data, { flag: "wx" });
       }
       out.push({ ...f, path: join(FILES_DIR, f.name) });
-    } catch (err) {
+    } catch (err: any) {
       log("couldn't copy a task's file", { issue: issue.identifier, file: f.id, err: String(err.message ?? err).slice(0, 200) });
     }
   }
@@ -95,8 +96,8 @@ export async function syncFiles(pc, issue, workspace, log = () => {}, skip = new
  * What the Engineer made for others to read: its Primer document (as `<title>.md`) and the files
  * in `.aidenhq/out/`, which only it could see in the workspace before. Size-limited, no subdirectories.
  */
-export function outputs(workspace, primer) {
-  const out = [];
+export function outputs(workspace: string, primer?: { path: string; title: string }) {
+  const out: { name: string; path: string; rel: string }[] = [];
   if (primer) {
     const ext = extname(primer.path);
     out.push({ name: `${diskName(primer.title).replace(/\.(md|html?)$/i, "")}${ext}`, path: primer.path, rel: relative(workspace, primer.path) });
@@ -119,8 +120,8 @@ export function outputs(workspace, primer) {
  * open descriptor (a regular file of at most `max` bytes, the same inode as the checked path) and read from it. Undefined for
  * anything else.
  */
-export function readOwn(workspace, rel, max = MAX_SHARED) {
-  let fd;
+export function readOwn(workspace: string, rel: string, max = MAX_SHARED): Buffer | undefined {
+  let fd: number | undefined;
   try {
     if (!rel || rel.startsWith("..") || !noLink(workspace, rel)) return undefined;
     const real = realpathSync(workspace);
@@ -146,9 +147,9 @@ export function readOwn(workspace, rel, max = MAX_SHARED) {
  * version. `shared` is the record of what's attached ({ name: { id, hash } }); resolves with the new one
  * and the names attached now.
  */
-export async function shareOutputs(pc, issue, files, shared = {}, log = () => {}) {
+export async function shareOutputs(pc: any, issue: any, files: any[], shared: Record<string, { id?: string; hash?: string }> = {}, log: Log = () => {}) {
   const next = { ...shared };
-  const attached = [];
+  const attached: string[] = [];
   for (const f of files) {
     const data = f.data; // read by outputs (readOwn)
     if (!data.length || data.length > MAX_SHARED) continue;
@@ -156,10 +157,10 @@ export async function shareOutputs(pc, issue, files, shared = {}, log = () => {}
     if (shared[f.name]?.hash === hash) continue;
     try {
       const a = await pc.addAttachment(issue.id, f.name, f.type, data);
-      if (shared[f.name]?.id) await pc.deleteAttachment(shared[f.name].id).catch((err) => log("couldn't remove an earlier version", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }));
+      if (shared[f.name]?.id) await pc.deleteAttachment(shared[f.name]!.id).catch((err: any) => log("couldn't remove an earlier version", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }));
       next[f.name] = { id: a.id, hash };
       attached.push(f.name);
-    } catch (err) {
+    } catch (err: any) {
       log("couldn't attach an output", { issue: issue.identifier, file: f.name, err: String(err.message ?? err).slice(0, 200) });
     }
   }

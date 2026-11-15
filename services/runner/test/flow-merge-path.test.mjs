@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
-import { State } from "../src/state.mjs";
+import { State } from "../src/state.ts";
 
 const url = (n) => `https://github.com/acme/app/pull/${n}`;
 /** As the fake agent writes it (test/fakes/claude.mjs): two identical blocks, `allowed` the one saying allow = true. */

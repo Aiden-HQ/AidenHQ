@@ -1,4 +1,4 @@
-// Evidence, read by code (wave 3, item 5): one function per deliverable kind, shared by the grader (grade.mjs gather) and
+// Evidence, read by code (wave 3, item 5): one function per deliverable kind, shared by the grader (grade.ts gather) and
 // the duplicate-card guard (item 4). Facts here were checked by code and are trusted; anything an agent wrote is returned
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
@@ -6,7 +6,7 @@ import { RUNNER_MARKER } from "./commands.mjs";
 import { patchKey } from "./git.mjs";
 import { GATE_CHECK, findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
 import { MAX_DIFF } from "./review.mjs";
-import { downscalePng, imageInfo, pngStamp } from "./images.ts";
+import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
 
 /** Marks the grader's own notes on a task, so they never count as the deliverable's evidence. */
 export const GRADER_MARKER = "<!-- aidenhq:grader -->";
@@ -14,7 +14,7 @@ export const GRADER_MARKER = "<!-- aidenhq:grader -->";
 /** The board's reason code for a change already satisfied on the target (services/board/src/approvals.ts ALREADY_APPLIED). */
 export const ALREADY_APPLIED = "already_applied";
 
-const hash = (s) => createHash("sha256").update(s).digest("hex").slice(0, 16);
+const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
 /**
  * The repository's own aggregate required check on the head (`ci-required` in the product's ci.yml): "green" when it
@@ -24,11 +24,11 @@ const hash = (s) => createHash("sha256").update(s).digest("hex").slice(0, 16);
  * "missing" when the repository's CI has no such aggregate at all (an app's template CI), which a merged head's final
  * rollup settles too: no aggregate there means the repository's CI had none for that commit.
  */
-function gateOn(pr, checks) {
+function gateOn(pr: any, checks: any[]): string {
   const gate = checks.find((c) => c.name === GATE_CHECK);
   if (gate) return gate.pending ? "running" : gate.status === "SUCCESS" ? "green" : "red";
   if (pr.state !== "OPEN" || !checks.length) return "missing";
-  return namedChecks(pr.baseRef?.target?.statusCheckRollup).some((c) => c.name === GATE_CHECK) ? "running" : "missing";
+  return namedChecks(pr.baseRef?.target?.statusCheckRollup).some((c: any) => c.name === GATE_CHECK) ? "running" : "missing";
 }
 
 /**
@@ -40,7 +40,7 @@ function gateOn(pr, checks) {
  * — a cancelled job, a missing dependency, a condition that came out false, a head whose aggregate is red or absent —
  * reads not green, so nothing is accepted on the strength of being skipped alone.
  */
-function checkState(pr, c, gate) {
+function checkState(pr: any, c: any, gate: string): string {
   if (c.pending) return "still running";
   if (!c.skipped) return c.status === "SUCCESS" ? "green" : c.status === "NEUTRAL" ? "not green (neutral)" : "not green (failed)";
   // The aggregate cannot accept its own skip: only its passing is the proof that the skips beside it are by design.
@@ -54,8 +54,8 @@ function checkState(pr, c, gate) {
  * The PRs the task's own runner records tie to it, for a merge its branch rows no longer name: the queue it ran for this task,
  * the merges it was asked to run, and the merge cards it filed on it (deps.taskMerged). dedupe: one row per PR.
  */
-export function taskMergePrs(rows) {
-  const out = [];
+export function taskMergePrs(rows: any[] | undefined) {
+  const out: { repo: string; number: number; url: string }[] = [];
   for (const r of rows ?? []) {
     const p = r?.url ? findPrs(String(r.url))[0] : r?.repo && r?.number ? { repo: String(r.repo), number: Number(r.number), url: `https://github.com/${r.repo}/pull/${r.number}` } : undefined;
     if (p && !out.some((x) => x.repo.toLowerCase() === p.repo.toLowerCase() && x.number === p.number)) out.push(p);
@@ -71,13 +71,13 @@ export function taskMergePrs(rows) {
  * what this read found and are the only source of a written escalation's premise. A file or report deliverable's evidence is
  * the task's own words, gathered again on the same pass, so there is nothing here to confirm outside it (no facts).
  */
-export async function presentNow(deliverable, deps) {
+export async function presentNow(deliverable: any, deps: any) {
   const kind = deliverable?.kind;
-  const facts = [];
+  const facts: string[] = [];
   if (kind === "pr") {
     let prs = byRef((await deps.taskPrs?.()) ?? [], deliverable.ref);
     if (!prs.length && deps.taskMerged) prs = byRef(taskMergePrs(await deps.taskMerged().catch(() => [])), deliverable.ref);
-    let merged;
+    let merged: { repo: string; sha: string } | undefined;
     for (const p of prs.slice(0, 5)) {
       const pr = (await deps.pr(p.repo, p.number).catch(() => null))?.repository?.pullRequest;
       if (!pr) {
@@ -85,7 +85,7 @@ export async function presentNow(deliverable, deps) {
         continue;
       }
       if (pr.state !== "MERGED") {
-        const running = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup).filter((c) => c.pending).map((c) => c.name);
+        const running = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup).filter((c: any) => c.pending).map((c: any) => c.name);
         facts.push(`${p.url} is ${pr.state === "OPEN" ? "open, not merged yet" : String(pr.state).toLowerCase()}${running.length ? ` (checks still running: ${running.join(", ")})` : ""}`);
         continue;
       }
@@ -96,7 +96,7 @@ export async function presentNow(deliverable, deps) {
     if (merged && deps.appOfRepo) {
       const app = await deps.appOfRepo(merged.repo).catch(() => null);
       const rows = app ? (await deploysOf(app, merged.sha, deps)).rows : [];
-      const d = rows.find((r) => r.status === "healthy");
+      const d = rows.find((r: any) => r.status === "healthy");
       if (app) facts.push(d ? `app ${app.name}: ${merged.sha.slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: no healthy deploy of ${merged.sha ? merged.sha.slice(0, 12) : "the merge commit"}`);
     }
     return { present: Boolean(merged), facts };
@@ -104,11 +104,11 @@ export async function presentNow(deliverable, deps) {
   if (kind === "app") {
     const app = await deps.app?.(deliverable.ref).catch(() => null);
     if (!app) return { present: false, facts: [`no app named ${deliverable.ref || "(none)"} is deployed yet`] };
-    const d = (await deploysOf(app, app.sha, deps)).rows.find((r) => r.status === "healthy");
+    const d = (await deploysOf(app, app.sha, deps)).rows.find((r: any) => r.status === "healthy");
     return { present: Boolean(d), facts: [d ? `app ${app.name}: ${String(app.sha).slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: deployed commit ${String(app.sha ?? "(none)").slice(0, 12)} has no healthy deploy`] };
   }
   if (kind === "apply") {
-    const applied = ((await deps.approvals?.()) ?? []).filter((a) => a.action === "apply" && a.state === "used" && a.outcome).at(-1);
+    const applied = ((await deps.approvals?.()) ?? []).filter((a: any) => a.action === "apply" && a.state === "used" && a.outcome).at(-1);
     return applied ? { present: true, facts: [`apply ${applied.id}: used, ${applied.outcome}`] } : { present: false, facts: ["no apply filed yet"] };
   }
   return { present: false, facts: [] };
@@ -118,7 +118,7 @@ export async function presentNow(deliverable, deps) {
  * The task's PRs as evidence: { awaiting } or { version, facts, data }. `prs` are the runner's own PRs for the task, narrowed
  * by the ref (a PR named only in the ref is never read). deps: pr(repo, n) (merges.PR_QUERY's data), diff(repo, n), ownRepo(slug).
  */
-export async function prEvidence(prs, ref, deps) {
+export async function prEvidence(prs: any[], ref: string, deps: any): Promise<any> {
   prs = byRef(prs, ref);
   // No branch row names one: the runner's own records for the task (its merge queue and the merge cards it filed) still say
   // which PR delivered it, so they are read rather than reporting "no pull request yet" for a merge whose row a cleanup, a
@@ -126,9 +126,9 @@ export async function prEvidence(prs, ref, deps) {
   const byRecord = !prs.length && Boolean(deps.taskMerged);
   if (byRecord) prs = byRef(taskMergePrs(await deps.taskMerged().catch(() => [])), ref);
   if (!prs.length) return { awaiting: "no pull request yet", missing: true };
-  const facts = [];
-  const versions = [];
-  const prs_ = []; // each graded PR with its merge commit ("" while unmerged)
+  const facts: string[] = [];
+  const versions: string[] = [];
+  const prs_: any[] = []; // each graded PR with its merge commit ("" while unmerged)
   let diff = "";
   for (const p of prs.slice(0, 5)) {
     const pr = (await deps.pr(p.repo, p.number))?.repository?.pullRequest;
@@ -138,7 +138,7 @@ export async function prEvidence(prs, ref, deps) {
     // A read caught mid-run is never a verdict. A check still queued or running is one (GitHub also reports the rollup as
     // a whole as PENDING until they all finish, so the individual states are the finer read), and so is a head whose
     // aggregate required check is not written yet: its jobs appear only as it finishes.
-    if (checks.some((c) => c.pending) || gate === "running") return { awaiting: `checks still running on ${p.url}` };
+    if (checks.some((c: any) => c.pending) || gate === "running") return { awaiting: `checks still running on ${p.url}` };
     // Outside the agents org and the product repo the runner can't merge and the owner doesn't: someone else merges it.
     if (pr.state === "OPEN" && deps.ownRepo && !deps.ownRepo(p.repo)) return { awaiting: `${p.url} is not merged yet` };
     // The runner's record names the PR; GitHub says what became of it. Closed without merging is not a merge, not "still running".
@@ -148,11 +148,11 @@ export async function prEvidence(prs, ref, deps) {
     versions.push(`${p.repo}#${p.number}@${sha}`);
     // The code a screenshot may show: the head, the merge commit, and the newest commit that isn't a merge of the base (the
     // agent's own, which the runner re-signs with the same tree before a base update merges on top). By commit or by tree.
-    const history = (pr.history?.nodes ?? []).map((n) => n.commit).filter(Boolean);
-    const own = history.findLast((c) => c.parents?.totalCount === 1);
-    const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
+    const history = (pr.history?.nodes ?? []).map((n: any) => n.commit).filter(Boolean);
+    const own = history.findLast((c: any) => c.parents?.totalCount === 1);
+    const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task" : ""}`);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task" : ""}`);
     diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)")).slice(0, MAX_DIFF)}\n`;
   }
   // The board keeps a version in 200 characters: several PRs are bound by their hash.
@@ -161,42 +161,42 @@ export async function prEvidence(prs, ref, deps) {
 }
 
 /** An epoch-millis deploy time as ISO, or the value as given (an apps-mcp row may already carry a string). */
-export const stamp = (at) => (typeof at === "number" ? new Date(at).toISOString() : String(at ?? ""));
+export const stamp = (at: unknown): string => (typeof at === "number" ? new Date(at).toISOString() : String(at ?? ""));
 
 /**
  * Every deploy of one exact commit, newest first. `deps.deployHistory(app, sha)` reads apps-mcp's whole deploy table, which is
  * never pruned, so a commit the bounded status row (`app.deploys`) has moved past is still found. Without that read (a
  * failure) only the row is available: `complete: false` says a missing deploy there may simply predate the window it keeps.
  */
-export async function deploysOf(app, sha, deps) {
+export async function deploysOf(app: any, sha: string | undefined, deps: any): Promise<{ rows: any[]; complete: boolean }> {
   if (!sha) return { rows: [], complete: true };
   const rows = await deps.deployHistory?.(app.name, sha).catch(() => undefined);
   if (Array.isArray(rows)) return { rows, complete: true };
-  return { rows: (Array.isArray(app.deploys) ? app.deploys : []).filter((d) => d.sha === sha), complete: false };
+  return { rows: (Array.isArray(app.deploys) ? app.deploys : []).filter((d: any) => d.sha === sha), complete: false };
 }
 
 /** Whether a merge predates the oldest deploy the status row still lists: then a miss there proves nothing either way. */
-export const predatesDeploys = (app, mergedAt) => {
-  const at = (Array.isArray(app?.deploys) ? app.deploys : []).map((d) => Date.parse(stamp(d.at))).filter((t) => Number.isFinite(t));
-  const merged = Date.parse(mergedAt || "");
+export const predatesDeploys = (app: any, mergedAt: unknown): boolean => {
+  const at = (Array.isArray(app?.deploys) ? app.deploys : []).map((d: any) => Date.parse(stamp(d.at))).filter((t: number) => Number.isFinite(t));
+  const merged = Date.parse((mergedAt as string) || "");
   return at.length > 0 && Number.isFinite(merged) && merged < Math.min(...at);
 };
 
 /** A deployed app (apps-mcp status row, or null) as evidence: its commit, state, health, incident and recent deploys. */
-export function appEvidence(app, name) {
+export function appEvidence(app: any, name: string | undefined): any {
   if (!app) return { awaiting: `no app named ${name || "(none)"} is deployed yet` };
   if (!app.sha) return { awaiting: `${app.name} is not deployed yet` };
   const facts = [`app ${app.name}: deployed commit ${app.sha}${app.deployed_at ? ` at ${stamp(app.deployed_at)}` : ""}${app.deployed_by ? ` by ${app.deployed_by}` : ""}; state ${app.state}; ${app.healthy ? "healthy" : "not healthy"}; ${app.incident ? `open incident (${app.incident.kind})` : "no open incident"}`];
   // The history, newest first: which commits were deployed, by whom, and how each ended. `by: auto-deploy` is the
   // platform's own deploy of a moved origin branch (loops.ts), never an agent or the owner.
   const seen = (Array.isArray(app.deploys) ? app.deploys : []).slice(0, 5);
-  if (seen.length) facts.push(`app ${app.name}: recent deploys (newest first): ${seen.map((d) => `${d.sha.slice(0, 12)} deployed ${stamp(d.at)} by ${d.by} (${d.status})`).join("; ")}`);
+  if (seen.length) facts.push(`app ${app.name}: recent deploys (newest first): ${seen.map((d: any) => `${d.sha.slice(0, 12)} deployed ${stamp(d.at)} by ${d.by} (${d.status})`).join("; ")}`);
   return { version: `${app.name}@${app.sha}`, facts, data: {} };
 }
 
 /** The task's latest fleet apply (its approval records) as evidence: its state and outcome. */
-export function applyEvidence(cards) {
-  const applied = cards.filter((a) => a.action === "apply").at(-1);
+export function applyEvidence(cards: any[]): any {
+  const applied = cards.filter((a: any) => a.action === "apply").at(-1);
   if (!applied) return { awaiting: "no apply filed yet", missing: true };
   const facts = [`apply ${applied.id}: ${applied.state}${applied.outcome ? `, ${applied.outcome}` : ""}`];
   return { version: applied.id, facts, data: { APPLY_OUTCOME: applied.outcomeText ?? "", APPLY_CHANGE: applied.details ?? "" } };
@@ -207,7 +207,7 @@ const COMMENT_MAX = 8_000; // one comment's characters
 export const COMMENTS_TOTAL = 18_000; // all comments' characters (the prompt fences a block at 20,000)
 const COMMON = new Set("about above after again agent along also another because before being below between could does doing done during each every final first found from have having here into itself just latest least made make more most much must never only other over posted result same should shows since some still such than that their them then there these they this those through under until very were what when where which while will with within would your".split(" "));
 /** A text's distinctive words (4+ characters, file names and paths whole), for matching a comment to what names it. */
-const termsOf = (text) => new Set((String(text).toLowerCase().match(/[a-z0-9][a-z0-9._/-]{3,}/g) ?? []).map((w) => w.replace(/[._/-]+$/, "")).filter((w) => w.length >= 4 && !COMMON.has(w)));
+const termsOf = (text: unknown) => new Set((String(text).toLowerCase().match(/[a-z0-9][a-z0-9._/-]{3,}/g) ?? []).map((w: string) => w.replace(/[._/-]+$/, "")).filter((w: string) => w.length >= 4 && !COMMON.has(w)));
 
 /**
  * The comments the grader reads, within COMMENTS_TOTAL: the NEWEST newest (anyone's but the grader's), then the task agent's
@@ -216,19 +216,19 @@ const termsOf = (text) => new Set((String(text).toLowerCase().match(/[a-z0-9][a-
  * note, is read this way, not lost behind the last few comments. Each is cut to COMMENT_MAX; they go in the task's order.
  * { text, fact }: the fact says what was sent, cut or left out.
  */
-export function pickComments(all, own, rubric = "") {
+export function pickComments(all: any[], own: (c: any) => boolean, rubric = "") {
   const newest = all.slice(-NEWEST);
   const earlier = all.slice(0, -NEWEST).filter(own);
   const latest = [...all].reverse().find(own);
   const named = `${rubric}\n${latest?.body ?? ""}`;
   const want = termsOf(named);
-  const score = (c) => (c.id && named.includes(c.id) ? 1e6 : [...termsOf(c.body)].filter((w) => want.has(w)).length);
+  const score = (c: any): number => (c.id && named.includes(c.id) ? 1e6 : [...termsOf(c.body)].filter((w) => want.has(w)).length);
   const ranked = earlier.map((c, i) => ({ c, i, s: score(c) })).sort((a, b) => b.s - a.s || b.i - a.i).map((x) => x.c);
   let left = COMMENTS_TOTAL;
-  const shown = new Map();
+  const shown = new Map<any, string>();
   let cut = 0;
   let out = 0;
-  const head = (c) => `--- comment ${String(c.createdAt ?? "").slice(0, 25)} ---\n`;
+  const head = (c: any) => `--- comment ${String(c.createdAt ?? "").slice(0, 25)} ---\n`;
   for (const c of [...newest].reverse().concat(ranked)) {
     const body = String(c.body ?? "");
     left -= head(c).length + 2; // the header and separator count too, so the fence never cuts the block
@@ -254,16 +254,16 @@ export function pickComments(all, own, rubric = "") {
  * trusted facts call each file by a code-made label (file_1, file_2, ... in the attachments' order) and its name and type go
  * in the fenced FILE_NAMES block, as data. The version stays the newest comments' and the files' ids.
  */
-export async function wordsEvidence(deps, rubric = []) {
-  const all = (await deps.comments()).filter((c) => !String(c.body ?? "").includes(GRADER_MARKER));
+export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<any> {
+  const all = (await deps.comments()).filter((c: any) => !String(c.body ?? "").includes(GRADER_MARKER));
   const comments = all.slice(-NEWEST);
-  const own = (c) => String(c.body ?? "").includes(RUNNER_MARKER) || (deps.assignee ? c.authorAgentId === deps.assignee : c.authorType === "agent");
+  const own = (c: any) => String(c.body ?? "").includes(RUNNER_MARKER) || (deps.assignee ? c.authorAgentId === deps.assignee : c.authorType === "agent");
   const picked = pickComments(all, own, rubric.join("\n"));
-  const files = (await deps.attachments().catch(() => [])).map((f, i) => ({ ...f, label: `file_${i + 1}` }));
-  const facts = files.length ? [`${files.length} file${files.length > 1 ? "s" : ""} attached: ${files.map((f) => f.label).join(", ")} (their names and types, as the agent gave them, are in FILE_NAMES)`] : ["no files attached"];
+  const files = (await deps.attachments().catch(() => [])).map((f: any, i: number) => ({ ...f, label: `file_${i + 1}` }));
+  const facts = files.length ? [`${files.length} file${files.length > 1 ? "s" : ""} attached: ${files.map((f: any) => f.label).join(", ")} (their names and types, as the agent gave them, are in FILE_NAMES)`] : ["no files attached"];
   if (all.length) facts.push(picked.fact);
-  const version = comments.length || files.length ? hash([...comments.map((c) => c.id), ...files.map((f) => f.id)].join(" ")) : "";
-  const names = files.map((f) => `${f.label}: ${String(f.originalFilename ?? f.name ?? "").slice(0, 200)} (${String(f.contentType ?? "").slice(0, 100)})`).join("\n");
+  const version = comments.length || files.length ? hash([...comments.map((c: any) => c.id), ...files.map((f: any) => f.id)].join(" ")) : "";
+  const names = files.map((f: any) => `${f.label}: ${String(f.originalFilename ?? f.name ?? "").slice(0, 200)} (${String(f.contentType ?? "").slice(0, 100)})`).join("\n");
   return { version, facts, files, data: { TASK_COMMENTS: picked.text, ...(files.length ? { FILE_NAMES: names } : {}) } };
 }
 
@@ -274,9 +274,9 @@ const MAX_OTHER_FILES = 20; // per task, the newest
  * The other tasks a rubric or a deliverable's ref names by identifier ("put the mockups onto ACME-12"): the graded task's own
  * prefix (its company's), never itself, at most MAX_OTHER_TASKS. Only these trusted texts, never the request or comments.
  */
-export function namedTasks(texts, own) {
+export function namedTasks(texts: unknown[], own: string | undefined) {
   const prefix = /^([A-Z][A-Z0-9]*)-\d+$/.exec(String(own ?? ""))?.[1];
-  const out = [];
+  const out: string[] = [];
   if (!prefix) return out;
   for (const t of texts) {
     for (const m of String(t ?? "").matchAll(/\b([A-Z][A-Z0-9]*)-(\d{1,7})\b/g)) {
@@ -295,35 +295,35 @@ export function namedTasks(texts, own) {
  * fenced OTHER_TASK_FILES block. A read that fails waits for the next look (missing evidence is never a pass).
  * { awaiting } or { facts, data, version } (version: the files' ids, "" with none).
  */
-export async function otherTaskEvidence(idents, deps, own = []) {
-  const facts = [];
-  const names = [];
-  const ids = [];
-  const nameOf = (f) => String(f.originalFilename ?? f.name ?? "");
-  const when = (t) => (/^\d{4}-\d\d-\d\dT[\d:.]+Z?$/.test(String(t ?? "")) ? String(t) : "an unknown time");
+export async function otherTaskEvidence(idents: string[], deps: any, own: any[] = []): Promise<any> {
+  const facts: string[] = [];
+  const names: string[] = [];
+  const ids: string[] = [];
+  const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
+  const when = (t: unknown) => (/^\d{4}-\d\d-\d\dT[\d:.]+Z?$/.test(String(t ?? "")) ? String(t) : "an unknown time");
   for (const ident of idents) {
-    let t;
+    let t: any;
     try {
       t = await deps.otherTask(ident);
-    } catch (err) {
+    } catch (err: any) {
       return { awaiting: `the files on ${ident} could not be read yet (${String(err.message ?? err).replace(/[^\w .:/()-]/g, "").slice(0, 160)})` };
     }
     if (!t) {
       facts.push(`${ident}: no such task in this company (nothing read from it)`);
       continue;
     }
-    const files = [...(t.files ?? [])].sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""))).slice(-MAX_OTHER_FILES);
+    const files = [...(t.files ?? [])].sort((a: any, b: any) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""))).slice(-MAX_OTHER_FILES);
     if (!files.length) {
       facts.push(`${ident} (another task the rubric names; its file list read now): no files attached`);
       continue;
     }
-    const lines = files.map((f, i) => {
+    const lines = files.map((f: any, i: number) => {
       const label = `${ident}/file_${i + 1}`;
       ids.push(f.id);
       names.push(`${label}: ${nameOf(f).slice(0, 200)} (${String(f.contentType ?? "").slice(0, 100)})`);
       const agent = String(t.agents?.[f.createdByAgentId] ?? "").replace(/[^\w .()-]/g, "").slice(0, 60);
       const by = f.createdByAgentId ? (f.createdByAgentId === deps.assignee ? "this task's agent" : agent ? `agent ${agent}` : "another agent") : f.createdByUserId ? "the board key (the owner, or the runner for an Engineer)" : "an unknown uploader";
-      const same = own.find((o) => nameOf(o) && nameOf(o) === nameOf(f) && Number(o.byteSize) === Number(f.byteSize));
+      const same = own.find((o: any) => nameOf(o) && nameOf(o) === nameOf(f) && Number(o.byteSize) === Number(f.byteSize));
       return `${label}: ${Number(f.byteSize) || 0} bytes, uploaded at ${when(f.createdAt)} by ${by}${same ? `, the same name and size as this task's ${same.label}` : ""}`;
     });
     facts.push(`${ident} (another task the rubric names; its file list read now, not the files' contents): ${files.length} file${files.length > 1 ? "s" : ""} attached${(t.files ?? []).length > files.length ? ` (the newest ${files.length} of ${t.files.length})` : ""}: ${lines.join("; ")} (their names and types are in OTHER_TASK_FILES)`);
@@ -332,7 +332,7 @@ export async function otherTaskEvidence(idents, deps, own = []) {
 }
 
 /** A content type as code may state it among the trusted facts: a plain type/subtype, or "unknown type". */
-const safeType = (t) => (/^[\w.+-]+\/[\w.+-]+$/.test(String(t ?? "")) ? String(t) : "unknown type");
+const safeType = (t: unknown) => (/^[\w.+-]+\/[\w.+-]+$/.test(String(t ?? "")) ? String(t) : "unknown type");
 
 export const MAX_IMAGES = 20; // a mockup task attaches ~18 screenshots; the byte budget below is the real bound
 const IMAGE_SIDE = 2048; // a PNG with a longer side is downscaled (the vision models scale to about this anyway)
@@ -343,7 +343,7 @@ export const TEXT_TOTAL = 16_000; // all text files' characters (the prompt fenc
 const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|ya?ml|log|html?|tsx|ts|jsx|js|css)$/i;
 
 /** A PNG made to fit: downscaled until its longest side is at most IMAGE_SIDE and its bytes IMAGE_BYTES, or null. */
-function fitPng(buf, info) {
+function fitPng(buf: Buffer, info: ImageInfo): Buffer | null {
   for (let side = Math.min(IMAGE_SIDE, Math.max(info.width, info.height)); side >= 256; side = Math.floor(side * 0.7)) {
     const small = downscalePng(buf, side);
     if (!small) return null;
@@ -363,19 +363,19 @@ function fitPng(buf, info) {
  * screenshot stamped (aidenhq-browse, ui-review) with a commit and tree that are none of them shows other code, so it is
  * not sent, and the facts say so. An unstamped image (a mockup, a reference) is sent as before.
  */
-export async function fileEvidence(files, content, { rubric = "", comments = "", heads = [] } = {}) {
-  const facts = [];
-  const images = [];
-  const texts = [];
+export async function fileEvidence(files: any[], content: (id: string) => Promise<Buffer>, { rubric = "", comments = "", heads = [] }: { rubric?: string; comments?: string; heads?: { commits: string[]; trees: string[] }[] } = {}): Promise<any> {
+  const facts: string[] = [];
+  const images: { url: string; label: string }[] = [];
+  const texts: string[] = [];
   let imageBytes = 0;
   let textLeft = TEXT_TOTAL;
-  const nameOf = (f) => String(f.originalFilename ?? f.name ?? "");
-  const names = (f, text) => {
-    const base = nameOf(f).split("/").pop().toLowerCase();
+  const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
+  const names = (f: any, text: string) => {
+    const base = nameOf(f).split("/").pop()!.toLowerCase();
     return base.length >= 3 && text.toLowerCase().includes(base);
   };
-  const rank = (f) => (names(f, rubric) ? 2 : names(f, comments) ? 1 : 0);
-  const order = [...files].sort((a, b) => rank(b) - rank(a) || String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+  const rank = (f: any) => (names(f, rubric) ? 2 : names(f, comments) ? 1 : 0);
+  const order = [...files].sort((a: any, b: any) => rank(b) - rank(a) || String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
   for (const f of order) {
     const name = nameOf(f);
     const isImage = /^image\//.test(f.contentType ?? "") || /\.(png|jpe?g|gif|webp)$/i.test(name);
@@ -392,10 +392,10 @@ export async function fileEvidence(files, content, { rubric = "", comments = "",
       facts.push(`${f.label}: not sent to the grader (the text budget of ${TEXT_TOTAL} characters was spent on other files)`);
       continue;
     }
-    let buf;
+    let buf: Buffer;
     try {
       buf = await content(f.id);
-    } catch (err) {
+    } catch (err: any) {
       return { awaiting: `the attached ${f.label} could not be read yet (${String(err.message ?? err).replace(/[^\w .:/()-]/g, "").slice(0, 160)})` };
     }
     if (isImage) {
@@ -406,9 +406,9 @@ export async function fileEvidence(files, content, { rubric = "", comments = "",
       }
       const real = `${info.width}x${info.height}`;
       const st = heads.length ? pngStamp(buf) : null;
-      const at = (v) => (typeof v === "string" && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(v) ? v : "");
+      const at = (v: unknown) => (typeof v === "string" && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(v) ? v : "");
       if (st && (at(st.commit) || at(st.tree)) && !heads.some((h) => h.commits.includes(at(st.commit)) || h.trees.includes(at(st.tree)))) {
-        facts.push(`${f.label}: a screenshot stamped as taken at commit ${at(st.commit).slice(0, 12) || "?"} (tree ${at(st.tree).slice(0, 12) || "?"}), which is not the code under review (${heads.map((h) => h.commits[0].slice(0, 12)).join(", ")}): not sent to the grader, as it shows other code`);
+        facts.push(`${f.label}: a screenshot stamped as taken at commit ${at(st.commit).slice(0, 12) || "?"} (tree ${at(st.tree).slice(0, 12) || "?"}), which is not the code under review (${heads.map((h) => h.commits[0]!.slice(0, 12)).join(", ")}): not sent to the grader, as it shows other code`);
         continue;
       }
       let sent = buf;
@@ -417,7 +417,7 @@ export async function fileEvidence(files, content, { rubric = "", comments = "",
         facts.push(`${f.label}: image ${real} px, attached, not sent to the grader (${Math.round(sent.length / 1024)} KB is over the image budget)`);
         continue;
       }
-      const s = sent === buf ? info : imageInfo(sent);
+      const s = (sent === buf ? info : imageInfo(sent))!;
       imageBytes += sent.length;
       images.push({ url: `data:${info.type};base64,${sent.toString("base64")}`, label: f.label });
       facts.push(`${f.label}: image ${real} px (its real size), shown as IMAGE_${images.length}${sent !== buf ? ` downscaled to ${s.width}x${s.height} px` : ""}`);
@@ -433,7 +433,7 @@ export async function fileEvidence(files, content, { rubric = "", comments = "",
 }
 
 /** Whether a rubric is about attached files (a screenshot, an image, an attachment): their contents are evidence then. */
-export const rubricNamesFiles = (rubric) => rubric.some((c) => /\b(attach\w*|screenshots?|images?|png|jpe?g|mockups?|files?)\b/i.test(String(c)));
+export const rubricNamesFiles = (rubric: unknown[]) => rubric.some((c) => /\b(attach\w*|screenshots?|images?|png|jpe?g|mockups?|files?)\b/i.test(String(c)));
 
 /**
  * Whether one branch commit is already satisfied on the target's current default branch (the duplicate-card guard): its
@@ -441,7 +441,7 @@ export const rubricNamesFiles = (rubric) => rubric.some((c) => /\b(attach\w*|scr
  * the caller's own fetch. { satisfied, evidence }; any git error is "not satisfied", so a card is filed (the safe direction).
  * `git(path, ...args)` resolves with trimmed stdout and rejects on a non-zero exit.
  */
-export async function onMain(git, path, base, sha) {
+export async function onMain(git: (path: string, ...args: string[]) => Promise<string>, path: string, base: string, sha: string): Promise<{ satisfied: boolean; evidence?: string }> {
   const main = `refs/remotes/origin/${base}`;
   try {
     const tip = await git(path, "rev-parse", "--verify", `${main}^{commit}`);
@@ -451,12 +451,12 @@ export async function onMain(git, path, base, sha) {
     const files = (await git(path, "diff", "-z", "--no-renames", "--name-only", mb, sha)).split("\0").filter(Boolean);
     // No files: nothing to compare (an empty pathspec would diff the whole tree).
     if (!files.length) return { satisfied: false };
-    const same = await git(path, "diff", "--quiet", "--no-renames", main, sha, "--", ...files.map((f) => `:(literal)${f}`)).then(() => true, () => false);
+    const same = await git(path, "diff", "--quiet", "--no-renames", main, sha, "--", ...files.map((f: string) => `:(literal)${f}`)).then(() => true, () => false);
     if (same) return { satisfied: true, evidence: `every file \`${sha.slice(0, 12)}\` changes (${files.length}: ${files.slice(0, 5).join(", ")}${files.length > 5 ? ", …" : ""}) is already identical on \`${base}\` (at \`${tip.slice(0, 12)}\`)` };
     // The same change already merged (a squash of it, by patch: the same file headers and changed lines), though main moved
     // on in those files since: one of the recent commits that touch them.
     const want = await patchKey(path, mb, sha);
-    const recent = (await git(path, "log", "--format=%H", "-n", String(RECENT_COMMITS), main, "--", ...files.map((f) => `:(literal)${f}`))).split("\n").filter(Boolean);
+    const recent = (await git(path, "log", "--format=%H", "-n", String(RECENT_COMMITS), main, "--", ...files.map((f: string) => `:(literal)${f}`))).split("\n").filter(Boolean);
     for (const c of recent) {
       const key = await patchKey(path, `${c}^`, c).catch(() => undefined);
       if (key === want) return { satisfied: true, evidence: `the same change is already merged on \`${base}\` as \`${c.slice(0, 12)}\`` };
@@ -475,16 +475,16 @@ export async function onMain(git, path, base, sha) {
 /** How far back on the default branch the guard looks for the same change merged (commits touching the same files). */
 const RECENT_COMMITS = 200;
 
-export async function guardBranch(git, row, sha) {
+export async function guardBranch(git: (path: string, ...args: string[]) => Promise<string>, row: any, sha: string) {
   if (!row.unpublished?.length && !row.stat) return { satisfied: false };
   return onMain(git, row.path, row.defaultBase, sha);
 }
 
 /** The task's PRs the ref narrows to: a PR ref (link or owner/name#n) by repo and number, a repo ref by repo, else all. */
-function byRef(prs, ref) {
-  const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+function byRef(prs: any[], ref: unknown): any[] {
+  const same = (a: unknown, b: unknown) => String(a).toLowerCase() === String(b).toLowerCase();
   const named = findPrs(ref);
-  if (named.length) return prs.filter((p) => named.some((n) => same(n.repo, p.repo) && n.number === p.number));
+  if (named.length) return prs.filter((p: any) => named.some((n: any) => same(n.repo, p.repo) && n.number === p.number));
   const repo = /^(?:https:\/\/github\.com\/)?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(String(ref ?? "").trim())?.[1];
-  return repo ? prs.filter((p) => same(p.repo, repo)) : prs;
+  return repo ? prs.filter((p: any) => same(p.repo, repo)) : prs;
 }

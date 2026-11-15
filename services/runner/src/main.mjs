@@ -8,13 +8,13 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, ENGINES, openrouterKind, repoAllowed, resolveEngine, stripHidden } from "./commands.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
-import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
+import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { branchCardArgs, cardText } from "./cards.ts";
 import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.ts";
-import { outputs, shareOutputs, syncFiles } from "./files.mjs";
+import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
-import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg } from "./github-app.mjs";
+import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg } from "./github-app.ts";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
@@ -22,25 +22,25 @@ import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, coversHead } from "./prompt.ts";
-import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
+import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
-import { jobAdvise } from "./advise.mjs";
+import { jobAdvise } from "./advise.ts";
 import { createMetrics, writeMetrics } from "./metrics.ts";
-import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
+import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos } from "./workspace.ts";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.ts";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.ts";
 import * as merges from "./merges.mjs";
 import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf } from "./siblings.ts";
 import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "./product-prs.ts";
-import { State } from "./state.mjs";
+import { State } from "./state.ts";
 import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.ts";
 import { authorize } from "./authorize.mjs";
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
 import { LUNA, UNSURE, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
-import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.mjs";
-import { ALREADY_APPLIED, guardBranch } from "./evidence.mjs";
+import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
+import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
@@ -223,7 +223,7 @@ async function poll() {
   if (boardApi) await runReviews().catch((err) => log("reviews check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Handbook edits to agents in trial: no tap. Every poll.
   await runTrialEdits().catch((err) => log("trial edits failed", { err: String(err.message ?? err).slice(0, 300) }));
-  // Graded done: finished deliverables waiting for the grader (grade.mjs). Every poll.
+  // Graded done: finished deliverables waiting for the grader (grade.ts). Every poll.
   // Not awaited: a grader call or a slow GitHub read never holds up the poll; one pass at a time.
   if (boardApi && !gradesRunning) {
     gradesRunning = true;
@@ -396,7 +396,7 @@ async function closeReviewedTasks() {
 let lastProductPrCheck = 0;
 /** A task the runner filed itself (with the board key, so Paperclip shows the owner as its creator): never the owner's words. */
 const runnerMade = (issueId) => Boolean(state.get(`runner-made:${issueId}`));
-/** Every owner-origin check goes through these two (apply.mjs): a runner-made task is never the owner's. */
+/** Every owner-origin check goes through these two (apply.ts): a runner-made task is never the owner's. */
 const ownerMadeTask = (issue) => ownerMade(issue, runnerMade(issue?.id));
 const trialNoTap = (issue, grants) => trialNoTapBy(issue, grants, runnerMade(issue?.id));
 
@@ -3101,7 +3101,7 @@ function checkedText(command, v, used) {
 
 // Fleet changes (Platform Engineer): when a run ends with a change on the instance repo's task branch, the runner shows the
 // diff and files it as an approval card; on the tap, applyApproved() lands exactly that commit on main and runs
-// ops/apply-config.sh on this host. Only instance config may differ from main (apply.mjs), so a prompt-injected edit to a
+// ops/apply-config.sh on this host. Only instance config may differ from main (apply.ts), so a prompt-injected edit to a
 // script can't run here; the push can't force.
 
 /**
@@ -3575,7 +3575,7 @@ async function startJob({ issue, instructions }) {
     const helper = repoHelper.register(tools, helperToken);
     const sessionId = resumed ? state.task(issue.id).session_id : undefined;
     const startedAt = Date.now();
-    // The job's gateway credential comes from its agent, task and start time: `aidenhq advise` mints the same one (advise.mjs).
+    // The job's gateway credential comes from its agent, task and start time: `aidenhq advise` mints the same one (advise.ts).
     const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, at: startedAt }, box });
     // What the next runner needs to adopt the run and finish its turn after a restart.
     tools.run = { pid: run.pid, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, agentId, repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
@@ -4234,7 +4234,7 @@ async function prepareWorkspace(issue, task, { clone = true, copy = false } = {}
   return workspace;
 }
 
-/** `aidenhq advise "<brief>"`: a second opinion from the advisor (src/advise.mjs), at most 5 per job. Changes nothing. */
+/** `aidenhq advise "<brief>"`: a second opinion from the advisor (src/advise.ts), at most 5 per job. Changes nothing. */
 async function agentAdvise(ctx, args) {
   const advice = await jobAdvise(ctx, args.brief, { cfg, save: saveTools });
   log("advisor consulted", { issue: ctx.issue.identifier });

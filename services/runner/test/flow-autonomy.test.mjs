@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
-import { State } from "../src/state.mjs";
+import { State } from "../src/state.ts";
 
 // Three independent conversations, each its own runner on its own fake GitHub, side by side.
 describe("flow-autonomy", { concurrency: true }, () => {

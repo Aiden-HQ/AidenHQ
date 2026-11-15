@@ -1,4 +1,4 @@
-// The duplicate-card guard's check (evidence.mjs onMain): a change already on the target's main, by ancestry or identical
+// The duplicate-card guard's check (evidence.ts onMain): a change already on the target's main, by ancestry or identical
 // files, is satisfied; a real change is not.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { guardBranch, onMain } from "../src/evidence.mjs";
+import { guardBranch, onMain } from "../src/evidence.ts";
 import { git } from "../src/git.mjs";
 
 test("already on main by ancestry or identical files; a real change is not", async (t) => {

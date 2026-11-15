@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { bumpTitle, definitionsOf, strayFiles, trialHandbookOnly, untrialedNewAgents } from "../src/apply.mjs";
+import { bumpTitle, definitionsOf, strayFiles, trialHandbookOnly, untrialedNewAgents } from "../src/apply.ts";
 
 test("only instance config can be applied", () => {
   assert.deepEqual(strayFiles(["instance.yaml", "apps.yaml", "agents/chief-of-staff.md", "agents/review-chaser/agent.yaml", "agents/review-chaser/AGENTS.md"]), []);
@@ -24,7 +24,7 @@ test("apply-config reads the pin with the same parser (CLI), in every form YAML 
   for (const line of [`product: ${sha}`, `product: "${sha}"`, `product: '${sha}'  # pinned`]) {
     const f = join(mkdtempSync(join(tmpdir(), "pin-")), "instance.yaml");
     writeFileSync(f, `${line}\nmodules: []\n`);
-    assert.equal(execFileSync("node", [new URL("../src/apply.mjs", import.meta.url).pathname, "product-pin", f], { encoding: "utf8" }), sha);
+    assert.equal(execFileSync("node", [new URL("../src/apply.ts", import.meta.url).pathname, "product-pin", f], { encoding: "utf8" }), sha);
   }
 });
 test("paused Engineers are not assignment targets", async () => {
@@ -54,7 +54,7 @@ test("the trial exception: only handbook edits to agents in trial (on main) land
   assert.equal(trialHandbookOnly([], {}), false);
 });
 test("the no-tap path is only for tasks the owner or the Architect (by the grants table's role) started", async () => {
-  const { trialNoTapBy } = await import("../src/apply.mjs");
+  const { trialNoTapBy } = await import("../src/apply.ts");
   const grants = { agents: { arch: { key: "architect", roles: ["architect"] }, cos: { key: "chief-of-staff", roles: ["fleet-admin"] } } };
   assert.equal(trialNoTapBy({ createdByUserId: "u1", createdByAgentId: null }, grants), true);
   assert.equal(trialNoTapBy({ createdByUserId: null, createdByAgentId: "arch" }, grants), true);
@@ -65,7 +65,7 @@ test("the no-tap path is only for tasks the owner or the Architect (by the grant
   assert.equal(trialNoTapBy({ createdByUserId: "u1", createdByAgentId: null }, grants, true), false, "runner-made: a card");
 });
 test("only the Architect's follow-ups on a task it created count as a request (review rounds with the Fleet Engineer)", async () => {
-  const { architectFollowUps } = await import("../src/apply.mjs");
+  const { architectFollowUps } = await import("../src/apply.ts");
   const grants = { agents: { arch: { roles: ["architect"] }, cos: { roles: ["fleet-admin"] } } };
   const notes = [{ id: "1", authorAgentId: "arch" }, { id: "2", authorAgentId: "cos" }];
   assert.deepEqual(architectFollowUps(notes, "arch", grants).map((c) => c.id), ["1"]);
@@ -81,7 +81,7 @@ test("only the Architect's follow-ups on a task it created count as a request (r
   assert.deepEqual(architectFollowUps(notes, "arch", grants, { reopened: true }).map((c) => c.id), ["1"], "an owner-approved task: still only its delegator");
 });
 test("trial is read as YAML, like compile", async () => {
-  const { isTrial } = await import("../src/apply.mjs");
+  const { isTrial } = await import("../src/apply.ts");
   assert.equal(isTrial("trial: true\n"), true);
   assert.equal(isTrial("trial: yes\n"), false);
   assert.equal(isTrial("name: x\n# trial: true\n"), false);
@@ -122,7 +122,7 @@ test("a graduation card lists the handbook edits that landed during the trial; o
   const { mkdtempSync, writeFileSync, mkdirSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { tmpdir } = await import("node:os");
-  const { trialEditsText } = await import("../src/apply.mjs");
+  const { trialEditsText } = await import("../src/apply.ts");
   const g = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: "pipe", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).toString().trim();
   const w = mkdtempSync(join(tmpdir(), "trialedits-"));
   g(w, "init", "-q", "-b", "main");
@@ -172,7 +172,7 @@ const holdLock = async (dir, ms) => {
 };
 
 test("a land that meets a held apply lock waits it out, then applies", async () => {
-  const { applyIsBusy, applyWaitingForLock } = await import("../src/apply.mjs");
+  const { applyIsBusy, applyWaitingForLock } = await import("../src/apply.ts");
   const dir = await checkoutWithLock();
   const holder = await holdLock(dir, 2500);
   assert.equal(await applyIsBusy(dir), true, "the lock is held before the land starts");
@@ -192,7 +192,7 @@ test("a land that meets a held apply lock waits it out, then applies", async () 
 });
 
 test("an apply lock not released within the bound stops waiting and says it timed out, naming the lock", async () => {
-  const { applyWaitingForLock } = await import("../src/apply.mjs");
+  const { applyWaitingForLock } = await import("../src/apply.ts");
   const dir = await checkoutWithLock();
   const holder = await holdLock(dir, 5000);
   const start = Date.now();
@@ -207,14 +207,14 @@ test("an apply lock not released within the bound stops waiting and says it time
 });
 
 test("an apply that fails for its own reason is neither waited on nor relabelled", async () => {
-  const { applyWaitingForLock } = await import("../src/apply.mjs");
+  const { applyWaitingForLock } = await import("../src/apply.ts");
   const dir = await checkoutWithLock();
   const out = await applyWaitingForLock(async () => ({ ok: false, text: "refusing: .env has no AIDENHQ_INSTANCE_DIR\n" }), dir, { boundMs: 5000, pollMs: 50 });
   assert.deepEqual(out, { ok: false, text: "refusing: .env has no AIDENHQ_INSTANCE_DIR\n" });
 });
 
 test("the bound alone ends the wait: a lock that keeps being refused is not retried forever because a probe saw it free", async () => {
-  const { applyWaitingForLock } = await import("../src/apply.mjs");
+  const { applyWaitingForLock } = await import("../src/apply.ts");
   // No holder at all: every probe reports the lock free, and the apply refuses on the lock each time anyway -- another
   // apply took it between the probe and the attempt. The bound has to end it, not the probe.
   const dir = await checkoutWithLock();
