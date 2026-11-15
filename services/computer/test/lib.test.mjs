@@ -160,6 +160,12 @@ test("repo-checkout's snapshot leaves out every .aidenhq/ folder", (t) => {
   assert.ok(existsSync(join(dest, "src/app.ts")));
   assert.ok(!existsSync(join(dest, ".aidenhq")), "the top-level .aidenhq/ is left out");
   assert.ok(!existsSync(join(dest, "web/.aidenhq")), "and a nested one");
+  // Most repositories have no .aidenhq/ at all: the exclude matching nothing must not fail the archive.
+  execFileSync("git", ["-C", repo, "rm", "-rq", ".aidenhq", "web/.aidenhq"]);
+  execFileSync("git", ["-C", repo, "-c", "user.email=a@example.com", "-c", "user.name=a", "-c", "commit.gpgsign=false", "commit", "-qm", "plain"]);
+  const plain = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  execFileSync("sh", ["-c", UNTAR_SCRIPT, "sh", dest], { input: execFileSync("git", archiveArgs(repo, plain)) });
+  assert.ok(existsSync(join(dest, "src/app.ts")));
 });
 
 test("repo-checkout reads this run's token from the launcher's file, never a stale env value", () => {
