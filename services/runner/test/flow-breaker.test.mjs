@@ -36,7 +36,7 @@ describe("flow-breaker", { concurrency: 1 }, () => {
     Object.assign(card, { state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest", decidedAt: new Date(Date.now() + 3600_000).toISOString(), reviewCode: "out_of_scope", review: "second.txt isn't part of the request." });
     return card;
   };
-  const notices = () => t.partComments().filter((c) => /Stopped: the same failure twice/.test(c));
+  const notices = () => t.paperclip.comments.get("parent").map((c) => c.body).filter((c) => /Stopped: the same failure twice/.test(c)); // an outcome: on the parent
 
   it("the same change rejected twice for the same reason stops the task until the next word on it", async () => {
     await t.settled();
@@ -68,6 +68,7 @@ describe("flow-breaker", { concurrency: 1 }, () => {
     await t.waitFor("the run's end", () => t.reviews().length > n);
     assert.match(t.toolRuns().at(-1).out, /stopped, the same failure twice/, t.toolRuns().at(-1).out);
     assert.equal(t.paperclip.approvals.size, 2, "nothing more filed");
+    assert.ok(!t.output.includes(`"msg":"rejection sent back","approval":"${second.id}"`), "a stopped task isn't sent back to its Engineer");
 
     // The next word on the task lifts the stop.
     t.step("none\naidenhq pr acme/app feat/second");

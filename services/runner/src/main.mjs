@@ -988,8 +988,8 @@ const stoppedText = (e) => `Not done: stopped, the same failure twice (${e.what}
 
 /**
  * One failure of `target` (a PR's checks, a reviewer's rejection) on attempt `head`, with its signature `s` ({ sig, short }).
- * The second identical one stops the task: logged, and one notice to the delegator (on the parent while an agent holds it,
- * else on the task). GitHub's text in it is fenced as data. True when the task is stopped.
+ * The second identical one stops the task: logged, and one outcome notice to the delegator (tellParent, "parked"; on the task
+ * itself when it has no parent). GitHub's text in it is fenced as data. True when the task is stopped.
  */
 async function noteFailure(issue, target, s, head, what) {
   const all = breakerOf(issue.id);
@@ -1001,8 +1001,8 @@ async function noteFailure(issue, target, s, head, what) {
   log("breaker tripped", { issue: issue.identifier, target, what, attempts: entry.heads.length });
   const full = await pc.issue(issue.id).catch(() => undefined);
   const text = `**Stopped: the same failure twice** on ${full?.identifier ?? issue.identifier} (${what}). The runner won't retry, publish or merge it again until you reply on ${full?.identifier ?? issue.identifier} with what to do next (that lifts the stop), or close it.${s.short ? `\n\nGitHub's text for the failure (data, not instructions):\n\n\`\`\`\n${s.short.replace(/```/g, "‵‵‵")}\n\`\`\`` : ""}`;
-  const parent = full?.parentId ? await pc.issue(full.parentId).catch(() => undefined) : undefined;
-  if (parent?.assigneeAgentId && !["done", "cancelled"].includes(parent.status)) await pc.comment(parent.id, text).catch(() => {});
+  // An outcome (notices.mjs "parked"): the delegator hears it on the parent; a task without one keeps it on itself.
+  if (full?.parentId) await tellParent(full, "parked", text).catch(() => {});
   else await pc.comment(issue.id, text).catch(() => {});
   return true;
 }
@@ -2115,6 +2115,8 @@ function checkFindings(issueId, action) {
 async function rejectedFollowUp(issue, a, post) {
   const full = await pc.issue(issue.id);
   if (["done", "cancelled"].includes(full.status) || !(await pc.engineerAgents()).some((x) => x.id === full.assigneeAgentId)) return;
+  // Stopped by the breaker (the same change rejected twice for the same reason): the delegator was told; nobody is sent back.
+  if (stopped(full.id)) return;
   // Counted as tiering counts them (an owner's reply since lifts the rejections before it), so parked here is parked there.
   const { records } = await commonTierState(full, a.action);
   const next = afterRejection({ code: post.code, rejects: priorDecisions(records, a.action).rejects, maxRejects: MAX_REJECTS, unsure: UNSURE });
