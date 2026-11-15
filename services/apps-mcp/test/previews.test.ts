@@ -89,6 +89,19 @@ describe("PR previews", () => {
     expect(s.store.previews().map((r) => r.pr)).toEqual([5, 6, 8]);
   });
 
+  it("a comment GitHub refused is posted on a later tick, without redeploying", async () => {
+    const s = setup();
+    const comment = s.d.github.comment;
+    s.d.github.comment = async () => { throw new Error("502"); };
+    s.setOpen([pr(6)]);
+    await previewTick(s.d);
+    s.d.github.comment = comment;
+    const ups = s.calls.filter((c) => c.includes("up")).length;
+    await previewTick(s.d);
+    expect(s.comments.map((c) => c.pr)).toEqual([6]);
+    expect(s.calls.filter((c) => c.includes("up")).length).toBe(ups);
+  });
+
   it("the deploy loop's reap leaves previews alone", async () => {
     const s = setup();
     s.setOpen([pr(6)]);

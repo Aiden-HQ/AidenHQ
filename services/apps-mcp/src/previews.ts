@@ -113,11 +113,31 @@ function placeholders(d: PreviewDeps, app: App): void {
     if (!existsSync(`${d.secretsDir}/${app.name}/${k}`)) put(`${d.secretsDir}/${app.name}`, k, randomBytes(24).toString("hex"));
 }
 
+/**
+ * The PR's one comment on its preview, posted or edited. One never posted is tried again next tick; a failed edit is left
+ * (the comment there still has the preview's URL, which doesn't change).
+ */
+async function say(d: PreviewDeps, app: App, pr: OpenPr, row: PreviewRow, why?: string): Promise<void> {
+  try {
+    const id = await d.github.comment(app.repo, pr.number, body(app, pr, d.url(previewApp(app, pr.number, row.port)), why), row.comment_id);
+    d.store.putPreview({ ...row, comment_id: id });
+  } catch (e) {
+    d.log.warn({ app: app.name, pr: pr.number, err: short(e) }, "preview comment failed");
+  }
+}
+
+/** The apps' tailnet node, never fatal here: the next sync (any tick) puts it right. */
+const sync = (d: PreviewDeps) => d.syncEdge().catch((e) => d.log.warn({ err: short(e) }, "preview: apps node sync failed"));
+
 async function deployOne(d: PreviewDeps, app: App, pr: OpenPr): Promise<void> {
   const name = previewName(app.name, pr.number);
   const rows = d.store.previews();
   const row = rows.find((r) => r.name === name);
-  if (row && row.sha === pr.sha && (row.status === "healthy" || row.status === "failed")) return; // this head is done
+  if (row && row.sha === pr.sha && (row.status === "healthy" || row.status === "failed")) {
+    // This head is done; a comment that didn't go through is said now (a failure's reason isn't kept).
+    if (row.comment_id === null) await say(d, app, pr, row, row.status === "failed" ? "it didn't build, start or get healthy" : undefined);
+    return;
+  }
   const port = row?.port ?? freePort(d, rows);
   if (!port) return d.log.warn({ app: app.name, pr: pr.number }, "no free preview port");
   const pa = previewApp(app, pr.number, port);
@@ -131,22 +151,18 @@ async function deployOne(d: PreviewDeps, app: App, pr: OpenPr): Promise<void> {
   } catch (e) {
     r = { ok: false, why: `it couldn't be prepared (${short(e)})` };
   }
-  d.store.putPreview({ ...base, status: r.ok ? "healthy" : "failed" });
-  if (r.ok || row?.status === "healthy") await d.syncEdge();
+  const done: PreviewRow = { ...base, status: r.ok ? "healthy" : "failed" };
+  d.store.putPreview(done);
+  if (r.ok || row?.status === "healthy") await sync(d);
   d.log.info({ app: app.name, pr: pr.number, sha: pr.sha, ok: r.ok }, "preview deployed");
-  try {
-    const id = await d.github.comment(app.repo, pr.number, body(app, pr, d.url(pa), r.why), base.comment_id);
-    d.store.putPreview({ ...base, status: r.ok ? "healthy" : "failed", comment_id: id });
-  } catch (e) {
-    d.log.warn({ app: app.name, pr: pr.number, err: short(e) }, "preview comment failed");
-  }
+  await say(d, app, pr, done, r.why);
 }
 
 /** Removes one preview and everything it had; its row goes last, so a failure is retried next tick. */
 async function teardown(d: PreviewDeps, r: PreviewRow): Promise<void> {
   if (!PREVIEW_NAME.test(r.name)) throw new Error(`${r.name} is not a preview`);
   d.store.putPreview({ ...r, status: "removing" });
-  await d.syncEdge(); // the apps' tailnet node leaves its network first: `down` can't remove a network still in use
+  await sync(d); // the apps' tailnet node leaves its network first: `down` can't remove a network still in use
   await d.engine.remove({ name: r.name, host: "local" } as App);
   if (existsSync(`${d.secretsDir}/${r.name}/DATABASE_URL`)) await d.dropDb(r.name);
   rmSync(`${d.secretsDir}/${r.name}`, { recursive: true, force: true });
