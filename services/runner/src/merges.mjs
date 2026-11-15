@@ -924,6 +924,13 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
         p.head = pr.headRefOid; // GitHub's update of the bound head: its checks have to pass on it now
         d = eachDecision(pr, p);
       }
+      // The design reviewer is asked once per head, as soon as a UI head has no verdict: its review needs no green checks (it
+      // looks at its own screenshots), so it runs beside CI rather than after it (the caller files its task and wakes it).
+      const verdict = designReview(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup).state;
+      if (["wait", "update"].includes(d.do) && !pr.isDraft && pr.headRefOid === p.head && p.reviewAsked !== pr.headRefOid && (p.ui ?? prTouchesUi(pr)) && verdict !== "success" && verdict !== "failure") {
+        p.reviewAsked = pr.headRefOid;
+        wake.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid });
+      }
       if (d.do === "retier") {
         // Not the runner's head nor GitHub's update of it: out of this queue, back to the caller to be tiered again.
         queue.prs.splice(queue.prs.indexOf(p), 1);
@@ -950,11 +957,6 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
         }
       } else if (d.do === "wait") {
         wait(`${pr.headRefOid}:${d.key ?? d.why}`, d.why, d.limit, d.again);
-        // The design reviewer is asked once per head, when the merge starts waiting on it (the caller files its task).
-        if (d.again && p.status === "pending" && p.reviewAsked !== pr.headRefOid) {
-          p.reviewAsked = pr.headRefOid;
-          wake.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid });
-        }
       }
       else if (d.do === "ready") {
         await github.markReady(pr.id, p.repo);
