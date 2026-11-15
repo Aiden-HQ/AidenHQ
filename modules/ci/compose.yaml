@@ -29,8 +29,8 @@ services:
         ./config.sh --unattended --ephemeral --disableupdate --url "$$RUNNER_URL" --token "$$RUNNER_TOKEN" --name "aidenhq-$$(hostname)" --labels aidenhq --work _work
         unset RUNNER_TOKEN
         exec ./run.sh
-    cpus: 2
-    mem_limit: 4g
+    cpus: 4
+    mem_limit: 8g
     pids_limit: 2048
     dns: [ 1.1.1.1, 8.8.8.8 ] # the host's resolver is off limits on aidenhq-ci
     networks:
