@@ -481,6 +481,14 @@ const designReviewer = () => Object.entries(readGrants()?.agents ?? {}).find(([,
  * PR still gets its review. An event, so the review starts now rather than at the next heartbeat. Once per head (runner state,
  * whichever path asked first); fixed text only. A later head of the same PR (the fix) is a re-review (owner, 2026-11-14: no long
  * back-and-forth): its task names the earlier reviews and asks only whether the blockers they named are fixed.
+ *
+ * Filing the task is not starting it: Paperclip never dispatches a task that arrives already assigned, so the reviewer's own
+ * 4-hourly heartbeat was the only thing that picked it up (owner, 2026-11-15). The runner therefore wakes it as any task does,
+ * with one comment on the new task: that is Paperclip's task-scoped wake, the one the board's wake-ups use (`wake.ts`) and a
+ * direct `POST /api/agents/:id/wakeup` deliberately isn't (its reason never reaches the prompt, and it wakes whatever task the
+ * agent holds). Once per head: the `asked:` state files one task and one wake per head, so a second sighting while the review
+ * is in flight starts nothing, and the wake reads the PR first: a head that merged, closed or moved on while the task was
+ * filed wakes nobody.
  */
 async function fileDesignReviewTask(pr, { waits = true } = {}) {
   const reviewer = designReviewer();
@@ -507,6 +515,17 @@ async function fileDesignReviewTask(pr, { waits = true } = {}) {
   state.set(`reviewed:${prKey}`, [...(earlier ? earlier.split("; ") : []), `${issue.identifier} (head \`${pr.head}\`)`].slice(-3).join("; "));
   state.set(`runner-made:${issue.id}`, new Date().toISOString());
   log("design review task filed", { pr: pr.url, head: pr.head, issue: issue.identifier, waits });
+  // Wake it now: one comment on the task is Paperclip's task-scoped wake (as the board's notices are), and its text reaches
+  // the reviewer's prompt, which a bare agent wake's never does. Only while the head is still the one to review: one that
+  // merged, closed or moved on while this was filed wakes nobody. A PR the runner can't read is not "gone": its task is
+  // woken for, as before.
+  const current = (await mergeGithub.pr(pr.repo, pr.number).catch(() => null))?.repository?.pullRequest;
+  const gone = current ? merges.supersededDesignReview({ repo: pr.repo, number: pr.number, head: pr.head }, current) : undefined;
+  if (gone) log("design review not woken: its head is gone", { pr: pr.url, head: pr.head, issue: issue.identifier, why: gone });
+  else
+    await pc
+      .comment(issue.id, `Start now: this review is waiting on you, and the PR is not reviewed until you set \`design-review\` on head \`${pr.head.slice(0, 12)}\`. ${pr.url}`)
+      .catch((err) => log("design review wake failed", { issue: issue.identifier, pr: pr.url, err: String(err.message ?? err).slice(0, 300) }));
   // The head it supersedes is no longer waiting on anyone: its task closes now, not when someone notices.
   await closeSupersededDesignReviews().catch((err) => log("superseded design review check failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 200) }));
 }
