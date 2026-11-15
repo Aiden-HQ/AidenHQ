@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it, test } from "node:test";
 import { classify } from "../src/tiers.mjs";
-import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, findPrs, finishedStatus, newQueue, prDecision, startOrResume, supersededDesignReview, touchesUi, WRITES, withGate, ciState, namedChecks } from "../src/merges.mjs";
+import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, environmentFailure, environmentReceipt, findPrs, finishedStatus, jobFor, newQueue, prDecision, startOrResume, supersededDesignReview, touchesUi, WRITES, withGate, ciState, namedChecks } from "../src/merges.mjs";
+import { prAttention } from "../src/product-prs.mjs";
 
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
 const red = { state: "FAILURE", contexts: { nodes: [{ __typename: "StatusContext", context: "buildkite/deploy", state: "FAILURE" }] } };
@@ -55,6 +56,11 @@ function fakeGithub(prs, commits = {}, bases = {}) {
     // Re-runs: kept outside any queue, as the runner keeps them in its state. `reviewComments`: the code-review gate's comment by PR.
     reran: {},
     reviewComments: {},
+    // A check's job by name: `jobs` answers { steps, annotations }, as GitHub's REST read of a job and its annotations does.
+    jobs: {},
+    async job(repo, check) {
+      return this.jobs[check.name] ?? { steps: [{ name: "Run tests" }], annotations: [] };
+    },
     reruns(repo, number) {
       return this.reran[number] ?? {};
     },
@@ -662,6 +668,130 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     card.prs[2] = at1(2, [tests, run("image-scan", "SUCCESS", 21, 200), run("lint", "SUCCESS", 23, 200)], pr);
     await advance(cq, { github: card, now: at(3) });
     assert.deepEqual(card.writes.at(-1), { merge: 2, sha: H, method: "squash" });
+  });
+
+  // A job GitHub refused to start (billing, a spending limit) is the environment's, not the commit's: it is re-run once at the
+  // same head, then reported with GitHub's annotation, and the head never moves.
+  it("a check that never started is environmental, not a failure: re-run once at the head, then reported, never rebased", async () => {
+    const H = "ab12".repeat(10);
+    const billing = "The job was not started because recent account payments have failed or your spending limit needs to be increased.";
+    const run = (name, conclusion, databaseId, wf = 100) => ({ __typename: "CheckRun", name, status: conclusion ? "COMPLETED" : "IN_PROGRESS", conclusion, databaseId, checkSuite: { workflowRun: { databaseId: wf } } });
+    const rolled = (nodes) => head({ state: nodes.some((c) => c.conclusion === "FAILURE") ? "FAILURE" : "SUCCESS", contexts: { nodes } });
+    const prAt = (n, nodes) => own(n, { headRefOid: H, mergeStateStatus: "UNSTABLE", ...rolled(nodes) });
+    const green = run("services/runner", "SUCCESS", 1);
+    const each = () => addEach(undefined, [{ repo: "o/r", number: 1, url: "u1", head: H }], { now: at(0) });
+
+    // Every red check is a job with no steps and an infrastructure annotation: it is re-run at this head, no new head.
+    const gh = fakeGithub({ 1: prAt(1, [green, run("image-scan", "FAILURE", 20, 200)]) });
+    gh.jobs = { "image-scan": { steps: [], annotations: [{ annotation_level: "failure", message: billing }, { annotation_level: "notice", message: "The ubuntu-latest label will migrate" }] } };
+    const q = each();
+    const first = await advance(q, { github: gh, now: at(0) });
+    assert.deepEqual(gh.writes, [{ rerun: 200, checks: ["image-scan"] }], "the failed job, at the same head");
+    assert.deepEqual(first.fixes, [], "no fix asked of the Engineer");
+    assert.equal(q.prs[0].status, "pending", "still waiting, not failed");
+    assert.equal(q.prs[0].head, H, "the head never moved");
+    assert.equal(first.done, undefined);
+
+    // The new job never started either: the second identical cause is final, reported once with the annotation and no code ask.
+    gh.prs[1] = prAt(1, [green, run("image-scan", "FAILURE", 21, 200)]);
+    const step = await advance(q, { github: gh, now: at(1) });
+    assert.equal(step.done, "stopped");
+    assert.equal(q.prs[0].status, "failed");
+    assert.match(q.prs[0].note, /blocked by the environment: image-scan never started/);
+    assert.doesNotMatch(q.prs[0].note, /named check|failed check/, "never read as a failing check");
+    const said = step.say.join("\n");
+    assert.match(said, /`image-scan` never started/);
+    assert.match(said, /head is not at fault/);
+    assert.match(said, /spending limit needs to be increased/, "GitHub's annotation, quoted");
+    assert.match(said, /rebase or a new head would change nothing/);
+    assert.doesNotMatch(said, /has failing checks|named check\(s\) failed/);
+    assert.deepEqual(gh.writes, [{ rerun: 200, checks: ["image-scan"] }], "no second re-run, no merge, no push");
+    assert.equal(q.prs[0].head, H);
+    // Polling the same head again says nothing more and asks for nothing.
+    const again = await advance(q, { github: gh, now: at(5) });
+    assert.deepEqual(again.say, []);
+
+    // A job that ran a step is a real failure, as before: reported to the Engineer, not re-run.
+    const real = fakeGithub({ 1: prAt(1, [green, run("image-scan", "FAILURE", 30, 300)]) });
+    real.jobs = { "image-scan": { steps: [{ name: "Build and scan" }], annotations: [{ annotation_level: "failure", message: "fixable high or critical vulnerabilities" }] } };
+    const rstep = await advance(each(), { github: real, now: at(0) });
+    assert.deepEqual(real.writes, []);
+    assert.equal(rstep.fixes.length, 1);
+    assert.match(rstep.say[0], /named check\(s\) failed on its head/);
+
+    // The gate's own roll-up doesn't make it environmental: it only rolls up the check beneath it.
+    const gated = fakeGithub({ 1: prAt(1, [green, run("image-scan", "FAILURE", 40, 400), run("ci-required", "FAILURE", 41, 401)]) });
+    gated.jobs = { "image-scan": { steps: [], annotations: [{ annotation_level: "failure", message: billing }] } };
+    const g1 = await advance(each(), { github: gated, now: at(0) });
+    assert.deepEqual(gated.writes, [{ rerun: 400, checks: ["image-scan"] }], "only the job that never ran");
+    assert.deepEqual(g1.fixes, []);
+  });
+
+  it("a check that never started is re-run once in a card queue too, and no head is published for it", async () => {
+    const H = "cd34".repeat(10);
+    const run = (name, conclusion, databaseId, wf = 100) => ({ __typename: "CheckRun", name, status: conclusion ? "COMPLETED" : "IN_PROGRESS", conclusion, databaseId, checkSuite: { workflowRun: { databaseId: wf } } });
+    const nodes = [run("tests", "SUCCESS", 1), run("image-scan", "FAILURE", 20, 200)];
+    const gh = fakeGithub({ 2: pr(2, { headRefOid: H, mergeStateStatus: "UNSTABLE", ...head({ state: "FAILURE", contexts: { nodes } }) }) });
+    gh.jobs = { "image-scan": { steps: [], annotations: [{ annotation_level: "failure", message: "recent account payments have failed" }] } };
+    const q = newQueue([{ repo: "o/r", number: 2, url: "u2", head: H }], { gapMinutes: 0, now: at(0) });
+    const first = await advance(q, { github: gh, now: at(0) });
+    assert.equal(q.state, "running", "waiting on its re-run");
+    assert.deepEqual(gh.writes, [{ rerun: 200, checks: ["image-scan"] }], "re-run at the head the card approved");
+    assert.doesNotMatch(first.say.join(""), /failing checks/);
+    assert.equal(q.prs[0].head, H, "the approved head, unchanged");
+    // The re-run never started again: one receipt, no merge, no second re-run, and the head still the card's.
+    gh.prs[2] = pr(2, { headRefOid: H, mergeStateStatus: "UNSTABLE", ...head({ state: "FAILURE", contexts: { nodes: [run("tests", "SUCCESS", 1), run("image-scan", "FAILURE", 21, 200)] } }) });
+    const second = await advance(q, { github: gh, now: at(1) });
+    assert.equal(second.done, "stopped");
+    assert.match(second.say.at(-1), /`image-scan` never started/);
+    assert.match(second.say.at(-1), /head is not at fault/);
+    assert.match(second.say.at(-1), /recent account payments have failed/, "GitHub's annotation");
+    assert.doesNotMatch(second.say.at(-1), /has failing checks|named check\(s\) failed/);
+    assert.deepEqual(gh.writes, [{ rerun: 200, checks: ["image-scan"] }]);
+    assert.equal(q.prs[0].head, H);
+  });
+
+  it("the product watcher asks for a rebase only when the red checks are the commit's: never for one that never started", () => {
+    const H = "ef56".repeat(10);
+    const run = (name, conclusion) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion });
+    const openPr = (nodes) => ({ mergeable: "MERGEABLE", headRefOid: H, commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { nodes } } } }] } });
+    const green = { state: "SUCCESS", contexts: { nodes: [run("tests", "SUCCESS")] } };
+    const env = [{ name: "image-scan", note: "The job was not started because recent account payments have failed" }];
+    // A job that never started: re-run at this head, never a rebase — even though `ci-required` rolls it up red.
+    assert.deepEqual(prAttention(openPr([run("tests", "SUCCESS"), run("image-scan", "FAILURE"), run("ci-required", "FAILURE")]), green, env), { do: "environment", checks: env });
+    // A real failure beside it: a rebase, as before (the environment's checks are not what is red).
+    assert.deepEqual(prAttention(openPr([run("tests", "FAILURE"), run("image-scan", "FAILURE")]), green, env), { do: "rebase", why: "red" });
+    // Green: nothing.
+    assert.equal(prAttention(openPr([run("tests", "SUCCESS")]), green, []), undefined);
+    // Behind a red main, nothing either: the base is not known green.
+    assert.equal(prAttention(openPr([run("tests", "FAILURE")]), { state: "FAILURE", contexts: { nodes: [] } }, []), undefined);
+    // A conflict still asks for the rebase, environment or not.
+    assert.deepEqual(prAttention({ ...openPr([]), mergeable: "CONFLICTING" }, green, env), { do: "rebase", why: "conflict" });
+  });
+
+  it("a check with a step run, or no annotation, is a real failure: only a job that never started with an infra note is environmental", async () => {
+    const H = "0123".repeat(10);
+    const check = { __typename: "CheckRun", name: "image-scan", status: "COMPLETED", conclusion: "FAILURE", databaseId: 20, checkSuite: { workflowRun: { databaseId: 200 } } };
+    const p = { headRefOid: H, commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { nodes: [check] } } } }] } };
+    const gh = (job) => ({ job: async () => job });
+    // A check run's id is not its Actions job's: the run's own job listing links back to the check run, and that decides.
+    assert.equal(jobFor([{ id: 900, name: "image-scan", check_run_url: "https://api.github.com/repos/o/r/check-runs/20" }], check)?.id, 900, "the job behind the check run");
+    assert.equal(jobFor([{ id: 901, name: "image-scan", check_run_url: "https://api.github.com/repos/o/r/check-runs/21" }], check)?.id, 901, "name is the fallback when no link matches");
+    assert.equal(jobFor([{ id: 902, name: "lint", check_run_url: "https://api.github.com/repos/o/r/check-runs/22" }], check), undefined, "no job for this check");
+    assert.equal(jobFor([], check), undefined);
+    assert.deepEqual(await environmentFailure(gh({ steps: [], annotations: [{ annotation_level: "failure", message: "billing" }] }), "o/r", p), [{ name: "image-scan", note: "billing", id: 20, run: 200 }]);
+    assert.deepEqual(await environmentFailure(gh({ steps: [{ name: "Build" }], annotations: [{ annotation_level: "failure", message: "billing" }] }), "o/r", p), [], "a step ran: it judged the commit");
+    assert.deepEqual(await environmentFailure(gh({ steps: [], annotations: [] }), "o/r", p), [], "no annotation: nothing says why");
+    assert.deepEqual(await environmentFailure(gh({ steps: [], annotations: [{ annotation_level: "notice", message: "a label moves" }] }), "o/r", p), [], "a notice isn't a failure");
+    assert.deepEqual(await environmentFailure({ job: async () => { throw new Error("404"); } }, "o/r", p), [], "unreadable is a failure of the code");
+    // The receipt names the check and GitHub's annotation, says the head is fine, and asks for no code change.
+    const receipt = environmentReceipt("#51", [{ name: "image-scan", note: "billing" }], H);
+    assert.match(receipt, /blocked by the environment, not the code/i);
+    assert.match(receipt, /`image-scan` never started/);
+    assert.match(receipt, /head is not at fault/);
+    assert.match(receipt, /"billing"/);
+    assert.match(receipt, /rebase or a new head would change nothing/);
+    assert.doesNotMatch(receipt, /fix the cause on the PR|rerun the tests/, "no code action");
   });
 
   // Owner, 2026-11-13 (roadmap-keeper#108 merged an unstyled page while its review was pending): on a UI PR the design review blocks.

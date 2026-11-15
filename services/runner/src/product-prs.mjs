@@ -2,9 +2,9 @@
 // becomes the Platform Engineer's task once its checks have finished, and an agent's open PR that conflicts with the
 // default branch (or went red while behind it) wakes its task once per default-branch commit. Pure: the runner does the I/O.
 // None of this writes to GitHub or decides a tier: it only wakes the Platform Engineer, whose writes are carded as always.
-import { ciState, namedChecks } from "./merges.mjs";
+import { GATE_CHECK, ciState, namedChecks } from "./merges.mjs";
 
-const ROLLUP = "statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } }";
+const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion databaseId checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
 export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
@@ -40,3 +40,18 @@ export function rebaseReason(pr, mainRollup) {
 
 /** The failed checks' names on a PR's head, for the wake-up text. */
 export const redChecks = (pr) => namedChecks(rollupOf(pr)).filter((c) => !c.ok && !c.pending).map((c) => c.name);
+
+/**
+ * What an agent's open PR asks of the runner, from GitHub's view of it and `environment` (the red checks that never started, as
+ * merges.environmentFailure reads them): { do: "environment", checks } — re-run those at this same head, then report GitHub's
+ * annotation, never a rebase; { do: "rebase", why: "conflict" | "red" }; or undefined. It is the environment's only when every
+ * red check is one that never started: one real failure beside them is the commit's, and asks for a rebase as before.
+ */
+export function prAttention(pr, mainRollup, environment = []) {
+  const why = rebaseReason(pr, mainRollup);
+  if (why === "conflict") return { do: "rebase", why };
+  const names = new Set(environment.map((c) => c.name));
+  const red = redChecks(pr).filter((name) => name !== GATE_CHECK);
+  if (red.length && names.size && red.every((name) => names.has(name))) return { do: "environment", checks: environment };
+  return why ? { do: "rebase", why } : undefined;
+}

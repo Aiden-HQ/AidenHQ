@@ -250,6 +250,69 @@ export function codeReviewInfra(body, head) {
 }
 
 /**
+ * The Actions job of a check run among its workflow run's jobs. A check run's own `databaseId` is not an Actions job id: the
+ * job is listed under its run and links back through `check_run_url`, so that link decides, and the job's name is the fallback.
+ */
+export function jobFor(jobs, check) {
+  const id = check?.databaseId;
+  const list = jobs ?? [];
+  return list.find((j) => id && String(j.check_run_url ?? "").endsWith(`/check-runs/${id}`)) ?? list.find((j) => j.name === (check?.name ?? check?.context));
+}
+
+/**
+ * A check whose job never executed a step: GitHub refused to start it (billing, a spending limit) or no runner took it. Nothing
+ * about the commit was judged, so its annotation is a report about the environment. `github.job(repo, check)` answers its job's
+ * steps and failure annotations; a step run, an unreadable job or no annotation is not this. Returns { name, note, id, run }.
+ */
+async function neverStarted(github, repo, n) {
+  if (n.__typename !== "CheckRun" || !n.databaseId || !["FAILURE", "ERROR"].includes(n.conclusion)) return undefined;
+  let job;
+  try {
+    job = await github.job(repo, n);
+  } catch {
+    return undefined;
+  }
+  if (job?.steps?.length) return undefined;
+  const notes = (job?.annotations ?? []).filter((a) => a.annotation_level === "failure").map((a) => String(a.message ?? "")).filter(Boolean);
+  return notes.length ? { name: n.name ?? n.context ?? "a check", note: notes[0], id: n.databaseId, run: n.checkSuite?.workflowRun?.databaseId } : undefined;
+}
+
+/**
+ * The red checks on the PR's head that never started: [{ name, note }] (the annotation is GitHub's text, never the runner's own
+ * words), else [] — one real failure, a check past the page, or a job that ran a step. The aggregate gate check (`ci-required`)
+ * is left out while another check is red: it only rolls those up, so its own redness adds nothing (in the billing case it runs
+ * and fails on the job beneath it).
+ */
+export async function environmentFailure(github, repo, pr) {
+  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+  const red = (rollup?.contexts?.nodes ?? []).filter((n) => !advisory(n) && FAILING.has(n.conclusion ?? n.state));
+  if (!red.length || rollup?.contexts?.pageInfo?.hasNextPage) return [];
+  const own = red.filter((n) => (n.name ?? n.context) !== GATE_CHECK);
+  const out = [];
+  for (const n of own.length ? own : red) {
+    const started = await neverStarted(github, repo, n);
+    if (!started) return [];
+    out.push(started);
+  }
+  return out;
+}
+
+/** The receipt for a merge stopped by checks that never ran: the checks and GitHub's annotation, and no code change asked for. */
+export function environmentReceipt(ref, checks, head, { retried = true } = {}) {
+  const clean = (s) => String(s ?? "").replace(/[\p{Cc}`"]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 240);
+  const list = checks.map((c) => `\`${clean(c.name)}\``).join(", ");
+  const said = [...new Set(checks.map((c) => clean(c.note)).filter(Boolean))].map((w) => `"${w}"`).join(" ");
+  return [
+    `**Blocked by the environment, not the code:** ${ref} is fine. ${checks.length === 1 ? "The check" : "The checks"} ${list} never started, so nothing judged head \`${String(head).slice(0, 12)}\` and the head is not at fault.`,
+    said ? `GitHub's own words: ${said}.` : "",
+    retried
+      ? "It was re-run once at the same head and the same thing happened, so this is the environment, not the code: a rebase or a new head would change nothing."
+      : "GitHub wouldn't re-run it from here, and nothing about the head is at fault: a rebase or a new head would change nothing.",
+    "That has to change outside the repository; the branch needs no change. Ask for the merge again once it has.",
+  ].filter(Boolean).join(" ");
+}
+
+/**
  * Red checks on the PR's head worth one automatic re-run (roadmap-keeper#111, 2026-11-13: its merge failed on a code-review
  * timeout and waited for someone to re-run it). Only when every red check is an Actions job that never judged the commit
  * (INFRA, or code-review's own "didn't finish") and none was re-run on this head already: one real failure fails the merge as
@@ -283,6 +346,38 @@ export async function infraRetry(github, repo, number, pr, reruns = {}) {
 
 /** How long a re-run's new job may take to show on GitHub before the failure stands. */
 const RERUN_SHOWS_MINUTES = 10;
+/**
+ * The environment's answer to red checks that never started, ahead of the plain failure: { wait } while their jobs are re-run
+ * once at this same head, or { stop, names } with the receipt once a re-run came back the same way (or GitHub refused it).
+ * Undefined when the failure is the commit's own, which `retryInfra` and the PR decisions report as before. The head never
+ * moves: nothing here rebases, updates or pushes.
+ */
+export async function environmentRetry(github, repo, number, pr, ref, checks) {
+  checks = checks ?? (await environmentFailure(github, repo, pr));
+  if (!checks.length) return undefined;
+  const head = pr.headRefOid;
+  const reruns = (await github.reruns(repo, number)) ?? {};
+  const shown = checks.map((c) => ({ name: c.name, note: c.note }));
+  const names = checks.map((c) => c.name);
+  // A re-run already happened on this head: a new job that never started again is the second identical cause, final and said
+  // once; the old job still on GitHub is it catching up.
+  if (checks.some((c) => reruns[c.name]?.head === head && reruns[c.name].id !== c.id)) return { stop: environmentReceipt(ref, shown, head), names };
+  if (checks.every((c) => reruns[c.name]?.head === head)) return { wait: RERUN_SHOWS_MINUTES };
+  // Only GitHub's own re-run of the failed jobs: the same head, no new commit. Refused (no Actions permission, or no workflow
+  // run behind the check): say so, don't retry.
+  if (checks.some((c) => !c.run)) return { stop: environmentReceipt(ref, shown, head, { retried: false }), names };
+  const runs = new Map();
+  for (const c of checks) runs.set(c.run, [...(runs.get(c.run) ?? []), { name: c.name, id: c.id }]);
+  for (const [run, list] of runs) {
+    try {
+      await github.rerun(repo, number, { run, checks: list, head });
+    } catch {
+      return { stop: environmentReceipt(ref, shown, head, { retried: false }), names };
+    }
+  }
+  return { wait: RERUN_SHOWS_MINUTES };
+}
+
 /**
  * The merge's answer to red checks: { key, limit } for its wait while they are re-run once (infraRetry), each workflow run's
  * failed jobs in one call; undefined when the failure stands, also when GitHub refuses the re-run (no permission).
@@ -596,6 +691,15 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
       say.push(`Skipped ${next.url}: ${d.why}.`);
       continue;
     }
+    // A red check that never started is the environment's, not the commit's: re-run it at this same head once, and the second
+    // time it stops with GitHub's annotation. Nothing here moves the head.
+    const env = d.do === "stop" && d.red ? await environmentRetry(github, next.repo, next.number, pr, `#${next.number}`) : undefined;
+    if (env?.stop) return stop(env.stop);
+    if (env) {
+      const r = waitOn(next, pr, `pr:${next.number}:${pr.headRefOid}:infra`, `#${next.number}: a check that never started is being re-run once at the same head`, env.wait);
+      if (r !== "next") return r;
+      continue;
+    }
     const retry = d.do === "stop" && d.red ? await retryInfra(github, next.repo, next.number, pr) : undefined;
     if (retry) {
       const r = waitOn(next, pr, `pr:${next.number}:${pr.headRefOid}:${retry.key}`, `#${next.number}: ${RERUN_WAIT[retry.key]}`, retry.limit);
@@ -769,11 +873,22 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
         retier.push({ repo: p.repo, number: p.number, url: p.url });
       } else if (d.do === "skip") Object.assign(p, { status: "skipped", note: d.why });
       else if (d.do === "fail") {
-        const retry = d.red ? await retryInfra(github, p.repo, p.number, pr) : undefined;
-        if (retry) wait(`${pr.headRefOid}:${retry.key}`, RERUN_WAIT[retry.key], retry.limit);
-        else {
-          fail(d.why);
-          if (d.red) fixes.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid, why: d.why });
+        // A check that never started is the environment's: re-run it at this head once, then report GitHub's annotation instead
+        // of a check failure, with nothing for the Engineer to change (no fix wake, no rebase, no new head).
+        const env = d.red ? await environmentRetry(github, p.repo, p.number, pr, p.url) : undefined;
+        if (env?.stop) {
+          Object.assign(p, { status: "failed", note: `blocked by the environment: ${env.names.join(", ")} never started` });
+          delete p.wait;
+          say.push(env.stop);
+        } else if (env) {
+          wait(`${pr.headRefOid}:infra`, "a check that never started is being re-run once at the same head", env.wait);
+        } else {
+          const retry = d.red ? await retryInfra(github, p.repo, p.number, pr) : undefined;
+          if (retry) wait(`${pr.headRefOid}:${retry.key}`, RERUN_WAIT[retry.key], retry.limit);
+          else {
+            fail(d.why);
+            if (d.red) fixes.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid, why: d.why });
+          }
         }
       } else if (d.do === "wait") {
         wait(`${pr.headRefOid}:${d.key ?? d.why}`, d.why, d.limit, d.again);

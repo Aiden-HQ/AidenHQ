@@ -28,7 +28,7 @@ import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBran
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.mjs";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.mjs";
 import * as merges from "./merges.mjs";
-import { OPEN_PRS_QUERY, dependabotDue, isDependabot, rebaseReason, redChecks } from "./product-prs.mjs";
+import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "./product-prs.mjs";
 import { State } from "./state.mjs";
 import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.mjs";
 import { authorize } from "./authorize.mjs";
@@ -421,13 +421,32 @@ async function watchProductPrs() {
   const bot = app ? (await botIdentity()).name.replace(/\[bot\]$/, "") : undefined;
   for (const pr of open) {
     if (isDependabot(pr) || pr.isCrossRepository !== false) continue;
-    const why = rebaseReason(pr, main.rollup);
     const key = `rebase-ping:${pr.url.toLowerCase()}:${main.oid}`;
-    if (!why || state.get(key)) continue;
+    const conflict = pr.mergeable === "CONFLICTING";
+    const red = conflict ? [] : redChecks(pr);
+    if (!conflict && (!red.length || pr.mergeable !== "MERGEABLE")) continue;
+    // This head already stopped on the environment: said once, and nothing in the repository changes that until it moves.
+    if (!conflict && state.get(`environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`)) continue;
     // Only an agent's own PR: one a task here opened, authored by the App's bot where there is one.
     const issueId = state.issuesWithPrs([pr.url], "").at(-1);
     if (!issueId || (bot && pr.author?.login !== bot)) continue;
-    if (why === "red") {
+    // A red check whose job never started (GitHub refused it: billing, no runner) is the environment's: it is re-run at this
+    // same head once and then said once, and it never asks for a rebase or a new head.
+    const env = conflict ? [] : await merges.environmentFailure(mergeGithub, repo, pr).catch((err) => (log("check classification failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 200) }), []));
+    const want = prAttention(pr, main.rollup, env);
+    if (!want) continue;
+    if (want.do === "environment") {
+      const r = await merges.environmentRetry(mergeGithub, repo, pr.number, pr, pr.url, want.checks);
+      const seen = `environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`;
+      // Bounded: the re-run once at this head, then one receipt. A poll that still sees the old job says nothing.
+      if (!r?.stop || state.get(seen)) continue;
+      state.set(seen, new Date().toISOString());
+      log("environment block reported", { pr: pr.url, head: pr.headRefOid, checks: want.checks.map((c) => c.name) });
+      await pc.comment(issueId, r.stop);
+      continue;
+    }
+    if (state.get(key)) continue;
+    if (want.why === "red") {
       const behind = Number((await execFileP(await findRealGh(), ["api", `repos/${repo}/compare/${main.oid}...${pr.headRefOid}`, "--jq", ".behind_by"], await gho(repo, READ))).stdout.trim());
       if (!(behind > 0)) {
         state.set(key, new Date().toISOString()); // red on its own: the merge queue reports that
@@ -435,7 +454,7 @@ async function watchProductPrs() {
       }
     }
     state.set(key, new Date().toISOString());
-    await wakeForRebase(issueId, pr, why, main);
+    await wakeForRebase(issueId, pr, want.why, main);
   }
 }
 
@@ -1154,6 +1173,21 @@ const mergeGithub = {
     const key = `reruns:${repo.toLowerCase()}#${number}`;
     state.set(key, JSON.stringify({ ...JSON.parse(state.get(key) || "{}"), ...Object.fromEntries(checks.map((c) => [c.name, { head, id: c.id }])) }));
     log("checks re-run", { repo, number, run, checks: checks.map((c) => c.name), head });
+  },
+  /**
+   * A check's Actions job: its steps (empty when GitHub never started it: no runner, billing) and its failure annotations
+   * (GitHub's own words about why). The job is listed under the check's workflow run, where it links back to the check run: a
+   * check run's `databaseId` is not a job id. Reads only when a red check has to be classified; an unlisted job is unreadable.
+   */
+  async job(repo, check) {
+    const run = check.checkSuite?.workflowRun?.databaseId;
+    if (!run) return { steps: [], annotations: [] };
+    const { stdout } = await execFileP(await findRealGh(), ["api", "--paginate", `repos/${repo}/actions/runs/${run}/jobs?per_page=100`, "--jq", ".jobs[] | @json"], await gho(repo, READ));
+    const jobs = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const job = merges.jobFor(jobs, check);
+    if (!job?.id) return { steps: [], annotations: [] };
+    const annotations = await execFileP(await findRealGh(), ["api", `repos/${repo}/check-runs/${check.databaseId}/annotations`], await gho(repo, READ)).then((r) => JSON.parse(r.stdout));
+    return { steps: job.steps ?? [], annotations: Array.isArray(annotations) ? annotations : [] };
   },
   /** The code-review gate's comment (its last, by the workflow's bot) says the review never finished on `head`. */
   async codeReviewInfra(repo, number, head) {
