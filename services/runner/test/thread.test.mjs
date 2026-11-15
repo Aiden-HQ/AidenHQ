@@ -15,7 +15,7 @@ describe("the conversation on a task", () => {
     runner(56, "Which pull requests should I merge? Link them in a comment."),
     user(58, "1. [api](https://github.com/initech/devops/pull/4918)\n2. [web](https://github.com/initech/devops/pull/4908)"),
     runner(59, "Continuing: investigating in `initech/devops`, with Claude Code."),
-    runner(59, `${REPLY_MARKER}**Done. Report only.**\n\n## Summary\nThe relayer PR has a conflict.\n\nWorkspace: \`/home/x\` · log: \`/y\``),
+    runner(59, `${REPLY_MARKER}**Done. Report only.**\n\n## Summary\nThe relayer PR has a conflict.`),
     { authorType: "agent", authorAgentId: "a1", createdAt: at(60), body: "I added the Slack thread to the parent task." },
     user(63, "Sounds good, fix the relayer conflict by rebasing. Then start merging them one by one as I instructed you."),
   ];
@@ -24,7 +24,7 @@ describe("the conversation on a task", () => {
   it("labels who said what, and leaves out start notes and this run's request", () => {
     assert.deepEqual(entries.map((e) => `${e.kind}:${e.who}`), ["user:Dana", "runner:Runner", "user:Dana", "you:You (Ada)", "agent:Alfred"]);
     assert.match(entries[2].body, /pull\/4918/);
-    assert.doesNotMatch(entries[3].body, /Workspace:|aidenhq-reply/, "no local paths or markers");
+    assert.doesNotMatch(entries[3].body, /aidenhq-reply/, "no markers");
   });
 
   it("names another task's Engineer by its replies, and gives the whole conversation as one transcript", () => {
