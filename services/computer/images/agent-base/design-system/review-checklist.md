@@ -11,6 +11,8 @@ base: only what the PR introduced blocks, and a finding the base already had is 
    when you can run both), read `report.md` and look at the screenshots of the changed pages once. With a named mockup,
    also put the head beside the mockup's screenshots (`ui-review --baseline <dir of the mockup's screenshots>`, named
    as `ui-review` names its own, writes before|after pictures). Try the main flow the PR touches once; that is enough.
+   Only screenshots taken now, of the app built from the head under review, are evidence: images committed in the
+   repository, attached by others or left from an earlier head show another commit.
 2. **Report:** the verdict, each blocker (screenshot or region, what is broken, the fix), then one short non-blocking
    list. When unsure, it is non-blocking.
 

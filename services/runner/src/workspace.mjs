@@ -215,6 +215,10 @@ export async function ensureRepo(workspace, repo, { cache, remoteUrl = `git@gith
   // Pushing is the runner's job: the clone has no push URL and a pre-push hook that refuses.
   await git(path, "config", "remote.origin.pushurl", "DISABLED_BY_AIDENHQ");
   if (hooksDir) await git(path, "config", "core.hooksPath", hooksDir);
+  // `.aidenhq/` (screenshots, reports, the PR body) is the task's scratch, never the repository's: one committed shows that
+  // run's app to every later reviewer as if it were theirs.
+  mkdirSync(join(path, ".git", "info"), { recursive: true });
+  appendFileSync(join(path, ".git", "info", "exclude"), "\n.aidenhq/\n");
   await git(path, "fetch", "--quiet", "--prune", "origin");
   // The reviewed heads the runner kept for a task that came before this one (refs/reviewed/…): local, never GitHub's.
   await git(path, "fetch", "--quiet", "--no-tags", cache, `+${REVIEWED}/*:${REVIEWED}/*`).catch(() => {});

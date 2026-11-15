@@ -36,7 +36,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, builtImage, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, builtImage, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -373,7 +373,7 @@ async function checkout(who, raw) {
   if (b) { b.busy++; b.lastUsed = Date.now(); }
   try {
     // Piped straight from git to the box (binary; never through docker()'s string buffer).
-    const g = spawn("git", ["-C", cache, "archive", "--format=tar", sha], { env: gitEnv, stdio: ["ignore", "pipe", "pipe"] });
+    const g = spawn("git", archiveArgs(cache, sha), { env: gitEnv, stdio: ["ignore", "pipe", "pipe"] });
     const d = spawn("docker", ["exec", "-i", who.container, "sh", "-c", UNTAR_SCRIPT, "sh", dest], { stdio: ["pipe", "ignore", "pipe"] });
     // A box gone mid-stream (evicted, tar failed) is an EPIPE here: the exit codes report it; it must never crash the launcher.
     for (const s of [g, d, g.stdout, d.stdin]) s.on("error", () => {});
