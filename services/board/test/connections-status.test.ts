@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { connectionStatus, sourceStatus, type ConnectionRow } from "../web/src/connections.js";
+import { connectionsView } from "../src/settings.js";
 
 const at = "2026-11-13T06:00:00Z";
 const row = (over: Partial<ConnectionRow>): ConnectionRow => ({ name: "x", module: "x", kind: "connection", transport: "http x:1", tools: { read: 1, write: 0 }, grants: [], setup: null, probe: null, signIn: null, ...over });
@@ -29,6 +30,21 @@ describe("connection status", () => {
     expect(connectionStatus(row({ name: "jira", signIn: { state: "expired", configured: true, since: at } }), here)).toMatchObject({ status: "signed_out", action: { label: "Reconnect" } });
     // Not set up at all: no Connect button (the setup steps say what to do).
     expect(connectionStatus(row({ name: "glean", signIn: { state: "missing", configured: false, since: at, detail: "GLEAN_MCP_URL not set" } }), here)).toEqual({ status: "not_configured", reason: "GLEAN_MCP_URL not set" });
+  });
+
+  it("a connection that signs in to nothing (local Grafana) is connected, with no Connect or cloud URL fields", () => {
+    const view = connectionsView({
+      compiled: { settings: { grafana_url: { value: "", set: false } }, mcp_servers: { grafana: { url: "http://grafana-mcp:8087/mcp", tools: { read: ["query_prometheus"] } } } },
+      catalog: [{ name: "grafana", enabled: true, connections: ["grafana"], settings: { grafana_url: { default: "", type: "url" }, grafana_mcp_url: { default: "https://mcp.grafana.com/mcp", type: "url" } } }],
+      probes: { grafana: probe({ ok: true, state: "local" }) },
+      signIns: { grafana: { state: "none", configured: true, since: at } },
+      google: null,
+      sources: [],
+      staleSources: new Set(),
+    });
+    const grafana = view.connections.find((r) => r.name === "grafana")!;
+    expect(grafana.urls).toEqual([]);
+    expect(connectionStatus(grafana, phone)).toEqual({ status: "connected", reason: "Answering its health check." });
   });
 
   it("puts an expired Google account ahead of a healthy service", () => {

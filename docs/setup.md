@@ -42,7 +42,11 @@ an `ops/setup.sh` host.
 | GitHub (read) | `gh auth login`, then `scripts/github-auth.sh`. |
 | Primer | Set its URL on the board (Settings, Connections), then `scripts/primer-auth.sh`. |
 | gcloud | `scripts/gcloud-auth.sh`. |
-| Glean, Jira, Grafana, ClickHouse | Set the URL on the board (Settings, Connections) and approve the change, then press Connect (from the host's loopback address). |
+| Glean, Jira, Grafana, ClickHouse | Set the URL on the board (Settings, Connections) and approve the change, then press Connect on the loopback board (below). Grafana with `grafana_source: local` needs no sign-in. |
+
+Sign-ins started on the board (Google, Glean, Jira, Grafana Cloud, ClickHouse) return to the board's loopback address, so start
+them there: on your laptop run `ssh -N -L 3120:127.0.0.1:3120 <you>@<host>`, open `http://127.0.0.1:3120`, sign in to
+the board and press Connect (Settings, Connections).
 
 ## The apps node's tailnet key
 

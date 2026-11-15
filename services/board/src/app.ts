@@ -1389,6 +1389,8 @@ export function createApp(opts: AppOptions): Server {
     },
   ];
 
+  // Where OAuth sign-ins must start: the loopback board, reached from a laptop through an SSH tunnel (docs/setup.md).
+  const TUNNEL = "http://127.0.0.1:3120 through ssh -N -L 3120:127.0.0.1:3120 <you>@<host> from your laptop";
   const googleViaBoard = mode === "lan" && !!opts.lan?.googleConnect && !!opts.lan.url.startsWith("https://");
 
   // ------------------------------------------------------------------ Settings (settings.ts)
@@ -2133,7 +2135,7 @@ export function createApp(opts: AppOptions): Server {
    */
   async function handleGoogle(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (!opts.google) throw new HttpError(404, "Google sign-in isn't set up on the board (no google_auth_token)");
-    if (!googleViaBoard && (mode !== "local" || !loopbackPort(req.headers.host))) throw new HttpError(403, "connect Google from the board on your computer (http://127.0.0.1:3120)");
+    if (!googleViaBoard && (mode !== "local" || !loopbackPort(req.headers.host))) throw new HttpError(403, `connect Google from ${TUNNEL}`);
     const callback = googleViaBoard ? `${opts.lan!.url}/google/callback` : `http://${String(req.headers.host).toLowerCase()}/google/callback`;
     try {
       if (url.pathname === "/google/connect") {
@@ -2180,7 +2182,7 @@ export function createApp(opts: AppOptions): Server {
     const auth = opts[key];
     const port = loopbackPort(req.headers.host);
     if (!auth) throw new HttpError(404, `${name} sign-in isn't set up on the board (no ${secret})`);
-    if (mode !== "local" || !port) throw new HttpError(403, `sign in to ${name} from the board on your computer (http://127.0.0.1:3120)`);
+    if (mode !== "local" || !port) throw new HttpError(403, `sign in to ${name} from ${TUNNEL}`);
     const host = String(req.headers.host).toLowerCase();
     try {
       if (url.pathname === connect) {

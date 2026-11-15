@@ -32,6 +32,7 @@ const readToken = (env: string | undefined) => (env && existsSync(env) ? readFil
 const inboundToken = readToken(process.env.MCP_TOKEN_FILE);
 const authToken = readToken(process.env.GRAFANA_AUTH_TOKEN_FILE);
 
+const startedAt = new Date().toISOString();
 let upstream: { client: Client; tools: Tool[]; at: number } | undefined;
 
 async function connect(): Promise<NonNullable<typeof upstream>> {
@@ -56,7 +57,7 @@ async function withUpstream<T>(fn: (u: NonNullable<typeof upstream>) => Promise<
     if (!upstream || Date.now() - upstream.at > 30 * 60_000) await reset(false);
     return await fn(upstream ?? (await connect()));
   } catch (err) {
-    if (err instanceof GrafanaAuthError || !isAuthFailure(err)) throw err;
+    if (LOCAL || err instanceof GrafanaAuthError || !isAuthFailure(err)) throw err; // local: no token to refresh
     log.warn("Grafana rejected the token; refreshing and retrying once");
     try {
       await reset(true);
@@ -130,8 +131,9 @@ const sendJson = (res: ServerResponse, status: number, body: unknown): void => v
 /** The board's sign-in endpoints: state, and starting or finishing a sign-in (never a token). */
 async function handleAuth(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
   if (!bearer(req, authToken, true)) return sendJson(res, 401, { error: "unauthorized" });
-  if (path === "/auth/status" && req.method === "GET") return sendJson(res, 200, { configured: Boolean(UPSTREAM), ...tokens.status() });
-  if (!signIn) return sendJson(res, 400, { error: "GRAFANA_URL is not set" });
+  // Local mode signs in to nothing: "none" tells the board there is no sign-in (and no Grafana Cloud URL) to offer.
+  if (path === "/auth/status" && req.method === "GET") return sendJson(res, 200, LOCAL ? { configured: true, state: "none", since: startedAt } : { configured: Boolean(UPSTREAM), ...tokens.status() });
+  if (!signIn) return sendJson(res, 400, { error: LOCAL ? "local Grafana needs no sign-in" : "GRAFANA_URL is not set" });
   if (req.method !== "POST") return sendJson(res, 405, { error: "method not allowed" });
   try {
     if (path === "/auth/start") {
@@ -156,7 +158,16 @@ const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   try {
     if (url.pathname === "/healthz") {
-      if (LOCAL) return sendJson(res, 200, { ok: true, state: "local" });
+      if (LOCAL) {
+        // Healthy only when the monitoring module's mcp-grafana answers; a failed ping drops the client so the next check reconnects.
+        try {
+          await withUpstream((u) => u.client.listTools(undefined, { timeout: 3000 }));
+          return sendJson(res, 200, { ok: true, state: "local" });
+        } catch (err) {
+          upstream = undefined;
+          return sendJson(res, 503, { ok: false, state: "local", detail: `local Grafana did not answer: ${String((err as Error).message).slice(0, 150)}` });
+        }
+      }
       const s = tokens.status();
       const ok = Boolean(UPSTREAM) && s.state !== "missing" && s.state !== "expired";
       const detail = !UPSTREAM ? "GRAFANA_URL not set" : s.state === "missing" ? "Grafana not connected (Connect on the board)" : s.state === "expired" ? `Grafana sign-in expired: ${s.detail ?? ""} (Reconnect on the board)` : undefined;
@@ -181,5 +192,5 @@ const http = createServer(async (req, res) => {
   }
 });
 
-http.listen(port, "0.0.0.0", () => log.info({ port, allowlist: [...allowlist], board_sign_in: Boolean(authToken) }, "grafana-mcp listening"));
+http.listen(port, "0.0.0.0", () => log.info({ port, allowlist: [...allowlist], board_sign_in: !LOCAL && Boolean(authToken) }, "grafana-mcp listening"));
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.close(() => process.exit(0)));

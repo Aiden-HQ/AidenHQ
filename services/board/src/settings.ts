@@ -300,12 +300,13 @@ export function connectionsView(input: {
       probe: m.url ? (input.probes[name] ?? null) : null,
       signIn: input.signIns[name] ?? null,
       ...(name === "google_workspace" ? { google: input.google ?? null } : {}),
-      urls: urls(moduleOf.get(name) ?? ""),
+      // A connection that signs in to nothing has no sign-in URLs to set (Grafana's cloud stack while it reads the local one).
+      urls: input.signIns[name]?.state === "none" ? [] : urls(moduleOf.get(name) ?? ""),
     };
   });
   // Modules that serve the runner rather than an agent connection (Grafana, ClickHouse): their sign-in, if the board has one.
   for (const m of input.catalog.filter((x) => x.enabled && x.setup && !(x.connections ?? []).length))
-    rows.push({ name: m.name, module: m.name, kind: "service", transport: "runner", tools: { read: 0, write: 0 }, grants: [], setup: m.setup ?? null, probe: null, signIn: input.signIns[m.name] ?? null, urls: urls(m.name) });
+    rows.push({ name: m.name, module: m.name, kind: "service", transport: "runner", tools: { read: 0, write: 0 }, grants: [], setup: m.setup ?? null, probe: null, signIn: input.signIns[m.name] ?? null, urls: input.signIns[m.name]?.state === "none" ? [] : urls(m.name) });
   const sources = (input.sources ?? []).map((x) => ({ name: `src_${x.source}`, lastOk: x.last_ok, failing: x.failing, stale: input.staleSources.has(x.source) }));
   return { compiled: Boolean(input.compiled), connections: rows, sources, sourcesError: input.sources === null };
 }

@@ -67,6 +67,12 @@ export interface Verdict {
   hint?: string;
 }
 
+/**
+ * How to reach the board's loopback address, where OAuth sign-ins return, from a laptop (docs/setup.md, Connecting accounts).
+ * Shown wherever a Connect button can't be offered.
+ */
+export const SIGN_IN_HINT = "To sign in, run ssh -N -L 3120:127.0.0.1:3120 <you>@<host> on your laptop, then open http://127.0.0.1:3120 and press Connect.";
+
 /** What a built-in connection is for, in the owner's words (it runs inside each agent run: nothing to check). */
 const BUILT_IN: Record<string, string> = { paperclip_tasks: "How agents read and update their tasks, delegate, and ask for approvals." };
 
@@ -80,7 +86,7 @@ const day = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: 
  * loopback address; Google also at the board's https address when the board says so).
  */
 export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boolean; google: boolean }): Verdict {
-  const connect = (label: string, href: string, can: boolean): Pick<Verdict, "action" | "hint"> => (can ? { action: { label, href } } : { hint: "Connect from the board on the host (http://127.0.0.1:3120)." });
+  const connect = (label: string, href: string, can: boolean): Pick<Verdict, "action" | "hint"> => (can ? { action: { label, href } } : { hint: SIGN_IN_HINT });
 
   // Google: each account's own sign-in comes first; the service's health after.
   if (row.google) {
@@ -90,7 +96,8 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
     if (expired.length) return { status: "signed_out", reason: `${expired.map((a) => a.email).join(", ")} stopped working (since ${day(expired[0]!.since)}).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(expired[0]!.email)}`, canConnect.google) };
   }
 
-  // A sign-in through an MCP proxy (Glean, Jira, Grafana, ClickHouse): set up at all, then signed in.
+  // A sign-in through an MCP proxy (Glean, Jira, Grafana, ClickHouse): set up at all, then signed in. State "none": this
+  // connection signs in to nothing (Grafana with grafana_source: local), so only its health counts.
   const s = row.signIn;
   if (s && !s.configured) return { status: "not_configured", reason: row.urls?.length ? "Add its URL to set it up." : (s.detail ?? "Its URL isn't set yet.") };
   if (s?.state === "missing") return { status: "signed_out", reason: "Set up, but not signed in yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) };
@@ -98,7 +105,7 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
 
   const p = row.probe;
   if (!p) {
-    if (row.kind === "service") return s?.state === "ok" ? { status: "connected", reason: "Signed in." } : { status: "unknown", reason: s ? "Its sign-in hasn't been checked yet." : "The board can't ask this service." };
+    if (row.kind === "service") return s?.state === "ok" || s?.state === "none" ? { status: "connected", reason: s.state === "ok" ? "Signed in." : "Needs no sign-in." } : { status: "unknown", reason: s ? "Its sign-in hasn't been checked yet." : "The board can't ask this service." };
     return row.transport === "built in" ? { status: "builtin", reason: BUILT_IN[row.name] ?? "Part of every agent run." } : { status: "unknown", reason: "Not checked yet." };
   }
   if (p.ok) return { status: "connected", reason: p.detail ? `Answering; it notes: ${p.detail}` : "Answering its health check." };

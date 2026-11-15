@@ -192,7 +192,8 @@ export interface Board {
 
 /** A sign-in through an MCP proxy (Glean, Grafana, ClickHouse, Jira). */
 export interface SignInStatus {
-  state: "missing" | "ok" | "expired" | "unknown";
+  /** "none": the connection signs in to nothing (e.g. Grafana with grafana_source: local). */
+  state: "missing" | "ok" | "expired" | "unknown" | "none";
   /** Whether the service is set up (GLEAN_MCP_URL, GRAFANA_URL, CLICKHOUSE_MCP_URL): without it there's no banner. */
   configured: boolean;
   since: string;

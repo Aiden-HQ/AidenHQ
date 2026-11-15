@@ -1,7 +1,8 @@
 import type { Logger } from "pino";
 
 export interface McpAuthStatus {
-  state: "missing" | "ok" | "expired" | "unknown";
+  /** "none": the proxy signs in to nothing (grafana-mcp with GRAFANA_SOURCE=local): no Connect, no URL fields. */
+  state: "missing" | "ok" | "expired" | "unknown" | "none";
   /** Whether the service's server is set (GLEAN_MCP_URL, GRAFANA_URL, CLICKHOUSE_MCP_URL): without it there's no banner. */
   configured: boolean;
   since: string;

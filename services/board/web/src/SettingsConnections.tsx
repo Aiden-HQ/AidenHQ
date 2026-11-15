@@ -94,7 +94,7 @@ function ConnectionItem({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Can 
         <>
           {filed && <ChangeProgress f={filed} after={filed.stage === "applied" && connect && <p className="st-next">Next: {connect} to sign in.</p>} />}
           {urls.length > 0 && !(filed && IN_FLIGHT.includes(filed.stage)) && <UrlFields urls={urls} primaryOnly={setup} />}
-          {setup && !connect && v.hint && <p className="st-hint">After the change is live, sign in from the host: {v.hint.replace(/^Connect from the board on the host \((.*)\)\.$/, "$1")}.</p>}
+          {setup && !connect && v.hint && <p className="st-hint">After the change is live: {v.hint}</p>}
           {!urls.length && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
           <Facts r={r} />
           {r.google && <GoogleAccounts g={r.google} can={can.google} />}

@@ -3,6 +3,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AgentAvatar } from "./AgentAvatar";
+import { SIGN_IN_HINT } from "./connections";
 import { api } from "./api";
 import { BUCKETS, BUCKET_NAMES, type Assignee, type Board, type Bucket, type Card, type CrewMember, type CrewState, type PlanItem, type SignInStatus, type Working } from "./types";
 import { SOURCE_NAMES, STATUS_BADGE, addDays, agentShort, ago, dayDate, elapsed, matches, shortDate, shortName, snoozeOptions, todayIn } from "./util";
@@ -467,7 +468,7 @@ export function GoogleBanner({ google, canReconnect }: { google: Board["google"]
               Connect Google
             </a>
           ) : (
-            <span className="alert-hint">Connect from the board on your computer.</span>
+            <span className="alert-hint">{SIGN_IN_HINT}</span>
           )}
         </div>
       )}
@@ -483,7 +484,7 @@ export function GoogleBanner({ google, canReconnect }: { google: Board["google"]
               Reconnect
             </a>
           ) : (
-            <span className="alert-hint">Reconnect from the board on your computer.</span>
+            <span className="alert-hint">{SIGN_IN_HINT}</span>
           )}
         </div>
       ))}
@@ -516,7 +517,7 @@ function SignInBanner({ name, path, status, canConnect, missing, stopped }: { na
             {status.state === "missing" ? "Connect" : "Reconnect"}
           </a>
         ) : (
-          <span className="alert-hint">Connect from the board on your computer.</span>
+          <span className="alert-hint">{SIGN_IN_HINT}</span>
         )}
       </div>
     </div>
