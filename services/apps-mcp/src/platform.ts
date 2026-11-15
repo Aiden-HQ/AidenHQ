@@ -3,14 +3,14 @@ import { createHmac, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { provisionDatabase, WAREHOUSE } from "./database.js";
+import { dropPreviewDatabase, provisionDatabase, WAREHOUSE } from "./database.js";
 import { createEngine, type Engine } from "./deploy.js";
 import { apiTarget, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, type Resolve, type Send } from "./api.js";
 import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type ProbeResult } from "./checks.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { RENDER_TIMEOUT_MS, renderArgs, VIEW_IMAGE, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
-import { checkout, commitMessage, diffForDeploy, resolveCommit, show, type GitEnv } from "./git.js";
+import { checkout, checkoutPr, commitMessage, diffForDeploy, resolveCommit, show, type GitEnv } from "./git.js";
 import { loadRegistry, type App } from "./registry.js";
 import { pickService, scriptCommand } from "./run.js";
 import { posix } from "node:path";
@@ -19,6 +19,7 @@ import { EDGE_CONTAINER, edgeTarget, exposes, writeServeConfig, type EdgeTarget 
 import { agentSigner, IDENTITY_HEADER } from "./identity.js";
 import { readonlyPool, type WarehouseDeps } from "./sources.js";
 import { parseChecks, PROBE, withoutSamples, type Quality } from "./quality.js";
+import { previewApp } from "./previews.js";
 
 const run = promisify(execFile);
 
@@ -62,6 +63,10 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     }
   };
 
+  // Over the Docker socket as the warehouse superuser (local socket auth inside the container): no network path or password.
+  const superSql = (q: string) => exec(["exec", "-i", WAREHOUSE.container, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", "warehouse", "-d", WAREHOUSE.db], { input: q }).then(() => undefined);
+  const dropPreviewDb = (name: string) => superSql(dropPreviewDatabase(name));
+
   const probe = async (app: App): Promise<boolean> => {
       let ok: boolean;
       if (app.health.url) {
@@ -90,12 +95,11 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     secretsDir: cfg.secretsDir,
     hostSecretsDir: cfg.hostSecretsDir,
     identityKeysHostFile: cfg.identityKeysHostFile,
-    checkout: (app, sha) => checkout(cfg.git, app, sha),
+    checkout: (app, sha) => (app.preview ? checkoutPr(cfg.git, app, sha!) : checkout(cfg.git, app, sha)), // a preview: its PR head (previews.ts)
     probe: (app) => probe(app),
     check: (app, declared) => checkApp(app, declared),
     expose: () => syncEdge().catch((err) => log.warn({ err: String(err) }, "apps node sync failed")),
-    // Over the Docker socket as the superuser (local socket auth inside the container): no network path or password needed.
-    provisionDb: (app) => provisionDatabase(app, { secretsDir: cfg.secretsDir, sql: (q) => exec(["exec", "-i", WAREHOUSE.container, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", "warehouse", "-d", WAREHOUSE.db], { input: q }).then(() => undefined) }),
+    provisionDb: (app) => provisionDatabase(app, { secretsDir: cfg.secretsDir, sql: superSql }),
   });
 
   /**
@@ -104,7 +108,13 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
    */
   async function syncEdge(): Promise<void> {
     const want = new Map<string, EdgeTarget>();
-    for (const app of apps()) {
+    const all = apps();
+    // Healthy previews of served apps too (previews.ts), at their own ports.
+    const previews = store.previews().flatMap((r) => {
+      const parent = all.find((a) => a.name === r.app);
+      return r.status === "healthy" && parent ? [previewApp(parent, r.pr, r.port)] : [];
+    });
+    for (const app of [...all, ...previews]) {
       if (!exposes(app) || app.host !== "local" || !store.goodDeploys(app.name).length) continue;
       const t = engine.deployed(app) ? edgeTarget(app, engine.compose(app)) : undefined;
       if (t) want.set(`app-${app.name}`, t);
@@ -119,6 +129,8 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   }
 
   const url = (app: App): string | undefined => (app.share?.host ? `https://${app.share.host}` : exposes(app) ? `${cfg.urlBase}:${app.port}` : undefined);
+  /** A preview's URL (previews.ts): only on the apps' tailnet node for now, and only when that node is configured. */
+  const previewUrl = (app: App): string | undefined => (cfg.urlBase && exposes(app) ? `${cfg.urlBase}:${app.port}` : undefined);
 
   async function status(app: App) {
     const last = store.lastDeploy(app.name);
@@ -130,6 +142,8 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       // Recent deploys (newest first): who deployed which commit and how it ended, so a reader can check a merged commit was
       // deployed by the platform's own auto-deploy rather than by hand. Deep enough that a graded commit hasn't scrolled out.
       deploys: store.recentDeploys(app.name, 20).map(({ sha, at, by, status }) => ({ sha, at, by, status })),
+      // Its open PRs' previews (previews.ts): reviewers may open them; nothing depends on them.
+      previews: store.previews().filter((r) => r.app === app.name).map((r) => ({ pr: r.pr, sha: r.sha, state: r.status, url: previewUrl(previewApp(app, r.pr, r.port)) })),
       ...(inc ? { incident: { opened_at: inc.opened_at, kind: inc.kind, detail: inc.detail } } : {}),
       ...(stats ? { stats } : {}),
     };
@@ -323,6 +337,6 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   const qualityFor = (a: App): Quality => quality.get(a.name) ?? { state: "unknown", why: "not probed yet" };
   /** Every probed app's checks without samples (the board's detector raises the failing ones; samples never leave here). */
   const qualityOf = () => apps().filter((a) => a.health.url).map((a) => ({ name: a.name, ...withoutSamples(qualityFor(a)) }));
-  return { healthFailure, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
+  return { previewUrl, dropPreviewDb, healthFailure, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;

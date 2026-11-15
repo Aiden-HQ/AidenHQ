@@ -15,6 +15,8 @@ import { posix } from "node:path";
 import { show } from "./git.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { graderView } from "./view.js";
+import { githubApi, startPreviews } from "./previews.js";
+import { inAgentsOrg } from "./git.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "apps-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 const need = (n: string): string => process.env[n] || (() => { throw new Error(`${n} is required`); })();
@@ -243,5 +245,8 @@ const http = createServer(async (req, res) => {
 http.listen(Number(process.env.PORT ?? 8090), "0.0.0.0", () => log.info("apps-mcp listening"));
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.close(() => process.exit(0)));
 reconcile = startLoops(p, log);
+// Preview deploys of open PRs on agents-org app repos (previews.ts): their own loop, with the GitHub App only.
+if (appToken && agentsOrg)
+  startPreviews({ apps: p.apps, store: p.store, engine: p.engine, github: githubApi(appToken), agentsRepo: (r) => inAgentsOrg(p.cfg.git, r), url: p.previewUrl, secretsDir: p.cfg.secretsDir, gitDir: p.cfg.git.gitDir, syncEdge: p.syncEdge, dropDb: p.dropPreviewDb, log });
 // People across sources: identity links proposed on exact email matches (src_meta.person_identity).
 startPeople(p.warehouse, log);

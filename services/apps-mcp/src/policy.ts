@@ -129,7 +129,8 @@ export function sandbox(resolved: ComposeJson, app: App, env: { APPS_DATA: strin
       else if (v.type !== "volume" && v.type !== "tmpfs") refuse(svc, `volume type ${v.type}`);
     }
     for (const ef of list(s.env_file)) hostPath(svc, typeof ef === "string" ? ef : ef.path, true);
-    for (const p of s.ports ?? []) if (p.published === undefined || Number(p.published) !== app.port) refuse(svc, `published port ${p.published} (only the registry port is allowed)`);
+    // A preview's compose is its parent's: it publishes the parent's port, moved below to the preview's own.
+    for (const p of s.ports ?? []) if (p.published === undefined || Number(p.published) !== (app.preview?.published ?? app.port)) refuse(svc, `published port ${p.published} (only the registry port is allowed)`);
 
     delete s.runtime;
     delete s.deploy?.resources;
@@ -147,7 +148,7 @@ export function sandbox(resolved: ComposeJson, app: App, env: { APPS_DATA: strin
       ...(app.untrusted ? { runtime: "runsc" } : {}),
     });
     if (!s.cap_add.length) delete s.cap_add;
-    if (s.ports) s.ports = s.ports.map((p: any) => ({ ...p, host_ip: "127.0.0.1" }));
+    if (s.ports) s.ports = s.ports.map((p: any) => ({ ...p, ...(app.preview ? { published: String(app.port) } : {}), host_ip: "127.0.0.1" }));
   }
   // Compose names a volume app-<name>_<key> unless told otherwise; a custom name could attach another app's volume.
   for (const [k, v] of Object.entries<any>(resolved.volumes ?? {})) if (v?.external || v?.driver_opts || (v?.driver && v.driver !== "local") || (v?.name && v.name !== `${own}_${k}`)) refuse(k, "an external, named or driver-backed volume");

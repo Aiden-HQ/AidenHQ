@@ -1,10 +1,10 @@
 // Deploy engine. Every docker call is `docker [--context <host>] ...`; exec, checkout and the health probe are injected.
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { checkSources, sandbox, serializeCompose, withSecrets, type ComposeJson } from "./policy.js";
 import { pickService, runArgv } from "./run.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { failed, probeResult, summary, type Declared, type ProbeResult } from "./checks.js";
-import type { App } from "./registry.js";
+import { PREVIEW_NAME, type App } from "./registry.js";
 import type { Store } from "./store.js";
 
 export interface Deps {
@@ -197,13 +197,42 @@ export function createEngine(d: Deps) {
     return r && `container ${String(r.Service).replace(/[^\w.-]/g, "").slice(0, 30)} ${String(r.State).replace(/\W/g, "").slice(0, 15)} code ${Number(r.ExitCode) || 0}`;
   }
 
-  /** Stops running app-<name> projects no longer in the registry (volumes kept). */
+  /** Stops running app-<name> projects no longer in the registry (volumes kept). Previews are previews.ts's to remove. */
   async function reap(registered: Set<string>): Promise<void> {
     for (const row of JSON.parse((await d.exec(["compose", "ls", "--format", "json"])) || "[]") as { Name: string }[]) {
       const name = /^app-(.+)$/.exec(row.Name)?.[1];
       const file = name && `${dir({ name } as App)}/compose.sandboxed.json`;
-      if (name && file && !registered.has(name) && existsSync(file)) await d.exec(["compose", "-p", row.Name, "-f", file, "down", "--remove-orphans"]);
+      if (name && file && !registered.has(name) && !PREVIEW_NAME.test(name) && existsSync(file)) await d.exec(["compose", "-p", row.Name, "-f", file, "down", "--remove-orphans"]);
     }
+  }
+
+  /**
+   * A pull request's preview (previews.ts) at `sha`: prepare + up + health, recorded under the preview's own name. No
+   * rollback, incident or checks: nothing waits on a preview. One that doesn't come up healthy is stopped (its volumes kept
+   * until remove).
+   */
+  async function preview(app: App, sha: string): Promise<{ sha: string; ok: boolean; why?: string }> {
+    if (!app.preview) throw new Error(`${app.name} is not a preview`);
+    return exclusive(app, async () => {
+      const next = await apply(app, sha);
+      const why = next.ok ? undefined : next.err ? "it didn't build or start" : `it wasn't healthy within ${app.health.grace_sec}s`;
+      if (!next.ok) {
+        await compose(app, ["down", "--remove-orphans"]).catch(() => "");
+        d.store.clearRunning(app.name);
+      }
+      record(app, { sha: next.sha, status: next.ok ? "healthy" : "failed", images: next.images }, `preview of #${app.preview!.pr}`, next.err ?? "");
+      return { sha: next.sha, ok: next.ok, ...(why ? { why } : {}) };
+    });
+  }
+
+  /** Removes a preview entirely: containers, volumes, the images it built, and its platform dir (checkout, compose). */
+  async function remove(app: App): Promise<void> {
+    if (!PREVIEW_NAME.test(app.name)) throw new Error(`${app.name} is not a preview`);
+    return exclusive(app, async () => {
+      if (existsSync(sandboxed(app))) await compose(app, ["down", "--volumes", "--rmi", "local", "--remove-orphans"]);
+      rmSync(dir(app), { recursive: true, force: true });
+      d.store.clearRunning(app.name);
+    });
   }
 
   /** The running app's compose services. */
@@ -231,6 +260,6 @@ export function createEngine(d: Deps) {
     return verify(app, await d.probe(app).catch(() => false), declared);
   }
 
-  return { check, run, services, deployed, compose: composeOf, deploy, rollback, reap, restart, logs, stats, containersHealthy, exitedContainer, locked: (app: App) => locks.has(app.name) };
+  return { preview, remove, check, run, services, deployed, compose: composeOf, deploy, rollback, reap, restart, logs, stats, containersHealthy, exitedContainer, locked: (app: App) => locks.has(app.name) };
 }
 export type Engine = ReturnType<typeof createEngine>;
