@@ -8,8 +8,8 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createGateway } from "../lib.mjs";
-import { CI_AUDIENCE, GITHUB_ISSUER } from "../ci.mjs";
+import { createGateway } from "../lib.ts";
+import { CI_AUDIENCE, GITHUB_ISSUER } from "../ci.ts";
 
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");

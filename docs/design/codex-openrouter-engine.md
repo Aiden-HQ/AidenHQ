@@ -33,7 +33,7 @@ Engineer without the flag, gets none. Every engine can carry them (opencode too,
 
 Owner decision, 2026-11-13: the Software and Platform Engineers are **light** Engineers, with no private reads: Primer
 and web search only. A separate strong App Engineer will opt in later. Any engine may get private reads because the
-gateway forces Zero Data Retention routing on every OpenRouter call (`provider.zdr = true` in `services/gateway/lib.mjs`)
+gateway forces Zero Data Retention routing on every OpenRouter call (`provider.zdr = true` in `services/gateway/lib.ts`)
 and OpenRouter ZDR is approved for all data.
 
 **Web search.** A light job gets `web_search="live"` (package docs). A job with private reads gets none, so private data

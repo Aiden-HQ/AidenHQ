@@ -1,4 +1,4 @@
-// The model gateway's logic (gateway.mjs wires it to its listeners): who a call is for, the spend caps, the pass-through
+// The model gateway's logic (gateway.ts wires it to its listeners): who a call is for, the spend caps, the pass-through
 // to OpenRouter with what it billed tapped from the answer, and the ledger (SQLite) the board pulls.
 //
 // Routes (OpenRouter-compatible; the caller's "API key" is its own per-run credential, never the OpenRouter key):
@@ -7,14 +7,14 @@
 //   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
 //   POST /internal/caps {scope, agentId, subject, cap}  (Bearer gateway_board_key) the owner raised a cap: the new cap
 //   GET /health
-// CI listener (gateway.mjs, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
-//   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.mjs) -> {token, expires_at}: an opaque CI token
+// CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
+//   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at}: an opaque CI token
 //   POST /api/v1/chat/completions  kind ci-code-review: the allowed models only, CI's own caps, attributed to repo and PR
 //   GET /health
 // Credentials: a Paperclip run JWT (Codex in Paperclip, env_key PAPERCLIP_API_KEY; checked at Paperclip's /api/agents/me,
 // its run id from the checked token, the task from that run); an agent computer's run token `ahqc_` (the launcher forwards
 // its boxes' calls here with it; the launcher's /whoami names the agent, Paperclip run and task, asked every call so a run
-// that ended stops at once); a runner token `ahqj_` (token.mjs: an Engineer job, or the runner's reviewer/grader/intake), or a fast chat lane's turn token (same format, signed with gateway_lane_secret, agent kind only); the source writers' key (gateway_source_key); Paperclip's harness key
+// that ended stops at once); a runner token `ahqj_` (token.ts: an Engineer job, or the runner's reviewer/grader/intake), or a fast chat lane's turn token (same format, signed with gateway_lane_secret, agent kind only); the source writers' key (gateway_source_key); Paperclip's harness key
 // (gateway_harness_key: the new-agent hello probe, whose env has no run JWT). The run key is the credential's sha256.
 // Caps: run / task / agent-day (grants caps, defaults 2/10/30 USD), checked before each call as settled + in flight. A task
 // labelled `chat` or a routine's execution task is perpetual: its task cap counts the UTC day only. System kinds
@@ -23,12 +23,50 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseSync } from "node:sqlite";
-import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.mjs";
-import { verifyToken } from "./token.mjs";
+import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.ts";
+import { verifyToken } from "./token.ts";
 
-export const DEFAULT_CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
-const SYSTEM = { reviewer: "AI reviewer", grader: "Grader", source: "Source writers" };
+type Brand<T, B extends string> = T & { readonly __brand: B };
+/** A run key: the sha256 of the caller's own credential (or the harness's day key). Run caps and the ledger key on it. */
+export type RunKey = Brand<string, "RunKey">;
+/**
+ * Who a model call is for, settled by identify() from the credential alone (a checked token, Paperclip's /api/agents/me,
+ * the launcher's /whoami, a stored CI token): only identify() makes one, and nothing in the request body ever feeds it.
+ */
+export type Caller = Brand<{
+  runKey: RunKey; agentId: string | null; runId: string | null; issueId: string | null; perpetual: boolean; rev: string | null;
+  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string };
+}, "Caller">;
+type GatewayError = Error & { status?: number; type?: string; extra?: Record<string, unknown> };
+type Caps = { run_usd: number; task_usd: number; day_usd: number };
+/** config/grants/grants.json `agents`, by Paperclip id (setup writes it). */
+type Grants = Record<string, { rev?: string; key?: string; caps?: Partial<Caps> }>;
+/** config/gateway.json `ci` (compile writes it from the ci module's settings). */
+type CiConf = { enabled?: boolean; orgs?: unknown; models?: unknown; repo_day_usd?: unknown; day_usd?: unknown };
+/** A run key's settled identity (the runs table), or the same fields resolved for one call. */
+type RunRow = { run_key: string; agent_id: string | null; run_id: string | null; issue_id: string | null; rev: string | null; perpetual: number; at: string };
+type RunIdentity = Pick<RunRow, "agent_id" | "run_id" | "issue_id" | "rev"> & { perpetual: number | boolean };
+type CallRow = {
+  key: string; at: string; day: string; run_key: string; run_id: string | null; agent_id: string | null; issue_id: string | null; task_subject: string | null;
+  rev: string | null; kind: string; component: string; model: string; input: number; cached: number; output: number; cost_usd: number | null; ms: number | null; status: string;
+};
+type CiTokenRow = { hash: string; repo: string; pr: number; head: string | null; gh_run: string; attempt: string; exp: string; at: string };
+type Sum = { s: number };
+type SumN = { s: number; n: number };
+type Over = { scope: string; subject: string; cap: number; spent: number };
+/** What OpenRouter billed for one call. */
+type Usage = { key: string; model: string; input: number; cached: number; output: number; costUsd: number | null };
+type UsageBlock = {
+  input_tokens?: number; prompt_tokens?: number; output_tokens?: number; completion_tokens?: number; cost?: unknown;
+  input_tokens_details?: { cached_tokens?: number }; prompt_tokens_details?: { cached_tokens?: number };
+};
+type Answer = { id?: unknown; model?: unknown; usage?: UsageBlock };
+type Log = (msg: string, fields?: Record<string, unknown>) => void;
+
+export const DEFAULT_CAPS: Caps = { run_usd: 2, task_usd: 10, day_usd: 30 };
+const SYSTEM: { source: string } & Record<string, string> = { reviewer: "AI reviewer", grader: "Grader", source: "Source writers" };
 const ROUTE = /^\/(?:(advisor|fanout)\/)?api\/v1\/(responses|chat\/completions)$/;
 const MAX_BODY = 32 * 1024 * 1024;
 const DAY_MS = 864e5;
@@ -39,33 +77,33 @@ const CI_TOKENS_PER_DAY = 200;
 const CI_INFLIGHT = 8;
 const CI_RESERVE_USD = 0.1;
 const CI_MAX_BODY = 8 * 1024 * 1024;
-// CI tokens a repo may be issued a minute. Only verified exchanges count (ci.mjs checks the claims, then GitHub's signature,
+// CI tokens a repo may be issued a minute. Only verified exchanges count (ci.ts checks the claims, then GitHub's signature,
 // about 20 microseconds), so a flood of forged or foreign tokens never uses up a real job's budget; one repo's flood of
 // genuine ones only uses its own. Refusals on the CI listener are logged at most CI_REFUSALS_LOGGED a minute.
 const CI_TOKENS_PER_MIN = 20;
 const CI_REFUSALS_LOGGED = 20;
 
-export const sha256 = (s) => createHash("sha256").update(s).digest("hex");
-const day = (ms) => new Date(ms).toISOString().slice(0, 10);
-const same = (a, b) => Boolean(a && b) && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
-const fail = (status, type, message, extra = {}) => Object.assign(new Error(message), { status, type, extra });
+export const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const fail = (status: number, type: string, message: string, extra: Record<string, unknown> = {}): GatewayError => Object.assign(new Error(message), { status, type, extra });
 
 /** A JSON file re-read when it changes; `fallback` when it's missing or unreadable. */
-function watched(file, pick, fallback) {
-  let cache;
+function watched<T>(file: string, pick: (j: Record<string, unknown>) => T, fallback: T): () => T {
+  let cache: { mtimeMs: number; size: number; v: T } | undefined;
   return () => {
     let st;
     try { st = statSync(file); } catch { return fallback; }
     if (!cache || cache.mtimeMs !== st.mtimeMs || cache.size !== st.size) {
       let v = fallback;
-      try { v = pick(JSON.parse(readFileSync(file, "utf8"))); } catch {}
+      try { v = pick(JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>); } catch {}
       cache = { mtimeMs: st.mtimeMs, size: st.size, v };
     }
     return cache.v;
   };
 }
 
-export function openLedger(file) {
+export function openLedger(file: string): DatabaseSync {
   mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(`
@@ -97,21 +135,21 @@ export function openLedger(file) {
  * completion's final chunk, or `response.completed`), or the whole JSON body. done() → { key, model, input (uncached),
  * cached, output, costUsd } or undefined. The model is the one OpenRouter answered with.
  */
-export function usageTap(sse) {
-  let tail = "", body = "", found;
-  const take = (text) => {
+export function usageTap(sse: boolean): { feed(text: string): void; done(): Usage | undefined } {
+  let tail = "", body = "", found: (Answer & { id: string; usage: UsageBlock }) | undefined;
+  const take = (text: string) => {
     if (!text.includes('"usage"')) return;
     try {
-      const j = JSON.parse(text);
+      const j = JSON.parse(text) as (Answer & { type?: unknown; response?: Answer }) | null;
       const r = j?.type === "response.completed" ? j.response : j;
-      if (r?.usage && typeof r.id === "string") found = r;
+      if (r?.usage && typeof r.id === "string") found = r as Answer & { id: string; usage: UsageBlock };
     } catch {}
   };
   return {
     feed(text) {
       if (!sse) { if (body.length < MAX_BODY) body += text; return; }
       const lines = (tail + text).split("\n");
-      tail = lines.pop();
+      tail = lines.pop()!;
       for (const l of lines) if (l.startsWith("data: ")) take(l.slice(6));
     },
     done() {
@@ -136,14 +174,17 @@ export function usageTap(sse) {
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, boardUrl, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }) {
+export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, boardUrl, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }: {
+  dbFile: string; grantsFile: string; settingsFile: string; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
+  boardUrl?: string; launcherUrl?: string; githubJwksUrl?: string; log?: Log; now?: () => number;
+}) {
   const db = openLedger(dbFile);
-  const grants = watched(grantsFile, (j) => j.agents ?? {}, {});
+  const grants = watched(grantsFile, (j) => (j.agents ?? {}) as Grants, {});
   const enforcing = watched(settingsFile, (j) => j.enforce_caps !== false, true);
   // CI code review (compile writes it from the ci module's settings): { enabled, orgs, models, repo_day_usd, day_usd } or null.
-  const ciConf = watched(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? j.ci : null), null);
+  const ciConf = watched<CiConf | null>(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? (j.ci as CiConf) : null), null);
   const keyFor = githubKeys(githubJwksUrl, now);
-  const inflight = new Map(); // id → { runKey, agentId, subject, day, est, ciRepo }
+  const inflight = new Map<string, { runKey: RunKey; agentId: string | null; subject: string | null; day: string; est: number; ciRepo: string | undefined }>(); // id → { runKey, agentId, subject, day, est, ciRepo }
   const q = {
     run: db.prepare("SELECT * FROM runs WHERE run_key = ?"),
     addRun: db.prepare("INSERT OR IGNORE INTO runs (run_key, agent_id, run_id, issue_id, rev, perpetual, at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
@@ -174,75 +215,75 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
   const pruner = setInterval(prune, 3600_000);
   pruner.unref();
 
-  async function paperclip(path, token) {
+  async function paperclip(path: string, token: string): Promise<unknown> {
     const res = await fetch(new URL(path, paperclipUrl), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
     if (!res.ok) throw Object.assign(new Error(`Paperclip ${path.split("/")[2]} answered ${res.status}`), { status: res.status });
     return res.json();
   }
 
   /** A Paperclip run's task (Paperclip's record of the run, else `hint`) and whether that task is perpetual. */
-  async function runTask(runId, hint = null) {
+  async function runTask(runId: string | null | undefined, hint: string | null = null) {
     const board = secret("paperclip_board_key");
-    const run = runId ? await paperclip(`/api/heartbeat-runs/${encodeURIComponent(runId)}`, board).catch(() => undefined) : undefined;
+    const run = (runId ? await paperclip(`/api/heartbeat-runs/${encodeURIComponent(runId)}`, board).catch(() => undefined) : undefined) as { issueId?: string; contextSnapshot?: { issueId?: string } } | undefined;
     const issueId = run?.issueId ?? run?.contextSnapshot?.issueId ?? hint ?? null;
-    const issue = issueId ? await paperclip(`/api/issues/${encodeURIComponent(issueId)}`, board).catch(() => undefined) : undefined;
+    const issue = (issueId ? await paperclip(`/api/issues/${encodeURIComponent(issueId)}`, board).catch(() => undefined) : undefined) as { labels?: ({ name?: string } | null)[]; originKind?: string } | undefined;
     return { issueId, perpetual: Boolean(issue && ((issue.labels ?? []).some((l) => l?.name === "chat") || issue.originKind === "routine_execution")) };
   }
 
   /** A computer's run token as the launcher that issued it knows it now: { agentId, runId, issueId }. */
-  async function computerRun(token) {
+  async function computerRun(token: string): Promise<{ agentId: string; runId?: string | null; issueId?: string | null }> {
     if (!launcherUrl) throw fail(503, "unauthorized", "this gateway doesn't know where the computer launcher is");
     const res = await fetch(new URL("/whoami", launcherUrl), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) })
-      .catch((e) => { throw fail(503, "unauthorized", `the computer launcher is unreachable (${e.message})`); });
+      .catch((e: Error) => { throw fail(503, "unauthorized", `the computer launcher is unreachable (${e.message})`); });
     if (res.status === 401) throw fail(401, "unauthorized", "this computer's run has ended");
     if (!res.ok) throw fail(503, "unauthorized", `the computer launcher answered ${res.status}`);
-    const j = await res.json().catch(() => undefined);
+    const j = (await res.json().catch(() => undefined)) as { agentId?: unknown; runId?: string | null; issueId?: string | null } | undefined;
     if (typeof j?.agentId !== "string" || !j.agentId) throw fail(401, "unauthorized", "the run token doesn't name its agent");
-    return j;
+    return j as { agentId: string; runId?: string | null; issueId?: string | null };
   }
 
   /** A run key's identity, settled once: the agent, Paperclip's run id, its task and whether that task is perpetual, the rev. */
-  function settle(runKey, { agentId = null, runId = null, issueId = null, perpetual = false }) {
+  function settle(runKey: RunKey, { agentId = null, runId = null, issueId = null, perpetual = false }: { agentId?: string | null; runId?: string | null; issueId?: string | null; perpetual?: boolean }): RunRow {
     q.addRun.run(runKey, agentId, runId, issueId, (agentId && grants()[agentId]?.rev) || null, perpetual ? 1 : 0, new Date(now()).toISOString());
-    return q.run.get(runKey);
+    return q.run.get(runKey) as RunRow;
   }
 
   /** Who the call is for: { runKey, agentId, runId, issueId, perpetual, rev, kind, component, capped }. Throws 401 otherwise. */
-  async function identify(cred, routeKind, ci = false) {
+  async function identify(cred: string, routeKind: string, ci = false): Promise<Caller> {
     if (!cred) throw fail(401, "unauthorized", "no credential: the API key must be this run's own credential");
-    const runKey = sha256(cred);
+    const runKey = sha256(cred) as RunKey;
     // The CI listener takes CI tokens only, and CI tokens work nowhere else: no other credential is even looked at there.
     if (ci !== cred.startsWith(CI_PREFIX)) throw fail(401, "unauthorized", ci ? "this address takes CI tokens only (POST /ci/token)" : "not a credential this gateway knows");
     if (ci) {
       ciOn();
-      const t = q.ciToken.get(runKey);
+      const t = q.ciToken.get(runKey) as CiTokenRow | undefined;
       if (!t || Date.parse(t.exp) <= now()) throw fail(401, "unauthorized", "this CI token is invalid or expired");
-      return { runKey, agentId: null, runId: null, issueId: null, perpetual: false, rev: t.head ?? null, kind: CI_KIND, component: CI_KIND, capped: false, ci: { repo: t.repo, subject: `${t.repo}#${t.pr}` } };
+      return { runKey, agentId: null, runId: null, issueId: null, perpetual: false, rev: t.head ?? null, kind: CI_KIND, component: CI_KIND, capped: false, ci: { repo: t.repo, subject: `${t.repo}#${t.pr}` } } as Caller;
     }
-    const as = (row, kind, component, capped) => ({ runKey, agentId: row?.agent_id ?? null, runId: row?.run_id ?? null, issueId: row?.issue_id ?? null, perpetual: Boolean(row?.perpetual), rev: row?.rev ?? null, kind, component, capped });
+    const as = (row: RunIdentity | null | undefined, kind: string, component: string, capped: boolean) => ({ runKey, agentId: row?.agent_id ?? null, runId: row?.run_id ?? null, issueId: row?.issue_id ?? null, perpetual: Boolean(row?.perpetual), rev: row?.rev ?? null, kind, component, capped }) as Caller;
     if (same(cred, secret("gateway_source_key"))) return as(null, "source", SYSTEM.source, false);
     if (same(cred, secret("gateway_harness_key"))) {
       // Paperclip's hello probe for a new agent: one shared key, so its "run" is the UTC day.
-      return { ...as(null, routeKind, "agent", true), runKey: `harness:${day(now())}` };
+      return { ...as(null, routeKind, "agent", true), runKey: `harness:${day(now())}` as RunKey } as Caller;
     }
     if (cred.startsWith("ahqj_")) {
       // A fast chat lane's turn token (slack-live-mcp) is signed with gateway_lane_secret: an agent's capped call only, so a
       // holder of the lane secret can never mint a system (uncapped) token.
       const lane = verifyToken(secret("gateway_lane_secret"), cred, now());
       if (lane?.k === "agent" && lane.a) {
-        const row = q.run.get(runKey) ?? settle(runKey, { agentId: lane.a, issueId: null });
+        const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: lane.a, issueId: null });
         return as(row, routeKind, `Fast lane: ${String(lane.c ?? lane.a)}`.slice(0, 80), true);
       }
       const p = verifyToken(secret("gateway_job_secret"), cred, now());
       if (!p) throw fail(401, "unauthorized", "this run's model credential is invalid or expired");
-      const row = q.run.get(runKey) ?? settle(runKey, { agentId: p.a, issueId: p.i });
+      const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, issueId: p.i });
       const system = p.k !== "agent";
       const component = String(p.c ?? (system ? SYSTEM[p.k] : "Engineer jobs")).slice(0, 80);
       return as(row, system ? p.k : routeKind, component, !system);
     }
     if (cred.startsWith("ahqc_")) {
       const box = await computerRun(cred);
-      let row = q.run.get(runKey);
+      let row: RunIdentity | undefined = q.run.get(runKey) as RunRow | undefined;
       if (!row) {
         const task = await runTask(box.runId, box.issueId);
         // Settled only once the launcher knows the Paperclip run (its first exec binds it): until then the identity is
@@ -254,14 +295,14 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     }
     if (cred.startsWith("eyJ")) {
       // The claims are read from the credential itself: its hash is the run key, so they are the bytes Paperclip accepted.
-      let claims = {};
-      try { claims = JSON.parse(Buffer.from(cred.split(".")[1], "base64url").toString("utf8")); } catch {}
+      let claims: { exp?: unknown; sub?: unknown; run_id?: string } = {};
+      try { claims = JSON.parse(Buffer.from(cred.split(".")[1]!, "base64url").toString("utf8")); } catch {}
       // A settled run key outlives Paperclip's check; the JWT's own expiry (Paperclip's TTL, 48h by default) still ends it.
       if (typeof claims.exp === "number" && claims.exp * 1000 <= now()) throw fail(401, "unauthorized", "this run's credential has expired");
-      let row = q.run.get(runKey);
+      let row = q.run.get(runKey) as RunRow | undefined;
       if (!row) {
         // The JWT is genuine if Paperclip accepts it; only then is its payload (run id, agent) read.
-        const me = await paperclip("/api/agents/me", cred).catch((e) => { throw fail(e.status === 401 || e.status === 403 ? 401 : 503, "unauthorized", e.message); });
+        const me = (await paperclip("/api/agents/me", cred).catch((e: GatewayError) => { throw fail(e.status === 401 || e.status === 403 ? 401 : 503, "unauthorized", e.message); })) as { id?: string } | undefined;
         if (!me?.id || claims.sub !== me.id) throw fail(401, "unauthorized", "the run credential doesn't name its agent");
         row = settle(runKey, { agentId: me.id, runId: claims.run_id ?? null, ...(await runTask(claims.run_id)) });
       }
@@ -270,21 +311,21 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     throw fail(401, "unauthorized", "not a credential this gateway knows");
   }
 
-  const capOf = (who, scope, subject) => {
-    const own = { ...DEFAULT_CAPS, ...((who.agentId && grants()[who.agentId]?.caps) || {}) }[`${scope}_usd`];
-    return q.cap.get(scope, who.agentId ?? "", subject)?.cap ?? own;
+  const capOf = (who: { agentId: string | null }, scope: string, subject: string): number => {
+    const own = ({ ...DEFAULT_CAPS, ...((who.agentId && grants()[who.agentId]?.caps) || {}) } as Record<string, number>)[`${scope}_usd`]!; // scope: run, task or day
+    return (q.cap.get(scope, who.agentId ?? "", subject) as { cap: number } | undefined)?.cap ?? own;
   };
-  const taskSubject = (who, t) => (who.issueId ? (who.perpetual ? `${who.issueId}:${day(t)}` : who.issueId) : null);
+  const taskSubject = (who: { issueId: string | null; perpetual: boolean }, t: number) => (who.issueId ? (who.perpetual ? `${who.issueId}:${day(t)}` : who.issueId) : null);
 
   /** The first cap this call would pass (settled + in flight), or undefined. */
-  function overCap(who, t) {
-    const pending = (pick) => [...inflight.values()].filter(pick).reduce((s, c) => s + c.est, 0);
+  function overCap(who: Caller, t: number): Over | undefined {
+    const pending = (pick: (c: { runKey: RunKey; agentId: string | null; subject: string | null; day: string }) => boolean) => [...inflight.values()].filter(pick).reduce((s, c) => s + c.est, 0);
     const today = day(t);
     const subject = taskSubject(who, t);
-    const scopes = [
-      ["run", who.runKey, () => q.spentRun.get(who.runKey).s + pending((c) => c.runKey === who.runKey)],
-      ...(who.agentId && subject ? [["task", subject, () => q.spentTask.get(who.agentId, subject).s + pending((c) => c.agentId === who.agentId && c.subject === subject)]] : []),
-      ...(who.agentId ? [["day", today, () => q.spentDay.get(who.agentId, today).s + pending((c) => c.agentId === who.agentId && c.day === today)]] : []),
+    const scopes: [string, string, () => number][] = [
+      ["run", who.runKey, () => (q.spentRun.get(who.runKey) as Sum).s + pending((c) => c.runKey === who.runKey)],
+      ...(who.agentId && subject ? [["task", subject, () => (q.spentTask.get(who.agentId, subject) as Sum).s + pending((c) => c.agentId === who.agentId && c.subject === subject)] as [string, string, () => number]] : []),
+      ...(who.agentId ? [["day", today, () => (q.spentDay.get(who.agentId, today) as Sum).s + pending((c) => c.agentId === who.agentId && c.day === today)] as [string, string, () => number]] : []),
     ];
     for (const [scope, subj, spentFn] of scopes) {
       const cap = capOf(who, scope, subj);
@@ -295,7 +336,7 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
   }
 
   /** The CI settings, when CI is on; else a 403 (settings.ci_review: off refuses every CI token at once). */
-  function ciOn() {
+  function ciOn(): CiConf {
     const c = ciConf();
     if (!c?.enabled) throw fail(403, "ci_off", "CI code review through the model gateway is off on this instance");
     return c;
@@ -306,13 +347,13 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
    * day; or undefined. A call may still cost more than its reservation, so a cap can be passed by at most what the calls in
    * flight (8 per repo) cost beyond theirs.
    */
-  function ciOverCap(who, t, c, reserve) {
+  function ciOverCap(who: Caller, t: number, c: CiConf, reserve: number) {
     const today = day(t);
-    const pending = (pick) => [...inflight.values()].filter((x) => x.ciRepo && x.day === today && pick(x)).reduce((s, x) => s + x.est, 0);
-    const prefix = `${who.ci.repo}#`;
-    const scopes = [
-      ["repo-day", Number(c.repo_day_usd), () => q.ciSpentRepo.get(today, prefix, prefix).s + pending((x) => x.ciRepo === who.ci.repo)],
-      ["day", Number(c.day_usd), () => q.ciSpent.get(today).s + pending(() => true)],
+    const pending = (pick: (x: { ciRepo: string | undefined }) => boolean) => [...inflight.values()].filter((x) => x.ciRepo && x.day === today && pick(x)).reduce((s, x) => s + x.est, 0);
+    const prefix = `${who.ci!.repo}#`; // a CI caller
+    const scopes: [string, number, () => number][] = [
+      ["repo-day", Number(c.repo_day_usd), () => (q.ciSpentRepo.get(today, prefix, prefix) as Sum).s + pending((x) => x.ciRepo === who.ci!.repo)],
+      ["day", Number(c.day_usd), () => (q.ciSpent.get(today) as Sum).s + pending(() => true)],
     ];
     for (const [scope, cap, spentFn] of scopes) {
       const spent = spentFn();
@@ -326,12 +367,12 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
    * the body is read is synchronous, so two exchanges for one run attempt can't both pass: the row's UNIQUE (repo, run,
    * attempt) decides, and once written it stays, whatever happens to the answer (fail closed).
    */
-  let issued = { minute: 0, byRepo: new Map() };
-  async function ciToken(req, res) {
+  let issued = { minute: 0, byRepo: new Map<string, number>() };
+  async function ciToken(req: IncomingMessage, res: ServerResponse) {
     const c = ciOn();
     const claims = await verifyGithubOidc(bearer(req), { orgs: Array.isArray(c.orgs) ? c.orgs : [], keyFor, now });
-    let body = {};
-    try { body = JSON.parse((await readBody(req, 4096)) || "{}") ?? {}; } catch (e) { if (e.status) throw e; }
+    let body: { head?: unknown } = {};
+    try { body = JSON.parse((await readBody(req, 4096)) || "{}") ?? {}; } catch (e) { if ((e as GatewayError).status) throw e; }
     // No await from here on.
     const minute = Math.floor(now() / 60_000);
     if (issued.minute !== minute) issued = { minute, byRepo: new Map() };
@@ -339,9 +380,9 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     issued.byRepo.set(claims.repo, n);
     if (n > CI_TOKENS_PER_MIN) throw fail(429, "too_many_tokens", `${claims.repo} has had ${CI_TOKENS_PER_MIN} CI tokens this minute`);
     const t = now();
-    if (q.ciIssued.get(claims.repo, day(t)).n >= CI_TOKENS_PER_DAY) throw fail(429, "too_many_tokens", `${claims.repo} has had ${CI_TOKENS_PER_DAY} CI tokens today`);
+    if ((q.ciIssued.get(claims.repo, day(t)) as { n: number }).n >= CI_TOKENS_PER_DAY) throw fail(429, "too_many_tokens", `${claims.repo} has had ${CI_TOKENS_PER_DAY} CI tokens today`);
     const token = `${CI_PREFIX}${randomBytes(32).toString("base64url")}`;
-    const head = /^[0-9a-f]{40}$/.test(String(body.head ?? "")) ? body.head : null; // advisory: the job says so
+    const head = /^[0-9a-f]{40}$/.test(String(body.head ?? "")) ? (body.head as string) : null; // advisory: the job says so
     const exp = new Date(t + CI_TTL_MS).toISOString();
     if (!q.addCiToken.run(sha256(token), claims.repo, claims.pr, head, claims.runId, claims.attempt, exp, new Date(t).toISOString()).changes) {
       throw fail(401, "unauthorized", "this run attempt has already traded its GitHub token");
@@ -351,7 +392,7 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
   }
 
   /** One raise_cap per scope, subject and cap value, filed on the board with the gateway's key (needs the run's task). */
-  async function fileRaise(who, over) {
+  async function fileRaise(who: Caller, over: Over): Promise<boolean> {
     // A run cap is on the credential's hash: the next run has a new one, so a raised run cap would never be used.
     if (over.scope === "run" || !who.agentId || !who.issueId || !boardUrl) return false;
     const args = [over.scope, who.agentId, over.subject, over.cap];
@@ -368,21 +409,21 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
       return true;
     } catch (e) {
       q.unfile.run(...args); // the next refused call files it again
-      log("raise_cap filing failed", { err: String(e.message).slice(0, 300) });
+      log("raise_cap filing failed", { err: String((e as Error).message).slice(0, 300) });
       return false;
     }
   }
 
   // Stamped when the call ends (the board pulls by that time); counted on the UTC day it started.
-  function record(who, r) {
+  function record(who: Caller, r: Partial<Usage> & { key?: string; t?: number; model?: unknown; costUsd?: number | null; ms?: number | null; status: string }) {
     const t = r.t ?? now();
     q.add.run(r.key ?? `gw:${randomUUID()}`, new Date(now()).toISOString(), day(t), who.runKey, who.runId, who.agentId, who.issueId, who.ci ? who.ci.subject : taskSubject(who, t), who.rev, who.kind, who.component, String(r.model ?? "").slice(0, 120) || "unknown", r.input ?? 0, r.cached ?? 0, r.output ?? 0, r.costUsd ?? null, r.ms ?? null, r.status);
   }
 
-  const send = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
-  const bearer = (req) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
-  async function readBody(req, max = MAX_BODY) {
-    const chunks = [];
+  const send = (res: ServerResponse, status: number, body: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+  const bearer = (req: IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
+  async function readBody(req: IncomingMessage, max = MAX_BODY): Promise<string> {
+    const chunks: Buffer[] = [];
     let n = 0;
     for await (const c of req) {
       n += c.length;
@@ -392,11 +433,11 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     return Buffer.concat(chunks).toString("utf8");
   }
 
-  async function model(req, res, routeKind, path, ci = false) {
+  async function model(req: IncomingMessage, res: ServerResponse, routeKind: string, path: string, ci = false) {
     const t0 = now();
     const who = await identify(bearer(req), routeKind, ci);
-    let body;
-    try { body = JSON.parse(await readBody(req, ci ? CI_MAX_BODY : MAX_BODY)); } catch (e) { throw e.status ? e : fail(400, "bad_request", "the body must be JSON"); }
+    let body: Record<string, unknown>;
+    try { body = JSON.parse(await readBody(req, ci ? CI_MAX_BODY : MAX_BODY)); } catch (e) { throw (e as GatewayError).status ? e : fail(400, "bad_request", "the body must be JSON"); }
     if (!body || typeof body !== "object" || typeof body.model !== "string") throw fail(400, "bad_request", "a model call needs a model");
     if (who.ci) {
       // CI's own gates, whatever the kill switch says: the models and fields it may use, calls in flight, its day caps. A
@@ -404,8 +445,8 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
       const c = ciOn();
       const problem = ciBodyProblem(body, Array.isArray(c.models) ? c.models : []);
       if (problem) throw fail(403, "not_allowed", problem);
-      if ([...inflight.values()].filter((x) => x.ciRepo === who.ci.repo).length >= CI_INFLIGHT) throw fail(429, "too_many_calls", `at most ${CI_INFLIGHT} CI calls in flight per repo`);
-      const avg = q.spentRun.get(who.runKey);
+      if ([...inflight.values()].filter((x) => x.ciRepo === who.ci!.repo).length >= CI_INFLIGHT) throw fail(429, "too_many_calls", `at most ${CI_INFLIGHT} CI calls in flight per repo`);
+      const avg = q.spentRun.get(who.runKey) as SumN;
       const over = ciOverCap(who, t0, c, Math.max(CI_RESERVE_USD, avg.n ? avg.s / avg.n : 0));
       if (over) {
         record(who, { key: `cap:${who.ci.repo}:${over.scope}:${day(t0)}:${over.cap}`, model: body.model, status: "cap_reached", t: t0, ms: 0 });
@@ -429,16 +470,16 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     const key = secret("openrouter_key");
     if (!key) throw fail(503, "no_upstream_key", "the gateway has no OpenRouter key");
     const id = randomUUID();
-    const avg = q.spentRun.get(who.runKey);
+    const avg = q.spentRun.get(who.runKey) as SumN;
     const est = Math.max(who.ci ? CI_RESERVE_USD : 0, avg.n ? avg.s / avg.n : 0);
     inflight.set(id, { runKey: who.runKey, agentId: who.agentId, subject: taskSubject(who, t0), day: day(t0), est, ciRepo: who.ci?.repo });
     try {
-      let up;
+      let up: Response;
       try {
         up = await fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
       } catch (e) {
         record(who, { model: body.model, status: "upstream_error", t: t0, ms: now() - t0 });
-        throw fail(502, "upstream_error", `OpenRouter unreachable (${e.message})`);
+        throw fail(502, "upstream_error", `OpenRouter unreachable (${(e as Error).message})`);
       }
       res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k))));
       const tap = usageTap(String(up.headers.get("content-type") ?? "").includes("event-stream"));
@@ -460,7 +501,7 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     }
   }
 
-  function boardKeyed(req) {
+  function boardKeyed(req: IncomingMessage) {
     if (!same(bearer(req), secret("gateway_board_key"))) throw fail(401, "unauthorized", "unauthorized");
   }
 
@@ -473,37 +514,37 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
   }
 
   /**
-   * Prometheus text for the monitoring module (gateway.mjs writes it as a node-exporter textfile; no route): today's spend and
+   * Prometheus text for the monitoring module (gateway.ts writes it as a node-exporter textfile; no route): today's spend and
    * cap per agent, cap refusals, CI review spend and cap, calls in flight. Labels are agent keys, never ids or secrets.
    */
   function metricsText() {
     const today = day(now());
-    const keyOf = (id) => (id ? String(grants()[id]?.key ?? "unknown") : "none");
-    const esc = (v) => String(v).replace(/["\\\n]/g, "_");
-    const out = [];
-    const metric = (name, help, rows) => {
+    const keyOf = (id: string | null) => (id ? String(grants()[id]?.key ?? "unknown") : "none");
+    const esc = (v: unknown) => String(v).replace(/["\\\n]/g, "_");
+    const out: string[] = [];
+    const metric = (name: string, help: string, rows: [Record<string, unknown>, number][]) => {
       out.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`);
       for (const [labels, v] of rows) out.push(`${name}${Object.keys(labels).length ? `{${Object.entries(labels).map(([k, x]) => `${k}="${esc(x)}"`).join(",")}}` : ""} ${Math.round(v * 1e4) / 1e4}`);
     };
-    const spend = db.prepare("SELECT agent_id, kind, COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status != 'cap_reached' GROUP BY agent_id, kind").all(today);
+    const spend = db.prepare("SELECT agent_id, kind, COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status != 'cap_reached' GROUP BY agent_id, kind").all(today) as { agent_id: string | null; kind: string; s: number }[];
     metric("aidenhq_gateway_spend_usd_today", "Billed model spend since 00:00 UTC, by agent key and call kind.", spend.map((r) => [{ agent: keyOf(r.agent_id), kind: r.kind }, r.s]));
-    const agents = [...new Set(spend.filter((r) => r.agent_id && !SYSTEM[r.kind] && r.kind !== CI_KIND).map((r) => r.agent_id))];
-    metric("aidenhq_gateway_agent_day_spend_usd", "An agent's spend counted against its agent-day cap, since 00:00 UTC.", agents.map((id) => [{ agent: keyOf(id) }, q.spentDay.get(id, today).s]));
+    const agents = [...new Set(spend.filter((r) => r.agent_id && !SYSTEM[r.kind] && r.kind !== CI_KIND).map((r) => r.agent_id!))];
+    metric("aidenhq_gateway_agent_day_spend_usd", "An agent's spend counted against its agent-day cap, since 00:00 UTC.", agents.map((id) => [{ agent: keyOf(id) }, (q.spentDay.get(id, today) as Sum).s]));
     metric("aidenhq_gateway_agent_day_cap_usd", "An agent's agent-day cap in force today.", agents.map((id) => [{ agent: keyOf(id) }, capOf({ agentId: id }, "day", today)]));
-    const refused = db.prepare("SELECT agent_id, kind, COUNT(*) AS n FROM calls WHERE day = ? AND status = 'cap_reached' GROUP BY agent_id, kind").all(today);
+    const refused = db.prepare("SELECT agent_id, kind, COUNT(*) AS n FROM calls WHERE day = ? AND status = 'cap_reached' GROUP BY agent_id, kind").all(today) as { agent_id: string | null; kind: string; n: number }[];
     metric("aidenhq_gateway_cap_refusals_today", "Runs or CI reviews refused over a spend cap since 00:00 UTC (one per run, scope and cap).", refused.map((r) => [{ agent: keyOf(r.agent_id), kind: r.kind }, r.n]));
     const ci = ciConf();
-    metric("aidenhq_gateway_ci_spend_usd_today", "App CI code review spend since 00:00 UTC.", [[{}, q.ciSpent.get(today).s]]);
+    metric("aidenhq_gateway_ci_spend_usd_today", "App CI code review spend since 00:00 UTC.", [[{}, (q.ciSpent.get(today) as Sum).s]]);
     metric("aidenhq_gateway_ci_day_cap_usd", "App CI code review's all-repos day cap (0: CI review off).", [[{}, ci?.enabled ? Number(ci.day_usd) || 0 : 0]]);
     metric("aidenhq_gateway_enforcing_caps", "1 when spend caps refuse calls (settings.spend_caps).", [[{}, enforcing() ? 1 : 0]]);
     metric("aidenhq_gateway_inflight", "Model calls in flight.", [[{}, inflight.size]]);
     return out.join("\n") + "\n";
   }
 
-  /** `ci`: the request came in on the CI listener (gateway.mjs), which serves the CI routes only. */
-  async function handle(req, res, { ci = false } = {}) {
+  /** `ci`: the request came in on the CI listener (gateway.ts), which serves the CI routes only. */
+  async function handle(req: IncomingMessage, res: ServerResponse, { ci = false } = {}) {
     try {
-      const path = String(req.url ?? "").split("?")[0];
+      const path = String(req.url ?? "").split("?")[0]!;
       if (req.method === "GET" && path === "/health") return send(res, 200, ci ? { ok: true } : { ok: true, enforcing: enforcing(), inflight: inflight.size });
       if (ci) {
         if (req.method === "POST" && path === "/ci/token") return await ciToken(req, res);
@@ -511,23 +552,24 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
         return send(res, 404, { error: { code: 404, type: "not_found", message: "no such route" } });
       }
       const m = ROUTE.exec(path);
-      if (req.method === "POST" && m) return await model(req, res, m[1] ?? "agent", m[2]);
+      if (req.method === "POST" && m) return await model(req, res, m[1] ?? "agent", m[2]!);
       if (req.method === "POST" && path === "/usage") {
         boardKeyed(req);
-        const { since } = JSON.parse((await readBody(req)) || "{}");
-        const records = q.since.all(String(since ?? "")).map((r) => ({ key: r.key, at: r.at, agentId: r.agent_id, component: r.component, model: r.model, input: r.input, cached: r.cached, output: r.output, costUsd: r.cost_usd, runKey: r.run_key, runId: r.run_id, issueId: r.issue_id, rev: r.rev, kind: r.kind, ms: r.ms, status: r.status, ...(r.kind === CI_KIND ? { subject: r.task_subject } : {}) }));
+        const { since } = JSON.parse((await readBody(req)) || "{}") as { since?: unknown };
+        const records = (q.since.all(String(since ?? "")) as CallRow[]).map((r) => ({ key: r.key, at: r.at, agentId: r.agent_id, component: r.component, model: r.model, input: r.input, cached: r.cached, output: r.output, costUsd: r.cost_usd, runKey: r.run_key, runId: r.run_id, issueId: r.issue_id, rev: r.rev, kind: r.kind, ms: r.ms, status: r.status, ...(r.kind === CI_KIND ? { subject: r.task_subject } : {}) }));
         return send(res, 200, { records });
       }
       if (req.method === "POST" && path === "/internal/caps") {
         boardKeyed(req);
-        const b = JSON.parse((await readBody(req)) || "{}");
+        const b = JSON.parse((await readBody(req)) || "{}") as { scope: string; agentId: string; subject: string; cap: number }; // checked next
         if (!["run", "task", "day"].includes(b.scope) || typeof b.agentId !== "string" || !b.agentId || !/^[\w:.-]{1,128}$/.test(String(b.subject)) || !(b.cap > 0 && b.cap <= 1000)) throw fail(400, "bad_request", "send {scope: run|task|day, agentId, subject, cap (USD, 0-1000]}");
         q.setCap.run(b.scope, b.agentId, b.subject, b.cap, new Date(now()).toISOString());
         log("cap set", { scope: b.scope, agent: b.agentId, subject: b.subject, cap: b.cap });
         return send(res, 200, { ok: true });
       }
       send(res, 404, { error: { code: 404, type: "not_found", message: "no such route" } });
-    } catch (e) {
+    } catch (err) {
+      const e = err as GatewayError;
       const status = e.status ?? 500;
       if ((status >= 500 || status === 401) && (!ci || ciRefusalLogged())) log("refused", { url: req.url, status, err: String(e.message).slice(0, 300) });
       if (!res.headersSent) send(res, status, { error: { code: status, type: e.type ?? "error", message: e.message, ...(e.extra ?? {}) } });

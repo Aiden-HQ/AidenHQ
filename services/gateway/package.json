@@ -9,8 +9,12 @@
   },
   "description": "The model gateway: the only holder of the OpenRouter key; per-run attribution, billed costs and spend caps.",
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning gateway.mjs",
+    "start": "node --disable-warning=ExperimentalWarning gateway.ts",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs",
-    "typecheck": "node --check gateway.mjs && node --check lib.mjs && node --check ci.mjs && node --check token.mjs"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "5.9.3"
   }
 }

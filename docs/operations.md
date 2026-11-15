@@ -283,7 +283,7 @@ per runner: 2 CPUs, 4 GB.
 **Code review spend (the model gateway).** The template's `code-review` job needs no model key: on our runners
 (`AIDENHQ_GATEWAY_URL`, set on the runner container) it asks GitHub for its OIDC token (`id-token: write`, that job only)
 and trades it at the gateway's `POST /ci/token` for an opaque CI token that lives 2 hours. The gateway
-(`services/gateway/ci.mjs`) checks GitHub's signature and that the job is a `pull_request` run of the repo's own
+(`services/gateway/ci.ts`) checks GitHub's signature and that the job is a `pull_request` run of the repo's own
 `.github/workflows/ci.yml` for that PR, on a self-hosted runner in the agents org; each run attempt trades its token
 once. The repo and PR come from that signed token. The CI token works only on the CI listener, only for
 `chat/completions` with the models in `settings.ci_review_models` and no fallbacks, plugins or server tools, under CI's

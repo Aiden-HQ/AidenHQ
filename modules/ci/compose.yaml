@@ -4,7 +4,7 @@
 # It gets only a one-hour registration token (RUNNER_TOKEN, minted on the host from the GitHub App): no host mounts, no
 # docker socket, none of the instance's secrets, and a network that reaches the public Internet and, on the host, only the
 # model gateway's CI listener (aidenhq-ci; 10.231.4.1:8201: CI tokens only, which a code-review job gets for its GitHub OIDC
-# token: services/gateway/ci.mjs).
+# token: services/gateway/ci.ts).
 
 services:
   ci-runner:

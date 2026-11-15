@@ -1,7 +1,7 @@
 [Unit]
 Description=AidenHQ CI runners: Docker network and host network rule (ops/vm/computer-net.sh, CI values)
 # The ci module's runners (modules/ci) reach the public Internet and the model gateway's CI listener (10.231.4.1:8201: CI
-# tokens only, services/gateway/ci.mjs); not the LAN, the tailnet, the rest of the host, the other compose services or each
+# tokens only, services/gateway/ci.ts); not the LAN, the tailnet, the rest of the host, the other compose services or each
 # other. Re-applied whenever Docker (re)starts; installed as a system unit by ops/vm/setup.sh.
 After=docker.service
 Requires=docker.service
