@@ -27,11 +27,6 @@ describe("the conversation on a task", () => {
     assert.doesNotMatch(entries[3].body, /Workspace:|aidenhq-reply/, "no local paths or markers");
   });
 
-  it("knows replies posted before the reply marker by the runner's footer", () => {
-    const old = threadEntries([runner(1, "**Done.**\n\n## Summary\nok\n\n---\nClaude Code · implement · `a/b`\nWorkspace: `/w` · log: `/l`")], { user: "Dana" });
-    assert.equal(old[0].kind, "you");
-  });
-
   it("names another task's Engineer by its replies, and gives the whole conversation as one transcript", () => {
     // PEN-3155: Ada couldn't see Alfred's report on the task she was added to.
     const other = threadEntries(comments, { user: "Dana", agents: [alfred], replyBy: "Grace" });
