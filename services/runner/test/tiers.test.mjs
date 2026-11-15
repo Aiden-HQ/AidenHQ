@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import YAML from "yaml";
-import { classify, dependabotCommits, newGrants, rejectedSince, routineCap } from "../src/tiers.mjs";
+import { classify, dependabotCommits, newGrants, priorDecisions, rejectedSince, routineCap } from "../src/tiers.mjs";
 import { origins } from "../src/paperclip.mjs";
 
 test("a replayed approval: only a later no on its branches (or a merge, or the owner's veto) outranks it", () => {
@@ -58,6 +58,17 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   const at = (records, sha = SHA("f"), b = {}) => pub("pr", { sha, patch: pk(sha), ...b }, { records });
   assert.equal(tierOf(at([rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("a"), 1)])), 0, "a reviewer's no on other content: reviewed (here Tier 0) afresh");
   assert.equal(at([rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("f"), 1)]).rule, "rejected-content", "the same commits stay rejected");
+  // Two reviewers unsure: the same commits come back only once the request chain changed (no re-rolling the reviewers).
+  const unsure = (requestChain) => [rec("rejected", "reviewer:~z-ai/glm-flash-latest", SHA("f"), 1, { reviewCode: "reviewer_unsure", requestChain })];
+  assert.equal(pub("pr", { sha: SHA("f"), patch: pk(SHA("f")) }, { records: unsure("c1"), requestChain: "c1" }).rule, "rejected-content", "same chain: still rejected");
+  assert.equal(pub("pr", { sha: SHA("f"), patch: pk(SHA("f")) }, { records: unsure(undefined), requestChain: "c2" }).rule, "rejected-content", "chain unknown then: still rejected");
+  assert.equal(tierOf(pub("pr", { sha: SHA("f"), patch: pk(SHA("f")) }, { records: unsure("c1"), requestChain: "c2" })), 0, "a changed chain: reviewed afresh");
+  // Once per content: the relift carries the first round's note (its unsure goes to the owner); a second rejection of the
+  // same commits, however the chain changed since, keeps them rejected.
+  assert.equal(priorDecisions(unsure("c1"), "pr", [], SHA("f"), undefined, "c2").relift, "note 1");
+  const twice = [...unsure("c1"), rec("rejected", "reviewer:~z-ai/glm-flash-latest", SHA("f"), 2, { reviewCode: "reviewer_unsure", requestChain: "c2" })];
+  assert.equal(pub("pr", { sha: SHA("f"), patch: pk(SHA("f")) }, { records: twice, requestChain: "c3" }).rule, "rejected-content", "no second relift");
+  assert.equal(tierOf(pub("pr", { sha: SHA("a"), patch: pk(SHA("a")) }, { records: twice, requestChain: "c3" })), 0, "changed commits: always a fresh review");
   assert.equal(tierOf(at([rec("rejected", "owner:board", SHA("a"), 1)])), 2, "the owner's no: their card");
   assert.equal(tierOf(at([rec("rejected", "owner:board", SHA("a"), 1), rec("approved", "owner:telegram", SHA("b"), 2)])), 0, "their later yes lifts it");
   // Bound to content: reject X, approve Y, resubmit X: still the owner's (the watcher decides as the owner too).

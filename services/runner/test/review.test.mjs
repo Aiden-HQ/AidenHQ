@@ -64,9 +64,51 @@ test("a refusal goes to the other model; the model that decided is named", async
   assert.deepEqual(asked, [LUNA, DEEPSEEK]);
 });
 
-test("unsure escalates to the owner, coded reviewer_unsure, with its reason", async () => {
-  const { ask } = asker([{ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason: "the diff is cut short" }) }]);
-  assert.deepEqual(await review({ card, diff: "+x", policy: "p", ask }), { decision: "escalate", code: "reviewer_unsure", reason: "the diff is cut short", model: LUNA, flag: true });
+test("unsure: a second reviewer decides with the first's note; unsure twice goes back to the agent, never the owner", async () => {
+  const unsure = (reason) => ({ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason, second_review: false }) });
+  // Unsure twice: rejected (back to the agent) with both notes, decided by the second reviewer (GLM after Luna).
+  let r = asker([unsure("the diff is cut short"), unsure("37 files are missing")]);
+  let prompts = [];
+  const twice = await review({ card, diff: "+x", policy: "p", requesterModel: "deepseek/deepseek-flash", ask: async (m, p) => (prompts.push(p), r.ask(m)) });
+  assert.deepEqual(r.asked, [LUNA, GLM]);
+  assert.deepEqual([twice.decision, twice.code, twice.model], ["reject", "reviewer_unsure", GLM]);
+  assert.match(twice.reason, /^Two AI reviewers were unsure; fix the request: .*the diff is cut short.*37 files are missing/);
+  // The second reviewer reads the first's note, fenced as data; the first never sees one.
+  assert.doesNotMatch(prompts[0].user, /FIRST_REVIEWER/);
+  assert.match(prompts[1].user, /<<<FIRST_REVIEWER\nthe diff is cut short\nFIRST_REVIEWER>>>/);
+  // The second's reject or approve decides; its escalate is the owner's.
+  r = asker([unsure("no chain"), no]);
+  const rejected = await review({ card, diff: "+x", policy: "p", ask: r.ask });
+  assert.deepEqual([rejected.decision, rejected.code, rejected.model], ["reject", "gate_change", GLM]);
+  r = asker([unsure("no chain"), ok]);
+  const yes = await review({ card, diff: "+x", policy: "p", ask: r.ask });
+  assert.deepEqual([yes.decision, yes.model, yes.second], ["approve", GLM, undefined]);
+  r = asker([unsure("no chain"), { content: JSON.stringify({ decision: "escalate", reason_code: "destructive_change", reason: "drops a table", second_review: false }) }]);
+  assert.equal((await review({ card, diff: "+x", policy: "p", ask: r.ask })).decision, "escalate");
+  // Unsure twice, a trivially changed request, unsure twice again on the same commits (`relift`): the owner's, both rounds' notes.
+  r = asker([unsure("still cut short"), unsure("still missing")]);
+  const again = await review({ card, diff: "+x", policy: "p", relift: "Two AI reviewers were unsure; fix the request: round one", ask: r.ask });
+  assert.deepEqual([again.decision, again.code], ["escalate", "reviewer_unsure"]);
+  assert.match(again.reason, /Earlier round: .*round one.*This round: .*still cut short.*still missing/);
+  // One approval never passes an authority-expanding card: a split, the owner's.
+  r = asker([unsure("no chain"), ok]);
+  assert.equal((await review({ card, diff: "+x", policy: "p", panel: true, ask: r.ask })).code, "panel_split");
+  // A reviewer's own authority-expanding flag is recorded on the card first (couldn't: retried later), and the second is
+  // asked as one of two.
+  const flaggedUnsure = { content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason: "cut short", second_review: true }) };
+  const marked = [];
+  prompts = [];
+  r = asker([flaggedUnsure, ok]);
+  const split = await review({ card, diff: "+x", policy: "p", onPanel: async () => marked.push("panel"), ask: async (m, p) => (prompts.push(p), r.ask(m)) });
+  assert.deepEqual([split.code, marked], ["panel_split", ["panel"]]);
+  assert.match(prompts[1].user, /authority-expanding/);
+  r = asker([flaggedUnsure, ok]);
+  const unrecorded = await review({ card, diff: "+x", policy: "p", onPanel: async () => { throw new Error("board down"); }, ask: r.ask });
+  assert.deepEqual([unrecorded.code, r.asked.length], ["reviewer_failed", 1]);
+  // The second's own flag is recorded too.
+  marked.length = 0;
+  r = asker([unsure("no chain"), flagged]);
+  assert.deepEqual([(await review({ card, diff: "+x", policy: "p", onPanel: async () => marked.push("panel"), ask: r.ask })).code, marked], ["panel_split", ["panel"]]);
 });
 
 test("the reviewer's codes are exactly the shared REVIEW_CODES (services/shared/reason-codes.ts)", () => {

@@ -6,7 +6,8 @@
 // (the agent's own account: kept as a record, never sent: the reviewer is reasoning-blind), requesterModel?, previous? (earlier rejections'
 // notes), expect }, where expect is "approve" or a list of acceptable decisions (an attack passes when it is rejected or
 // escalated, never approved: through the whole panel when there is one), expect_code (optional) a list of acceptable reason
-// codes (an `unsure` comes back as escalate, code reviewer_unsure), and expect_second (optional): true when an approval
+// codes (a first `unsure` goes to a second reviewer given its note; unsure twice comes back as reject, code
+// reviewer_unsure, the request sent back to the agent), and expect_second (optional): true when an approval
 // must carry the second reviewer's (the panel ran), false when one reviewer must have decided it alone. `card.panel`: code
 // marked the card authority-expanding (tiers.mjs `panel`), as the runner passes it. expect_flag (optional): whether the first
 // reviewer must mark it authority-expanding itself (second_review), the routing code can't do.

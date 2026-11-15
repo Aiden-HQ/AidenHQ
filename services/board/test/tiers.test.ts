@@ -122,6 +122,11 @@ describe("tiered approvals", () => {
     // Its notice (posted with the board key) names the reviewer, so no agent reads it as the owner's no.
     await new Promise((r) => setTimeout(r, 20));
     expect(posted.find((b) => b.includes(`approval ${reject.id}`))).toMatch(/^\*\*Rejected by the AI reviewer\*\*.*not the owner's decision/);
+    // Two reviewers unsure: sent back to the agent, worded as the request to fix, never as the owner's no.
+    const unsure = (await call("POST", "/internal/approvals", { issue: "WOR-7", action: "pr", tier: 1, reason: "r", args: { only: [{ repo: "org/app", branch: `p${++n}`, sha: "8".repeat(40) }] } }, { "x-reviewer-key": REVIEWER })).json;
+    expect((await verdict(unsure.id, { digest: unsure.digest, decision: "reject", code: "reviewer_unsure", reason: "Two AI reviewers were unsure; fix the request: x" })).json).toMatchObject({ state: "rejected", tier: 1 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(posted.find((b) => b.includes(`approval ${unsure.id}`))).toMatch(/^\*\*Sent back: two AI reviewers were unsure\*\*.*not the owner's decision/);
     // A reviewer's no never makes the next request the owner's.
     expect((await call("POST", "/internal/approvals", { issue: "WOR-7", action: "pr", tier: 1, reason: "r", args: { only: [{ repo: "org/app", branch: `p${++n}`, sha: "e".repeat(40) }] } }, { "x-reviewer-key": REVIEWER })).json.tier).toBe(1);
   });

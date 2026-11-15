@@ -83,7 +83,7 @@ export function classify(action, s) {
   const t = highest(action === "push" || action === "pr" ? publishParts(action, s) : action === "merge" ? mergeParts(s) : action === "close" ? closeParts(s) : action === "apply" ? applyParts(s) : action === "create_repo" ? createRepoParts(s) : []);
   // Earlier decisions on this task (owner, 2026-11-14; replaced "sticky"): the owner's own no holds until they say yes; the
   // reviewer's no holds for the same content and bounds the retries.
-  const prior = t.reject ? undefined : priorPart(priorDecisions(s.records, action, s.also, requestKey(action, s), requestPatches(action, s)));
+  const prior = t.reject ? undefined : priorPart(priorDecisions(s.records, action, s.also, requestKey(action, s), requestPatches(action, s), s.requestChain));
   if (prior) return prior.reject ? prior : { ...prior, reason: `${prior.reason} (was: ${t.reason})` };
   // A routine's cap (its `autonomy`): the stricter of it and the instance's wins. tier0: Tier 1 is the owner's; off: Tier 0 too.
   if (!t.reject && ((s.routineAutonomy === "off" && t.tier < 2) || (s.routineAutonomy === "tier0" && t.tier === 1)))
@@ -185,23 +185,33 @@ const decided = (r) => ["approved", "used", "expired", "rejected"].includes(r.st
  *   this content and hasn't approved that same content since (an approval of other content doesn't lift it).
  * - rejects: the AI reviewer's rejections on the task since the owner's last yes, task-wide (any branch, PR or name),
  *   except those whose exact content was approved later. At MAX_REJECTS the action is parked.
- * - same: one of those rejected exactly this content (requestKey): it stays rejected (its note).
+ * - same: one of those rejected exactly this content (requestKey): it stays rejected (its note). Two reviewers' unsure
+ *   lifts once, after the request chain changed (`chain`: the current chain's hash).
+ * - relift: that lift's earlier note: the re-review's unsure goes to the owner, not back to the agent.
  * - findings: every one of those notes, attached to the next review.
  */
-export function priorDecisions(records, action, also = [], key, patches) {
+export function priorDecisions(records, action, also = [], key, patches, chain) {
   const want = [action, ...(also ?? [])];
   const mine = (records ?? []).filter((r) => decided(r) && carried(r).some((x) => want.includes(x))).sort((a, b) => String(a.decidedAt ?? "").localeCompare(String(b.decidedAt ?? "")));
   const lastOwner = mine.filter(byOwner).at(-1);
   const ownerYes = mine.filter((r) => byOwner(r) && r.state !== "rejected").at(-1);
   const approvedLater = (r) => mine.some((y) => y.state !== "rejected" && String(y.decidedAt) > String(r.decidedAt) && recordKey(y) !== undefined && recordKey(y) === recordKey(r));
   const since = mine.filter((r) => r.state === "rejected" && r.decidedBy.startsWith("reviewer:") && !CODE_REJECTS.includes(r.reviewCode) && (!ownerYes || String(r.decidedAt) > String(ownerYes.decidedAt)) && !approvedLater(r));
-  const same = key ? since.find((r) => recordKey(r) === key) : undefined;
+  // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
+  // same commits may come back once, after the request chain changed (`chain`, its hash now; `requestChain`, its hash
+  // when they were unsure). The chain is agent-editable, so that relift happens at most once per content: the re-review
+  // gets `relift` (the first round's note), and unsure again there goes to the owner (review.mjs). Unchanged or unknown
+  // chain, or any other rejection of the content, and it stays rejected. It still counts toward MAX_REJECTS.
+  const rejectedSame = key ? since.filter((r) => recordKey(r) === key) : [];
+  const [only] = rejectedSame;
+  const lifted = rejectedSame.length === 1 && only.reviewCode === "reviewer_unsure" && Boolean(only.requestChain) && Boolean(chain) && only.requestChain !== chain;
+  const same = lifted ? undefined : rejectedSame[0];
   // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
   // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
   const sameContent = (r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: same ? same.review || "no note" : undefined, rejects: since.length, findings: since.map((r) => r.review).filter(Boolean) };
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: same ? same.review || "no note" : undefined, relift: lifted ? only.review || "no note" : undefined, rejects: since.length, findings: since.map((r) => r.review).filter(Boolean) };
 }
 
 /** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */

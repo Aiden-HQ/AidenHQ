@@ -152,7 +152,7 @@ export function ApprovalCard({ a: card, open, decided, inline, prefix = "", unfo
           <>
             <dt>Reviewer's note</dt>
             <dd className="pre">
-              {a.reviewCode === "reviewer_unsure" && <strong>The reviewer wasn't sure, so it's yours: </strong>}
+              {a.reviewCode === "reviewer_unsure" && <strong>{a.state === "rejected" ? "Two reviewers weren't sure, so it went back to the agent: " : "The reviewer wasn't sure, so it's yours: "}</strong>}
               {a.review}
               {a.reviewCode && <span className="mono muted"> · {a.reviewCode}</span>}
             </dd>

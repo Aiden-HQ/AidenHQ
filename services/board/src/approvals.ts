@@ -556,8 +556,8 @@ export class Approvals {
    * The AI reviewer's verdict on a pending Tier 1 record, bound to its digest: approve or reject decides it (decided_by
    * `reviewer:<model>`, or `reviewer:<model>+<second>` when a second reviewer approved too); escalate makes it Tier 2 (the
    * owner's), with the note. Anything else is refused, and so is an approval of a panel record (authority-expanding) that
-   * names no second reviewer of another model. `code` is the reviewer's reason code (reviewer_unsure: it couldn't tell, so
-   * the owner decides; panel_split: the two reviewers disagreed).
+   * names no second reviewer of another model. `code` is the reviewer's reason code (reviewer_unsure on a reject: two
+   * reviewers couldn't tell, so it went back to the agent; panel_split: the two reviewers disagreed).
    */
   review(id: string, v: { digest: string; decision: "approve" | "reject" | "escalate"; reason: string; model: string; second?: string; code?: ReviewCode }, now = new Date()): { ok: true; approval: Approval } | { ok: false; reason: string } {
     const a = this.get(id);

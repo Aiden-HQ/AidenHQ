@@ -265,7 +265,7 @@ export interface Approval {
   review: string | null;
   /** The tier rule's reason code (null on older records). */
   reasonCode?: string | null;
-  /** The reviewer's reason code (reviewer_unsure: it couldn't tell, so the owner decides). */
+  /** The reviewer's reason code (reviewer_unsure on a rejection: two reviewers couldn't tell, so it went back to the agent). */
   reviewCode?: string | null;
   /** Stamped by the board from the credential: account:<id> (an admin's tap, or the owner's typed reply on the board), owner:telegram, owner:reply (a typed reply in Telegram), watcher, reviewer:<model>, auto:<rule>. */
   decidedBy: string | null;

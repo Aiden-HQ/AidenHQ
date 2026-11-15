@@ -47,9 +47,12 @@ agent, never to the owner.
   family than the first's and the requester's) answers the same question blind to the first's verdict: both approving runs
   it, the first rejecting sends it back, anything else is a split for the owner. The board refuses a reviewer approval of
   a panel card that names no second reviewer. A call error or timeout is retried with backoff and, after six tries, goes
-  back to the agent; a diff too large, missing or with files the reviewer can't read goes back too. "Unsure" goes to the
-  owner.
-- **Tier 2: owner.** A board card plus a message on the owner channel: a panel split, a reviewer's "unsure" or
+  back to the agent; a diff too large, missing or with files the reviewer can't read goes back too. A first reviewer's
+  "unsure" goes to a second reviewer (another family), given the first's note: its approve or reject decides (one approval
+  on a panel card is a split), and a second "unsure" sends the request back to the agent with both notes, not to the
+  owner. The same commits are reviewed again once, after the request chain changed; unsure twice again on that
+  re-review goes to the owner with both rounds' notes.
+- **Tier 2: owner.** A board card plus a message on the owner channel: a panel split, a reviewer's
   "escalate" (a destructive migration), the owner's own veto, a routine's or the instance's autonomy cap, a spend-cap
   raise, or nothing recognised. If the reviewers looked first, their notes are attached.
 

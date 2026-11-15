@@ -22,7 +22,7 @@ export const REVIEW_CODES = [
   "supply_chain",
   "policy_other",
   "owner_should_look",
-  // unsure: the model can't tell; always escalates to the owner
+  // unsure: the model can't tell; a second reviewer decides, and both unsure sends it back to the agent (reject)
   "reviewer_unsure",
   // code escalated without (or despite) a usable verdict
   "reviewer_failed",

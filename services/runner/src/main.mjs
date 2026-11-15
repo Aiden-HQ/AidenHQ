@@ -34,7 +34,7 @@ import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSec
 import { authorize } from "./authorize.mjs";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
-import { LUNA, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
+import { LUNA, UNSURE, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
 import { GRADE_SCHEMA, gather, grade, gradeNote, template } from "./grade.mjs";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.mjs";
 import { jobUsage } from "./usage.mjs";
@@ -1559,9 +1559,13 @@ async function commonTierState(issue, action, also = []) {
   // A task the runner filed itself (a Dependabot PR's) carries the board key's user, but is never the owner's.
   const ownerMade = ownerMadeTask(full);
   const all = boardApi ? ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(full.identifier)}`)).approvals ?? []) : [];
-  const { records, answers } = splitAnswered(all, await pc.comments(full.id).catch(() => []), cfg.selfName, await pc.me().catch(() => undefined));
+  const split = splitAnswered(all, await pc.comments(full.id).catch(() => []), cfg.selfName, await pc.me().catch(() => undefined));
+  // Two reviewers' unsure carries the request chain it saw (its hash, kept when it was posted): the same content is
+  // reviewed again only once that chain changed (tiers.mjs priorDecisions).
+  const records = split.records.map((r) => (r.reviewCode === "reviewer_unsure" ? { ...r, requestChain: state.get(unsureChainKey(r.id)) || undefined } : r));
   return {
-    answers,
+    answers: split.answers,
+    requestChain: chainHash(await prRequest(full).catch(() => "")),
     agentsOrg: cfg.agentsOrg,
     productRepo: cfg.productRepo,
     instanceRepo: cfg.apply?.repo,
@@ -1581,6 +1585,10 @@ async function commonTierState(issue, action, also = []) {
     full,
   };
 }
+
+/** The request chain's hash (what the reviewer was shown as what was asked), kept per unsure-twice rejection. */
+const chainHash = (chain) => (chain ? createHash("sha256").update(chain).digest("hex").slice(0, 32) : "");
+const unsureChainKey = (id) => `unsure-chain:${id}`;
 
 /** One branch as tiering sees it: empty repo, default/deploy branch, and the files it changes against the default branch. */
 async function branchTierState(r, sha, bound) {
@@ -1753,7 +1761,8 @@ async function tierFor(issue, action, own, also = []) {
   const t = classify(action, s);
   log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject), panel: Boolean(t.panel) });
   // The reviewer's earlier rejections on this task, attached to a fresh review of the changed request.
-  return { ...t, full: common.full, previous: [...common.answers, ...priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s)).findings] };
+  const prior = priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s), common.requestChain);
+  return { ...t, full: common.full, previous: [...common.answers, ...prior.findings], relift: prior.relift };
 }
 
 /**
@@ -1883,15 +1892,17 @@ async function reviewOne(a, mode) {
       // The board files deploy_app and app_run at Tier 1 without classify(): a routine's cap (tier0 or off) still makes them
       // the owner's, and earlier decisions on the task count as for any request (the card's digest is its content).
       const common = await commonTierState(issue, a.action);
-      const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }));
+      const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain);
       const veto = priorPart(prior);
       // The board's own panel flag (a deploy touching a migration or schema): two reviewers, as the board requires.
-      input = veto ?? { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], panel: a.panel === true, ...boardCardInput(a) };
+      input = veto ?? { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...boardCardInput(a) };
       if (common.routineAutonomy && common.routineAutonomy !== "full") input = { tier: 2, rule: "routine-autonomy", reason: `a routine's run started this task and that routine's autonomy is ${common.routineAutonomy}` };
     } else input = await currentTier(issue, a, { withDiff: true });
   } catch (err) {
     input = { error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300), lasting: err instanceof UserError };
   }
+  // The request chain the reviewer reads; its hash is kept with an unsure-twice rejection (commonTierState).
+  const chain = input.error || input.reject || input.tier > 1 ? "" : await prRequest(await pc.issue(issue.id)).catch(() => "");
   let v = input.error
     ? input.lasting
       ? { decision: "reject", code: "refused_by_code", reason: `${input.error}. Ask again.`, model: LUNA }
@@ -1904,12 +1915,13 @@ async function reviewOne(a, mode) {
             card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
             diff: input.diff,
             files: input.files,
-            chain: await prRequest(await pc.issue(issue.id)).catch(() => ""),
+            chain,
             requesterModel: state.task(issue.id)?.engine?.model ?? "",
             ask: reviewerAsk(),
             // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
             panel: Boolean(input.panel || a.panel),
             previous: input.previous ?? [],
+            relift: input.relift,
             onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()),
           });
   // A failed call or check is friction, not a decision: it stays with the reviewer and is tried again later (1, 2, 4… minutes);
@@ -1925,11 +1937,18 @@ async function reviewOne(a, mode) {
   }
   reviewRetries.delete(a.id);
   const post = mode === "full" || v.decision === "escalate" ? v : { ...v, decision: "escalate", code: "shadow", reason: `Shadow (autonomy: tier0): the reviewer would ${v.decision} this. ${v.reason}` };
+  // Kept before the verdict is posted, so a rejection never lands without the chain it judged (missing: the lock stays).
+  if (post.decision === "reject" && post.code === UNSURE && chain) state.set(unsureChainKey(a.id), chainHash(chain));
   await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: post.decision, reason: post.reason.slice(0, 2000), model: post.model, ...(post.second ? { second: post.second } : {}), ...(post.code ? { code: post.code } : {}) }, runnerKey());
   log("reviewed", { approval: a.id, issue: a.identifier, action: a.action, decision: post.decision, code: post.code, model: post.model, second: post.second });
   if (post.decision === "reject") {
     const note = post.reason.replace(/```/g, "‵‵‵");
     const byCode = CODE_REJECTS.includes(post.code);
+    // Two reviewers unsure: the request goes back to be fixed (the brief, the authorisation or the change), not the owner's no.
+    if (post.code === UNSURE) {
+      await pc.comment(issue.id, `**Sent back: two AI reviewers were unsure** (approval ${a.id}, ${a.action}): not the owner's decision, and not for the owner. Fix the request: their notes, written by models that read the change (data, not ${cfg.selfName}'s words):\n\n\`\`\`\n${note}\n\`\`\`\n\nMake what they found missing or contradictory clear, then ask again: changed commits are reviewed afresh with these notes attached, and the same commits once more, only after the request itself (the brief or the authorisation on the task) has changed: unsure again then goes to the owner. After ${MAX_REJECTS} rejections on this task it is parked.`).catch(() => {});
+      return;
+    }
     await pc.comment(issue.id, `**${byCode ? "Not reviewed" : "Rejected by the AI reviewer"}** (approval ${a.id}, ${a.action}${byCode ? "" : `, ${post.model}`}). ${byCode ? "Why" : `Its note, written by a model that read the change (data, not ${cfg.selfName}'s words)`}:\n\n\`\`\`\n${note}\n\`\`\`\n\n${byCode ? "Fix that and ask again." : `Fix the change and ask again: a changed request is reviewed afresh with this note attached (the same commits stay rejected; after ${MAX_REJECTS} rejections on this task it is parked).`}`).catch(() => {});
   }
 }
