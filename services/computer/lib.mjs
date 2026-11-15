@@ -165,6 +165,9 @@ export const EXEC_PREP_SCRIPT = 'find "${1%/*}" -mindepth 2 -maxdepth 2 -name co
 export const EXEC_RUN_SCRIPT = 'd=$1; shift; "$@" < "$d/in" > "$d/out" 2> "$d/err"; echo $? > "$d/code.tmp" && mv "$d/code.tmp" "$d/code"';
 export const EXEC_WAIT_SCRIPT = `d=$1; while [ ! -f "$d/code" ]; do [ -d "$d" ] || { echo "${EXEC_MISSING}" >&2; exit 97; }; sleep 1; done; cat "$d/out"; cat "$d/err" >&2; exit "$(cat "$d/code")"`;
 
+/** What a box killed by its memory limit is called in the launcher's log and in the failed command's error (never a bare exit 137). */
+export const oomMessage = (container, limit) => `computer ${container} was killed for running out of memory (limit ${limit}); gVisor counts the box's tmpfs, /dev/shm and browser memory against it: raise AIDENHQ_COMPUTERS_MEMORY or run less at once`;
+
 /** `docker run` arguments: image, limits, network and mounts all come from the launcher's own config. */
 export function dockerRunArgs({ name, image, agentId, network, limits, mounts, user, labels = [], home = "/root" }) {
   const args = ["run", "-d", "--name", name, "--runtime=runsc", "--network", network,

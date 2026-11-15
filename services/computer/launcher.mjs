@@ -37,7 +37,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, builtImage, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -61,7 +61,7 @@ const CFG = {
   // 7: the 5 Paperclip computer agents' max_parallel plus the App Engineer's 2 (2026-11-13, a 15 GB host with no swap).
   max: Number(env("AIDENHQ_COMPUTERS_MAX", 7)),
   idleMs: Number(env("AIDENHQ_COMPUTERS_IDLE_MIN", 10)) * 60_000,
-  limits: { memory: env("AIDENHQ_COMPUTERS_MEMORY", "2g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "512m", pids: 1024 },
+  limits: { memory: env("AIDENHQ_COMPUTERS_MEMORY", "6g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "1g", pids: 1024 },
   grantsFile: path.join(configDir, "grants", "grants.json"),
   catalogFile: path.join(path.resolve(repo, env("AIDENHQ_DATA_DIR", "data")), "paperclip", "catalog.static.json"),
   computersFile: env("AIDENHQ_COMPUTERS_FILE", path.join(configDir, "computers.json")),
@@ -71,7 +71,7 @@ const CFG = {
   runnerWork: runnerDir("work_dir", "~/aidenhq-work"),
   runnerState: runnerDir("state_dir", "~/.local/state/aidenhq-runner"),
   // A runner job's box: its own memory limit (the pool's RAM: docs/design/sandboxing.md, launcher pool).
-  jobMemory: env("AIDENHQ_COMPUTERS_JOB_MEMORY", "1536m"),
+  jobMemory: env("AIDENHQ_COMPUTERS_JOB_MEMORY", "3g"),
 };
 CFG.runnerRepos = path.join(CFG.runnerWork, "repos");
 function runnerDir(key, fallback) {
@@ -201,7 +201,12 @@ async function collect(container, dir, timeoutMs) {
 /** A failed exec in a box that is no longer running says so (the run ends with that reason), not as a bare exit code. */
 async function unlessGone(container, r) {
   if (r.exitCode === 0) return r;
-  if (!boxes.has(container) || ["missing", "exited", "dead", "removing"].includes(await jobState(container))) throw fail(404, `computer gone: ${container} went away during the command (destroyed, stopped or out of memory)`);
+  if (!boxes.has(container) || ["missing", "exited", "dead", "removing"].includes(await jobState(container))) {
+    const oom = (await docker(["inspect", "-f", "{{.State.OOMKilled}}", container])).stdout.trim() === "true";
+    const msg = oomMessage(container, jobs.has(container) ? CFG.jobMemory : CFG.limits.memory);
+    if (oom) log(msg);
+    throw fail(404, oom ? msg : `computer gone: ${container} went away during the command (destroyed or stopped)`);
+  }
   return r;
 }
 const newName = () => CFG.prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
