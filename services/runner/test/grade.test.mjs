@@ -4,8 +4,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
-import { fileEvidence, presentNow, taskMergePrs } from "../src/evidence.mjs";
-import { GRADE_SCHEMA, escalationFor, evidencePremise, gather, grade, gradeNote, gradePrompt, graderModels, rubricPaths } from "../src/grade.mjs";
+import { fileEvidence, presentNow, taskMergePrs } from "../src/evidence.ts";
+import { GRADE_SCHEMA, escalationFor, evidencePremise, gather, grade, gradeNote, gradePrompt, graderModels, rubricPaths } from "../src/grade.ts";
 import { DEEPSEEK, LUNA, openRouterAsk } from "../src/review.mjs";
 
 const pr = ({ state = "OPEN", check = "SUCCESS", head = "h".repeat(40), merge = "m".repeat(40), imageScan = null, files = undefined } = {}) => {

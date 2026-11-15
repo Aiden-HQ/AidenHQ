@@ -480,7 +480,7 @@ const NO_FACT = [
   [/\b(?:returns?|responds? with) (?:an? )?(?:HTTP |status )?[1-5]\d\d\b/i, "the grader calls no API. Name a page at a path instead (it renders the page and sees its HTTP status and text), or \"a test in the diff covers the 400 for X\""],
   [/\b(?:npm|pnpm|yarn) (?:run )?test\b|\bpytest\b|\bgo test\b|\bcargo test\b/i, "the grader runs no tests. Name the CI check instead: \"the tests check is green on the PR's head\", and \"a test in the diff covers X\" for what it must cover"],
 ];
-// A page path the grader renders (grade.mjs rubricPaths): "/health returns 200" is its HTTP status, which it does see.
+// A page path the grader renders (grade.ts rubricPaths): "/health returns 200" is its HTTP status, which it does see.
 const PAGE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._~-]/;
 /** Why the grader can't check this criterion from any fact it is given, or undefined. */
 const noFact = (c) => NO_FACT.find(([re], i) => re.test(c) && !(i === 1 && PAGE_PATH.test(c)))?.[1];

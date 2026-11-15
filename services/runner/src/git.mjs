@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { DEFAULT_IDENTITY, appRemoteUrl, appSlugOf, identityEnv, withGitToken } from "./github-app.mjs";
+import { DEFAULT_IDENTITY, appRemoteUrl, appSlugOf, identityEnv, withGitToken } from "./github-app.ts";
 
 const run = promisify(execFile);
 

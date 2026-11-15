@@ -1,10 +1,10 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { DEFAULT_IDENTITY, identityEnv } from "./github-app.mjs";
+import { DEFAULT_IDENTITY, identityEnv } from "./github-app.ts";
 import { appendFileSync, closeSync, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { progressTracker } from "./progress.mjs";
+import { progressTracker } from "./progress.ts";
 import { mintToken } from "../../gateway/token.ts";
 import { CODEX_CONFIG_SCRUB } from "../../computer/lib.mjs";
 import { smallFile } from "./git.mjs";
@@ -191,7 +191,7 @@ const hostRoutes = () =>
   [...execFileSync("ip", ["-4", "route", "show", "table", "all"], { encoding: "utf8" }).matchAll(/^(?:(?:unicast|local|broadcast|anycast|multicast|unreachable|blackhole|prohibit|throw)\s+)?(\d+\.\d+\.\d+\.\d+)(?:\/(\d+))?\s/gm)].map((m) => ({ address: m[1], prefix: m[2] ? Number(m[2]) : 32 }));
 
 /**
- * The job in its own network namespace (src/netjail.mjs): Internet egress through pasta, and of the host's loopback
+ * The job in its own network namespace (src/netjail.ts): Internet egress through pasta, and of the host's loopback
  * only the ports it was given (the run's helper, the read-only MCP endpoints it is wired to). Every other loopback
  * service (the board, Paperclip, apps trusting loopback callers), the host's other addresses and the LAN are out of
  * reach. The job's first step sets the unreachable routes, then drops the capabilities it used (bounding set too).
@@ -205,7 +205,7 @@ function jailed({ pasta, bwrap = "bwrap" }, masks, loopback, argv) {
   const unreachable = [...BLOCKED, ...host.filter((a) => !a.address.startsWith("127.")).map((a) => `${a.address}/32`)];
   const inner = `for n in ${unreachable.join(" ")}; do PATH="/usr/sbin:/sbin:$PATH" ip route add unreachable "$n" || exit 1; done; exec setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all -- "$@"`;
   return [
-    process.execPath, join(import.meta.dirname, "netjail.mjs"), pasta, ports, link,
+    process.execPath, join(import.meta.dirname, "netjail.ts"), pasta, ports, link,
     // The public resolvers go where /etc/resolv.conf leads (systemd-resolved's stub-resolv.conf), on a private tmpfs:
     // bound onto the host's own file, the bind came off the first time resolved rewrote it (a rename over a mountpoint
     // detaches it in every namespace), and the job was left with 127.0.0.53, unreachable in its network.

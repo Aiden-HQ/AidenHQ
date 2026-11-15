@@ -11,3 +11,6 @@ export interface Failed {
  * does not narrow: an empty message would read as success.
  */
 export type Result<T extends object> = Failed | (T & { error?: undefined });
+
+/** The runner's logger: a message and optional fields. */
+export type Log = (msg: string, extra?: Record<string, unknown>) => void;

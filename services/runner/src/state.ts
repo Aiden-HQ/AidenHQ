@@ -4,7 +4,9 @@ import { DatabaseSync } from "node:sqlite";
 
 /** Durable runner state: per-task workspace/session and processed comment IDs. */
 export class State {
-  constructor(dir) {
+  db: DatabaseSync;
+
+  constructor(dir: string) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(dir, "state.sqlite"));
     this.db.exec(`
@@ -63,112 +65,112 @@ export class State {
     this.db.exec("CREATE TABLE IF NOT EXISTS pushed_heads (repo TEXT NOT NULL, branch TEXT NOT NULL, sha TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (repo, branch, sha))");
   }
 
-  recordPush(repo, branch, sha) {
+  recordPush(repo: string, branch: string, sha: string) {
     this.db.prepare("INSERT OR IGNORE INTO pushed_heads (repo, branch, sha, at) VALUES (?, ?, ?, ?)").run(String(repo).toLowerCase(), branch, sha, new Date().toISOString());
   }
 
   /** Whether the runner pushed `sha` as the tip of `branch` in `repo`. */
-  pushedHead(repo, branch, sha) {
+  pushedHead(repo: string, branch: string, sha: string) {
     return Boolean(this.db.prepare("SELECT 1 FROM pushed_heads WHERE repo = ? AND branch = ? AND sha = ?").get(String(repo).toLowerCase(), branch, sha));
   }
 
-  branches(issueId) {
+  branches(issueId: string): any[] {
     return this.db.prepare("SELECT * FROM branches WHERE issue_id = ? ORDER BY repo, branch").all(issueId);
   }
 
   /** Other tasks whose branches opened any of these PRs (a merge task can merge PRs another task opened). */
-  issuesWithPrs(urls, except) {
+  issuesWithPrs(urls: string[], except: string): string[] {
     const want = new Set(urls.map((u) => String(u).toLowerCase()));
-    const rows = this.db.prepare("SELECT DISTINCT issue_id, pr_url FROM branches WHERE pr_url IS NOT NULL AND issue_id != ?").all(except);
-    return [...new Set(rows.filter((r) => want.has(String(r.pr_url).toLowerCase())).map((r) => r.issue_id))];
+    const rows = this.db.prepare("SELECT DISTINCT issue_id, pr_url FROM branches WHERE pr_url IS NOT NULL AND issue_id != ?").all(except) as any[];
+    return [...new Set(rows.filter((r) => want.has(String(r.pr_url).toLowerCase())).map((r) => r.issue_id as string))];
   }
 
   /** Record a branch the task has (insert or update its base and purpose). */
-  saveBranch(issueId, { repo, branch, base, purpose }) {
+  saveBranch(issueId: string, { repo, branch, base, purpose }: { repo: string; branch: string; base: string; purpose?: string | null }) {
     this.db
       .prepare("INSERT INTO branches (issue_id, repo, branch, base, purpose, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (issue_id, repo, branch) DO UPDATE SET base = excluded.base, purpose = COALESCE(NULLIF(excluded.purpose, ''), branches.purpose), updated_at = excluded.updated_at")
       .run(issueId, repo, branch, base, purpose ?? "", new Date().toISOString());
   }
 
-  updateBranch(issueId, repo, branch, fields) {
+  updateBranch(issueId: string, repo: string, branch: string, fields: Record<string, any>) {
     const keys = Object.keys(fields);
     this.db.prepare(`UPDATE branches SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE issue_id = ? AND repo = ? AND branch = ?`).run(...keys.map((k) => fields[k] ?? null), new Date().toISOString(), issueId, repo, branch);
   }
 
-  deleteBranch(issueId, repo, branch) {
+  deleteBranch(issueId: string, repo: string, branch: string) {
     this.db.prepare("DELETE FROM branches WHERE issue_id = ? AND repo = ? AND branch = ?").run(issueId, repo, branch);
   }
 
-  task(issueId) {
-    const row = this.db.prepare("SELECT * FROM tasks WHERE issue_id = ?").get(issueId);
+  task(issueId: string): any {
+    const row = this.db.prepare("SELECT * FROM tasks WHERE issue_id = ?").get(issueId) as any;
     if (!row) return undefined;
     return { ...row, engine: row.engine_json ? JSON.parse(row.engine_json) : undefined };
   }
 
-  ensureTask(issueId, identifier) {
+  ensureTask(issueId: string, identifier: string) {
     const now = new Date().toISOString();
     this.db.prepare("INSERT OR IGNORE INTO tasks (issue_id, identifier, first_seen, updated_at) VALUES (?, ?, ?, ?)").run(issueId, identifier, now, now);
     return this.task(issueId);
   }
 
-  updateTask(issueId, fields) {
-    const map = { ...fields };
+  updateTask(issueId: string, fields: Record<string, any>) {
+    const map: Record<string, any> = { ...fields };
     if ("engine" in map) (map.engine_json = JSON.stringify(map.engine)), delete map.engine;
     map.updated_at = new Date().toISOString();
     const keys = Object.keys(map);
     this.db.prepare(`UPDATE tasks SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE issue_id = ?`).run(...keys.map((k) => map[k] ?? null), issueId);
   }
 
-  handled(commentId) {
+  handled(commentId: string) {
     return Boolean(this.db.prepare("SELECT 1 FROM comments WHERE comment_id = ?").get(commentId));
   }
 
-  markHandled(commentId, issueId) {
+  markHandled(commentId: string, issueId: string) {
     this.db.prepare("INSERT OR IGNORE INTO comments (comment_id, issue_id, handled_at) VALUES (?, ?, ?)").run(commentId, issueId, new Date().toISOString());
   }
 
-  startJob(issueId, engine, logPath) {
+  startJob(issueId: string, engine: string, logPath: string) {
     return Number(
       this.db.prepare("INSERT INTO jobs (issue_id, status, engine, started_at, log_path) VALUES (?, 'running', ?, ?, ?)").run(issueId, engine, new Date().toISOString(), logPath).lastInsertRowid,
     );
   }
 
-  finishJob(id, status, detail) {
+  finishJob(id: number, status: string, detail?: string | null) {
     this.db.prepare("UPDATE jobs SET status = ?, finished_at = ?, detail = ? WHERE id = ?").run(status, new Date().toISOString(), detail ?? null, id);
   }
 
-  lastJob(issueId) {
+  lastJob(issueId: string): any {
     return this.db.prepare("SELECT * FROM jobs WHERE issue_id = ? ORDER BY id DESC LIMIT 1").get(issueId);
   }
 
   /** The latest finished job of each task, newest first (a stuck part shows on the board). */
-  latestJobs(limit) {
+  latestJobs(limit: number): any[] {
     return this.db
       .prepare("SELECT jobs.status, tasks.identifier FROM jobs JOIN tasks USING (issue_id) WHERE jobs.id IN (SELECT MAX(id) FROM jobs WHERE finished_at IS NOT NULL GROUP BY issue_id) ORDER BY jobs.id DESC LIMIT ?")
       .all(limit);
   }
 
   /** The newest finished jobs, with their task's identifier. */
-  recentJobs(limit) {
+  recentJobs(limit: number): any[] {
     return this.db
       .prepare("SELECT jobs.*, tasks.identifier FROM jobs JOIN tasks USING (issue_id) WHERE jobs.finished_at IS NOT NULL ORDER BY jobs.id DESC LIMIT ?")
       .all(limit);
   }
 
-  saveRun(id, run) {
+  saveRun(id: number, run: unknown) {
     this.db.prepare("UPDATE jobs SET run_json = ? WHERE id = ?").run(JSON.stringify(run), id);
   }
 
   /** Jobs left 'running' by the previous runner process: adopted, or resumed, at startup. */
-  runningJobs() {
-    return this.db.prepare("SELECT * FROM jobs WHERE status = 'running' ORDER BY id").all().map((j) => ({ ...j, run: j.run_json ? JSON.parse(j.run_json) : undefined }));
+  runningJobs(): any[] {
+    return (this.db.prepare("SELECT * FROM jobs WHERE status = 'running' ORDER BY id").all() as any[]).map((j) => ({ ...j, run: j.run_json ? JSON.parse(j.run_json) : undefined }));
   }
 
-  get(key) {
-    return this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key)?.value;
+  get(key: string): any {
+    return (this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as any)?.value;
   }
 
-  set(key, value) {
+  set(key: string, value: any) {
     this.db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(key, value);
   }
 }

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow } from "./flow-harness.mjs";
-import { State } from "../src/state.mjs";
+import { State } from "../src/state.ts";
 
 const SHA = "a".repeat(40);
 const card = (id) => ({

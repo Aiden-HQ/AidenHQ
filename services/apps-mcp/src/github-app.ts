@@ -1,5 +1,5 @@
 // Read access to private agents-org repos through the instance's GitHub App. A minimal copy of
-// services/runner/src/github-app.mjs (separate package): per repo, a short-lived installation token narrowed to that one
+// services/runner/src/github-app.ts (separate package): per repo, a short-lived installation token narrowed to that one
 // repo and {contents: read}, handed to that one git child through a credential helper reading an env var.
 import { createSign } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -67,7 +67,7 @@ export function appTokens(dir: string, fetch = globalThis.fetch): RepoToken | un
 /**
  * git args + env for a command that carries the token in env AIDENHQ_GIT_TOKEN (never argv, URL or .git/config): config a
  * planted repo could use to run code or reroute traffic is overridden, every other credential helper cleared, and this one
- * answers only `get` for protocol=https and host=github.com (as services/runner/src/github-app.mjs).
+ * answers only `get` for protocol=https and host=github.com (as services/runner/src/github-app.ts).
  */
 export const CREDENTIAL_ARGS = [
   "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "core.sshCommand=", "-c", "http.proxy=",

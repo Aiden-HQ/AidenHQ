@@ -1,6 +1,6 @@
 // Push access for repos no GitHub App covers: before the runner's first approved push to a repo it gets a write deploy key
 // (ops/vm/add-deploy-key.sh). The admin token lives in the vault, never in an agent's sandbox. No token: a no-op. It never
-// creates a repo: a new app's repo is created only in the agents org, on an approved create_repo card (github-app.mjs).
+// creates a repo: a new app's repo is created only in the agents org, on an approved create_repo card (github-app.ts).
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 

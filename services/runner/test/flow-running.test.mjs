@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
-import { State } from "../src/state.mjs";
+import { State } from "../src/state.ts";
 
 describe("flow-running", () => {
   const t = flow();

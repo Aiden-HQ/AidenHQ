@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { State } from "../src/state.mjs";
+import { State } from "../src/state.ts";
 import { readLog } from "./fakes/lib.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");

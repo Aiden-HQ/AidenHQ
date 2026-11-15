@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { progressTracker } from "../src/progress.mjs";
+import { progressTracker } from "../src/progress.ts";
 
 const said = (t) => ({ type: "assistant", message: { content: [{ type: "text", text: t }] } });
 const use = (id, name, input) => ({ type: "assistant", message: { content: [{ type: "tool_use", id, name, input }] } });

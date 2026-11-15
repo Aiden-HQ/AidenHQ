@@ -9,7 +9,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeRepo } from "./commands.mjs";
-import { readOwn } from "./files.mjs";
+import { readOwn } from "./files.ts";
 import { SAFE_GIT_ARGS, defaultBranch, git, smallFile } from "./git.mjs";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -18,21 +18,21 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
  * Whether a clone still shares object files with another (a clone made for the jail is hardlinked to the cache). Only looked
  * at, never written: the clone's .git is the agent's, so nothing here follows a link or writes by a name found in it.
  */
-function sharesObjects(clone) {
-  const walk = (dir) => readdirSync(dir, { withFileTypes: true }).some((e) => (e.isDirectory() ? walk(join(dir, e.name)) : e.isFile() && lstatSync(join(dir, e.name)).nlink > 1));
+function sharesObjects(clone: string): boolean {
+  const walk = (dir: string): boolean => readdirSync(dir, { withFileTypes: true }).some((e) => (e.isDirectory() ? walk(join(dir, e.name)) : e.isFile() && lstatSync(join(dir, e.name)).nlink > 1));
   const objects = join(clone, ".git", "objects");
   return Boolean(lstatSync(objects, { throwIfNoEntry: false })?.isDirectory()) && walk(objects);
 }
 const MANIFEST = join(".aidenhq", "branches.json");
 
-export const workspacePath = (workDir, identifier) => join(workDir, "tasks", identifier);
+export const workspacePath = (workDir: string, identifier: string) => join(workDir, "tasks", identifier);
 
-const hasRef = (cwd, ref) => git(cwd, "rev-parse", "--verify", "--quiet", ref).then(() => true, () => false);
+const hasRef = (cwd: string, ref: string) => git(cwd, "rev-parse", "--verify", "--quiet", ref).then(() => true, () => false);
 
 // `fn(path, opts)` answered once per state of the clone's refs. Only for answers that depend on nothing but the
 // refs and the commits they reach (commits never change): a run, a fetch or a rename moves a ref and asks again.
-const memo = new Map();
-async function sameRefs(fn, path, opts) {
+const memo = new Map<string, any>();
+async function sameRefs(fn: (path: string, opts: any) => Promise<any>, path: string, opts: any): Promise<any> {
   const key = async () => createHash("sha256").update(JSON.stringify([fn.name, path, opts])).update(refFiles(path) ?? (await git(path, "for-each-ref", "--format=%(refname) %(objectname)"))).digest("hex");
   const before = await key();
   if (memo.has(before)) return structuredClone(memo.get(before));
@@ -51,12 +51,12 @@ async function sameRefs(fn, path, opts) {
  * or when anything there isn't a directory or a small regular file: the clone is the agent's to write, so a symlink,
  * FIFO or device there is never followed, waited on or read.
  */
-function refFiles(path) {
+function refFiles(path: string): string | undefined {
   const dir = join(path, ".git");
   try {
     if (!lstatSync(dir).isDirectory() || !lstatSync(join(dir, "refs")).isDirectory() || existsSync(join(dir, "reftable"))) return undefined;
-    const parts = [];
-    const walk = (d, rel) => {
+    const parts: string[] = [];
+    const walk = (d: string, rel: string): void => {
       for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
         if (e.isDirectory()) walk(join(d, e.name), `${rel}/${e.name}`);
         else {
@@ -78,16 +78,16 @@ function refFiles(path) {
 
 // What a turn asks about every branch is answered from facts that never change (how many commits one commit has that another
 // lacks) or from one read of the refs, so a clone with many old branches costs a turn nothing for the ones that didn't move.
-const relations = new Map(); // `${clone}\0${a}\0${b}` -> commits reachable from a and not from b
-const related = new Map(); // clone -> commit ids whose relation to every branch and remote branch has been read
+const relations = new Map<string, number>(); // `${clone}\0${a}\0${b}` -> commits reachable from a and not from b
+const related = new Map<string, Set<string>>(); // clone -> commit ids whose relation to every branch and remote branch has been read
 let aheadBehind = true;
-const relKey = (path, a, b) => `${path}\0${a}\0${b}`;
+const relKey = (path: string, a: string, b: string) => `${path}\0${a}\0${b}`;
 
 /** In one git process: how each branch and remote branch of the clone stands against commit `c`, remembered for good. */
-async function readRelations(path, c) {
-  const done = related.get(path) ?? related.set(path, new Set()).get(path);
+async function readRelations(path: string, c: string) {
+  const done = related.get(path) ?? related.set(path, new Set()).get(path)!;
   if (!aheadBehind || done.has(c)) return;
-  let out;
+  let out: string;
   try {
     out = await git(path, "for-each-ref", `--format=%(objectname) %(ahead-behind:${c})`, "refs/heads", "refs/remotes/origin");
   } catch {
@@ -101,27 +101,27 @@ async function readRelations(path, c) {
   for (const line of out.split("\n")) {
     const [sha, ahead, behind] = line.split(" ");
     if (!behind) continue;
-    relations.set(relKey(path, sha, c), Number(ahead));
-    relations.set(relKey(path, c, sha), Number(behind));
+    relations.set(relKey(path, sha!, c), Number(ahead));
+    relations.set(relKey(path, c, sha!), Number(behind));
   }
-  (related.get(path) ?? related.set(path, new Set()).get(path)).add(c);
+  (related.get(path) ?? related.set(path, new Set()).get(path)!).add(c);
 }
 
 /** Commits reachable from `a` and not from `b` (commit ids). */
-async function commitsNotIn(path, a, b) {
+async function commitsNotIn(path: string, a: string, b: string): Promise<number> {
   const key = relKey(path, a, b);
   if (!relations.has(key)) relations.set(key, Number(await git(path, "rev-list", "--count", a, "--not", b).catch(() => "1000000")));
-  return relations.get(key);
+  return relations.get(key)!;
 }
 
 // A clone's refs as of now, read once per change of them (the key costs no git process for an ordinary clone).
-const snapshots = new Map();
-async function snapshot(path) {
+const snapshots = new Map<string, { key: string; refs: Map<string, string>; remotes: string }>();
+async function snapshot(path: string) {
   const key = refFiles(path) ?? (await git(path, "for-each-ref", "--format=%(refname) %(objectname)"));
   const hit = snapshots.get(path);
   if (hit?.key === key) return hit;
   const lines = (await git(path, "for-each-ref", "--format=%(refname) %(objectname)")).split("\n").filter(Boolean);
-  const refs = new Map(lines.map((l) => l.split(" ")));
+  const refs = new Map(lines.map((l): [string, string] => l.split(" ") as [string, string]));
   const remotes = createHash("sha256").update(lines.filter((l) => l.startsWith("refs/remotes/")).join("\n")).digest("hex");
   const made = { key, refs, remotes };
   if (snapshots.size >= 200) snapshots.clear();
@@ -131,19 +131,19 @@ async function snapshot(path) {
 
 // A clone's slug, remembered against its .git/config exactly as it was read (any write replaces the file, so a
 // changed remote or a clone re-created at the same path never reads a stale slug).
-const slugs = new Map();
-const configStamp = (path) => {
+const slugs = new Map<string, { stamp: string; repo: any }>();
+const configStamp = (path: string) => {
   const s = statSync(join(path, ".git", "config"), { bigint: true, throwIfNoEntry: false });
   return s ? `${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}` : "";
 };
 
-async function cloneSlug(path) {
+async function cloneSlug(path: string) {
   const stamp = configStamp(path);
   const known = slugs.get(path);
   if (stamp && known?.stamp === stamp) return known.repo;
   // A repository cloned from a path on this host (repo_sources) carries its slug in aidenhq.slug.
   const pairs = (await git(path, "config", "--get-regexp", "^(aidenhq\\.slug|remote\\.origin\\.url)$").catch(() => "")).split("\n").map((l) => l.split(/ (.*)/s));
-  const value = (key) => pairs.findLast(([k]) => k === key)?.[1] ?? "";
+  const value = (key: string) => pairs.findLast(([k]) => k === key)?.[1] ?? "";
   const repo = normalizeRepo(value("aidenhq.slug") || value("remote.origin.url"));
   if (repo && stamp) slugs.set(path, { stamp, repo });
   return repo;
@@ -157,32 +157,32 @@ async function cloneSlug(path) {
  * that mount point: it is removed, and returns true. A real git directory is left alone (false). Anything else is a hard
  * error, with a message that says the workspace must be started afresh.
  */
-export function repairWorkspaceGit(workspace) {
+export function repairWorkspaceGit(workspace: string): boolean {
   const dir = join(workspace, ".git");
   if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) return false;
-  let entries;
+  let entries: string[];
   try {
     entries = readdirSync(dir);
-  } catch (err) {
+  } catch (err: any) {
     throw new Error(`this task's workspace can't be used: ${dir} can't be read (${err.code ?? "unknown error"}). Reply again to retry, or start the task afresh (\`aidenhq cleanup\`).`);
   }
   if (!entries.length) {
     try {
       rmdirSync(dir);
-    } catch (err) {
+    } catch (err: any) {
       throw new Error(`this task's workspace can't be used yet: ${dir} is an empty mount point a job's sandbox left behind that is still attached (${err.code ?? "unknown error"}). A runner restart clears it, or start the task afresh (\`aidenhq cleanup\`).`);
     }
     return true;
   }
-  const has = (name, isDir = false) => entries.includes(name) && (isDir ? lstatSync(join(dir, name), { throwIfNoEntry: false })?.isDirectory() : lstatSync(join(dir, name), { throwIfNoEntry: false })?.isFile());
+  const has = (name: string, isDir = false) => entries.includes(name) && (isDir ? lstatSync(join(dir, name), { throwIfNoEntry: false })?.isDirectory() : lstatSync(join(dir, name), { throwIfNoEntry: false })?.isFile());
   if (has("HEAD") && has("objects", true) && has("refs", true)) return false; // a real git directory: not ours to touch
   throw new Error(`this task's workspace can't be used: ${dir} holds files but isn't a git directory. Start the task afresh (\`aidenhq cleanup\`) and ask again.`);
 }
 
 /** The repositories cloned in a workspace: top-level directories that are git clones (not worktrees). */
-export async function workspaceRepos(workspace) {
+export async function workspaceRepos(workspace: string) {
   if (!existsSync(workspace)) return [];
-  const out = [];
+  const out: any[] = [];
   for (const name of readdirSync(workspace).sort()) {
     const path = join(workspace, name);
     if (name.startsWith(".") || !existsSync(join(path, ".git")) || !statSync(join(path, ".git")).isDirectory()) continue;
@@ -196,7 +196,7 @@ export async function workspaceRepos(workspace) {
  * Clone `repo` into the workspace from the runner's cache clone (`cache`), pointed at GitHub
  * (`remoteUrl`), on its default branch. An existing clone is fetched instead. Returns its path.
  */
-export async function ensureRepo(workspace, repo, { cache, remoteUrl = `git@github.com:${repo.slug}.git`, hooksDir, copy = false }) {
+export async function ensureRepo(workspace: string, repo: any, { cache, remoteUrl = `git@github.com:${repo.slug}.git`, hooksDir, copy = false }: { cache: string; remoteUrl?: string; hooksDir?: string; copy?: boolean }): Promise<string> {
   mkdirSync(workspace, { recursive: true });
   const existing = (await workspaceRepos(workspace)).find((r) => r.slug.toLowerCase() === repo.slug.toLowerCase());
   if (existing) {
@@ -233,19 +233,19 @@ export async function ensureRepo(workspace, repo, { cache, remoteUrl = `git@gith
 }
 
 /** The agent's optional note on its branches: [{ repo, branch, base, purpose }]. */
-export function readManifest(workspace) {
+export function readManifest(workspace: string): any[] {
   try {
     const list = JSON.parse(readOwn(workspace, MANIFEST, 256 * 1024)?.toString("utf8") ?? "[]");
-    return Array.isArray(list) ? list.filter((e) => e && typeof e.branch === "string") : [];
+    return Array.isArray(list) ? list.filter((e: any) => e && typeof e.branch === "string") : [];
   } catch {
     return [];
   }
 }
 
 /** The pushed tip of a branch per the last fetch, or "". */
-const remoteTip = (path, branch) => git(path, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`).catch(() => "");
+const remoteTip = (path: string, branch: string) => git(path, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`).catch(() => "");
 
-const countAgainst = async (path, tip, not) => Number(await git(path, "rev-list", "--count", tip, "--not", not).catch(() => "1000000"));
+const countAgainst = async (path: string, tip: string, not: string) => Number(await git(path, "rev-list", "--count", tip, "--not", not).catch(() => "1000000"));
 
 /**
  * The task's branches in one clone, each with its base: the branch it was made from. That's the
@@ -254,27 +254,27 @@ const countAgainst = async (path, tip, not) => Number(await git(path, "rev-list"
  * manifest wins when it names one of those. A local branch with no commits beyond its base (the
  * default branch, a plain checkout of `v2`) isn't a task branch.
  */
-export const findBranches = (path, { base, manifest = [], slug, known = [] }) => sameRefs(findBranchesNow, path, { base, manifest, slug, known });
+export const findBranches = (path: string, { base, manifest = [], slug, known = [] }: { base: string; manifest?: any[]; slug?: string; known?: string[] }) => sameRefs(findBranchesNow, path, { base, manifest, slug, known });
 
-async function findBranchesNow(path, { base, manifest, slug, known }) {
+async function findBranchesNow(path: string, { base, manifest, slug, known }: { base: string; manifest: any[]; slug?: string; known: string[] }) {
   const { refs } = await snapshot(path);
-  const heads = [...refs].filter(([r]) => r.startsWith("refs/heads/")).map(([r, sha]) => [r.slice(11), sha]);
-  const remoteTip = new Map([...refs].filter(([r]) => r.startsWith("refs/remotes/origin/")).map(([r, sha]) => [r.slice(20), sha]));
+  const heads = [...refs].filter(([r]) => r.startsWith("refs/heads/")).map(([r, sha]): [string, string] => [r.slice(11), sha]);
+  const remoteTip = new Map([...refs].filter(([r]) => r.startsWith("refs/remotes/origin/")).map(([r, sha]): [string, string] => [r.slice(20), sha]));
   const onBase = remoteTip.has(base);
   // Branches on GitHub that could be a base: the default one first, then the most recently updated.
   const remotes = (await git(path, "for-each-ref", "--sort=-committerdate", "--count=60", "--format=%(refname:lstrip=3)", "refs/remotes/origin")).split("\n").filter((r) => r && r !== "HEAD");
   const bases = [...new Set([...(onBase ? [base] : []), ...remotes])];
   // Every branch against every candidate base, in one process per commit not read before (new branch or new base).
   for (const [, tip] of heads) await readRelations(path, tip);
-  for (const r of bases) if (remoteTip.has(r)) await readRelations(path, remoteTip.get(r));
-  const count = (tip, r) => (remoteTip.has(r) ? commitsNotIn(path, tip, remoteTip.get(r)) : countAgainst(path, tip, `origin/${r}`));
-  const found = [];
+  for (const r of bases) if (remoteTip.has(r)) await readRelations(path, remoteTip.get(r)!);
+  const count = (tip: string, r: string) => (remoteTip.has(r) ? commitsNotIn(path, tip, remoteTip.get(r)!) : countAgainst(path, tip, `origin/${r}`));
+  const found: any[] = [];
   for (const [branch, tip] of heads) {
     if (branch === base) continue;
     // A checkout of a branch on GitHub with nothing new (a local `v2`) is only the task's if the task
     // made it (pushed, maybe with a PR).
     if (!known.includes(branch) && remoteTip.has(branch) && !(await count(tip, branch))) continue;
-    let best;
+    let best: { base: string; n: number } | undefined;
     for (const r of bases) {
       if (r === branch) continue; // its own pushed copy is not its base
       const n = await count(tip, r);
@@ -287,7 +287,7 @@ async function findBranchesNow(path, { base, manifest, slug, known }) {
   const baseTip = heads.find(([b]) => b === base)?.[1];
   if (!onBase && baseTip) found.unshift({ branch: base, tip: baseTip, own: Number(await git(path, "rev-list", "--count", baseTip)), remoteBase: base, counts: new Map() });
   for (const b of found) {
-    const named = manifest.find((m) => m.branch === b.branch && (!m.repo || !slug || String(m.repo).toLowerCase() === slug.toLowerCase()));
+    const named = manifest.find((m: any) => m.branch === b.branch && (!m.repo || !slug || String(m.repo).toLowerCase() === slug.toLowerCase()));
     let pick = { base: b.remoteBase, n: b.own };
     for (const o of found) {
       if (o.branch === b.branch || o.tip === b.tip || o.branch === base) continue;
@@ -297,8 +297,8 @@ async function findBranchesNow(path, { base, manifest, slug, known }) {
       if (n < pick.n) pick = { base: o.branch, n };
     }
     // The manifest's base, if it is one of the candidates and as close as the best one.
-    if (named?.base && named.base !== b.branch && (bases.includes(named.base) || found.some((o) => o.branch === named.base))) {
-      const n = b.counts.get(named.base) ?? (found.some((o) => o.branch === named.base) ? await countAgainst(path, b.tip, named.base) : await countAgainst(path, b.tip, `origin/${named.base}`));
+    if (named?.base && named.base !== b.branch && (bases.includes(named.base) || found.some((o: any) => o.branch === named.base))) {
+      const n = b.counts.get(named.base) ?? (found.some((o: any) => o.branch === named.base) ? await countAgainst(path, b.tip, named.base) : await countAgainst(path, b.tip, `origin/${named.base}`));
       if (n <= pick.n) pick = { base: named.base, n };
     }
     b.base = pick.base;
@@ -311,14 +311,14 @@ async function findBranchesNow(path, { base, manifest, slug, known }) {
  * What a branch's base is in git: the task branch of that name when there is one (stacked), else the
  * branch on GitHub (`origin/<base>`), else nothing (an empty repository).
  */
-export async function baseRef(path, { branch, base, taskBranches = [] }) {
+export async function baseRef(path: string, { branch, base, taskBranches = [] }: { branch: string; base: string; taskBranches?: string[] }): Promise<string> {
   const { refs } = await snapshot(path);
   if (base !== branch && taskBranches.includes(base) && refs.has(`refs/heads/${base}`)) return base;
   return refs.has(`refs/remotes/origin/${base}`) ? `origin/${base}` : "";
 }
 
 /** Whether the clone has a local branch of that name. */
-export const hasBranch = async (path, branch) => (await snapshot(path)).refs.has(`refs/heads/${branch}`);
+export const hasBranch = async (path: string, branch: string) => (await snapshot(path)).refs.has(`refs/heads/${branch}`);
 
 /**
  * The base a new PR opens into, resolved against GitHub first: a stacked branch's base only while GitHub still has that
@@ -328,11 +328,11 @@ export const hasBranch = async (path, branch) => (await snapshot(path)).refs.has
  * Only confirmed absence falls back: a read that fails (network, auth) returns an error and opens nothing, because a base
  * that can't be shown to be gone may still be the one the branch's own commits must not be read without.
  */
-export async function resolvePrBase(path, { branch, base, defaultBranch }) {
+export async function resolvePrBase(path: string, { branch, base, defaultBranch }: { branch: string; base: string; defaultBranch: string }): Promise<{ base: string; from: string; error?: string }> {
   let reading = base;
   const unread = () => ({ base: "", from: "", error: `couldn't read GitHub's \`${reading}\`, so no PR was opened: try again in a few minutes` });
   /** False only when GitHub itself says the branch isn't there (a clean `ls-remote` with no ref). A failed read throws. */
-  const onGitHub = async (name) => {
+  const onGitHub = async (name: string) => {
     reading = name;
     const remote = (await git(path, "ls-remote", "--heads", "origin", name)).trim();
     if (!remote) return false;
@@ -340,13 +340,13 @@ export async function resolvePrBase(path, { branch, base, defaultBranch }) {
     return true;
   };
   /** Commits on `branch` GitHub's `name` doesn't have. Throws when either side can't be read. */
-  const ahead = async (name) => {
+  const ahead = async (name: string) => {
     reading = name;
     const tip = await git(path, "rev-parse", "--verify", `refs/remotes/origin/${name}^{commit}`);
     return Number(await git(path, "rev-list", "--count", `${tip}..${branch}`));
   };
-  let into;
-  let own;
+  let into: string;
+  let own: number;
   try {
     const stacked = base !== defaultBranch && (await onGitHub(base)) && (await ahead(base)) > 0;
     into = stacked ? base : defaultBranch;
@@ -364,8 +364,8 @@ export async function resolvePrBase(path, { branch, base, defaultBranch }) {
 }
 
 /** Commits on `branch` that aren't on GitHub yet (oldest first), and the diffstat against its base. */
-const changes = new Map();
-export async function branchChanges(path, { branch, base, taskBranches = [] }) {
+const changes = new Map<string, { answer: any; remotes: string }>();
+export async function branchChanges(path: string, { branch, base, taskBranches = [] }: { branch: string; base: string; taskBranches?: string[] }): Promise<any> {
   const snap = await snapshot(path);
   const from = await baseRef(path, { branch, base, taskBranches });
   const own = snap.refs.get(`refs/remotes/origin/${branch}`);
@@ -380,29 +380,29 @@ export async function branchChanges(path, { branch, base, taskBranches = [] }) {
   return structuredClone(answer);
 }
 
-async function branchChangesNow(path, { branch, base, taskBranches = [] }) {
+async function branchChangesNow(path: string, { branch, base, taskBranches = [] }: { branch: string; base: string; taskBranches?: string[] }) {
   const from = (await baseRef(path, { branch, base, taskBranches })) || EMPTY_TREE;
-  const stop = from === EMPTY_TREE ? [] : [from];
+  const stop: string[] = from === EMPTY_TREE ? [] : [from];
   const unpublished = (await git(path, "log", "--reverse", "--format=%h %s", branch, "--not", "--remotes=origin", ...stop)).split("\n").filter(Boolean);
   const stat = await git(path, "diff", "--shortstat", from === EMPTY_TREE ? EMPTY_TREE : `${from}...${branch}`, ...(from === EMPTY_TREE ? [branch] : [])).catch(() => "");
   return { unpublished, stat, onGitHub: Boolean(await remoteTip(path, branch)) };
 }
 
 /** Full messages of the commits on `branch` since `from` (oldest first), for PR descriptions and checks. */
-export const messagesSince = (path, from, branch) => sameRefs(messagesNow, path, [from, branch]);
+export const messagesSince = (path: string, from: string | undefined, branch: string): Promise<string[]> => sameRefs(messagesNow, path, [from, branch]);
 
-async function messagesNow(path, [from, branch]) {
+async function messagesNow(path: string, [from, branch]: [string | undefined, string]) {
   return (await git(path, "log", "--reverse", "--format=%B%x1e", from ? `${from}..${branch}` : branch).catch(() => "")).split("\x1e").map((m) => m.trim()).filter(Boolean);
 }
 
 /** Worktrees of a clone (the clone itself first): [{ path, branch (or ""), head }]. */
-export async function worktrees(path) {
-  const out = [];
-  let cur;
+export async function worktrees(path: string) {
+  const out: { path: string; branch: string; head: string }[] = [];
+  let cur: { path: string; branch: string; head: string } | undefined;
   for (const line of (await git(path, "worktree", "list", "--porcelain")).split("\n")) {
     if (line.startsWith("worktree ")) out.push((cur = { path: line.slice(9), branch: "", head: "" }));
-    else if (line.startsWith("HEAD ")) cur.head = line.slice(5);
-    else if (line.startsWith("branch ")) cur.branch = line.slice(7).replace(/^refs\/heads\//, "");
+    else if (line.startsWith("HEAD ")) cur!.head = line.slice(5);
+    else if (line.startsWith("branch ")) cur!.branch = line.slice(7).replace(/^refs\/heads\//, "");
   }
   return out.filter((w) => existsSync(w.path));
 }
@@ -413,18 +413,18 @@ export async function worktrees(path) {
  * descendants follow, and every local branch is moved to the rewritten tip. Worktrees on those
  * branches stay clean: the trees are identical. Returns the number of commits rewritten.
  */
-export async function signUnsigned(path) {
+export async function signUnsigned(path: string): Promise<number> {
   // Whether to sign is the host user's own setting (global config): the clone's config is the agent's to write, and task-folder git reads none.
   if ((await gitEnv(tmpdir(), {}, "config", "--global", "--bool", "--get", "commit.gpgsign").catch(() => "")) !== "true") return 0;
   const list = (await git(path, "rev-list", "--reverse", "--topo-order", "--parents", "--branches", "--not", "--remotes=origin")).split("\n").filter(Boolean).map((l) => l.split(" "));
-  const map = new Map();
+  const map = new Map<string, string>();
   const dir = mkdtempSync(join(tmpdir(), "pw-sign-"));
   try {
     for (const [sha, ...parents] of list) {
       const raw = await git(path, "cat-file", "commit", sha);
-      const header = raw.split("\n\n")[0];
+      const header = raw.split("\n\n")[0]!;
       if (/^gpgsig /m.test(header) && !parents.some((p) => map.has(p))) continue;
-      const person = (role) => {
+      const person = (role: string) => {
         const m = new RegExp(`^${role} (.*) <([^>]*)> (\\d+ [+-]\\d{4})$`, "m").exec(header);
         return m ? { name: m[1], email: m[2], date: m[3] } : undefined;
       };
@@ -432,28 +432,28 @@ export async function signUnsigned(path) {
       const committer = person("committer");
       const msgFile = join(dir, "msg");
       writeFileSync(msgFile, raw.slice(raw.indexOf("\n\n") + 2));
-      const tree = /^tree (\w+)$/m.exec(header)[1];
+      const tree = /^tree (\w+)$/m.exec(header)![1]!;
       const args = ["commit-tree", "-S", tree, ...parents.flatMap((p) => ["-p", map.get(p) ?? p]), "-F", msgFile];
       const env = {
         GIT_AUTHOR_NAME: author?.name, GIT_AUTHOR_EMAIL: author?.email, GIT_AUTHOR_DATE: author?.date,
         GIT_COMMITTER_NAME: committer?.name, GIT_COMMITTER_EMAIL: committer?.email, GIT_COMMITTER_DATE: committer?.date,
       };
-      map.set(sha, await gitEnv(path, env, ...args));
+      map.set(sha!, await gitEnv(path, env, ...args));
     }
     if (!map.size) return 0;
     for (const line of (await git(path, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")).split("\n").filter(Boolean)) {
-      const [ref, tip] = line.split(" ");
-      if (map.has(tip)) await git(path, "update-ref", ref, map.get(tip), tip);
+      const [ref, tip] = line.split(" ") as [string, string];
+      if (map.has(tip)) await git(path, "update-ref", ref, map.get(tip)!, tip);
     }
     // Worktrees on a detached HEAD at a rewritten commit follow too.
-    for (const w of await worktrees(path)) if (!w.branch && map.has(w.head)) await git(w.path, "update-ref", "--no-deref", "HEAD", map.get(w.head), w.head);
+    for (const w of await worktrees(path)) if (!w.branch && map.has(w.head)) await git(w.path, "update-ref", "--no-deref", "HEAD", map.get(w.head)!, w.head);
     return map.size;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-function gitEnv(cwd, env, ...args) {
+function gitEnv(cwd: string, env: Record<string, string | undefined>, ...args: string[]): Promise<string> {
   const clean = Object.fromEntries(Object.entries(env).filter(([, v]) => v));
   return new Promise((resolve, reject) =>
     execFile("git", [...SAFE_GIT_ARGS, ...args], { cwd, env: { ...process.env, ...clean, GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null", GIT_SHALLOW_FILE: "/dev/null" } }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stderr })) : resolve(stdout.trim()))),
@@ -465,7 +465,7 @@ function gitEnv(cwd, env, ...args) {
  * back to GitHub's: nothing is ever published as the default branch by accident. Returns the new
  * branch, or "" when the default branch has nothing of its own.
  */
-export async function moveOffDefault(path, base, name) {
+export async function moveOffDefault(path: string, base: string, name: string): Promise<string> {
   if (!(await hasRef(path, `origin/${base}`)) || !(await hasRef(path, `refs/heads/${base}`))) return "";
   if (!Number(await git(path, "rev-list", "--count", base, "--not", `origin/${base}`))) return "";
   await git(path, "branch", name, base);
@@ -475,7 +475,7 @@ export async function moveOffDefault(path, base, name) {
 }
 
 /** Carry the commits after `since` on `branch` onto a new branch `name` from origin/<base> (a merged PR's follow-ups). */
-export async function carryOver(path, { branch, base, since, name }) {
+export async function carryOver(path: string, { branch, base, since, name }: { branch: string; base: string; since: string; name: string }): Promise<number> {
   const range = (await hasRef(path, `${since}^{commit}`)) ? `${since}..${branch}` : `origin/${base}..${branch}`;
   const carry = (await git(path, "rev-list", "--reverse", "--no-merges", range)).split("\n").filter(Boolean);
   if (!carry.length) return 0;
@@ -501,14 +501,14 @@ export async function carryOver(path, { branch, base, since, name }) {
 }
 
 /** Every worktree of every clone with uncommitted changes: [{ repo, path, branch }]. */
-export async function dirtyCheckouts(repos) {
-  const out = [];
+export async function dirtyCheckouts(repos: any[]) {
+  const out: { repo: any; path: string; branch: string }[] = [];
   for (const r of repos) for (const w of await worktrees(r.path)) if (await git(w.path, "status", "--porcelain").catch(() => "")) out.push({ repo: r, path: w.path, branch: w.branch });
   return out;
 }
 
 /** Copy every local branch of a clone into the cache as refs/kept/<task>/… before a workspace is removed. */
-export async function keepBranches(path, cache, identifier) {
+export async function keepBranches(path: string, cache: string, identifier: string) {
   await git(cache, "fetch", "--quiet", path, `+refs/heads/*:refs/kept/${identifier}/*`).catch(() => {});
 }
 
@@ -520,15 +520,15 @@ export async function keepBranches(path, cache, identifier) {
  * ref and neither shadows the other; and never on GitHub, so an unapproved head is published nowhere.
  */
 export const REVIEWED = "refs/reviewed";
-export const reviewedRef = (approval, branch) => `${REVIEWED}/${approval}/${branch}`;
+export const reviewedRef = (approval: string, branch: string) => `${REVIEWED}/${approval}/${branch}`;
 /** What has been kept, and when: [{ repo, ref, at }], beside the cache clones (the refs themselves can't carry a date). */
-const reviewedIndex = (cacheRoot) => join(cacheRoot, ".reviewed-refs.jsonl");
-const readReviewed = (cacheRoot) => {
+const reviewedIndex = (cacheRoot: string) => join(cacheRoot, ".reviewed-refs.jsonl");
+const readReviewed = (cacheRoot: string): any[] => {
   try {
     return readFileSync(reviewedIndex(cacheRoot), "utf8")
       .split("\n")
       .filter(Boolean)
-      .flatMap((l) => {
+      .flatMap((l): any[] => {
         try {
           const e = JSON.parse(l);
           return typeof e?.repo === "string" && typeof e?.ref === "string" ? [e] : [];
@@ -546,7 +546,7 @@ const readReviewed = (cacheRoot) => {
  * so it outlives the task's workspace: the branch goes by name, and the object itself when the branch has moved on since.
  * Returns the ref; throws when what landed isn't `sha` (nothing is kept then).
  */
-export async function keepReviewedHead(path, cache, { repo, approval, branch, sha, cacheRoot, now = new Date() }) {
+export async function keepReviewedHead(path: string, cache: string, { repo, approval, branch, sha, cacheRoot, now = new Date() }: { repo: string; approval: string; branch: string; sha: string; cacheRoot: string; now?: Date }): Promise<string> {
   const ref = reviewedRef(approval, branch);
   // The exact commit the card names, whatever its branch says by now (a commit the source clone has is enough).
   await git(cache, "fetch", "--quiet", "--no-tags", path, `+${sha}:${ref}`).catch(() => git(cache, "fetch", "--quiet", "--no-tags", path, `+refs/heads/${branch}:${ref}`));
@@ -564,17 +564,17 @@ export async function keepReviewedHead(path, cache, { repo, approval, branch, sh
  * Drop kept reviewed heads past their retention (`days`, default 30) and any whose ref is already gone. The runner calls
  * this on its cache sweep; nothing else ever deletes them, and a merged PR's branch is still GitHub's to delete as before.
  */
-export async function pruneReviewedRefs(cacheRoot, { days = 30, now = Date.now() } = {}) {
+export async function pruneReviewedRefs(cacheRoot: string, { days = 30, now = Date.now() } = {}) {
   const cut = now - days * 86_400_000;
   // One entry per ref, the latest date: a ref kept again (a second card on it) takes the newer retention.
-  const latest = new Map();
+  const latest = new Map<string, any>();
   for (const e of readReviewed(cacheRoot)) {
     const key = `${e.repo.toLowerCase()} ${e.ref}`;
     const prev = latest.get(key);
     if (!prev || Date.parse(e.at) > Date.parse(prev.at)) latest.set(key, e);
   }
-  const kept = [];
-  const removed = [];
+  const kept: any[] = [];
+  const removed: string[] = [];
   for (const e of latest.values()) {
     const cache = join(cacheRoot, ...e.repo.split("/"));
     const tip = await git(cache, "rev-parse", "--verify", "--quiet", `${e.ref}^{commit}`).catch(() => "");

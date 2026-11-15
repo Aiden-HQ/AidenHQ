@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { State } from "../src/state.mjs";
+import { State } from "../src/state.ts";
 
 test("finds the tasks that opened the merged PRs, case-insensitively, and skips the merging task", () => {
   const s = new State(join(mkdtempSync(join(tmpdir(), "opened-")), "state"));

@@ -6,9 +6,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { outputs, syncFiles } from "../src/files.mjs";
-import { readDocument } from "../src/primer.mjs";
-import { readManifest } from "../src/workspace.mjs";
+import { outputs, syncFiles } from "../src/files.ts";
+import { readDocument } from "../src/primer.ts";
+import { readManifest } from "../src/workspace.ts";
 
 test("links in .aidenhq are never followed: no host file shared, published, read as the manifest or overwritten", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "aidenhq-links-"));

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
-import { State } from "../src/state.mjs";
+import { State } from "../src/state.ts";
 
 const rubric = ["the report says which repositories use Legacy", "each claim links its source", "it names the next step"];
 const answer = (met) => ({ verdict: met.every((m) => m === "yes") ? "satisfied" : "needs_revision", criteria: met.map((m, i) => ({ id: String(i + 1), met: m, evidence: m === "yes" ? "shown in the report" : "no source links" })) });

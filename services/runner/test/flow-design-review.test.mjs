@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow } from "./flow-harness.mjs";
-import { State } from "../src/state.mjs";
+import { State } from "../src/state.ts";
 
 describe("flow-design-review", () => {
   const t = flow({
