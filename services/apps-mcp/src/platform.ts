@@ -10,7 +10,7 @@ import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, judg
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { RENDER_TIMEOUT_MS, renderArgs, VIEW_IMAGE, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
-import { checkout, diffForDeploy, resolveCommit, show, type GitEnv } from "./git.js";
+import { checkout, commitMessage, diffForDeploy, resolveCommit, show, type GitEnv } from "./git.js";
 import { loadRegistry, type App } from "./registry.js";
 import { pickService, scriptCommand } from "./run.js";
 import { posix } from "node:path";
@@ -46,6 +46,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   const healthy = new Map<string, boolean>();
   // Each app's quality checks from its last probe (quality.ts): findings only, never part of `healthy`.
   const quality = new Map<string, Quality>();
+  const failures = new Map<string, string>(); // why each app's last failed health probe failed, when the app itself answered
   const cache = new Map<string, Awaited<ReturnType<typeof status>>>(); // last computed status per app: the health tick fills it
   const errors = new Map<string, string>(); // why the last reconcile of an app failed before anything started
 
@@ -57,14 +58,23 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       return o?.both ? `${r.stdout}${r.stderr}` : r.stdout;
     } catch (err: any) {
       const e = new Error(`docker ${args.slice(0, 3).join(" ")} failed${err.killed ? " (timed out)" : ""}: ${String(err.stderr || err.message).trim().slice(-600)}`);
-      throw Object.assign(e, { stdout: o?.both ? String(err.stdout ?? "") : undefined, killed: Boolean(err.killed) });
+      throw Object.assign(e, { stdout: String(err.stdout ?? ""), killed: Boolean(err.killed), code: typeof err.code === "number" ? err.code : undefined });
     }
   };
 
   const probe = async (app: App): Promise<boolean> => {
       let ok: boolean;
       if (app.health.url) {
-        const out = await exec(["run", "--rm", "--pull", "never", "--network", `app-${app.name}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "64m", cfg.healthImage, "node", "-e", PROBE, app.health.url]).then((o) => o, () => undefined);
+        const out = await exec(["run", "--rm", "--pull", "never", "--network", `app-${app.name}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "64m", cfg.healthImage, "node", "-e", PROBE, app.health.url]).then(
+          (o) => (failures.delete(app.name), o),
+          (e) => {
+            // The probe's own exit 2 with `HTTP <status>`: the app answered with an error (never app text: a status code only).
+            const status = e.code === 2 ? /^HTTP ([45]\d\d)$/.exec(String(e.stdout).trim())?.[1] : undefined;
+            if (status) failures.set(app.name, `health answered HTTP ${status}`);
+            else failures.delete(app.name);
+            return undefined;
+          },
+        );
         ok = out !== undefined;
         // Down: its checks weren't evaluated (unknown keeps their findings open; the outage is the availability incident's).
         quality.set(app.name, out !== undefined ? parseChecks(out) : { state: "unknown", why: "the health check failed" });
@@ -304,10 +314,15 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       sql: (script, vars) => exec(["exec", "-i", WAREHOUSE.container, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", ...Object.entries(vars).flatMap(([k, v]) => ["-v", `${k}=${v}`]), "-U", "warehouse", "-d", WAREHOUSE.db], { input: script }),
     };
   };
+  /** Why the app's last health probe failed when the app answered with an HTTP error (post-deploy watch evidence), else undefined. */
+  const healthFailure = (app: App): string | undefined => failures.get(app.name);
+  /** A deployed commit whose message carries a `No-Auto-Rollback:` trailer (a security fix): the watch only raises it. Unreadable counts as marked. */
+  const noAutoRollback = async (app: App, sha: string): Promise<boolean> =>
+    commitMessage(cfg.git, app, sha).then((m) => /^no-auto-rollback(?::|\s*$)/im.test(m), (err) => (log.warn({ app: app.name, err: String(err) }, "commit message unreadable"), true));
   /** An app's quality checks from its last probe, samples included (app_status, for a caller who may read the app). */
   const qualityFor = (a: App): Quality => quality.get(a.name) ?? { state: "unknown", why: "not probed yet" };
   /** Every probed app's checks without samples (the board's detector raises the failing ones; samples never leave here). */
   const qualityOf = () => apps().filter((a) => a.health.url).map((a) => ({ name: a.name, ...withoutSamples(qualityFor(a)) }));
-  return { sign, checkNow, qualityOf, qualityFor, syncEdge, warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
+  return { healthFailure, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;

@@ -4,11 +4,11 @@
 // quality:<app>:<check> for Fleet Ops to route to the app's owner. Everything here is app-authored data, bounded.
 
 /**
- * The probe, run with node inside a one-shot container on the app's network: exit 0 when the status is under 400 (healthy),
- * else 1, exactly as before; on success it prints the body's `checks` (or null) for parseChecks.
+ * The probe, run with node inside a one-shot container on the app's network: exit 0 when the status is under 400 (healthy);
+ * an HTTP error prints `HTTP <status>` and exits 2 (the app answered: evidence for the post-deploy watch), anything else 1; on success it prints the body's `checks` (or null) for parseChecks.
  */
 export const PROBE =
-  "fetch(process.argv[1],{signal:AbortSignal.timeout(5000)}).then(async r=>{if(r.status>=400)process.exit(1);let c=null;try{const j=JSON.parse((await r.text()).slice(0,200000));c=j&&j.checks!==undefined?j.checks:null}catch{}process.stdout.write(JSON.stringify(c)??'null',()=>process.exit(0))}).catch(()=>process.exit(1))";
+  "fetch(process.argv[1],{signal:AbortSignal.timeout(5000)}).then(async r=>{if(r.status>=400){process.stdout.write('HTTP '+r.status,()=>process.exit(2));return}let c=null;try{const j=JSON.parse((await r.text()).slice(0,200000));c=j&&j.checks!==undefined?j.checks:null}catch{}process.stdout.write(JSON.stringify(c)??'null',()=>process.exit(0))}).catch(()=>process.exit(1))";
 
 export const MAX_CHECKS = 20;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,59}$/;

@@ -121,6 +121,12 @@ export async function checkout(env: GitEnv, app: App, sha?: string): Promise<{ s
   return { sha: full, dir };
 }
 
+/** A deployed commit's full message, from the app's bare repo (its deploy fetched it). Read by code only, never shown. */
+export async function commitMessage(env: GitEnv, app: App, sha: string): Promise<string> {
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("sha must be 40 hex characters");
+  return git(env, [`--git-dir=${env.gitDir}/${app.name}.git`, "log", "-1", "--format=%B", sha]);
+}
+
 /** The full sha and subject of a commit on origin/<branch> (what an approval card names); throws if unknown or off-branch. */
 export async function resolveCommit(env: GitEnv, app: App, sha: string): Promise<{ sha: string; subject: string }> {
   checkOrg(env, app);
