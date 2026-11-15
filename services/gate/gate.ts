@@ -25,9 +25,81 @@
 // cookie an app sets through the gate is host-only (its Domain dropped): a preview can't toss cookies at the live app or
 // any other, and a live app's cookies never reach its previews.
 import { createHash, createPrivateKey, createPublicKey, randomBytes, sign, timingSafeEqual, verify } from "node:crypto";
+import type { JsonWebKey, KeyObject } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
+import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse } from "node:http";
 import { isIP } from "node:net";
+import type { Duplex } from "node:stream";
+
+/**
+ * Trust brands: a value of a branded type comes only from the place that checked it (an inline `as` at that site and nowhere
+ * else). Anything read from a request (headers, cookies, query, body) is plain `string` and can't stand in for one.
+ */
+type Brand<T, B extends string> = T & { readonly __brand: B };
+/** An email a sign-in method verified (the Access token's, or the board's session's), trimmed and lowercased. */
+export type VerifiedEmail = Brand<string, "VerifiedEmail">;
+/** The identity JWT the gate minted for one request to one app (X-AidenHQ-Identity). */
+export type IdentityToken = Brand<string, "IdentityToken">;
+
+/** A shared app's host in the compiled config. */
+export interface HostSite { app: string; port: number; aud?: string; default_role?: string }
+/** The site a request is for: a shared app's host, or a preview of one (`parent`: the live app). */
+export type Site = HostSite & { parent?: string };
+/** config/gate.json, as scripts/edge.mjs compiles it (my_apps, auth_url and hosts are always written). */
+export interface GateConfig {
+  port: number;
+  login?: string;
+  issuer?: string;
+  certs_url?: string;
+  auth_url: string;
+  auth_secret_file?: string;
+  accounts_file?: string;
+  owner_email?: string;
+  my_apps: { host: string; aud?: string };
+  identity_key_file: string;
+  hosts: Record<string, HostSite>;
+  previews?: { file: string; ports: [number, number] };
+}
+export interface Account { role: "admin" | "user"; disabled: boolean; name: string }
+export interface AppRoles { default?: string; roles?: Record<string, string> }
+export interface AccountState { accounts: Map<string, Account>; apps: Record<string, AppRoles> }
+interface Signer { key: KeyObject; kid: string }
+export interface IdentityClaims { iss: string; aud: string; sub: string; kind: string; email: VerifiedEmail; name?: string; role: string; idp?: string; iat: number; exp: number }
+type KeyLookup = (kid: string) => Promise<KeyObject | undefined>;
+/** The board's answer for an app's Access page (services/board/src/app-access.ts). */
+export interface AccessPageData {
+  app: string;
+  host: string;
+  default: string;
+  roles: { name: string; meaning: string }[];
+  assignments: { email: string; role: string; set_by: string; declared: boolean }[];
+  log: { at: string; subject: string; before: string | null; after: string | null; by: string; asked_by: string | null; request_id: string | null }[];
+}
+/** One of the visitor's in-app requests, as the board lists them. */
+export interface RequestRow { at: string; text: string; status: string; reply?: string | null }
+/** The board's JSON answers the gate reads fields of. */
+interface BoardReply { error?: string; code?: unknown; token?: unknown; requests?: RequestRow[] }
+/** A refusal (or a redirect to sign-in): the status and a short text. */
+interface Refusal { status: number; msg: string; location?: string; cookie?: string; email?: undefined }
+/** A sign-in method's answer: the email it verified. */
+interface SignIn { email: VerifiedEmail; idp: "access" | "password" }
+interface Visitor { email: VerifiedEmail; name: string; idp: string | undefined }
+/** What authorize() decided; each kind's flags are absent (undefined) on every other kind, so a truthy flag narrows. */
+type Decision =
+  | Refusal
+  | { handoff: true; query: URLSearchParams }
+  | { signOut: true }
+  | { go: true; query: URLSearchParams }
+  | { auth: true; path: string }
+  | (Visitor & { mine: true; roleOf: (app: string) => string; access: boolean })
+  | (Visitor & { requests: true; site: Site; role: string })
+  | (Visitor & { request: true; site: Site; role: string })
+  | (Visitor & { site: Site; role: string; app: string; token: IdentityToken });
+type KeysOf<T> = T extends unknown ? keyof T : never;
+type Exclusive<U, All extends PropertyKey = KeysOf<U>> = U extends unknown ? U & { [K in Exclude<All, keyof U>]?: undefined } : never;
+type Authz = Exclusive<Decision>;
+type Log = (o: Record<string, unknown>) => void;
 
 const JWKS_MAX_AGE_MS = 3600_000;
 const JWKS_HARD_MAX_MS = 2 * JWKS_MAX_AGE_MS; // past this without a good refresh, trust no cached key
@@ -64,33 +136,33 @@ const SESSION_TTL_MS = 60_000;
 const SESSION_CACHE_MAX = 1000;
 const HOP = ["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"];
 
-const b64json = (s) => JSON.parse(Buffer.from(s, "base64url").toString("utf8"));
-const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const b64json = (s: string): unknown => JSON.parse(Buffer.from(s, "base64url").toString("utf8"));
+const b64url = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
 export const IDENTITY_HEADER = "x-aidenhq-identity";
 const IDENTITY_TTL_S = 300;
 
 /** A person's stable, opaque id: the same under every sign-in method, from the email that method verified. */
-export const subOf = (email) => `u_${createHash("sha256").update(`aidenhq-user:${email.trim().toLowerCase()}`).digest("base64url").slice(0, 22)}`;
+export const subOf = (email: VerifiedEmail) => `u_${createHash("sha256").update(`aidenhq-user:${email.trim().toLowerCase()}`).digest("base64url").slice(0, 22)}`;
 
 /** The gate's signing key (identity_key_file, Ed25519 PKCS#8), re-read when the file changes; its kid as scripts/identity.mjs computes it. */
-export function signingKey(file) {
-  let cached, mtime = -1;
+export function signingKey(file: string): () => Signer {
+  let cached: Signer | undefined, mtime = -1;
   return () => {
     const m = statSync(file).mtimeMs;
     if (m !== mtime) {
       const key = createPrivateKey(readFileSync(file, "utf8"));
       const x = createPublicKey(key).export({ format: "jwk" }).x;
-      cached = { key, kid: createHash("sha256").update(Buffer.from(x, "base64url")).digest("base64url").slice(0, 16) };
+      cached = { key, kid: createHash("sha256").update(Buffer.from(x!, "base64url")).digest("base64url").slice(0, 16) };
       mtime = m;
     }
-    return cached;
+    return cached!;
   };
 }
 
 /** A compact EdDSA JWT. */
-export function mint({ key, kid }, claims) {
+export function mint({ key, kid }: Signer, claims: IdentityClaims): IdentityToken {
   const body = `${b64url({ alg: "EdDSA", kid, typ: "JWT" })}.${b64url(claims)}`;
-  return `${body}.${sign(null, Buffer.from(body), key).toString("base64url")}`;
+  return `${body}.${sign(null, Buffer.from(body), key).toString("base64url")}` as IdentityToken;
 }
 
 /** Thrown when the gate can't trust any keys (never loaded, or the last good load is too old): the request gets a 503. */
@@ -100,18 +172,18 @@ export class KeysUnavailable extends Error {}
  * The team's signing keys by kid, cached; refetched hourly or on an unknown kid (rate-limited). Fails closed: once the
  * last successful load is older than JWKS_HARD_MAX_MS (a rotated-out key may have been revoked), no key is trusted.
  */
-export function jwks(url, fetchImpl = fetch, now = Date.now) {
-  let keys = new Map(), at = 0, tried = -Infinity, inflight;
+export function jwks(url: string, fetchImpl: typeof fetch = fetch, now: () => number = Date.now): KeyLookup {
+  let keys = new Map<string, KeyObject>(), at = 0, tried = -Infinity, inflight: Promise<void> | undefined;
   const load = async () => {
     tried = now();
     const r = await fetchImpl(url, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) throw new Error(`jwks ${r.status}`);
     const next = new Map();
-    for (const k of (await r.json()).keys ?? []) if (k.kty === "RSA" && k.kid) next.set(k.kid, createPublicKey({ key: k, format: "jwk" }));
+    for (const k of ((await r.json()) as { keys?: (JsonWebKey & { kid?: string })[] }).keys ?? []) if (k.kty === "RSA" && k.kid) next.set(k.kid, createPublicKey({ key: k, format: "jwk" }));
     keys = next;
     at = now();
   };
-  return async (kid) => {
+  return async (kid: string) => {
     if ((now() - at > JWKS_MAX_AGE_MS || !keys.has(kid)) && now() - tried > JWKS_REFETCH_MS) {
       inflight ??= load().catch((e) => console.error(JSON.stringify({ msg: "jwks fetch failed", err: String(e) }))).finally(() => (inflight = undefined));
       await inflight;
@@ -122,15 +194,15 @@ export function jwks(url, fetchImpl = fetch, now = Date.now) {
 }
 
 /** The token's claims, or throws: RS256 only, a known kid, valid signature, the issuer, this app's aud, not expired. */
-export async function verifyToken(token, { issuer, aud, key }) {
-  const parts = String(token).split(".");
+export async function verifyToken(token: string, { issuer, aud, key }: { issuer: string | undefined; aud: string; key: KeyLookup }) {
+  const parts = String(token).split(".") as [string, string, string];
   if (parts.length !== 3) throw new Error("malformed token");
-  const header = b64json(parts[0]);
+  const header = b64json(parts[0]) as { alg?: unknown; kid?: unknown };
   if (header.alg !== "RS256") throw new Error(`alg ${header.alg} not allowed`);
   const k = await key(String(header.kid ?? ""));
   if (!k) throw new Error("unknown signing key");
   if (!verify("sha256", Buffer.from(`${parts[0]}.${parts[1]}`), k, Buffer.from(parts[2], "base64url"))) throw new Error("bad signature");
-  const c = b64json(parts[1]);
+  const c = b64json(parts[1]) as { iss?: unknown; aud?: unknown; exp?: unknown; nbf?: unknown; email?: unknown };
   const now = Date.now() / 1000;
   if (c.iss !== issuer) throw new Error("wrong issuer");
   if (![c.aud].flat().includes(aud)) throw new Error("wrong audience");
@@ -140,19 +212,19 @@ export async function verifyToken(token, { issuer, aud, key }) {
 }
 
 /** A Set-Cookie without any Domain attribute: host-only (a preview's cookies never reach a sibling host). */
-export const hostOnly = (c) => c.replace(/;\s*domain\s*=[^;]*/gi, "");
-const hostOf = (req) => String(req.headers.host ?? "").toLowerCase().replace(/:\d+$/, "");
-const cookies = (req) => String(req.headers.cookie ?? "").split(";").map((c) => c.trim()).filter(Boolean);
-const cookieName = (c) => c.split("=")[0].trim();
+export const hostOnly = (c: string) => c.replace(/;\s*domain\s*=[^;]*/gi, "");
+const hostOf = (req: IncomingMessage) => String(req.headers.host ?? "").toLowerCase().replace(/:\d+$/, "");
+const cookies = (req: IncomingMessage) => String(req.headers.cookie ?? "").split(";").map((c) => c.trim()).filter(Boolean);
+const cookieName = (c: string) => c.split("=")[0]!.trim();
 /** Only Better Auth's cookies (for the auth listener), "" when there are none. */
-const authCookies = (req) => cookies(req).filter((c) => AUTH_COOKIE.test(cookieName(c))).join("; ");
+const authCookies = (req: IncomingMessage) => cookies(req).filter((c) => AUTH_COOKIE.test(cookieName(c))).join("; ");
 /** The session cookie's value when the request carries exactly one, else "". */
-const sessionCookie = (req) => {
+const sessionCookie = (req: IncomingMessage) => {
   const found = cookies(req).filter((c) => cookieName(c) === SESSION_COOKIE);
-  return found.length === 1 ? found[0].slice(SESSION_COOKIE.length + 1).trim() : "";
+  return found.length === 1 ? found[0]!.slice(SESSION_COOKIE.length + 1).trim() : "";
 };
 /** A same-host path to send a visitor back to, or "/". */
-const localPath = (p) => {
+const localPath = (p: unknown) => {
   if (typeof p !== "string" || /[\x00-\x20\x7f\\]/.test(p)) return "/";
   try {
     const u = new URL(p, "https://x"); // as a browser resolves it: anything that leaves this origin goes home instead
@@ -163,18 +235,18 @@ const localPath = (p) => {
 };
 
 /** The Access page and the request channel: the exact https origin of this host, nothing else. */
-const exactOrigin = (req, host) => req.headers.origin === `https://${host}`;
+const exactOrigin = (req: IncomingMessage, host: string) => req.headers.origin === `https://${host}`;
 
 /** Same-origin for a state-changing request or an upgrade: the exact https origin of this host, else Sec-Fetch-Site. */
-export function sameOrigin(req, host) {
+export function sameOrigin(req: IncomingMessage, host: string) {
   const o = req.headers.origin;
   if (o !== undefined) return o === `https://${host}`;
   return req.headers["sec-fetch-site"] === "same-origin";
 }
 
 /** The request headers the app sees: no inbound identity, no Access token or cookie, no sign-in cookie; our token set. */
-export function upstreamHeaders(req, token, { upgrade = false } = {}) {
-  const h = {};
+export function upstreamHeaders(req: IncomingMessage, token: IdentityToken, { upgrade = false } = {}): OutgoingHttpHeaders {
+  const h: IncomingHttpHeaders = {};
   for (const [k, v] of Object.entries(req.headers)) if (!STRIP.test(k) && (upgrade ? !["proxy-connection", "keep-alive"].includes(k) : !HOP.includes(k))) h[k] = v;
   if (h.cookie) {
     const kept = cookies(req).filter((c) => cookieName(c).toLowerCase() !== "cf_authorization" && !AUTH_COOKIE.test(cookieName(c)));
@@ -188,13 +260,13 @@ export function upstreamHeaders(req, token, { upgrade = false } = {}) {
  * The visitor's address: Cloudflare's CF-Connecting-IP only (its edge always overwrites it, and only cloudflared reaches
  * the gate on 127.0.0.1). Absent or not an IP: "" (no header; the board counts the gate's socket address instead).
  */
-export function clientIp(req) {
+export function clientIp(req: IncomingMessage) {
   const v = String(req.headers["cf-connecting-ip"] ?? "").trim().replace(/^::ffff:/, "");
   return isIP(v) ? v : "";
 }
 
 /** The board's shared secret (auth_secret_file): the auth listener trusts our client-IP header only beside it. */
-const boardSecret = (cfg) => {
+const boardSecret = (cfg: GateConfig) => {
   try { return cfg.auth_secret_file ? readFileSync(cfg.auth_secret_file, "utf8").trim() : ""; } catch { return ""; }
 };
 
@@ -202,8 +274,8 @@ const boardSecret = (cfg) => {
  * Sign-in traffic for the auth listener: no identity headers or Access token (STRIP drops any x-aidenhq-* a client sent),
  * only Better Auth's cookies, our forwarding, the visitor's address (failures count against it) and the board's secret.
  */
-export function authHeaders(req, secret = "") {
-  const h = {};
+export function authHeaders(req: IncomingMessage, secret = ""): OutgoingHttpHeaders {
+  const h: IncomingHttpHeaders = {};
   for (const [k, v] of Object.entries(req.headers)) if (!STRIP.test(k) && !HOP.includes(k) && !k.startsWith("x-forwarded-") && k !== "cookie" && k !== "accept-encoding") h[k] = v;
   const c = authCookies(req);
   const ip = clientIp(req);
@@ -216,40 +288,40 @@ const ROLE = /^[a-z][a-z0-9-]{1,30}$/;
  * Roles arrive resolved by the board (one it doesn't know is already `blocked`). Throws on anything malformed (the gate then
  * refuses with a 503).
  */
-export function parseAccounts(text) {
-  const doc = JSON.parse(text);
+export function parseAccounts(text: string): AccountState {
+  const doc = JSON.parse(text) as { accounts?: unknown; apps?: unknown } | null;
   const list = doc?.accounts;
   if (!Array.isArray(list)) throw new Error("accounts.json: no accounts list");
-  const accounts = new Map();
-  for (const a of list) {
-    if (typeof a?.email !== "string" || !a.email.includes("@") || !["admin", "user"].includes(a.role) || typeof a.disabled !== "boolean") throw new Error("accounts.json: bad account entry");
-    accounts.set(a.email.trim().toLowerCase(), { role: a.role, disabled: a.disabled, name: typeof a.name === "string" ? a.name : "" });
+  const accounts = new Map<string, Account>();
+  for (const a of list as ({ email?: unknown; role?: unknown; disabled?: unknown; name?: unknown } | null)[]) {
+    if (typeof a?.email !== "string" || !a.email.includes("@") || !(["admin", "user"] as unknown[]).includes(a.role) || typeof a.disabled !== "boolean") throw new Error("accounts.json: bad account entry");
+    accounts.set(a.email.trim().toLowerCase(), { role: a.role as Account["role"], disabled: a.disabled, name: typeof a.name === "string" ? a.name : "" });
   }
-  const apps = doc.apps ?? {};
+  const apps = (doc!.apps ?? {}) as Record<string, { default?: unknown; roles?: unknown } | null>;
   if (typeof apps !== "object" || Array.isArray(apps)) throw new Error("accounts.json: bad apps");
   for (const r of Object.values(apps)) {
     const roles = r?.roles ?? {};
-    if (!ROLE.test(String(r?.default)) || r.default === "admin" || typeof roles !== "object" || Array.isArray(roles) || !Object.values(roles).every((x) => ROLE.test(String(x)))) throw new Error("accounts.json: bad app roles");
+    if (!ROLE.test(String(r?.default)) || r!.default === "admin" || typeof roles !== "object" || Array.isArray(roles) || !Object.values(roles).every((x) => ROLE.test(String(x)))) throw new Error("accounts.json: bad app roles");
   }
-  return { accounts, apps };
+  return { accounts, apps: apps as Record<string, AppRoles> };
 }
 
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const STYLE = `<style>body{font:16px/1.5 system-ui,sans-serif;max-width:44rem;margin:2rem auto;padding:0 1rem}a{color:inherit}table{border-collapse:collapse;width:100%}td{padding:6px 8px 6px 0;vertical-align:middle}form{display:inline}.muted{color:#777;font-size:14px}input,select,button{font:inherit;padding:4px 8px}code{word-break:break-all}.note{padding:10px;border:1px solid #ccc;border-radius:8px}</style>`;
-const html = (title, body) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>${STYLE}</head><body>${body}</body></html>\n`;
+const html = (title: string, body: string) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>${STYLE}</head><body>${body}</body></html>\n`;
 /** The my-apps page: the apps this visitor may open, with their role; the apps they admin link to their Access page. */
-export function myAppsPage(email, apps) {
+export function myAppsPage(email: string, apps: { host: string; app: string; role: string }[]) {
   const items = apps.map((a) => `<li><a href="https://${esc(a.host)}/">${esc(a.app)}</a> <span class="muted">${esc(a.role)}</span>${a.role === "admin" ? ` · <a class="muted" href="${ACCESS_PATH}?app=${encodeURIComponent(a.app)}">Access</a>` : ""}</li>`).join("");
   return html("My apps", `<h1>My apps</h1><p>Signed in as ${esc(email)}.</p>${items ? `<ul>${items}</ul>` : "<p>No apps are shared with you yet.</p>"}`);
 }
 /** One app's Access page (its admins only): the roles, the default, who has which role, and the last changes. */
-export function accessPage(p) {
+export function accessPage(p: AccessPageData) {
   const app = esc(p.app);
   const hidden = `<input type="hidden" name="app" value="${app}">`;
-  const options = (pick, omit = []) => p.roles.filter((r) => !omit.includes(r.name)).map((r) => `<option value="${esc(r.name)}"${r.name === pick ? " selected" : ""}>${esc(r.name)}</option>`).join("");
-  const form = (action, inner) => `<form method="post" action="${ACCESS_PATH}"><input type="hidden" name="action" value="${action}">${hidden}${inner}</form>`;
-  const row = (a) => `<tr><td>${esc(a.email)}</td><td>${form("role", `<input type="hidden" name="email" value="${esc(a.email)}"><select name="role">${options(a.role)}</select> <button>Save</button>`)}${a.declared ? "" : ` <span class="muted">${esc(a.role)}: no longer declared, so blocked</span>`}</td><td>${form("remove", `<input type="hidden" name="email" value="${esc(a.email)}"><button>Remove</button>`)}</td><td class="muted">${esc(a.set_by)}</td></tr>`;
-  const change = (l) => `<tr><td class="muted">${esc(String(l.at).slice(0, 16).replace("T", " "))}</td><td>${esc(l.subject)}</td><td>${esc(l.before ?? "none")} → ${esc(l.after ?? "none")}</td><td class="muted">${esc(l.by)}${l.asked_by ? `, asked by ${esc(l.asked_by)}` : ""}${l.request_id ? ` (${esc(l.request_id)})` : ""}</td></tr>`;
+  const options = (pick: string, omit: string[] = []) => p.roles.filter((r) => !omit.includes(r.name)).map((r) => `<option value="${esc(r.name)}"${r.name === pick ? " selected" : ""}>${esc(r.name)}</option>`).join("");
+  const form = (action: string, inner: string) => `<form method="post" action="${ACCESS_PATH}"><input type="hidden" name="action" value="${action}">${hidden}${inner}</form>`;
+  const row = (a: AccessPageData["assignments"][number]) => `<tr><td>${esc(a.email)}</td><td>${form("role", `<input type="hidden" name="email" value="${esc(a.email)}"><select name="role">${options(a.role)}</select> <button>Save</button>`)}${a.declared ? "" : ` <span class="muted">${esc(a.role)}: no longer declared, so blocked</span>`}</td><td>${form("remove", `<input type="hidden" name="email" value="${esc(a.email)}"><button>Remove</button>`)}</td><td class="muted">${esc(a.set_by)}</td></tr>`;
+  const change = (l: AccessPageData["log"][number]) => `<tr><td class="muted">${esc(String(l.at).slice(0, 16).replace("T", " "))}</td><td>${esc(l.subject)}</td><td>${esc(l.before ?? "none")} → ${esc(l.after ?? "none")}</td><td class="muted">${esc(l.by)}${l.asked_by ? `, asked by ${esc(l.asked_by)}` : ""}${l.request_id ? ` (${esc(l.request_id)})` : ""}</td></tr>`;
   return html(`${p.app}: access`, `<p><a href="/">My apps</a> · <a href="https://${esc(p.host)}/">Open ${app}</a></p><h1>${app}: access</h1>
 <h2>Default</h2><p class="muted">What someone with no role below gets. AidenHQ admins are admins of every app.</p>${form("default", `<select name="role">${options(p.default, ["admin"])}</select> <button>Save</button>`)}
 <h2>People</h2>${form("role", `<input name="email" type="email" placeholder="Email" required> <select name="role">${options("member")}</select> <button>Set</button>`)}
@@ -258,8 +330,8 @@ export function accessPage(p) {
 <h2>Changes</h2><table>${p.log.map(change).join("") || `<tr><td class="muted">None yet.</td></tr>`}</table>`);
 }
 /** The visitor's own in-app requests on this app, with the agent's reply. */
-export function requestsPage(app, rows) {
-  const row = (r) => `<tr><td class="muted">${esc(String(r.at).slice(0, 16).replace("T", " "))}</td><td>${esc(String(r.text).slice(0, 300))}</td><td>${esc(r.status)}</td><td>${esc(r.reply ?? "")}</td></tr>`;
+export function requestsPage(app: string, rows: RequestRow[]) {
+  const row = (r: RequestRow) => `<tr><td class="muted">${esc(String(r.at).slice(0, 16).replace("T", " "))}</td><td>${esc(String(r.text).slice(0, 300))}</td><td>${esc(r.status)}</td><td>${esc(r.reply ?? "")}</td></tr>`;
   return html(`${app}: your requests`, `<p><a href="/">Back to ${esc(app)}</a></p><h1>Your requests</h1>${rows.length ? `<table><tr><th>When</th><th>Request</th><th>Status</th><th>Reply</th></tr>${rows.map(row).join("")}</table>` : "<p>None yet.</p>"}`);
 }
 
@@ -268,24 +340,24 @@ const PREVIEW_HOST = /^pr-([1-9][0-9]{0,5})\.(.+)$/;
  * A preview host's site, or undefined: its parent must be a compiled app host (whose Access audience it takes), and the previews file (apps-mcp's, re-read
  * when it changes; absent = none) must name the preview with a port in the compiled band. Throws when the file is unreadable.
  */
-export function previewSites() {
-  let text, map = {};
+export function previewSites(): (cfg: GateConfig, host: string) => Site | undefined {
+  let text: string | undefined, map: Record<string, unknown> = {};
   return (cfg, host) => {
     const pv = cfg.previews;
     const m = pv && PREVIEW_HOST.exec(host);
-    const parent = m && (Object.hasOwn(cfg.hosts ?? {}, m[2]) ? cfg.hosts[m[2]] : undefined);
+    const parent = m && (Object.hasOwn(cfg.hosts ?? {}, m[2]!) ? cfg.hosts[m[2]!] : undefined);
     if (!parent) return undefined;
-    let t;
-    try { t = readFileSync(pv.file, "utf8"); } catch (e) { if (e.code === "ENOENT") t = "{}"; else throw e; }
+    let t: string;
+    try { t = readFileSync(pv!.file, "utf8"); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") t = "{}"; else throw e; }
     if (t !== text) {
-      const next = JSON.parse(t);
+      const next = JSON.parse(t) as Record<string, unknown> | null;
       if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("previews file: not a map");
       map = next;
       text = t;
     }
     const app = `${parent.app}-pr-${m[1]}`;
-    const port = Object.hasOwn(map, app) ? map[app] : undefined;
-    if (!Number.isInteger(port) || port < pv.ports[0] || port > pv.ports[1]) return undefined;
+    const port = (Object.hasOwn(map, app) ? map[app] : undefined) as number; // checked next
+    if (!Number.isInteger(port) || port < pv!.ports[0] || port > pv!.ports[1]) return undefined;
     return { app, parent: parent.app, port, ...(parent.aud ? { aud: parent.aud } : {}) };
   };
 }
@@ -298,28 +370,28 @@ export function previewSites() {
  * auth_secret_file: the board's (gate_board_secret), sent as X-AidenHQ-Gate to the auth listener in password mode.
  * accounts_file: the board's account map and app roles (mounted read-only), re-read when its content changes.
  */
-export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)) }) {
-  const keysets = new Map(); // certs_url → key lookup (one in practice)
-  const keyFor = (url) => keysets.get(url) ?? keysets.set(url, jwks(url, fetchImpl, now)).get(url);
-  const signers = new Map(); // identity_key_file → its key (one in practice)
-  const signerFor = (file) => signers.get(file) ?? signers.set(file, signingKey(file)).get(file);
+export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)) }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log }): Server {
+  const keysets = new Map<string, KeyLookup>(); // certs_url → key lookup (one in practice)
+  const keyFor = (url: string) => keysets.get(url) ?? keysets.set(url, jwks(url, fetchImpl, now)).get(url)!;
+  const signers = new Map<string, () => Signer>(); // identity_key_file → its key (one in practice)
+  const signerFor = (file: string) => signers.get(file) ?? signers.set(file, signingKey(file)).get(file)!;
   const previewOf = previewSites();
 
-  let state, stateText;
+  let state: AccountState | undefined, stateText: string | undefined;
   /** The board's accounts and app roles, re-parsed when the file's text changes; throws when it can't be read. */
-  const accountState = (file) => {
+  const accountState = (file: string | undefined): AccountState => {
     if (!file) throw new Error("no accounts_file");
     const text = readFileSync(file, "utf8");
     if (text !== stateText) {
       state = parseAccounts(text);
       stateText = text; // only after a good parse: a torn write is read again on the next request
     }
-    return state;
+    return state!;
   };
 
-  const sessions = new Map(); // sha256(auth cookies) → { at, email }
+  const sessions = new Map<string, { at: number; email: VerifiedEmail }>(); // sha256(auth cookies) → { at, email }
   /** The signed-in email from the board's get-session; null for no session; throws when the answer can't be trusted. */
-  async function sessionEmail(req, cfg) {
+  async function sessionEmail(req: IncomingMessage, cfg: GateConfig): Promise<VerifiedEmail | null> {
     const v = sessionCookie(req);
     if (!v) return null;
     const c = `${SESSION_COOKIE}=${v}`;
@@ -329,9 +401,10 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     const secret = boardSecret(cfg);
     const r = await fetchImpl(new URL("/.auth/api/get-session", cfg.auth_url), { headers: { cookie: c, "x-forwarded-host": hostOf(req), "x-forwarded-proto": "https", ...(secret ? { "x-aidenhq-gate": secret } : {}) }, signal: AbortSignal.timeout(5000) });
     if (!r.ok) throw new Error(`get-session ${r.status}`);
-    const body = await r.json();
+    const body = (await r.json()) as { user?: { banned?: unknown; email?: unknown } } | null;
     if (body === null || body?.user?.banned === true) return null;
-    const email = typeof body?.user?.email === "string" ? body.user.email.trim().toLowerCase() : "";
+    // The board checked the session: the brand is minted here and in accessEmail only.
+    const email = (typeof body?.user?.email === "string" ? body.user.email.trim().toLowerCase() : "") as VerifiedEmail;
     if (!email.includes("@")) throw new Error("get-session: no user email");
     if (sessions.size >= SESSION_CACHE_MAX) sessions.clear();
     sessions.set(key, { at: now(), email });
@@ -339,16 +412,18 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   }
 
   /** → { email } from the Access token for this host's aud, or a refusal. */
-  async function accessEmail(req, cfg, host, aud) {
+  async function accessEmail(req: IncomingMessage, cfg: GateConfig, host: string, aud: string | undefined): Promise<{ email: VerifiedEmail } | Refusal> {
     const token = req.headers["cf-access-jwt-assertion"];
     try {
       if (!aud) throw new Error("no aud for this host");
       if (!token || Array.isArray(token)) throw new Error("no token");
-      const claims = await verifyToken(token, { issuer: cfg.issuer, aud, key: keyFor(cfg.certs_url) });
-      const email = typeof claims.email === "string" ? claims.email.trim().toLowerCase() : "";
+      // compile writes certs_url whenever a host has an aud (an aud needs the team: scripts/edge.mjs)
+      const claims = await verifyToken(token, { issuer: cfg.issuer, aud, key: keyFor(cfg.certs_url!) });
+      // The Access token checked out: the brand is minted here and in sessionEmail only.
+      const email = (typeof claims.email === "string" ? claims.email.trim().toLowerCase() : "") as VerifiedEmail;
       return email ? { email } : { status: 403, msg: "forbidden: no email in the token" };
     } catch (e) {
-      log({ msg: "denied", host, why: e.message });
+      log({ msg: "denied", host, why: (e as Error).message });
       return e instanceof KeysUnavailable ? { status: 503, msg: "unavailable: can't verify sign-ins right now" } : { status: 403, msg: "forbidden" };
     }
   }
@@ -360,8 +435,8 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
    * A new method (direct OIDC, Google, Tailscale) is one more entry here plus its place in authorize().
    */
   const adapters = {
-    access: { authenticate: async (req, cfg, host, aud) => { const a = await accessEmail(req, cfg, host, aud); return a.email ? { email: a.email, idp: "access" } : a; } },
-    password: { authenticate: async (req, cfg) => { const email = await sessionEmail(req, cfg); return email ? { email, idp: "password" } : null; } },
+    access: { authenticate: async (req: IncomingMessage, cfg: GateConfig, host: string, aud: string | undefined): Promise<SignIn | Refusal> => { const a = await accessEmail(req, cfg, host, aud); return a.email ? { email: a.email, idp: "access" } : (a as Refusal); } },
+    password: { authenticate: async (req: IncomingMessage, cfg: GateConfig): Promise<SignIn | null> => { const email = await sessionEmail(req, cfg); return email ? { email, idp: "password" } : null; } },
   };
 
   /**
@@ -369,10 +444,10 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
    * { mine: true, email, name, roleOf, access } for the my-apps host, { request | requests: true, site, email, role } for
    * the gate's own /.aidenhq paths, or { site, email, name, role, app, secret } to proxy.
    */
-  async function authorize(req, { upgrade }) {
+  async function authorize(req: IncomingMessage, { upgrade }: { upgrade: boolean }): Promise<Authz> {
     const cfg = config();
     const host = hostOf(req);
-    let site;
+    let site: Site | undefined;
     try {
       site = Object.hasOwn(cfg.hosts ?? {}, host) ? cfg.hosts[host] : previewOf(cfg, host);
     } catch (e) {
@@ -392,15 +467,15 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     const aud = (site ?? cfg.my_apps).aud;
 
     // Access: always in access mode (a host without an aud is refused), and on a password-mode host that has an aud.
-    let email, idp;
+    let email: VerifiedEmail | undefined, idp: string | undefined;
     if (login === "access" || aud) {
       const a = await adapters.access.authenticate(req, cfg, host, aud);
-      if (!a.email) return a;
+      if (!a.email) return a as Refusal; // a verified email is never empty
       ({ email, idp } = a);
     }
     // /.auth is judged on the normalised path (what a server behind us would see), and anything encoded is refused.
-    const rawPath = url.split("?")[0];
-    let norm;
+    const rawPath = url.split("?")[0]!;
+    let norm: URL;
     try { norm = new URL(`http://gate${url}`); } catch { return { status: 400, msg: "bad request" }; }
     if (norm.pathname === "/.auth" || norm.pathname.startsWith(AUTH_PATH) || /(^|\/)(\.|%2e)auth([/\\]|%2f|%5c|$)/i.test(rawPath)) {
       if (ENCODED.test(rawPath)) return { status: 400, msg: "bad request" };
@@ -421,7 +496,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     }
     if (login === "password") {
       try {
-        ({ email, idp } = (await adapters.password.authenticate(req, cfg)) ?? {});
+        ({ email, idp } = (await adapters.password.authenticate(req, cfg)) ?? ({} as Partial<SignIn>));
       } catch (e) {
         log({ msg: "session check failed", host, err: String(e) });
         return { status: 503, msg: "unavailable: can't check sign-ins right now" };
@@ -437,14 +512,15 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       }
     }
 
-    let st;
+    let st: AccountState;
     try {
       st = accountState(cfg.accounts_file);
     } catch (e) {
       log({ msg: "accounts unreadable", err: String(e) });
       return { status: 503, msg: "unavailable: can't read accounts right now" };
     }
-    const acct = st.accounts.get(email);
+    // Signed in by now: the login is access (the Access check named them above) or password (the session did).
+    const acct = st.accounts.get(email!);
     if (acct?.disabled) {
       log({ msg: "denied", host, email, why: "disabled" });
       return { status: 403, msg: "forbidden: this account is disabled" };
@@ -454,12 +530,12 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     if (login === "password" && !acct) return { status: 403, msg: "forbidden: no account" };
     // An AidenHQ admin by its account (the owner's is one) is an admin of every app; else the app's assignment, its default,
     // or blocked.
-    const roleOf = (app) => {
+    const roleOf = (app: string): string => {
       if (acct?.role === "admin") return "admin";
       const a = Object.hasOwn(st.apps, app) ? st.apps[app] : undefined;
-      return (a && Object.hasOwn(a.roles ?? {}, email) ? a.roles[email] : a?.default) ?? "blocked";
+      return (a && Object.hasOwn(a.roles ?? {}, email!) ? a.roles![email!] : a?.default) ?? "blocked";
     };
-    const who = { email, name: acct?.name ?? "", idp };
+    const who: Visitor = { email: email!, name: acct?.name ?? "", idp };
     if (mine) {
       const p = url.split("?")[0];
       if (upgrade || (p !== "/" && p !== ACCESS_PATH) || (p === "/" && !read)) return { status: 404, msg: "not found" };
@@ -467,7 +543,8 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       return { mine: true, ...who, roleOf, access: p === ACCESS_PATH };
     }
 
-    const role = roleOf(site.parent ?? site.app); // a preview: its parent app's access
+    // Not the my-apps host, so an app host: site is set (else the 404 above).
+    const role = roleOf(site!.parent ?? site!.app); // a preview: its parent app's access
     if (role === "blocked") {
       log({ msg: "denied", host, email, why: "blocked" });
       return { status: 403, msg: "forbidden: this app isn't shared with you" };
@@ -476,36 +553,36 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     if (norm.pathname === RESERVED || norm.pathname.startsWith(`${RESERVED}/`) || /(^|\/)(\.|%2e)aidenhq([/\\]|%2f|%5c|$)/i.test(rawPath)) {
       if (ENCODED.test(rawPath) || upgrade) return { status: 400, msg: "bad request" };
       const path = norm.pathname;
-      if (read && path === `${RESERVED}/access`) return cfg.my_apps?.host ? { status: 302, msg: "access", location: `https://${cfg.my_apps.host}${ACCESS_PATH}?app=${encodeURIComponent(site.parent ?? site.app)}` } : { status: 404, msg: "not found" };
-      if (site.parent) return { status: 404, msg: "not found" }; // requests are the live app's, never a preview's
-      if (read && path === `${RESERVED}/requests`) return { requests: true, site, ...who, role };
-      if (req.method === "POST" && path === `${RESERVED}/request`) return exactOrigin(req, host) ? { request: true, site, ...who, role } : { status: 403, msg: "forbidden: cross-origin" };
+      if (read && path === `${RESERVED}/access`) return cfg.my_apps?.host ? { status: 302, msg: "access", location: `https://${cfg.my_apps.host}${ACCESS_PATH}?app=${encodeURIComponent(site!.parent ?? site!.app)}` } : { status: 404, msg: "not found" };
+      if (site!.parent) return { status: 404, msg: "not found" }; // requests are the live app's, never a preview's
+      if (read && path === `${RESERVED}/requests`) return { requests: true, site: site!, ...who, role };
+      if (req.method === "POST" && path === `${RESERVED}/request`) return exactOrigin(req, host) ? { request: true, site: site!, ...who, role } : { status: 403, msg: "forbidden: cross-origin" };
       return { status: 404, msg: "not found" };
     }
     if ((upgrade || !read) && !sameOrigin(req, host)) return { status: 403, msg: "forbidden: cross-origin" };
     // The app's identity token for this request: without the signing key, refuse rather than send one the app must reject.
-    let token;
+    let token: IdentityToken;
     try {
       const iat = Math.floor(now() / 1000);
-      token = mint(signerFor(cfg.identity_key_file)(), { iss: "aidenhq-gate", aud: site.app, sub: subOf(email), kind: "person", email, name: who.name, role, idp, iat, exp: iat + IDENTITY_TTL_S });
+      token = mint(signerFor(cfg.identity_key_file)(), { iss: "aidenhq-gate", aud: site!.app, sub: subOf(email!), kind: "person", email: email!, name: who.name, role, idp, iat, exp: iat + IDENTITY_TTL_S });
     } catch (e) {
       log({ msg: "can't sign identity", host, err: String(e) });
       return { status: 503, msg: "unavailable: can't sign you in to this app right now" };
     }
-    return { site, ...who, role, app: site.app, token };
+    return { site: site!, ...who, role, app: site!.app, token };
   }
 
   /** The my-apps list: every shared app whose role for the visitor isn't blocked, with that role. */
-  const appsFor = (cfg, roleOf) => Object.entries(cfg.hosts ?? {})
+  const appsFor = (cfg: GateConfig, roleOf: (app: string) => string) => Object.entries(cfg.hosts ?? {})
     .map(([host, s]) => ({ host, app: s.app, role: roleOf(s.app) }))
     .filter((a) => a.role !== "blocked")
     .sort((x, y) => x.app.localeCompare(y.app));
 
   /** An auth endpoint's answer without any `token` field (Better Auth returns the session token in sign-in bodies). */
-  const tokenless = (r, res, h) => {
-    const chunks = [];
+  const tokenless = (r: IncomingMessage, res: ServerResponse, h: IncomingHttpHeaders) => {
+    const chunks: Buffer[] = [];
     let size = 0;
-    r.on("data", (c) => {
+    r.on("data", (c: Buffer) => {
       size += c.length;
       if (size > AUTH_BODY_MAX) return void r.destroy(), res.writeHead(502, { "content-type": "text/plain" }).end("bad gateway\n");
       chunks.push(c);
@@ -525,21 +602,21 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     });
   };
 
-  const plain = (res, status, msg, headers = {}) => void res.writeHead(status, { "content-type": "text/plain", "cache-control": "no-store", ...headers }).end(`${msg}\n`);
+  const plain = (res: ServerResponse, status: number, msg: string, headers: OutgoingHttpHeaders = {}) => void res.writeHead(status, { "content-type": "text/plain", "cache-control": "no-store", ...headers }).end(`${msg}\n`);
   /**
    * POST JSON to the board's auth listener → { status, body }. The cookie is a browser's on an https host: the board reads
    * the __Host- names only with x-forwarded-proto https.
    */
-  const board = async (cfg, path, body, cookie) => {
+  const board = async (cfg: GateConfig, path: string, body: Record<string, unknown>, cookie?: string): Promise<{ status: number; body: BoardReply | null }> => {
     const secret = boardSecret(cfg);
     const headers = { "content-type": "application/json", "x-forwarded-proto": "https", ...(cookie ? { cookie } : {}), ...(secret ? { "x-aidenhq-gate": secret } : {}) };
     const r = await fetchImpl(new URL(path, cfg.auth_url), { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
-    return { status: r.status, body: await r.json().catch(() => null) };
+    return { status: r.status, body: (await r.json().catch(() => null)) as BoardReply | null };
   };
 
   const PAGE = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" };
   /** A form post's fields (urlencoded, small). */
-  const form = async (req) => {
+  const form = async (req: IncomingMessage) => {
     if (!String(req.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded")) return null;
     let text = "";
     for await (const c of req) if ((text += c).length > FORM_MAX) return null;
@@ -547,20 +624,20 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   };
 
   /** A JSON body (small), or null. */
-  const jsonBody = async (req) => {
+  const jsonBody = async (req: IncomingMessage): Promise<unknown> => {
     if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) return null;
     let text = "";
     for await (const c of req) if ((text += c).length > REQUEST_MAX) return null;
     try { return JSON.parse(text); } catch { return null; }
   };
   /** The board's answer to a refused change, as plain text with its status (never a 5xx: those throw). */
-  const refused = (res, r) => plain(res, [400, 403, 404, 409, 429].includes(r.status) ? r.status : 400, r.body?.error ?? "bad request");
+  const refused = (res: ServerResponse, r: { status: number; body: BoardReply | null }) => plain(res, [400, 403, 404, 409, 429].includes(r.status) ? r.status : 400, r.body?.error ?? "bad request");
 
   /**
    * My-apps host, /access?app=<name>: the app's Access page for its admins (AidenHQ admins and the app's own). The gate says
    * who is asking (the email it signed in or verified); the board checks they're an admin of that app and makes every change.
    */
-  async function access(req, res, email) {
+  async function access(req: IncomingMessage, res: ServerResponse, email: VerifiedEmail) {
     const cfg = config();
     try {
       let app = new URL(`http://gate${req.url}`).searchParams.get("app") ?? "";
@@ -569,7 +646,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
         if (!f) return plain(res, 400, "bad request");
         app = f.get("app") ?? "";
         const action = f.get("action");
-        const call = action === "role" ? ["role", { email: f.get("email") ?? "", role: f.get("role") ?? "" }]
+        const call: [string, Record<string, unknown>] | null = action === "role" ? ["role", { email: f.get("email") ?? "", role: f.get("role") ?? "" }]
           : action === "remove" ? ["role", { email: f.get("email") ?? "", role: null }]
           : action === "default" ? ["default", { role: f.get("role") ?? "" }] : null;
         if (!call) return plain(res, 400, "bad request");
@@ -582,7 +659,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       const m = await board(cfg, "/.auth/api/app-access/page", { by: email, app });
       if (m.status >= 500) throw new Error(`app-access page ${m.status}`);
       if (m.status !== 200) return refused(res, m);
-      res.writeHead(200, PAGE).end(req.method === "HEAD" ? undefined : accessPage(m.body));
+      res.writeHead(200, PAGE).end(req.method === "HEAD" ? undefined : accessPage(m.body as unknown as AccessPageData));
     } catch (e) {
       log({ msg: "app access failed", err: String(e) });
       plain(res, 503, "unavailable: the change may not have reached the gate; reload and check");
@@ -590,9 +667,9 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   }
 
   /** App host, POST /.aidenhq/request {text, context?}: an in-app request; the identity is the gate's, never the app's. */
-  async function inAppRequest(req, res, a) {
-    const json = (status, body) => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
-    const b = await jsonBody(req);
+  async function inAppRequest(req: IncomingMessage, res: ServerResponse, a: { email: VerifiedEmail; site: Site }) {
+    const json = (status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
+    const b = (await jsonBody(req)) as { text?: unknown; context?: unknown } | null;
     const text = typeof b?.text === "string" ? b.text.trim() : "";
     const context = b?.context === undefined ? undefined : typeof b.context === "string" ? b.context : JSON.stringify(b.context);
     if (!text || text.length > 4000 || (context !== undefined && context.length > 500)) return json(400, { error: "text (1 to 4000 characters) and an optional context (up to 500)" });
@@ -607,11 +684,11 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   }
 
   /** App host, GET /.aidenhq/requests: the visitor's own requests on this app, with status and reply. */
-  async function myRequests(req, res, a) {
+  async function myRequests(req: IncomingMessage, res: ServerResponse, a: { email: VerifiedEmail; site: Site }) {
     try {
       const r = await board(config(), "/.auth/api/app-request/mine", { email: a.email, app: a.site.app });
       if (r.status !== 200) throw new Error(`app-request mine ${r.status}`);
-      res.writeHead(200, PAGE).end(req.method === "HEAD" ? undefined : requestsPage(a.site.app, r.body.requests ?? []));
+      res.writeHead(200, PAGE).end(req.method === "HEAD" ? undefined : requestsPage(a.site.app, r.body!.requests ?? []));
     } catch (e) {
       log({ msg: "my requests failed", err: String(e) });
       plain(res, 503, "unavailable: try again");
@@ -619,13 +696,13 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   }
 
   /** My-apps host, GET /.auth/go?to=<app URL>&state=<nonce>: signed in here → a code for that app host and browser → its handoff. */
-  async function go(req, res, query) {
+  async function go(req: IncomingMessage, res: ServerResponse, query: URLSearchParams) {
     const cfg = config();
     const to = query.get("to") ?? "";
     const state = query.get("state") ?? "";
-    let t;
+    let t: URL | undefined;
     try { t = new URL(to); } catch {}
-    const known = (h) => { try { return Object.hasOwn(cfg.hosts ?? {}, h) || !!previewOf(cfg, h); } catch { return false; } };
+    const known = (h: string) => { try { return Object.hasOwn(cfg.hosts ?? {}, h) || !!previewOf(cfg, h); } catch { return false; } };
     if (!t || t.protocol !== "https:" || t.username || t.password || t.port || !known(t.hostname) || !STATE.test(state)) return plain(res, 400, "bad request");
     try {
       const email = await sessionEmail(req, cfg);
@@ -645,14 +722,14 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
    * App host, GET /.auth/handoff?code=…&state=…&next=<path>: only in the browser that started it (the state cookie this host
    * set equals `state`), the board redeems the code for this host → a host-only session cookie. The state cookie is cleared.
    */
-  async function handoff(req, res, query) {
+  async function handoff(req: IncomingMessage, res: ServerResponse, query: URLSearchParams) {
     const cfg = config();
     const code = query.get("code") ?? "";
     const state = query.get("state") ?? "";
     const clear = { "set-cookie": [STATE_CLEAR] };
     if (!code || code.length > 512 || !STATE.test(state)) return plain(res, 400, "bad request", clear);
     const mine = cookies(req).filter((c) => cookieName(c) === STATE_COOKIE).map((c) => c.slice(STATE_COOKIE.length + 1).trim());
-    if (mine.length !== 1 || mine[0].length !== state.length || !timingSafeEqual(Buffer.from(mine[0]), Buffer.from(state))) {
+    if (mine.length !== 1 || mine[0]!.length !== state.length || !timingSafeEqual(Buffer.from(mine[0]!), Buffer.from(state))) {
       log({ msg: "handoff refused", host: hostOf(req), why: "state mismatch" });
       return plain(res, 403, "forbidden: this sign-in didn't start in this browser; open the app again", clear);
     }
@@ -669,7 +746,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   }
 
   /** App host, POST /.auth/sign-out: the board revokes this host's session; the cookie expires and the cache forgets it. */
-  async function signOut(req, res) {
+  async function signOut(req: IncomingMessage, res: ServerResponse) {
     const cfg = config();
     const v = sessionCookie(req);
     sessions.clear(); // a sign-out through the gate ends every cached answer at once, not within 60 s
@@ -695,7 +772,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     if (a.mine) return void res.writeHead(200, PAGE).end(req.method === "HEAD" ? undefined : myAppsPage(a.email, appsFor(config(), a.roleOf)));
     if (a.request) return inAppRequest(req, res, a);
     if (a.requests) return myRequests(req, res, a);
-    let target;
+    let target: { host: string; port: number; headers: OutgoingHttpHeaders };
     if (a.auth) {
       const u = new URL(config().auth_url);
       target = { host: u.hostname, port: Number(u.port) || 80, headers: authHeaders(req, boardSecret(config())) };
@@ -720,16 +797,20 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     req.pipe(up);
   });
 
-  server.on("upgrade", async (req, socket, head) => {
+  server.on("upgrade", async (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
     const a = await authorize(req, { upgrade: true });
-    if (!a.site) return void socket.end(`HTTP/1.1 ${a.status} ${{ 400: "Bad Request", 401: "Unauthorized", 404: "Not Found", 503: "Service Unavailable" }[a.status] ?? "Forbidden"}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${a.msg.length + 1}\r\n\r\n${a.msg}\n`);
-    const up = httpRequest({ host: "127.0.0.1", port: a.site.port, method: req.method, path: req.url, headers: upstreamHeaders(req, a.token, { upgrade: true }) });
-    const raw = (status, message, rawHeaders) => {
+    // An upgrade is refused or proxied: authorize() returns no other kind for one.
+    if (!a.site) {
+      const r = a as Refusal;
+      return void socket.end(`HTTP/1.1 ${r.status} ${({ 400: "Bad Request", 401: "Unauthorized", 404: "Not Found", 503: "Service Unavailable" } as Record<number, string>)[r.status] ?? "Forbidden"}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${r.msg.length + 1}\r\n\r\n${r.msg}\n`);
+    }
+    const up = httpRequest({ host: "127.0.0.1", port: a.site.port, method: req.method, path: req.url, headers: upstreamHeaders(req, a.token!, { upgrade: true }) });
+    const raw = (status: number | undefined, message: string | undefined, rawHeaders: string[]) => {
       let s = `HTTP/1.1 ${status} ${message}\r\n`;
       for (let i = 0; i < rawHeaders.length; i += 2) {
-        if (rawHeaders[i].toLowerCase() === "set-cookie" && AUTH_COOKIE.test(cookieName(rawHeaders[i + 1]))) continue; // as for responses
-        s += `${rawHeaders[i]}: ${rawHeaders[i].toLowerCase() === "set-cookie" && config().previews ? hostOnly(rawHeaders[i + 1]) : rawHeaders[i + 1]}\r\n`;
+        if (rawHeaders[i]!.toLowerCase() === "set-cookie" && AUTH_COOKIE.test(cookieName(rawHeaders[i + 1]!))) continue; // as for responses
+        s += `${rawHeaders[i]}: ${rawHeaders[i]!.toLowerCase() === "set-cookie" && config().previews ? hostOnly(rawHeaders[i + 1]!) : rawHeaders[i + 1]}\r\n`;
       }
       return `${s}\r\n`;
     };

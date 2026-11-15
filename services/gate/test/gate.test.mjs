@@ -7,7 +7,7 @@ import { connect } from "node:net";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accessPage, authHeaders, createGate, mint, myAppsPage, requestsPage, signingKey, subOf } from "../gate.mjs";
+import { accessPage, authHeaders, createGate, mint, myAppsPage, requestsPage, signingKey, subOf } from "../gate.ts";
 import { createIdentity } from "../../shared/aidenhq-identity.mjs";
 import { ensureIdentityKeys } from "../../../scripts/identity.mjs";
 

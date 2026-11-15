@@ -37,7 +37,7 @@ person later gets an account. It is opaque so apps key data on it rather than on
 
 ## Identity providers (the gate's adapters)
 
-`services/gate/gate.mjs` has one interface per sign-in method:
+`services/gate/gate.ts` has one interface per sign-in method:
 
 ```js
 adapter.authenticate(req, ctx) → { email, name?, idp } | null   // null: no credential; throws Refused(status, msg)

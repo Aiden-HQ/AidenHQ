@@ -8,6 +8,7 @@ updates:
       - /scripts
       - /services/apps-mcp
       - /services/board
+      - /services/gate
       - /services/runner
       - /modules/security/scanner
       - /modules/clickhouse/connections/clickhouse-mcp
