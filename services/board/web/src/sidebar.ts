@@ -79,3 +79,6 @@ export function groupChats(rows: ChatRow[], agents: ChatAgent[]): { front: Agent
     .sort((a, b) => Number(b.chats.length > 0) - Number(a.chats.length > 0) || lastAt(b).localeCompare(lastAt(a)) || a.agent.name.localeCompare(b.agent.name));
   return { front: frontAgent ? group(frontAgent) : null, others };
 }
+
+/** A sidebar group's lane agent: groups are keyed by the Paperclip agent id, the lane's own key is its short name (`aria`). */
+export const laneOf = <T extends { id: string }>(lane: T[], agentId: string): T | undefined => lane.find((l) => l.id === agentId);

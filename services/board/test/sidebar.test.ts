@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { VISIBLE, groupChats, groupTasks, taskSummary } from "../web/src/sidebar.js";
+import { VISIBLE, groupChats, laneOf, groupTasks, taskSummary } from "../web/src/sidebar.js";
 import type { ChatRow } from "../web/src/types.js";
 
 const row = (n: number, o: Partial<ChatRow> = {}): ChatRow => ({ identifier: `WOR-${n}`, title: `c${n}`, open: true, agent: { key: "a", name: "Aiden" }, state: "idle", updatedAt: `2026-11-${String(10 + (n % 15)).padStart(2, "0")}T00:00:00Z`, unread: false, ...o });
@@ -22,5 +22,13 @@ describe("tasks of a chat", () => {
     const at = "2026-11-12T00:00:00Z";
     const g = groupTasks([{ state: "failed", updatedAt: at }, { state: "queued", updatedAt: at }, { state: "in review", updatedAt: at }, { state: "done", updatedAt: at }, { state: "done", updatedAt: "2026-01-01T00:00:00Z" }], Date.parse(at));
     expect([g.needs.length, g.working.length, g.waiting.length, g.finished.length]).toEqual([1, 0, 2, 1]);
+  });
+});
+
+describe("laneOf", () => {
+  it("finds a lane agent by the Paperclip id the sidebar groups use, not by its lane key", () => {
+    const lane = [{ key: "aria", id: "0d9c-uuid", name: "Aria" }];
+    const { others } = groupChats([], [{ key: "0d9c-uuid", name: "Aria" }]);
+    expect(laneOf(lane, others[0]!.agent.key)?.key).toBe("aria");
   });
 });

@@ -13,7 +13,7 @@ import { LaneChat } from "./LaneChat";
 import { live as streaming, useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
-import { anyLive, groupChats, groupTasks, showsChip, taskSummary, type AgentGroup } from "./sidebar";
+import { anyLive, groupChats, groupTasks, laneOf, showsChip, taskSummary, type AgentGroup } from "./sidebar";
 import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conversation";
 import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, ChatState, FileView, Question, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
@@ -145,10 +145,10 @@ function Sidebar({ lane, rows, agents, crew, selected, go, error, retry }: { lan
         <ChatListSkeleton />
       ) : (
         <nav className="side-scroll">
-          {groups.front && <Group g={filter(groups.front)} lane={lane.find((l) => l.key === groups.front!.agent.key)} crew={crew} selected={selected} go={go} front searching={!!q} />}
+          {groups.front && <Group g={filter(groups.front)} lane={laneOf(lane, groups.front.agent.key)} crew={crew} selected={selected} go={go} front searching={!!q} />}
           {groups.others.length > 0 && <h3 className="side-h">Agents</h3>}
           {groups.others.map((g) => (
-            <Group key={g.agent.key} g={filter(g)} lane={lane.find((l) => l.key === g.agent.key)} crew={crew} selected={selected} go={go} searching={!!q} />
+            <Group key={g.agent.key} g={filter(g)} lane={laneOf(lane, g.agent.key)} crew={crew} selected={selected} go={go} searching={!!q} />
           ))}
         </nav>
       )}
