@@ -90,9 +90,10 @@ async function pass(store: SourceStore): Promise<void> {
   );
   const clientId = file("AUDITOR_CF_ID_FILE");
   const clientSecret = file("AUDITOR_CF_SECRET_FILE");
-  if (clientId && clientSecret) {
+  const auditorUrl = env("AUDITOR_URL", "");
+  if (auditorUrl && clientId && clientSecret) {
     // Its own ingest_run rows; an auditor outage never fails the CVE pass.
-    written += await auditorPass(store, auditorClient({ url: env("AUDITOR_URL", "https://auditor.example.com/mcp"), clientId, clientSecret }), registryApps()).catch((err) => {
+    written += await auditorPass(store, auditorClient({ url: auditorUrl, clientId, clientSecret }), registryApps()).catch((err) => {
       log("app auditor pass failed", { err: String(err) });
       return 0;
     });

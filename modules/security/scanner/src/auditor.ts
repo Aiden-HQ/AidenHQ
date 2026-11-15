@@ -1,6 +1,6 @@
-// AppSec's App Auditor (acme/app-auditor) through its MCP server, as code: a vibe audit of each app repo when it is
+// An App Auditor (the app_auditor_url setting) through its MCP server, as code: a vibe audit of each app repo when it is
 // new to us and weekly after (the auditor diffs against its prior audit by itself), its findings into src_security
-// (tool app-auditor, target app:<name>). Off unless the Cloudflare Access service token files are filled in.
+// (tool app-auditor, target app:<name>). Off unless the URL and the Cloudflare Access service token files are set.
 //
 // The token can read every team's audit reports, so it stays in this service: no agent ever holds it, and only
 // start_vibe_audit, get_job_status and get_findings are called. At most one new job per pass (the auditor's MCP cap is

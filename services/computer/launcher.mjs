@@ -69,7 +69,7 @@ const CFG = {
   // clones, and for runner jobs the task folders, the clones' guard hooks and the per-task Codex homes.
   runnerWork: runnerDir("work_dir", "~/aidenhq-work"),
   runnerState: runnerDir("state_dir", "~/.local/state/aidenhq-runner"),
-  // A runner job's box: its own memory limit (the pool's RAM: docs/superpowers/plans/2026-11-13-app-engineer.md, design 9).
+  // A runner job's box: its own memory limit (the pool's RAM: docs/design/sandboxing.md, launcher pool).
   jobMemory: env("AIDENHQ_COMPUTERS_JOB_MEMORY", "1536m"),
 };
 CFG.runnerRepos = path.join(CFG.runnerWork, "repos");

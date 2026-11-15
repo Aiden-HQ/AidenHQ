@@ -1,4 +1,4 @@
-// Box jobs (docs/superpowers/plans/2026-11-13-app-engineer.md): an Engineer with a computer runs each turn in a box from the
+// Box jobs (docs/design/sandboxing.md, the strong tier): an Engineer with a computer runs each turn in a box from the
 // launcher (POST /job), through `docker exec`. The real runner (src/main.mjs) as a child process, a fake Paperclip
 // (flow-harness), a fake launcher and a fake `docker` (test/fakes/docker.mjs) that plays the agent's turn.
 import { after, before, describe, it } from "node:test";

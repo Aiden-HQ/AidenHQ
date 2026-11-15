@@ -135,5 +135,5 @@ This supersedes "Engineer jobs stay in the runner's bubblewrap and passt jail" a
 
 Image CVE scans run in neither tier: CI's `image-scan` check (lock files and pinned base images, no build) is their
 evidence, and the security module's scan of deployed images covers what RUN steps install. The grader captures deployed
-apps' live pages itself, for both tiers. Building the strong tier needs the box integration in
-[the App Engineer plan](../superpowers/plans/2026-11-13-app-engineer.md); until it lands, work that needs it waits.
+apps' live pages itself, for both tiers. The strong tier is the App Engineer (`modules/engineering`): the runner runs
+each of its turns in a job box through the computer launcher (`services/computer/launcher.mjs`).

@@ -3,10 +3,10 @@ description: "Security Watch (CVE scans of everything we run, verified with the 
 requires:
   - warehouse
 settings:
-  # AppSec's App Auditor MCP server (acme/app-auditor). Used only when its Cloudflare Access service token is in the
-  # vault (app_auditor_cf_client_id / _secret); empty files = off.
+  # An App Auditor MCP server behind Cloudflare Access (optional). Used only when this URL is set and its Access service
+  # token is in the vault (app_auditor_cf_client_id / _secret); empty = off.
   app_auditor_url:
-    default: https://auditor.example.com/mcp
+    default: ""
 agents:
   security-watch:
     department: security

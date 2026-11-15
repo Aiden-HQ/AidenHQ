@@ -1,13 +1,15 @@
-# Extends the default rules. Only exact, planted fake values are allowlisted (found by a full-history scan);
-# never allowlist a whole path.
+# Extends the default rules. Only exact values are allowlisted, each a planted fake or a name, never a real secret
+# (found by a scan of every snapshot); never allowlist a whole path.
 [extend]
 useDefault = true
 
 [[allowlists]]
-description = "Fake secrets planted in tests and docs"
+description = "Fake secrets planted in tests and docs, and an env var name the generic rule mistakes for a key"
 regexes = [
   '''^s3cret-roadmap$''',
   '''^ghp_abcdefghij1234$''',
   '''^mgmt-SECRET-123$''',
   '''^0123456789abcdef0123456789abcdef$''',
+  '''^abcdef0123456789$''',
+  '''^AIDENHQ_MCP_B64$''',
 ]
