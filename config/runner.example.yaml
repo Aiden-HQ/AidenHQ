@@ -31,27 +31,16 @@ engines:
   openrouter:                         # opencode on OpenRouter (the fallback); models are listed in config/paperclip.yaml
     model: ~deepseek/deepseek-flash-latest
     key_file: ~/.config/aidenhq/openrouter_key
-  claude:                             # "engine: claude" / "use Claude": Claude Code, headless, inside codex sandbox
+  claude:                             # "engine: claude" / "use Claude": Claude Code, headless, under bwrap
     model: ""                         # empty = Claude Code's default; or opus, sonnet, haiku, fable, claude-…
     token_file: ~/.config/aidenhq/claude_oauth_token   # from `claude setup-token` (0600)
     # Runner-owned Claude Code home: none of your plugins, hooks, MCP servers or claude.ai connectors.
     config_dir: ~/.local/state/aidenhq-runner/claude
 
-# Primer for every engine, read-only. Token: $AIDENHQ_SECRETS_DIR/primer_mcp_token.
-# The runner itself publishes a task's Primer document on /mcp/publish with its own token; never given to jobs.
-primer:
-  url: http://127.0.0.1:3123/mcp/read
-
-# Grafana and Google Cloud, read-only, for Claude Code and Codex jobs only; never OpenRouter.
-# Grafana: grafana-mcp on loopback (token: $AIDENHQ_SECRETS_DIR/grafana_mcp_token).
-# Google Cloud: scripts/gcloud-auth.sh signs in (again after the 16-hour session); each job gets a
-# one-hour token with the user's access and the prompt's read-only rule, never the sign-in itself.
-grafana:
-  url: http://127.0.0.1:3124/mcp
-# ClickHouse Cloud, SELECT queries only, for Claude Code and Codex jobs only; never OpenRouter.
-# clickhouse-mcp on loopback (token: $AIDENHQ_SECRETS_DIR/clickhouse_mcp_token).
-clickhouse:
-  url: http://127.0.0.1:3127/mcp
+# Jobs read Primer, Grafana, Slack, Glean and ClickHouse through the model gateway's /c/<connection>/mcp with their own
+# token: the agent's `jobcaps:` (modules/<m>/module.yaml), compiled into config/jobcaps.json. Nothing to set here.
+# Google Cloud, for an Engineer with private_reads: scripts/gcloud-auth.sh signs in (again after the 16-hour session); each
+# job gets a one-hour token with the user's access and the prompt's read-only rule, never the sign-in itself.
 gcp:
   credentials: ~/.config/aidenhq/gcloud/application_default_credentials.json
   # Projects jobs are told to start with; the first is gcloud's default.

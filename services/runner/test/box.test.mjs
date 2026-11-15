@@ -4,14 +4,16 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { readLog } from "./fakes/lib.mjs";
 import { fakePaperclip } from "./flow-harness.mjs";
 import { State } from "../src/state.ts";
-import { ensureRepo } from "../src/workspace.ts";
+import { ensureRepo, safeWorkspace } from "../src/workspace.ts";
+import { buildCommand, layout } from "../src/engines.mjs";
+import { loadConfig } from "../src/config.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
 const FAKES = join(import.meta.dirname, "fakes");
@@ -304,5 +306,57 @@ describe("box jobs", () => {
     assert.equal(reviews().length, n, "never moved back to review");
     assert.ok(!paperclip.patches.some((p) => p.issue === "PEN-2" && p.at >= released), "no status or reply on the closed task");
     paperclip.issues.get("part").status = "in_review";
+  });
+});
+
+// Hostile-job checks (spec §8.9): what a job could use to reach past its own task folder.
+describe("hostile jobs", () => {
+  it("H1: a symlinked task folder is refused, and a real one inside the work dir passes", () => {
+    const root = mkdtempSync(join(tmpdir(), "h1-"));
+    mkdirSync(join(root, "tasks", "WOR-1"), { recursive: true });
+    const target = mkdtempSync(join(tmpdir(), "h1-x-"));
+    symlinkSync(target, join(root, "tasks", "WOR-2"));
+    assert.throws(() => safeWorkspace(root, join(root, "tasks", "WOR-2")), /workspace refused: .* is a symlink/);
+    // A link higher up (tasks/ itself) is refused too, and so is a path that leaves the work dir.
+    const other = mkdtempSync(join(tmpdir(), "h1-root-"));
+    mkdirSync(join(target, "WOR-3"));
+    symlinkSync(target, join(other, "tasks"));
+    assert.throws(() => safeWorkspace(other, join(other, "tasks", "WOR-3")), /symlink/);
+    assert.throws(() => safeWorkspace(root, join(root, "tasks", "..", "..")), /not inside/);
+    assert.equal(safeWorkspace(root, join(root, "tasks", "WOR-1")), join(realpathSync(root), "tasks", "WOR-1"));
+  });
+
+  it("H2: the jail hides the vault, the data dir, the Docker and tailscaled sockets and the user's runtime dir", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "h2-"));
+    writeFileSync(join(dir, "system.yaml"), `paperclip:\n  company_id: "${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}"\n`);
+    const before = { config: process.env.AIDENHQ_CONFIG_DIR, secrets: process.env.AIDENHQ_SECRETS_DIR, data: process.env.AIDENHQ_DATA_DIR };
+    Object.assign(process.env, { AIDENHQ_CONFIG_DIR: dir, AIDENHQ_SECRETS_DIR: join(dir, "secrets"), AIDENHQ_DATA_DIR: join(dir, "data") });
+    const cfg = loadConfig();
+    for (const [k, v] of Object.entries({ AIDENHQ_CONFIG_DIR: before.config, AIDENHQ_SECRETS_DIR: before.secrets, AIDENHQ_DATA_DIR: before.data })) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    for (const p of [join(dir, "secrets"), join(dir, "data"), "/run/docker.sock", "/run/tailscale/tailscaled.sock", `/run/user/${process.getuid()}`]) assert.ok(cfg.gcp.hidden.includes(p), `${p} hidden`);
+    // What the list names inside an allowed path is masked in the job: a folder by an empty tmpfs, a file by /dev/null.
+    for (const d of ["secrets", "data"]) mkdirSync(join(dir, d));
+    writeFileSync(join(dir, "docker.sock"), "");
+    const args = layout({ gcp: { hidden: [join(dir, "secrets"), join(dir, "data"), join(dir, "docker.sock")] } }, { rw: [dir] });
+    const after = args.slice(args.indexOf(dir) + 2).join(" ");
+    for (const d of ["secrets", "data"]) assert.ok(after.includes(`--tmpfs ${join(dir, d)}`), d);
+    assert.ok(after.includes(`--ro-bind /dev/null ${join(dir, "docker.sock")}`));
+  });
+
+  it("H3: no MCP token or connection URL in a job, and no engine wrapped in codex sandbox", () => {
+    const dir = mkdtempSync(join(tmpdir(), "h3-"));
+    for (const [f, v] of [["claude", "tok"], ["secret", "job-secret"]]) writeFileSync(join(dir, f), v);
+    writeFileSync(join(dir, "jobcaps.json"), JSON.stringify({ "primer-read": { connection: "primer", url: "http://127.0.0.1:3123/mcp/read", bearer_secret: "primer_mcp_read_token", tools: ["primer_get_document"] } }));
+    const cfg = { claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), gatewayJobSecretFile: join(dir, "secret"), codexOpenrouterHome: join(dir, "homes"), jobcapsFile: join(dir, "jobcaps.json"), sandbox: { extra_writable_roots: [] } };
+    for (const kind of ["codex", "claude", "openrouter"]) {
+      const { argv, env } = buildCommand({ cfg, engine: { kind, model: "m" }, worktree: join(dir, "w"), lastMessageFile: join(dir, "last"), job: { agentId: "a1", issueId: "i1", jobcaps: ["primer-read"] } });
+      assert.deepEqual(Object.keys(env).filter((k) => /_MCP_TOKEN$/.test(k)), [], kind);
+      const text = `${argv.join(" ")} ${env.OPENCODE_CONFIG_CONTENT ?? ""}`;
+      const urls = [...text.matchAll(/https?:\/\/[^\s"',]+/g)].map((m) => m[0]).filter((u) => /\/mcp/.test(u));
+      assert.ok(urls.length, `${kind}: wired to its jobcap`);
+      for (const u of urls) assert.ok(u.startsWith("http://127.0.0.1:8201/c/"), `${kind}: ${u}`);
+      if (kind !== "codex") assert.ok(!argv.some((a, i) => a === "codex" && argv[i + 1] === "sandbox"), `${kind}: codex sandbox`);
+      assert.ok(!text.includes("primer_mcp_read_token"), `${kind}: the read secret's name`);
+    }
   });
 });

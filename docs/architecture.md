@@ -48,8 +48,8 @@ task folder, the toolchains, its engine's state), in its own PID, IPC and networ
 |---|---|---|---|
 | `codex-openrouter` (primary) | Codex CLI, its own sandbox, a runner-owned Codex home per task with the product's skills | OpenRouter through the model gateway, a per-job token, ZDR only | low to max (max: DeepSeek) |
 | `codex` | Codex CLI, its own sandbox | the host's Codex login | low to xhigh |
-| `claude` | Claude Code inside `codex sandbox` | a subscription token | low to max |
-| `openrouter` (fallback) | opencode inside `codex sandbox` | OpenRouter through the model gateway, a per-job token | low to high (model variants) |
+| `claude` | Claude Code under bwrap | a subscription token | low to max |
+| `openrouter` (fallback) | opencode under bwrap | OpenRouter through the model gateway, a per-job token | low to high (model variants) |
 
 Every job gets Primer read-only. Private reads (Grafana, Slack, Glean, ClickHouse, gcloud, other tasks) go only to an
 Engineer whose definition sets `private_reads: true`, on any engine, and such a job has no web search. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed

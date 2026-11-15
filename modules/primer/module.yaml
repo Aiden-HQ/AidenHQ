@@ -15,6 +15,10 @@ connections:
     tools:
       read: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document ]
       write: [ primer_create_document, primer_add_version ]
+# Runner jobs read Primer through the model gateway with their own token (scripts/modules.mjs jobcapEntries); read_url and
+# read_secret are today's loopback read endpoint and its token, which only the gateway holds.
+jobcaps:
+  - { id: primer-read, connection: primer, tools: read, read_url: "http://127.0.0.1:3123/mcp/read", read_secret: primer_mcp_read_token }
 compose: compose.yaml
 # The runner's publish token: compile creates it (random) when missing, so the apply needs no extra step.
 generated_secrets:

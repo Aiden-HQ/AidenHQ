@@ -6,8 +6,8 @@ import { gatewayUrl, jobToken } from "./engines.mjs";
 
 /**
  * One `advise` for a job's helper context: `ctx.agentId` (its Engineer), `ctx.issue`, `ctx.run` (its record in the runner's
- * state: `startedAt`, and `advised`, the calls used so far). The credential is minted again from the job's agent, task and
- * start time, so it is the job's own token, and a runner that adopted the job after a restart uses the same run key and
+ * state: `startedAt`, `jobcaps`, and `advised`, the calls used so far). The credential is minted again from the job's agent, task,
+ * jobcaps and start time, so it is the job's own token, and a runner that adopted the job after a restart uses the same run key and
  * carries on the same count. `save(ctx)` persists the count (main.mjs saveTools). Resolves with the text to print.
  */
 export async function jobAdvise(ctx: any, brief: unknown, { cfg, save = (_ctx: any) => {}, fetchFn = fetch }: { cfg: any; save?: (ctx: any) => void; fetchFn?: typeof fetch }): Promise<string> {
@@ -15,7 +15,7 @@ export async function jobAdvise(ctx: any, brief: unknown, { cfg, save = (_ctx: a
   ctx.advised ??= { advisor: ctx.run.advised ?? 0 };
   ctx.advisor ??= modelTools({
     grant: async () => ({ id: ctx.agentId }), grantsFile: "", gatewayUrl: gatewayUrl(cfg), fetchFn, used: ctx.advised,
-    key: jobToken(cfg, { agentId: ctx.agentId, issueId: ctx.issue.id, at: ctx.run.startedAt }),
+    key: jobToken(cfg, { agentId: ctx.agentId, issueId: ctx.issue.id, at: ctx.run.startedAt, jobcaps: ctx.run.jobcaps }),
   }).advisor_ask;
   const b = String(brief ?? "").trim();
   try {
