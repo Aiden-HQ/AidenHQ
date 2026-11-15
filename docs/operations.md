@@ -259,7 +259,9 @@ locked, nothing that needs secrets starts. Recovery without the TPM: [ops/vault/
 
 `aidenhq-runner` (`ops/units/aidenhq-runner.service`) is a systemd user unit running
 `services/runner/src/main.mjs` as the AidenHQ user, configured by `config/runner.yaml`. It starts only once the vault is
-mounted and restarts on failure. Other units: `aidenhq-computers` (the agent computer launcher, optional) and
+mounted and restarts on failure. Other units: `aidenhq-computers` (the agent computer launcher, optional; a restart
+never ends a run: boxes stay up, an agent's turn runs detached in its box and the plugin collects its result from the new
+launcher; a new image applies from the next acquire) and
 `aidenhq-transcripts.path` (meeting transcript watcher). Enable user units to survive logout with
 `loginctl enable-linger <user>`.
 

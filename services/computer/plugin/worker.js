@@ -3,19 +3,14 @@
 import { readFileSync } from "node:fs";
 import { definePlugin, runWorker } from "/app/packages/plugins/sdk/dist/index.js";
 import { leftInProgress } from "./status.js";
+import { execute, request as call } from "./client.js";
 
 const TOKEN = readFileSync(process.env.AIDENHQ_LAUNCHER_TOKEN_FILE || "/run/secrets/computer_launcher_token", "utf8").trim();
 const cfg = (raw = {}) => ({
   timeoutMs: Number.isFinite(raw.timeoutMs) ? raw.timeoutMs : 3_600_000,
   launcherUrl: raw.launcherUrl || "http://10.231.0.1:8199",
+  token: TOKEN,
 });
-async function call(c, route, body) {
-  const r = await fetch(`${c.launcherUrl}/${route}`, { method: "POST", headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const j = await r.json().catch(() => ({}));
-  // /exec answers 200 at once and reports a failure in the body (see the launcher's answerSlowly).
-  if (!r.ok || j.error) throw new Error(`computer launcher ${route}: ${j.status ?? r.status} ${j.error ?? ""}`.trim());
-  return j;
-}
 const meta = (container, extra = {}) => ({ provider: "aidenhq-computer", remoteCwd: "/workspace", container, ...extra });
 
 let ctx;
@@ -91,8 +86,8 @@ const plugin = definePlugin({
   async onEnvironmentExecute(p) {
     const c = cfg(p.config);
     const container = p.lease?.providerLeaseId ?? p.providerLeaseId;
-    if (p.env?.PAPERCLIP_RUN_ID) runs.set(p.env.PAPERCLIP_RUN_ID, { container, launcherUrl: c.launcherUrl });
-    return await call(c, "exec", { container, command: p.command, args: p.args ?? [], cwd: p.cwd, env: p.env ?? {}, stdin: p.stdin ?? null, timeoutMs: p.timeoutMs ?? c.timeoutMs });
+    if (p.env?.PAPERCLIP_RUN_ID) runs.set(p.env.PAPERCLIP_RUN_ID, { ...c, container });
+    return await execute(c, { container, command: p.command, args: p.args ?? [], cwd: p.cwd, env: p.env ?? {}, stdin: p.stdin ?? null, timeoutMs: p.timeoutMs ?? c.timeoutMs });
   },
 });
 
