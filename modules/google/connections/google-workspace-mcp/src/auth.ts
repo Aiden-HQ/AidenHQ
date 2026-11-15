@@ -36,7 +36,7 @@ if (!clientFile || !outFile) {
 }
 
 type Account = { refresh_token: string; scopes?: string[] };
-type CredsFile = { client_id?: string; client_secret?: string; refresh_token?: string; primary?: string; accounts?: Record<string, Account> };
+type CredsFile = { client_id?: string; client_secret?: string; primary?: string; accounts?: Record<string, Account> };
 
 async function emailFor(accessToken: string): Promise<string> {
   const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", { headers: { authorization: `Bearer ${accessToken}` } });
@@ -45,29 +45,13 @@ async function emailFor(accessToken: string): Promise<string> {
   return j.emailAddress;
 }
 
-/** Existing credentials, converting the legacy single-account shape (its email is looked up). */
-async function existingCreds(clientId: string, clientSecret?: string): Promise<CredsFile> {
-  let current: CredsFile = {};
+/** The credentials file as it is, or empty when there is none yet. */
+function existingCreds(): CredsFile {
   try {
-    current = JSON.parse(readFileSync(outFile as string, "utf8")) as CredsFile;
+    return JSON.parse(readFileSync(outFile as string, "utf8")) as CredsFile;
   } catch {
     return {};
   }
-  if (current.refresh_token && !current.accounts) {
-    try {
-      const body = new URLSearchParams({ client_id: current.client_id ?? clientId, refresh_token: current.refresh_token, grant_type: "refresh_token" });
-      if (current.client_secret ?? clientSecret) body.set("client_secret", (current.client_secret ?? clientSecret)!);
-      const tok = (await (await fetch("https://oauth2.googleapis.com/token", { method: "POST", body })).json()) as { access_token?: string };
-      if (tok.access_token) {
-        const email = await emailFor(tok.access_token);
-        current = { client_id: current.client_id, client_secret: current.client_secret, primary: email, accounts: { [email]: { refresh_token: current.refresh_token } } };
-        console.log(`Converted the existing login (${email}) to the multi-account format.`);
-      }
-    } catch {
-      current = {};
-    }
-  }
-  return current;
 }
 
 const raw = JSON.parse(readFileSync(clientFile, "utf8"));
@@ -106,12 +90,11 @@ const server = createServer(async (req, res) => {
   const unexpected = granted.filter((s) => s && !SCOPES.includes(s) && !["openid", "email", "profile"].includes(s));
   if (unexpected.length) console.warn("warning: unexpected scopes granted:", unexpected.join(", "));
   const email = await emailFor(tokens.access_token!);
-  const creds = await existingCreds(client.client_id, client.client_secret);
+  const creds = existingCreds();
   creds.client_id = client.client_id;
   creds.client_secret = client.client_secret;
   creds.accounts = { ...(creds.accounts ?? {}), [email]: { refresh_token: tokens.refresh_token, scopes: granted } };
   if (makePrimary || !creds.primary) creds.primary = email;
-  delete creds.refresh_token;
   writeFileSync(outFile, JSON.stringify(creds, null, 2), { mode: 0o600 });
   chmodSync(outFile, 0o600);
   res.writeHead(200, { "content-type": "text/plain" }).end(`AidenHQ: read-only access granted for ${email}. You can close this tab.`);

@@ -12,7 +12,7 @@ const PR9 = "https://github.com/acme/app/pull/9";
 
 describe("flow-product", () => {
   const t = flow({
-    grants: { autonomy: "off", agents: { "engineer-claude": { key: "fleet-engineer" } } },
+    grants: { autonomy: "off", agents: { "engineer-claude": { key: "fleet-engineer", roles: ["platform-engineer"] } } },
     env: { AIDENHQ_PRODUCT_REPO: "acme/app", AIDENHQ_GITHUB_AGENTS_ORG: "acme-agents" },
     runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n",
   });

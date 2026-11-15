@@ -10,7 +10,7 @@ import { flow } from "./flow-harness.mjs";
 
 describe("flow-breaker", { concurrency: 1 }, () => {
   const t = flow({
-    grants: { autonomy: "full", agents: { "engineer-claude": { key: "fleet-engineer" } } },
+    grants: { autonomy: "full", agents: { "engineer-claude": { key: "fleet-engineer", roles: ["platform-engineer"] } } },
     env: { AIDENHQ_PRODUCT_REPO: "acme/app", AIDENHQ_GITHUB_AGENTS_ORG: "acme-agents" },
     runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n",
   });

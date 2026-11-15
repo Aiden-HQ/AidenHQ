@@ -27,7 +27,8 @@ const CODEX_MODEL_COMMAND = "/opt/aidenhq/codex-model";
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
 // Roles (checked by the services: board fleet tools, tasks bridge, apps-mcp, setup) and the modules allowed to grant each.
 const ROLES = {
-  "fleet-admin": ["core"], // the board's fleet tools and relaying the owner's words
+  "fleet-admin": ["core"], // the board's fleet tools and relaying the owner's words; the Chief of Staff: never paused, never passed to by an agent
+  "platform-engineer": ["core"], // the agent that makes fleet and product changes: settings changes, rule proposals and Dependabot PRs are filed to it
   "board-writer": ["core"], // board moves and recurring tasks
   "engineer-dispatch": ["core"], // Engineer sub-tasks
   "app-incidents": ["core"], // change any app with an open incident

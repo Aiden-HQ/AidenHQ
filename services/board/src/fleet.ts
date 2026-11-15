@@ -19,6 +19,8 @@ export class Refused extends Error {}
 
 const DAY = 864e5;
 const QUOTE_MAX_AGE_MS = 2 * 3600_000;
+/** Whether the agent holds the role, by the grants table setup writes (never metadata, which agents edit). */
+export const holdsRole = (id: string, role: string) => (grantsTable(process.env.AIDENHQ_GRANTS_FILE)()[id]?.roles ?? []).includes(role);
 const personaOf = (a: Agent) => (a.metadata?.persona as { name?: string } | undefined)?.name || a.name;
 const keyOf = (a: Agent) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, "");
 
@@ -367,7 +369,7 @@ async function control(pc: Paperclip, caller: Agent, a: z.infer<typeof ControlSc
   if (a.action.endsWith("_agent")) {
     const agents = (await pc.request<Agent[]>("GET", `${co}/agents`)).filter((x) => x.status !== "terminated");
     const t = pick(agents, a.target, "agent", (x) => [x.name, personaOf(x), keyOf(x)]);
-    if (a.action === "pause_agent" && (t.id === caller.id || keyOf(t) === "chief-of-staff")) throw new Refused("refused: the Chief of Staff can't pause itself");
+    if (a.action === "pause_agent" && (t.id === caller.id || holdsRole(t.id, "fleet-admin"))) throw new Refused("refused: the Chief of Staff can't pause itself");
     const verb = a.action.split("_")[0]!;
     await pc.request("POST", `/api/agents/${t.id}/${verb}`, {});
     done = `${verb}d agent ${personaOf(t)}`;

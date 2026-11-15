@@ -12,8 +12,6 @@ const when = (iso: unknown) => String(iso ?? "").slice(0, 16).replace("T", " ");
 
 // The runner's notes that a run started or was queued say nothing the conversation needs.
 const START_NOTE = /^(On it|Continuing|Looking into your question|Queued)\b/;
-// Replies posted before REPLY_MARKER existed: the runner's footer under every report.
-const LEGACY_REPLY = /^Workspace: `[^`]*` · log: `|^_[^\n]* · (answer|investigate|implement|no repository)\b/m;
 
 /** A Paperclip task comment, as far as the thread reads it. */
 export interface TaskComment { id?: string; body?: string | null; authorType?: string; authorAgentId?: string | null; createdAt?: string }
@@ -36,8 +34,8 @@ export function threadEntries(comments: TaskComment[], { user, you, agents = [],
       out.push({ kind: "agent", who: agent?.metadata?.persona?.name || agent?.name || "Another agent", at: c.createdAt, body });
     } else if (!hasMarker(raw, RUNNER_MARKER)) {
       if (!current(c)) out.push({ kind: "user", who: user, at: c.createdAt, body });
-    } else if (hasMarker(raw, REPLY_MARKER) || LEGACY_REPLY.test(body)) {
-      const reply = { at: c.createdAt, body: body.replace(/^Workspace: `.*$/m, "").trim() };
+    } else if (hasMarker(raw, REPLY_MARKER)) {
+      const reply = { at: c.createdAt, body };
       out.push(replyBy !== undefined ? { kind: "agent", who: replyBy || "An Engineer", ...reply } : { kind: "you", who: you ? `You (${you})` : "You", ...reply });
     } else if (!START_NOTE.test(body)) {
       out.push({ kind: "runner", who: "Runner", at: c.createdAt, body });
@@ -46,7 +44,7 @@ export function threadEntries(comments: TaskComment[], { user, you, agents = [],
   return out;
 }
 
-const isReply = (c: TaskComment) => c.authorType !== "agent" && hasMarker(c.body, RUNNER_MARKER) && (hasMarker(c.body, REPLY_MARKER) || LEGACY_REPLY.test(stripHidden(c.body)));
+const isReply = (c: TaskComment) => c.authorType !== "agent" && hasMarker(c.body, RUNNER_MARKER) && hasMarker(c.body, REPLY_MARKER);
 
 /**
  * The user's words around the agent's previous reply, for checking a GitHub write against them

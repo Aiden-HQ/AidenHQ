@@ -279,6 +279,6 @@ test("chat: an instance agent's fast chat lane: defaults, and only its own grant
 test("builder: true reaches the compiled config (setup adds How we build from it), on module and instance agents", () => {
   const r = compile(product, withAgents({ "review-chaser": { yaml: { builder: true } } }, ["github", "design"]));
   const builders = Object.entries(r.paperclip.agents).filter(([, a]) => a.builder === true).map(([k]) => k);
-  assert.deepEqual(builders.sort(), ["app-maintainer", "architect", "review-chaser", "ui-designer", "ui-reviewer"]);
+  assert.deepEqual(builders.sort(), ["app-maintainer", "architect", "fleet-engineer", "review-chaser", "ui-designer", "ui-reviewer"]);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { builder: "yes" } } })), /x: builder is true, false or absent/);
 });

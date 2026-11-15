@@ -14,6 +14,7 @@ export interface NotifyArgs {
   channel?: "telegram" | "slack" | "both" | "board" | undefined;
   actions?: string[] | undefined; // Telegram one-tap buttons; a press sends the label as the owner's message
   questions?: Question[] | undefined; // multiple choice: the board shows a form; Telegram/Slack get them spelled out
+  escalate?: string | undefined; // urgent: why the thread got worse since its last page; re-pages through the cooldown
   task?: string | undefined; // the chat (task identifier) this message belongs to: its agent's name heads it; replies continue it
   kind?: NotifyKind | undefined; // decision: needs the owner (never braked); done: a finished result (the default); fyi: may be muted on Telegram
 }
@@ -101,8 +102,6 @@ export function spellOut(questions: Question[] = []): string {
 const DUPLICATE_MS = 10 * 60_000;
 
 const STALE_MS = 10 * 60_000;
-// A thread that "just got worse" deserves a re-page through the cooldown.
-const RE_ESCALATION_RE = /\b(escalat\w*|worse|spreading|second incident|new incident|production down|prod down|now also|still down|just got|getting worse|customer impact)\b/i;
 
 // & < > start link/mention syntax; *_~` are neutralised with a zero-width space so senders can't restyle the DM.
 // Agent text can carry untrusted content: no raw <links|labels>, @mentions or spoofed URLs reach the owner.
@@ -262,7 +261,7 @@ export async function notifyOwner(store: Store, cfg: NotifyConfig, a: NotifyArgs
     const track = a.channel_id && threadKey ? { channel: a.channel_id, key: threadKey } : null;
     if (track && cfg.cooldownMs > 0) {
       const last = store.lastUrgent(track.channel, track.key);
-      if (last !== null && now - last < cfg.cooldownMs && !RE_ESCALATION_RE.test(a.text)) return { sent: false, reason: "cooldown" };
+      if (last !== null && now - last < cfg.cooldownMs && !a.escalate) return { sent: false, reason: "cooldown" };
     }
     // Every urgent alert links the message it was raised from.
     const link = await sourceLink(cfg, a);

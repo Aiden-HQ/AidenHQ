@@ -1,4 +1,7 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -19,6 +22,10 @@ const agents: Agent[] = [
   { id: "00000000-0000-0000-0000-0000000000d3", name: "Scout", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:scout" } },
 ];
 const [ALFRED, ADA, GRACE] = [agents[0]!.id, agents[1]!.id, agents[2]!.id];
+// The Chief of Staff holds fleet-admin in the grants table, which is what an agent can't pass to.
+const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
+writeFileSync(grantsFile, JSON.stringify({ agents: { [agents[3]!.id]: { key: "chief-of-staff", roles: ["fleet-admin"], tools: {} } } }));
+process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 describe("mentions in a message", () => {
   const list = assignees(agents);

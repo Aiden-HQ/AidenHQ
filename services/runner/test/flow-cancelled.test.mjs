@@ -106,7 +106,7 @@ describe("flow-cancelled", { concurrency: true }, () => {
   // already done gets one note and no run: nothing here is gated on comments to a done task.
   describe("the runner's own notes still reach a done task", { concurrency: 1 }, () => {
     const t = flow({
-      grants: { autonomy: "off", agents: { "engineer-claude": { key: "fleet-engineer" } } },
+      grants: { autonomy: "off", agents: { "engineer-claude": { key: "fleet-engineer", roles: ["platform-engineer"] } } },
       env: { AIDENHQ_PRODUCT_REPO: "acme/app", AIDENHQ_GITHUB_AGENTS_ORG: "acme-agents" },
     });
     const busy = () => (t.paperclip.activity.at(-1)?.running ?? []).some((r) => r.mode !== "merging PRs");

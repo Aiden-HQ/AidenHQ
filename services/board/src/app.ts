@@ -17,7 +17,7 @@ import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedC
 import { AccountError, forwardedProto, type Accounts, type AccountSession, type Role } from "./accounts.js";
 import { AccessError, assertNamesApp } from "./app-access.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, Refused, appsApi, appsToken, assertMeantTask, boundedFleetStatus, deployApproved, fleetControl, fleetCosts, fleetStatus, relayableWords, requestRun, requireAgent, requireFleetRole, runApproved } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, appsToken, assertMeantTask, boundedFleetStatus, deployApproved, fleetControl, fleetCosts, fleetStatus, relayableWords, requestRun, requireAgent, requireFleetRole, runApproved } from "./fleet.js";
 import { detectorState, kickDetector, staleSources, takeOwnerLines } from "./fleet-ops.js";
 import { AlertsSchema, metricsText, receiveAlerts } from "./monitoring.js";
 import { ARGS, BOARD_ACTIONS, BatchItemsSchema, REVIEWER_MODELS, RaiseCapSchema, RunRequestSchema, autonomy, batchesOn, card, digestText, parseReply, raiseCapRequest, shown, type Approval, type BatchResult, type RaiseCap, type RunnerAction } from "./approvals.js";
@@ -1439,7 +1439,7 @@ export function createApp(opts: AppOptions): Server {
         const agent = named ?? (byName.length === 1 ? byName[0] : undefined);
         if (!agent) throw new HttpError(400, `${byName.length > 1 ? "more than one agent answers to" : "no agent is called"} ${to}: ${ctx.assignees.flatMap((a) => (a.kind === "me" ? [] : [a.persona?.name ?? a.name])).join(", ")}`);
         // An agent may pass only to the Researcher, an Engineer, or an agent already on this task; never the Chief of Staff.
-        const chief = ctx.agents.find((x) => x.id === agent.key)?.metadata?.setupKey === "aidenhq:chief-of-staff";
+        const chief = holdsRole(agent.key, "fleet-admin");
         const onTask = (await pc.children(task.id)).some((k) => k.assigneeAgentId === agent.key);
         if (chief || (agent.kind === "agent" && !onTask)) throw new HttpError(403, `${agent.persona?.name ?? agent.name} can't be passed to from here`);
         if (agent.key === issue.assigneeAgentId) throw new HttpError(400, `this is ${agent.persona?.name ?? agent.name}'s own chat`);
@@ -1827,7 +1827,7 @@ export function createApp(opts: AppOptions): Server {
           throw e;
         }
         const ctx = await context();
-        const engineer = ctx.agents.find((a) => a.metadata?.setupKey === "aidenhq:fleet-engineer" && a.status !== "terminated");
+        const engineer = ctx.agents.find((a) => holdsRole(a.id, "platform-engineer") && a.status !== "terminated");
         if (!engineer) throw new HttpError(409, "there is no Platform Engineer to make the change");
         const label = await labelNamed(ctx, SETTINGS_LABEL, "#7048e8");
         const { title, description } = taskFor(changes, compiled, catalog.filter((m) => m.chosen).map((m) => m.name));

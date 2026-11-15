@@ -32,6 +32,7 @@ agents:
     # Routed since 2026-11-14, after the live checks (restart, cancel, peak memory: docs/design/sandboxing.md).
     # The strong tier: its runner jobs run in an `engineer` agent computer (gVisor) with app and data reads and a browser.
     brief: true
+    builder: true # its brief carries "How we build" (paperclip-setup HOW_WE_BUILD_SECTION)
     graded: true
     adapter: opencode_local
     engine: codex-openrouter

@@ -23,7 +23,7 @@ const scenario = (name, body, { trustedBaseUnread = 0 } = {}) =>
   describe(`flow-merge-path: ${name}`, { concurrency: 1 }, () => {
     const t = flow({
       // dup_guard off: its fetch would also reset a forged origin/main in the workspace; the replay must hold without it.
-      grants: { autonomy: "off", dup_guard: "off", agents: { "engineer-claude": { key: "fleet-engineer" } } },
+      grants: { autonomy: "off", dup_guard: "off", agents: { "engineer-claude": { key: "fleet-engineer", roles: ["platform-engineer"] } } },
       env: { AIDENHQ_PRODUCT_REPO: "acme/app", AIDENHQ_GITHUB_AGENTS_ORG: "acme-agents" },
     });
     const prs = {};
