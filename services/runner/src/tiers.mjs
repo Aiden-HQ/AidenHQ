@@ -13,18 +13,19 @@ import YAML from "yaml";
  * apply), the state classify() trusts and the runner's GitHub writes (main, state, config, github-app, host git on agent
  * clones), the job jail, who an agent is and what it may call (agent-auth, the compiler's grants, setup), the board's
  * approval records, decision routes, tier rules and sign-in, the sandboxes, the model gateway (key and spend caps), host
- * privileges, the security checks, and the product's CI (the checks a merge waits on).
+ * privileges, the security checks, and the product's CI (the checks a merge waits on). A file stays here when it moves from
+ * `.mjs` to `.ts` (the TypeScript conversion), so each name matches either extension.
  */
 const GATE_CORE = [
-  /^services\/runner\/src\/(tiers|review|authorize|merges|apply|netjail|state|config|github-app|git|main|engines|workspace|files|commands)\.mjs$/,
+  /^services\/runner\/src\/(tiers|review|authorize|merges|apply|netjail|state|config|github-app|git|main|engines|workspace|files|commands)\.(mjs|ts)$/,
   // What a job can reach: its sandbox and launch (engines: the bwrap allowlist, writable roots, env), what lands in its
   // workspace and what the runner reads back from it (workspace, files), and the computer box rules (computers).
-  /^scripts\/computers\.mjs$/,
+  /^scripts\/computers\.(mjs|ts)$/,
   /^services\/runner\/test\/reviewer-cases\//,
-  /^services\/runner\/scripts\/reviewer-eval\.mjs$/,
+  /^services\/runner\/scripts\/reviewer-eval\.(mjs|ts)$/,
   /^modules\/core\/security\//,
   /(^|\/)agent-auth\.ts$/,
-  /^scripts\/(modules|paperclip-setup|no-shell)\.mjs$/,
+  /^scripts\/(modules|paperclip-setup|no-shell)\.(mjs|ts)$/,
   /^services\/board\/src\/(approvals|app|fleet|accounts|session)\.ts$/,
   /^services\/computer\//,
   /^services\/gateway\//,
@@ -36,7 +37,7 @@ const GATE_CORE = [
  * Gate code that is not the core: the runner's Primer publishing. The AI reviewer decides (Tier 1) and may flag it for the
  * second reviewer when it weakens a control. (commands.mjs is core: repo access, the owner's words, private reads.)
  */
-const GATE_CODE = [/^services\/runner\/src\/primer\.mjs$/];
+const GATE_CODE = [/^services\/runner\/src\/primer\.(mjs|ts)$/];
 const GITHUB = /(^|\/)\.github\//;
 /** Module agents that hold roles (besides any agent whose grants list roles). */
 const ROLE_AGENTS = new Set(["chief-of-staff", "architect", "fleet-engineer"]);

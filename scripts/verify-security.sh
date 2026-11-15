@@ -524,10 +524,10 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
 # reviewer's yes, and a CI template copy is Tier 0 only when its .github tree is the deployed product's template tree.
 rreview="services/runner/src/review.mjs"; bapprovals="services/board/src/approvals.ts"
 [ "$(grep -oE 'T\(2, "[a-z-]+"' "$rtiers" | sort -u | tr '\n' ' ')" = 'T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
-  && grep -qF '/^services\/runner\/src\/(tiers|review|authorize|merges|apply|netjail|state|config|github-app|git|main|engines|workspace|files|commands)\.mjs$/,' "$rtiers" && grep -qF '  /^scripts\/computers\.mjs$/,' "$rtiers" \
+  && grep -qF '/^services\/runner\/src\/(tiers|review|authorize|merges|apply|netjail|state|config|github-app|git|main|engines|workspace|files|commands)\.(mjs|ts)$/,' "$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
   && grep -qF '/^services\/runner\/test\/reviewer-cases\//,' "$rtiers" && grep -qF '/^modules\/core\/security\//,' "$rtiers" \
   && grep -qF '/^services\/board\/src\/(approvals|app|fleet|accounts|session)\.ts$/,' "$rtiers" && grep -qF '/(^|\/)agent-auth\.ts$/,' "$rtiers" \
-  && grep -qF '/^scripts\/(modules|paperclip-setup|no-shell)\.mjs$/,' "$rtiers" && grep -qF '/(^|\/)\.github\//,' "$rtiers" \
+  && grep -qF '/^scripts\/(modules|paperclip-setup|no-shell)\.(mjs|ts)$/,' "$rtiers" && grep -qF '/(^|\/)\.github\//,' "$rtiers" \
   && grep -qF 'if (GATE_CORE.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rtiers" \
   && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rtiers" \
   && grep -qF 'const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);' "$rtiers" \

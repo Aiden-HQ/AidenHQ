@@ -194,7 +194,10 @@ test("product repo: a bump that quietly edits a gate file is the owner's", () =>
   assert.match(t.reason, /review\.mjs/);
   // The gate's own core and anything that can bypass it: the panel. Other gate code: the reviewer alone (it may flag it).
   for (const f of ["services/runner/src/git.mjs", "services/runner/src/commands.mjs", "services/runner/src/engines.mjs", "services/runner/src/workspace.mjs", "services/runner/src/files.mjs", "scripts/computers.mjs", "services/runner/test/reviewer-cases/01-x.json", "services/runner/scripts/reviewer-eval.mjs", "services/board/src/fleet.ts"]) assert.equal(tierOf(prod("pr", { files: [f] })), "panel", f);
-  for (const f of ["services/runner/src/primer.mjs"]) {
+  // The TypeScript conversion renames files in place: a gate file keeps its tier as .ts.
+  for (const f of ["services/runner/src/tiers.ts", "services/runner/src/review.ts", "services/runner/src/main.ts", "services/runner/src/config.ts", "services/runner/src/commands.ts", "scripts/computers.ts", "scripts/paperclip-setup.ts", "services/runner/scripts/reviewer-eval.ts"]) assert.equal(tierOf(prod("pr", { files: [f] })), "panel", f);
+  assert.equal(tierOf(prod("pr", { files: ["services/runner/src/prompt.ts"] })), 1, "general code is not gate code as .ts either");
+  for (const f of ["services/runner/src/primer.mjs", "services/runner/src/primer.ts"]) {
     assert.equal(prod("pr", { files: [f] }).rule, "product-gate", f);
     assert.equal(tierOf(prod("pr", { files: [f] })), 1, f);
   }
