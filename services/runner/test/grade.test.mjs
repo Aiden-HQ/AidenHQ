@@ -32,8 +32,8 @@ test("pending evidence waits; a merged PR is bound to its merge commit", async (
   const merged = await gather({ kind: "pr", ref }, deps({ pr: async () => pr({ state: "MERGED" }) }));
   assert.equal(merged.version, `acme/app#7@${"m".repeat(40)}`);
   assert.match(merged.facts[0], /merged into main.*checks: test green/);
-  // A skipped check other than an inapplicable image-scan is reported as skipped, never as green evidence.
-  assert.match((await gather({ kind: "pr", ref }, deps({ pr: async () => pr({ state: "MERGED", check: "SKIPPED" }) }))).facts[0], /checks: test skipped/);
+  // A skipped check whose head has no passing required aggregate is not green evidence, whatever the reason for the skip.
+  assert.match((await gather({ kind: "pr", ref }, deps({ pr: async () => pr({ state: "MERGED", check: "SKIPPED" }) }))).facts[0], /checks: test not green \(skipped, with no ci-required to accept it\)/);
   const long = [1, 2, 3, 4].map((n) => ({ repo: "acme/a-rather-long-repository-name", number: n, url: `https://github.com/acme/a-rather-long-repository-name/pull/${n}` }));
   const many = await gather({ kind: "pr", ref: "acme/a-rather-long-repository-name" }, deps({ taskPrs: async () => long }));
   assert.match(many.version, /^prs:[0-9a-f]{16}$/);
@@ -44,16 +44,82 @@ test("an image-scan skipped because no image could change reads green, as the me
   // CI skips image-scan when no Dockerfile's build inputs changed (`.github/workflows/ci.yml`): the merge gate merges on it.
   assert.match(await facts({ imageScan: "SKIPPED", files: ["src/app.ts", "README.md"] }), /checks: test green, image-scan green \(no image could change\)/);
   // Nothing was scanned, so it is not proof when an image could change, or when the file list is unread or past its first page.
-  assert.match(await facts({ imageScan: "SKIPPED", files: ["src/app.ts", "Dockerfile"] }), /image-scan skipped/);
-  assert.match(await facts({ imageScan: "SKIPPED", files: ["images/web/Containerfile.prod"] }), /image-scan skipped/);
-  assert.match(await facts({ imageScan: "SKIPPED" }), /image-scan skipped/);
+  assert.match(await facts({ imageScan: "SKIPPED", files: ["src/app.ts", "Dockerfile"] }), /image-scan not green \(skipped, and an image could change\)/);
+  assert.match(await facts({ imageScan: "SKIPPED", files: ["images/web/Containerfile.prod"] }), /image-scan not green \(skipped/);
+  assert.match(await facts({ imageScan: "SKIPPED" }), /image-scan not green \(skipped/);
   const paged = pr({ imageScan: "SKIPPED" });
   paged.repository.pullRequest.files = { pageInfo: { hasNextPage: true }, nodes: [{ path: "src/app.ts" }] };
-  assert.match((await gather({ kind: "pr", ref }, deps({ pr: async () => paged }))).facts[0], /image-scan skipped/);
-  // Only image-scan's inapplicable skip is green: another check skipped reads skipped even with the same clean files.
-  assert.match(await facts({ check: "SKIPPED", files: ["src/app.ts"] }), /checks: test skipped/);
+  assert.match((await gather({ kind: "pr", ref }, deps({ pr: async () => paged }))).facts[0], /image-scan not green \(skipped/);
+  // Only image-scan's inapplicable skip is green on its own: another check skipped with no required aggregate is not green.
+  assert.match(await facts({ check: "SKIPPED", files: ["src/app.ts"] }), /checks: test not green \(skipped, with no ci-required to accept it\)/);
   // A scan that ran and passed is simply green.
   assert.match(await facts({ imageScan: "SUCCESS", files: ["src/app.ts"] }), /image-scan green(?! \()/);
+});
+
+/** A merged PR whose head carries exactly these checks ({ name, status, conclusion }). */
+const headOf = (checks, over = {}) => ({
+  repository: {
+    pullRequest: {
+      state: "MERGED", headRefOid: "h".repeat(40), baseRefName: "main", mergeCommit: { oid: "m".repeat(40) },
+      commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] },
+      ...over,
+    },
+  },
+});
+const checkRun = (name, conclusion, status = "COMPLETED") => ({ __typename: "CheckRun", name, status, conclusion });
+/**
+ * A stand-in for the grader model that applies the prompt's own rule to the facts it is given: the checks criterion is
+ * met when every check on the head reads green, and not met when one reads anything else. Judging the wording the grader
+ * actually sees is what makes these tests about the evidence, not about a hand-fed verdict.
+ */
+const checksGrader = async (_model, prompt) => {
+  const line = prompt.user.split("\n").find((l) => l.startsWith("- ") && l.includes("; checks: "));
+  const list = line.slice(line.indexOf("checks: ") + 8);
+  const states = list.replace(/\([^)]*\)/g, ""); // a state's reason in brackets, never the state itself
+  const met = !/ (red|skipped|still running|not green)\b/.test(states) && / green\b/.test(states);
+  return { content: JSON.stringify({ verdict: met ? "satisfied" : "needs_revision", criteria: [{ id: "1", met: met ? "yes" : "no", evidence: list }] }) };
+};
+const gradeChecks = async (prData) => {
+  const ev = await gather({ kind: "pr", ref }, deps({ pr: async () => prData }));
+  assert.equal(ev.awaiting, undefined, ev.awaiting);
+  return { ev, v: await grade({ rubric: ["checks are green on the merged head"], deliverable: { kind: "pr", ref }, facts: ev.facts, data: ev.data, request: "", ask: checksGrader }) };
+};
+
+test("skips by the path filter read green when the required aggregate passed, so the checks criterion is met", async () => {
+  // A board-only diff: the runner jobs and image-scan skip by the path filter, and ci-required passes taking them as skipped.
+  const { ev, v } = await gradeChecks(headOf([checkRun("supply-chain", "SUCCESS"), checkRun("runner-unit", "SKIPPED"), checkRun("runner-flows (1/2)", "SKIPPED"), checkRun("image-scan", "SKIPPED"), checkRun("ci-required", "SUCCESS")], { files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "services/board/src/app.ts" }] } }));
+  assert.match(ev.facts[0], /runner-unit green \(skipped, and ci-required accepted it\)/);
+  assert.match(ev.facts[0], /runner-flows \(1\/2\) green \(skipped, and ci-required accepted it\)/);
+  assert.equal(v.outcome, "satisfied", JSON.stringify(v.criteria));
+  assert.deepEqual(v.criteria.map((c) => c.met), ["yes"]);
+});
+
+test("a skip the required aggregate did not accept is not green: the checks criterion is unmet", async () => {
+  for (const gate of [checkRun("ci-required", "FAILURE"), checkRun("ci-required", "CANCELLED"), checkRun("ci-required", "SKIPPED"), undefined]) {
+    const { ev, v } = await gradeChecks(headOf([checkRun("supply-chain", "SUCCESS"), checkRun("runner-unit", "SKIPPED"), ...(gate ? [gate] : [])]));
+    assert.match(ev.facts[0], /runner-unit not green \(skipped, (and ci-required did not pass|with no ci-required to accept it)\)/, ev.facts[0]);
+    assert.equal(v.outcome, "needs_revision", JSON.stringify({ gate, criteria: v.criteria }));
+    assert.deepEqual(v.criteria.map((c) => c.met), ["no"]);
+  }
+  // A neutral check is never green either, whatever the gate says.
+  const neutral = await gradeChecks(headOf([checkRun("supply-chain", "NEUTRAL"), checkRun("ci-required", "SUCCESS")]));
+  assert.match(neutral.ev.facts[0], /supply-chain not green \(neutral\)/);
+  assert.equal(neutral.v.outcome, "needs_revision");
+});
+
+test("checks still running are never graded as not met: the evidence waits for the rollup to settle", async () => {
+  for (const data of [
+    headOf([checkRun("supply-chain", "SUCCESS"), checkRun("runner-unit", null, "IN_PROGRESS")]),
+    headOf([checkRun("supply-chain", "SUCCESS"), checkRun("runner-flows (1/2)", null, "QUEUED")]),
+    // The aggregate appears only once its dependencies finish: an open PR's head without it, in a repository whose CI has
+    // one, is a rollup still being written (a merged head's rollup is final, so its absence there is a real gap).
+    headOf([checkRun("supply-chain", "SUCCESS"), checkRun("runner-unit", "SUCCESS")], { state: "OPEN", mergeCommit: null, baseRef: { target: { statusCheckRollup: { contexts: { nodes: [checkRun("ci-required", "SUCCESS")] } } } } }),
+    headOf([checkRun("supply-chain", "SUCCESS"), checkRun("ci-required", null, "QUEUED")]),
+  ]) {
+    const ev = await gather({ kind: "pr", ref }, deps({ pr: async () => data }));
+    assert.match(ev.awaiting, /still running|has not settled yet/);
+    assert.equal(ev.facts, undefined, "no facts to grade: the row waits as awaiting_evidence, never needs_revision");
+  }
 });
 
 test("only the task's own PRs are read; an open PR the runner can't merge waits", async () => {

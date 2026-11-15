@@ -327,7 +327,7 @@ export function namedChecks(rollup) {
     .filter((n) => !advisory(n))
     .map((n) => ({ name: n.name ?? n.context, status: n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state }))
     .filter((c) => c.name)
-    .map((c) => ({ name: c.name, ok: pass.has(c.status), pending: ["PENDING", "EXPECTED", null, undefined].includes(c.status), ...(c.status === "SKIPPED" ? { skipped: true } : {}) }));
+    .map((c) => ({ name: c.name, status: c.status, ok: pass.has(c.status), pending: ["PENDING", "EXPECTED", null, undefined].includes(c.status), ...(c.status === "SKIPPED" ? { skipped: true } : {}) }));
 }
 
 /**
@@ -369,6 +369,7 @@ export async function awaitChecks(read, { every = 10_000, until = 90_000, sleep 
 export const GATE_CHECK = "ci-required";
 export function withGate(data) {
   const pr = data?.repository?.pullRequest;
+  if (pr?.state && pr.state !== "OPEN") return data; // a closed or merged head's rollup is final: never a queued gate added to it
   const head = pr?.commits?.nodes?.[0]?.commit?.statusCheckRollup;
   const base = pr?.baseRef?.target?.statusCheckRollup;
   const has = (rollup) => (rollup?.contexts?.nodes ?? []).some((n) => (n.name ?? n.context) === GATE_CHECK);

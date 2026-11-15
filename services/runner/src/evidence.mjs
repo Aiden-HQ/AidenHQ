@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { RUNNER_MARKER } from "./commands.mjs";
 import { patchKey } from "./git.mjs";
-import { findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
+import { GATE_CHECK, findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
 import { MAX_DIFF } from "./review.mjs";
 import { downscalePng, imageInfo } from "./images.mjs";
 
@@ -17,14 +17,37 @@ export const ALREADY_APPLIED = "already_applied";
 const hash = (s) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
 /**
- * A check's state as the trusted facts state it. The merge gate treats one skip as green: the `image-scan` job never ran
- * because the change cannot alter an image (`.github/workflows/ci.yml`), which `skippedImageScan` decides, so that skip is
- * reported green with its reason. A scan skipped where an image could change, or with its file list unread, is not proof and
- * stays "skipped", as does every other skipped check.
+ * The repository's own aggregate required check on the head (`ci-required` in the product's ci.yml): "green" when it
+ * completed and passed, "red" when it ended otherwise ("not accepted"), "running" while it is queued or in progress —
+ * and also, on an open PR, when CI on the head has started but the aggregate is not there yet, because the jobs that need
+ * another appear only as it finishes and a head with a few checks can look complete while its tests have not started.
+ * "missing" when the repository's CI has no such aggregate at all (an app's template CI), which a merged head's final
+ * rollup settles too: no aggregate there means the repository's CI had none for that commit.
  */
-function checkState(pr, c) {
-  if (!c.skipped) return c.ok ? "green" : "red";
-  return c.name === "image-scan" && !skippedImageScan(pr) ? "green (no image could change)" : "skipped";
+function gateOn(pr, checks) {
+  const gate = checks.find((c) => c.name === GATE_CHECK);
+  if (gate) return gate.pending ? "running" : gate.status === "SUCCESS" ? "green" : "red";
+  if (pr.state !== "OPEN" || !checks.length) return "missing";
+  return namedChecks(pr.baseRef?.target?.statusCheckRollup).some((c) => c.name === GATE_CHECK) ? "running" : "missing";
+}
+
+/**
+ * A check's state as the trusted facts state it: green, still running, or not green. Three cases are green. A passed
+ * check. An `image-scan` skipped because the change cannot alter an image (`.github/workflows/ci.yml`), which
+ * `skippedImageScan` decides: the merge gate merges on that skip. And a skip the repository's own aggregate required
+ * check accepted on the same head: ci.yml's `ci-required` is what decides which jobs may skip (it lists them and requires
+ * every other job to succeed), so its passing is the proof that a skip beside it was by design. A skip it did not accept
+ * — a cancelled job, a missing dependency, a condition that came out false, a head whose aggregate is red or absent —
+ * reads not green, so nothing is accepted on the strength of being skipped alone.
+ */
+function checkState(pr, c, gate) {
+  if (c.pending) return "still running";
+  if (!c.skipped) return c.status === "SUCCESS" ? "green" : c.status === "NEUTRAL" ? "not green (neutral)" : "not green (failed)";
+  // The aggregate cannot accept its own skip: only its passing is the proof that the skips beside it are by design.
+  if (c.name === GATE_CHECK) return "not green (the required check itself was skipped)";
+  if (c.name === "image-scan") return skippedImageScan(pr) ? "not green (skipped, and an image could change)" : "green (no image could change)";
+  if (gate === "green") return `green (skipped, and ${GATE_CHECK} accepted it)`;
+  return gate === "red" ? `not green (skipped, and ${GATE_CHECK} did not pass)` : `not green (skipped, with no ${GATE_CHECK} to accept it)`;
 }
 
 /**
@@ -42,14 +65,18 @@ export async function prEvidence(prs, ref, deps) {
     const pr = (await deps.pr(p.repo, p.number))?.repository?.pullRequest;
     if (!pr) return { awaiting: `${p.url} can't be read yet` };
     const checks = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
-    if (checks.some((c) => c.pending)) return { awaiting: `checks still running on ${p.url}` };
+    const gate = gateOn(pr, checks);
+    // A read caught mid-run is never a verdict. A check still queued or running is one (GitHub also reports the rollup as
+    // a whole as PENDING until they all finish, so the individual states are the finer read), and so is a head whose
+    // aggregate required check is not written yet: its jobs appear only as it finishes.
+    if (checks.some((c) => c.pending) || gate === "running") return { awaiting: `checks still running on ${p.url}` };
     // Outside the agents org and the product repo the runner can't merge and the owner doesn't: someone else merges it.
     if (pr.state === "OPEN" && deps.ownRepo && !deps.ownRepo(p.repo)) return { awaiting: `${p.url} is not merged yet` };
     const merged = pr.state === "MERGED";
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     versions.push(`${p.repo}#${p.number}@${sha}`);
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "" });
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${checkState(pr, c)}`).join(", ") : "none"}`);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}`);
     diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)")).slice(0, MAX_DIFF)}\n`;
   }
   // The board keeps a version in 200 characters: several PRs are bound by their hash.

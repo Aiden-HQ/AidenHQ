@@ -797,4 +797,10 @@ test("withGate: a head without the base branch's ci-required check is pending, n
   // A repository whose CI has no gate: unchanged.
   const none = withGate(data([run("tests")], [run("tests")]));
   assert.deepEqual(namedChecks(rollup(none)).map((c) => c.name), ["tests"]);
+  // A merged head's rollup is final: the gate is never added as queued to it, or the grader would wait on checks that
+  // will not run again.
+  const merged = data([run("scripts")], [run("ci-required")]);
+  merged.repository.pullRequest.state = "MERGED";
+  assert.equal(ciState(rollup(withGate(merged))), "green");
+  assert.deepEqual(namedChecks(rollup(merged)).map((c) => c.name), ["scripts"]);
 });
