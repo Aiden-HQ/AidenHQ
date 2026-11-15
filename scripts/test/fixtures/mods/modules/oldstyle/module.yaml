@@ -1,4 +1,0 @@
-name: oldstyle
-description: the old grant fields
-agents:
-  n: { adapter: codex_local, mcp_servers: [tasks] }

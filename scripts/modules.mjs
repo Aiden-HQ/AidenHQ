@@ -327,7 +327,6 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       put(paperclip.mcp_servers, k, c.url ? { ...c, env_http_headers: { "X-Agent-Key": "PAPERCLIP_API_KEY", ...c.env_http_headers } } : c, "connection");
     }
     for (const [key, a] of Object.entries(def.agents ?? {})) {
-      if (a.mcp_servers || a.enabled_tools) fail(`agent ${key}: use connections: (mcp_servers and enabled_tools are gone)`);
       const file = join(root, "agents", key, "AGENTS.md");
       if (!existsSync(file)) fail(`agent ${key}: missing ${relative(productDir, file)}`);
       const { meta } = frontmatter(readFileSync(file, "utf8"));
@@ -578,7 +577,6 @@ function instanceAgents(instanceDir, settings, paperclip, routineTitles) {
     const handbook = join(dir, key, "AGENTS.md");
     if (!existsSync(handbook)) fail(`agent ${key}: missing agents/${key}/AGENTS.md`);
     const def = substitute(readYaml(file), settings);
-    if ("catch_up" in def) fail(`agent ${key}: catch_up was renamed heartbeat (heartbeat: true, or hours between heartbeats)`);
     for (const f of Object.keys(def)) if (!INSTANCE_AGENT_FIELDS.includes(f)) fail(`agent ${key}: ${f === "roles" ? "an instance agent may not have roles" : `unknown field ${f} (known: ${INSTANCE_AGENT_FIELDS.join(", ")})`}`);
     for (const f of ["name", "description", "model", "budget"]) if (def[f] == null || def[f] === "") fail(`agent ${key}: ${f} is required`);
     if (typeof def.budget !== "number" || !(def.budget > 0)) fail(`agent ${key}: budget is USD per month, a number above 0`);
@@ -614,7 +612,6 @@ function heartbeatRoutines(paperclip, settings, agentOverrides, routineTitles) {
   const every = Number(settings.heartbeat_hours ?? 4);
   if (!HEARTBEAT_HOURS.includes(every)) fail(`settings.heartbeat_hours: one of ${HEARTBEAT_HOURS.join(", ")}`);
   for (const [key, a] of Object.entries(paperclip.agents)) {
-    if (a.catch_up != null) fail(`agent ${key}: catch_up was renamed heartbeat (heartbeat: true, or hours between heartbeats)`);
     const hb = agentOverrides[key]?.heartbeat ?? a.heartbeat;
     if (hb == null || hb === false) continue;
     const hours = hb === true ? every : hb;

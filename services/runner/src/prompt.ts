@@ -304,11 +304,6 @@ export function runOutcome({ code, timedOut, stalled, lastMessage, timeoutMinute
   return { finished, headline: `**Stopped before finishing:** the agent ended without a reply.${leftover} Say **continue** to pick up where it stopped.` };
 }
 
-/** The report without the trailing commit-message line. */
-export function stripCommitLine(report: unknown) {
-  return String(report ?? "").replace(/^\s*`?Commit message:.*$/im, "").trim();
-}
-
 /**
  * The task's branches at the end of a run report: a table, then the commits
  * GitHub doesn't have yet. Only those count as new: listing everything on a branch made report-only

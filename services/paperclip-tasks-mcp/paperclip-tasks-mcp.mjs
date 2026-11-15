@@ -243,7 +243,6 @@ async function tellParent(issue, handedBack = false) {
 
 const PRIORITIES = ["critical", "high", "medium", "low"];
 const OPEN_STATUSES = "backlog,todo,in_progress,in_review,blocked";
-const SLACK_GRACE_SECONDS = 3600;
 
 let labelCache;
 async function labelIds(names) {
@@ -706,8 +705,6 @@ const TOOLS = {
       refuseReservedMarker(marker, ...(related_markers ?? []));
       const m = String(marker).trim().replace(/^(source:)+/, ""); // agents sometimes include the prefix
       if (!/^[A-Za-z0-9:._\/-]{3,200}$/.test(m)) throw new Error("invalid marker");
-      // A pinned Slack message is the same item as the needs-response or todo task for it:
-      // closing either must not bring it back under the other marker.
       let assigneeAgent, target, origin = "";
       const g = await grant();
       // An agent in trial ("draft, don't do") creates work only for itself: with no assignee the task lands on the owner's
@@ -730,15 +727,7 @@ const TOOLS = {
         origin = `Filed by ${me.metadata?.persona?.name || me.name} (agent). This is an agent request, not the owner's words.\n\n`;
       }
       const markers = [m, ...(related_markers ?? []).map((r) => String(r).trim())];
-      if (m.startsWith("source:slack:pin:")) markers.push(m.replace(/^source:slack:pin:/, "source:slack:"));
-      // ...and the other way round, for a needs-response or todo task (source:slack:<channel>:<ts>).
-      const slackAsk = /^source:slack:[^:]+:([0-9]+)(?:\.[0-9]+)?$/.exec(m);
-      if (slackAsk) markers.push(m.replace(/^source:slack:/, "source:slack:pin:"));
       if (markers.some((k) => !/^[A-Za-z0-9:._\/-]{3,200}$/.test(k))) throw new Error("invalid related marker");
-      // A Slack ask gets an hour for the user to answer or pin it before it becomes a task.
-      if (slackAsk && Date.now() / 1000 - Number(slackAsk[1]) < SLACK_GRACE_SECONDS) {
-        return { created: false, deferred: true, reason: "the Slack message is less than an hour old; a later scan decides" };
-      }
       // Idempotency keys expire after 7 days in Paperclip, so also look for an open task
       // (or, with dedupe_closed, a closed one) that already carries one of these markers.
       const statuses = dedupe_closed ? `${OPEN_STATUSES},done,cancelled` : OPEN_STATUSES;
@@ -1155,7 +1144,7 @@ const TOOLS = {
     run: async ({ issue, comment, to }) => {
       await requireAssistant();
       const me = await api("GET", "/api/agents/me");
-      return boardApi(`/internal/issues/${issueRef(issue)}/pass`, { comment: String(comment), to: String(to), by: me?.metadata?.persona?.name || "Alfred" });
+      return boardApi(`/internal/issues/${issueRef(issue)}/pass`, { comment: String(comment), to: String(to), by: me.metadata?.persona?.name || me.name });
     },
   },
   task_handoff: {
