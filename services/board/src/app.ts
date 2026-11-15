@@ -38,6 +38,7 @@ import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
+import { latest, successorOf } from "./rollover.js";
 import { APPROVAL_MARKER, NOTICE_MARKER, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
 import { activityDays } from "./days.js";
 import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
@@ -1001,6 +1002,16 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
+      // Where a message to a task the board moved to a successor goes (rollover.ts): read-only, from the board's own record.
+      // Only the owner channel (decide key) asks, before delivering a reply or a daily-chat message.
+      method: "GET",
+      path: /^\/internal\/successor\/([A-Za-z0-9_-]+)$/,
+      handle: async (m, _b, _u, req) => {
+        if (!ownerKeyed(req)) throw new HttpError(403, "only the owner's channel asks where a chat continues");
+        return { id: successorOf(store, m[1]!) ?? null };
+      },
+    },
+    {
       // pending: the cards the owner-channel sends; approved: what the runner may claim (with the args it replays).
       method: "GET",
       path: /^\/internal\/approvals$/,
@@ -1676,7 +1687,9 @@ export function createApp(opts: AppOptions): Server {
       method: "POST",
       path: /^\/api\/issues\/([^/]+)\/not-right$/,
       handle: async (m, body) => {
-        const { ctx, issue } = await editableIssue(decodeURIComponent(m[1]!), "this task isn't yours");
+        const own = await editableIssue(decodeURIComponent(m[1]!), "this task isn't yours");
+        const { ctx } = own;
+        const issue = await latest(pc, store, own.issue); // a moved task's correction goes to its successor
         const { text } = parse(z.object({ text: z.string().trim().min(1).max(500) }).strict(), body);
         const label = await labelNamed(ctx, "correction", "#dc2626");
         await pc.addComment(issue.id, `Not right: ${text}\n\n<!-- aidenhq-correction -->`);
@@ -1785,7 +1798,10 @@ export function createApp(opts: AppOptions): Server {
       method: "POST",
       path: /^\/api\/issues\/([^/]+)\/comments$/,
       handle: async (m, body, _u, req) => {
-        const { ctx, issue } = await editableIssue(decodeURIComponent(m[1]!));
+        const { ctx, issue: asked } = await editableIssue(decodeURIComponent(m[1]!));
+        // A task moved to a successor (rollover.ts): the message goes there, and the board opens it.
+        const issue = await latest(pc, store, asked);
+        const moved = issue.id !== asked.id ? { movedTo: issue.identifier } : {};
         // `brief`: the chat's send, which refetches the chat itself, so the reply skips building the whole task view.
         const { body: text, answer, brief } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional(), brief: z.boolean().optional() }).strict(), body);
         const view = async () => (brief ? { identifier: issue.identifier } : issueView(issue.id));
@@ -1796,7 +1812,7 @@ export function createApp(opts: AppOptions): Server {
         const replyBy = reply && !answer && (reply.ref || reply.target || store.approvals.pendingOn(replyRef).length) ? replyStamp() : null;
         if (reply && replyBy) {
           const a = await decided(store.approvals.decideByReply(replyRef, reply.decision, replyBy, new Date(), reply.target), replyBy);
-          return { ...(await view()), approval: a };
+          return { ...(await view()), ...moved, approval: a };
         }
         // @-mentions: the agents named, other than the one this chat is with, get the message on their part.
         const task = await userTaskOf(issue, ctx);
@@ -1820,7 +1836,7 @@ export function createApp(opts: AppOptions): Server {
         const parts = [];
         for (const a of others) parts.push(await deliver(ctx, task!, a, text, { identifier: issue.identifier, commentId: posted?.id, note: `Written in ${where} on ${issue.identifier}.` }));
         // A message that left this chat for another agent's: the board opens that one.
-        return { ...(await view()), ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
+        return { ...(await view()), ...moved, ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
       },
     },
     {

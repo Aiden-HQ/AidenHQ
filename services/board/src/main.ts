@@ -13,6 +13,7 @@ import { Paperclip } from "./paperclip.js";
 import { weekdayOf } from "./recurrence.js";
 import { Store, localDate } from "./store.js";
 import { startWake } from "./wake.js";
+import { startRollover } from "./rollover.js";
 
 const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
@@ -37,6 +38,8 @@ setInterval(rollover, 60_000).unref();
 startDetector(paperclip, store, log);
 // Event wake-ups for heartbeat agents (wake.ts): on unless the instance setting wake_ups is off.
 startWake(paperclip, store, log);
+// Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
+startRollover(paperclip, store, log);
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (services/gateway), agent
 // computers' included (the launcher forwards their calls there).
 pullUsage(cfg.gateway, store, log, 60_000, "gateway_usage_pulled_at");

@@ -416,7 +416,13 @@ export function prTitle(commits, taskTitle) {
   return `${prefix ?? ""}${title}`.slice(0, 200);
 }
 
-/** How an approval ended, said on the task that asked for it (an agent's subtask's parent), so its agent wakes. */
+/**
+ * How an approval ended, said on the task that asked for it (an agent's subtask's parent), so its agent wakes. A success
+ * is a short receipt (its full text is on the card and on the subtask): these notes pile up on long-lived chats, whose
+ * whole history every fresh session re-reads. A failure keeps its detail.
+ */
 export function appliedNote(identifier, approvalId, outcome) {
-  return `**${outcome.ok ? "Approved and applied" : "Approved, but it failed"}** (${identifier}, approval ${approvalId}): ${String(outcome.text ?? "").trim().slice(0, 1500)}`;
+  const text = String(outcome.text ?? "").trim();
+  const cap = outcome.ok ? 400 : 1500;
+  return `**${outcome.ok ? "Approved and applied" : "Approved, but it failed"}** (${identifier}, approval ${approvalId}): ${text.length > cap ? `${text.slice(0, cap)}… (more on ${identifier})` : text}`;
 }

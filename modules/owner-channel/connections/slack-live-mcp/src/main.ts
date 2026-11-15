@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
 import { boardClient, sendBatch, sendCards, sendOutcomes, sendResetLinks } from "./approvals.js";
-import { makeChat, startTelegramPoll, type ChatConfig } from "./chat.js";
+import { boardSuccessor, makeChat, startTelegramPoll, type ChatConfig } from "./chat.js";
 import { quickCommand } from "./commands.js";
 import { isOwnerComment, taskForNotify, ownerViaOf } from "./threads.js";
 import { buttonsMarkup } from "./telegram.js";
@@ -138,7 +138,10 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.clo
 const appToken = env("SLACK_APP_TOKEN");
 
 // Inbound chat bridge: only when the board key is mounted.
-const chatCfg: ChatConfig = { paperclipUrl: process.env.PAPERCLIP_URL ?? "", boardKey: env("PAPERCLIP_BOARD_KEY"), companyId: process.env.PAPERCLIP_COMPANY_ID ?? "", telegramToken: cfg.telegramToken, telegramChatId: cfg.telegramChatId };
+const boardUrl = process.env.BOARD_INTERNAL_URL ?? "";
+const boardToken = env("BOARD_INTERNAL_TOKEN");
+const decideKey = env("OWNER_DECIDE_KEY");
+const chatCfg: ChatConfig = { paperclipUrl: process.env.PAPERCLIP_URL ?? "", boardKey: env("PAPERCLIP_BOARD_KEY"), companyId: process.env.PAPERCLIP_COMPANY_ID ?? "", telegramToken: cfg.telegramToken, telegramChatId: cfg.telegramChatId, ...(boardUrl && boardToken && decideKey.length >= 32 ? { successor: boardSuccessor(boardUrl, boardToken, decideKey) } : {}) };
 const deliver = chatCfg.boardKey && chatCfg.paperclipUrl ? makeChat(chatCfg, store, log) : undefined;
 // notify_owner(task): the task's agent heads the message (looked up here, never taken from the text).
 if (deliver) {
@@ -178,9 +181,6 @@ cfg.brakeOn = () => {
 if (chatCfg.paperclipUrl)
   cfg.postReply = makePostReply({ paperclipUrl: chatCfg.paperclipUrl, launcherUrl: process.env.AIDENHQ_LAUNCHER_URL ?? "", warn: (msg, status) => log.warn({ status }, msg) });
 // Approval cards: pending records become Telegram cards; taps and exact typed replies decide them with the decide key.
-const boardUrl = process.env.BOARD_INTERNAL_URL ?? "";
-const boardToken = env("BOARD_INTERNAL_TOKEN");
-const decideKey = env("OWNER_DECIDE_KEY");
 const board = boardUrl && boardToken && decideKey.length >= 32 ? boardClient(boardUrl, boardToken, decideKey) : undefined;
 if (!board) log.warn("BOARD_INTERNAL_URL/BOARD_INTERNAL_TOKEN/OWNER_DECIDE_KEY not set; approvals from Telegram are off (tap them on the board)");
 if (board && cfg.telegramToken && cfg.telegramChatId) {

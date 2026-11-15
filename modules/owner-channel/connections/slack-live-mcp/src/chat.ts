@@ -21,6 +21,21 @@ export interface ChatConfig {
   companyId: string; // optional; defaults to the company named OWNER.company
   telegramToken: string;
   telegramChatId: string;
+  /**
+   * The board's record of a task it moved to a successor (it outgrew an agent's fresh session; board rollover.ts): where a
+   * message to that task goes. Never read from description text. Unset (no board) or unreachable: the task itself.
+   */
+  successor?: (issueId: string) => Promise<string | null>;
+}
+
+/** The board's internal API, asked where a moved task's messages go (GET /internal/successor/:id, its own record; decide key). */
+export function boardSuccessor(url: string, token: string, decideKey: string) {
+  return async (issueId: string): Promise<string | null> => {
+    const res = await fetch(`${url.replace(/\/$/, "")}/internal/successor/${encodeURIComponent(issueId)}`, { headers: { authorization: `Bearer ${token}`, "x-owner-key": decideKey }, signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) throw new Error(`board successor → ${res.status}`);
+    const id = ((await res.json()) as { id?: unknown }).id;
+    return typeof id === "string" && id ? id : null;
+  };
 }
 export interface ChatMessage {
   source: "telegram" | "slack";
@@ -101,6 +116,14 @@ export function makeChat(cfg: ChatConfig, store: Store, log: Logger) {
     return (agentCache = { at: Date.now(), list: await api("GET", `/api/companies/${company}/agents`) }).list;
   };
 
+  // A task the board moved to a successor: the message goes there (the board's record). The board unreachable: the task
+  // itself (the board moves it again if a run there fails), never a blocked Telegram queue.
+  const current = async (issue: any): Promise<any> => {
+    if (!cfg.successor || !issue?.id) return issue;
+    const next = await cfg.successor(String(issue.id)).catch((err: Error) => (log.warn({ issue: issue.id, err: err.message }, "couldn't ask the board where a chat continues"), null));
+    return next ? ((await api("GET", `/api/issues/${next}`).catch(() => null)) ?? issue) : issue;
+  };
+
   // A Paperclip bug can hold a task (executionBlocker) so comments on it no longer wake its assignee. Wake the agent
   // directly, as the board does for the owner's comments. Never fails the delivery.
   const wakeIfHeld = async (issueId: string, comment: { id?: string } | undefined): Promise<void> => {
@@ -120,17 +143,19 @@ export function makeChat(cfg: ChatConfig, store: Store, log: Logger) {
   const deliver = async (m: ChatMessage): Promise<void> => {
     const route = m.source === "telegram" && !m.forward ? routeOwnerMessage(m.text, m.replyTo ? { chatId: cfg.telegramChatId, messageId: m.replyTo } : undefined, store, await agents()) : ({ kind: "aiden" } as const);
     if (route.kind === "reply") {
-      const issue = await api("GET", `/api/issues/${route.issueId}`).catch(() => null);
+      const found = await api("GET", `/api/issues/${route.issueId}`).catch(() => null);
+      // A chat the board moved to a successor (it outgrew a fresh session): the reply goes there.
+      const issue = found && (await current(found));
       if (issue) {
         // A message to a finished chat reopens it; one the agent handed back goes to that agent again.
         if (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled") {
           const agentId = issue.assigneeAgentId ? undefined : chatAgentOf(issue.description);
           // Never let a failed reopen block Telegram (the poll loop retries a throwing update forever): log it, deliver anyway.
-          await api("PATCH", `/api/issues/${route.issueId}`, { status: "todo", ...(agentId ? { assigneeAgentId: agentId, assigneeUserId: null } : {}) }).catch((err: Error) =>
-            log.warn({ err: err.message, issue: route.issueId }, "couldn't reopen the chat; delivering the message anyway"),
+          await api("PATCH", `/api/issues/${issue.id}`, { status: "todo", ...(agentId ? { assigneeAgentId: agentId, assigneeUserId: null } : {}) }).catch((err: Error) =>
+            log.warn({ err: err.message, issue: issue.id }, "couldn't reopen the chat; delivering the message anyway"),
           );
         }
-        await wakeIfHeld(route.issueId, await api("POST", `/api/issues/${route.issueId}/comments`, { body: formatComment(m) }));
+        await wakeIfHeld(issue.id, await api("POST", `/api/issues/${issue.id}/comments`, { body: formatComment(m) }));
         markOwnerMessage(store);
         return;
       }
@@ -164,7 +189,10 @@ export function makeChat(cfg: ChatConfig, store: Store, log: Logger) {
     const key = `chat_issue:${day()}`;
     let id = store.getKv(key);
     if (id) {
-      const issue = await api("GET", `/api/issues/${id}`).catch(() => null);
+      const found = await api("GET", `/api/issues/${id}`).catch(() => null);
+      // Today's chat may have been moved to a successor by the board (rollover.ts): follow it, and remember it.
+      const issue = found && (await current(found));
+      if (issue && issue.id !== id) store.setKv(key, (id = String(issue.id)));
       if (!issue) id = undefined;
       // Keep it the CoS's task and open, whatever happened to it since (handoffs, closes).
       else if (issue.assigneeAgentId !== cos || issue.status !== "todo")

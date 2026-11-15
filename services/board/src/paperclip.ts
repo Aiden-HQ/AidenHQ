@@ -38,6 +38,7 @@ export interface Issue {
   cancelledAt?: string | null;
   createdByUserId?: string | null;
   createdByAgentId?: string | null;
+  projectId?: string | null;
   /** The task this one is a sub-task of: an agent's work on the user's task. */
   parentId?: string | null;
   /** "routine_execution" for a routine's run task. */
@@ -107,6 +108,7 @@ export interface Comment {
   authorType: string;
   authorAgentId?: string | null;
   authorUserId?: string | null;
+  createdByRunId?: string | null;
   createdAt: string;
   deletedAt?: string | null;
 }
@@ -334,6 +336,12 @@ export class Paperclip {
   async comments(id: string): Promise<Comment[]> {
     const list = await this.request<Comment[]>("GET", `/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`);
     return list.filter((c) => !c.deletedAt);
+  }
+
+  /** One page of a task's comments (Paperclip's most: 500): oldest first after the comment `after`, or the newest first. */
+  commentPage(id: string, opts: { after?: string; newest?: boolean } = {}): Promise<Comment[]> {
+    const q = new URLSearchParams({ order: opts.newest ? "desc" : "asc", limit: "500", ...(opts.after ? { after: opts.after } : {}) });
+    return this.request<Comment[]>("GET", `/api/issues/${encodeURIComponent(id)}/comments?${q}`);
   }
 
   updateIssue(id: string, body: Record<string, unknown>): Promise<Issue> {

@@ -74,6 +74,15 @@ export function chatAgent(issue: Issue): string | undefined {
   return issue.assigneeAgentId ?? /\n\n<!-- aidenhq-chat-agent:([A-Za-z0-9_-]+) -->\s*$/.exec(issue.description ?? "")?.[1] ?? undefined;
 }
 
+/**
+ * A task moved to a successor (rollover.ts) starts with a `continued` line naming it; the successor ends with `continues`
+ * (before any chat-agent marker). These are for people and for resuming an unfinished move: messages are routed by the
+ * board's own record (rollover.ts successorOf; the bridge asks for it), never by description text.
+ */
+export const continuedMarker = (id: string) => `<!-- aidenhq-continued:${id} -->`;
+export const continuesMarker = (id: string) => `<!-- aidenhq-continues:${id} -->`;
+export const continuedIn = (description: string | null | undefined) => /^Continued in [A-Z]+-\d+\.\n\n<!-- aidenhq-continued:([A-Za-z0-9_-]+) -->/.exec(description ?? "")?.[1];
+
 // ------------------------------------------------------------------ the conversation
 
 /** An agent's visible reply to the owner (notify_owner(task) posts it; the owner-channel bridge's REPLY_MARKER). */

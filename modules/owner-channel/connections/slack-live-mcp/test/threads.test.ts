@@ -108,3 +108,26 @@ describe("a held chat (Paperclip parks the task's own wake)", () => {
     expect(await run(undefined)).toEqual([]);
   });
 });
+
+describe("a chat the board moved to a successor", () => {
+  it("a reply goes where the board's record says, never reopening the old chat", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: URL | string, init?: RequestInit) => {
+      const path = new URL(String(u)).pathname;
+      calls.push(`${init?.method ?? "GET"} ${path}`);
+      if (path.endsWith("/agents")) return new Response(JSON.stringify([{ id: "c", name: "Aiden", status: "idle", metadata: { setupKey: "aidenhq:chief-of-staff" } }]));
+      if (path.endsWith("/labels")) return new Response(JSON.stringify([{ id: "L", name: "chat" }]));
+      if (path === "/api/issues/old") return new Response(JSON.stringify({ id: "old", status: "done", assigneeAgentId: null, description: `Old.\n\n${chatAgentMarker("c")}` }));
+      if (path === "/api/issues/new") return new Response(JSON.stringify({ id: "new", status: "todo", assigneeAgentId: "c" }));
+      if (path.endsWith("/comments")) return new Response('{"id":"c1"}');
+      return new Response("{}");
+    }));
+    const store = openStore(":memory:");
+    store.setThread("telegram", "42", "7", "old");
+    const log = { info() {}, warn() {}, error() {} } as any;
+    const successor = async (id: string) => (id === "old" ? "new" : null);
+    await makeChat({ paperclipUrl: "http://pc", boardKey: "k", companyId: "co", telegramToken: "t", telegramChatId: "42", successor }, store, log)({ source: "telegram", text: "and the logs?", replyTo: "7" });
+    expect(calls).toContain("POST /api/issues/new/comments");
+    expect(calls.filter((c) => c.includes("/api/issues/old") && !c.startsWith("GET"))).toEqual([]);
+  });
+});
