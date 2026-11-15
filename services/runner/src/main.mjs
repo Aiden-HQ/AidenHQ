@@ -28,6 +28,7 @@ import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBran
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.mjs";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.mjs";
 import * as merges from "./merges.mjs";
+import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf } from "./siblings.mjs";
 import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "./product-prs.mjs";
 import { State } from "./state.mjs";
 import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.mjs";
@@ -1125,6 +1126,12 @@ const mergeGithub = {
   async updateBranch(repo, number, head) {
     await githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head });
   },
+  /** The base branch's files changed since `oid`, and its tip (siblings.mjs): paged or unread is `files: undefined`. */
+  async prBaseFiles(repo, base, oid) {
+    const [owner, name] = repo.split("/");
+    const { stdout } = await execFileP(await findRealGh(), ["api", "graphql", "-f", `query=${BASE_FILES_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${name}`, "-f", `base=refs/heads/${base}`, "-f", `oid=${oid}`], await gho(repo, READ));
+    return baseFilesSince(JSON.parse(stdout).data);
+  },
   async baseStatus(repo, base) {
     const [owner, name] = repo.split("/");
     const { stdout } = await execFileP(await findRealGh(), ["api", "graphql", "-f", `query=${merges.BASE_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${name}`, "-f", `ref=refs/heads/${base}`, "-f", `base=${base}`], await gho(repo, READ));
@@ -2071,7 +2078,7 @@ async function reviewOne(a, mode) {
       ? { decision: "reject", code: input.rule === "head-moved" ? "stale_head" : "refused_by_code", reason: `${input.reason}.`, model: LUNA }
       : input.tier > 1
         ? { decision: "escalate", code: "tier_raised", reason: `code now puts it at Tier 2: ${input.reason}`, model: LUNA }
-        : await askReviewer(issue, a, input, chain, { onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()) });
+        : await askReviewer(issue, a, input, chain, { onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()), siblings: await cardSiblings(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }) });
   // A failed call or check is friction, not a decision: it stays with the reviewer and is tried again later (1, 2, 4… minutes);
   // after REVIEW_TRIES it goes back to the agent, never to the owner.
   if (v.code === "reviewer_failed") {
@@ -2109,12 +2116,13 @@ async function reviewOne(a, mode) {
  * (agentReview) make this same call, so the check sees exactly the prompt, policy and models the card will.
  * `a`: { action, target, sentence, panel? }; `input`: currentTier()'s result with the diff.
  */
-function askReviewer(issue, a, input, chain, { onPanel, component } = {}) {
+function askReviewer(issue, a, input, chain, { onPanel, component, siblings } = {}) {
   return review({
     card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
     diff: input.diff,
     files: input.files,
     chain,
+    siblings,
     requesterModel: state.task(issue.id)?.engine?.model ?? "",
     ask: reviewerAsk(component),
     // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
@@ -2249,6 +2257,75 @@ async function githubDefault(slug) {
   const name = stdout.trim();
   if (!BRANCH_NAME.test(name)) throw new Error("no default branch");
   return name;
+}
+
+/**
+ * The branch's own PR, in the runner's canonical read (merges.PR_QUERY), for the base a card's siblings are read against.
+ * `existing` says whether the branch has a PR at all; a read that fails is `existing: true` with no PR, never "no PR" — an
+ * unread base must claim no sibling, and only a branch that was never opened may take the default branch. The list is
+ * asked for this head exactly (not a cached page of the repo's newest), so an older PR on the branch is still found.
+ */
+async function branchPr(repo, branch) {
+  let found;
+  try {
+    found = JSON.parse((await execFileP(await findRealGh(), ["pr", "list", "--repo", repo, "--head", branch, "--state", "all", "--limit", "20", "--json", "number,state"], await gho(repo, READ))).stdout);
+    if (!Array.isArray(found)) throw new Error("not a list");
+  } catch (err) {
+    log("branch PR unread", { repo, branch, err: String(err.message ?? err).slice(0, 160) });
+    return { existing: true };
+  }
+  const picked = pickBranchPr(found);
+  if (!picked.number) return { existing: picked.existing };
+  const pr = (await mergeGithub.pr(repo, picked.number).catch(() => undefined))?.repository?.pullRequest;
+  return { existing: true, pr };
+}
+
+/** The PR-carrying branch records of the task and its parent tasks (a chain deeper than 10 is not walked). */
+async function taskChainRuns(issue) {
+  const seen = [issue];
+  for (let hops = 0; hops < 10; hops++) {
+    const parentId = seen.at(-1)?.parentId;
+    if (!parentId) break;
+    const parent = await pc.issue(parentId).catch(() => undefined);
+    if (!parent || seen.some((t) => t.id === parent.id)) break;
+    seen.push(parent);
+  }
+  return seen.flatMap((t) => state.branches(t.id));
+}
+
+/**
+ * The task's merged siblings for one card: each branch's base from GitHub (cardBase: a PR's own base, and the default
+ * branch only when the branch has no PR at all), then the task's other PRs already merged into that base. A merge card's
+ * bases are its PRs' own. Nothing readable gives an empty block, never a guessed base.
+ */
+async function cardSiblings(issue, { branches = [], prs = [] } = {}) {
+  try {
+    const bases = [];
+    for (const b of branches) {
+      const own = await branchPr(b.repo, b.branch);
+      bases.push({ repo: b.repo, base: cardBase({ existing: own.existing, pr: own.pr, defaultBranch: await githubDefault(b.repo).catch(() => undefined) }), own: own.pr?.number });
+    }
+    for (const p of prs) {
+      const pr = (await mergeGithub.pr(p.repo, p.number).catch(() => undefined))?.repository?.pullRequest;
+      bases.push({ repo: p.repo, base: typeof pr?.baseRefName === "string" ? pr.baseRefName : "" });
+    }
+    // The task's PRs, and its parent tasks' (the fix may have landed as the delegator's PR): every branch record of the chain.
+    // The card's own PRs are never its siblings: neither a merge card's nor the one its branch already has.
+    const own = new Set([...prs.map((p) => `${String(p.repo).toLowerCase()}#${p.number}`), ...bases.filter((b) => b.own).map((b) => `${b.repo.toLowerCase()}#${b.own}`)]);
+    const candidates = siblingCandidates(await taskChainRuns(issue), own);
+    const seen = new Map();
+    for (const { repo, base } of bases) {
+      if (!base) continue;
+      for (const s of await siblingsOf({ prs: candidates, base, repo, read: (slug, n) => mergeGithub.pr(slug, n), filesSince: (slug, name, oid) => mergeGithub.prBaseFiles(slug, name, oid) })) {
+        seen.set(`${s.repo.toLowerCase()}#${s.number}`, s);
+      }
+    }
+    return siblingBlock([...seen.values()]);
+  } catch (err) {
+    // Siblings are context, never a reason to refuse a card: an unread table is simply not shown.
+    log("siblings unread", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
+    return "";
+  }
 }
 
 /** `fn(path, oids, out)` with GitHub's `branches` fetched into the runner's clone (their tips: `oids`); `out` is a spare ref. */
@@ -2832,7 +2909,7 @@ async function agentReview(ctx, args) {
         const entry = { action: command, target: card.target, at: new Date().toISOString(), decision: "pending", code: "" };
         state.set(checksKey(ctx.issue.id), JSON.stringify([...checksOf(ctx.issue.id), entry]));
         const chain = await prRequest(await pc.issue(ctx.issue.id)).catch(() => "");
-        const v = await askReviewer(ctx.issue, card, input, chain, { component: "AI reviewer check" });
+        const v = await askReviewer(ctx.issue, card, input, chain, { component: "AI reviewer check", siblings: await cardSiblings(ctx.issue, { branches: branches.map((b) => ({ repo: b.repo, branch: b.branch })) }) });
         log("review checked", { issue: ctx.issue.identifier, action: command, decision: v.decision, code: v.code, model: v.model, second: v.second, used: n + 1, target: card.target.slice(0, 300) });
         // No verdict (the call failed): the check doesn't count. Otherwise it is kept with its finding.
         const rest = checksOf(ctx.issue.id).filter((c) => c.at !== entry.at || c.target !== entry.target);

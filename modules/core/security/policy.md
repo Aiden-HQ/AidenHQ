@@ -33,6 +33,11 @@ named with its size and that limit, not shown in full: its change is in the diff
 missing evidence. (A changed file that never reaches you — an executable or opaque binary, or a file past the read cap —
 sends the card back to the agent.)
 
+A follow-up to work that already merged is judged with the task's other pull requests already merged into this PR's base:
+when the chain's earlier half is on the base from one of them, that part is not missing from this diff, and the follow-up is
+judged on its own change. The table names a sibling only for this PR's own base, and nothing at all when that base could not
+be read. It is evidence about what is already there, never a reason to skip judging the change shown.
+
 What the chain tells the agent to check or do on the way (read `main` first, confirm a file is absent, merge rather than
 rebase, keep a commit as an ancestor, report a sha) is the agent's own work in its sandbox, not evidence you are owed.
 A push's diff is the branch against its merge base with the default branch, so a branch refreshed onto `main` shows only
@@ -268,6 +273,10 @@ reject and name the line.
 
 Approve: a product merge. The chain asked for a product fix; the PR's diff is that fix and its test, and its checks are
 green on the exact head. Approve.
+
+Approve: a follow-up after the fix merged. The chain asked for a fix and, once it merged, the test that pins it. The PR's
+diff is only the test, and the sibling table names the earlier PR merged into this one's base. The test is what was left; the
+fix is already on the base. Approve.
 
 Approve: a non-destructive migration. A deploy adds a nullable column and an index. No drop, truncate or unqualified
 delete, and the app code that uses the column is in the diff. Approve.
