@@ -62,10 +62,10 @@ const lane = makeLane({
 const laneTools = { store: laneStore, lane, agents: laneAgents, timezone: process.env.OWNER_TIMEZONE || "UTC" };
 const routeLane = laneRoutes({ lane, store: laneStore, agents: laneAgents, token: env("BOARD_INTERNAL_TOKEN"), log });
 
-// One triage run per window, with every event that arrived in it: the first event after a quiet window fires at once, and
-// the rest wait for the window to end (one run per Slack event was 67 runs a day, 50 of them finding nothing). An urgent
-// event in a busy window waits up to the window. Signed like scripts/trigger-meeting-scan.sh.
-const TRIAGE_WINDOW_MS = 30 * 60_000;
+// One triage run per minute at most, with every event that arrived in it: the first event after a quiet minute fires at
+// once, and the rest wait for the minute to end (one run per Slack event was 67 runs a day, 50 of them finding nothing;
+// a 30-minute window was too slow). An urgent event in a busy minute waits up to the window. Signed like scripts/trigger-meeting-scan.sh.
+const TRIAGE_WINDOW_MS = 60_000;
 const webhookUrl = env("TRIAGE_WEBHOOK_URL");
 const webhookSecret = env("TRIAGE_WEBHOOK_SECRET");
 let lastPoke = 0;
