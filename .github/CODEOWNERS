@@ -1,7 +1,7 @@
 # The maintainer reviews every change; gate files are listed so branch protection can require that review.
 *                                  @Aiden-HQ/maintainers
-/services/runner/src/tiers.mjs     @Aiden-HQ/maintainers
-/services/runner/src/review.mjs    @Aiden-HQ/maintainers
+/services/runner/src/tiers.*       @Aiden-HQ/maintainers
+/services/runner/src/review.*      @Aiden-HQ/maintainers
 /services/shared/agent-auth.ts     @Aiden-HQ/maintainers
 /services/gate/                    @Aiden-HQ/maintainers
 /ops/                              @Aiden-HQ/maintainers

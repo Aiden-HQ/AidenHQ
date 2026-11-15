@@ -103,7 +103,8 @@ A change is **authority-expanding** when it:
   (`services/runner/test/reviewer-cases/`) and `scripts/reviewer-eval.mjs`, the board's `approvals.ts`, `app.ts`,
   `fleet.ts`, `accounts.ts` and `session.ts`, `agent-auth.ts`, `scripts/modules.mjs` and `scripts/paperclip-setup.mjs`,
   `services/computer/`, `services/gateway/`, `ops/`, `scripts/verify-security.sh`, `scripts/supply-chain/`,
-  `.gitleaks.toml`, and the product's `.github/`; or anything that can bypass them.
+  `.gitleaks.toml`, and the product's `.github/` (each of these files is the same file as `.ts`, once converted from `.mjs`);
+  or anything that can bypass them.
 
 Set `second_review: true` on every authority-expanding change, whatever you decide. Code marks most of them already (by
 path, grants and config content); the flag is for what code can't see, such as a weakened check in an ordinary file, or a
