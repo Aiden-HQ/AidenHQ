@@ -16,8 +16,9 @@ import YAML from "yaml";
  * privileges, the security checks, and the product's CI (the checks a merge waits on). A file stays here when it moves from
  * `.mjs` to `.ts` (the TypeScript conversion), so each name matches either extension.
  */
-const GATE_CORE = [
-  /^services\/runner\/src\/(tiers|review|authorize|merges|apply|netjail|state|config|github-app|git|main|engines|workspace|files|commands)\.(mjs|ts)$/,
+export const GATE_CORE = [
+  // One entry per file, so a renamed or moved gate file shows up as a dead entry (gate-coverage.test.mjs).
+  ...["tiers", "review", "authorize", "merges", "apply", "netjail", "state", "config", "github-app", "git", "main", "engines", "workspace", "files", "commands"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
   // What a job can reach: its sandbox and launch (engines: the bwrap allowlist, writable roots, env), what lands in its
   // workspace and what the runner reads back from it (workspace, files), and the computer box rules (computers).
   /^scripts\/computers\.(mjs|ts)$/,
@@ -25,14 +26,56 @@ const GATE_CORE = [
   /^services\/runner\/scripts\/reviewer-eval\.(mjs|ts)$/,
   /^modules\/core\/security\//,
   /(^|\/)agent-auth\.ts$/,
-  /^scripts\/(modules|paperclip-setup|no-shell)\.(mjs|ts)$/,
-  /^services\/board\/src\/(approvals|app|fleet|accounts|session)\.ts$/,
+  /^scripts\/modules\.(mjs|ts)$/,
+  /^scripts\/paperclip-setup\.(mjs|ts)$/,
+  /^scripts\/no-shell\.(mjs|ts)$/,
+  /^services\/board\/src\/approvals\.ts$/,
+  /^services\/board\/src\/app\.ts$/,
+  /^services\/board\/src\/fleet\.ts$/,
+  /^services\/board\/src\/accounts\.ts$/,
+  /^services\/board\/src\/session\.ts$/,
   /^services\/computer\//,
   /^services\/gateway\//,
   /^ops\//,
-  /^scripts\/verify-security\.sh$|^scripts\/supply-chain\/|^\.gitleaks\.toml$/,
+  /^scripts\/verify-security\.sh$/,
+  /^scripts\/supply-chain\//,
+  /^\.gitleaks\.toml$/,
+  // The lean ratchet counters and checklists, and the tests that hold this list and the ratchet: loosening either would
+  // hide an ungated file or a growing kernel.
+  /^scripts\/lean\//,
+  /^scripts\/test\/lean\.test\.mjs$/,
+  /^services\/runner\/test\/gate-coverage\.test\.mjs$/,
   /(^|\/)\.github\//,
 ];
+/** Where gate files live: every tracked file here must match a GATE_CORE entry or be listed in OUTSIDE_GATE. A trailing
+ * `/` is a prefix; anything else is an exact path. */
+export const GATE_DIRS = [
+  "services/runner/src/",
+  "services/gateway/",
+  "services/computer/",
+  "ops/",
+  "modules/core/security/",
+  "services/board/src/approvals.ts",
+  "services/board/src/app.ts",
+  "services/board/src/fleet.ts",
+  "services/board/src/accounts.ts",
+  "services/board/src/session.ts",
+];
+/** Runner files deliberately outside the core (primer is gate code: GATE_CODE). Adding one here is a gate-core change. */
+export const OUTSIDE_GATE = [
+  "advise.ts", "answered.ts", "branch.ts", "breaker.ts", "busy.ts", "cards.ts", "describe.ts", "evidence.ts", "gcp.ts", "grade.ts",
+  "images.ts", "intake.ts", "metrics.ts", "notices.ts", "paperclip.ts", "primer.ts", "product-prs.ts", "progress.ts", "prompt.ts",
+  "recurring.ts", "repohelper.ts", "repos.ts", "retry.ts", "reviews.ts", "siblings.ts", "thread.ts", "types.ts", "usage.ts",
+].map((f) => `services/runner/src/${f}`);
+/** `uncovered: <file>` for a file in a gate dir that no entry matches and OUTSIDE_GATE doesn't list; `dead entry: <source>`
+ * for an entry that matches no file. */
+export function coverageProblems(files, core = GATE_CORE, outside = OUTSIDE_GATE, dirs = GATE_DIRS) {
+  const inDir = (f) => dirs.some((d) => (d.endsWith("/") ? f.startsWith(d) : f === d));
+  return [
+    ...files.filter((f) => inDir(f) && !outside.includes(f) && !core.some((g) => g.test(f))).map((f) => `uncovered: ${f}`),
+    ...core.filter((g) => !files.some((f) => g.test(f))).map((g) => `dead entry: ${g.source}`),
+  ];
+}
 /**
  * Gate code that is not the core: the runner's Primer publishing. The AI reviewer decides (Tier 1) and may flag it for the
  * second reviewer when it weakens a control. (commands.mjs is core: repo access, the owner's words, private reads.)

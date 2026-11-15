@@ -1,0 +1,105 @@
+{
+  "name": "fixture",
+  "owner": {
+    "name": "Fixture"
+  },
+  "description": "Test fixture modules",
+  "plugins": [
+    {
+      "name": "a",
+      "source": "./a"
+    },
+    {
+      "name": "appmod",
+      "source": "./appmod"
+    },
+    {
+      "name": "b",
+      "source": "./b"
+    },
+    {
+      "name": "badtool",
+      "source": "./badtool"
+    },
+    {
+      "name": "boxeng",
+      "source": "./boxeng"
+    },
+    {
+      "name": "core",
+      "source": "./core"
+    },
+    {
+      "name": "cyc1",
+      "source": "./cyc1"
+    },
+    {
+      "name": "cyc2",
+      "source": "./cyc2"
+    },
+    {
+      "name": "dup1",
+      "source": "./dup1"
+    },
+    {
+      "name": "dup2",
+      "source": "./dup2"
+    },
+    {
+      "name": "ext1",
+      "source": "./ext1"
+    },
+    {
+      "name": "ext2",
+      "source": "./ext2"
+    },
+    {
+      "name": "glean",
+      "source": "./glean"
+    },
+    {
+      "name": "needy",
+      "source": "./needy"
+    },
+    {
+      "name": "orphan",
+      "source": "./orphan"
+    },
+    {
+      "name": "roley",
+      "source": "./roley"
+    },
+    {
+      "name": "rolez",
+      "source": "./rolez"
+    },
+    {
+      "name": "runnerheartbeat",
+      "source": "./runnerheartbeat"
+    },
+    {
+      "name": "shady",
+      "source": "./shady"
+    },
+    {
+      "name": "sloppy",
+      "source": "./sloppy"
+    },
+    {
+      "name": "typo",
+      "source": "./typo"
+    },
+    {
+      "name": "untagged",
+      "source": "./untagged"
+    },
+    {
+      "name": "wild",
+      "source": "./wild"
+    },
+    {
+      "name": "wiper",
+      "source": "./wiper"
+    }
+  ]
+}

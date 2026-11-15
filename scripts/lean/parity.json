@@ -1,0 +1,296 @@
+[
+  {
+    "n": 1,
+    "workflow": "Owner chats with Aiden on the board",
+    "today": [
+      "services/board/test/chat-routes.test.ts",
+      "services/board/test/chats.test.ts"
+    ],
+    "next": "board panel + message frame; owner.message reaches chief-of-staff"
+  },
+  {
+    "n": 2,
+    "workflow": "Owner chats via Telegram, voice notes",
+    "today": [
+      "modules/owner-channel/connections/slack-live-mcp/test/telegram.test.ts",
+      "modules/owner-channel/connections/slack-live-mcp/test/commands.test.ts"
+    ],
+    "next": "channel-telegram tests; TEST chat on instance"
+  },
+  {
+    "n": 3,
+    "workflow": "Agent asks the owner (notify_owner), brake at 5",
+    "today": [
+      "modules/owner-channel/connections/slack-live-mcp/test/brake.test.ts",
+      "services/board/test/brake.test.ts"
+    ],
+    "next": "channel-telegram + /v1/brake/notify test"
+  },
+  {
+    "n": 4,
+    "workflow": "Card approve/reject on board",
+    "today": [
+      "services/board/test/approval-routes.test.ts",
+      "services/board/test/card-contract.test.ts"
+    ],
+    "next": "kernel page tests"
+  },
+  {
+    "n": 5,
+    "workflow": "Telegram buttons, typed reply, approve-all",
+    "today": [
+      "modules/owner-channel/connections/slack-live-mcp/test/approvals.test.ts"
+    ],
+    "next": "channel tokens tests (unit 2f)"
+  },
+  {
+    "n": 6,
+    "workflow": "Watcher decide and stale reject",
+    "today": [
+      "services/board/test/approval-routes.test.ts"
+    ],
+    "next": "channel-operator test"
+  },
+  {
+    "n": 7,
+    "workflow": "Tier 0 runs, Tier 1 reviewer, Tier 2 owner, panel",
+    "today": [
+      "services/runner/test/flow-autonomy.test.mjs",
+      "services/runner/test/review.test.mjs"
+    ],
+    "next": "kernel K5/K6 + ai-reviewer"
+  },
+  {
+    "n": 8,
+    "workflow": "Engineer job: prompt, run, comment mid-run, finish",
+    "today": [
+      "services/runner/test/flow-running.test.mjs",
+      "services/runner/test/flow-conversation.test.mjs"
+    ],
+    "next": "engineering + engine-codex + K7"
+  },
+  {
+    "n": 9,
+    "workflow": "Runner restart adopts jobs",
+    "today": [
+      "services/runner/test/adopt.test.mjs"
+    ],
+    "next": "K7 adopt test"
+  },
+  {
+    "n": 10,
+    "workflow": "Push / PR to agents org and outside it",
+    "today": [
+      "services/runner/test/flow-workspace.test.mjs",
+      "services/runner/test/open-pr.test.mjs",
+      "services/runner/test/pr-base.test.mjs"
+    ],
+    "next": "codehost-github executor tests"
+  },
+  {
+    "n": 11,
+    "workflow": "Merge at reviewed head once green, queue, breaker",
+    "today": [
+      "services/runner/test/flow-merge-path.test.mjs",
+      "services/runner/test/flow-reviewed-heads.test.mjs",
+      "services/runner/test/flow-breaker.test.mjs"
+    ],
+    "next": "codehost-github + engineering"
+  },
+  {
+    "n": 12,
+    "workflow": "create_repo in agents org",
+    "today": [
+      "services/runner/test/tiers.test.mjs",
+      "services/runner/test/runner.test.mjs"
+    ],
+    "next": "codehost-github"
+  },
+  {
+    "n": 13,
+    "workflow": "Fleet apply, Tier 0 instance changes, land",
+    "today": [
+      "services/runner/test/apply.test.mjs",
+      "services/runner/test/land.test.mjs",
+      "services/runner/test/flow-product.test.mjs"
+    ],
+    "next": "kernel.apply + codehost-github.land"
+  },
+  {
+    "n": 14,
+    "workflow": "Product PR watch, Dependabot pin-only merges, supply chain",
+    "today": [
+      "services/runner/test/flow-product.test.mjs",
+      "services/runner/test/tiers.test.mjs",
+      "scripts/test/supply-chain.test.mjs",
+      "scripts/test/pins.test.mjs"
+    ],
+    "next": "platform events + check"
+  },
+  {
+    "n": 15,
+    "workflow": "Design-review tasks and status",
+    "today": [
+      "services/runner/test/flow-design-review.test.mjs"
+    ],
+    "next": "design events + check"
+  },
+  {
+    "n": 16,
+    "workflow": "Graded done, reopen on failed grade",
+    "today": [
+      "services/runner/test/flow-graded.test.mjs",
+      "services/board/test/grades.test.ts"
+    ],
+    "next": "grading task.finish check"
+  },
+  {
+    "n": 17,
+    "workflow": "Delegation and outcomes to parents",
+    "today": [
+      "services/runner/test/flow-delegated.test.mjs",
+      "services/runner/test/notices.test.mjs",
+      "scripts/test/parent-wake.test.mjs"
+    ],
+    "next": "tasks + K6 notices"
+  },
+  {
+    "n": 18,
+    "workflow": "Spend caps, raise_cap card",
+    "today": [
+      "services/gateway/test/gateway.test.mjs"
+    ],
+    "next": "K8 tests"
+  },
+  {
+    "n": 19,
+    "workflow": "App deploy, run, restart, rollback, previews, incidents",
+    "today": [
+      "services/apps-mcp/test/deploy.test.ts",
+      "services/apps-mcp/test/run.test.ts",
+      "services/apps-mcp/test/previews.test.ts",
+      "services/apps-mcp/test/checks.test.ts"
+    ],
+    "next": "apps-platform kinds"
+  },
+  {
+    "n": 20,
+    "workflow": "Shared apps sign-in (gate, 3129)",
+    "today": [
+      "services/gate/test/gate.test.mjs"
+    ],
+    "next": "apps-platform + /auth/handoff"
+  },
+  {
+    "n": 21,
+    "workflow": "Warehouse sources, source_new, people",
+    "today": [
+      "services/apps-mcp/test/sources.test.ts",
+      "services/apps-mcp/test/people.test.ts"
+    ],
+    "next": "warehouse + warehouse.sources"
+  },
+  {
+    "n": 22,
+    "workflow": "Vendor sign-ins banner",
+    "today": [
+      "services/board/test/glean.test.ts",
+      "services/board/test/google.test.ts",
+      "services/board/test/connections-status.test.ts"
+    ],
+    "next": "board.signins"
+  },
+  {
+    "n": 23,
+    "workflow": "Coach, memory, librarian tools",
+    "today": [
+      "scripts/test/coach-tools.test.mjs",
+      "scripts/test/memory.test.mjs",
+      "scripts/test/librarian-tools.test.mjs"
+    ],
+    "next": "modules' tests"
+  },
+  {
+    "n": 24,
+    "workflow": "Heartbeats, wake-ups, recurring tasks",
+    "today": [
+      "scripts/test/heartbeat.test.mjs",
+      "services/runner/test/runner.test.mjs"
+    ],
+    "next": "chief-of-staff"
+  },
+  {
+    "n": 25,
+    "workflow": "Fast chat lane, wake_at",
+    "today": [
+      "services/board/test/lane.test.ts"
+    ],
+    "next": "chat-lane"
+  },
+  {
+    "n": 26,
+    "workflow": "Instance agents, trial, graduate",
+    "today": [
+      "scripts/test/agents.test.mjs",
+      "scripts/test/trial-tasks.test.mjs"
+    ],
+    "next": "loader + agent-builder"
+  },
+  {
+    "n": 27,
+    "workflow": "Agent computers",
+    "today": [
+      "services/computer/test/exec.test.mjs",
+      "services/computer/test/jobs.test.mjs",
+      "services/computer/test/lib.test.mjs",
+      "scripts/test/computers.test.mjs"
+    ],
+    "next": "computer (privileged)"
+  },
+  {
+    "n": 28,
+    "workflow": "Primer publish",
+    "today": [
+      "services/runner/test/authorize.test.mjs",
+      "services/runner/test/flow-conversation.test.mjs"
+    ],
+    "next": "primer.publish kind"
+  },
+  {
+    "n": 29,
+    "workflow": "Slack post to allowed channels",
+    "today": [
+      "modules/owner-channel/connections/slack-live-mcp/test/post.test.ts"
+    ],
+    "next": "channel-slack.post"
+  },
+  {
+    "n": 30,
+    "workflow": "Fleet pause/resume, owner-word relay",
+    "today": [
+      "services/board/test/fleet.test.ts",
+      "services/board/test/relay.test.ts",
+      "scripts/test/fleet-pause.test.mjs"
+    ],
+    "next": "K11 tests"
+  },
+  {
+    "n": 31,
+    "workflow": "Monitoring, alerts",
+    "today": [
+      "services/board/test/monitoring.test.ts",
+      "scripts/test/monitoring.test.mjs"
+    ],
+    "next": "monitoring module"
+  },
+  {
+    "n": 32,
+    "workflow": "Backup, restore, verify-security",
+    "today": [
+      "scripts/backup.sh",
+      "scripts/restore.sh",
+      "scripts/verify-security.sh"
+    ],
+    "next": "kernel ops + monitoring.health"
+  }
+]
