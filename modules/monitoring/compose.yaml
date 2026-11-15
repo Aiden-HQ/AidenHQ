@@ -43,18 +43,19 @@ services:
     networks:
       - monitoring
 
-  # Containers' CPU and memory by cgroup (no Docker socket: only apps-mcp holds one). Names come from containers.prom
-  # (ops/host-metrics.sh), joined on the cgroup id.
+  # CPU, memory and pressure by cgroup (no Docker socket: only apps-mcp holds one, so no container labels). Container names
+  # come from containers.prom (ops/host-metrics.sh), joined on the cgroup id. The raw whitelist adds the host-side sources:
+  # dockerd and containerd (Docker builds) and /user.slice (the runner's service cgroup holds the Engineer jobs).
   cadvisor:
     extends: { file: ../../compose.base.yaml, service: hardened }
     image: ghcr.io/google/cadvisor:v0.60.6@sha256:b8e7d1093144fd088f425ff003d75a4aa405de075db78dae3bc563730b1bd07a
     read_only: true
     command:
       - --docker_only=false
-      - --raw_cgroup_prefix_whitelist=/system.slice/docker-
+      - --raw_cgroup_prefix_whitelist=/system.slice/docker-,/system.slice/docker.service,/system.slice/containerd.service,/user.slice
       - --housekeeping_interval=30s
       - --store_container_labels=false
-      - --enable_metrics=cpu,memory,diskIO
+      - --enable_metrics=cpu,memory,diskIO,pressure
     volumes:
       - /sys:/sys:ro
       - /proc:/rootfs/proc:ro

@@ -2,7 +2,7 @@
 # The monitoring module's host metrics (docs/design/monitoring.md), as node-exporter textfiles in data/monitoring/textfile:
 #   units.prom       AidenHQ's systemd units, user (runner, gateway, CI runners, computers) and system (aidenhq-ci-net, ...):
 #                    active and failed. No privileges: `systemctl [--user] list-units` reads them as the owner's user.
-#   containers.prom  every compose container: running, restart count, health, and its cgroup id, so cAdvisor's per-cgroup
+#   containers.prom  every compose container and computer box: running, restart count, health, and its cgroup id, so cAdvisor's per-cgroup
 #                    usage gets a name (cAdvisor has no Docker socket: only apps-mcp holds one).
 # Run every 30 seconds by the user timer aidenhq-host-metrics (apply-config installs it while the module is on). Nothing is
 # written while the directory is missing (the module is off).
@@ -37,7 +37,8 @@ write() { # name: atomic, so node-exporter never reads half a file
   done
 } | write units.prom
 
-ids="$(docker ps -aq --filter label=com.docker.compose.project 2>/dev/null)"
+# Compose containers and agent computer boxes (docker run, no compose labels).
+ids="$({ docker ps -aq --filter label=com.docker.compose.project; docker ps -aq --filter label=aidenhq.computer; } 2>/dev/null | sort -u)"
 {
   echo "# HELP aidenhq_container_running 1 when the compose container is running."
   echo "# TYPE aidenhq_container_running gauge"
@@ -45,7 +46,7 @@ ids="$(docker ps -aq --filter label=com.docker.compose.project 2>/dev/null)"
   echo "# TYPE aidenhq_container_restarts gauge"
   echo "# HELP aidenhq_container_unhealthy 1 when the container's healthcheck reports unhealthy."
   echo "# TYPE aidenhq_container_unhealthy gauge"
-  [ -n "$ids" ] && docker inspect $ids --format '{{.Id}} {{index .Config.Labels "com.docker.compose.project"}} {{index .Config.Labels "com.docker.compose.service"}} {{.Name}} {{.State.Running}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null \
+  [ -n "$ids" ] && docker inspect $ids --format '{{.Id}} {{or (index .Config.Labels "com.docker.compose.project") "-"}} {{or (index .Config.Labels "com.docker.compose.service") "-"}} {{.Name}} {{.State.Running}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null \
     | clean | while read -r id project service name running restarts health; do
       l="id=\"/system.slice/docker-$id.scope\",project=\"$project\",service=\"$service\",name=\"${name#/}\""
       echo "aidenhq_container_running{$l} $([ "$running" = true ] && echo 1 || echo 0)"

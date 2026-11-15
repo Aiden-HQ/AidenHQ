@@ -98,3 +98,50 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "app CI code review has spent over 80% of its day cap"
+      # Deployed apps (the app-* compose projects) are starved of CPU, not merely a busy host: the whole host is waiting on CPU
+      # (PSI "some" over 40% of the time), or an app container's own cgroup waits over 20% while the host is over 15%
+      # (an app at its own CPU limit alone does not fire). Spikes that leave the apps alone never fire.
+      - alert: AppsCpuStarved
+        expr: |
+          rate(node_pressure_cpu_waiting_seconds_total[5m]) > 0.40
+          or (
+            rate(container_pressure_cpu_waiting_seconds_total[5m])
+              * on (id) group_left (project, service) max by (id, project, service) (aidenhq_container_running{project=~"app-.+"}) > 0.20
+            and on () rate(node_pressure_cpu_waiting_seconds_total[5m]) > 0.15
+          )
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "deployed apps are starved of CPU ({{ $labels.project }}): CPU waiting {{ $value | humanizePercentage }} of the time for over 5 minutes (CPU by source dashboard)"
+  # CPU by source (Containers dashboard): cores by name, then by source. Host-side sources come from cAdvisor's raw cgroups:
+  # the runner's service cgroup holds the Engineer jobs, dockerd and containerd the Docker builds. "other" is the host total
+  # less the rest (core services, anything too short-lived for containers.prom to name).
+  - name: cpu
+    rules:
+      - record: aidenhq:container_cpu_cores
+        expr: |
+          sum by (name, project, service) (
+            rate(container_cpu_usage_seconds_total{id=~"/system.slice/docker-.+"}[2m])
+              * on (id) group_left (name, project, service) max by (id, name, project, service) (aidenhq_container_running)
+          )
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: engineer_jobs }
+        expr: sum(rate(container_cpu_usage_seconds_total{id=~"/user.slice/.+/aidenhq-runner.service"}[2m])) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: ci_runners }
+        expr: sum(aidenhq:container_cpu_cores{name=~"aidenhq-ci-runner.*"}) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: computer_boxes }
+        expr: sum(aidenhq:container_cpu_cores{name=~"aidenhq-computer-.*"}) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: paperclip }
+        expr: sum(aidenhq:container_cpu_cores{service="paperclip"}) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: apps }
+        expr: sum(aidenhq:container_cpu_cores{project=~"app-.+"}) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: builds_dockerd }
+        expr: sum(rate(container_cpu_usage_seconds_total{id=~"/system.slice/(docker|containerd).service"}[2m])) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: other }
+        expr: clamp_min(sum(rate(container_cpu_usage_seconds_total{id="/"}[2m])) - sum(aidenhq:cpu_cores:by_source{source!="other"}), 0)

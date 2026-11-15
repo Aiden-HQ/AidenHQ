@@ -30,7 +30,12 @@ The host processes (runner, gateway) and the systemd/container states are textfi
 is itself an alert (`HostMetricsStale`).
 
 cAdvisor gets no Docker socket (only apps-mcp holds one, `scripts/verify-security.sh`), so it labels containers by cgroup
-id; `containers.prom` carries each container's id, name, project and service, and the Containers dashboard joins on it.
+id; `containers.prom` carries each compose container's and computer box's id, name, project and service, and the Containers
+dashboard and the `cpu` recording rules join on it. cAdvisor's raw cgroup whitelist also covers dockerd and containerd (Docker
+builds) and `/user.slice` (the runner's service cgroup holds the Engineer jobs). The "CPU by source" panel stacks
+`aidenhq:cpu_cores:by_source`: Engineer jobs, CI runners, computer boxes, Paperclip, apps, builds/dockerd, and other (the host
+total less the rest, which also holds containers too short-lived for `containers.prom`'s 30 second refresh to name). CPU spikes
+alone are fine; `AppsCpuStarved` fires only when deployed apps are starved (below).
 Network counters from node-exporter are its own namespace's (no host networking); disk, memory, CPU, pressure and OOM
 kills are the host's.
 
@@ -59,7 +64,8 @@ Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 85%, o
 `DiskNearlyFull` (over 95%, **critical**), `MemoryPressure`, `OomKill`, `HostMetricsStale`, `ContainerRestarting`,
 `CoreServiceDown` (an aidenhq container, the runner or gateway unit, or the board or gateway not answering, for 5 minutes,
 **critical**), `UnitFailed`, `CiRunnersDown`, `RunnerQueueStuck`, `RunnerJobOverlong`, `GatewaySpendNearCap`,
-`CiReviewSpendNearCap`.
+`CiReviewSpendNearCap`, `AppsCpuStarved` (host CPU pressure over 40% for 5 minutes, or an `app-*` container's own CPU pressure
+over 20% while the host's is over 15%).
 
 Alertmanager has one receiver: the board's `POST /internal/alerts` (`services/board/src/monitoring.ts`), with
 `send_resolved`. The board keeps what is firing and the Fleet Ops detector (`fleet-ops.ts`) gets an `alert` check group, so
