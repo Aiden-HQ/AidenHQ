@@ -39,6 +39,14 @@ if (args[0] === "pr" && args[1] === "view" && existsSync(move)) {
   log("moved", { branch });
 }
 const fixture = join(dir, "github-prs.json");
+// The live state a run and `aidenhq status` read (`gh pr view <url> --json state,…`): those PRs read as open, with their checks.
+if (args[0] === "pr" && args[1] === "view" && args[4] === "state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup" && existsSync(fixture)) {
+  const p = JSON.parse(readFileSync(fixture, "utf8"))[/\/pull\/(\d+)$/.exec(args[2])?.[1]];
+  if (!p) process.exit(1);
+  const checks = p.checks === "NONE" ? [] : [{ name: "test", status: p.checks === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: p.checks === "PENDING" ? null : p.checks }];
+  console.log(JSON.stringify({ state: p.merged ? "MERGED" : "OPEN", isDraft: false, reviewDecision: "", mergeStateStatus: "CLEAN", statusCheckRollup: checks }));
+  process.exit(0);
+}
 if (args[0] !== "api" || !existsSync(fixture)) process.exit(1);
 const prs = JSON.parse(readFileSync(fixture, "utf8"));
 const field = (name) => args.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1);
