@@ -1,5 +1,5 @@
 // The runner's card payload and the board's strict schema, held together: a push or PR card is built by the runner from the
-// branches it is about to publish (services/runner/src/cards.mjs) and posted here through the board's own route. A field the
+// branches it is about to publish (services/runner/src/cards.ts) and posted here through the board's own route. A field the
 // runner adds and the board's ARGS doesn't know is a 400 that blocks every publish of that kind (a merge card's `ui`, a
 // product branch's `base`), so the payload is taken from the runner's builder, never restated field by field here.
 import { request } from "node:http";
@@ -20,7 +20,7 @@ const issue = { id: "11111111-1111-1111-1111-111111111111", identifier: "WOR-184
 const engineer = { id: "fe", name: "Fleet Engineer", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:engineer-fleet" } };
 const pc = { addComment: async () => {}, me: async () => "me-1", agents: async () => [engineer], labels: async () => [], company: async () => ({ issuePrefix: "WOR" }), issue: async () => issue } as unknown as Paperclip;
 const log = pino({ level: "silent" });
-const runnerCards = await import(pathToFileURL(join(import.meta.dirname, "../../runner/src/cards.mjs")).href);
+const runnerCards = await import(pathToFileURL(join(import.meta.dirname, "../../runner/src/cards.ts")).href);
 
 function listen(app: ReturnType<typeof createApp>) {
   let port = 0;

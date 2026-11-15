@@ -14,16 +14,17 @@ export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!) {
   }
 }`;
 
-const rollupOf = (pr) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+/** A PR (or the default branch rollup) as GitHub GraphQL returns it; read loosely. */
+const rollupOf = (pr: any) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
 
 /** Opened by Dependabot from a branch of the repo (GraphQL says `dependabot`, the CLI `app/dependabot`, REST `dependabot[bot]`). */
-export const isDependabot = (pr) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
+export const isDependabot = (pr: any) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
 
 /** A Dependabot PR whose named checks have all finished (none still running): its task is due now, not on arrival. */
-export function dependabotDue(pr) {
+export function dependabotDue(pr: any) {
   if (!isDependabot(pr)) return false;
   const checks = namedChecks(rollupOf(pr));
-  return checks.length > 0 && !checks.some((c) => c.pending);
+  return checks.length > 0 && !checks.some((c: any) => c.pending);
 }
 
 /**
@@ -31,15 +32,15 @@ export function dependabotDue(pr) {
  * check failed on its head while the default branch is green: perhaps only because the base moved; the caller also checks
  * that the PR is behind), or undefined. GitHub still computing mergeability (UNKNOWN) is undefined: the next read decides.
  */
-export function rebaseReason(pr, mainRollup) {
+export function rebaseReason(pr: any, mainRollup: any) {
   if (pr.mergeable === "CONFLICTING") return "conflict";
   if (pr.mergeable !== "MERGEABLE") return undefined;
-  const red = namedChecks(rollupOf(pr)).filter((c) => !c.ok && !c.pending);
+  const red = namedChecks(rollupOf(pr)).filter((c: any) => !c.ok && !c.pending);
   return red.length && ciState(mainRollup) === "green" ? "red" : undefined;
 }
 
 /** The failed checks' names on a PR's head, for the wake-up text. */
-export const redChecks = (pr) => namedChecks(rollupOf(pr)).filter((c) => !c.ok && !c.pending).map((c) => c.name);
+export const redChecks = (pr: any) => namedChecks(rollupOf(pr)).filter((c: any) => !c.ok && !c.pending).map((c: any) => c.name);
 
 /**
  * What an agent's open PR asks of the runner, from GitHub's view of it and `environment` (the red checks that never started, as
@@ -47,11 +48,11 @@ export const redChecks = (pr) => namedChecks(rollupOf(pr)).filter((c) => !c.ok &
  * annotation, never a rebase; { do: "rebase", why: "conflict" | "red" }; or undefined. It is the environment's only when every
  * red check is one that never started: one real failure beside them is the commit's, and asks for a rebase as before.
  */
-export function prAttention(pr, mainRollup, environment = []) {
+export function prAttention(pr: any, mainRollup: any, environment: { name: string }[] = []) {
   const why = rebaseReason(pr, mainRollup);
   if (why === "conflict") return { do: "rebase", why };
-  const names = new Set(environment.map((c) => c.name));
-  const red = redChecks(pr).filter((name) => name !== GATE_CHECK);
-  if (red.length && names.size && red.every((name) => names.has(name))) return { do: "environment", checks: environment };
+  const names = new Set(environment.map((c: any) => c.name));
+  const red = redChecks(pr).filter((name: string) => name !== GATE_CHECK);
+  if (red.length && names.size && red.every((name: string) => names.has(name))) return { do: "environment", checks: environment };
   return why ? { do: "rebase", why } : undefined;
 }

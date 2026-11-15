@@ -7,21 +7,26 @@ import { RUNNER_MARKER, hasMarker, stripHidden } from "./commands.mjs";
 export const REPLY_MARKER = "<!-- aidenhq-reply -->";
 
 /** Untrusted text between markers it can't fake, cut to `max` characters. */
-export const fence = (label, text, max = Infinity) => `<<<${label}\n${String(text ?? "").replace(/<<<|>>>/g, "‹‹‹").slice(0, max)}\n${label}>>>`;
-const when = (iso) => String(iso ?? "").slice(0, 16).replace("T", " ");
+export const fence = (label: string, text: unknown, max = Infinity) => `<<<${label}\n${String(text ?? "").replace(/<<<|>>>/g, "‹‹‹").slice(0, max)}\n${label}>>>`;
+const when = (iso: unknown) => String(iso ?? "").slice(0, 16).replace("T", " ");
 
 // The runner's notes that a run started or was queued say nothing the conversation needs.
 const START_NOTE = /^(On it|Continuing|Looking into your question|Queued)\b/;
 // Replies posted before REPLY_MARKER existed: the runner's footer under every report.
 const LEGACY_REPLY = /^Workspace: `[^`]*` · log: `|^_[^\n]* · (answer|investigate|implement|no repository)\b/m;
 
+/** A Paperclip task comment, as far as the thread reads it. */
+export interface TaskComment { id?: string; body?: string | null; authorType?: string; authorAgentId?: string | null; createdAt?: string }
+/** One conversation entry for the prompt. */
+export interface ThreadEntry { kind: "user" | "you" | "runner" | "agent"; who: string; at: string | undefined; body: string }
+
 /**
  * The comments as entries, oldest first: { kind: "user" | "you" | "runner" | "agent", who, at, body }.
  * `current(c)` marks comments that are this run's instructions (left out: they come separately). On
  * another task, `replyBy` names the Engineer whose replies the runner posted there (kind "agent").
  */
-export function threadEntries(comments, { user, you, agents = [], current = () => false, replyBy }) {
-  const out = [];
+export function threadEntries(comments: TaskComment[], { user, you, agents = [], current = () => false, replyBy }: { user: string; you?: string; agents?: any[]; current?: (c: TaskComment) => boolean; replyBy?: string }): ThreadEntry[] {
+  const out: ThreadEntry[] = [];
   for (const c of comments) {
     const raw = String(c.body ?? "");
     const body = stripHidden(raw).trim();
@@ -41,30 +46,30 @@ export function threadEntries(comments, { user, you, agents = [], current = () =
   return out;
 }
 
-const isReply = (c) => c.authorType !== "agent" && hasMarker(c.body, RUNNER_MARKER) && (hasMarker(c.body, REPLY_MARKER) || LEGACY_REPLY.test(stripHidden(c.body)));
+const isReply = (c: TaskComment) => c.authorType !== "agent" && hasMarker(c.body, RUNNER_MARKER) && (hasMarker(c.body, REPLY_MARKER) || LEGACY_REPLY.test(stripHidden(c.body)));
 
 /**
  * The user's words around the agent's previous reply, for checking a GitHub write against them
  * (src/authorize.mjs): their comments before it and after it, and the reply. Comments the runner
  * carried out as commands (exact "push", "pr") are left out: done once, they allow nothing more.
  */
-export function wordsAround(comments, { isCommand = () => false } = {}) {
+export function wordsAround(comments: TaskComment[], { isCommand = () => false }: { isCommand?: (body: string | null | undefined) => boolean } = {}) {
   const last = comments.findLastIndex(isReply);
-  const own = (c) => c.authorType === "user" && !hasMarker(c.body, RUNNER_MARKER) && stripHidden(c.body).trim() && !isCommand(c.body);
+  const own = (c: TaskComment) => c.authorType === "user" && !hasMarker(c.body, RUNNER_MARKER) && stripHidden(c.body).trim() && !isCommand(c.body);
   return {
     earlier: comments.slice(0, Math.max(last, 0)).filter(own),
     recent: comments.slice(last + 1).filter(own),
-    lastReply: last >= 0 ? comments[last].body : "",
+    lastReply: last >= 0 ? comments[last]!.body : "",
   };
 }
 
 /** The newest blocks that fit in `budget` characters, oldest first, and how many older ones were left out. */
-function newestWithin(blocks, budget) {
-  const kept = [];
+function newestWithin(blocks: string[], budget: number) {
+  const kept: string[] = [];
   let size = 0;
-  for (let i = blocks.length - 1; i >= 0 && size + blocks[i].length <= budget; i--) {
-    kept.unshift(blocks[i]);
-    size += blocks[i].length;
+  for (let i = blocks.length - 1; i >= 0 && size + blocks[i]!.length <= budget; i--) {
+    kept.unshift(blocks[i]!);
+    size += blocks[i]!.length;
   }
   return { kept, omitted: blocks.length - kept.length };
 }
@@ -73,9 +78,9 @@ function newestWithin(blocks, budget) {
  * The conversation as a prompt section, newest kept when it's long: each entry is cut to `each`
  * characters, and the oldest are left out past `budget`. "" when there's nothing to show.
  */
-export function threadSection(user, entries, { resumed = false, each = 6000, budget = 40_000 } = {}) {
+export function threadSection(user: string, entries: ThreadEntry[], { resumed = false, each = 6000, budget = 40_000 }: { resumed?: boolean; each?: number; budget?: number } = {}) {
   if (!entries.length) return "";
-  const cut = (s) => (s.length > each ? `${s.slice(0, each)}\n… (cut)` : s);
+  const cut = (s: string) => (s.length > each ? `${s.slice(0, each)}\n… (cut)` : s);
   const blocks = entries.map((e) => `### ${e.who} · ${when(e.at)}\n\n${e.kind === "user" ? cut(e.body) : fence(e.kind === "you" ? "YOUR_REPLY" : e.kind === "runner" ? "RUNNER" : "AGENT", cut(e.body))}`);
   const { kept, omitted } = newestWithin(blocks, budget);
   return `## ${resumed ? "On this task since your last reply" : "The conversation on this task"}
@@ -91,14 +96,20 @@ ${kept.join("\n\n")}
  * Another task's conversation as text, for context (the caller fences it): who said what, oldest
  * first, the newest kept past `budget`. "" when there's nothing.
  */
-export function transcript(entries, { each = 12_000, budget = 60_000 } = {}) {
-  const cut = (s) => (s.length > each ? `${s.slice(0, each)}\n… (cut)` : s);
+export function transcript(entries: ThreadEntry[], { each = 12_000, budget = 60_000 }: { each?: number; budget?: number } = {}) {
+  const cut = (s: string) => (s.length > each ? `${s.slice(0, each)}\n… (cut)` : s);
   const { kept, omitted } = newestWithin(entries.map((e) => `### ${e.who} · ${when(e.at)}\n\n${cut(e.body)}`), budget);
   return `${omitted ? `(${omitted} older comment${omitted === 1 ? "" : "s"} left out for length.)\n\n` : ""}${kept.join("\n\n")}`;
 }
 
+/** One PR's state, as the prompt shows it. */
+export interface PrSnapshot { state: string; review?: string; checks?: { passed: number; failed: number; pending: number }; merge?: string }
+
+/** One branch's row from the runner's branchRows, as the state section reads it. */
+export interface StateRow { repo: string; branch: string; merged?: boolean; unpublished: unknown[]; onGitHub?: boolean; prUrl?: string | null }
+
 /** One PR's state from `gh pr view --json state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup`. */
-export function prSnapshot(pr) {
+export function prSnapshot(pr: any): PrSnapshot {
   if (!pr) return { state: "unknown" };
   const checks = { passed: 0, failed: 0, pending: 0 };
   for (const c of pr.statusCheckRollup ?? []) {
@@ -109,22 +120,22 @@ export function prSnapshot(pr) {
   }
   return {
     state: pr.state === "OPEN" && pr.isDraft ? "draft" : String(pr.state ?? "unknown").toLowerCase(),
-    review: { APPROVED: "approved", CHANGES_REQUESTED: "changes requested", REVIEW_REQUIRED: "review required" }[pr.reviewDecision] ?? "no review needed",
+    review: ({ APPROVED: "approved", CHANGES_REQUESTED: "changes requested", REVIEW_REQUIRED: "review required" } as Record<string, string>)[pr.reviewDecision] ?? "no review needed",
     checks,
-    merge: { CLEAN: "can merge", DIRTY: "conflicts", BEHIND: "behind its base", BLOCKED: "blocked (reviews or checks)", UNSTABLE: "can merge, checks failing", HAS_HOOKS: "can merge", UNKNOWN: "not computed yet" }[pr.mergeStateStatus] ?? "",
+    merge: ({ CLEAN: "can merge", DIRTY: "conflicts", BEHIND: "behind its base", BLOCKED: "blocked (reviews or checks)", UNSTABLE: "can merge, checks failing", HAS_HOOKS: "can merge", UNKNOWN: "not computed yet" } as Record<string, string>)[pr.mergeStateStatus] ?? "",
   };
 }
 
-const prNumber = (url) => (/\/pull\/(\d+)/.exec(url ?? "")?.[1] ? `#${/\/pull\/(\d+)/.exec(url)[1]}` : "");
+const prNumber = (url: string | null | undefined) => (/\/pull\/(\d+)/.exec(url ?? "")?.[1] ? `#${/\/pull\/(\d+)/.exec(url!)![1]}` : "");
 
 /**
  * Where the task's work stands, read just before the run: each branch with its PR (rows from the
  * runner's branchRows, `prs` by URL from prSnapshot), and the merge queue's summary. "" when empty.
  */
-export function stateSection({ rows = [], prs = new Map(), merges = "" }) {
+export function stateSection({ rows = [], prs = new Map(), merges = "" }: { rows?: StateRow[]; prs?: Map<string, PrSnapshot>; merges?: string }) {
   const live = rows.filter((r) => !r.merged || r.unpublished.length);
   if (!live.length && !merges) return "";
-  const checks = (c) => [c.passed && `${c.passed} passed`, c.failed && `${c.failed} failed`, c.pending && `${c.pending} running`].filter(Boolean).join(", ") || "none";
+  const checks = (c: { passed: number; failed: number; pending: number }) => [c.passed && `${c.passed} passed`, c.failed && `${c.failed} failed`, c.pending && `${c.pending} running`].filter(Boolean).join(", ") || "none";
   const lines = live.map((r) => {
     const github = r.unpublished.length ? `${r.unpublished.length} commit${r.unpublished.length === 1 ? "" : "s"} not on GitHub` : r.onGitHub ? "up to date" : "not pushed";
     const p = r.prUrl ? prs.get(r.prUrl) ?? { state: "unknown" } : undefined;

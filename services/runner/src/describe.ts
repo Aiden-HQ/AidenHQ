@@ -2,8 +2,8 @@
 // about how a change was made, so nothing about AidenHQ, Paperclip, task numbers, the agents or
 // this machine may appear in what we publish (PR #44 on legacy-techdocs said "Draft opened by
 // AidenHQ for Paperclip task PEN-406"). A short Codex call writes it; code checks for leaks.
-import { askCodex } from "./intake.mjs";
-import { fence } from "./thread.mjs";
+import { askCodex } from "./intake.ts";
+import { fence } from "./thread.ts";
 
 export const PR_SCHEMA = {
   type: "object",
@@ -15,16 +15,16 @@ export const PR_SCHEMA = {
 const INTERNAL = /aidenhq|paperclip|\bPEN-\d+\b|\/home\/|~\/|\bworktree\b|\bopencode\b|\bopenrouter\b|claude code|\bcodex\b/i;
 
 /** True when text mentions our tooling, task numbers or local paths. */
-export const leaksInternal = (text) => INTERNAL.test(String(text ?? ""));
+export const leaksInternal = (text: unknown) => INTERNAL.test(String(text ?? ""));
 
 /** The first internal name in text, for telling the agent what to reword. */
-export const leakIn = (text) => String(text ?? "").match(INTERNAL)?.[0];
+export const leakIn = (text: unknown) => String(text ?? "").match(INTERNAL)?.[0];
 
 /** Claude Code ends PR descriptions with its own footer out of habit; the reviewers don't need it. */
-export const stripAttribution = (body) => String(body ?? "").replace(/^[^\S\n]*(?:🤖[^\S\n]*)?Generated with \[?Claude Code\]?(?:\([^)\n]*\))?[^\S\n]*$/gim, "").trim();
+export const stripAttribution = (body: unknown) => String(body ?? "").replace(/^[^\S\n]*(?:🤖[^\S\n]*)?Generated with \[?Claude Code\]?(?:\([^)\n]*\))?[^\S\n]*$/gim, "").trim();
 
 /** Commit messages (\x1e-separated, oldest first) without trailers from older runner versions. */
-export function cleanMessages(raw) {
+export function cleanMessages(raw: unknown) {
   return String(raw ?? "")
     .split("\x1e")
     .map((m) => m.split("\n").filter((l) => !/^\s*Paperclip task:/i.test(l)).join("\n").trim())
@@ -32,14 +32,14 @@ export function cleanMessages(raw) {
 }
 
 /** The safe fallback: the commit messages themselves. */
-export function fallbackDescription(messages) {
+export function fallbackDescription(messages: string[]) {
   const [first, ...rest] = messages;
-  const bodyOf = (m) => m.split("\n").slice(1).join("\n").trim();
+  const bodyOf = (m: string) => m.split("\n").slice(1).join("\n").trim();
   if (!rest.length) return bodyOf(first ?? "") || "";
   return ["## Changes", "", ...messages.map((m) => `- ${m.split("\n")[0]}${bodyOf(m) ? `\n\n  ${bodyOf(m).replace(/\n/g, "\n  ")}` : ""}`)].join("\n");
 }
 
-export function describePrompt({ repo, base, request, messages, stat, diff, report }) {
+export function describePrompt({ repo, base, request, messages, stat, diff, report }: { repo: string; base: string; request: unknown; messages: string[]; stat: unknown; diff: unknown; report: unknown }) {
   return `Write the title and description of a GitHub pull request for ${repo} (into ${base}), for the repository's reviewers. Answer with JSON. Do not run any tools.
 
 Rules:
@@ -63,7 +63,7 @@ ${fence("REPORT", report, 4000)}`;
  * Title and body for a new PR. Falls back to the commit messages when the call fails or its answer
  * mentions anything internal; generated tells which one it is.
  */
-export async function writePrDescription({ cfg, repo, base, request, messages, stat, diff, report, fallbackTitle }) {
+export async function writePrDescription({ cfg, repo, base, request, messages, stat, diff, report, fallbackTitle }: { cfg: any; repo: string; base: string; request: unknown; messages: string[]; stat: unknown; diff: unknown; report: unknown; fallbackTitle: string }) {
   const fallback = { title: fallbackTitle, body: fallbackDescription(messages), generated: false };
   try {
     const raw = await askCodex(cfg, describePrompt({ repo, base, request, messages, stat, diff, report }), PR_SCHEMA);
@@ -77,8 +77,8 @@ export async function writePrDescription({ cfg, repo, base, request, messages, s
 }
 
 /** The open PR gh refused to duplicate ("a pull request for branch … already exists: <url>"), when it is in `repo`. */
-export function existingPrUrl(stderr, repo) {
+export function existingPrUrl(stderr: unknown, repo: unknown) {
   if (!/already exists/i.test(String(stderr ?? ""))) return undefined;
   const url = String(stderr).match(/https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+/);
-  return url && url[1].toLowerCase() === String(repo).toLowerCase() ? url[0] : undefined;
+  return url && url[1]!.toLowerCase() === String(repo).toLowerCase() ? url[0] : undefined;
 }

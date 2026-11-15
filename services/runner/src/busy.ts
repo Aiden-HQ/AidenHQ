@@ -2,7 +2,7 @@
 // docs/design/conversational-engineers.md, During a run). The agent can't read it until its run ends, so a short
 // no-tools call decides: stop the work, answer a progress question from what the work shows, or keep
 // the comment for the agent's next turn. It can only ever stop work or say something; it starts nothing.
-import { askCodex } from "./intake.mjs";
+import { askCodex } from "./intake.ts";
 
 export const BUSY_SCHEMA = {
   type: "object",
@@ -11,9 +11,9 @@ export const BUSY_SCHEMA = {
   properties: { decision: { type: "string", enum: ["stop", "answer", "later"] }, answer: { type: "string" } },
 };
 
-const fenced = (label, text, max) => `<<<${label}\n${String(text ?? "").replace(/<<<|>>>/g, "‹‹‹").slice(-max)}\n${label}>>>`;
+const fenced = (label: string, text: unknown, max: number) => `<<<${label}\n${String(text ?? "").replace(/<<<|>>>/g, "‹‹‹").slice(-max)}\n${label}>>>`;
 
-export function busyPrompt({ user, comment, activity }) {
+export function busyPrompt({ user, comment, activity }: { user: string; comment: unknown; activity: unknown }) {
   return `${user} wrote a comment on a task while work on it is in progress (shown below). The engineering agent doing the work can't read the comment until its run ends. Decide what to do with it, as JSON. Do not run any tools.
 
 - "stop": ${user} wants the work in progress stopped or cancelled now ("stop", "cancel that", "hold on, don't", "wait, wrong repo": anything that means the current work should not go on). Also when they ask to stop the merges.
@@ -29,7 +29,7 @@ ${fenced("COMMENT", comment, 3000)}`;
 }
 
 /** { decision, answer } for a comment that arrived while the task is busy. */
-export async function readBusy({ cfg, user, comment, activity, ask = askCodex }) {
+export async function readBusy({ cfg, user, comment, activity, ask = askCodex }: { cfg: any; user: string; comment: unknown; activity: unknown; ask?: (cfg: any, prompt: string, schema: object) => Promise<any> }): Promise<{ decision: string; answer: string }> {
   const raw = await ask(cfg, busyPrompt({ user, comment, activity }), BUSY_SCHEMA);
   const decision = ["stop", "answer", "later"].includes(raw?.decision) ? raw.decision : "later";
   const answer = decision === "answer" ? String(raw?.answer ?? "").trim().slice(0, 2000) : "";

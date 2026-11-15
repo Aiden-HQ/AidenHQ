@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it, test } from "node:test";
 import { classify } from "../src/tiers.mjs";
 import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, environmentFailure, environmentalChecks, environmentReceipt, findPrs, finishedStatus, jobFor, newQueue, prDecision, startOrResume, supersededDesignReview, touchesUi, WRITES, withGate, ciState, namedChecks } from "../src/merges.mjs";
-import { prAttention } from "../src/product-prs.mjs";
+import { prAttention } from "../src/product-prs.ts";
 
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
 const red = { state: "FAILURE", contexts: { nodes: [{ __typename: "StatusContext", context: "buildkite/deploy", state: "FAILURE" }] } };

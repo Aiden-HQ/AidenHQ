@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Regression set for comments that arrive while a task's run or merges are in progress (readBusy in
-// src/busy.mjs): each comment, the work it arrived during, and the decision it must get, run through
+// src/busy.ts): each comment, the work it arrived during, and the decision it must get, run through
 // the real call. Run before every change to that prompt or its inputs:
 //
 //   npm run eval:busy                 all cases (config/busy-cases.yaml, else the example set)
@@ -10,7 +10,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { readBusy } from "../src/busy.mjs";
+import { readBusy } from "../src/busy.ts";
 import { loadConfig, REPO_ROOT } from "../src/config.mjs";
 
 async function main() {

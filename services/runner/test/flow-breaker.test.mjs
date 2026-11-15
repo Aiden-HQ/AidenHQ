@@ -32,7 +32,7 @@ describe("flow-breaker", { concurrency: 1 }, () => {
     const n = calls.length;
     card.state = "review";
     await t.waitFor("the reviewer's verdict", () => calls.length > n && t.output.includes(`"approval":"${card.id}","issue":"PEN-2","action":"pr","decision":"reject"`));
-    // Dated after the next turn's comment: an owner reply after a rejection answers it (answered.mjs); nobody has here.
+    // Dated after the next turn's comment: an owner reply after a rejection answers it (answered.ts); nobody has here.
     Object.assign(card, { state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest", decidedAt: new Date(Date.now() + 3600_000).toISOString(), reviewCode: "out_of_scope", review: "second.txt isn't part of the request." });
     return card;
   };

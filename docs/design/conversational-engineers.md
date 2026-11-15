@@ -37,7 +37,7 @@ a turn -> engine (Claude Code, Codex or opencode) in the workspace
 
 ## What a turn sees
 
-`services/runner/src/thread.mjs` builds the prompt sections. A **fresh session** (first turn, engine switch, or after a
+`services/runner/src/thread.ts` builds the prompt sections. A **fresh session** (first turn, engine switch, or after a
 reset) gets everything: the Engineer's rules, the task and its parent, the whole thread oldest first with every comment
 labelled (the user, the Engineer's own earlier replies, the runner, other agents), and the live state of every repository,
 branch and PR in the workspace (open or draft, review decision, checks, mergeability) with the merge queue. Untrusted text
@@ -98,7 +98,7 @@ before the queue merges it.
   into the running session and echoed back once taken in.
 - **Codex and opencode** cannot take input mid-run. A comment waits for the next turn, which starts as soon as the
   current one ends and includes everything that arrived meanwhile.
-- **The one quick reader** (`busy.mjs`) looks at comments that arrive while work is running and decides between *stop*,
+- **The one quick reader** (`busy.ts`) looks at comments that arrive while work is running and decides between *stop*,
   *answer now* (a progress question, answered from what the work shows) and *later*. It can only stop work or say
   something; it never starts work. When in doubt it chooses *later*.
 

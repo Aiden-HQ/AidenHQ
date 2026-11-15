@@ -3,7 +3,7 @@
 // is used only for a branch with no PR at all.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BASE_FILES_QUERY, baseFilesSince, cardBase, changedSinceMerge, encodeName, mergedSiblings, pickBranchPr, siblingBlock, siblingCandidates, siblingFromPr, siblingsOf } from "../src/siblings.mjs";
+import { BASE_FILES_QUERY, baseFilesSince, cardBase, changedSinceMerge, encodeName, mergedSiblings, pickBranchPr, siblingBlock, siblingCandidates, siblingFromPr, siblingsOf } from "../src/siblings.ts";
 
 const oid = (c) => c.repeat(40);
 const pr = (over = {}) => ({ number: 59, state: "MERGED", baseRefName: "main", mergedAt: "2026-11-01T10:00:00Z", mergeCommit: { oid: oid("a") }, files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "src/a.mjs" }, { path: "src/b.mjs" }] }, ...over });

@@ -2,7 +2,7 @@
 // held (small fixes into the page layer it replaces cost the rewrite a rebase and a fresh code and design review).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { firstPrompt } from "../src/prompt.mjs";
+import { firstPrompt } from "../src/prompt.ts";
 
 const prompt = () =>
   firstPrompt({ user: "Dana", task: { identifier: "PEN-1", title: "A fix", description: "" }, workspace: "/w", repos: [], instructions: "Do it." });

@@ -9,7 +9,7 @@ import { findPrs } from "./merges.mjs";
  * whitespace, a newline or readable prose into the prompt. It is a bijection on UTF-8 bytes, not a list of known-bad
  * characters: paths keep `[A-Za-z0-9._/-]`, branches also `+`, commits `[0-9a-f]`, and everything else becomes `%XX`.
  */
-export function encodeName(value, kind = "path") {
+export function encodeName(value: unknown, kind: "path" | "branch" | "commit" = "path") {
   const allowed = { path: /^[A-Za-z0-9._/-]$/, branch: /^[A-Za-z0-9._/+-]$/, commit: /^[0-9a-f]$/ }[kind];
   if (!allowed) throw new Error(`unknown name kind: ${kind}`);
   let out = "";
@@ -20,20 +20,23 @@ export function encodeName(value, kind = "path") {
   return out;
 }
 
+/** A task PR already merged into a base; `baseTip` and `after` are filled by siblingsOf. */
+export interface Sibling { repo: string; number: number; base: string; mergeCommit: string; mergedAt: string; files: string[] | undefined; baseTip?: string; after?: string[] }
+
 /**
  * One PR as the sibling block sees it, from the canonical PR read (merges.PR_QUERY), or undefined when it isn't merged.
  * Merged-ness is only GitHub's own indicator: `mergedAt`, or REST's `merged: true`. A `state` string is never enough — a
  * REST read of a merged PR is `{state: "closed", merged: true}`, and comparing to "MERGED" silently claims nothing.
  * The merge commit is `mergeCommit.oid`. A paged file list (hasNextPage) is not read: `files` stays undefined.
  */
-export function siblingFromPr(pr, repo) {
+export function siblingFromPr(pr: any, repo?: unknown): Sibling | undefined {
   if (!pr) return undefined;
   const merged = Boolean(pr.mergedAt) || pr.merged === true;
   if (!merged) return undefined;
   const number = Number(pr.number);
   if (!Number.isInteger(number) || number <= 0) return undefined;
   // No file list, or one GitHub paged: not read (undefined), never an empty list that would read as "the merge changed nothing".
-  const files = !pr.files || pr.files.pageInfo?.hasNextPage ? undefined : (pr.files.nodes ?? []).map((f) => f?.path).filter((p) => typeof p === "string");
+  const files = !pr.files || pr.files.pageInfo?.hasNextPage ? undefined : (pr.files.nodes ?? []).map((f: any) => f?.path).filter((p: unknown) => typeof p === "string");
   return {
     repo: String(repo ?? ""),
     number,
@@ -50,18 +53,18 @@ export function siblingFromPr(pr, repo) {
  * A PR (or a read that may have missed one): only the base GitHub reports, and empty when it can't be read — falling back
  * to the default branch would attach `main`'s merged siblings to a stacked PR, the guess the own-base filter prevents.
  */
-export function cardBase({ existing, pr, defaultBranch }) {
+export function cardBase({ existing, pr, defaultBranch }: { existing?: boolean; pr?: any; defaultBranch?: unknown }) {
   if (existing === false) return typeof defaultBranch === "string" ? defaultBranch : "";
   const base = pr?.baseRefName;
   return typeof base === "string" ? base : "";
 }
 
 /** The siblings merged into exactly `base`: same repo, GitHub says merged, with a merge commit. No known base, nothing. */
-export function mergedSiblings({ prs = [], base, repo } = {}) {
+export function mergedSiblings({ prs = [], base, repo }: { prs?: any[]; base?: string; repo?: string } = {}): Sibling[] {
   if (!base) return [];
   return prs
     .map((p) => siblingFromPr(p.pr ?? p, p.repo ?? repo))
-    .filter((s) => s && s.base === base && s.mergeCommit && (!repo || !s.repo || s.repo.toLowerCase() === String(repo).toLowerCase()));
+    .filter((s) => s && s.base === base && s.mergeCommit && (!repo || !s.repo || s.repo.toLowerCase() === String(repo).toLowerCase())) as Sibling[];
 }
 
 /**
@@ -69,12 +72,12 @@ export function mergedSiblings({ prs = [], base, repo } = {}) {
  * `mergeCommit` (undefined when the compare was capped or unread), and `baseTip` is the base branch's tip. `[]` only while
  * the base still sits at that merge commit; anything unread is undefined, which renders as "not read", never "unchanged".
  */
-export function changedSinceMerge(sibling, baseTip) {
+export function changedSinceMerge(sibling: Sibling | null | undefined, baseTip: string | undefined) {
   if (!baseTip || !sibling?.mergeCommit) return undefined;
   if (baseTip === sibling.mergeCommit) return [];
   if (!Array.isArray(sibling.files) || !Array.isArray(sibling.after)) return undefined;
   const after = new Set(sibling.after);
-  return sibling.files.filter((f) => after.has(f));
+  return sibling.files.filter((f: string) => after.has(f));
 }
 
 /** The block's budget: whole entries only, so a long list can never cut an entry in half. */
@@ -84,10 +87,10 @@ export const MAX_SIBLING_CHARS = 2_000;
  * Two lines per sibling inside the budget: the PR and its merge commit, then what the base did to its files since. Code's
  * own words are prose; every PR-chosen name is encoded, so the block is safe inside its fence.
  */
-export function siblingBlock(siblings, { max = MAX_SIBLING_CHARS } = {}) {
-  const entries = [];
+export function siblingBlock(siblings: Sibling[] | null | undefined, { max = MAX_SIBLING_CHARS }: { max?: number } = {}) {
+  const entries: string[][] = [];
   for (const s of siblings ?? []) entries.push(entry(s, changedSinceMerge(s, s.baseTip)));
-  const out = [];
+  const out: string[] = [];
   let used = 0;
   for (const [i, lines] of entries.entries()) {
     const text = lines.join("\n");
@@ -103,19 +106,19 @@ export function siblingBlock(siblings, { max = MAX_SIBLING_CHARS } = {}) {
 }
 
 /** One sibling as its two lines: what merged it, and what the base did to its files since. */
-function entry(s, changed) {
+function entry(s: Sibling, changed: string[] | undefined) {
   const base = s.base;
   const ref = `${encodeName(s.repo, "path")}#${s.number}`;
   const into = base ? ` into ${encodeName(base, "branch")}` : "";
   const commit = encodeName(s.mergeCommit.slice(0, 12), "commit");
   const first = `- ${ref} at ${commit}${into}`;
-  let second;
+  let second: string;
   if (!Array.isArray(s.files)) second = "  files not read: its file list was paged, so which of them the base still has is unknown";
   else if (!base) second = "  base not read, so what it changed since is not read";
   else if (changed === undefined) second = "  changes on the base since its merge not read";
   else if (!s.files.length) second = "  no files read, so there are none to name";
   else if (!changed.length) second = `  its files unchanged on ${encodeName(base, "branch")} since the merge`;
-  else second = `  changed again on ${encodeName(base, "branch")} since: ${changed.map((f) => encodeName(f, "path")).join(", ")}`;
+  else second = `  changed again on ${encodeName(base, "branch")} since: ${changed.map((f: string) => encodeName(f, "path")).join(", ")}`;
   return [first, second];
 }
 
@@ -132,14 +135,14 @@ export const BASE_FILES_QUERY = `query($owner: String!, $repo: String!, $base: S
 }`;
 
 /** BASE_FILES_QUERY's data as { tip, files }, or undefined when the read has nothing usable. */
-export function baseFilesSince(data) {
+export function baseFilesSince(data: any): { tip: string; files: string[] | undefined } | undefined {
   const r = data?.repository;
   const tip = r?.ref?.target?.oid;
   if (typeof tip !== "string" || !tip) return undefined;
   const files = r?.object?.compare?.files;
   if (!files) return { tip, files: undefined };
   if (files.pageInfo?.hasNextPage) return { tip, files: undefined };
-  return { tip, files: (files.nodes ?? []).map((f) => f?.path).filter((p) => typeof p === "string") };
+  return { tip, files: (files.nodes ?? []).map((f: any) => f?.path).filter((p: unknown) => typeof p === "string") };
 }
 
 /**
@@ -148,9 +151,9 @@ export function baseFilesSince(data) {
  * changed after `oid`. Bases are never guessed: whatever `cardBase` returned is used as it is, and an empty base reads
  * nothing. A failed read of one PR leaves that sibling out rather than inventing its merge state.
  */
-export async function siblingsOf({ prs = [], base, repo, read, filesSince }) {
+export async function siblingsOf({ prs = [], base, repo, read, filesSince }: { prs?: any[]; base?: string; repo?: string; read: (repo: string, number: number) => Promise<any>; filesSince: (repo: string, base: string, oid: string) => Promise<{ tip?: string; files?: string[] } | undefined> }) {
   if (!base) return [];
-  const known = [];
+  const known: { repo: string; pr: any }[] = [];
   for (const p of prs) {
     const number = Number(p.number ?? p);
     if (!Number.isInteger(number) || number <= 0) continue;
@@ -161,7 +164,7 @@ export async function siblingsOf({ prs = [], base, repo, read, filesSince }) {
     if (data?.repository?.pullRequest) known.push({ repo: slug, pr: data.repository.pullRequest });
   }
   // One filter for "merged into exactly this base" (mergedSiblings), so the bulk helper and the card can never disagree.
-  const out = [];
+  const out: Sibling[] = [];
   for (const s of mergedSiblings({ prs: known, base, repo })) {
     const files = await filesSince(s.repo, base, s.mergeCommit).catch(() => undefined);
     s.baseTip = files?.tip;
@@ -172,7 +175,7 @@ export async function siblingsOf({ prs = [], base, repo, read, filesSince }) {
 }
 
 /** A branch's PR from `gh pr list --head`: whether it has one at all, and which (the open one, else the newest). */
-export function pickBranchPr(list) {
+export function pickBranchPr(list: unknown): { existing: boolean; number?: number } {
   if (!Array.isArray(list)) return { existing: true }; // unread: may exist, so never "no PR"
   const mine = list.map((p) => ({ number: Number(p?.number), state: String(p?.state ?? "") })).filter((p) => Number.isInteger(p.number) && p.number > 0);
   if (!mine.length) return { existing: false };
@@ -184,8 +187,8 @@ export function pickBranchPr(list) {
  * The PRs a card may call siblings: every PR named in the task chain's branch records, less the card's own (its branch's PR,
  * or a merge card's PRs). Order is kept, duplicates dropped.
  */
-export function siblingCandidates(runs = [], own = new Set()) {
-  const out = [];
+export function siblingCandidates(runs: any[] = [], own = new Set<string>()) {
+  const out: { repo: string; number: number }[] = [];
   for (const b of runs) {
     for (const p of findPrs(b?.pr_url ?? "")) {
       const key = `${p.repo.toLowerCase()}#${p.number}`;

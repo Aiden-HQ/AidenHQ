@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import YAML from "yaml";
 import { classify, dependabotCommits, newGrants, priorDecisions, rejectedSince, routineCap } from "../src/tiers.mjs";
-import { origins } from "../src/paperclip.mjs";
+import { origins } from "../src/paperclip.ts";
 
 test("a replayed approval: only a later no on its branches (or a merge, or the owner's veto) outranks it", () => {
   const b = { repo: "acme/aidenhq", branch: "fix/a" };

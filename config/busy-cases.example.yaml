@@ -1,5 +1,5 @@
 # Regression set for comments that arrive while a task's run or merges are in progress
-# (services/runner/src/busy.mjs). Copy to config/busy-cases.yaml (gitignored) and add real comments.
+# (services/runner/src/busy.ts). Copy to config/busy-cases.yaml (gitignored) and add real comments.
 # Run: npm run eval:busy --prefix services/runner. Fields: id, comment, activity (the work in
 # progress as the runner shows it), expect (stop | answer | later).
 
