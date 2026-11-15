@@ -39,6 +39,16 @@ export function groupTasks<T extends { state: ChatState; updatedAt: string }>(it
   const cutoff = new Date(now - 7 * 86_400_000).toISOString();
   return { needs: by(NEEDS), working: by(["working"]), waiting: by(WAITING), finished: by(["done"]).filter((t) => t.updatedAt >= cutoff).slice(0, 5) };
 }
+/** A chat that may be settled: its agent finished or went quiet, and it waits on no one (the board checks again). */
+export const settleableChat = (s: ChatState) => s === "done" || s === "idle";
+const QUIET_MS = 2 * 3_600_000;
+/** The sidebar's bulk suggestion: own chats, finished and quiet for 2h+, not yet settled (oldest activity last). */
+export function settleSuggestions(rows: ChatRow[], now = Date.now()): ChatRow[] {
+  const quiet = new Date(now - QUIET_MS).toISOString();
+  const busy = new Set(rows.filter((r) => r.from && (NEEDS.includes(r.state) || r.state === "working" || r.state === "queued")).map((r) => r.from));
+  return rows.filter((r) => !r.from && !r.settled && !busy.has(r.identifier) && settleableChat(r.state) && (r.preview?.at ?? r.updatedAt) < quiet).sort(newest);
+}
+
 /** A run is live somewhere: poll faster. */
 export const anyLive = (rows: { state: ChatState }[]) => rows.some((r) => r.state === "working" || r.state === "queued");
 

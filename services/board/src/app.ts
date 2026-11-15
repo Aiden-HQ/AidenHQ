@@ -43,6 +43,7 @@ import { APPROVAL_MARKER, NOTICE_MARKER, chatAgent, chatAgentMarker, chatState, 
 import { activityDays } from "./days.js";
 import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
+import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lineageTotal, modelOf, settleable, stillSettled, type LineageRow } from "./lineage.js";
 
 export interface AppOptions {
   /** The board key's client: every read and every write (all admins write as the owner, 2026-11-12). */
@@ -661,6 +662,7 @@ export function createApp(opts: AppOptions): Server {
       description: displayText(issue.description),
       bucket: placement?.bucket ?? null,
       editable: assigned,
+      settled: store.settledAt().has(issue.id),
       labelIds: issue.labelIds ?? (issue.labels ?? []).map((l) => l.id),
       executor: executorOf(issue, ctx.assignees),
       replyTarget: replyTarget(issue, ctx.assignees),
@@ -769,6 +771,90 @@ export function createApp(opts: AppOptions): Server {
     };
     const found = await Promise.all(open.map(async (task) => ({ task, ask: await askOf(task) })));
     return found.filter((x): x is { task: Issue; ask: NonNullable<typeof x.ask> } => Boolean(x.ask));
+  }
+
+  /**
+   * The lineage strip: a chat's or task's delegated tasks and theirs, each with its state, model, latest word, tokens and
+   * cost (the usage ledger, by task), and the pending approvals on any of them (decided through the Approvals routes).
+   */
+  async function lineage(ref: string) {
+    const { ctx, issue } = await ownIssue(ref);
+    const kids = (await pc.children(issue.id)).filter((k) => k.status !== "cancelled");
+    // Paperclip limits concurrent list requests per client: a few at a time.
+    const grand: Issue[][] = [];
+    for (let i = 0; i < kids.length; i += 4) grand.push(...(await Promise.all(kids.slice(i, i + 4).map((k) => pc.children(k.id).then((l) => l.filter((g) => g.status !== "cancelled")).catch(() => [] as Issue[])))));
+    const all = [...kids, ...grand.flat()];
+    const [live, runs, busy, names] = await Promise.all([pc.liveRuns(), pc.recentRuns(100), working(ctx), bylines()]);
+    const awaiting = store.approvals.awaiting();
+    const usage = store.usageByIssue(all.flatMap((i) => [i.id, i.identifier]));
+    const pending = store.approvals.list().filter((a) => a.state === "pending");
+    const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
+    const row = async (k: Issue, children: LineageRow[]): Promise<LineageRow & { approvals: ReturnType<typeof shownApproval>[] }> => {
+      const st = chatState(k, live, runs.find((r) => r.issueId === k.id && r.finishedAt), ctx.me, awaiting);
+      const w = busy.map.get(k.identifier);
+      const c = w?.said ? undefined : await pc.latestComment(k.id).catch(() => undefined);
+      const u = usage.get(k.id) ?? usage.get(k.identifier);
+      return {
+        identifier: k.identifier,
+        title: k.title,
+        agent: agentOf(k.assigneeAgentId)?.name ?? "You",
+        model: modelOf(k, agentOf(k.assigneeAgentId)),
+        status: lineageStatus(st.state, k),
+        latest: w?.said ? { text: summaryOf(w.said, 160), at: w.saidAt ?? k.updatedAt } : c && c.authorType === "agent" ? { text: summaryOf(c.body, 160), at: c.createdAt } : null,
+        tokens: u ? u.tokens : null,
+        usd: u ? u.usd : null,
+        startedAt: k.createdAt,
+        endedAt: k.completedAt ?? k.cancelledAt ?? null,
+        children,
+        approvals: pending.filter((a) => a.issueId === k.id).map((a) => shownApproval(names, a)),
+      };
+    };
+    const rows = await Promise.all(kids.map(async (k, i) => row(k, await Promise.all((grand[i] ?? []).map((g) => row(g, []))))));
+    return { identifier: issue.identifier, children: rows, total: lineageTotal(rows) };
+  }
+
+  /** Settle a finished chat or task out of the active lists (or bring it back): the board's own state, never Paperclip's. */
+  async function settle(ref: string, body: unknown) {
+    const { settled } = parse(z.object({ settled: z.boolean() }).strict(), body);
+    const { ctx, issue } = await editableIssue(ref);
+    if (!settled) {
+      store.unsettle(issue.id);
+      return { settled: false };
+    }
+    const [live, runs, kids] = await Promise.all([pc.liveRuns(), pc.recentRuns(100), pc.children(issue.id).catch(() => [] as Issue[])]);
+    const chat = isChat(issue, ctx);
+    const awaiting = store.approvals.awaiting();
+    const stateOf = (i: Issue) => chatState(i, live, runs.find((r) => r.issueId === i.id && r.finishedAt), ctx.me, awaiting).state;
+    if (!settleable(stateOf(issue), issue, chat)) throw new HttpError(409, chat ? "this chat isn't finished: its agent is working or waiting on you" : "only a finished task can be settled");
+    if (kids.some((k) => holdsActive(stateOf(k)))) throw new HttpError(409, "work handed out from here is still running or waiting on you");
+    const agent = ctx.agents.find((a) => a.id === (chat ? chatAgent(issue) : issue.assigneeAgentId))?.name ?? "You";
+    store.settle({ issueId: issue.id, identifier: issue.identifier, title: issue.title, agent, kind: chat ? "chat" : "task" });
+    store.events.emit("chat", issue.id);
+    return { settled: true };
+  }
+
+  /**
+   * The side chat: the owner's question about a task, answered by the front agent's model through the gateway with the task
+   * as fenced data. Nothing is posted on the task and no agent wakes; the conversation lives in the owner's browser.
+   */
+  async function aside(ref: string, body: unknown) {
+    const { messages } = parse(AsideSchema, body);
+    if (!opts.gateway) throw new HttpError(503, "the board has no model gateway configured (AIDENHQ_GATEWAY_URL, gateway_board_key)");
+    const { ctx, issue } = await ownIssue(ref);
+    const [comments, kids] = await Promise.all([pc.comments(issue.id), pc.children(issue.id).catch(() => [] as Issue[])]);
+    const name = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id)?.name ?? "Agent";
+    const front = ctx.agents.find((a) => a.metadata?.setupKey === "aidenhq:chief-of-staff") ?? ctx.agents[0];
+    const model = String(front?.adapterConfig?.model ?? "~deepseek/deepseek-flash-latest").replace(/^openrouter\//, "");
+    const prompt = asideMessages(
+      {
+        issue,
+        agent: issue.assigneeAgentId ? name(issue.assigneeAgentId) : "the owner",
+        comments: comments.slice(-8).map((c) => ({ ...c, author: c.authorAgentId ? name(c.authorAgentId) : "the owner" })),
+        children: kids.filter((k) => k.status !== "cancelled").map((k) => ({ identifier: k.identifier, title: k.title, status: k.status, agent: name(k.assigneeAgentId) })),
+      },
+      messages,
+    );
+    return { answer: await askGateway(opts.gateway, model, prompt) };
   }
 
   /** Attach a file to a task; a PDF also gets its text as `<name>.txt`, for the agents. */
@@ -1563,7 +1649,15 @@ export function createApp(opts: AppOptions): Server {
         // Who is working and the connections' states don't depend on the tasks: started with them, not after.
         const extras = Promise.all([working(ctx), opts.google?.status(), opts.glean?.status(), opts.grafana?.status(), opts.clickhouse?.status(), opts.jira?.status(), bylines()]);
         extras.catch(() => {}); // awaited below; this only keeps a failure there from going unhandled meanwhile
-        const [all, closed] = await Promise.all([pc.openIssues().then((l) => mine(l, ctx)), pc.closedSince(since).then((l) => mine(l, ctx))]);
+        const settledAt = store.settledAt();
+        // A settled task stays off the board until something happens on it.
+        const unsettled = (i: Issue) => {
+          if (!settledAt.has(i.id)) return true;
+          if (stillSettled(settledAt.get(i.id), i, "done")) return false;
+          store.unsettle(i.id);
+          return true;
+        };
+        const [all, closed] = await Promise.all([pc.openIssues().then((l) => mine(l, ctx)), pc.closedSince(since).then((l) => mine(l, ctx).filter(unsettled))]);
         const open = await closeLeftoverParts(all, closed, ctx);
         // Agents' sub-tasks are part of their parent's card: they never get a place of their own.
         const folded = foldedChildren([...open, ...closed], ctx.assignees);
@@ -1619,6 +1713,7 @@ export function createApp(opts: AppOptions): Server {
           ...chatState(i, live, lastRun(i.id), ctx.me, awaiting),
           updatedAt: i.lastActivityAt ?? i.updatedAt,
         });
+        const settledAt = store.settledAt();
         const chats = await Promise.all(
           all.map(async (i) => {
             const messages = await chatMessages(i, ctx).catch(() => [] as Message[]);
@@ -1626,8 +1721,11 @@ export function createApp(opts: AppOptions): Server {
             const shown = shownState({ state: r.state, ...(r.reason ? { reason: r.reason } : {}) }, messages, lastRun(i.id));
             Object.assign(r, shown);
             const said = lastWord(messages);
+            // Settled: out of the active list until something happens on it (then it comes back on its own).
+            const settled = stillSettled(settledAt.get(i.id), i, r.state);
+            if (!settled && settledAt.has(i.id)) store.unsettle(i.id);
             // Unread: the agent spoke after the owner last opened the chat.
-            return { ...r, ...(said ? { preview: said } : {}), unread: said?.from === "agent" && said.at > store.seenAt(i.id) };
+            return { ...r, ...(said ? { preview: said } : {}), unread: said?.from === "agent" && said.at > store.seenAt(i.id), ...(settled ? { settled } : {}) };
           }),
         );
         // Work an agent handed out from an open chat (a child task of it): listed under that chat's agent.
@@ -1647,6 +1745,12 @@ export function createApp(opts: AppOptions): Server {
         const agents = ctx.agents
           .filter((a) => a.status !== "paused" && a.status !== "terminated")
           .map((a) => ({ key: a.id, name: a.name, front: a.metadata?.setupKey === "aidenhq:chief-of-staff" }));
+        // A settled chat whose handed-out work runs or waits on the owner is active again.
+        for (const c of chats) {
+          if (!c.settled || !handedOut.some((h) => h.from === c.identifier && holdsActive(h.state))) continue;
+          delete (c as { settled?: boolean }).settled;
+          store.unsettle(all.find((i) => i.identifier === c.identifier)!.id);
+        }
         return { chats: [...chats, ...handedOut], agents };
       },
     },
@@ -1977,6 +2081,11 @@ export function createApp(opts: AppOptions): Server {
     { method: "POST", path: /^\/api\/issues\/([^/]+)\/schedule$/, handle: async (m, body) => schedule(decodeURIComponent(m[1]!), body) },
     { method: "POST", path: /^\/api\/issues\/([^/]+)\/recurring$/, handle: async (m, body) => recurringChange(decodeURIComponent(m[1]!), body) },
     { method: "POST", path: /^\/api\/issues\/([^/]+)\/merge$/, handle: async (m, body) => merge(decodeURIComponent(m[1]!), body) },
+    { method: "GET", path: /^\/api\/issues\/([^/]+)\/lineage$/, handle: async (m) => lineage(decodeURIComponent(m[1]!)) },
+    { method: "POST", path: /^\/api\/issues\/([^/]+)\/settle$/, handle: async (m, body) => settle(decodeURIComponent(m[1]!), body) },
+    { method: "POST", path: /^\/api\/issues\/([^/]+)\/aside$/, maxBody: 100_000, handle: async (m, body) => aside(decodeURIComponent(m[1]!), body) },
+    // The Settled view: what the owner settled, searchable by identifier, title or agent.
+    { method: "GET", path: /^\/api\/settled$/, handle: async (_m, _b, url) => ({ settled: store.settledList((url.searchParams.get("q") ?? "").slice(0, 200)) }) },
     {
       method: "PUT",
       path: /^\/api\/buckets\/([a-z]+)$/,

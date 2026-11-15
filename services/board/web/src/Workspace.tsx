@@ -10,12 +10,13 @@ import { QUERIES, chatQuery, peekingChat, prefetchChat, useQuery } from "./queri
 import { ChatListSkeleton, SkeletonLines } from "./Skeleton";
 import { ApprovalCard, StateChip } from "./Chat";
 import { LaneChat } from "./LaneChat";
+import { LineageStrip } from "./Lineage";
 import { live as streaming, useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
-import { anyLive, groupChats, groupTasks, laneOf, showsChip, taskSummary, type AgentGroup } from "./sidebar";
+import { anyLive, groupChats, groupTasks, laneOf, settleSuggestions, settleableChat, showsChip, taskSummary, type AgentGroup } from "./sidebar";
 import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conversation";
-import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, ChatState, FileView, Question, Working } from "./types";
+import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, ChatState, FileView, Question, SettledItem, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
 import { openQuestions } from "./questions";
 
@@ -116,7 +117,9 @@ export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, o
 // ------------------------------------------------------------------ sidebar
 
 function Sidebar({ lane, rows, agents, crew, selected, go, error, retry }: { lane: LaneAgent[]; rows: ChatRow[] | null; agents: ChatAgent[]; crew: Assignee[]; selected: string | null; go: (h: string) => void; error: string; retry: () => void }) {
-  const groups = useMemo(() => groupChats(rows ?? [], agents), [rows, agents]);
+  const active = useMemo(() => (rows ?? []).filter((r) => !r.settled), [rows]);
+  const groups = useMemo(() => groupChats(active, agents), [active, agents]);
+  const [tab, setTab] = useState<"active" | "settled">("active");
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
   // A search looks through every chat of the agent, open or finished, and lists the matches flat.
@@ -131,8 +134,17 @@ function Sidebar({ lane, rows, agents, crew, selected, go, error, retry }: { lan
         <button className="btn primary new-chat-btn" onClick={() => go("#/c/")}>
           <PlusIcon /> New chat
         </button>
-        <input className="side-search" type="search" placeholder="Search chats" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search chats" />
+        <div className="side-tabs" role="tablist">
+          <button role="tab" aria-selected={tab === "active"} className={tab === "active" ? "on" : ""} onClick={() => setTab("active")}>
+            Active<i>{active.filter((r) => !r.from && r.open).length}</i>
+          </button>
+          <button role="tab" aria-selected={tab === "settled"} className={tab === "settled" ? "on" : ""} onClick={() => setTab("settled")}>
+            Settled
+          </button>
+        </div>
+        {tab === "active" && <input className="side-search" type="search" placeholder="Search chats" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search chats" />}
       </div>
+      {tab === "settled" && <SettledList selected={selected} go={go} reloadList={retry} />}
       {error && (
         <div className="alert">
           Couldn't load your chats: {error}{" "}
@@ -141,18 +153,103 @@ function Sidebar({ lane, rows, agents, crew, selected, go, error, retry }: { lan
           </button>
         </div>
       )}
-      {!rows ? (
+      {tab === "active" && (!rows ? (
         <ChatListSkeleton />
       ) : (
         <nav className="side-scroll">
+          {!q && <SettleSuggestion rows={active} reloadList={retry} />}
           {groups.front && <Group g={filter(groups.front)} lane={laneOf(lane, groups.front.agent.key)} crew={crew} selected={selected} go={go} front searching={!!q} />}
           {groups.others.length > 0 && <h3 className="side-h">Agents</h3>}
           {groups.others.map((g) => (
             <Group key={g.agent.key} g={filter(g)} lane={laneOf(lane, g.agent.key)} crew={crew} selected={selected} go={go} searching={!!q} />
           ))}
         </nav>
-      )}
+      ))}
     </aside>
+  );
+}
+
+/** "N finished, quiet for 2h+: Settle all", with an untick per chat to keep it. */
+function SettleSuggestion({ rows, reloadList }: { rows: ChatRow[]; reloadList: () => void }) {
+  const offered = settleSuggestions(rows);
+  const [kept, setKept] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  if (!offered.length) return null;
+  const picked = offered.filter((r) => !kept.has(r.identifier));
+  const settleAll = async () => {
+    setBusy(true);
+    await Promise.all(picked.map((r) => api.settle(r.identifier, true).catch(() => undefined)));
+    setBusy(false);
+    reloadList();
+  };
+  return (
+    <div className="settle-suggest">
+      <div className="settle-row">
+        <b>◆ {offered.length} finished</b>
+        <span className="muted">quiet for 2h+</span>
+        <button className="btn settle-all" disabled={busy || !picked.length} onClick={() => void settleAll()}>
+          Settle {picked.length === offered.length ? "all" : picked.length || ""}
+        </button>
+      </div>
+      <ul>
+        {offered.map((r) => (
+          <li key={r.identifier}>
+            <label>
+              <input type="checkbox" checked={!kept.has(r.identifier)} onChange={() => setKept((k) => (k.has(r.identifier) ? new Set([...k].filter((x) => x !== r.identifier)) : new Set([...k, r.identifier])))} />
+              <span className="t" title={r.title}>
+                {r.title}
+              </span>
+            </label>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Settled chats and tasks: searchable; a click views one, Reopen brings it back to the active list. */
+function SettledList({ selected, go, reloadList }: { selected: string | null; go: (h: string) => void; reloadList: () => void }) {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState<SettledItem[] | null>(null);
+  const load = useCallback(() => api.settledList(q.trim()).then((r) => setItems(r.settled), () => setItems([])), [q]);
+  useEffect(() => {
+    const t = setTimeout(() => void load(), 150);
+    return () => clearTimeout(t);
+  }, [load]);
+  const hash = (i: SettledItem) => (i.kind === "chat" ? `#/c/${i.identifier}` : `#/t/${i.identifier}`);
+  const reopen = async (i: SettledItem) => {
+    await api.settle(i.identifier, false).catch(() => undefined);
+    reloadList();
+    void load();
+    go(hash(i));
+  };
+  return (
+    <div className="side-scroll settled-list">
+      <input className="side-search" type="search" placeholder="Search settled" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search settled chats and tasks" autoFocus />
+      {!items ? (
+        <ChatListSkeleton count={3} />
+      ) : !items.length ? (
+        <p className="side-empty muted small">{q ? "No matches." : "Nothing settled yet. Settle a finished chat or task to keep the active list short."}</p>
+      ) : (
+        <ul className="side-chats">
+          {items.map((i) => (
+            <li key={i.issueId}>
+              <div className={`settled-row${i.identifier === selected ? " on" : ""}`}>
+                <button className="settled-open" onClick={() => go(hash(i))} title={`View ${i.identifier} without reopening`}>
+                  <span className="side-chat-title">{i.title}</span>
+                  <span className="muted small">
+                    {i.agent} · {i.kind} · settled {ago(i.at)}
+                  </span>
+                </button>
+                <button className="btn reopen-btn" onClick={() => void reopen(i)}>
+                  Reopen
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -464,6 +561,14 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
   const answer = useCallback((t: string) => void sendRef.current(t, [], true), []);
   const openChat = useCallback((id: string) => go(`#/c/${id}`), [go]);
 
+  async function settle(on: boolean) {
+    await api.settle(refId, on).then(
+      () => toast(on ? `Settled “${shortTitle(chat!.title)}”` : "Back in the active list"),
+      (e: Error) => toast(`Couldn't ${on ? "settle" : "reopen"}: ${e.message}`),
+    );
+    await reloadList();
+  }
+
   async function stop() {
     const r = await api.stopChat(refId).catch((e: Error) => (toast(`Couldn't stop: ${e.message}`), undefined));
     if (r) toast(r.stopped ? "Stopped." : "Nothing was running.");
@@ -595,6 +700,18 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
               Stop
             </button>
           )}
+          {row?.settled ? (
+            <button className="btn settle-btn on" onClick={() => void settle(false)} title="Settled: bring it back to the active list">
+              ◆ Settled · Reopen
+            </button>
+          ) : (
+            !live &&
+            settleableChat(chat.state) && (
+              <button className="btn settle-btn" onClick={() => void settle(true)} title="Move this finished chat to Settled">
+                ◆ Settle
+              </button>
+            )
+          )}
           {chat.runs.length > 0 && (
             <a className="btn last-run-btn" href={`#/r/${chat.runs[0]!.id}`} title="The trace of this chat's latest run">
               Last run
@@ -617,6 +734,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
             </a>
           </div>
         )}
+        <LineageStrip refId={chat.identifier} title={chat.title} agent={chat.agent.name} crew={crew} prefix={prefix} href={(id) => `#/c/${id}`} onSignIn={onSignIn} />
         <div
           className="conv-scroll"
           ref={scroller}

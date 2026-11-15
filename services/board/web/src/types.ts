@@ -222,6 +222,8 @@ export interface IssueView extends Omit<Card, "scheduled" | "recurring" | "worki
   description: string;
   bucket: Bucket | null;
   editable: boolean;
+  /** Settled out of the active lists (finished work the owner put away). */
+  settled?: boolean;
   labelIds: string[];
   replyTarget: string;
   scheduled: { date: string; bucket: Bucket; position: "top" | "bottom" } | null;
@@ -451,6 +453,42 @@ export interface ChatRow {
   unread: boolean;
   /** Work handed out from that chat (its identifier). */
   from?: string;
+  /** Settled out of the active list (until something happens on it). */
+  settled?: boolean;
+}
+
+export type LineageStatus = "running" | "done" | "blocked" | "approval" | "needs" | "waiting";
+/** A delegated task in the lineage strip; `tokens` and `usd` are null when the ledger has no calls for it. */
+export interface LineageRow {
+  identifier: string;
+  title: string;
+  agent: string;
+  model: string | null;
+  status: LineageStatus;
+  latest: { text: string; at: string } | null;
+  tokens: number | null;
+  usd: number | null;
+  startedAt: string;
+  endedAt: string | null;
+  approvals: Approval[];
+  children: LineageRow[];
+}
+export interface Lineage {
+  identifier: string;
+  children: LineageRow[];
+  total: { tasks: number; running: number; needs: number; blocked: number; tokens: number; usd: number; ms: number };
+}
+export interface SettledItem {
+  issueId: string;
+  identifier: string;
+  title: string;
+  agent: string;
+  kind: "chat" | "task";
+  at: string;
+}
+export interface AsideMessage {
+  role: "user" | "assistant";
+  text: string;
 }
 export interface ChatAgent {
   key: string;

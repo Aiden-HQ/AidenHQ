@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { LineageStrip } from "./Lineage";
 import { api } from "./api";
 import { Avatar, Chips, CloseIcon, CrewAvatar, MergeMenu, MoveMenu, Plan, SnoozeMenu, memberIssue } from "./components";
 import { Markdown } from "./markdown";
@@ -197,6 +198,20 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
           </button>
         )}
         {editable && closed && (
+          <button
+            className={`btn settle-btn${issue.settled ? " on" : ""}`}
+            title={issue.settled ? "Settled: bring it back to the active list" : "Move this finished task to Settled"}
+            onClick={() =>
+              void api.settle(issue.identifier, !issue.settled).then(
+                () => (toast(issue.settled ? `${issue.identifier} is back in the active list` : `${issue.identifier} settled`), onChanged(), void reload()),
+                (e: Error) => toast(`Couldn't settle: ${e.message}`),
+              )
+            }
+          >
+            {issue.settled ? "◆ Settled · Unsettle" : "◆ Settle"}
+          </button>
+        )}
+        {editable && closed && (
           <button className="btn primary" disabled={busy} onClick={() => void update({ status: "todo" }, `${issue.identifier} reopened`)}>
             Reopen
           </button>
@@ -235,6 +250,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
           )}
         </div>
       </div>
+      <LineageStrip refId={issue.identifier} title={issue.title} agent={(issue.assignee && who(issue.assignee)?.name) || "you"} crew={board.assignees} prefix={board.prefix} href={(id) => `#/t/${id}`} onSignIn={() => undefined} />
       {(issue.crew.length > 0 || (mine && editable && !closed)) && (
         <nav className="task-tabs" aria-label="The crew on this task">
           <button className={`task-tab${tab === "overview" ? " on" : ""}`} onClick={() => pick("overview")}>

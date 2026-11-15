@@ -27,7 +27,7 @@ const Attribution = {
   runId: z.string().min(1).max(80).nullable().optional(),
   issueId: z.string().min(1).max(80).nullable().optional(),
   rev: z.string().regex(/^[0-9a-f]{1,64}$/).nullable().optional(),
-  kind: z.enum(["agent", "advisor", "grader", "reviewer", "fanout", "source", "ci-code-review"]).nullable().optional(),
+  kind: z.enum(["agent", "advisor", "grader", "reviewer", "fanout", "source", "ci-code-review", "aside"]).nullable().optional(),
   ms: z.number().int().min(0).nullable().optional(),
   status: z.string().regex(/^[a-z0-9_]{1,40}$/).nullable().optional(),
 };
