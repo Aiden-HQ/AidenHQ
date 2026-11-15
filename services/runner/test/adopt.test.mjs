@@ -4,12 +4,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { State } from "../src/state.mjs";
+import { readLog } from "./fakes/lib.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
 const FAKES = join(import.meta.dirname, "fakes");
@@ -101,7 +102,7 @@ test("a runner restart leaves a running job alone; the next runner adopts it and
     runner.stderr.on("data", (d) => (output += d));
     return runner;
   };
-  const claudeRuns = () => (existsSync(env.FAKE_LOG) ? readFileSync(env.FAKE_LOG, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.kind === "claude") : []);
+  const claudeRuns = () => readLog(env.FAKE_LOG).filter((e) => e.kind === "claude");
   const replies = () => paperclip.patches.filter((p) => p.status === "in_review");
   const waitFor = async (what, ok, ms = 30_000) => {
     for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) if (ok()) return;

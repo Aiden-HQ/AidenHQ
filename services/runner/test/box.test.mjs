@@ -8,6 +8,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { readLog } from "./fakes/lib.mjs";
 import { fakePaperclip } from "./flow-harness.mjs";
 import { State } from "../src/state.mjs";
 import { ensureRepo } from "../src/workspace.mjs";
@@ -64,7 +65,7 @@ describe("box jobs", () => {
     for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) if (ok()) return;
     assert.fail(`timed out waiting for ${what}\n${output.slice(-3000)}\ncomments: ${paperclip.comments.get("part").map((c) => c.body).join("\n---\n")}`);
   };
-  const fake = () => (existsSync(join(dir, "fake.log")) ? readFileSync(join(dir, "fake.log"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const fake = () => readLog(join(dir, "fake.log"));
   const dockerRuns = () => fake().filter((e) => e.kind === "docker").map((e) => e.data);
   const reviews = () => paperclip.patches.filter((p) => p.issue === "PEN-2" && p.status === "in_review").map((p) => ({ ...p, at: p.at }));
   const step = (text) => writeFileSync(join(dir, "step"), text);

@@ -4,12 +4,13 @@
 import { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { State } from "../src/state.mjs";
+import { readLog } from "./fakes/lib.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
 const FAKES = join(import.meta.dirname, "fakes");
@@ -249,7 +250,7 @@ export function flow({ parent: parentOver, part: partOver, grants, grades, gradi
     runner.stdout.on("data", (d) => (output += d));
     runner.stderr.on("data", (d) => (output += d));
   };
-  const fakeLog = () => (existsSync(join(dir, "fake.log")) ? readFileSync(join(dir, "fake.log"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const fakeLog = () => readLog(join(dir, "fake.log"));
   const partComments = () => paperclip.comments.get("part").map((c) => c.body);
   const claudeRuns = () => fakeLog().filter((e) => e.kind === "claude").map((e) => e.data);
   const toolRuns = () => fakeLog().filter((e) => e.kind === "tool").map((e) => e.data);
