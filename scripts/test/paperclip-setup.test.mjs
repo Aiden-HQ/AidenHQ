@@ -46,6 +46,29 @@ test("an app change is checked live an hour and a day after it deploys, and data
   assert.match(engineer, /A data app's migrations add: new tables/);
 });
 
+/** The rule an agent proposes a correction with: the improving-rules text, as the script emits it. */
+function improving() {
+  const line = readFileSync(script, "utf8").split("\n").find((l) => l.startsWith('  return "\\n\\n## Improving the rules'));
+  assert.ok(line, "improvingSection's text is missing");
+  const out = join(mkdtempSync(join(tmpdir(), "setup-section-")), "section.mjs");
+  writeFileSync(out, `process.stdout.write(${line.trim().replace(/^return /, "").replace(/;$/, "")});\n`);
+  return execFileSync(process.execPath, [out], { encoding: "utf8" });
+}
+
+test("a recurring correction becomes a fast static check, and the fleet handbook carries the same rule", () => {
+  // The rule: fix the cause in code or the starter, add a fast lint rule that says how to fix the root cause,
+  // and keep handbook text for judgment calls. Asserted by its clauses, so the paragraph can be reworded.
+  const text = improving();
+  assert.match(text, /\n\n## Improving the rules\n\n/);
+  for (const t of ["fixed in code first", "code or the starter", "fast lint rule", "well under a second", "how to fix the root cause", "real judgment calls"]) assert.ok(text.includes(t), t);
+  // The old wording ("fix the work first", "the same problem twice") is gone: a correction is a check first.
+  assert.doesNotMatch(text, /fix the work first|the same problem twice/);
+  const rule = text.match(/A recurring correction is fixed in code first:[^.]*\./)?.[0];
+  assert.ok(rule && rule.includes("real judgment calls"), rule);
+  const handbook = readFileSync(join(dirname(script), "../modules/core/agents/fleet-engineer/AGENTS.md"), "utf8");
+  assert.ok(handbook.includes(rule), "the fleet handbook carries the same rule in the same wording");
+});
+
 test("every agent gets how we work, builders also how we build, and asking the owner defers to it", () => {
   const work = section("HOW_WE_WORK_SECTION");
   assert.match(work, /\n\n## How we work\n\n/);
@@ -53,5 +76,6 @@ test("every agent gets how we work, builders also how we build, and asking the o
   assert.match(section("HOW_WE_BUILD_SECTION"), /\n\n## How we build\n\n/);
   assert.match(readFileSync(script, "utf8"), /\n    metadata: \{[^\n]*build: HOW_WE_BUILD_SECTION/);
   assert.match(section("HOW_WE_BUILD_SECTION"), /Large rewrites hold the files they replace/);
+  assert.ok(section("HOW_WE_BUILD_SECTION").includes("- Comments: code is self-explanatory to agents; a comment only where the why is not visible in the code."));
   assert.ok(section("ASKING_SECTION").includes("When a call is the owner's (How we work), ask before acting on it"));
 });
