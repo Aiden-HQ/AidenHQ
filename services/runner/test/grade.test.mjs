@@ -357,6 +357,13 @@ test("a file deliverable's attachments reach the model: an image part (a large P
   for (let y = 0; y < 600; y++) noise[y * (1 + 2000 * 3)] = 0;
   const big = await fileEvidence([{ id: "n", originalFilename: "noise.png", label: "file_1" }], async () => pngOf(2000, 600, noise));
   assert.match(big.facts[0], /file_1: image 2000x600 px \(its real size\), shown as IMAGE_1 downscaled to 1000x300 px/);
+  // A pr's screenshots stamped (aidenhq-browse, ui-review) at other code are left out; the head's commit or tree is sent.
+  const stamped = (s) => { const p = pngOf(8, 8, Buffer.alloc(8 * 25)); return Buffer.concat([p.subarray(0, 33), chunk("tEXt", Buffer.from(`aidenhq\0${JSON.stringify(s)}`, "latin1")), p.subarray(33)]); };
+  const shots = { old: stamped({ commit: "a".repeat(40), tree: "b".repeat(40) }), tree: stamped({ commit: "c".repeat(40), tree: "d".repeat(40) }), head: stamped({ commit: "e".repeat(40) }), mock: pngOf(8, 8, Buffer.alloc(8 * 25)) };
+  const heads = [{ commits: ["e".repeat(40)], trees: ["d".repeat(40)] }];
+  const judged = await fileEvidence(Object.keys(shots).map((id, i) => ({ id, originalFilename: `${id}.png`, label: `file_${i + 1}` })), async (id) => shots[id], { heads });
+  assert.match(judged.facts.join("\n"), /file_1: a screenshot stamped as taken at commit aaaaaaaaaaaa \(tree bbbbbbbbbbbb\), which is not the code under review \(eeeeeeeeeeee\): not sent/);
+  assert.equal(judged.images.length, 3); // the tree match (taken before the runner committed), the head, and the unstamped mockup
 
   // Through the real request builder: the body sent to the model carries the text and the downscaled image.
   let body;
@@ -525,4 +532,26 @@ test("an escalation's premise is the facts read now, never the reason the wait c
   assert.doesNotMatch(premise, /checks still running/, "the captured reason is not replayed");
   // A report or file has nothing outside the task to read: the reason gathered on this pass is all there is.
   assert.match(evidencePremise("nothing posted on the task yet"), /nothing posted on the task yet$/);
+});
+
+test("a pr's screenshots count only when stamped with its own code: the head, or the agent's last commit by tree", async () => {
+  const chunk = (type, data) => { const b = Buffer.alloc(12 + data.length); b.writeUInt32BE(data.length, 0); b.write(type, 4, "latin1"); data.copy(b, 8); b.writeUInt32BE(crc32(b.subarray(4, 8 + data.length)), 8 + data.length); return b; };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(4, 0); ihdr.writeUInt32BE(4, 4); ihdr.set([8, 2, 0, 0, 0], 8);
+  const png = (stamp) => Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), chunk("IHDR", ihdr), ...(stamp ? [chunk("tEXt", Buffer.from(`aidenhq\0${JSON.stringify(stamp)}`, "latin1"))] : []), chunk("IDAT", deflateSync(Buffer.alloc(4 * 13))), chunk("IEND", Buffer.alloc(0))]);
+  // The agent's commit (re-signed by the runner, same tree t1), then the runner's update merge with the base as the head.
+  const p = pr();
+  p.repository.pullRequest.history = { nodes: [
+    { commit: { oid: "a".repeat(40), tree: { oid: "0".repeat(40) }, parents: { totalCount: 1 } } },
+    { commit: { oid: "c".repeat(40), tree: { oid: "1".repeat(40) }, parents: { totalCount: 1 } } },
+    { commit: { oid: "h".repeat(40), tree: { oid: "2".repeat(40) }, parents: { totalCount: 2 } } },
+  ] };
+  const files = { before: png({ commit: "b".repeat(40), tree: "1".repeat(40) }), stale: png({ commit: "b".repeat(40), tree: "0".repeat(40) }), mockup: png() };
+  const ev = await gather({ kind: "pr", ref }, deps({
+    pr: async () => p,
+    attachments: async () => Object.keys(files).map((id, i) => ({ id, originalFilename: `${id}.png`, contentType: "image/png", createdAt: `2026-11-15T10:00:0${i}Z` })),
+    content: async (id) => files[id],
+  }), ["screenshots of the changed pages attached"]);
+  const facts = ev.facts.join("\n");
+  assert.equal(ev.images.length, 2); // taken before the commit (its tree is the agent's commit's), and the unstamped mockup
+  assert.match(facts, /file_2: a screenshot stamped as taken at commit bbbbbbbbbbbb \(tree 000000000000\), which is not the code under review \(hhhhhhhhhhhh\): not sent/);
 });

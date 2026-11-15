@@ -28,6 +28,31 @@ export function imageInfo(buf) {
   return null;
 }
 
+/**
+ * The capture stamp aidenhq-browse and ui-review write into their screenshots: the `aidenhq` tEXt chunk's JSON ({ commit,
+ * tree, url, width, mode, takenAt }), or null for any other image (or a stamp that doesn't parse). Read before IDAT only.
+ */
+export function pngStamp(buf) {
+  if (imageInfo(buf)?.type !== "image/png") return null;
+  for (let i = 8; i + 8 <= buf.length; ) {
+    const len = buf.readUInt32BE(i), type = buf.toString("latin1", i + 4, i + 8);
+    if (type === "IDAT" || type === "IEND" || i + 12 + len > buf.length) return null;
+    if (type === "tEXt") {
+      const d = buf.subarray(i + 8, i + 8 + len), z = d.indexOf(0);
+      if (z > 0 && d.toString("latin1", 0, z) === "aidenhq") {
+        try {
+          const s = JSON.parse(d.toString("latin1", z + 1));
+          return s && typeof s === "object" ? s : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+    i += 12 + len;
+  }
+  return null;
+}
+
 const CHANNELS = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 
 /**

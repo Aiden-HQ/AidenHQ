@@ -92,7 +92,9 @@ export async function gather(deliverable, deps, rubric = []) {
   // The attached files' contents (images, text) for a file or report, or a rubric about files; the names alone prove nothing.
   let files = { facts: [], data: {}, images: [] };
   if (rubric.length && w.files.length && deps.content && (["file", "report"].includes(kind) || rubricNamesFiles(rubric))) {
-    files = await fileEvidence(w.files, deps.content, { rubric: rubric.join("\n"), comments: w.data.TASK_COMMENTS });
+    // A pr's screenshots are judged against its own heads: a capture stamped at other code is left out (fileEvidence).
+    const heads = kind === "pr" ? ev.prs.map((p) => p.shows).filter((h) => h?.commits.length) : [];
+    files = await fileEvidence(w.files, deps.content, { rubric: rubric.join("\n"), comments: w.data.TASK_COMMENTS, heads });
     if (files.awaiting) return { awaiting: files.awaiting };
   }
   // Another task the rubric or the ref names ("put the accepted mockups onto ACME-12"): its file list, read-only.

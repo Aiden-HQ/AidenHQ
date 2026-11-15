@@ -53,7 +53,8 @@ passing (it builds, serves and checks the CSP), and an existing app's server mus
   "value": "Lamp"}, {"press": "Enter"}, {"wait": "text=Saved"}, {"shot": "saved"}]`). Open every screenshot and fix
   what looks wrong (overlap, clipping, unstyled or empty areas, a misaligned table) and every reported problem, then run it
   again until it prints `clean`. `--width 390` checks the phone layout. Files in `.aidenhq/out/` (at most 20) are
-  attached to the task after the run; name them in your report.
+  attached to the task after the run; name them in your report. Each screenshot is stamped with the code it shows, and
+  the grader leaves out any that isn't your PR's final code: take them after your last change.
 - With a mockup, screenshot your pages at its width and mode (`--width 1280`, the width its screenshots use) and open
   each one beside the mockup's: fix every difference a person would see at a glance that isn't the real data (greyer,
   flatter, sparser, smaller or bigger type, missing hover or detail), and say in your report what still differs and why.

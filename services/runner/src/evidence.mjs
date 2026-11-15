@@ -6,7 +6,7 @@ import { RUNNER_MARKER } from "./commands.mjs";
 import { patchKey } from "./git.mjs";
 import { GATE_CHECK, findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
 import { MAX_DIFF } from "./review.mjs";
-import { downscalePng, imageInfo } from "./images.mjs";
+import { downscalePng, imageInfo, pngStamp } from "./images.mjs";
 
 /** Marks the grader's own notes on a task, so they never count as the deliverable's evidence. */
 export const GRADER_MARKER = "<!-- aidenhq:grader -->";
@@ -146,7 +146,12 @@ export async function prEvidence(prs, ref, deps) {
     const merged = pr.state === "MERGED";
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     versions.push(`${p.repo}#${p.number}@${sha}`);
-    prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "" });
+    // The code a screenshot may show: the head, the merge commit, and the newest commit that isn't a merge of the base (the
+    // agent's own, which the runner re-signs with the same tree before a base update merges on top). By commit or by tree.
+    const history = (pr.history?.nodes ?? []).map((n) => n.commit).filter(Boolean);
+    const own = history.findLast((c) => c.parents?.totalCount === 1);
+    const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
+    prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task" : ""}`);
     diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)")).slice(0, MAX_DIFF)}\n`;
   }
@@ -354,9 +359,11 @@ function fitPng(buf, info) {
  * comments name, then the newest. { awaiting } when a file can't be read yet (missing evidence is never a pass), else
  * { facts, data, images }: the facts say per file label (never its name, the agent's string) what was sent (its size, its
  * pixel size, what was cut or left out), so a file left out reads as not sent, not as missing work. `content(id)` resolves
- * with the file's bytes.
+ * with the file's bytes. `heads` (a pr's): the code under review, each PR's { commits, trees } (prEvidence's `shows`); a
+ * screenshot stamped (aidenhq-browse, ui-review) with a commit and tree that are none of them shows other code, so it is
+ * not sent, and the facts say so. An unstamped image (a mockup, a reference) is sent as before.
  */
-export async function fileEvidence(files, content, { rubric = "", comments = "" } = {}) {
+export async function fileEvidence(files, content, { rubric = "", comments = "", heads = [] } = {}) {
   const facts = [];
   const images = [];
   const texts = [];
@@ -398,6 +405,12 @@ export async function fileEvidence(files, content, { rubric = "", comments = "" 
         continue;
       }
       const real = `${info.width}x${info.height}`;
+      const st = heads.length ? pngStamp(buf) : null;
+      const at = (v) => (typeof v === "string" && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(v) ? v : "");
+      if (st && (at(st.commit) || at(st.tree)) && !heads.some((h) => h.commits.includes(at(st.commit)) || h.trees.includes(at(st.tree)))) {
+        facts.push(`${f.label}: a screenshot stamped as taken at commit ${at(st.commit).slice(0, 12) || "?"} (tree ${at(st.tree).slice(0, 12) || "?"}), which is not the code under review (${heads.map((h) => h.commits[0].slice(0, 12)).join(", ")}): not sent to the grader, as it shows other code`);
+        continue;
+      }
       let sent = buf;
       if (info.type === "image/png" && (Math.max(info.width, info.height) > IMAGE_SIDE || buf.length > IMAGE_BYTES)) sent = fitPng(buf, info) ?? buf;
       if (sent.length > IMAGE_BYTES || imageBytes + sent.length > IMAGES_BYTES) {
