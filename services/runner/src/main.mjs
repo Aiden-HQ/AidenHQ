@@ -10,7 +10,7 @@ import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, is
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
 import { branchCardArgs, cardText } from "./cards.ts";
-import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, gatewayUrl, jailProblem, jobToken, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
+import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
@@ -24,7 +24,7 @@ import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, 
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine, coversHead } from "./prompt.ts";
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
 import { startRepoHelper } from "./repohelper.ts";
-import { jobAdvisor } from "./advise.mjs";
+import { jobAdvise } from "./advise.mjs";
 import { createMetrics, writeMetrics } from "./metrics.ts";
 import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.ts";
@@ -3539,13 +3539,12 @@ async function startJob({ issue, instructions }) {
     if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity });
     if (stopping) return; // the runner is restarting: the job resumes after it (RESUME_KEY)
     // From here on nothing waits before the run is recorded: a restart either cuts the job before it or adopts the run.
-    // The job's gateway credential, minted once: its own model calls and its `aidenhq advise` share one run key. In memory only.
-    const modelKey = viaGateway(engine.kind) ? jobToken(cfg, { agentId, issueId: issue.id }) : undefined;
-    tools = { issue, workspace, words, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box, agentId, modelKey };
+    tools = { issue, workspace, words, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box, agentId };
     const helper = repoHelper.register(tools, helperToken);
     const sessionId = resumed ? state.task(issue.id).session_id : undefined;
     const startedAt = Date.now();
-    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, token: modelKey }, box });
+    // The job's gateway credential comes from its agent, task and start time: `aidenhq advise` mints the same one (advise.mjs).
+    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, at: startedAt }, box });
     // What the next runner needs to adopt the run and finish its turn after a restart.
     tools.run = { pid: run.pid, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, agentId, repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
     state.saveRun(jobId, tools.run);
@@ -3616,7 +3615,7 @@ async function stopBox(issue, box) {
 
 /** The agent's tools changed what its turn does after the run (reset, engine, cleanup): kept for the runner that adopts it. */
 function saveTools(ctx) {
-  if (ctx.run) state.saveRun(ctx.jobId, { ...ctx.run, reset: ctx.reset, switchTo: ctx.engine, cleanup: ctx.cleanup });
+  if (ctx.run) state.saveRun(ctx.jobId, { ...ctx.run, reset: ctx.reset, switchTo: ctx.engine, cleanup: ctx.cleanup, advised: ctx.advised?.advisor ?? ctx.run.advised });
 }
 
 /** A turn is over (finished, failed, or cut off before its run started): what the agent asked for, then the next job. */
@@ -4203,13 +4202,9 @@ async function prepareWorkspace(issue, task, { clone = true, copy = false } = {}
   return workspace;
 }
 
-/**
- * `aidenhq advise "<brief>"`: a second opinion from the advisor (src/advise.mjs) on the job's own model credential (after an
- * adoption, a fresh one for the same Engineer and task), at most 5 per job. Changes nothing.
- */
+/** `aidenhq advise "<brief>"`: a second opinion from the advisor (src/advise.mjs), at most 5 per job. Changes nothing. */
 async function agentAdvise(ctx, args) {
-  ctx.advisor ??= jobAdvisor({ gatewayUrl: gatewayUrl(cfg), key: ctx.modelKey ?? jobToken(cfg, { agentId: ctx.agentId, issueId: ctx.issue.id }), agentId: ctx.agentId });
-  const advice = await ctx.advisor(args.brief);
+  const advice = await jobAdvise(ctx, args.brief, { cfg, save: saveTools });
   log("advisor consulted", { issue: ctx.issue.identifier });
   return advice;
 }

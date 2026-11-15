@@ -36,11 +36,11 @@ const fence = (label, text) => `<<<${label}\n${String(text ?? "").replace(/<<<|>
 
 /**
  * The tools, for Object.assign(TOOLS, …). `grant()` is the bridge's (this run's agent id and key); `grantsFile` the grants
- * table setup writes; `gatewayUrl` the gateway's base; `key` this run's credential (PAPERCLIP_API_KEY).
+ * table setup writes; `gatewayUrl` the gateway's base; `key` this run's credential (PAPERCLIP_API_KEY). `used` is the run's
+ * call count, passed in by a caller that keeps it across processes (the runner, across its restarts).
  */
-export function modelTools({ grant, grantsFile, gatewayUrl, key, fetchFn = fetch }) {
+export function modelTools({ grant, grantsFile, gatewayUrl, key, fetchFn = fetch, used = { advisor: 0 } }) {
   const base = String(gatewayUrl).replace(/\/+$/, "");
-  const used = { advisor: 0 };
 
   async function complete(route, body, timeoutMs) {
     if (!key) throw Object.assign(new Error("PAPERCLIP_API_KEY is not set (only available inside a Paperclip run)"), { refused: true });

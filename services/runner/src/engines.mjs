@@ -308,18 +308,19 @@ export async function releaseBox(call, container, { everyMs = 2000, forMs = 20 *
  * A model credential for the gateway (services/gateway/token.ts), signed with gateway_job_secret: a job's (kind agent, capped,
  * billed to its Engineer and task) or the runner's own (reviewer, grader, intake). Never the OpenRouter key.
  */
-export function modelToken(cfg, claims) {
+export function modelToken(cfg, claims, now = Date.now()) {
   let secret = "";
   try { secret = readFileSync(cfg.gatewayJobSecretFile, "utf8").trim(); } catch {}
-  return mintToken(secret, claims);
+  return mintToken(secret, claims, now);
 }
 export const gatewayApi = (cfg) => `${gatewayUrl(cfg)}/api/v1`;
 
 /**
- * The job's own credential to the model gateway, valid past its deadline (an adopted run keeps its env). The runner mints it
- * once per job (`job.token`) so the job's `aidenhq advise` calls share its run key: the same run cap and run page.
+ * The job's own credential to the model gateway, valid past its deadline (an adopted run keeps its env). Minted from the job's
+ * agent, task and start time (`job.at`), so the same job always gets the same token: its `aidenhq advise` calls, also from a
+ * runner that adopted it after a restart, share its run key (the same run cap and run page).
  */
-export const jobToken = (cfg, job) => job.token ?? modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 });
+export const jobToken = (cfg, job) => job.token ?? modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 }, job.at);
 
 const GATEWAY_KEY_ENV = "AIDENHQ_GATEWAY_KEY";
 // Off for codex-openrouter, as for Paperclip's Codex agents: ChatGPT connectors, the desktop's browser and computer, OpenAI's
