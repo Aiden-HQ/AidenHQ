@@ -104,12 +104,12 @@ export async function tick(store: Pick<Store, "meta" | "setMeta">, checks: Recor
       if (o.fired) s.recovered.push({ key, reason: o.reason, at, fired: false });
     }
   }
-  // The owner hears of a health flag that stays open a day, from here: it arrives even when Fleet Ops is the broken part.
-  for (const [key, o] of Object.entries(s.open)) {
-    if (!o.told && HEALTH.some((g) => key.startsWith(`${g}:`)) && Date.parse(at) - Date.parse(o.at) > DAY_MS) {
-      o.told = true;
-      queueOwnerLine(store, `🩺 **Fleet flag open over a day**: ${o.reason}.`);
-    }
+  // Every flag is Fleet Ops's. The owner hears only that Fleet Ops itself can't be reached: a flag its webhook hasn't taken
+  // for a day (one fixed line, never a flag's own text), since that is the case where nobody else would act.
+  const unheard = Object.values(s.open).filter((o) => !o.fired && !o.told && Date.parse(at) - Date.parse(o.at) > DAY_MS);
+  if (unheard.length) {
+    for (const o of unheard) o.told = true;
+    queueOwnerLine(store, "🩺 **Fleet Ops is unreachable**: its health flags have not reached it for a day. Ask Aiden to check the Fleet Ops routine.");
   }
   const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, reason: o.reason, since: o.at }));
   const recovered = s.recovered.filter((r) => !r.fired).map(({ key, reason, at }) => ({ key, reason, recovered_at: at }));
@@ -122,13 +122,12 @@ export async function tick(store: Pick<Store, "meta" | "setMeta">, checks: Recor
 }
 
 const DAY_MS = 24 * 60 * MIN;
-const HEALTH = ["missed", "routine", "silent", "grade"]; // the health groups: a flag open over a day reaches the owner
 const SILENT_RUNS = 3; // silent runs in a day before the flag opens
 const MISSED_GRACE_MS = 15 * MIN;
 const HARD_FAIL = new Set(["failed", "timed_out"]);
 const SOFT_CODES = new Set(["cap_reached", "issue_reassigned"]); // not the routine's fault
 
-/** One-line owner messages waiting for the owner channel (it collects them with the grading escalations, once). */
+/** One-line owner messages waiting for the owner channel (it collects each once). */
 export function queueOwnerLine(store: Pick<Store, "meta" | "setMeta">, line: string): void {
   const q: string[] = JSON.parse(store.meta("owner_health_lines") ?? "[]");
   store.setMeta("owner_health_lines", JSON.stringify([...q, line].slice(-20)));

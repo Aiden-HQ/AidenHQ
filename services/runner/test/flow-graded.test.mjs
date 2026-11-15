@@ -1,6 +1,6 @@
 // End to end (see flow-harness.mjs): graded done. An Engineer task an agent delegated with a rubric: its finished turn
 // goes to the grader; a failed criterion reopens it and the runner itself dispatches the Engineer again (its own marked
-// comments never would); a pass closes it and tells the parent; 3 rejected versions go to the owner.
+// comments never would); a pass closes it and tells the parent; 3 rejected versions go to the delegator.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { flow } from "./flow-harness.mjs";
@@ -37,10 +37,10 @@ describe("flow-graded", { concurrency: true }, () => {
   describe("flow-graded: three rejections escalate", () => {
     const t = flow(delegated("escalate"));
 
-    it("after 3 rejected versions the task goes to the owner, not back to the Engineer", async () => {
+    it("after 3 rejected versions the task goes to the delegator, not back to the Engineer", async () => {
       const { waitFor, paperclip, partComments } = t;
       paperclip.graderAnswers.push(answer(["no", "yes", "yes"]), answer(["no", "yes", "yes"]), answer(["no", "yes", "yes"]));
-      await waitFor("the escalation", () => partComments().some((c) => /Graded: escalated to the owner/.test(c)), 90_000);
+      await waitFor("the escalation", () => partComments().some((c) => /Graded: escalated to the delegator/.test(c)), 90_000);
       assert.deepEqual(paperclip.gradeLog.map((v) => v.outcome), ["needs_revision", "needs_revision", "needs_revision"]);
       assert.equal(paperclip.grades.get("part").state, "escalated");
       assert.notEqual(paperclip.issues.get("part").status, "done");
@@ -56,15 +56,15 @@ describe("flow-graded", { concurrency: true }, () => {
   };
 
   describe("flow-graded: evidence that never comes", () => {
-    // Held two days for a PR the task never opened: the owner hears of it, with the reason.
+    // Held two days for a PR the task never opened: the delegator hears of it, with the reason.
     const t = flow(held("stale", { rubric: [], deliverable: { kind: "pr", ref: "" }, state: "awaiting_evidence", updatedAt: new Date(Date.now() - 2 * 86_400_000).toISOString() }));
 
     it("escalates after a day without asking the grader", async () => {
       const { waitFor, paperclip, partComments } = t;
-      await waitFor("the escalation", () => partComments().some((c) => /escalated to the owner\*\* \(still waiting for its evidence a day after it was finished: no pull request yet\)/.test(c)));
+      await waitFor("the escalation", () => partComments().some((c) => /escalated to the delegator\*\* \(still waiting for its evidence a day after it was finished: no pull request yet\)/.test(c)));
       assert.equal(paperclip.grades.get("part").state, "escalated");
       assert.equal(paperclip.graderCalls.length, 0);
-      await waitFor("an open parent is told", () => (paperclip.comments.get("parent") ?? []).some((c) => /went to the owner after grading/.test(c.body)));
+      await waitFor("an open parent is told", () => (paperclip.comments.get("parent") ?? []).some((c) => /grade escalated to you/.test(c.body)));
     });
   });
 
@@ -78,7 +78,7 @@ describe("flow-graded", { concurrency: true }, () => {
       const { waitFor, paperclip } = t;
       await waitFor("the escalation", () => paperclip.grades.get("part")?.state === "escalated");
       await t.idle(300);
-      assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /went to the owner/.test(c.body)), "no comment on the finished parent");
+      assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /grade escalated to you/.test(c.body)), "no comment on the finished parent");
       assert.equal(paperclip.issues.get("parent").status, "done");
     });
   });
@@ -94,8 +94,8 @@ describe("flow-graded", { concurrency: true }, () => {
       paperclip.graderAnswers.push({ abort: true }, { abort: true }, answer(["yes", "yes", "yes"]));
       await waitFor("the failed grading pass", () => paperclip.gradeLog.some((v) => v.outcome === "grading_failed"));
       await waitFor("grading_failed", () => paperclip.grades.get("part").state === "grading_failed");
-      assert.ok(!partComments().some((c) => /Graded: escalated to the owner/.test(c)), "a timeout is not an owner decision");
-      assert.ok(!paperclip.comments.get("parent").some((c) => /went to the owner/.test(c.body)), "the parent is not told of an escalation");
+      assert.ok(!partComments().some((c) => /Graded: escalated to the delegator/.test(c)), "a timeout is not an escalation");
+      assert.ok(!paperclip.comments.get("parent").some((c) => /grade escalated to you/.test(c.body)), "the parent is not told of an escalation");
       assert.notEqual(paperclip.issues.get("part").status, "done");
       // The next pass picks it up again and can still close the task.
       await waitFor("the retry to pass", () => paperclip.issues.get("part").status === "done", 90_000);

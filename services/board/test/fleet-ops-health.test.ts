@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checks, missedFires, takeOwnerLines } from "../src/fleet-ops.js";
+import { checks, missedFires, takeOwnerLines, tick } from "../src/fleet-ops.js";
 import { Store } from "../src/store.js";
 
 const now = Date.parse("2026-11-13T12:00:00Z");
@@ -11,6 +11,23 @@ describe("health flags", () => {
     const sched = (nextRunAt: string) => [{ kind: "schedule", enabled: true, label: "evening", nextRunAt }];
     const found = missedFires([{ id: "a", title: "A", status: "active", triggers: sched(iso(40)) }, { id: "b", title: "B", status: "active", triggers: sched(iso(5)) }, { id: "c", title: "C", status: "paused", triggers: sched(iso(400)) }], now);
     expect(found!.map((i) => i.key)).toEqual(["a:evening"]);
+  });
+
+  it("a flag open a day reaches the owner only when Fleet Ops never took it, as one fixed line", async () => {
+    const store = new Store(":memory:");
+    const grade = { grade: async () => [{ key: "g1", reason: "graded task g1 escalated" }] };
+    const day = (n: number) => new Date(now + n * 25 * 60 * 60_000);
+    await tick(store, grade, async () => true, day(0));
+    await tick(store, grade, async () => true, day(1));
+    expect(takeOwnerLines(store)).toEqual([]); // Fleet Ops has it
+    const down = { silent: async () => [{ key: "a1", reason: "agent a1 silent" }] };
+    await tick(store, down, async () => false, day(0));
+    await tick(store, down, async () => false, day(1));
+    await tick(store, down, async () => false, day(2));
+    const lines = takeOwnerLines(store);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("Fleet Ops is unreachable");
+    expect(lines[0]).not.toContain("a1");
   });
 
   it("pauses a routine after 3 hard failures once, tells the owner, and counts only newer runs after the owner resumes it", async () => {

@@ -110,7 +110,7 @@ describe("grade routes", () => {
     expect(reviewCheck(patches.at(-1)!)).toBeGreaterThan(Date.now());
   });
 
-  it("an escalated task stays the owner's until a new deliverable version", async () => {
+  it("an escalated task stays escalated until a new deliverable version", async () => {
     for (const v of ["a", "b", "c"]) {
       if (v !== "a") await gate(as("eng"));
       await post("/internal/grades/WOR-7/verdict", { version: v, outcome: "needs_revision", model: "glm" }, runner);
@@ -137,32 +137,31 @@ describe("grade routes", () => {
     }
   });
 
-  it("the owner channel does not ask for an accept-or-reject decision after the grader failed every retry", async () => {
+  it("an escalated grade is its delegator's to accept, never a line on the owner's channel", async () => {
     const s = new Store(":memory:");
-    s.grades.file("g", [], { kind: "report", ref: "" });
-    completionGate(s.grades, "g", "task_finish");
-    for (let i = 0; i < 5; i++) s.grades.record("g", { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] });
+    s.grades.file(task.id, [], { kind: "report", ref: "" });
+    completionGate(s.grades, task.id, "task_finish");
+    for (let i = 0; i < 5; i++) s.grades.record(task.id, { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] });
+    expect(s.grades.get(task.id)!.state).toBe("escalated");
     const decideKey = "d".repeat(32);
     const app2 = createApp({ paperclip: pc, store: s, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY, decideKey });
     await new Promise<void>((r) => app2.listen(0, "127.0.0.1", r));
     const port2 = (app2.address() as AddressInfo).port;
-    const get = (path: string, headers: Record<string, string>) =>
+    const call = (method: string, path: string, headers: Record<string, string>, body?: unknown) =>
       new Promise<{ status: number; json: any }>((resolve, reject) => {
-        const req = request({ host: "127.0.0.1", port: port2, method: "GET", path, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...headers } }, (res) => {
+        const req = request({ host: "127.0.0.1", port: port2, method, path, headers: { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...headers } }, (res) => {
           let text = "";
           res.on("data", (c) => (text += c));
           res.on("end", () => resolve({ status: res.statusCode!, json: text ? JSON.parse(text) : undefined }));
         });
         req.on("error", reject);
-        req.end();
+        req.end(body === undefined ? undefined : JSON.stringify(body));
       });
     try {
-      const r = await get("/internal/owner/grades", { "x-owner-key": decideKey });
-      expect(r.status).toBe(200);
-      const line = r.json.lines.find((l: string) => /Grading failed/.test(l));
-      expect(line).toContain("failed 5 times");
-      expect(line).toContain("no rubric criterion was assessed");
-      expect(line).not.toContain("close it to accept");
+      expect((await call("GET", "/internal/owner/grades", { "x-owner-key": decideKey })).json).toEqual({ lines: [] });
+      // Its delegator's close accepts the work.
+      expect((await call("POST", "/internal/grades/WOR-7/gate", { "x-agent-key": "cos" }, { via: "task_set_status" })).json).toEqual({ pass: true });
+      expect(s.grades.get(task.id)!.state).toBe("satisfied");
     } finally {
       app2.close();
     }

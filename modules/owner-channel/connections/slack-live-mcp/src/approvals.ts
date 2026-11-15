@@ -32,7 +32,7 @@ export interface Board {
   resetLinks(): Promise<{ email: string; url: string }[]>;
   /** The daily approvals digest, handed over once a day by the board; null when not due or empty. */
   digest(): Promise<string | null>;
-  /** Graded tasks escalated to the owner (3 rejected versions, or the grader couldn't judge), each line handed over once. */
+  /** The board's one-line owner notices (critical alerts, a paused routine, Fleet Ops unreachable), each handed over once. */
   escalations(): Promise<string[]>;
   /** The board's answer: the record after the decision (for a batch, all of them, or nothing), or why it refused. */
   decide(body: { id?: string; task?: string; batch?: string; decision: "approve" | "reject"; via: "telegram" }): Promise<{ ok: true; sentence: string; state: string } | { ok: false; reason: string }>;
@@ -73,7 +73,7 @@ export function boardClient(url: string, token: string, decideKey: string): Boar
     },
     escalations: async () => {
       const r = await call("GET", "/internal/owner/grades");
-      if (r.status !== 200) throw new Error(`board grade escalations → ${r.status}`);
+      if (r.status !== 200) throw new Error(`board owner notices → ${r.status}`);
       return Array.isArray(r.json.lines) ? r.json.lines.map(String) : [];
     },
     decide: async (body) => {

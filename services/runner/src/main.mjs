@@ -1100,7 +1100,7 @@ async function mayClose(issueId, via) {
 
 let gradesRunning = false;
 const grading = new Set();
-const GRADE_WAIT_MS = 24 * 60 * 60_000; // evidence still missing a day after the close: the owner hears of it
+const GRADE_WAIT_MS = 24 * 60 * 60_000; // evidence still missing a day after the close: it escalates to the delegator
 const gradeLooked = new Map(); // issueId → when its evidence was last looked at while waiting
 /** The board's waiting rows: grade each (one at a time per task), and check escalated tasks finished again for a new version. */
 async function runGrades() {
@@ -1114,8 +1114,9 @@ async function runGrades() {
       const issue = await pc.issue(g.issueId);
       let version = "";
       if (["file", "report"].includes(g.deliverable.kind)) {
-        // Any comment is a new version of these: only the owner's own word since the escalation sends it back to the grader.
-        version = (await pc.comments(issue.id)).filter((c) => Paperclip.isUserInstruction(c) && c.createdAt > g.updatedAt).at(-1)?.id ?? "";
+        // Any comment is a new version of these: only the owner's or the delegator's word since the escalation sends it back
+        // to the grader.
+        version = (await pc.comments(issue.id)).filter((c) => (Paperclip.isUserInstruction(c) || (issue.createdByAgentId && c.authorAgentId === issue.createdByAgentId)) && c.createdAt > g.updatedAt).at(-1)?.id ?? "";
       } else {
         const ev = await gather(g.deliverable, gradeDeps(issue));
         if (ev.awaiting) continue; // still moving (checks, merges, a card): the mark stays, the next look decides
@@ -1213,7 +1214,7 @@ async function gradeOne(g) {
   const last = g.verdicts?.at(-1);
   let v;
   if (ev.awaiting) {
-    // Evidence that never comes (a PR nobody merges, a deploy that never lands) goes to the owner after a day, saying why;
+    // Evidence that never comes (a PR nobody merges, a deploy that never lands) escalates to the delegator after a day, saying why;
     // a task still moving (a run, its merges) is never cut short.
     if (ev.busy || Date.now() - Date.parse(g.updatedAt) < GRADE_WAIT_MS) {
       if (g.state !== "awaiting_evidence") await boardApi.post(verdictPath, { version: "", outcome: "awaiting_evidence" });
@@ -1257,7 +1258,7 @@ async function gradeOne(g) {
     }
   } else if (row.state === "escalated") {
     await pc.comment(issue.id, note);
-    await tellOpenParent(issue, `${issue.identifier} went to the owner after grading: ${issue.title}. See ${issue.identifier}.`).catch(() => {});
+    await tellOpenParent(issue, `${issue.identifier}'s grade escalated to you: ${issue.title}. Decide it: close it to accept the work, or reopen it with what to change. See ${issue.identifier}.`).catch(() => {});
   }
 }
 

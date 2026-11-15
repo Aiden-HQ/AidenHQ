@@ -29,7 +29,7 @@ import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor } from "./settings-change.js";
-import { FileGradeSchema, GateSchema, MAX_GRADER_FAILURES, VerdictSchema, completionGate, gradePassed, gradingOn, gradingReviewPolicy, prRefAllowed } from "./grades.js";
+import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradePassed, gradingOn, gradingReviewPolicy, prRefAllowed } from "./grades.js";
 import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -1049,7 +1049,7 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     // Graded done (grades.ts): the delegating agent files the rubric (write-once, trusted storage); every completion path
-    // asks the gate; the runner grades the waiting rows and records each outcome; the owner channel hears of escalations.
+    // asks the gate; the runner grades the waiting rows and records each outcome; the delegator decides an escalation.
     {
       method: "POST",
       path: /^\/internal\/grades$/,
@@ -1082,10 +1082,19 @@ export function createApp(opts: AppOptions): Server {
         const runner = via === "finish_turn" || via === "finish_merges";
         const agent = runner ? (requireRunner(req, `closes a task by ${via}`), undefined) : await requireAgentTool(req, via);
         const issue = await pc.issue(decodeURIComponent(m[1]!));
-        // Only the task's own assignee moves its grade: anyone else closing a graded task (its delegator) is refused, and
-        // an ungraded one passes without touching anything.
+        // Only the task's own assignee moves its grade: anyone else closing a graded task is refused, and an ungraded one
+        // passes without touching anything. The one exception: an escalated grade is its delegator's call, and its close
+        // accepts the work.
         if (agent && issue.assigneeAgentId !== agent.id) {
           const g = gradingOn() ? store.grades.get(issue.id) : undefined;
+          if (g?.state === "escalated" && issue.createdByAgentId === agent.id) {
+            store.grades.accept(issue.id);
+            const label = (await pc.labels()).find((l) => l.name === "grading");
+            const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
+            if (label && ids.includes(label.id)) await pc.updateIssue(issue.id, { labelIds: ids.filter((id) => id !== label.id) });
+            log.info({ task: issue.identifier }, "escalated grade accepted by its delegator");
+            return { pass: true };
+          }
           if (g && !(g.state === "satisfied" && issue.status === "done")) throw new HttpError(403, "this task is graded: the grader closes it once its rubric is met (only its assignee finishes it)");
           return { pass: true };
         }
@@ -1194,26 +1203,13 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // Escalated grades for the owner's Telegram, each handed over once (the owner channel, decide key).
+      // The owner's one-line notices (critical monitoring alerts, a paused routine, Fleet Ops unreachable), each handed over
+      // once (the owner channel, decide key). Escalated grades are not here: they go to the task's delegator (wake.ts).
       method: "GET",
       path: /^\/internal\/owner\/grades$/,
       handle: async (_m, _b, _u, req) => {
-        if (!opts.decideKey || !keyMatches(req.headers["x-owner-key"], opts.decideKey)) throw new HttpError(403, "only the owner's channel collects escalations");
-        const lines: string[] = [];
-        for (const g of store.grades.escalated()) {
-          const key = `grade_told:${g.issueId}`;
-          if (store.meta(key) === g.updatedAt) continue;
-          store.setMeta(key, g.updatedAt);
-          const issue = await pc.issue(g.issueId).catch(() => undefined);
-          // A grader that failed every retry has no rubric verdict: the owner is not asked to accept or reject ungraded work.
-          if (g.failures >= MAX_GRADER_FAILURES) {
-            lines.push(`⚖️ **Grading failed**: ${issue?.identifier ?? g.issueId} (the grader failed ${g.failures} times and no rubric criterion was assessed). This is not a request to accept or reject ungraded work; reopen it only if you want to change the work.`);
-            continue;
-          }
-          const why = g.verdicts.at(-1)?.verdict === "cannot_judge" ? "the grader couldn't judge it" : `${g.attempts} rejected version${g.attempts === 1 ? "" : "s"}`;
-          lines.push(`⚖️ **Grading needs you**: ${issue?.identifier ?? g.issueId} (${why}). Its unmet criteria are on the task; close it to accept, or reopen it with what to change.`);
-        }
-        return { lines: [...lines, ...takeOwnerLines(store)] }; // plus the detector's health lines (routine paused, flag open a day)
+        if (!opts.decideKey || !keyMatches(req.headers["x-owner-key"], opts.decideKey)) throw new HttpError(403, "only the owner's channel collects owner notices");
+        return { lines: takeOwnerLines(store) };
       },
     },
     {

@@ -10,7 +10,8 @@ import type { Events } from "./events.js";
  * open: filed with the delegation, the task not finished yet. pending: a completion path hit the gate, waiting for the
  * runner. awaiting_evidence: checks, a deploy or an approval still running. Then satisfied, needs_revision (back to the
  * assignee), grading_failed (the grader failed or returned no usable criteria: retried on a bounded ladder, never the
- * owner's) or escalated (3 rejected versions, cannot_judge, or 5 failed grader passes).
+ * owner's) or escalated (3 rejected versions, cannot_judge, or 5 failed grader passes: the delegator decides, accepting
+ * by closing the task or reopening it with what to change).
  */
 export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "escalated";
 export interface Deliverable {
@@ -55,11 +56,11 @@ interface Row {
   updated_at: string;
 }
 
-/** Rejected versions before the owner decides (owner decision, wave 1). */
+/** Rejected versions before the grade escalates to the delegator (owner decision, wave 1). */
 export const MAX_LOOPS = 3;
 /** The waits after successive failed grader passes (1, 5, 15 then 60 minutes); the pass after the last wait is the 5th. */
 export const GRADER_RETRY_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
-/** Failed grader passes before the owner hears of it; the retry ladder has one wait fewer. */
+/** Failed grader passes before the grade escalates; the retry ladder has one wait fewer. */
 export const MAX_GRADER_FAILURES = 5;
 /** How long after the `failures`-th failed pass the runner retries it. */
 export const graderRetryDelay = (failures: number) => GRADER_RETRY_MS[Math.min(Math.max(failures, 1), GRADER_RETRY_MS.length) - 1]!;
@@ -149,7 +150,7 @@ export class Grades {
       .filter((g) => g.state !== "grading_failed" || !g.failedAt || Date.parse(g.failedAt) + graderRetryDelay(g.failures) <= now);
   }
 
-  /** Escalated rows, newest first: the owner channel tells the owner of each once. */
+  /** Escalated rows, newest first (the Fleet Ops `grade` check flags one waiting over a day). */
   escalated(): Grade[] {
     return (this.db.prepare("SELECT * FROM grades WHERE state = 'escalated' ORDER BY updated_at DESC LIMIT 50").all() as unknown as Row[]).map(fromRow);
   }
@@ -159,14 +160,14 @@ export class Grades {
     return (this.db.prepare("SELECT g.* FROM grades g JOIN grade_resubmits r ON r.issue_id = g.issue_id WHERE g.state = 'escalated'").all() as unknown as Row[]).map(fromRow);
   }
 
-  /** Marks an escalated task as finished again (the completion gate); its state stays the owner's. */
+  /** Marks an escalated task as finished again (the completion gate); its state stays the delegator's. */
   markResubmitted(issueId: string): void {
     this.db.prepare("INSERT OR IGNORE INTO grade_resubmits (issue_id, at) VALUES (?, ?)").run(issueId, new Date().toISOString());
   }
 
   /**
    * The runner's check of a resubmitted escalated task: a deliverable version other than the last one graded goes back to
-   * the grader; the same version stays escalated (only the owner resolves it). The mark is cleared either way.
+   * the grader; the same version stays escalated (the delegator or the owner resolves it). The mark is cleared either way.
    */
   resubmit(issueId: string, version: string): Grade | undefined {
     this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
@@ -191,6 +192,12 @@ export class Grades {
     return this.get(issueId)!;
   }
 
+  /** An escalated grade accepted by the task's delegator (closing it): the row is settled, its verdicts kept. */
+  accept(issueId: string): void {
+    const g = this.get(issueId)!;
+    this.set(issueId, "satisfied", g.attempts, g.verdicts, 0, null);
+  }
+
   /** Waiting for the grader again (the completion gate). */
   pend(issueId: string): void {
     const g = this.get(issueId)!;
@@ -200,7 +207,7 @@ export class Grades {
   /**
    * One grading pass's outcome. A rejected version counts once (loops are distinct versions). A version rejected before and
    * handed in again unchanged, the MAX_LOOPS-th rejected version, cannot_judge, a grader refusal and evidence that never came
-   * (error) escalate to the owner. A grader that failed or returned no usable criteria (grading_failed) is retried on the
+   * (error) escalate to the delegator. A grader that failed or returned no usable criteria (grading_failed) is retried on the
    * 1-5-15-60 minute ladder and only escalates after MAX_GRADER_FAILURES passes; any real verdict clears that count.
    */
   record(issueId: string, v: z.infer<typeof VerdictSchema>, now = Date.now()): Grade {
@@ -247,14 +254,14 @@ export function gradingReviewPolicy(policy: Record<string, unknown> | null | und
 export type CompletionPath = z.infer<typeof GateSchema>["via"];
 /**
  * pass: the path may close the task as it would have. Otherwise the task goes to in_review with the `grading` label and the
- * row has this state (escalated: it waits for the owner; grading_failed: the runner retries it).
+ * row has this state (escalated: it waits for the delegator; grading_failed: the runner retries it).
  */
 export type GateResult = { pass: true } | { pass: false; state: "pending" | "awaiting_evidence" | "needs_revision" | "grading_failed" | "escalated"; label: "grading" };
 
 /**
  * The completion gate, idempotent. A task without a rubric or with grading switched off passes, and so does a satisfied one
  * that is already done (another path closing it again). Satisfied is not sticky: a satisfied task reopened and finished
- * again is graded again (each verdict is bound to its deliverable version). An escalated task stays the owner's: finishing
+ * again is graded again (each verdict is bound to its deliverable version). An escalated task stays the delegator's: finishing
  * it again only marks it, and the runner sends it back to the grader once there is a new deliverable version.
  */
 export function completionGate(grades: Grades, issueId: string, _via: CompletionPath, { done = false, on = gradingOn() }: { done?: boolean; on?: boolean } = {}): GateResult {

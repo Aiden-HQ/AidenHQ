@@ -271,7 +271,7 @@ export function gradeNote(g, rubric, outcome, { version, reason } = {}) {
         : outcome === "grading_failed"
           ? `**Grading failed; retrying.** (${reason ?? g.reason ?? "the grader failed or returned no usable criteria"}). No rubric verdict yet: the grader runs again shortly.`
           : outcome === "escalated" && g.outcome === "grading_failed"
-            ? `**Grading failed; escalated to the owner.** The grader failed 5 times and no rubric criterion was assessed. This is not a request to accept or reject ungraded work: it needs the grader fixed or a later retry.`
-            : `**Graded: escalated to the owner** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). It waits for their decision: they close it to accept, or reopen it with what to change.`;
+            ? `**Grading failed; escalated to the delegator.** The grader failed 5 times and no rubric criterion was assessed. The delegator judges the work from its evidence: closing the task accepts it; reopening it with what to change sends a new version to the grader.`
+            : `**Graded: escalated to the delegator** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader.`;
   return [head, lines.join("\n"), `_Grader: ${g.model || "none"}; version ${String(version ?? "").slice(0, 80) || "(none)"}. The grader's words, not the owner's._`, GRADER_MARKER].filter(Boolean).join("\n\n");
 }

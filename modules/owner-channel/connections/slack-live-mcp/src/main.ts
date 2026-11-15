@@ -199,7 +199,7 @@ if (board && cfg.telegramToken && cfg.telegramChatId) {
       // The daily approvals digest: the board hands it over once, from 21:00 in the owner's timezone.
       board.digest().then(async (text) => void (text ? await postTelegram(cfg, text) : undefined)).catch((err) => log.warn({ err: String(err) }, "approvals digest failed")),
       // Graded tasks the grader escalated (graded done): one line each, handed over once by the board.
-      board.escalations().then(async (lines) => { for (const l of lines) await postTelegram(cfg, l); }).catch((err) => log.warn({ err: String(err) }, "grade escalations failed")),
+      board.escalations().then(async (lines) => { for (const l of lines) await postTelegram(cfg, l); }).catch((err) => log.warn({ err: String(err) }, "owner notices failed")),
       sendOutcomes(board, store, (text) => postTelegram(cfg, text), (id, text) => editTelegram(cfg, id, text)).catch((err) => log.warn({ err: String(err) }, "approval outcomes failed")),
     ]);
   void cards();

@@ -97,11 +97,11 @@ test("a grader timeout goes to the next model; when every model fails it is a re
   assert.match(fail.reason, /aborted due to timeout/);
 });
 
-test("a grader that keeps failing escalates with honest wording, not an accept-or-reject request", () => {
+test("a grader that keeps failing escalates to the delegator with honest wording", () => {
   const note = gradeNote({ outcome: "grading_failed", model: "glm", criteria: [], reason: "the grader failed (timeout)" }, [], "escalated", { version: "v1" });
   assert.match(note, /failed 5 times/);
   assert.match(note, /no rubric criterion was assessed/);
-  assert.match(note, /not a request to accept or reject ungraded work/);
+  assert.match(note, /delegator judges the work from its evidence/);
 });
 
 test("corrupt or empty criteria are a retryable grading failure, never a verdict", async () => {
