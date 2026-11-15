@@ -878,6 +878,7 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
   const say = [];
   const retier = [];
   const wake = [];
+  const turned = []; // PRs the queue refused: the caller wakes the Engineer with the reason (those in `fixes` get their own wake)
   const fixes = []; // PRs not merged because their checks failed on this head: the caller wakes the task's Engineer
   const t = now.getTime();
   for (const p of queue.prs.filter((x) => x.status === "pending")) {
@@ -885,6 +886,7 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
       Object.assign(p, { status: "failed", note: why });
       delete p.wait;
       say.push(`**Not merged:** ${p.url}: ${why}.`);
+      turned.push({ repo: p.repo, number: p.number, url: p.url, head: p.head, why, key: why.slice(0, 40) });
     };
     // again: past the limit the design reviewer is asked once more for the same head (the caller files its task again), and
     // the wait starts over; past it a second time the PR is parked (not merged, with a note to ask again).
@@ -991,12 +993,12 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
     }
   }
   const out = say.length ? [say.join("\n")] : [];
-  if (queue.prs.some((x) => x.status === "pending")) return { queue, say: out, retier, wake, fixes };
+  if (queue.prs.some((x) => x.status === "pending")) return { queue, say: out, retier, wake, fixes, turned };
   const merged = queue.prs.filter((x) => x.status === "merged").length;
   const failed = queue.prs.filter((x) => x.status === "failed" || x.status === "escalated").length;
   Object.assign(queue, { state: failed ? "stopped" : "done", finishedAt: now.toISOString(), ...(failed ? { reason: `${failed} not merged` } : {}) });
   const headline = failed ? `**Merges finished:** ${merged} merged, ${failed} not.` : `**Done:** ${merged} merged, ${minutes(t - Date.parse(queue.startedAt))} minutes in all.`;
-  return { queue, say: [...out, summary(queue, headline)], done: queue.state, retier, wake, fixes };
+  return { queue, say: [...out, summary(queue, headline)], done: queue.state, retier, wake, fixes, turned };
 }
 
 /**

@@ -138,6 +138,32 @@ describe("flow-autonomy", { concurrency: true }, () => {
     it("never errors or asks for a repository along the way", () => t.noErrors());
   });
 
+  describe("a requested merge turned away, end to end", { concurrency: 1 }, () => {
+    const t = tier0();
+
+    // A merge refused before it enters the queue (red checks on the head here) is only a "Not merged" comment, which starts no
+    // turn: the runner starts the Engineer's next one with the reason, once for that head.
+    it("wakes the Engineer with the reason, once per head", async () => {
+      const { waitFor, fakeLog, partComments, step, turn, settled } = t;
+      await settled();
+      reviewerKey(t);
+      step("third\naidenhq push acme/app feat/third");
+      await turn("Add the third change and push it.");
+      const state = new State(join(t.dir, "state"));
+      state.updateBranch("part", "acme/app", "feat/third", { pr_url: "https://github.com/acme/app/pull/8" });
+      state.db.close();
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 8: { branch: "feat/third", files: ["third.txt"], checks: "FAILURE" } }));
+      step("more\naidenhq push acme/app feat/third");
+      await turn("Add a bit more to it and push.");
+      const woken = () => fakeLog().filter((e) => e.kind === "claude" && /wasn't merged: .*named check\(s\) failed on the head/.test(e.data.prompt));
+      await waitFor("the Engineer's turn with the reason", () => woken().length === 1);
+      assert.match(woken()[0].data.prompt, /\`aidenhq merge https:\/\/github.com\/acme\/app\/pull\/8\` again/);
+      assert.ok(partComments().some((c) => /\*\*Not merged:\*\*/.test(c)), "the comment is still said");
+    });
+
+    it("never errors or asks for a repository along the way", () => t.noErrors());
+  });
+
   describe("autonomy tier0 with a design reviewer, end to end", { concurrency: 1 }, () => {
     const t = tier0();
 
