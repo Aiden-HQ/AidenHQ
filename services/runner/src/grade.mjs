@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { REPO_ROOT } from "./config.mjs";
-import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, fileEvidence, namedTasks, otherTaskEvidence, predatesDeploys, prEvidence, rubricNamesFiles, stamp, wordsEvidence } from "./evidence.mjs";
+import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, fileEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, rubricNamesFiles, stamp, wordsEvidence } from "./evidence.mjs";
 import { MAX_DIFF, reviewerModels } from "./review.mjs";
 
 export { GRADER_MARKER };
@@ -279,6 +279,30 @@ export async function grade({ rubric, deliverable, facts, data, request, images 
 
 /** Criteria met or unverified, at least one unverified and none shown unmet: the board escalates it (grades.ts unverifiedOnly). */
 export const unverifiedOnly = (criteria = []) => criteria.some((c) => c.met === "unknown") && !criteria.some((c) => c.met === "no");
+
+/**
+ * The premise an escalation for missing evidence states: built from what the task's record shows *now* (`facts`, from
+ * presentNow), never replayed from the reason the wait captured when it began. A wait that started as "checks still running"
+ * and escalates after those checks ended must not keep saying so. With no facts to state (a file or report deliverable, whose
+ * evidence is the task's own words, gathered again on this pass), the reason gathered now is all there is.
+ */
+export function evidencePremise(awaiting, facts = []) {
+  return `still waiting for its evidence a day after it was finished: ${facts.length ? facts.join("; ") : awaiting}`;
+}
+
+/**
+ * What a held grade does when its wait is over: hold the row, or escalate with a reason. Before anyone is asked to decide, the
+ * deliverable is read again from the task's own record (presentNow): present means the work is there, so the row keeps waiting
+ * for the next grading pass instead of asking the delegator about shipped work. With nothing there, the reason is built from
+ * the facts read now, never from the reason the wait captured; a deliverable that never existed keeps its own wording.
+ * { hold: true, facts } or { reason, facts }.
+ */
+export async function escalationFor(ev, deliverable, deps) {
+  if (ev.missing) return { reason: `finished without its deliverable: ${ev.awaiting}`, facts: [] };
+  const now = await presentNow(deliverable, deps).catch(() => ({ present: false, facts: [] }));
+  if (now.present) return { hold: true, facts: now.facts };
+  return { reason: evidencePremise(ev.awaiting, now.facts), facts: now.facts };
+}
 
 /** The grader's note on the task: what it found, per criterion, and what follows. */
 export function gradeNote(g, rubric, outcome, { version, reason } = {}) {

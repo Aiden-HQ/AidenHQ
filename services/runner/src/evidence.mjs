@@ -51,11 +51,80 @@ function checkState(pr, c, gate) {
 }
 
 /**
+ * The PRs the task's own runner records tie to it, for a merge its branch rows no longer name: the queue it ran for this task,
+ * the merges it was asked to run, and the merge cards it filed on it (deps.taskMerged). dedupe: one row per PR.
+ */
+export function taskMergePrs(rows) {
+  const out = [];
+  for (const r of rows ?? []) {
+    const p = r?.url ? findPrs(String(r.url))[0] : r?.repo && r?.number ? { repo: String(r.repo), number: Number(r.number), url: `https://github.com/${r.repo}/pull/${r.number}` } : undefined;
+    if (p && !out.some((x) => x.repo.toLowerCase() === p.repo.toLowerCase() && x.number === p.number)) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * What the task's own record says about its deliverable *now*, read fresh when an evidence wait is about to escalate: a PR
+ * merged (the task's branch rows, or the runner's own merge records for it when those rows are gone) with its mergedAt, and for
+ * a PR in an app's repo a healthy deploy of that merge commit; for an app, a healthy deploy record of its deployed sha; for an apply, a
+ * used card with an outcome. { present, facts }: present means the work is there and the wait must hold, not escalate; facts are
+ * what this read found and are the only source of a written escalation's premise. A file or report deliverable's evidence is
+ * the task's own words, gathered again on the same pass, so there is nothing here to confirm outside it (no facts).
+ */
+export async function presentNow(deliverable, deps) {
+  const kind = deliverable?.kind;
+  const facts = [];
+  if (kind === "pr") {
+    let prs = byRef((await deps.taskPrs?.()) ?? [], deliverable.ref);
+    if (!prs.length && deps.taskMerged) prs = byRef(taskMergePrs(await deps.taskMerged().catch(() => [])), deliverable.ref);
+    let merged;
+    for (const p of prs.slice(0, 5)) {
+      const pr = (await deps.pr(p.repo, p.number).catch(() => null))?.repository?.pullRequest;
+      if (!pr) {
+        facts.push(`${p.url} could not be read just now`);
+        continue;
+      }
+      if (pr.state !== "MERGED") {
+        const running = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup).filter((c) => c.pending).map((c) => c.name);
+        facts.push(`${p.url} is ${pr.state === "OPEN" ? "open, not merged yet" : String(pr.state).toLowerCase()}${running.length ? ` (checks still running: ${running.join(", ")})` : ""}`);
+        continue;
+      }
+      merged ??= { repo: p.repo, sha: pr.mergeCommit?.oid ?? pr.headRefOid ?? "" };
+      facts.push(`${p.url} is merged${pr.mergedAt ? ` at ${pr.mergedAt}` : ""}${pr.mergeCommit?.oid ? ` (merge commit ${pr.mergeCommit.oid.slice(0, 12)})` : ""}`);
+    }
+    // A merged PR is delivered by itself; an app on its repo only adds the "deployed at that commit" fact.
+    if (merged && deps.appOfRepo) {
+      const app = await deps.appOfRepo(merged.repo).catch(() => null);
+      const rows = app ? (await deploysOf(app, merged.sha, deps)).rows : [];
+      const d = rows.find((r) => r.status === "healthy");
+      if (app) facts.push(d ? `app ${app.name}: ${merged.sha.slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: no healthy deploy of ${merged.sha ? merged.sha.slice(0, 12) : "the merge commit"}`);
+    }
+    return { present: Boolean(merged), facts };
+  }
+  if (kind === "app") {
+    const app = await deps.app?.(deliverable.ref).catch(() => null);
+    if (!app) return { present: false, facts: [`no app named ${deliverable.ref || "(none)"} is deployed yet`] };
+    const d = (await deploysOf(app, app.sha, deps)).rows.find((r) => r.status === "healthy");
+    return { present: Boolean(d), facts: [d ? `app ${app.name}: ${String(app.sha).slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: deployed commit ${String(app.sha ?? "(none)").slice(0, 12)} has no healthy deploy`] };
+  }
+  if (kind === "apply") {
+    const applied = ((await deps.approvals?.()) ?? []).filter((a) => a.action === "apply" && a.state === "used" && a.outcome).at(-1);
+    return applied ? { present: true, facts: [`apply ${applied.id}: used, ${applied.outcome}`] } : { present: false, facts: ["no apply filed yet"] };
+  }
+  return { present: false, facts: [] };
+}
+
+/**
  * The task's PRs as evidence: { awaiting } or { version, facts, data }. `prs` are the runner's own PRs for the task, narrowed
  * by the ref (a PR named only in the ref is never read). deps: pr(repo, n) (merges.PR_QUERY's data), diff(repo, n), ownRepo(slug).
  */
 export async function prEvidence(prs, ref, deps) {
   prs = byRef(prs, ref);
+  // No branch row names one: the runner's own records for the task (its merge queue and the merge cards it filed) still say
+  // which PR delivered it, so they are read rather than reporting "no pull request yet" for a merge whose row a cleanup, a
+  // prune or a state reset took away. Never a comment: its runner marker is text any writer can copy, so it proves nothing.
+  const byRecord = !prs.length && Boolean(deps.taskMerged);
+  if (byRecord) prs = byRef(taskMergePrs(await deps.taskMerged().catch(() => [])), ref);
   if (!prs.length) return { awaiting: "no pull request yet", missing: true };
   const facts = [];
   const versions = [];
@@ -72,11 +141,13 @@ export async function prEvidence(prs, ref, deps) {
     if (checks.some((c) => c.pending) || gate === "running") return { awaiting: `checks still running on ${p.url}` };
     // Outside the agents org and the product repo the runner can't merge and the owner doesn't: someone else merges it.
     if (pr.state === "OPEN" && deps.ownRepo && !deps.ownRepo(p.repo)) return { awaiting: `${p.url} is not merged yet` };
+    // The runner's record names the PR; GitHub says what became of it. Closed without merging is not a merge, not "still running".
+    if (byRecord && pr.state !== "MERGED") return { awaiting: `${p.url} ${pr.state === "OPEN" ? "is not merged yet" : "was closed without merging"}` };
     const merged = pr.state === "MERGED";
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     versions.push(`${p.repo}#${p.number}@${sha}`);
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "" });
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}`);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task" : ""}`);
     diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)")).slice(0, MAX_DIFF)}\n`;
   }
   // The board keeps a version in 200 characters: several PRs are bound by their hash.

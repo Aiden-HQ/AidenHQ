@@ -37,7 +37,7 @@ import { checkSignature, record } from "./breaker.mjs";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
 import { LUNA, UNSURE, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
-import { GRADE_SCHEMA, gather, grade, gradeNote, template } from "./grade.mjs";
+import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.mjs";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.mjs";
 import { jobUsage } from "./usage.mjs";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.mjs";
@@ -1343,6 +1343,9 @@ async function releaseGrades(grades) {
 
 /** What the grader reads, for one task: GitHub through the App, the board's cards and app status, Paperclip's comments and files. */
 function gradeDeps(issue) {
+  // Read once per pass: the wait's words and the guard read the same thread.
+  let thread;
+  const comments = () => (thread ??= pc.comments(issue.id));
   return {
     busy: () =>
       running.has(issue.id) || queue.some((j) => j.issue.id === issue.id)
@@ -1352,6 +1355,14 @@ function gradeDeps(issue) {
           : "",
     approvals: async () => (await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.id)}`)).approvals ?? [],
     taskPrs: async () => merges.findPrs(state.branches(issue.id).map((b) => b.pr_url).filter(Boolean).join("\n")),
+    // The PRs this task's own runner records tie to it when no branch row does: its merge queue for the task, the merges it was
+    // asked to run, and the merge cards it filed on it. The runner's own state and the board's cards, never a comment: a
+    // comment's runner marker is text any writer can copy, so it proves nothing about which task a PR belongs to.
+    taskMerged: async () => {
+      const cards = ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.id)}`)).approvals ?? []).filter((a) => a.action === "merge");
+      const asked = JSON.parse(state.get("auto_merges") || "{}")[issue.id]?.prs ?? [];
+      return [...(mergeQueue(issue.id)?.prs ?? []).filter((p) => p.status === "merged"), ...asked, ...cards.flatMap((a) => a.args?.prs ?? [])];
+    },
     ownRepo,
     pr: (repo, number) => mergeGithub.pr(repo, number),
     diff: async (repo, number) => (await execFileP(await findRealGh(), ["api", "-H", "Accept: application/vnd.github.diff", `repos/${repo}/pulls/${number}`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }))).stdout,
@@ -1361,7 +1372,7 @@ function gradeDeps(issue) {
     deployHistory: async (name, sha) => (await boardApi.get(`/internal/grades/deploys/${name}/${sha}`)).deploys,
     view: (name, path) => boardApi.post("/internal/grades/view", { name, path }),
     assignee: issue.assigneeAgentId, // whose comments are the task agent's own (wordsEvidence)
-    comments: () => pc.comments(issue.id),
+    comments,
     attachments: () => pc.attachments(issue.id),
     content: (id) => pc.attachmentContent(id),
     identifier: issue.identifier,
@@ -1396,7 +1407,8 @@ async function gradeOne(g) {
   if (["done", "cancelled"].includes(issue.status)) return;
   gradeLooked.set(g.issueId, Date.now());
   const rubric = g.rubric.length ? g.rubric : template(g.deliverable.kind);
-  const ev = await gather(g.deliverable, gradeDeps(issue), rubric);
+  const deps = gradeDeps(issue);
+  const ev = await gather(g.deliverable, deps, rubric);
   const verdictPath = `/internal/grades/${encodeURIComponent(g.issueId)}/verdict`;
   const agent = (await pc.agents()).find((a) => a.id === issue.assigneeAgentId);
   const last = g.verdicts?.at(-1);
@@ -1410,8 +1422,18 @@ async function gradeOne(g) {
       log("grading waits for evidence", { issue: issue.identifier, why: ev.awaiting });
       return;
     }
+    // The wait is over: hold the row if the deliverable turns out to be there after all, else escalate on today's facts
+    // (escalationFor says which, and why). Both places the owner hears of a held grade — the note below and the board's
+    // owner-channel line, which carries the escalated row — go through here; the other escalations (rejected versions,
+    // cannot_judge, 5 failed grader passes) do not.
+    const esc = await escalationFor(ev, g.deliverable, deps);
+    if (esc.hold) {
+      log("grading waits: the deliverable is present", { issue: issue.identifier, why: ev.awaiting, facts: esc.facts.join("; ").slice(0, 400) });
+      if (g.state !== "awaiting_evidence") await boardApi.post(verdictPath, { version: "", outcome: "awaiting_evidence" });
+      return;
+    }
     ev.version = "";
-    v = { outcome: "error", model: "", criteria: [], reason: ev.missing ? `finished without its deliverable: ${ev.awaiting}` : `still waiting for its evidence a day after it was finished: ${ev.awaiting}` };
+    v = { outcome: "error", model: "", criteria: [], reason: esc.reason };
   } else if (g.state === "awaiting_evidence" && last?.verdict === "satisfied" && last.version === ev.version) {
     // Graded satisfied before, but closing the task failed: the same version keeps its verdict, no second grader call.
     v = { outcome: "satisfied", model: last.model, criteria: last.criteria };
