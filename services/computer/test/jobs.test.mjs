@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { JOB_ENV_NAMES, Jobs, LEASE_MS, Tokens, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, stale } from "../lib.mjs";
-import { startRepoHelper } from "../../runner/src/repohelper.mjs";
+import { startRepoHelper } from "../../runner/src/repohelper.ts";
 
 const keys = { plugin: "plugin-key", runner: "runner-key", progress: "progress-key" };
 const job = (container, issueId = "iss-1") => ({ container, agentId: "app-eng", issueId, identifier: "PEN-7", workspace: "/w/tasks/PEN-7", codexHome: "/s/codex-openrouter/iss-1", helperPort: 4100, helperToken: "ab".repeat(12) });

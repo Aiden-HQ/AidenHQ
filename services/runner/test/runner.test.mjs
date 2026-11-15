@@ -7,9 +7,9 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { crewNames, findRepos, mentionedRepos, normalizeRepo, parseCommand, repoAllowed, resolveEngine } from "../src/commands.mjs";
 import { buildCommand, cowRoot, removeLayers } from "../src/engines.mjs";
-import { staleRoutineRuns } from "../src/recurring.mjs";
+import { staleRoutineRuns } from "../src/recurring.ts";
 import { firstPrompt, followUpPrompt, latestReport, observeSection } from "../src/prompt.mjs";
-import { accessToken, gcpSession } from "../src/gcp.mjs";
+import { accessToken, gcpSession } from "../src/gcp.ts";
 import { diskName, plan, syncFiles } from "../src/files.mjs";
 
 const cfg = {
@@ -420,7 +420,7 @@ describe("repositories as Paperclip stores them", () => {
 
 
 describe("review requests handled on GitHub", async () => {
-  const { prLinks, reviewOutcome, reviewTarget } = await import("../src/reviews.mjs");
+  const { prLinks, reviewOutcome, reviewTarget } = await import("../src/reviews.ts");
   const slackTask = {
     title: "Reply to Nora: review live-contracts PR #127",
     createdAt: "2026-10-06T22:30:00.000Z",
@@ -611,7 +611,7 @@ describe("branch names in the repository's style", async () => {
 });
 
 describe("recurring tasks: GitHub activity", async () => {
-  const { activityComment, formatRepo } = await import("../src/recurring.mjs");
+  const { activityComment, formatRepo } = await import("../src/recurring.ts");
   const since = "2026-10-05T05:00:00.000Z";
   const until = "2026-10-12T05:00:00.000Z";
 
@@ -637,7 +637,7 @@ describe("recurring tasks: GitHub activity", async () => {
 });
 
 describe("recurring tasks: direct pushes", async () => {
-  const { formatRepo } = await import("../src/recurring.mjs");
+  const { formatRepo } = await import("../src/recurring.ts");
   it("lists default-branch commits that didn't come from a merged PR", () => {
     const history = {
       totalCount: 3,

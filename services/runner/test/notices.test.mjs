@@ -1,7 +1,7 @@
-// Notices inform; only an outcome wakes an agent (notices.mjs). What reaches a parent from the runner, decided in one place.
+// Notices inform; only an outcome wakes an agent (notices.ts). What reaches a parent from the runner, decided in one place.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "../src/notices.mjs";
+import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "../src/notices.ts";
 
 test("outcomes go to the parent, progress stays on the sub-task, and an unknown kind is a bug", () => {
   for (const k of ["done", "parked", "escalated", "failed", "decision"]) assert.equal(wakesParent(k), true, k);

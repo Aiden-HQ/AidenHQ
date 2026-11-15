@@ -6,7 +6,7 @@
 // on a parent and only 29% of them advanced anything.
 
 /** Outcomes: the sub-task ended in a state its delegator acts on. */
-const OUTCOMES = new Set([
+const OUTCOMES = new Set<string>([
   "done", // closed (graded satisfied, or closed ungraded), or finished with nothing left for the runner or a grader
   "parked", // the runner stopped retrying (the AI reviewer's rejections ran out)
   "escalated", // the grader gave the decision to the delegator
@@ -14,7 +14,7 @@ const OUTCOMES = new Set([
   "decision", // it needs the delegator's word (a "pr" go-ahead, a brief two reviewers found unclear)
 ]);
 /** Progress: something on the way that the runner, the Engineer or the grader still carries on from. */
-const PROGRESS = new Set([
+const PROGRESS = new Set<string>([
   "rejected", // a card rejected and sent back to its Engineer (the runner dispatches it with the note)
   "applied", // an approved card ran, with a grade still to follow
   "merged", // the merges ran, with a grade still to follow
@@ -22,7 +22,10 @@ const PROGRESS = new Set([
 ]);
 
 /** Whether a notice of this kind goes to the parent (an outcome) or stays on the sub-task (progress). */
-export function wakesParent(kind) {
+/** A notice the runner posts about a sub-task. */
+export type NoticeKind = "done" | "parked" | "escalated" | "failed" | "decision" | "rejected" | "applied" | "merged" | "finished";
+
+export function wakesParent(kind: string): boolean {
   if (OUTCOMES.has(kind)) return true;
   if (PROGRESS.has(kind)) return false;
   throw new Error(`unknown notice kind: ${kind}`);
@@ -32,7 +35,7 @@ export function wakesParent(kind) {
  * Whether a task's grade (its board state; none when ungraded) still has its say: then the grader's outcome follows, and
  * the task's progress is not news. A satisfied, escalated or settled grade has said it already.
  */
-export const graderSpeaks = (state) => ["open", "pending", "awaiting_evidence", "needs_revision", "grading_failed"].includes(state);
+export const graderSpeaks = (state: string | null | undefined): boolean => ["open", "pending", "awaiting_evidence", "needs_revision", "grading_failed"].includes(state as string);
 
 /**
  * The kind of the summary posted when a parent's Engineer sub-tasks have all finished a turn (prompt.mjs subtaskSummary's
@@ -40,7 +43,16 @@ export const graderSpeaks = (state) => ["open", "pending", "awaiting_evidence", 
  * nothing (each committed change already has its card): the grade says the rest. Otherwise it is the outcome: work that
  * failed or stopped, a "pr" the delegator has to reply, or ungraded work whose result is now the delegator's to judge.
  */
-export function summaryKind(rows) {
+/** One finished Engineer sub-task in a parent's summary (prompt.mjs subtaskSummary). */
+export interface SummaryRow {
+  status?: string;
+  job?: string;
+  committed?: boolean;
+  cards?: unknown[];
+  graded?: boolean;
+}
+
+export function summaryKind(rows: SummaryRow[]): NoticeKind {
   if (rows.some((r) => r.status !== "cancelled" && r.job !== "done")) return "failed";
   if (rows.some((r) => r.committed && !(r.cards ?? []).length)) return "decision";
   return rows.every((r) => r.status === "cancelled" || r.graded) ? "finished" : "done";
@@ -52,7 +64,7 @@ export function summaryKind(rows) {
  * runner stops: the task is parked and the delegator is told, never the Engineer. Two reviewers unsure may mean the brief
  * is the fix, which is the delegator's: it is told too. A card whose head moved (stale) needs nothing: a newer one follows.
  */
-export function afterRejection({ code, rejects, maxRejects, unsure }) {
+export function afterRejection({ code, rejects, maxRejects, unsure }: { code: string | null | undefined; rejects: number; maxRejects: number; unsure: string }): { dispatch: boolean; tell?: NoticeKind } {
   if (code === "stale_head") return { dispatch: false };
   if (rejects >= maxRejects) return { dispatch: false, tell: "parked" };
   return { dispatch: true, ...(code === unsure ? { tell: "decision" } : {}) };

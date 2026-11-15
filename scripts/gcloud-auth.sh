@@ -2,7 +2,7 @@
 # Signs AidenHQ in to Google Cloud for Engineer jobs: plain gcloud application-default
 # login, with gcloud's own scopes (asking for more got the sign-in blocked by Google's app policy). Run it
 # again when the 16-hour Google Cloud session ends: the runner says so on the task. Jobs only ever get a
-# one-hour access token (services/runner/src/gcp.mjs); this sign-in stays hidden from them. Opens a
+# one-hour access token (services/runner/src/gcp.ts); this sign-in stays hidden from them. Opens a
 # browser for the Google sign-in.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,7 +22,7 @@ CLOUDSDK_CONFIG="$dir" run_gcloud auth application-default login --disable-quota
 chmod 0600 "$dir/application_default_credentials.json"
 # Prove the refresh works the way jobs will use it.
 node --input-type=module -e "
-import { accessToken } from '$repo/services/runner/src/gcp.mjs';
+import { accessToken } from '$repo/services/runner/src/gcp.ts';
 const r = await accessToken('$dir/application_default_credentials.json').catch((e) => { console.error('error: ' + e.message); process.exit(1); });
 console.log('Google Cloud signed in for AidenHQ. Jobs get one-hour tokens (this one valid until ' + new Date(r.expiresAt).toLocaleTimeString() + ', refreshed while they run).');
 "

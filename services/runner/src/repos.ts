@@ -6,12 +6,15 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
-export const shell = (token) => async (cmd, args) => (await run(cmd, args, { env: { ...process.env, GH_TOKEN: token }, maxBuffer: 1024 * 1024 }).catch((e) => ({ stdout: e.stdout ?? "" }))).stdout;
+/** Runs a command and returns its stdout; a failed command returns what it printed before failing. */
+export type Shell = (cmd: string, args: string[]) => Promise<string>;
 
-export function repoAccess({ token, script, sh = shell(token) }) {
+export const shell = (token: string | undefined): Shell => async (cmd, args) => (await run(cmd, args, { env: { ...process.env, GH_TOKEN: token }, maxBuffer: 1024 * 1024 }).catch((e: { stdout?: string }) => ({ stdout: e.stdout ?? "" }))).stdout;
+
+export function repoAccess({ token, script, sh = shell(token) }: { token?: string; script: string; sh?: Shell }) {
   return {
     /** A write deploy key and push route for this repo, unless it already has one. */
-    async ensureWritable(slug) {
+    async ensureWritable(slug: string): Promise<void> {
       if (!token) return;
       const routes = await sh("git", ["config", "--global", "--get-regexp", "pushinsteadof"]);
       if (routes.toLowerCase().includes(`:${slug.toLowerCase()}.pushinsteadof`)) return;

@@ -2,7 +2,7 @@
 // input_tokens includes the cached ones.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { usageFromLog } from "../src/usage.mjs";
+import { usageFromLog } from "../src/usage.ts";
 
 test("opencode steps and Codex turns sum to uncached, cached and output tokens", () => {
   const opencode = [

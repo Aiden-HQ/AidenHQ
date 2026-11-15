@@ -315,7 +315,7 @@ bad_ch="$(echo "$ch_tools" | grep -Ev '^(get_organizations|get_services_list|get
 # one-hour access token only, never the sign-in's refresh token.
 grep -q '\*\*Read only:\*\* describe, list, get, read and get-iam-policy commands' services/runner/src/prompt.mjs \
   && ! grep -q 'refresh_token' services/runner/src/engines.mjs \
-  && pass "runner: Google Cloud jobs get a one-hour token and the read-only rule (services/runner/src/gcp.mjs, prompt.mjs)" || fail "runner: Google Cloud jobs lost the read-only rule, or got the refresh token"
+  && pass "runner: Google Cloud jobs get a one-hour token and the read-only rule (services/runner/src/gcp.ts, prompt.mjs)" || fail "runner: Google Cloud jobs lost the read-only rule, or got the refresh token"
 grep -q '^export function layout(cfg' services/runner/src/engines.mjs && ! grep -q '"--dev-bind", "/", "/"' services/runner/src/engines.mjs && grep -q '"--tmpfs", "/tmp", "--tmpfs", home' services/runner/src/engines.mjs \
   && grep -q '"--unshare-pid", "--unshare-ipc",' services/runner/src/engines.mjs && grep -q '"--proc", "/proc"' services/runner/src/engines.mjs \
   && pass "runner: jobs see an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "runner: jobs bind the host's whole filesystem again"
@@ -555,11 +555,11 @@ grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-set
 # (the Platform Engineer's line), refused anywhere else. A repository is created only by an approved create_repo card
 # (`create-repo` files it, the panel's): one call, in createRepoApproved, never from naming or cloning one. `review` asks the
 # AI reviewer about what `pr` would file, files and publishes nothing, and is capped per job.
-tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelper.mjs)"
+tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelper.ts)"
 [ "$tools" = 'export const TOOLS = ["repo", "status", "review", "push", "pr", "merge", "close", "create-repo", "apply", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks"]' ] \
   && grep -qF 'close: agentClose,' "$rmain" \
   && [ "$(grep -c 'createRepo(' "$rmain")" = 1 ] && awk '/^async function createRepoApproved/,/^}/' "$rmain" | grep -qF 'await app.createRepo(slug)' \
-  && ! grep -qE 'POST.*/repos\b|/user/repos' services/runner/src/repos.mjs \
+  && ! grep -qE 'POST.*/repos\b|/user/repos' services/runner/src/repos.ts \
   && [ "$(awk '/^async function agentTasks?\(/,/^}/' services/runner/src/main.mjs | grep -c '^  requireTaskReads(ctx);')" = 2 ] \
   && [ "$(awk '/^async function agentMerge/,/^}/' "$rmain" | grep -n 'tierFor(ctx.issue, "merge"' | head -1 | cut -d: -f1)" -lt "$(awk '/^async function agentMerge/,/^}/' "$rmain" | grep -n 'await fileApproval(ctx.issue, { action: "merge"' | cut -d: -f1)" ] \
   && awk '/^async function agentMerge/,/^}/' "$rmain" | grep -qF 'const now = bound.filter((_, i) => tiers[i].tier === 0);' \
