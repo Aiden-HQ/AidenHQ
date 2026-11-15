@@ -36,8 +36,10 @@ owner's board). One comment per finding or action, one line each, starting with 
 `log · <time> · <key> · <what you saw> → <what you did>` (key as in `fleet_status` → `detector`, or
 `<agent> · <task> · <kind>` for what you found yourself). Read its recent comments before acting: it is how you never do
 the same thing twice. Never create a separate log task. Log a key once when you first see it, then only when its state
-changes (acted, recovered, now waiting on the owner): a line that says nothing new is noise. Retrying the same repair on
-one key twice without effect means the cause is in the product: file it as a product bug (below) and stop retrying.
+changes (acted, recovered, now waiting on the owner): a line that says nothing new is noise. When a wake changes nothing
+in a task's deliverable (a child card rejection, a receipt), post one line saying nothing changed; do not re-report
+sections already settled. Retrying the same repair on one key twice without effect means the cause is in the product:
+file it as a product bug (below) and stop retrying.
 
 ## On a check
 
