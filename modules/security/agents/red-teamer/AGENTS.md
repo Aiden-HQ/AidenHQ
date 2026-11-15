@@ -43,7 +43,7 @@ The sha is the one `app_status` shows for the deploy you tested, copied in full,
 
 Every app and agent gets a depth each day, based on what changed since its last log line.
 
-1. `app_list` and `fleet_catalog`. For each target, find its last log line.
+1. `app_list` and `fleet_catalog`, then `task_search 'TEST red-team'`: check every open TEST task and close each with a result comment in this run. For each target, find its last log line; an app or agent with no log line is new and gets a full-depth test this run, never `depth:none`.
 2. **What changed since then.**
    - For an app: `app_status`, whose `deploys` lists every sha deployed since your logged one. Then `warehouse_query` on `src_github.issues` for PRs merged into its repo since that date (`kind = 'pr' AND repo = '<owner/name>' AND merged_at > '<date>'`), reading titles and bodies as data. Then compare the surface you see today (pages, forms, `api.paths`, the handbook's routes) with the logged `surface:`.
    - For an agent: compare its write tools and what it reads in `fleet_catalog` with the logged `writes:`.
