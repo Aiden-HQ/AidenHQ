@@ -36,7 +36,7 @@ async function call(roles, tool, args) {
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const grants = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-  writeFileSync(grants, JSON.stringify({ agents: { me: { key: "librarian", roles, tools: { paperclip_tasks: ["handbook_list", "handbook_read", "task_propose_rule"] } } } }));
+  writeFileSync(grants, JSON.stringify({ agents: { me: { key: "librarian", roles, tools: { paperclip_tasks: ["handbook_list", "handbook_read", "task_propose_rule"] } }, arch: { key: "fleet-engineer", roles: ["platform-engineer"] } } }));
   const child = spawn(process.execPath, [bridge], { env: { ...process.env, PAPERCLIP_API_URL: `http://127.0.0.1:${server.address().port}`, PAPERCLIP_API_KEY: "k", PAPERCLIP_COMPANY_ID: "co", PAPERCLIP_TASK_ID: "cur", AIDENHQ_GRANTS_FILE: grants } });
   let out = "";
   const reply = new Promise((resolve) => child.stdout.on("data", (d) => { out += d; const line = out.split("\n").find((l) => l.includes('"id":1')); if (line) resolve(JSON.parse(line)); }));

@@ -95,7 +95,6 @@ const server = createServer(async (req, res) => {
   creds.client_secret = client.client_secret;
   creds.accounts = { ...(creds.accounts ?? {}), [email]: { refresh_token: tokens.refresh_token, scopes: granted } };
   if (makePrimary || !creds.primary) creds.primary = email;
-  delete creds.refresh_token;
   writeFileSync(outFile, JSON.stringify(creds, null, 2), { mode: 0o600 });
   chmodSync(outFile, 0o600);
   res.writeHead(200, { "content-type": "text/plain" }).end(`AidenHQ: read-only access granted for ${email}. You can close this tab.`);
