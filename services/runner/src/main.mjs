@@ -21,7 +21,7 @@ import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
-import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine, coversHead } from "./prompt.ts";
+import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, coversHead } from "./prompt.ts";
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.mjs";
@@ -3727,13 +3727,13 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     state.finishJob(jobId, result.timedOut ? "timeout" : result.code ? "failed" : outcome.finished ? "done" : "incomplete", rows.some((r) => r.unpublished.length) ? "committed" : undefined);
     if (outcome.finished) {
       // The agent's reply, in its own words. None: a comment that needed no answer ("thanks").
-      const reply = [outcome.silent ? "" : stripCommitLine(result.lastMessage), primerNote, sharedNote, ...(footer.length ? ["---", ...footer] : [])].filter(Boolean).join("\n\n");
+      const reply = [outcome.silent ? "" : String(result.lastMessage ?? "").trim(), primerNote, sharedNote, ...(footer.length ? ["---", ...footer] : [])].filter(Boolean).join("\n\n");
       await retryTransient(() => pc.finishStatus(issue.id, "in_review", reply.trim() ? `${REPLY_MARKER}${reply}` : undefined));
       // A graded deliverable's turn ended: the grader looks at it (a task without a rubric passes untouched).
       await mayClose(issue.id, "finish_turn");
     } else {
       // Failures also go to review (Paperclip refuses "blocked" without a blocker); the runner says what failed.
-      const report = stripCommitLine(result.lastMessage);
+      const report = String(result.lastMessage ?? "").trim();
       const failure = [
         outcome.headline,
         `Last lines of the log:\n\`\`\`\n${logTail(logPath)}\n\`\`\``,

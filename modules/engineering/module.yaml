@@ -6,7 +6,6 @@ isolation: code-exec
 agents:
   engineer-openrouter:
     department: engineering
-    # was engineer-glm; setup renames the existing agent
     persona: { name: Linus, voice: "Scrappy; tries the cheap route first and says plainly when it isn't good enough.", avatar: linus }
     # Paperclip never runs runner agents: opencode_local only holds the openrouter/<model> ids. The runner's engine is Codex
     # through the model gateway (codex-openrouter); `engine: openrouter` (an instance override) falls back to opencode.

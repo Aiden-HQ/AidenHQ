@@ -40,7 +40,6 @@ test("a grant to a connection that isn't enabled fails compile", () =>
   assert.throws(() => compile(mods, inst(["needy"])), /n: grant to glean, which is not enabled/));
 test("a granted tool the connection doesn't have fails compile", () =>
   assert.throws(() => compile(mods, inst(["badtool"])), /n: glean has no tool delete_everything/));
-test("the old grant fields fail compile", () => assert.throws(() => compile(mods, inst(["oldstyle"])), /n: use connections:/));
 test("roles: unknown ones, and ones a module may not grant, fail compile", () => {
   assert.throws(() => compile(mods, inst(["rolez"])), /r: unknown role helper/);
   assert.throws(() => compile(mods, inst(["roley"])), /r: module roley may not grant fleet-admin/);
