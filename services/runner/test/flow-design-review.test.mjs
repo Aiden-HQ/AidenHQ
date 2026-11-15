@@ -63,3 +63,48 @@ describe("flow-design-review", () => {
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
 });
+
+describe("flow-design-review: the task is one its reviewer can run", () => {
+  // The reviewer is an agent in a computer (the design module's UI Reviewer), as it is on the fleet: Paperclip holds a shared
+  // folder for a whole run, so a task filed into it without a folder of its own never starts, is left in progress with no run
+  // and is blocked for having no live execution path. A task with `agent_default` gets the reviewer's own folder and runs.
+  const t = flow({
+    env: { AIDENHQ_PRODUCT_REPO: "acme/aidenhq", AIDENHQ_GITHUB_AGENTS_ORG: "acme" },
+    runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n",
+    computers: ["designer-1"],
+  });
+  const reviews = () => t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9");
+
+  it("a board-filed design-review task starts a run instead of sitting in progress with none", async () => {
+    await t.settled();
+    const exited = new Promise((r) => t.runner.once("exit", r));
+    t.runner.kill("SIGTERM");
+    await exited;
+    mkdirSync(join(t.dir, "config/grants"), { recursive: true });
+    writeFileSync(join(t.dir, "config/grants/grants.json"), JSON.stringify({ autonomy: "tier0", agents: { "designer-1": { key: "ui-reviewer", roles: ["design-review"] } } }));
+    writeFileSync(join(t.dir, "secrets/reviewer_key"), `${"r".repeat(64)}\n`, { mode: 0o600 });
+    t.startRunner();
+
+    t.step("ui\naidenhq push acme/app feat/ui");
+    await t.turn("Restyle the page and push it.");
+    assert.equal(t.toolRuns().at(-1).code, 0, t.toolRuns().at(-1).out);
+    const state = new State(join(t.dir, "state"));
+    state.updateBranch("part", "acme/app", "feat/ui", { pr_url: "https://github.com/acme/app/pull/9" });
+    state.db.close();
+    writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 9: { branch: "feat/ui", files: ["web/app.css"], checks: "SUCCESS" } }));
+
+    t.step("ui-more\naidenhq push acme/app feat/ui");
+    await t.turn("Tweak it and push.");
+    assert.equal(t.toolRuns().at(-1).code, 0, t.toolRuns().at(-1).out);
+    await t.waitFor("the review task for that head", () => reviews().length === 1);
+    const task = reviews()[0];
+    const filed = t.paperclip.issues.get(task.id);
+    assert.ok(t.paperclip.runs.some((r) => r.issueId === task.id && r.agentId === "designer-1"), "a run is attached to it");
+    assert.equal(filed.status, "in_progress", "claimed and running, not blocked with no run");
+    assert.ok(!t.paperclip.comments.get(task.id).some((c) => /no live execution path/.test(String(c.body))), "never blocked for having no run");
+    assert.equal(filed.executionWorkspacePreference, "agent_default", "the reviewer's own folder, as every delegation carries");
+    assert.deepEqual(filed.executionWorkspaceSettings, { mode: "agent_default" });
+  });
+
+  it("never errors or asks for a repository along the way", () => t.noErrors());
+});

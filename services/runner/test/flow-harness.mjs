@@ -52,6 +52,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const approvals = new Map();
   const autos = [];
   const created = []; // tasks the runner filed (POST …/issues), as the board key
+  const runs = []; // the runs Paperclip started, one per task it could dispatch
   let n = 0;
   // Like Paperclip, a comment bumps its task's updatedAt (the runner skips a task it already handled at the same one).
   const addComment = (issueId, body) => {
@@ -61,6 +62,22 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     if (i) i.updatedAt = createdAt;
   };
   const find = (ref) => issues.get(ref) ?? [...issues.values()].find((i) => i.identifier === ref);
+  /**
+   * Paperclip's dispatch of a new task to an agent in a computer (a real Paperclip here, as CLAUDE.md's "Paperclip quirks"
+   * describes it): the agent holds one folder for a whole run, so a task that doesn't ask for a folder of its own has nothing
+   * to run in. It is left in progress with no run, and the terminal recovery blocks it three seconds later. Every delegation
+   * carries `agent_default` for exactly this; a task filed without it never runs.
+   */
+  const dispatch = (i) => {
+    const agent = engineers.find((a) => a.id === i.assigneeAgentId);
+    if (!agent?.defaultEnvironmentId) return; // a host agent: Paperclip's folder rules don't apply
+    const mode = i.executionWorkspaceSettings?.mode ?? i.executionWorkspacePreference;
+    i.status = "in_progress";
+    if (mode === "agent_default" || mode === "isolated_workspace") return void runs.push({ issueId: i.id, agentId: agent.id });
+    i.status = "blocked";
+    // Paperclip's own notice, not the owner's words.
+    comments.get(i.id).push({ id: `system-${++n}`, authorType: "system", authorAgentId: null, authorUserId: null, body: "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run recovery, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.", createdAt: new Date(Date.now() + n).toISOString() });
+  };
   // The board's args schema is strict: a merge card's PR entries take these fields only, and any other is a 400 naming it.
   const strictArgs = (args) => (args?.prs ?? []).flatMap((p, i) => Object.keys(p ?? {}).filter((k) => !["repo", "number", "url", "head", "noReview"].includes(k)).map((k) => `prs.${i}: Unrecognized key: "${k}"`));
   const server = createServer(async (req, res) => {
@@ -93,10 +110,11 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     if (req.method === "GET" && path === "/api/cli-auth/me") return send({ userId: USER });
     if (req.method === "POST" && path === `/api/companies/${COMPANY}/issues`) {
       const b = JSON.parse(body);
-      const i = { id: `made-${created.length + 1}`, identifier: `PEN-${100 + created.length}`, status: b.status, title: b.title, description: b.description, assigneeAgentId: b.assigneeAgentId, assigneeUserId: null, parentId: null, createdByUserId: USER, createdByAgentId: null, labels: [] };
+      const i = { id: `made-${created.length + 1}`, identifier: `PEN-${100 + created.length}`, status: b.status, title: b.title, description: b.description, assigneeAgentId: b.assigneeAgentId, assigneeUserId: null, parentId: null, createdByUserId: USER, createdByAgentId: null, labels: [], executionWorkspacePreference: b.executionWorkspacePreference ?? null, executionWorkspaceSettings: b.executionWorkspaceSettings ?? null };
       created.push({ ...b, id: i.id });
       issues.set(i.id, i);
       comments.set(i.id, []);
+      dispatch(i);
       return send(i, 201);
     }
     const upload = new RegExp(`^/api/companies/${COMPANY}/issues/([^/]+)/attachments$`).exec(path);
@@ -217,14 +235,14 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     a.state = state;
     return a;
   };
-  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created, hang, failRead };
+  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created, runs, hang, failRead };
 }
 
 /**
  * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
-export function flow({ parent: parentOver, part: partOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep } = {}) {
+export function flow({ parent: parentOver, part: partOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [] } = {}) {
   let dir, runner, runnerEnv, paperclip, output = "";
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -338,7 +356,9 @@ ${runnerYaml}`,
     ];
     Object.assign(parent, parentOver);
     Object.assign(part, partOver);
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff });
+    // Agents in a computer (`image:` in the module): Paperclip runs them, and a task they get must have a folder of its own.
+    const inComputers = computers.map((id) => ({ id, name: id, status: "idle", adapterType: "codex_local", adapterConfig: {}, defaultEnvironmentId: "env-computer", metadata: { setupKey: `aidenhq:${id}` } }));
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 
