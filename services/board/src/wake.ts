@@ -114,8 +114,8 @@ function signals(task: Issue, kids: Issue[], store: WakeDeps["store"], prs: Map<
   for (const t of [task, ...kids]) {
     for (const a of store.approvals.on(t.id)) {
       // Approved and not yet applied is not news: the runner's outcome follows. An outcome carries no time of its own.
-      const terminal = a.outcome != null || a.state === "rejected";
-      out.set(`card:${a.id}`, { value: terminal ? `${a.state}|${a.outcome ?? ""}` : "open", at: a.state === "rejected" ? (a.decidedAt ?? undefined) : undefined, line: () => `The ${a.action} card on ${a.identifier} is ${a.outcome ?? a.state}.` });
+      const terminal = a.outcome != null || a.state === "rejected" || a.state === "stale";
+      out.set(`card:${a.id}`, { value: terminal ? `${a.state}|${a.outcome ?? ""}` : "open", at: a.state === "rejected" || a.state === "stale" ? (a.decidedAt ?? undefined) : undefined, line: () => `The ${a.action} card on ${a.identifier} is ${a.outcome ?? a.state}.` });
     }
   }
   for (const r of refs) {

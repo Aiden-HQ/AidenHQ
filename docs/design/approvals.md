@@ -23,7 +23,7 @@ agent, never to the owner.
   later request of it there is the owner's until they approve one. The reviewer's rejection holds for exactly that content
   (the same commits are refused by code, under any branch name); changed content is reviewed afresh with every earlier
   note on the task attached; after three reviewer rejections on the task since the owner's last yes (a rejected change
-  approved later no longer counts), the action is parked with a note to the agent. Code's own refusals (moved, unreadable, too large) never count. `tiers.mjs` `priorDecisions`; the board keeps
+  approved later no longer counts), the action is parked with a note to the agent. Code's own refusals (moved, unreadable, too large) never count; a card closed because its head moved is stored `stale`, not `rejected`. `tiers.mjs` `priorDecisions`; the board keeps
   its own check of the owner's veto.
 - **Authority-expanding goes to the panel.** A change is authority-expanding when it weakens an approval,
   authentication, sandbox or secret control, changes who can approve, widens credentials, grants, public access, data

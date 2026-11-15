@@ -62,6 +62,7 @@ export function outcomeOf(a: Approval): Outcome {
   if (a.outcome === "failed") return { text: "Failed", tone: "bad" };
   if (a.state === "unknown") return { text: "Unknown", tone: "bad" };
   if (a.state === "rejected") return { text: "Rejected", tone: "meh" };
+  if (a.state === "stale") return { text: "Moved", tone: "meh" };
   if (a.state === "expired") return { text: /replaced/.test(a.outcomeText ?? "") || a.replaced ? "Replaced" : "Expired", tone: "meh" };
   return { text: "Applying", tone: "meh" };
 }

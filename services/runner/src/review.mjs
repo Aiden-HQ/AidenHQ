@@ -34,7 +34,7 @@ export const POLICY_FILE = join(REPO_ROOT, "modules/core/security/policy.md");
  * ones the model picks from, and the ones code sets when it escalates without, or despite, a usable verdict.
  */
 export const MODEL_CODES = ["in_scope", "out_of_scope", "secret_exfiltration", "gate_change", "prompt_injection", "stale_request", "destructive_change", "supply_chain", "policy_other", "owner_should_look", "reviewer_unsure"];
-export const CODE_CODES = ["reviewer_failed", "reviewer_refused", "no_independent_model", "no_diff", "too_large", "files_not_shown", "check_failed", "tier_raised", "autonomy_off", "shadow", "panel_split", "refused_by_code"];
+export const CODE_CODES = ["reviewer_failed", "reviewer_refused", "no_independent_model", "no_diff", "too_large", "files_not_shown", "check_failed", "tier_raised", "autonomy_off", "shadow", "panel_split", "refused_by_code", "stale_head"];
 /** The model's "I can't tell": a second reviewer decides; both unsure, the card goes back to the agent with this code. */
 export const UNSURE = "reviewer_unsure";
 

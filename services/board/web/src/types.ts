@@ -253,7 +253,7 @@ export interface Approval {
   details: string;
   requestedBy: string;
   /** auto: a Tier 0 run, already made; an audit row only. */
-  state: "pending" | "approved" | "rejected" | "expired" | "used" | "unknown" | "auto";
+  state: "pending" | "approved" | "rejected" | "stale" | "expired" | "used" | "unknown" | "auto";
   /** 0 ran at once, 1 the AI reviewer decides, 2 the owner decides. */
   tier: 0 | 1 | 2;
   reason: string;

@@ -1789,7 +1789,7 @@ async function currentTier(issue, a, { withDiff = false } = {}) {
     for (const b of a.args.only) {
       const r = rows.find((x) => x.repo.toLowerCase() === b.repo.toLowerCase() && x.branch === b.branch);
       const tip = r ? await git(r.path, "rev-parse", "--verify", `refs/heads/${b.branch}^{commit}`).catch(() => "") : "";
-      if (tip !== b.sha) throw new UserError(`${b.repo} \`${b.branch}\` moved since the card`);
+      if (tip !== b.sha) throw new MovedHead(`${b.repo} \`${b.branch}\` moved since the card`);
       branches.push(await branchTierState(r, b.sha, b.base));
     }
     const t = await tierFor(issue, a.action, { branches }, a.args.merge ? ["merge"] : []);
@@ -1811,7 +1811,7 @@ async function currentTier(issue, a, { withDiff = false } = {}) {
     const workspace = await prepareWorkspace(issue, state.task(issue.id), { clone: false });
     const b = await fleetBranch(issue, workspace);
     if (b.error) throw new UserError(b.error);
-    if (b.sha !== a.args.sha) throw new UserError("the fleet branch moved since the card");
+    if (b.sha !== a.args.sha) throw new MovedHead("the fleet branch moved since the card");
     const bump = await productBump(b);
     if (bump?.error) throw new UserError(bump.error);
     const t = await tierFor(issue, "apply", await applyTierState(b, bump));
@@ -1899,16 +1899,16 @@ async function reviewOne(a, mode) {
       if (common.routineAutonomy && common.routineAutonomy !== "full") input = { tier: 2, rule: "routine-autonomy", reason: `a routine's run started this task and that routine's autonomy is ${common.routineAutonomy}` };
     } else input = await currentTier(issue, a, { withDiff: true });
   } catch (err) {
-    input = { error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300), lasting: err instanceof UserError };
+    input = { error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300), lasting: err instanceof UserError, stale: err instanceof MovedHead };
   }
   // The request chain the reviewer reads; its hash is kept with an unsure-twice rejection (commonTierState).
   const chain = input.error || input.reject || input.tier > 1 ? "" : await prRequest(await pc.issue(issue.id)).catch(() => "");
   let v = input.error
     ? input.lasting
-      ? { decision: "reject", code: "refused_by_code", reason: `${input.error}. Ask again.`, model: LUNA }
+      ? { decision: "reject", code: input.stale ? "stale_head" : "refused_by_code", reason: `${input.error}. Ask again.`, model: LUNA }
       : { decision: "escalate", code: "reviewer_failed", reason: `couldn't check the change (${input.error})`, model: LUNA }
     : input.reject
-      ? { decision: "reject", code: "refused_by_code", reason: `${input.reason}.`, model: LUNA }
+      ? { decision: "reject", code: input.rule === "head-moved" ? "stale_head" : "refused_by_code", reason: `${input.reason}.`, model: LUNA }
       : input.tier > 1
         ? { decision: "escalate", code: "tier_raised", reason: `code now puts it at Tier 2: ${input.reason}`, model: LUNA }
         : await review({
@@ -2853,6 +2853,8 @@ async function agentTasks(ctx, args) {
 }
 
 class UserError extends Error {}
+/** The card's branch or head moved before review: the card is stale, not rejected, and costs no review slot. */
+class MovedHead extends UserError {}
 
 /**
  * One turn of the Engineer's conversation on a task (docs/design/conversational-engineers.md): the

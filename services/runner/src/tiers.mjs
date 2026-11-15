@@ -173,7 +173,7 @@ const keyOf = (list) => (list.length && list.every((x) => typeof x === "string" 
 /** Reviewer rejections a task's retries are bounded by: past this many (since the owner's last yes), the action is parked. */
 export const MAX_REJECTS = 3;
 /** Rejections code made without judging the change (it moved, couldn't be read, too large): they are never findings. */
-export const CODE_REJECTS = ["refused_by_code", "check_failed", "too_large", "files_not_shown", "no_diff", "reviewer_failed"];
+export const CODE_REJECTS = ["refused_by_code", "stale_head", "check_failed", "too_large", "files_not_shown", "no_diff", "reviewer_failed"];
 const byOwner = (r) => Boolean(r.decidedBy) && !/^(reviewer|auto|stale):/.test(r.decidedBy);
 // An approved card a newer request replaced is `expired`, still decided (a yes).
 const decided = (r) => ["approved", "used", "expired", "rejected"].includes(r.state) && Boolean(r.decidedBy);

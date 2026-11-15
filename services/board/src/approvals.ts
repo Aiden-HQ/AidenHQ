@@ -14,7 +14,7 @@ export type Action = (typeof ACTIONS)[number];
 export const BOARD_ACTIONS: readonly Action[] = ["deploy_app", "app_run", "raise_cap"];
 
 // "auto": a Tier 0 audit row: the runner already ran it; never decided, never claimable.
-export type State = "pending" | "approved" | "rejected" | "expired" | "used" | "auto";
+export type State = "pending" | "approved" | "rejected" | "stale" | "expired" | "used" | "auto";
 /**
  * Tiers (the tiered-approvals design): 0 ran at once (an audit row), 1 the AI reviewer decides, 2 the owner decides.
  * A record filed without a tier is 2.
@@ -569,10 +569,11 @@ export class Approvals {
     if (a.panel && v.decision === "approve" && !v.second) return { ok: false, reason: "an authority-expanding record needs a second reviewer's approval too" };
     const by = `reviewer:${v.model}${v.decision === "approve" && v.second ? `+${v.second}` : ""}`;
     const note = v.reason.slice(0, 2000);
+    const state = v.decision === "approve" ? "approved" : v.decision === "reject" && v.code === "stale_head" ? "stale" : "rejected";
     const r =
       v.decision === "escalate"
         ? this.db.prepare("UPDATE approvals SET tier = 2, review = ?, review_code = ? WHERE id = ? AND state = 'pending' AND tier = 1").run(note, v.code ?? null, id)
-        : this.db.prepare("UPDATE approvals SET state = ?, decided_by = ?, decided_at = ?, review = ?, review_code = ? WHERE id = ? AND state = 'pending' AND tier = 1").run(v.decision === "approve" ? "approved" : "rejected", by, now.toISOString(), note, v.code ?? null, id);
+        : this.db.prepare("UPDATE approvals SET state = ?, decided_by = ?, decided_at = ?, review = ?, review_code = ? WHERE id = ? AND state = 'pending' AND tier = 1").run(state, by, now.toISOString(), note, v.code ?? null, id);
     if (r.changes !== 1) return { ok: false, reason: "it changed meanwhile" };
     this.changed(a.issueId);
     return { ok: true, approval: this.get(id)! };

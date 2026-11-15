@@ -39,6 +39,8 @@ export const REVIEW_CODES = [
   "panel_split",
   // code refused the request at review time (it moved, it was rejected before, retries ran out): back to the agent
   "refused_by_code",
+  // code closed the card because its head moved before review: not a verdict, and not a rejection
+  "stale_head",
 ] as const;
 export type ReviewCode = (typeof REVIEW_CODES)[number];
 

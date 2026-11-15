@@ -89,6 +89,10 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   const three = [1, 2, 3].map((i) => rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA(String(i)), i));
   assert.equal(at(three).rule, "retries-exhausted", "parked after three");
   assert.equal(at(three.map((r) => ({ ...r, reviewCode: "refused_by_code" }))).rule, "agents-org-branch", "code's refusals (moved, unreadable) never count");
+  // The reproduction: a judged rejection, a card closed for its moved head, then another card: two judged rejections, not parked.
+  const judgedStaleJudged = [rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("a"), 1), rec("stale", "reviewer:~openai/gpt-luna-latest", SHA("b"), 2, { reviewCode: "stale_head" }), rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("c"), 3)];
+  assert.equal(tierOf(at(judgedStaleJudged, SHA("d"))), 0, "a stale card spends no review slot");
+  assert.equal(at([...judgedStaleJudged, rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("d"), 4)], SHA("e")).rule, "retries-exhausted", "three judged rejections still park");
   // The count is task-wide: only the owner's yes, or a later approval of a rejected change's exact content, clears it; a
   // Tier 0 audit row or an approval of other content never does, and a renamed branch doesn't start a new budget.
   assert.equal(at([...three, rec("approved", "reviewer:~openai/gpt-luna-latest", SHA("9"), 4)]).rule, "retries-exhausted", "an approval of other content");

@@ -33,6 +33,7 @@ const OUTCOME: Record<Approval["state"], string> = {
   approved: "Approved: applying…",
   used: "Applying…",
   rejected: "Rejected: nothing ran.",
+  stale: "Closed: its head moved before review, so nothing ran.",
   expired: "Expired: nothing ran.",
   unknown: "Unknown: the apply stopped without reporting back. Check the task; it is never retried.",
   auto: "Ran at once (Tier 0).",

@@ -24,6 +24,13 @@ describe("raise_cap", () => {
 });
 
 describe("approval records", () => {
+  it("a moved-head refusal is recorded stale, not rejected", () => {
+    const { approvals } = new Store(":memory:");
+    const a = approvals.request({ ...req({ action: "push" }), tier: 1, reason: "agents-org-branch", args: { only: [{ repo: "acme/app", branch: "fix/x", sha: "a".repeat(40) }] } });
+    expect(approvals.review(a.id, { digest: a.digest, decision: "reject", reason: "moved since the card", model: "~openai/gpt-luna-latest", code: "stale_head" })).toMatchObject({ ok: true, approval: { state: "stale", reviewCode: "stale_head" } });
+    expect(approvals.get(a.id)).toMatchObject({ state: "stale" });
+  });
+
   it("approves once, is claimed once, and reports its outcome once", () => {
     const { approvals } = new Store(":memory:");
     const a = approvals.request(req());
