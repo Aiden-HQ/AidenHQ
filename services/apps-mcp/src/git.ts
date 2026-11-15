@@ -81,6 +81,20 @@ async function fetchAll(env: GitEnv, app: App): Promise<string> {
   return gd;
 }
 
+/**
+ * origin/<branch> again, straight from the app's own origin: fetchAll's copy can come from a host checkout that has not
+ * fetched since a merge, while GitHub has the commit. Only refs/heads/<branch> is copied, so it can add history but never
+ * make a commit reachable that origin/<branch> doesn't have.
+ */
+const fetchBranch = (env: GitEnv, app: App, gd: string): Promise<string> =>
+  git(env, [gd, "fetch", "--prune", url(app), `+refs/heads/${app.branch}:refs/remotes/origin/${app.branch}`], undefined, {}, app);
+
+/** From what fetchAll brought; when that doesn't hold (a checkout that lags origin), origin/<branch> once from the app's own origin, then once again. */
+async function fromOrigin<T>(env: GitEnv, app: App, gd: string, find: () => Promise<T>): Promise<T> {
+  // A fetch that can't run (no access, offline) leaves find()'s own error to be thrown.
+  return find().catch(async () => (await fetchBranch(env, app, gd).catch(() => ""), find()));
+}
+
 /** Checks the app out at sha (default: its pin, else head of origin/<branch>), refusing commits not reachable from origin/<branch>. */
 export async function checkout(env: GitEnv, app: App, sha?: string): Promise<{ sha: string; dir: string }> {
   checkOrg(env, app);
@@ -88,12 +102,15 @@ export async function checkout(env: GitEnv, app: App, sha?: string): Promise<{ s
   const dir = `${env.appsData}/.platform/${app.name}/src`; // platform-only: apps can mount their data dir, never this
   const tmp = `${dir}.new`;
   const gd = await fetchAll(env, app);
-  const full = await git(env, [gd, "rev-parse", "--verify", `${sha ?? app.pin ?? `origin/${app.branch}`}^{commit}`]);
-  try {
-    await git(env, [gd, "merge-base", "--is-ancestor", full, `origin/${app.branch}`]);
-  } catch {
-    throw new Error(`commit ${full.slice(0, 8)} is not reachable from origin/${app.branch}`);
-  }
+  const full = await fromOrigin(env, app, gd, async () => {
+    const full = await git(env, [gd, "rev-parse", "--verify", `${sha ?? app.pin ?? `origin/${app.branch}`}^{commit}`]);
+    try {
+      await git(env, [gd, "merge-base", "--is-ancestor", full, `origin/${app.branch}`]);
+    } catch {
+      throw new Error(`commit ${full.slice(0, 8)} is not reachable from origin/${app.branch}`);
+    }
+    return full;
+  });
   // Into a fresh dir, then renamed into place: nothing pre-existing is followed. No index, so every file is written.
   rmSync(tmp, { recursive: true, force: true });
   rmSync(`${env.gitDir}/${app.name}.git/index`, { force: true });
@@ -109,12 +126,15 @@ export async function resolveCommit(env: GitEnv, app: App, sha: string): Promise
   checkOrg(env, app);
   if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error("sha must be 7-40 hex characters");
   const gd = await fetchAll(env, app);
-  const full = await git(env, [gd, "rev-parse", "--verify", "--quiet", `${sha}^{commit}`]).catch(() => "");
-  if (!/^[0-9a-f]{40}$/.test(full)) throw new Error(`no single commit ${sha} in ${app.repo}`);
-  await git(env, [gd, "merge-base", "--is-ancestor", full, `origin/${app.branch}`]).catch(() => {
-    throw new Error(`commit ${full.slice(0, 12)} is not on origin/${app.branch}`);
-  });
-  return { sha: full, subject: await git(env, [gd, "log", "-1", "--format=%s", full]) };
+  const find = async (): Promise<{ sha: string; subject: string }> => {
+    const full = await git(env, [gd, "rev-parse", "--verify", "--quiet", `${sha}^{commit}`]).catch(() => "");
+    if (!/^[0-9a-f]{40}$/.test(full)) throw new Error(`no single commit ${sha} in ${app.repo}`);
+    await git(env, [gd, "merge-base", "--is-ancestor", full, `origin/${app.branch}`]).catch(() => {
+      throw new Error(`commit ${full.slice(0, 12)} is not on origin/${app.branch}`);
+    });
+    return { sha: full, subject: await git(env, [gd, "log", "-1", "--format=%s", full]) };
+  };
+  return fromOrigin(env, app, gd, find);
 }
 
 /**
