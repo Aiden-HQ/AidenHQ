@@ -49,7 +49,7 @@ const AppSchema = z
     // host set: a public route through the gate and no tailscale serve route; aud: the app's own Access application tag.
     share: z.object({
       host: z.string().regex(/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, "host is a lowercase DNS name").optional(),
-      aud: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/, "aud is the Access application's audience tag").optional(),
+      aud: z.string().regex(/^[A-Za-z0-9_:-]{8,128}$/, "aud is the host's audience: an Access application tag, or a front door's (service:<id>)").optional(),
       // A new app's default role for people (else its manifest's, else blocked); the app's admins can change it.
       default_role: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/).refine((r) => r !== "admin", "the default role is never admin").optional(),
       viewers: z.never({ error: "share.viewers is gone: app admins are named on the board and set roles on the app's Access page" }).optional(),
