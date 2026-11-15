@@ -1,10 +1,11 @@
 // The fast chat lane end to end against a fake gateway: a board message becomes a streamed turn with a tool call and a
-// reply, timed; a slow turn still replies by the deadline; the board's internal API; wakes are owner-local and fire once.
+// reply, timed; a slow turn still replies by the deadline; a reply that only promises is continued by the lane itself
+// (also after a restart) and a failing continuation says so; the board's internal API; wakes are owner-local and fire once.
 import { createHmac } from "node:crypto";
 import http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import type { LaneAgent } from "../src/lane/config.js";
-import { makeLane } from "../src/lane/lane.js";
+import { ACK, makeLane } from "../src/lane/lane.js";
 import { laneRoutes } from "../src/lane/serve.js";
 import { openLaneStore } from "../src/lane/store.js";
 import { parseWhen } from "../src/lane/time.js";
@@ -68,6 +69,56 @@ describe("fast chat lane", () => {
     expect(store.recent("aria", "board", 0).map((m) => m.text)).toEqual(["write me a memo", "On it: this needs a little longer. I'll follow up here.", "Done: here it is."]);
     await lane.receive("aria", "board", "again?");
     expect(store.recent("aria", "board", 0).at(-1)!.text).toMatch(/^Sorry, that didn't work/);
+  });
+
+  it("a reply that only promises is continued by the lane, after a restart too; a failing continuation says so", async () => {
+    // The live case: the model answers "On it" with no task_create and no tools. A one-word check calls it DEFERRED.
+    const bodies: any[] = [];
+    let mode: "ok" | "down" = "ok";
+    const gw = await serve((req, res) => {
+      let b = "";
+      req.on("data", (x) => (b += x)).on("end", () => {
+        const body = JSON.parse(b);
+        bodies.push(body);
+        if (mode === "down") return void res.writeHead(500).end("boom");
+        const sys = String(body.messages[0].content);
+        const last = String(body.messages.at(-1).content);
+        if (sys.startsWith("You check one chat reply")) return sse(res, [{ choices: [{ delta: { content: /^Reply: On it/m.test(last) ? "DEFERRED" : "FINAL" } }] }]);
+        if (last.startsWith("[continue]")) return sse(res, [{ choices: [{ delta: { content: "H1 OKRs: ship the gateway; halve costs." } }] }]);
+        sse(res, [{ choices: [{ delta: { content: "On it — summarizing the H1 2027 Company OKRs doc now." } }] }]);
+      });
+    });
+    let clock = Date.UTC(2026, 10, 15, 7, 6);
+    const store = openLaneStore(":memory:");
+    const mk = () => makeLane({ store, agents: () => ({ aria: agent }), gatewayUrl: gw, laneSecret: "s", timezone: "UTC", ownerName: "Sam", log: quiet, tools: { defs: async () => [], call: async () => "" }, deliver: async () => {}, now: () => clock });
+    await mk().receive("aria", "board", "summarize the H1 OKRs");
+    expect(store.recent("aria", "board", 0).map((m) => m.text)).toEqual(["summarize the H1 OKRs", "On it — summarizing the H1 2027 Company OKRs doc now.", "H1 OKRs: ship the gateway; halve costs."]);
+    expect(bodies.find((b) => String(b.messages.at(-1).content).startsWith("[continue]")).messages.at(-1).content).toContain('"summarize the H1 OKRs"');
+
+    // A restart after the lane said "on it": the turn row is left running; the next lane owes it and answers, once.
+    store.add("aria", "board", "owner", "and the H2 ones?", clock);
+    store.startTurn("aria", "board", agent.model, clock);
+    store.add("aria", "board", "agent", ACK, clock);
+    const lane = mk();
+    lane.resume();
+    await lane.tick();
+    for (let i = 0; i < 100 && lane.busy("aria", "board"); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(store.recent("aria", "board", 0).slice(3).map((m) => m.text)).toEqual(["and the H2 ones?", ACK, "H1 OKRs: ship the gateway; halve costs."]);
+
+    // The gateway goes down during a continuation: the owner hears it, it retries a minute later, then gives up out loud.
+    store.add("aria", "board", "owner", "and Q3?", clock);
+    store.add("aria", "board", "agent", "On it.", clock);
+    store.owe("aria", "board", "continue", "and Q3?", clock, clock);
+    mode = "down";
+    await lane.tick();
+    for (let i = 0; i < 100 && lane.busy("aria", "board"); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(store.recent("aria", "board", 0).at(-1)!.text).toMatch(/^Couldn't finish "and Q3\?" yet \(model call failed \(500\).*Retrying in a minute\.$/);
+    clock += 61_000;
+    await lane.tick();
+    for (let i = 0; i < 100 && lane.busy("aria", "board"); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(store.recent("aria", "board", 0).at(-1)!.text).toMatch(/^Couldn't finish "and Q3\?" \(.*Ask me again/);
+    expect(store.recent("aria", "board", 0).slice(6).map((m) => m.text.split(" (")[0])).toEqual(["and Q3?", "On it.", 'Couldn\'t finish "and Q3?" yet', 'Couldn\'t finish "and Q3?"']);
+    expect(store.due("continue", clock + 3600_000)).toEqual([]);
   });
 
   it("wakes: owner-local times, each fires once", () => {

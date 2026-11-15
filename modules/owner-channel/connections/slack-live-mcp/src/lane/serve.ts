@@ -102,7 +102,8 @@ export function startLaneTelegram(o: { lane: Lane; agents: () => Record<string, 
 
 /**
  * Fires due wakes every 15 s: a lane agent's wake with a conversation runs a lane turn there; any other wake is a labelled
- * notice on its task, which wakes that task's agent through Paperclip.
+ * notice on its task, which wakes that task's agent through Paperclip. The same pass runs what the lane owes (lane.tick);
+ * on start, turns a restart cut off are owed first (lane.resume).
  */
 export function startWakes(o: { store: LaneStore; lane: Lane; agents: () => Record<string, LaneAgent>; noticeOnTask: (task: string, text: string) => Promise<void>; log: Log }) {
   const tick = async () => {
@@ -115,7 +116,9 @@ export function startWakes(o: { store: LaneStore; lane: Lane; agents: () => Reco
         o.log.warn({ wake: w.id, err: (e as Error).message }, "wake failed");
       }
     }
+    await o.lane.tick().catch((e: Error) => o.log.warn({ err: e.message }, "lane owed pass failed"));
   };
+  o.lane.resume();
   void tick();
   return setInterval(() => void tick(), 15_000).unref();
 }
