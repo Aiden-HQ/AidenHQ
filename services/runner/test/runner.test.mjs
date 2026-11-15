@@ -1013,6 +1013,8 @@ describe("publishing a task's document to Primer", async () => {
 
   it("tells the agent where the document goes only when Primer was asked for", () => {
     const base = { user: "Dana", task: { identifier: "PEN-1", title: "T", description: "" }, workspace: "/w", repos: [], mode: "investigate", instructions: "Do it" };
+    assert.doesNotMatch(firstPrompt(base), /## How we build/);
+    assert.match(firstPrompt({ ...base, build: "\n\n## How we build\n\n- Less code.\n" }), /## How we build\n\n- Less code\.\n\n## /);
     assert.doesNotMatch(firstPrompt(base), /## Primer/);
     assert.match(firstPrompt({ ...base, primer: {} }), /## Primer[\s\S]*\.aidenhq\/primer\.md[\s\S]*a new document the first time/);
     assert.match(followUpPrompt({ ...base, primer: { url: "https://primer.example/d/x" } }), /new version of https:\/\/primer\.example\/d\/x/);

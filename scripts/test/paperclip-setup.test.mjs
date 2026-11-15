@@ -51,6 +51,7 @@ test("every agent gets how we work, builders also how we build, and asking the o
   assert.match(work, /\n\n## How we work\n\n/);
   assert.ok(work.includes("Bring the owner the calls that are genuinely theirs: spend, a veto, a choice of taste"));
   assert.match(section("HOW_WE_BUILD_SECTION"), /\n\n## How we build\n\n/);
+  assert.match(readFileSync(script, "utf8"), /\n    metadata: \{[^\n]*build: HOW_WE_BUILD_SECTION/);
   assert.match(section("HOW_WE_BUILD_SECTION"), /Large rewrites hold the files they replace/);
   assert.ok(section("ASKING_SECTION").includes("When a call is the owner's (How we work), ask before acting on it"));
 });

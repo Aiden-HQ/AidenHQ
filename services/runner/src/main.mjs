@@ -3550,6 +3550,7 @@ async function startJob({ issue, instructions }) {
     // A specialised Engineer (Platform Engineer) brings its own handbook; the others share one persona per engine.
     const assigned = engineers.find((a) => a.id === full.assigneeAgentId);
     const brief = typeof assigned?.metadata?.brief === "string" ? assigned.metadata.brief : "";
+    const build = typeof assigned?.metadata?.build === "string" ? assigned.metadata.build : "";
     const persona = brief ? undefined : personaFor(engine.kind, engineers, assigned);
     // Comments while it works reach a session that takes them (Claude Code).
     const channel = {};
@@ -3560,7 +3561,7 @@ async function startJob({ issue, instructions }) {
     const seen = engine.box ? { workspace: "/workspace", repos: repos.map((r) => ({ ...r, path: r.path.replace(workspace, "/workspace") })) } : { workspace, repos };
     const prompt = resumed
       ? followUpPrompt({ user: cfg.selfName, instructions, ...seen, branches, files, primer, crew, observe, thread, stand, brief })
-      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, observe, thread, stand, team: crewNames(engineers), brief });
+      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, observe, thread, stand, team: crewNames(engineers), brief, build });
     const tipsBefore = await branchTips(workspace);
     const identity = await botIdentity();
     const ghToken = engine.box ? undefined : await jobGhToken(repos).catch((err) => (log("no gh token for the job", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), undefined));

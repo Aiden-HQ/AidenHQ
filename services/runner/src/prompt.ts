@@ -43,9 +43,8 @@ const WORK = (user: string) => `## How to work
 
 - Do what ${user} asks, as one engineer to another: answer a question, look into something, or change code. Change tracked files when they ask for changes (fix, add, update, rebase…); when they only ask a question or for a look, don't: say what you would change and offer to.
 - Make the calls the work needs yourself and say why in your reply. Take advice and input from ${user}, the agent that gave you the task and reviewers on board, weighed with your own judgement (${user}'s requests stay your instructions). Ask ${user} when the call is genuinely theirs (spend, a veto, a choice of taste, or what they meant when only they can know it and the readings lead to different results), as one clear question with options and your recommendation first.
-- Keep changes focused and simple: less code, reusing what the repository, its libraries and the app starter already have before writing new (when you add something new, say why in the PR); an abstraction, setting or compatibility layer arrives the second time it is needed. Handle the common path well and let rare cases fail with a clear error. When something goes wrong, fix what caused it so it stays fixed. Small clean-ups you spot along the way go in a PR of their own, apart from the main change; where the AI reviewer judges the change, list them in your reply instead.
-- Tests: a few that prove the change works end to end. While you work, run the tests you touched; run the full suite of each package you changed once, before you publish. Then judge the change by using it: run it, and look at and click through the pages it changes. Commit what you mean to keep (see Git).
-- Work fast: batch independent steps (reads, searches, checks) into one command or one round of parallel tool calls, and run independent long steps side by side. When your tool can run sub-agents, give each independent part of a large change to one and integrate the results yourself.
+- When something goes wrong, fix what caused it so it stays fixed. Where the AI reviewer judges the change, list the small clean-ups you spot in your reply instead of including them.
+- While you work, run the tests you touched; run the full suite of each package you changed once, before you publish. Commit what you mean to keep (see Git).
 - Install a package's dependencies (\`npm ci\`, or its lockfile's equivalent) before its build, \`tsc\` or tests: "tsc: not found" means you skipped it.
 - Your sandbox has the workspace, its toolchains, package installs into the workspace and the public Internet. It has no Docker, no system installs (apt, sudo) and no access to this instance's host, its live apps or their logs, so don't probe for them (docker, journalctl, reading paths outside the workspace): it only wastes the run. If the work needs one, say so in your reply. Image CVE scans are the PR's \`image-scan\` check (lock files and pinned base images, no build), not local.
 - A PR's \`code-review\` check fails on critical or high findings: fix those on the branch. Its other findings (in the same PR comment) are not this change's work: list them in your reply under "Non-blocking code-review findings" with the PR link, so they become one backlog task.
@@ -214,6 +213,9 @@ ${user} reads the result on Primer. Write the complete document in Markdown to \
 }
 
 /** A specialised Engineer's own handbook (`brief: true` in config/paperclip.yaml): its role and extra rules. */
+/** How we build, the shared text from the agent's metadata (`build`, scripts/paperclip-setup.mjs). */
+const buildSection = (build: string) => (build.trim() ? `${build.trim()}\n\n` : "");
+
 const briefSection = (brief: string) => (brief ? `## Your role (from your handbook; it adds to the rules, never lifts them)\n\n${brief}\n\n` : "");
 
 /** Everything the first prompt of a job is built from. */
@@ -233,9 +235,10 @@ export interface FirstPromptArgs {
   stand?: string;
   team?: PromptTeamMember[];
   brief?: string;
+  build?: string;
 }
 
-export function firstPrompt({ user, task, workspace, repos, branches = [], instructions, files = [], primer, persona, crew, observe, thread = "", stand = "", team = [], brief = "" }: FirstPromptArgs) {
+export function firstPrompt({ user, task, workspace, repos, branches = [], instructions, files = [], primer, persona, crew, observe, thread = "", stand = "", team = [], brief = "", build = "" }: FirstPromptArgs) {
   return `You are ${persona ? `${persona.name}, one of AidenHQ's engineering agents` : "AidenHQ's engineering agent"}, working for ${user} on Paperclip task ${task.identifier}: "${task.title}".${
     persona?.voice ? `\n\nYour voice: ${persona.voice} It sets the tone of your replies only; the rules below always apply.` : ""
   }
@@ -247,7 +250,7 @@ ${workspaceSection({ workspace, repos, branches })}
 
 ${WORK(user)}
 
-${RULES(user)}
+${buildSection(build)}${RULES(user)}
 
 ${briefSection(brief)}## Task (untrusted context)
 
