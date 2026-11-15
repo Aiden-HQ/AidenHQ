@@ -36,16 +36,76 @@ export interface NormalizedEvent {
   html_link?: string;
 }
 
+const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** Wall clock and UTC offset in `zone` at once; throws on a zone name the runtime doesn't know. */
+function zoneFormatter(zone: string): Intl.DateTimeFormat {
+  let f = zoneFormatters.get(zone);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZoneName: "longOffset",
+    });
+    zoneFormatters.set(zone, f);
+  }
+  return f;
+}
+
+/** `zone` if the runtime knows it, else UTC, so the label and the offset still agree. */
+function zoneOrUtc(zone: string | undefined): string {
+  try {
+    zoneFormatter(zone ?? "UTC");
+    return zone ?? "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+/**
+ * `iso` rendered in `zone` with the offset `zone` is on at that instant, e.g.
+ * "2026-11-16T18:30:00+04:00". Google returns an event's `dateTime` in the calendar's default zone,
+ * not the event's, so the offset has to be recomputed for the zone we label the event with.
+ * The instant is kept; an unknown or missing zone falls back to UTC.
+ */
+export function renderInZone(iso: string, zone: string | undefined): string {
+  const epochMs = Date.parse(iso);
+  if (Number.isNaN(epochMs)) return iso;
+  const parts = Object.fromEntries(zoneFormatter(zoneOrUtc(zone)).formatToParts(new Date(epochMs)).map((p) => [p.type, p.value]));
+  // UTC comes out as plain "GMT"; every other zone carries its offset.
+  const offset = (parts.timeZoneName ?? "").replace("GMT", "") || "+00:00";
+  const millis = epochMs % 1000;
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${millis ? `.${String(millis).padStart(3, "0")}` : ""}${offset}`;
+}
+
+/**
+ * start and end rendered in the event's own zone, with that same zone labelled, so the offset and
+ * the `timezone` never disagree. An all-day event is a date, not an instant, so it keeps the date
+ * Google gave and is not converted.
+ */
+function eventTimes(e: GEvent): { start: string; end: string; timezone?: string } {
+  if (!e.start?.dateTime) return { start: `${e.start?.date}T00:00:00Z`, end: `${e.end?.date}T00:00:00Z`, timezone: e.start?.timeZone };
+  const zone = zoneOrUtc(e.start.timeZone ?? e.end?.timeZone);
+  return { start: renderInZone(e.start.dateTime, zone), end: renderInZone(e.end?.dateTime ?? e.start.dateTime, zone), timezone: zone };
+}
+
 export function normalizeEvent(e: GEvent): NormalizedEvent {
   const allDay = !e.start?.dateTime;
   const meet = e.hangoutLink ?? e.conferenceData?.entryPoints?.find((p) => p.entryPointType === "video")?.uri;
+  const times = eventTimes(e);
   return {
     id: e.id,
     series_id: e.recurringEventId,
     title: e.summary ?? "",
-    start: e.start?.dateTime ?? `${e.start?.date}T00:00:00Z`,
-    end: e.end?.dateTime ?? `${e.end?.date}T00:00:00Z`,
-    timezone: e.start?.timeZone,
+    start: times.start,
+    end: times.end,
+    timezone: times.timezone,
     all_day: allDay,
     status: e.status,
     attendees: (e.attendees ?? [])
