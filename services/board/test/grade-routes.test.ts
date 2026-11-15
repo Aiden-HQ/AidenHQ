@@ -204,7 +204,7 @@ describe("grade routes", () => {
     const s = new Store(":memory:");
     s.grades.file(task.id, [], { kind: "report", ref: "" });
     completionGate(s.grades, task.id, "task_finish");
-    for (let i = 0; i < 5; i++) s.grades.record(task.id, { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] });
+    for (let i = 0; i < 5; i++) s.grades.record(task.id, { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] }, Date.now(), ["cos"]);
     expect(s.grades.get(task.id)!.state).toBe("escalated");
     const decideKey = "d".repeat(32);
     const app2 = createApp({ paperclip: pc, store: s, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY, decideKey });
@@ -237,7 +237,7 @@ describe("grade routes", () => {
     // Alfred's sub-task of Aiden's task, graded, and escalated: the runner's note lands on the parent, so Aiden is woken.
     s.grades.file(childTask.id, [], { kind: "report", ref: "" });
     completionGate(s.grades, childTask.id, "task_finish");
-    for (let i = 0; i < 5; i++) s.grades.record(childTask.id, { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] });
+    for (let i = 0; i < 5; i++) s.grades.record(childTask.id, { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] }, Date.now(), ["ra", "cos"]);
     expect(s.grades.get(childTask.id)!.state).toBe("escalated");
     const { gateFor, close } = await gateApp(s);
     try {
@@ -249,6 +249,23 @@ describe("grade routes", () => {
       expect(accepted.state).toBe("satisfied");
       expect(accepted.verdicts.at(-1)).toMatchObject({ verdict: "accepted", by: "cos" });
     } finally {
+      close();
+    }
+  });
+
+  it("re-parenting after the escalation does not grant the close: the delegator is the one saved when it escalated", async () => {
+    const s = new Store(":memory:");
+    s.grades.file(childTask.id, [], { kind: "report", ref: "" });
+    completionGate(s.grades, childTask.id, "task_finish");
+    for (let i = 0; i < 5; i++) s.grades.record(childTask.id, { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] }, Date.now(), ["ra", "cos"]);
+    // Afterwards the task moves under a parent that "other" is assigned to.
+    Object.assign(parentTask, { assigneeAgentId: "other" });
+    const { gateFor, close } = await gateApp(s);
+    try {
+      expect((await gateFor("WOR-10", "other")).status).toBe(403);
+      expect(s.grades.get(childTask.id)!.state).toBe("escalated");
+    } finally {
+      Object.assign(parentTask, { assigneeAgentId: "cos" });
       close();
     }
   });

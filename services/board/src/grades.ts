@@ -42,6 +42,8 @@ export interface Grade {
   failures: number;
   /** When the last grader pass failed (null until one does). */
   failedAt: string | null;
+  /** The agents the escalation was addressed to, saved when the grade escalated (null: escalated before this was saved). */
+  delegators: string[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -55,6 +57,7 @@ interface Row {
   verdicts: string;
   failures: number;
   failed_at: string | null;
+  delegators: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -113,7 +116,7 @@ export function prRefAllowed(ref: string, grantsFile = process.env.AIDENHQ_GRANT
   return Boolean((t.agents_org && org === t.agents_org.toLowerCase()) || (t.product_repo && repo === t.product_repo.toLowerCase()));
 }
 
-const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
+const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, delegators: r.delegators ? JSON.parse(r.delegators) : null, createdAt: r.created_at, updatedAt: r.updated_at });
 
 export class Grades {
   constructor(
@@ -127,6 +130,7 @@ export class Grades {
     const columns = (db.prepare("PRAGMA table_info(grades)").all() as { name: string }[]).map((c) => c.name);
     if (!columns.includes("failures")) db.exec("ALTER TABLE grades ADD COLUMN failures INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("failed_at")) db.exec("ALTER TABLE grades ADD COLUMN failed_at TEXT");
+    if (!columns.includes("delegators")) db.exec("ALTER TABLE grades ADD COLUMN delegators TEXT");
     // An escalated task finished again: graded again only once the runner finds a new deliverable version (resubmit).
     db.exec("CREATE TABLE IF NOT EXISTS grade_resubmits (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL)");
   }
@@ -187,10 +191,11 @@ export class Grades {
     this.events?.emit("grades", issueId);
   }
 
-  private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, now = Date.now()): Grade {
+  private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, now = Date.now(), delegators?: string[]): Grade {
+    // The delegators belong to the escalation: written in the same UPDATE that escalates, cleared when the grade leaves it.
     this.db
-      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, updated_at = ? WHERE issue_id = ?")
-      .run(state, attempts, JSON.stringify(verdicts), failures, failedAt, new Date(now).toISOString(), issueId);
+      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, updated_at = ?, delegators = CASE WHEN ? = 'escalated' THEN COALESCE(?, delegators) ELSE NULL END WHERE issue_id = ?")
+      .run(state, attempts, JSON.stringify(verdicts), failures, failedAt, new Date(now).toISOString(), state, delegators ? JSON.stringify(delegators) : null, issueId);
     this.events?.emit("grades", issueId);
     return this.get(issueId)!;
   }
@@ -218,22 +223,23 @@ export class Grades {
    * (error) escalate to the delegator. A grader that failed or returned no usable criteria (grading_failed) is retried on the
    * 1-5-15-60 minute ladder and only escalates after MAX_GRADER_FAILURES passes; any real verdict clears that count.
    */
-  record(issueId: string, v: z.infer<typeof VerdictSchema>, now = Date.now()): Grade {
+  record(issueId: string, v: z.infer<typeof VerdictSchema>, now = Date.now(), delegators?: string[]): Grade {
+    const set = (state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, at: number) => this.set(issueId, state, attempts, verdicts, failures, failedAt, at, delegators);
     const g = this.get(issueId);
     if (!g) throw new Error("no grade for this task");
-    if (v.outcome === "awaiting_evidence") return this.set(issueId, "awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt, now);
+    if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt, now);
     const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: ["error", "grading_failed"].includes(v.outcome) ? "cannot_judge" : (v.outcome as Verdict["verdict"]), criteria: v.criteria };
     const verdicts = [...g.verdicts, verdict].slice(-20);
-    if (v.outcome === "satisfied") return this.set(issueId, "satisfied", g.attempts, verdicts, 0, null, now);
+    if (v.outcome === "satisfied") return set("satisfied", g.attempts, verdicts, 0, null, now);
     if (v.outcome === "grading_failed") {
       const failures = g.failures + 1;
       const state = failures >= MAX_GRADER_FAILURES ? "escalated" : "grading_failed";
-      return this.set(issueId, state, g.attempts, verdicts, failures, new Date(now).toISOString(), now);
+      return set(state, g.attempts, verdicts, failures, new Date(now).toISOString(), now);
     }
-    if (v.outcome !== "needs_revision") return this.set(issueId, "escalated", g.attempts, verdicts, 0, null, now);
-    if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return this.set(issueId, "escalated", g.attempts, verdicts, 0, null, now);
+    if (v.outcome !== "needs_revision") return set("escalated", g.attempts, verdicts, 0, null, now);
+    if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return set("escalated", g.attempts, verdicts, 0, null, now);
     const attempts = g.attempts + 1;
-    return this.set(issueId, attempts >= MAX_LOOPS ? "escalated" : "needs_revision", attempts, verdicts, 0, null, now);
+    return set(attempts >= MAX_LOOPS ? "escalated" : "needs_revision", attempts, verdicts, 0, null, now);
   }
 }
 

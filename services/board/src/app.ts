@@ -1107,8 +1107,9 @@ export function createApp(opts: AppOptions): Server {
         if (agent && issue.assigneeAgentId !== agent.id) {
           const g = gradingOn() ? store.grades.get(issue.id) : undefined;
           if (g?.state === "escalated") {
-            const parent = issue.parentId ? await pc.issue(issue.parentId).catch(() => undefined) : undefined;
-            if (issue.createdByAgentId === agent.id || parent?.assigneeAgentId === agent.id) {
+            // Judged against the delegators saved when it escalated, never today's creator or parent (both can be changed
+            // later); a row escalated before they were saved falls back to the creator.
+            if ((g.delegators ?? [issue.createdByAgentId]).includes(agent.id)) {
               store.grades.accept(issue.id, agent.id);
               const label = (await pc.labels()).find((l) => l.name === "grading");
               const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
@@ -1165,7 +1166,10 @@ export function createApp(opts: AppOptions): Server {
         const v = parse(VerdictSchema, body);
         const issue = await pc.issue(decodeURIComponent(m[1]!));
         if (!store.grades.get(issue.id)) throw new HttpError(404, "no grade for this task");
-        const g = store.grades.record(issue.id, v);
+        // An escalation is addressed to the agent that filed the task and the agent on its parent task, as of now; fetched
+        // before recording so they are saved in the same write that escalates.
+        const parent = issue.parentId ? await pc.issue(issue.parentId).catch(() => undefined) : undefined;
+        const g = store.grades.record(issue.id, v, Date.now(), [issue.createdByAgentId, parent?.assigneeAgentId].filter((x): x is string => Boolean(x)));
         // Done waiting: the label goes (the runner moves the task on).
         if (g.state !== "awaiting_evidence") {
           const label = (await pc.labels()).find((l) => l.name === "grading");
