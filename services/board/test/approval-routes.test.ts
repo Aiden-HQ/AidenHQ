@@ -109,6 +109,27 @@ describe("approval routes", () => {
     expect((await post(`/internal/approvals/${deploy.id}/outcome`, { nonce: "f".repeat(32), ok: true, text: "x" })).status).toBe(404);
   });
 
+  // A `pr` card's head is on no GitHub branch before approval, so a rejection names the runner-cache ref that holds it:
+  // the next task on the work resolves the reviewed commit instead of rebuilding the change from prose.
+  it("a rejected pr card names the cache ref holding its reviewed heads; a push card does not", async () => {
+    const only = [
+      { repo: "acme/aidenhq", branch: "fix/x", sha: "e".repeat(40) },
+      { repo: "acme/infra", branch: "reviewed/y", sha: "f".repeat(40) },
+    ];
+    const pr = (await post("/internal/approvals", { issue: "WOR-184", action: "pr", args: { only } })).json;
+    const push = (await post("/internal/approvals", { issue: "WOR-184", action: "push", args: { only } })).json;
+    const reject = (id: string) => post("/internal/owner/approvals/decide", { id, decision: "reject", via: "telegram" }, { "x-owner-key": DECIDE_KEY });
+    expect((await reject(pr.id)).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    const text = posted.find((c) => c.body.includes(`approval ${pr.id}`))?.body ?? "";
+    expect(text).toContain(`\`refs/reviewed/${pr.id}/fix/x\``);
+    expect(text).toContain(`\`refs/reviewed/${pr.id}/reviewed/y\``);
+    expect(text).toMatch(/never pushed, so GitHub has no branch and no PR for it/);
+    expect((await reject(push.id)).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(posted.find((c) => c.body.includes(`approval ${push.id}`))?.body).not.toContain("refs/reviewed");
+  });
+
   it("a product PR card that also merges says so, and the runner's per-task read carries its args (sticky rejects)", async () => {
     const only = [{ repo: "acme/aidenhq", branch: "fleet/x", sha: "d".repeat(40) }];
     const filed = await post("/internal/approvals", { issue: "WOR-184", action: "pr", args: { only, merge: true } });

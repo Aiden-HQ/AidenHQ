@@ -393,6 +393,19 @@ export function createApp(opts: AppOptions): Server {
   }
 
   /**
+   * The refs a rejected `pr` card's reviewed heads were kept at (the runner keeps them in its cache clone when it files the
+   * card): the branch comes from the card's checked args, so the name is a ref, never prose. Nothing was pushed for it.
+   */
+  function reviewedRefsText(a: Approval): string {
+    if (a.action !== "pr") return "";
+    const parsed = ARGS.pr.safeParse(a.args);
+    if (!parsed.success) return "";
+    const repos = [...new Set(parsed.data.only.map((b) => b.repo))];
+    const names = parsed.data.only.map((b) => `\`refs/reviewed/${a.id}/${b.branch}\``).join(", ");
+    return `\n\nThe reviewed head stays in the runner's cache as ${names} (a task clone of ${repos.join(", ")} fetches it): it was never pushed, so GitHub has no branch and no PR for it. Start from that ref rather than from this note.`;
+  }
+
+  /**
    * A rejection reaches the asking task, so nobody waits on a card that won't run. The AI reviewer's is the runner's to say:
    * it posts the one notice, with the reviewer's note, and sends it back to an Engineer itself. The owner's no is an outcome
    * (notices inform; only an outcome wakes an agent), so the chat above an agent's sub-task hears it too; a card closed as
@@ -408,7 +421,7 @@ export function createApp(opts: AppOptions): Server {
     const stale = a.decidedBy?.startsWith("stale:");
     const text = stale
       ? `**Closed as stale or a duplicate** (approval ${a.id}, ${a.action}): not a no on the change. If it is still needed, ask again for its current state.\n\n${APPROVAL_MARKER}`
-      : `**Rejected** (approval ${a.id}, ${a.action}). Don't file it again unchanged; if it isn't clear why, ask what to change.\n\n${APPROVAL_MARKER}`;
+      : `**Rejected** (approval ${a.id}, ${a.action}). Don't file it again unchanged; if it isn't clear why, ask what to change.${reviewedRefsText(a)}\n\n${APPROVAL_MARKER}`;
     await pc.addComment(a.issueId, text).catch((err) => log.warn({ err: String(err) }, "couldn't post the rejection"));
     if (issue.parentId && !stale) await pc.addComment(issue.parentId, `**Rejected** on ${a.identifier} (approval ${a.id}, ${a.action}).\n\n${APPROVAL_MARKER}`).catch(() => {});
   }

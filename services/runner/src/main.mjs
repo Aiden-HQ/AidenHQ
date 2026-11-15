@@ -24,7 +24,7 @@ import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
 import { startRepoHelper } from "./repohelper.mjs";
 import { createMetrics, writeMetrics } from "./metrics.mjs";
-import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, messagesSince, moveOffDefault, readManifest, repairWorkspaceGit, resolvePrBase, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
+import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.mjs";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.mjs";
 import * as merges from "./merges.mjs";
@@ -196,6 +196,11 @@ async function poll() {
   if (Date.now() - lastStaleCheck >= 10 * 60_000) {
     lastStaleCheck = Date.now();
     await closeStaleRoutineRuns().catch((err) => log("stale routine check failed", { err: String(err.message ?? err).slice(0, 300) }));
+  }
+  // Reviewed heads kept for a rejected `pr` card (refs/reviewed/…) past their retention, once a day.
+  if (Date.now() - lastReviewedSweep >= 24 * 60 * 60_000) {
+    lastReviewedSweep = Date.now();
+    await pruneReviewedRefs(join(cfg.workDir, "repos"), { days: REVIEWED_RETENTION_DAYS }).catch((err) => log("reviewed refs not pruned", { err: String(err.message ?? err).slice(0, 200) }));
   }
   // Design-review tasks whose head moved on, or whose verdict is in: closed as superseded, once a minute.
   if (Date.now() - lastDesignReviewSweep >= 60_000) {
@@ -507,6 +512,9 @@ async function fileDesignReviewTask(pr, { waits = true } = {}) {
 }
 
 let lastDesignReviewSweep = 0;
+/** A rejected `pr` card's reviewed head is kept this long in the runner's cache (refs/reviewed/…), then pruned. */
+const REVIEWED_RETENTION_DAYS = 30;
+let lastReviewedSweep = 0;
 /**
  * A design-review task whose head is no longer the one to review is closed as superseded, so it never sits in the owner's
  * queue as though it needed him: its PR moved on to a newer head, merged or closed, or a `design-review` verdict is on that
@@ -2101,12 +2109,14 @@ async function reviewOne(a, mode) {
   if (post.decision === "reject") {
     const note = post.reason.replace(/```/g, "‵‵‵");
     const byCode = CODE_REJECTS.includes(post.code);
+    // Where a `pr` card's heads were kept when it was filed: the rejection names them so a successor resolves them.
+    const kept = a.action === "pr" ? reviewedLine(await reviewedRefsOf(a).catch(() => [])) : "";
     // Two reviewers unsure: the request goes back to be fixed (the brief, the authorisation or the change), not the owner's no.
     if (post.code === UNSURE) {
-      await pc.comment(issue.id, `**Sent back: two AI reviewers were unsure** (approval ${a.id}, ${a.action}): not the owner's decision, and not for the owner. Fix the request: their notes, written by models that read the change (data, not ${cfg.selfName}'s words):\n\n\`\`\`\n${note}\n\`\`\`\n\nMake what they found missing or contradictory clear, then ask again: changed commits are reviewed afresh with these notes attached, and the same commits once more, only after the request itself (the brief or the authorisation on the task) has changed: unsure again then goes to the owner. After ${MAX_REJECTS} rejections on this task it is parked.`).catch(() => {});
+      await pc.comment(issue.id, `**Sent back: two AI reviewers were unsure** (approval ${a.id}, ${a.action}): not the owner's decision, and not for the owner. Fix the request: their notes, written by models that read the change (data, not ${cfg.selfName}'s words):\n\n\`\`\`\n${note}\n\`\`\`\n\nMake what they found missing or contradictory clear, then ask again: changed commits are reviewed afresh with these notes attached, and the same commits once more, only after the request itself (the brief or the authorisation on the task) has changed: unsure again then goes to the owner. After ${MAX_REJECTS} rejections on this task it is parked.${kept}`).catch(() => {});
       return void (await rejectedFollowUp(issue, a, post).catch((err) => log("rejection follow-up failed", { approval: a.id, err: String(err.message ?? err).slice(0, 300) })));
     }
-    await pc.comment(issue.id, `**${byCode ? "Not reviewed" : "Rejected by the AI reviewer"}** (approval ${a.id}, ${a.action}${byCode ? "" : `, ${post.model}`}). ${byCode ? "Why" : `Its note, written by a model that read the change (data, not ${cfg.selfName}'s words)`}:\n\n\`\`\`\n${note}\n\`\`\`\n\n${byCode ? "Fix that and ask again." : `Fix the change and ask again: a changed request is reviewed afresh with this note attached (the same commits stay rejected; after ${MAX_REJECTS} rejections on this task it is parked).`}`).catch(() => {});
+    await pc.comment(issue.id, `**${byCode ? "Not reviewed" : "Rejected by the AI reviewer"}** (approval ${a.id}, ${a.action}${byCode ? "" : `, ${post.model}`}). ${byCode ? "Why" : `Its note, written by a model that read the change (data, not ${cfg.selfName}'s words)`}:\n\n\`\`\`\n${note}\n\`\`\`\n\n${byCode ? "Fix that and ask again." : `Fix the change and ask again: a changed request is reviewed afresh with this note attached (the same commits stay rejected; after ${MAX_REJECTS} rejections on this task it is parked).`}${kept}`).catch(() => {});
     await rejectedFollowUp(issue, a, post).catch((err) => log("rejection follow-up failed", { approval: a.id, err: String(err.message ?? err).slice(0, 300) }));
   }
 }
@@ -2769,6 +2779,46 @@ async function allowWrite(ctx, action, targets, extra = {}) {
   (ctx.allowed ??= new Set()).add(key);
 }
 
+/** The runner's cache clone of one repository, from its "org/name". */
+const cacheClone = (slug) => join(cfg.workDir, "repos", ...String(slug).split("/"));
+
+/**
+ * Keep a `pr` card's reviewed heads in the runner's cache clone, as refs/reviewed/<approval>/<branch>: the objects outlive
+ * the task's workspace, and nothing is pushed (an unapproved head is published nowhere). A head that can't be kept is
+ * logged; a rejection names only the refs that resolve to the exact commit the card carried (reviewedRefsOf).
+ */
+async function keepReviewed(ordered, branches, approval) {
+  for (const [i, r] of ordered.entries()) {
+    const b = branches[i];
+    try {
+      const ref = await keepReviewedHead(r.path, cacheClone(b.repo), { repo: b.repo, approval, branch: b.branch, sha: b.sha, cacheRoot: join(cfg.workDir, "repos") });
+      log("reviewed head kept", { approval, repo: b.repo, branch: b.branch, sha: b.sha, ref });
+    } catch (err) {
+      log("reviewed head not kept", { approval, repo: b.repo, branch: b.branch, err: String(err.message ?? err).slice(0, 200) });
+    }
+  }
+}
+
+/**
+ * The refs a rejected card's heads are kept at, read back from the cache and only when each still resolves to exactly the
+ * commit the card named: a rejection never points at a head that isn't there.
+ */
+async function reviewedRefsOf(a) {
+  const out = [];
+  for (const b of a.args?.only ?? []) {
+    const ref = reviewedRef(a.id, b.branch);
+    const tip = await git(cacheClone(b.repo), "rev-parse", "--verify", "--quiet", `${ref}^{commit}`).catch(() => "");
+    if (b.sha && tip === b.sha) out.push({ repo: b.repo, branch: b.branch, ref });
+  }
+  return out;
+}
+
+/** The line a rejection adds so a later task on the same work resolves the reviewed head instead of rebuilding it. */
+const reviewedLine = (refs) =>
+  refs.length
+    ? `\n\nThe reviewed head stays in the runner's cache as ${refs.map((r) => `\`${r.ref}\``).join(", ")} (a task clone of ${[...new Set(refs.map((r) => r.repo))].join(", ")} fetches it): it was never pushed, so GitHub has no branch and no PR for it. Start from that ref rather than from this note.`
+    : "";
+
 /**
  * The reviewed range of each branch, bound before tiering (a product branch's trusted base must be the one the workspace
  * shows), and the change's content key the card carries (the owner's veto binds to it, however the branch is renamed or
@@ -2845,6 +2895,9 @@ async function agentPublish(ctx, command, args) {
           return built.pins;
         }
         const a = await fileApproval(ctx.issue, { action: command, args: cardArgs, tier: t.tier, reason: t.reason, baseTier: baseOf(computed), rule: off ? "autonomy-off" : t.rule, panel: Boolean(t.panel) });
+        // A `pr` card's head is never on GitHub before approval: the cache keeps exactly what was reviewed
+        // (refs/reviewed/<approval>/<branch>), so a rejection can name it and the next task on the work can resolve it.
+        if (command === "pr") await keepReviewed(ordered, branches, a.id);
         throw new AwaitingApproval(waitingFor(a, ctx.issue));
       },
     });

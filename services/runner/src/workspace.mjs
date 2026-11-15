@@ -5,7 +5,7 @@
 // cache (hardlinked objects), so they are quick and keep every write inside the workspace.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeRepo } from "./commands.mjs";
@@ -201,6 +201,7 @@ export async function ensureRepo(workspace, repo, { cache, remoteUrl = `git@gith
   const existing = (await workspaceRepos(workspace)).find((r) => r.slug.toLowerCase() === repo.slug.toLowerCase());
   if (existing) {
     await git(existing.path, "fetch", "--quiet", "--prune", "origin");
+    await git(existing.path, "fetch", "--quiet", "--no-tags", cache, `+${REVIEWED}/*:${REVIEWED}/*`).catch(() => {});
     // A box mounts this clone read-write: one sharing files with the runner's cache (made for the jail) is refused.
     if (copy && sharesObjects(existing.path)) throw new Error(`${repo.slug} in this task's workspace was cloned for the jail and shares files with the runner's cache, so it can't go into a computer. Start the task afresh (\`aidenhq cleanup\`, then ask again) or hand it back to the Software Engineer.`);
     return existing.path;
@@ -215,6 +216,8 @@ export async function ensureRepo(workspace, repo, { cache, remoteUrl = `git@gith
   await git(path, "config", "remote.origin.pushurl", "DISABLED_BY_AIDENHQ");
   if (hooksDir) await git(path, "config", "core.hooksPath", hooksDir);
   await git(path, "fetch", "--quiet", "--prune", "origin");
+  // The reviewed heads the runner kept for a task that came before this one (refs/reviewed/…): local, never GitHub's.
+  await git(path, "fetch", "--quiet", "--no-tags", cache, `+${REVIEWED}/*:${REVIEWED}/*`).catch(() => {});
   await git(path, "remote", "set-head", "origin", "--auto").catch(() => {});
   const base = await defaultBranch(path);
   if (await hasRef(path, `origin/${base}`)) await git(path, "checkout", "--quiet", "-B", base, `origin/${base}`);
@@ -503,5 +506,81 @@ export async function dirtyCheckouts(repos) {
 /** Copy every local branch of a clone into the cache as refs/kept/<task>/… before a workspace is removed. */
 export async function keepBranches(path, cache, identifier) {
   await git(cache, "fetch", "--quiet", path, `+refs/heads/*:refs/kept/${identifier}/*`).catch(() => {});
+}
+
+// ------------------------------------------------------------------ reviewed heads
+
+/**
+ * Where a reviewed head waits for the task that comes next: `refs/reviewed/<approval>/<branch>` in the runner's cache clone
+ * of its repository. Under `refs/reviewed/`, never `refs/heads/`, so a task branch literally named `reviewed/…` is another
+ * ref and neither shadows the other; and never on GitHub, so an unapproved head is published nowhere.
+ */
+export const REVIEWED = "refs/reviewed";
+export const reviewedRef = (approval, branch) => `${REVIEWED}/${approval}/${branch}`;
+/** What has been kept, and when: [{ repo, ref, at }], beside the cache clones (the refs themselves can't carry a date). */
+const reviewedIndex = (cacheRoot) => join(cacheRoot, ".reviewed-refs.jsonl");
+const readReviewed = (cacheRoot) => {
+  try {
+    return readFileSync(reviewedIndex(cacheRoot), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .flatMap((l) => {
+        try {
+          const e = JSON.parse(l);
+          return typeof e?.repo === "string" && typeof e?.ref === "string" ? [e] : [];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Keep the head a card reviewed, exactly (`sha`), in the cache clone `cache` of `repo`, as refs/reviewed/<approval>/<branch>,
+ * so it outlives the task's workspace: the branch goes by name, and the object itself when the branch has moved on since.
+ * Returns the ref; throws when what landed isn't `sha` (nothing is kept then).
+ */
+export async function keepReviewedHead(path, cache, { repo, approval, branch, sha, cacheRoot, now = new Date() }) {
+  const ref = reviewedRef(approval, branch);
+  // The exact commit the card names, whatever its branch says by now (a commit the source clone has is enough).
+  await git(cache, "fetch", "--quiet", "--no-tags", path, `+${sha}:${ref}`).catch(() => git(cache, "fetch", "--quiet", "--no-tags", path, `+refs/heads/${branch}:${ref}`));
+  const got = await git(cache, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`).catch(() => "");
+  if (got !== sha) {
+    if (got) await git(cache, "update-ref", "-d", ref).catch(() => {});
+    throw new Error(`the reviewed head of ${repo} \`${branch}\` (${sha.slice(0, 9)}) isn't what landed at ${ref}, so nothing was kept`);
+  }
+  // Appended, one entry per line: two tasks filing cards at once each keep theirs (a rewrite could lose one).
+  appendFileSync(reviewedIndex(cacheRoot), `${JSON.stringify({ repo, ref, at: now.toISOString() })}\n`);
+  return ref;
+}
+
+/**
+ * Drop kept reviewed heads past their retention (`days`, default 30) and any whose ref is already gone. The runner calls
+ * this on its cache sweep; nothing else ever deletes them, and a merged PR's branch is still GitHub's to delete as before.
+ */
+export async function pruneReviewedRefs(cacheRoot, { days = 30, now = Date.now() } = {}) {
+  const cut = now - days * 86_400_000;
+  // One entry per ref, the latest date: a ref kept again (a second card on it) takes the newer retention.
+  const latest = new Map();
+  for (const e of readReviewed(cacheRoot)) {
+    const key = `${e.repo.toLowerCase()} ${e.ref}`;
+    const prev = latest.get(key);
+    if (!prev || Date.parse(e.at) > Date.parse(prev.at)) latest.set(key, e);
+  }
+  const kept = [];
+  const removed = [];
+  for (const e of latest.values()) {
+    const cache = join(cacheRoot, ...e.repo.split("/"));
+    const tip = await git(cache, "rev-parse", "--verify", "--quiet", `${e.ref}^{commit}`).catch(() => "");
+    if (tip && Date.parse(e.at) >= cut) kept.push(e);
+    else {
+      if (tip) await git(cache, "update-ref", "-d", e.ref).catch(() => {});
+      removed.push(e.ref);
+    }
+  }
+  if (latest.size) writeFileSync(reviewedIndex(cacheRoot), kept.map((e) => `${JSON.stringify(e)}\n`).join(""));
+  return removed;
 }
 

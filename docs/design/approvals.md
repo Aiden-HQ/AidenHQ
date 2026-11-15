@@ -25,6 +25,11 @@ agent, never to the owner.
   note on the task attached; after three reviewer rejections on the task since the owner's last yes (a rejected change
   approved later no longer counts), the action is parked with a note to the agent. Code's own refusals (moved, unreadable, too large) never count; a card closed because its head moved is stored `stale`, not `rejected`. `tiers.mjs` `priorDecisions`; the board keeps
   its own check of the owner's veto.
+- **A rejected head stays inspectable.** A `pr` card's head is reviewed before anything is pushed, so a rejection that
+  held to its content would otherwise have nothing left to read: the runner keeps each reviewed head in its cache clone as
+  `refs/reviewed/<approval>/<branch>` when the card is filed, the rejection names that ref, and a later task's clone
+  fetches it back. It is never pushed — GitHub has no branch and no PR for it. The refs are pruned after 30 days by the
+  runner's daily cache sweep, the same schedule as its other cache work; a host lost takes them with it.
 - **Authority-expanding goes to the panel.** A change is authority-expanding when it weakens an approval,
   authentication, sandbox or secret control, changes who can approve, widens credentials, grants, public access, data
   destinations or spending, or edits the gate's own core. Code decides most of it (`GATE_CORE` and content rules in
