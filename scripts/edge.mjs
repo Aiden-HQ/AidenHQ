@@ -9,6 +9,10 @@
 // (AUTH_URL) and Access becomes optional per host (a host with an `aud` still needs it: password never removes Access).
 // In password mode sign-in lives only on the my-apps host; each app host gets its own host-only session cookie through a
 // one-time handoff code (services/gate/gate.mjs), and the gate strips auth cookies before any app.
+// settings.edge.previews: true: pull request previews of shared apps (services/apps-mcp/src/previews.ts) at
+// pr-<n>.<host> under each share.host, through the gate, with the parent's access: one ingress rule *.<host> per shared
+// app behind the parent's own aud (its Access application must cover *.<host> too). apps-mcp writes which previews run
+// (data/previews/previews.json); the gate takes only ports in PREVIEW_PORTS from it.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,6 +27,8 @@ export const ACCOUNTS_FILE = "/accounts/accounts.json"; // the board's account m
 export const AUTH_SECRET_FILE = "/secrets/auth_listener"; // gate_board_secret in the gate: X-AidenHQ-Gate to 3129 (sign-in, app access)
 export const LOGINS = ["access", "password"];
 export const IDENTITY_KEY_FILE = "/secrets/identity_key"; // the vault's identity/gate.pem in the gate: it mints app identity tokens
+export const PREVIEWS_FILE = "/previews/previews.json"; // apps-mcp's running previews (data/previews), mounted read-only
+export const PREVIEW_PORTS = [39100, 39399]; // services/apps-mcp/src/registry.ts PREVIEW_PORTS
 // cloudflared 2026.10.7 (multi-arch index), pinned by digest.
 const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba";
 const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -49,7 +55,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
   const login = settings.app_login ?? "access";
   if (!LOGINS.includes(login)) fail(`settings.app_login must be ${LOGINS.join(" or ")}`);
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(edge.tunnel_id ?? ""))) fail("settings.edge.tunnel_id must be the tunnel's UUID");
-  for (const k of Object.keys(edge)) if (!["team_domain", "tunnel_id", "my_apps"].includes(k)) fail(`settings.edge.${k} is not a setting`);
+  for (const k of Object.keys(edge)) if (!["team_domain", "tunnel_id", "my_apps", "previews"].includes(k)) fail(`settings.edge.${k} is not a setting`);
   // An Access application's audience tag: required on every host with app_login access, optional with password.
   const audOf = (aud, where) => {
     if (aud == null && login === "password") return undefined;
@@ -63,6 +69,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
     const s = a.share;
     if (!HOST.test(s.host)) fail(`app ${a.name}: share.host ${s.host} is not a lowercase DNS name`);
     if (hosts[s.host]) fail(`app ${a.name}: share.host ${s.host} is also ${hosts[s.host].app}'s`);
+    if (/^pr-\d+\./.test(s.host)) fail(`app ${a.name}: share.host ${s.host}: pr-<n>.<host> hosts are previews'`);
     if (!Number.isInteger(a.port)) fail(`app ${a.name}: share.host needs a port`);
     if (a.port === GATE_PORT) fail(`app ${a.name}: port ${GATE_PORT} is the gate's`);
     if (a.port === AUTH_PORT) fail(`app ${a.name}: port ${AUTH_PORT} is the board's auth listener`);
@@ -83,6 +90,11 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
   }
   // my_apps: the catalog and each app's Access page (both modes); in password mode also the one sign-in host.
   if (!myApps) fail("settings.edge.my_apps.host is required: it serves My apps, each app's Access page and (password mode) sign-in");
+  let previews;
+  if (edge.previews) {
+    if (edge.previews !== true) fail("settings.edge.previews is true or absent (previews take each app's own Access audience)");
+    previews = { file: PREVIEWS_FILE, ports: PREVIEW_PORTS };
+  }
   const gateHosts = [...Object.entries(hosts), ...(myApps ? [[myApps.host, myApps]] : [])];
   const anyAud = gateHosts.some(([, h]) => h.aud);
   const team = /^([a-z0-9-]+)\.cloudflareaccess\.com$/.exec(String(edge.team_domain ?? ""))?.[1];
@@ -91,15 +103,17 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
   const gate = {
     port: GATE_PORT, login, ...(issuer ? { issuer, certs_url: `${issuer}/cdn-cgi/access/certs` } : {}),
     auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE, owner_email: owner,
-    ...(myApps ? { my_apps: myApps } : {}), hosts,
+    ...(myApps ? { my_apps: myApps } : {}), hosts, ...(previews ? { previews } : {}),
   };
+  // Previews: *.<host> for each shared app, behind that app's aud, after every exact host (cloudflared takes the first match).
+  const wild = previews ? Object.entries(hosts).map(([h, x]) => [`*.${h}`, x]) : [];
   const cloudflared = {
     tunnel: edge.tunnel_id,
     "credentials-file": "/run/secrets/cloudflared_credentials",
     ingress: [
       // cloudflared checks the Access token too (a second layer); the gate is the one that decides. Only a password-mode
       // host without an aud goes without Access.
-      ...gateHosts.map(([hostname, h]) => ({ hostname, service: GATE_URL, ...(h.aud ? { originRequest: { access: { required: true, teamName: team, audTag: [h.aud] } } } : {}) })),
+      ...[...gateHosts, ...wild].map(([hostname, h]) => ({ hostname, service: GATE_URL, ...(h.aud ? { originRequest: { access: { required: true, teamName: team, audTag: [h.aud] } } } : {}) })),
       { service: "http_status:404" },
     ],
   };
@@ -116,6 +130,8 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
           `\${AIDENHQ_SECRETS_DIR}/identity/gate.pem:${IDENTITY_KEY_FILE}:ro`,
           // Its proof to the board's auth listener (core's generated gate_board_secret): sign-in and app access.
           `\${AIDENHQ_SECRETS_DIR}/gate_board_secret:${AUTH_SECRET_FILE}:ro`,
+          // Which previews run (apps-mcp writes it; a directory, so its atomic replace is seen).
+          ...(previews ? [`\${AIDENHQ_DATA_DIR:-./data}/previews:${dirname(PREVIEWS_FILE)}:ro`] : []),
         ],
       },
       // The board reads the gate's config (the sign-in host, app hosts, login mode) and writes data/gate/accounts.json.
@@ -144,7 +160,8 @@ export function checkIngress(cfg, { login = "access" } = {}) {
   const seen = new Set();
   for (const r of rules.slice(0, -1)) {
     for (const k of Object.keys(r)) if (!["hostname", "service", "originRequest"].includes(k)) bad(`rule key ${k}`);
-    if (typeof r.hostname !== "string" || !HOST.test(r.hostname) || seen.has(r.hostname)) bad(`hostname ${r.hostname}`);
+    // A wildcard is one leading `*.` label (preview hosts), never alone on a top-level domain.
+    if (typeof r.hostname !== "string" || !HOST.test(r.hostname.replace(/^\*\.(?=[^.]+\.)/, "x.")) || seen.has(r.hostname)) bad(`hostname ${r.hostname}`);
     seen.add(r.hostname);
     if (r.service !== GATE_URL) bad(`${r.hostname} → ${r.service} (only ${GATE_URL}, the gate)`);
     for (const k of Object.keys(r.originRequest ?? {})) if (k !== "access") bad(`${r.hostname}: originRequest.${k}`);

@@ -17,6 +17,13 @@
 // host lists the visitor's apps and serves each app's Access page to its admins; the board decides every change. Sign-in
 // (password mode) is served only on the my-apps host; an app host gets its own host-only __Host- cookie through a one-time
 // handoff. Whatever the gate can't read or check (keys, accounts, sessions) refuses with a 503.
+// Preview hosts (cfg.previews; services/apps-mcp/src/previews.ts): pr-<n>.<host> is the preview of the shared app at
+// <host> for its pull request n, when apps-mcp's previews file names that preview with a port inside the compiled band.
+// The gate derives everything else itself: the parent's Access audience (its Access application covers *.<host>) and the
+// parent's role for the visitor; an identity token for the preview (so preview code can't replay it at the live app);
+// requests and My apps stay the parent's. A preview runs unreviewed code under its parent's host, so with previews on every
+// cookie an app sets through the gate is host-only (its Domain dropped): a preview can't toss cookies at the live app or
+// any other, and a live app's cookies never reach its previews.
 import { createHash, createPrivateKey, createPublicKey, randomBytes, sign, timingSafeEqual, verify } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
@@ -132,6 +139,8 @@ export async function verifyToken(token, { issuer, aud, key }) {
   return c;
 }
 
+/** A Set-Cookie without any Domain attribute: host-only (a preview's cookies never reach a sibling host). */
+export const hostOnly = (c) => c.replace(/;\s*domain\s*=[^;]*/gi, "");
 const hostOf = (req) => String(req.headers.host ?? "").toLowerCase().replace(/:\d+$/, "");
 const cookies = (req) => String(req.headers.cookie ?? "").split(";").map((c) => c.trim()).filter(Boolean);
 const cookieName = (c) => c.split("=")[0].trim();
@@ -254,10 +263,37 @@ export function requestsPage(app, rows) {
   return html(`${app}: your requests`, `<p><a href="/">Back to ${esc(app)}</a></p><h1>Your requests</h1>${rows.length ? `<table><tr><th>When</th><th>Request</th><th>Status</th><th>Reply</th></tr>${rows.map(row).join("")}</table>` : "<p>None yet.</p>"}`);
 }
 
+const PREVIEW_HOST = /^pr-([1-9][0-9]{0,5})\.(.+)$/;
+/**
+ * A preview host's site, or undefined: its parent must be a compiled app host (whose Access audience it takes), and the previews file (apps-mcp's, re-read
+ * when it changes; absent = none) must name the preview with a port in the compiled band. Throws when the file is unreadable.
+ */
+export function previewSites() {
+  let text, map = {};
+  return (cfg, host) => {
+    const pv = cfg.previews;
+    const m = pv && PREVIEW_HOST.exec(host);
+    const parent = m && (Object.hasOwn(cfg.hosts ?? {}, m[2]) ? cfg.hosts[m[2]] : undefined);
+    if (!parent) return undefined;
+    let t;
+    try { t = readFileSync(pv.file, "utf8"); } catch (e) { if (e.code === "ENOENT") t = "{}"; else throw e; }
+    if (t !== text) {
+      const next = JSON.parse(t);
+      if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("previews file: not a map");
+      map = next;
+      text = t;
+    }
+    const app = `${parent.app}-pr-${m[1]}`;
+    const port = Object.hasOwn(map, app) ? map[app] : undefined;
+    if (!Number.isInteger(port) || port < pv.ports[0] || port > pv.ports[1]) return undefined;
+    return { app, parent: parent.app, port, ...(parent.aud ? { aud: parent.aud } : {}) };
+  };
+}
+
 /**
  * createGate({ config, fetch }) → http.Server. `config()` returns the compiled gate config (re-read by the caller as it
  * changes): { login, issuer?, certs_url?, auth_url?, auth_secret_file?, accounts_file, owner_email, my_apps?: { host, aud? },
- * identity_key_file, hosts: { <host>: { app, port, aud?, default_role? } } }.
+ * identity_key_file, hosts: { <host>: { app, port, aud?, default_role? } }, previews?: { file, ports: [min, max] } }.
  * identity_key_file: the gate's Ed25519 signing key (vault identity/gate.pem, mounted read-only): it mints each app's token.
  * auth_secret_file: the board's (gate_board_secret), sent as X-AidenHQ-Gate to the auth listener in password mode.
  * accounts_file: the board's account map and app roles (mounted read-only), re-read when its content changes.
@@ -267,6 +303,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   const keyFor = (url) => keysets.get(url) ?? keysets.set(url, jwks(url, fetchImpl, now)).get(url);
   const signers = new Map(); // identity_key_file → its key (one in practice)
   const signerFor = (file) => signers.get(file) ?? signers.set(file, signingKey(file)).get(file);
+  const previewOf = previewSites();
 
   let state, stateText;
   /** The board's accounts and app roles, re-parsed when the file's text changes; throws when it can't be read. */
@@ -335,7 +372,13 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   async function authorize(req, { upgrade }) {
     const cfg = config();
     const host = hostOf(req);
-    const site = Object.hasOwn(cfg.hosts ?? {}, host) ? cfg.hosts[host] : undefined;
+    let site;
+    try {
+      site = Object.hasOwn(cfg.hosts ?? {}, host) ? cfg.hosts[host] : previewOf(cfg, host);
+    } catch (e) {
+      log({ msg: "previews unreadable", err: String(e) });
+      return { status: 503, msg: "unavailable: can't read previews right now" };
+    }
     const mine = !site && cfg.my_apps?.host === host;
     if (!site && !mine) return { status: 404, msg: "not found" };
     const url = String(req.url ?? "");
@@ -424,7 +467,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       return { mine: true, ...who, roleOf, access: p === ACCESS_PATH };
     }
 
-    const role = roleOf(site.app);
+    const role = roleOf(site.parent ?? site.app); // a preview: its parent app's access
     if (role === "blocked") {
       log({ msg: "denied", host, email, why: "blocked" });
       return { status: 403, msg: "forbidden: this app isn't shared with you" };
@@ -433,7 +476,8 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     if (norm.pathname === RESERVED || norm.pathname.startsWith(`${RESERVED}/`) || /(^|\/)(\.|%2e)aidenhq([/\\]|%2f|%5c|$)/i.test(rawPath)) {
       if (ENCODED.test(rawPath) || upgrade) return { status: 400, msg: "bad request" };
       const path = norm.pathname;
-      if (read && path === `${RESERVED}/access`) return cfg.my_apps?.host ? { status: 302, msg: "access", location: `https://${cfg.my_apps.host}${ACCESS_PATH}?app=${encodeURIComponent(site.app)}` } : { status: 404, msg: "not found" };
+      if (read && path === `${RESERVED}/access`) return cfg.my_apps?.host ? { status: 302, msg: "access", location: `https://${cfg.my_apps.host}${ACCESS_PATH}?app=${encodeURIComponent(site.parent ?? site.app)}` } : { status: 404, msg: "not found" };
+      if (site.parent) return { status: 404, msg: "not found" }; // requests are the live app's, never a preview's
       if (read && path === `${RESERVED}/requests`) return { requests: true, site, ...who, role };
       if (req.method === "POST" && path === `${RESERVED}/request`) return exactOrigin(req, host) ? { request: true, site, ...who, role } : { status: 403, msg: "forbidden: cross-origin" };
       return { status: 404, msg: "not found" };
@@ -581,7 +625,8 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     const state = query.get("state") ?? "";
     let t;
     try { t = new URL(to); } catch {}
-    if (!t || t.protocol !== "https:" || t.username || t.password || t.port || !Object.hasOwn(cfg.hosts ?? {}, t.hostname) || !STATE.test(state)) return plain(res, 400, "bad request");
+    const known = (h) => { try { return Object.hasOwn(cfg.hosts ?? {}, h) || !!previewOf(cfg, h); } catch { return false; } };
+    if (!t || t.protocol !== "https:" || t.username || t.password || t.port || !known(t.hostname) || !STATE.test(state)) return plain(res, 400, "bad request");
     try {
       const email = await sessionEmail(req, cfg);
       if (!email) return plain(res, 302, "sign in", { location: `${AUTH_PATH}sign-in?next=${encodeURIComponent(`${GO_PATH}?to=${encodeURIComponent(t.href)}&state=${state}`)}` });
@@ -662,7 +707,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       for (const k of HOP) delete h[k];
       delete h["set-auth-token"]; // Better Auth's bearer header: the session token never leaves through the gate
       // An app can't set (or overwrite) any auth cookie; the auth listener's must be host-only (no Domain).
-      const kept = [h["set-cookie"] ?? []].flat().filter((c) => !AUTH_COOKIE.test(cookieName(c)) || (a.auth && !/;\s*domain\s*=/i.test(c)));
+      const kept = [h["set-cookie"] ?? []].flat().filter((c) => !AUTH_COOKIE.test(cookieName(c)) || (a.auth && !/;\s*domain\s*=/i.test(c))).map((c) => (a.site && config().previews ? hostOnly(c) : c));
       if (kept.length) h["set-cookie"] = kept;
       else delete h["set-cookie"];
       if (a.auth && (/json/i.test(String(h["content-type"] ?? "")) || a.path.startsWith(`${AUTH_PATH}api/`))) return void tokenless(r, res, h);
@@ -684,7 +729,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       let s = `HTTP/1.1 ${status} ${message}\r\n`;
       for (let i = 0; i < rawHeaders.length; i += 2) {
         if (rawHeaders[i].toLowerCase() === "set-cookie" && AUTH_COOKIE.test(cookieName(rawHeaders[i + 1]))) continue; // as for responses
-        s += `${rawHeaders[i]}: ${rawHeaders[i + 1]}\r\n`;
+        s += `${rawHeaders[i]}: ${rawHeaders[i].toLowerCase() === "set-cookie" && config().previews ? hostOnly(rawHeaders[i + 1]) : rawHeaders[i + 1]}\r\n`;
       }
       return `${s}\r\n`;
     };

@@ -107,6 +107,23 @@ test("app_login: access needs an aud everywhere; password signs in through the b
   compile(mods, inst({ edge: { tunnel_id: TUNNEL, my_apps: { host: "my.other.org" } }, app_login: "password" }, [open]));
 });
 
+test("previews: *.<host> per shared app after the exact hosts, behind that app's own aud; the gate gets the band and the file", () => {
+  const out = compile(mods, inst({ edge: { ...edge, previews: true } }, [roadmap]));
+  assert.deepEqual(out.edge.gate.previews, { file: "/previews/previews.json", ports: [39100, 39399] });
+  assert.deepEqual(out.edge.cloudflared.ingress.slice(-2), [
+    { hostname: "*.roadmap.acme.com", service: GATE_URL, originRequest: { access: { required: true, teamName: "acme", audTag: ["aud-roadmap-0001"] } } },
+    { service: "http_status:404" },
+  ]);
+  checkIngress(out.edge.cloudflared);
+  assert.ok(out.compose.services.gate.volumes.includes("${AIDENHQ_DATA_DIR:-./data}/previews:/previews:ro"));
+  assert.throws(() => compile(mods, inst({ edge: { ...edge, previews: { aud: "aud-shared-001" } } }, [roadmap])), /own Access audience/);
+  assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, share: { ...roadmap.share, host: "pr-2.roadmap.acme.com" } }])), /previews'/);
+  const rule = (hostname) => ({ ingress: [{ hostname, service: GATE_URL, originRequest: { access: { required: true, audTag: ["a"] } } }, { service: "http_status:404" }] });
+  assert.throws(() => checkIngress(rule("*.com")), /hostname/);
+  assert.throws(() => checkIngress(rule("*")), /hostname/);
+  assert.throws(() => checkIngress(rule("a.*.acme.com")), /hostname/);
+});
+
 test("two services can't claim one host port", () => {
   assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, port: 3129 }])), /3129 is the board's auth listener/);
   const app = (name) => ({ name, repo: `acme/${name}`, owner: "a", description: "d", port: 4300 });
