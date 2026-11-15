@@ -3,7 +3,10 @@
 // comments never would); a pass closes it and tells the parent; 3 rejected versions go to the delegator.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { flow } from "./flow-harness.mjs";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { flow, git } from "./flow-harness.mjs";
+import { State } from "../src/state.mjs";
 
 const rubric = ["the report says which repositories use Legacy", "each claim links its source", "it names the next step"];
 const answer = (met) => ({ verdict: met.every((m) => m === "yes") ? "satisfied" : "needs_revision", criteria: met.map((m, i) => ({ id: String(i + 1), met: m, evidence: m === "yes" ? "shown in the report" : "no source links" })) });
@@ -92,6 +95,70 @@ describe("flow-graded", { concurrency: true }, () => {
       await t.idle(1500);
       assert.equal(paperclip.grades.get("part").state, "awaiting_evidence");
       assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /needs your decision/.test(c.body)));
+    });
+  });
+
+  // A graded task whose evidence landed after its wait began once reached the delegator as "still waiting for its evidence",
+  // quoting a premise the task's own thread contradicted. Before it escalates, the runner re-reads the task's record.
+  const prUrl = "https://github.com/acme/app/pull/7";
+  const prRubric = ["merged into main", "checks green on the head", "the diff makes the change"];
+  /** The runner's own merge record for the task (its state, as a merge queue keeps it): what merged, and at which commit. */
+  const mergedRecord = ({ dir }, pr) => {
+    const state = new State(join(dir, "state"));
+    state.set("merges:part", JSON.stringify({ state: "done", identifier: "PEN-2", prs: [{ ...pr, status: "merged", mergedAt: new Date(Date.now() - 30 * 3_600_000).toISOString(), sha: git(dir, "--git-dir", join(dir, "github/acme/app.git"), "rev-parse", "main") }] }));
+    state.db.close();
+  };
+  /** PR #7 on the fake GitHub, its branch behind it so the head reads as a real commit. */
+  const seedPr = ({ dir }, { merged = true, checks = "SUCCESS" } = {}) => {
+    git(dir, "--git-dir", join(dir, "github/acme/app.git"), "branch", "-f", "fix/legacy", "main");
+    writeFileSync(join(dir, "github-prs.json"), JSON.stringify({ 7: { branch: "fix/legacy", files: ["x.txt"], checks, merged } }));
+  };
+  /** The task's own branch row naming PR #7, for when the fixture has one. */
+  const branchRow = ({ dir }) => {
+    const state = new State(join(dir, "state"));
+    state.saveBranch("part", { repo: "acme/app", branch: "fix/legacy", base: "main" });
+    state.updateBranch("part", "acme/app", "fix/legacy", { pr_url: prUrl });
+    state.db.close();
+  };
+  const heldPr = (name, over = {}) => held(name, { rubric: prRubric, deliverable: { kind: "pr", ref: "" }, state: "awaiting_evidence", updatedAt: new Date(Date.now() - 2 * 86_400_000).toISOString() }, over);
+
+  describe("flow-graded: a merge record outlives the branch row", () => {
+    // The row that named the PR is gone (a cleanup, a state reset); the runner's own merge record for the task is not.
+    const t = flow(heldPr("record", { setup: (f) => (seedPr(f), mergedRecord(f, { repo: "acme/app", number: 7, url: prUrl })) }));
+
+    it("grades the merge found in the runner's own record instead of escalating", async () => {
+      const { waitFor, paperclip, partComments } = t;
+      paperclip.graderAnswers.push(answer(["yes", "yes", "yes"]));
+      await waitFor("the graded task closed", () => paperclip.issues.get("part").status === "done", 60_000);
+      assert.equal(paperclip.grades.get("part").state, "satisfied");
+      assert.ok(!partComments().some((c) => /escalated to the delegator/.test(c)), "no decision asked on delivered work");
+      assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /needs your decision/.test(c.body)));
+    });
+  });
+
+  describe("flow-graded: a merged PR whose head still lists a running check", () => {
+    const t = flow(heldPr("merged-running", { setup: (f) => (branchRow(f), seedPr(f, { checks: "PENDING" })) }));
+
+    it("holds the row and does not escalate it to the delegator", async () => {
+      const { paperclip, partComments } = t;
+      await t.waitFor("the guard to see the merge", () => /grading waits: the deliverable is present/.test(t.output), 30_000);
+      assert.ok(!partComments().some((c) => /escalated to the delegator/.test(c)), "no decision asked on shipped work");
+      assert.notEqual(paperclip.grades.get("part").state, "escalated");
+    });
+  });
+
+  describe("flow-graded: nothing delivered still escalates, on today's facts", () => {
+    // The wait began while the checks were running; today the PR is open, so that is what the delegator hears.
+    const t = flow(heldPr("still-open", { setup: (f) => (branchRow(f), seedPr(f, { merged: false })) }));
+
+    it("escalates, with a premise read from the PR now rather than the old reason", async () => {
+      const { waitFor, paperclip } = t;
+      await waitFor("the escalation", () => (paperclip.comments.get("parent") ?? []).some((c) => /needs your decision/.test(c.body)), 60_000);
+      assert.equal(paperclip.grades.get("part").state, "escalated");
+      const note = (paperclip.comments.get("parent") ?? []).find((c) => /needs your decision/.test(c.body)).body;
+      assert.match(note, new RegExp(`still waiting for its evidence a day after it was finished: ${prUrl} is open, not merged yet`));
+      assert.doesNotMatch(note, /checks still running/, "the older reason text is not replayed");
+      assert.equal(paperclip.graderCalls.length, 0);
     });
   });
 
