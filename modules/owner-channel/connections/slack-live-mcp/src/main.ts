@@ -11,7 +11,7 @@ import { quickCommand } from "./commands.js";
 import { isOwnerComment, taskForNotify, ownerViaOf } from "./threads.js";
 import { buttonsMarkup } from "./telegram.js";
 import { transcribe } from "./voice.js";
-import { buildServer } from "./mcp.js";
+import { buildServer, trialGuard, trialOf } from "./mcp.js";
 import { startSocket } from "./socket.js";
 import { openStore } from "./store.js";
 import { makePostReply, notifyOwner, postTelegram, editTelegram, type NotifyConfig } from "./urgent.js";
@@ -113,7 +113,12 @@ const http = createServer(async (req, res) => {
     if (!auth.ok) return void res.writeHead(auth.status, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
     // The caller (agent-auth's whoami) and its key: notify_owner(task) posts the reply on the chat as that agent.
     const key = String(req.headers["x-agent-key"] ?? "");
-    const server = buildServer(store, cfg, auth.caller && key ? { id: auth.caller.id, name: auth.caller.name, key } : undefined, postCfg, laneTools);
+    // An agent in trial ("draft, don't do") reaches the owner and its own chats only (the grants table's mark, exactly true).
+    // The mark is read per call and an unreadable table refuses the guarded tools, never the non-trial behaviour.
+    const callerId = auth.caller?.id;
+    const guard = trialGuard(callerId ? () => trialOf(process.env.AIDENHQ_GRANTS_FILE, callerId) : undefined);
+    if (guard.refusal) log.warn({ reason: guard.refusal }, "trial mark unreadable; guarded tools refuse");
+    const server = buildServer(store, cfg, auth.caller && key ? { id: auth.caller.id, name: auth.caller.name, key } : undefined, postCfg, laneTools, guard);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();

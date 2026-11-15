@@ -694,15 +694,21 @@ const TOOLS = {
       // A pinned Slack message is the same item as the needs-response or todo task for it:
       // closing either must not bring it back under the other marker.
       let assigneeAgent, target, origin = "";
+      const g = await grant();
+      // An agent in trial ("draft, don't do") creates work only for itself: with no assignee the task lands on the owner's
+      // board, and any other assignee is a delegation. Both are refused before anything is created.
+      if (g.trial && !assignee)
+        throw new Error(`Refused: ${g.key} is in trial and may only create tasks assigned to itself; a task with no assignee goes to the owner's board.`);
       if (assignee) {
-        // Assigning work to another agent is a delegation: never from an agent on trial,
-        // and the task says which agent asked (an agent request, not the owner's words), as task_delegate does.
-        if ((await grant()).trial) throw new Error("an agent on trial can't assign tasks to other agents");
+        // The task says which agent asked (an agent request, not the owner's words), as task_delegate does.
         const want = String(assignee).trim().toLowerCase();
         const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY)}/agents`);
         const hits = all.filter((a) => a.status !== "terminated" && [keyOf(a), a.name, a.metadata?.persona?.name].some((n) => String(n ?? "").toLowerCase() === want));
         if (hits.length !== 1) throw new Error(hits.length ? `"${assignee}" is ambiguous: use the key from fleet_catalog` : `"${assignee}" is not an agent here (see fleet_catalog)`);
         [target] = hits;
+        // Assigning work to another agent is a delegation: never from an agent on trial.
+        if (g.trial && target.id !== g.id)
+          throw new Error(`Refused: ${g.key} is in trial and may only create tasks assigned to itself; assigning work to ${keyOf(target)} is a delegation, which comes after the trial.`);
         await refuseUnlistedAssignee(target);
         assigneeAgent = target.id;
         const me = await api("GET", "/api/agents/me");
