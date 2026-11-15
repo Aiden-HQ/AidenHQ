@@ -91,18 +91,24 @@ const EXECUTABLE = /^(\x7fELF|MZ)/;
  * sends the card back to the agent for those, naming each file with its size, the limit and the next step. A plain text
  * file that doesn't fit goes into oversized instead: it is named to the model with its own size and the limit, its change
  * is in the DIFF, and the verdict says it was judged from the diff. Deleted files are text undefined, skipped.
+ *
+ * The text returned never exceeds MAX_FILES, so the FILES fence sends it whole: 300 files with paths near git's limit cost
+ * more in notes than the budget, so those names are shortened, and anything still over is counted in one closing line
+ * rather than left to the fence to cut off (which would drop the last files' notes and their changes silently).
  */
 export function fileContext(files) {
   const entries = files.filter((f) => f.text !== undefined).map((f) => ({ f, kind: classify(f) }));
-  // Every file is accounted for by its note, and the notes are reserved before any text: what is emitted never exceeds
-  // MAX_FILES, so the FILES fence sends all of it rather than cutting the tail (and the last files' changes) off. Files
-  // are walked in order, as before: one whose text no longer fits is named with its size instead.
-  let left = MAX_FILES - entries.reduce((n, { f, kind }) => n + noteOf(f, kind).length + 2, 0);
+  // Every file is accounted for by its note, and the notes are reserved before any text. One line per file is what does
+  // that, but 300 files with long paths cost more than the budget on their own, so then the names are shortened.
+  let notes = entries.map(({ f, kind }) => noteOf(f, kind, f.name));
+  const cost = (lines) => lines.reduce((n, x) => n + x.length + 2, 0);
+  if (cost(notes) > MAX_FILES) notes = entries.map(({ f, kind }) => noteOf(f, kind, shortName(f.name)));
+  let left = MAX_FILES - cost(notes);
   const oversized = [];
   const shown = new Set();
-  for (const { f, kind } of entries) {
+  for (const [i, { f, kind }] of entries.entries()) {
     if (kind !== "text") continue;
-    const extra = `#### ${f.name}\n${f.text}`.length - noteOf(f, kind).length;
+    const extra = `#### ${f.name}\n${f.text}`.length - notes[i].length;
     if (extra > left) {
       oversized.push(`${f.name} (${f.text.length} characters)`);
       continue;
@@ -110,7 +116,22 @@ export function fileContext(files) {
     left -= extra;
     shown.add(f);
   }
-  const out = entries.map(({ f, kind }) => (shown.has(f) ? `#### ${f.name}\n${f.text}` : noteOf(f, kind)));
+  // Room for the closing line, so what is emitted plus that line still fits the budget. Anything the notes and text
+  // cannot cover — only reachable when even shortened names overflow — is counted there, never dropped by the fence.
+  const reserve = 200;
+  const out = [];
+  let used = 0;
+  let omitted = 0;
+  for (const [i, { f }] of entries.entries()) {
+    const line = shown.has(f) ? `#### ${f.name}\n${f.text}` : notes[i];
+    if (used + line.length + 2 > MAX_FILES - reserve) {
+      omitted++;
+      continue;
+    }
+    used += line.length + 2;
+    out.push(line);
+  }
+  if (omitted) out.push(`(${out.length} of ${entries.length} changed files are named above; ${omitted} more ${omitted === 1 ? "is" : "are"} not named, over the ${MAX_FILES}-character budget for changed files, and every change is in the DIFF)`);
   // Named with what it is and its size, not the same phrase per file: a card can have many, and every one is named.
   const leftOut = entries.filter(({ kind }) => kind === "binary" || kind === "unreadable").map(({ f, kind }) => `${f.name} (${kind === "binary" ? `binary, ${Buffer.byteLength(f.text)} bytes` : "not read, size unknown"})`);
   return { text: out.join("\n\n"), leftOut, oversized };
@@ -124,13 +145,20 @@ function classify(f) {
 }
 
 /** The note that stands in for a file the reviewer isn't shown in full, from the file's own name and size. */
-function noteOf(f, kind) {
-  if (kind === "unreadable") return `(${f.name}: not read, past the read cap; its content is not available)`;
-  if (kind === "binary") return `(${f.name}: executable or opaque binary, not shown)`;
-  if (kind === "media") return `(${f.name}: binary, not shown; ${f.name.match(MEDIA)[1].toLowerCase()} file, about ${Math.ceil(Buffer.byteLength(f.text) / 1024)} KB)`;
+function noteOf(f, kind, name = f.name) {
+  if (kind === "unreadable") return `(${name}: not read, past the read cap; its content is not available)`;
+  if (kind === "binary") return `(${name}: executable or opaque binary, not shown)`;
+  if (kind === "media") return `(${name}: binary, not shown; ${f.name.match(MEDIA)[1].toLowerCase()} file, about ${Math.ceil(Buffer.byteLength(f.text) / 1024)} KB)`;
   const why = f.text.length > MAX_FILES ? "larger on its own than the" : "over what is left of the";
-  return `(${f.name}: ${f.text.length}-character text file, ${why} ${MAX_FILES}-character budget for changed files; not shown in full, its change is in the DIFF)`;
+  return `(${name}: ${f.text.length}-character text file, ${why} ${MAX_FILES}-character budget for changed files; not shown in full, its change is in the DIFF)`;
 }
+
+/** A file name short enough to keep every note affordable: the repo, then the last two path segments, each cut if long. */
+const shortName = (name) => {
+  const [repo, ...rest] = String(name).split(" ");
+  const cut = (part) => (part.length > 40 ? `${part.slice(0, 37)}…` : part);
+  return `${repo} …/${String(rest.join(" ")).split("/").slice(-2).map(cut).join("/")}`;
+};
 
 export function reviewPrompt({ policy, card, diff, files = "", chain, panel = false, previous = [] }) {
   const system = `You are the security reviewer for an AI agent fleet. Agents ask to push code, open or merge pull requests, change the fleet's configuration, deploy apps or run one-off scripts. Code already sorted this request into Tier 1: routine, but it needs an independent check before it runs. Decide, following the policy below:

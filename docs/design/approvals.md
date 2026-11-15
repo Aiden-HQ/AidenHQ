@@ -113,7 +113,9 @@ reason_code, reason, second_review}`.
   size, the 200,000-character limit and what the card should do instead.
 - **Oversized text.** A plain text file past the budget for changed files is not unreadable: it is named to the model with
   its own size and the limit, the card is reviewed on the diff, and the verdict's reason records that it was judged from
-  the diff rather than in full.
+  the diff rather than in full. The budget goes to the notes first, so every file is shown or named; with hundreds of
+  long paths the names are shortened, and anything still over is counted in one closing line, so what is handed to the
+  model always fits the file fence whole instead of being cut off at the tail.
 - **Input.** The policy (`modules/core/security/policy.md`, from the product repo only, so instances cannot loosen it);
   the card; the full diff at the exact head; the full text of changed files at that commit (within a budget); and the
   request chain, and the notes of earlier rejections of the same target on the task. Everything an agent or stranger

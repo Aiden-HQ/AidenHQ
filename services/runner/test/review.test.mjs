@@ -131,6 +131,20 @@ test("plain text over the whole-file budget reaches a verdict naming its size an
   assert.doesNotMatch(v.reason, /can't read/);
 });
 
+// The reported bug put the same file in "changed files the reviewer can't read" at one head and not at the next, because
+// one shared budget had been spent by its neighbours. Readability is the file's own: byte-identical content is read the
+// same way at both heads, whatever grew around it.
+test("the same file content at two heads gets the same readability verdict", () => {
+  const file = { name: "services/runner/test/runner.test.mjs", text: "t".repeat(199_000) };
+  const at = (neighbour) => fileContext([{ name: "scripts/paperclip-setup.mjs", text: "s".repeat(neighbour) }, { ...file }]);
+  const before = at(500);
+  const after = at(150_000);
+  for (const files of [before, after]) assert.deepEqual(files.leftOut, [], "never unreadable, at either head");
+  assert.deepEqual(at(1).leftOut, before.leftOut, "the same verdict as the file on its own");
+  assert.match(before.text, /runner\.test\.mjs/);
+  assert.match(after.text, /runner\.test\.mjs/);
+});
+
 // The incident itself: the app starter's two byte-identical lockfiles, 121,215 characters each, changed together.
 test("the paired 121,215-character app-starter lockfiles reach a verdict naming their size, not \"can't read\"", async () => {
   const lock = (name, n = 121_215) => ({ name, text: ("{\n  \"lockfileVersion\": 3,\n" + "  \"node_modules/x\": { \"version\": \"1.0.0\" },\n".repeat(n)).slice(0, n - 2) + "}\n" });
@@ -148,6 +162,22 @@ test("the paired 121,215-character app-starter lockfiles reach a verdict naming 
   assert.match(prompt.user, /services\/computer\/images\/agent-base\/app-starter\/package-lock\.json: 121215-character text file/);
   assert.match(v.reason, /Judged from the DIFF, not in full: .*121215 characters/);
   assert.doesNotMatch(v.reason, /can't read/);
+});
+
+// The notes are reserved before any text, but 300 files with paths near git's limit cost more in notes than the budget
+// on their own. Unnamed, that used to overflow the FILES fence, which cut off the tail: the last files were neither shown
+// nor named. Shortening those names keeps every file accounted for and the text whole.
+test("long file names can't push the context past the budget, and no file is dropped", () => {
+  const long = (i, size) => ({ name: `acme/app ${"d".repeat(700)}/f${i}.mjs`, text: "y".repeat(size) });
+  for (const size of [1_000, 50_000]) {
+    const files = fileContext(Array.from({ length: 300 }, (_, i) => long(i, size)));
+    assert.deepEqual(files.leftOut, [], "plain text is still readable");
+    assert.ok(files.text.length <= MAX_FILES, `${size}-byte files: context is ${files.text.length}, within ${MAX_FILES}`);
+    const shown = (files.text.match(/^####/gm) ?? []).length;
+    const named = (files.text.match(/^\(acme/gm) ?? []).length;
+    const counted = Number(/\((\d+) more are not named/.exec(files.text)?.[1] ?? 0);
+    assert.equal(shown + named + counted, 300, `${size}-byte files: every file is shown, named or counted`);
+  }
 });
 
 test("the real app-starter lockfiles are byte-identical, and the pair still reaches a verdict", async () => {
