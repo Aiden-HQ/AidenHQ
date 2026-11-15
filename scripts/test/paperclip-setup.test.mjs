@@ -15,14 +15,25 @@ test("paperclip-setup.mjs passes a syntax check", () => {
   execFileSync(process.execPath, ["--check", script], { encoding: "utf8" });
 });
 
-test("the generated handing-work section parses and keeps its heading", () => {
+/** The section setup emits, built from the declaration the script carries (and checked to parse first). */
+function section() {
   const declaration = readFileSync(script, "utf8").split("\n").find((l) => l.startsWith(PREFIX));
   assert.ok(declaration, "DELEGATING_SECTION is missing");
-  // The output setup emits for this section, built from the declaration it carries.
   const out = join(mkdtempSync(join(tmpdir(), "setup-section-")), "section.mjs");
   writeFileSync(out, `${declaration}\nprocess.stdout.write(DELEGATING_SECTION);\n`);
   execFileSync(process.execPath, ["--check", out], { encoding: "utf8" });
-  const section = execFileSync(process.execPath, [out], { encoding: "utf8" });
-  assert.match(section, /\n\n## Handing work to an Engineer\n\n/);
-  assert.ok(section.includes("Write the brief and the PR body as plain facts"));
+  return execFileSync(process.execPath, [out], { encoding: "utf8" });
+}
+
+test("the generated handing-work section parses and keeps its heading", () => {
+  const text = section();
+  assert.match(text, /\n\n## Handing work to an Engineer\n\n/);
+  assert.ok(text.includes("Write the brief and the PR body as plain facts"));
+});
+
+test("a merge job's rubric is worded on the merge, never on a card id", () => {
+  // A Tier 0 merge answers "No card is needed", and a card filed on a draft can be spent without a merge.
+  const text = section();
+  assert.ok(text.includes("never on a card or merge-request id"));
+  assert.ok(text.includes("No card is needed."));
 });
