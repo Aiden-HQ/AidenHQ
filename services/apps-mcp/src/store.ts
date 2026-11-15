@@ -2,6 +2,8 @@
 import Database from "better-sqlite3";
 
 export interface Deploy { id: number; app: string; sha: string; images_json: string; by: string; at: number; status: string; detail: string }
+/** A pull request's preview (previews.ts): its parent app, PR, host port, the head it runs and the PR comment it keeps. */
+export interface PreviewRow { name: string; app: string; pr: number; port: number; sha: string; status: string; at: number; comment_id: number | null }
 export interface Incident { id: number; app: string; opened_at: number; closed_at: number | null; kind: string; detail: string; notified: number }
 
 export function openStore(path: string) {
@@ -11,7 +13,12 @@ export function openStore(path: string) {
     CREATE TABLE IF NOT EXISTS deploys (id INTEGER PRIMARY KEY AUTOINCREMENT, app TEXT, sha TEXT, images_json TEXT, by TEXT, at INTEGER, status TEXT, detail TEXT);
     CREATE TABLE IF NOT EXISTS incidents (id INTEGER PRIMARY KEY AUTOINCREMENT, app TEXT, opened_at INTEGER, closed_at INTEGER, kind TEXT, detail TEXT, notified INTEGER DEFAULT 1);
     CREATE INDEX IF NOT EXISTS deploys_app ON deploys (app, id);
-    CREATE TABLE IF NOT EXISTS running (app TEXT PRIMARY KEY, sha TEXT NOT NULL, at INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS running (app TEXT PRIMARY KEY, sha TEXT NOT NULL, at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS previews (name TEXT PRIMARY KEY, app TEXT NOT NULL, pr INTEGER NOT NULL, port INTEGER NOT NULL UNIQUE, sha TEXT NOT NULL, status TEXT NOT NULL, at INTEGER NOT NULL, comment_id INTEGER);`);
+  const putPreview = db.prepare(`INSERT INTO previews (name, app, pr, port, sha, status, at, comment_id) VALUES (@name, @app, @pr, @port, @sha, @status, @at, @comment_id)
+    ON CONFLICT (name) DO UPDATE SET sha = excluded.sha, status = excluded.status, at = excluded.at, comment_id = excluded.comment_id`);
+  const allPreviews = db.prepare(`SELECT * FROM previews ORDER BY app, pr`);
+  const dropPreview = db.prepare(`DELETE FROM previews WHERE name = ?`);
   const setRunning = db.prepare(`INSERT INTO running (app, sha, at) VALUES (?, ?, ?) ON CONFLICT (app) DO UPDATE SET sha = excluded.sha, at = excluded.at`);
   const getRunning = db.prepare(`SELECT sha FROM running WHERE app = ?`);
   const clearRunning = db.prepare(`DELETE FROM running WHERE app = ?`);
@@ -48,6 +55,9 @@ export function openStore(path: string) {
      * provable as deployed once the bounded list has moved past it, which is not the same as never having deployed.
      */
     deploysOf: (app: string, sha: string) => deploysOf.all(app, sha) as Deploy[],
+    previews: () => allPreviews.all() as PreviewRow[],
+    putPreview: (r: PreviewRow) => void putPreview.run(r),
+    dropPreview: (name: string) => void dropPreview.run(name),
     openIncident: (app: string) => openInc.get(app) as Incident | undefined,
     addIncident: (app: string, kind: string, detail: string, at = Date.now()) => addInc.run(app, at, kind, detail).lastInsertRowid as number,
     /** Open incidents whose webhook hasn't gone through yet. */

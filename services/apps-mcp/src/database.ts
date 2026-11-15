@@ -4,7 +4,7 @@
 // never rotated: a stored URL is reused; a new one is only made when the URL file is missing (first deploy, or lost).
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import type { App } from "./registry.js";
+import { PREVIEW_NAME, type App } from "./registry.js";
 
 // The warehouse module app's postgres container (compose project app-warehouse), on the apps_warehouse network.
 export const WAREHOUSE = { container: "app-warehouse-postgres-1", port: 5432, db: "warehouse" };
@@ -12,7 +12,7 @@ export const WAREHOUSE = { container: "app-warehouse-postgres-1", port: 5432, db
 /** Registry names are [a-z][a-z0-9-]: one plain postgres identifier. */
 export const dbName = (app: string): string => {
   const n = `app_${app.replace(/-/g, "_")}`;
-  if (!/^app_[a-z][a-z0-9_]{0,40}$/.test(n)) throw new Error(`bad app name for a database: ${app}`);
+  if (!/^app_[a-z][a-z0-9_]{0,58}$/.test(n)) throw new Error(`bad app name for a database: ${app}`);
   return n;
 };
 
@@ -59,4 +59,20 @@ ALTER ROLE ${role} SET search_path = ${role};
   // Aliases the app asked for (e.g. ROADMAP_DATABASE_URL): written when missing, rewritten with a fresh password.
   for (const k of app.secrets.filter((k) => k !== "DATABASE_URL" && k.endsWith("DATABASE_URL"))) if (fresh || !existsSync(`${dir}/${k}`)) put(dir, k, url);
   if (fresh) put(dir, "DATABASE_URL", url); // last: its presence means everything above happened
+}
+
+/**
+ * A preview's login and everything it owns (its schema) are dropped when the preview goes (previews.ts). Only a preview's:
+ * the registry reserves the -pr-<n> names, so this can never reach an app's live schema.
+ */
+export function dropPreviewDatabase(app: string): string {
+  if (!PREVIEW_NAME.test(app)) throw new Error(`${app} is not a preview`);
+  const role = dbName(app);
+  return `DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = '${role}') THEN
+    EXECUTE 'DROP OWNED BY ${role} CASCADE';
+    EXECUTE 'DROP ROLE ${role}';
+  END IF;
+END $$;
+`;
 }

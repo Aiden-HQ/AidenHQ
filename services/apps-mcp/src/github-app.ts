@@ -32,7 +32,8 @@ function appJwt(appId: string, key: string, now = Date.now()): string {
   return `${body}.${createSign("RSA-SHA256").update(body).sign(key, "base64url")}`;
 }
 
-export type RepoToken = (slug: string, perm?: "read" | "write") => Promise<string>;
+/** `more`: permissions beyond contents (previews.ts reads and comments on pull requests: pull_requests write). */
+export type RepoToken = (slug: string, perm?: "read" | "write", more?: Record<string, "read" | "write">) => Promise<string>;
 
 /** Mints tokens for single repos (contents: read, or write for the registry push; the App must hold contents: write), reused until 5 minutes before expiry. Undefined when the App's files are absent. */
 export function appTokens(dir: string, fetch = globalThis.fetch): RepoToken | undefined {
@@ -49,14 +50,14 @@ export function appTokens(dir: string, fetch = globalThis.fetch): RepoToken | un
     });
     return { status: r.status, body: (await r.json().catch(() => ({}))) as any };
   };
-  return async (slug, perm = "read") => {
-    const ck = `${slug.toLowerCase()}:${perm}`;
+  return async (slug, perm = "read", more = {}) => {
+    const ck = `${slug.toLowerCase()}:${perm}:${JSON.stringify(more)}`;
     const hit = cache.get(ck);
     if (hit && hit.expires - Date.now() > 5 * 60_000) return hit.token;
     const [owner, name] = slug.split("/");
     const inst = await api("GET", `/repos/${owner}/${name}/installation`);
     if (inst.status !== 200) throw new Error(`the GitHub App can't see ${slug} (GitHub said ${inst.status} ${inst.body?.message ?? ""})`.trim());
-    const r = await api("POST", `/app/installations/${inst.body.id}/access_tokens`, { repositories: [name], permissions: { contents: perm } });
+    const r = await api("POST", `/app/installations/${inst.body.id}/access_tokens`, { repositories: [name], permissions: { ...more, contents: perm } });
     if (r.status !== 201) throw new Error(`couldn't get a GitHub App token for ${slug} (GitHub said ${r.status} ${r.body?.message ?? ""})`.trim());
     cache.set(ck, { token: r.body.token, expires: Date.parse(r.body.expires_at) });
     return r.body.token as string;

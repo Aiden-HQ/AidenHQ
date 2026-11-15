@@ -5,9 +5,15 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseDocument } from "yaml";
 import { z } from "zod";
 
+/** A preview's name (previews.ts): reserved, so no registry app can share its project, secrets, checkout or database role. */
+export const PREVIEW_NAME = /-pr-\d+$/;
+/** Host ports for previews (loopback for the gate, the apps' tailnet node's ports): no registry app may take one. */
+export const PREVIEW_PORTS = { min: 39100, max: 39399 } as const;
+
 const plainRel = (p: string) => !p.startsWith("/") && !p.startsWith("~") && !p.includes("$") && !p.split(/[\\/]/).includes("..");
 
-const name = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/).refine((n) => n !== "paperclip" && n !== "sources", "reserved name"); // `paperclip` and `sources` name AidenHQ networks in connects
+// `paperclip` and `sources` name AidenHQ networks in connects; `<app>-pr-<n>` names a pull request's preview (previews.ts).
+const name = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/).refine((n) => n !== "paperclip" && n !== "sources", "reserved name").refine((n) => !PREVIEW_NAME.test(n), "names ending -pr-<number> are previews'");
 const AppSchema = z
   .object({
     name,
@@ -18,7 +24,7 @@ const AppSchema = z
     host: z.string().default("local"),
     owner: z.string(),
     description: z.string(),
-    port: z.number().int().min(1024).max(65535).optional(),
+    port: z.number().int().min(1024).max(65535).refine((p) => p < PREVIEW_PORTS.min || p > PREVIEW_PORTS.max, `ports ${PREVIEW_PORTS.min}-${PREVIEW_PORTS.max} are the previews'`).optional(),
     expose: z.boolean().default(true), // tailscale serve --https=<port>; false for non-HTTP apps (databases)
     health: z.object({ url: z.string().optional(), grace_sec: z.number().default(60) }).default({ grace_sec: 60 }),
     stateful: z.boolean().default(false),
@@ -68,7 +74,9 @@ const AppSchema = z
     secrets: [...new Set([...a.secrets, ...(a.database ? ["DATABASE_URL"] : [])])],
   }));
 export const parseApp = (raw: unknown): App => AppSchema.parse(raw);
-export type App = z.output<typeof AppSchema>;
+/** `preview`: set only on a pull request's preview (previews.ts previewApp), never by the registry. */
+export type App = z.output<typeof AppSchema> & { preview?: Preview };
+export interface Preview { of: string; pr: number; published: number } // published: the parent's port, which its compose publishes
 
 const readApps = (path: string): App[] =>
   (((parseDocument(readFileSync(path, "utf8")).toJS() ?? {}) as { apps?: unknown[] }).apps ?? []).map((a) => AppSchema.parse(a));

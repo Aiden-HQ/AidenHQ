@@ -24,7 +24,7 @@ function auth(env: GitEnv): NodeJS.ProcessEnv {
   return { ...process.env, GIT_TERMINAL_PROMPT: "0", ...(token ? { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader", GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}` } : {}) };
 }
 
-const inAgentsOrg = (env: GitEnv, repo: string) => !!env.agentsOrg && repo.split("/")[0]!.toLowerCase() === env.agentsOrg.toLowerCase();
+export const inAgentsOrg = (env: GitEnv, repo: string) => !!env.agentsOrg && repo.split("/")[0]!.toLowerCase() === env.agentsOrg.toLowerCase();
 
 type Cmd = { args: string[]; env: NodeJS.ProcessEnv };
 const plain = (env: GitEnv, args: string[], extra: NodeJS.ProcessEnv = {}): Cmd => ({ args: ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], env: { ...auth(env), ...extra } });
@@ -99,8 +99,6 @@ async function fromOrigin<T>(env: GitEnv, app: App, gd: string, find: () => Prom
 export async function checkout(env: GitEnv, app: App, sha?: string): Promise<{ sha: string; dir: string }> {
   checkOrg(env, app);
   if (sha && !/^[0-9a-f]{7,40}$/.test(sha)) throw new Error("sha must be 7-40 hex characters");
-  const dir = `${env.appsData}/.platform/${app.name}/src`; // platform-only: apps can mount their data dir, never this
-  const tmp = `${dir}.new`;
   const gd = await fetchAll(env, app);
   const full = await fromOrigin(env, app, gd, async () => {
     const full = await git(env, [gd, "rev-parse", "--verify", `${sha ?? app.pin ?? `origin/${app.branch}`}^{commit}`]);
@@ -111,14 +109,40 @@ export async function checkout(env: GitEnv, app: App, sha?: string): Promise<{ s
     }
     return full;
   });
-  // Into a fresh dir, then renamed into place: nothing pre-existing is followed. No index, so every file is written.
+  return { sha: full, dir: await workTree(env, app, gd, full) };
+}
+
+/** The app's platform-only checkout of `full`: into a fresh dir, then renamed into place, so nothing pre-existing is followed. */
+async function workTree(env: GitEnv, app: App, gd: string, full: string): Promise<string> {
+  const dir = `${env.appsData}/.platform/${app.name}/src`; // platform-only: apps can mount their data dir, never this
+  const tmp = `${dir}.new`;
   rmSync(tmp, { recursive: true, force: true });
-  rmSync(`${env.gitDir}/${app.name}.git/index`, { force: true });
+  rmSync(`${env.gitDir}/${app.name}.git/index`, { force: true }); // no index, so every file is written
   mkdirSync(tmp, { recursive: true });
   await git(env, [gd, `--work-tree=${tmp}`, "checkout", "--force", "--detach", full]);
   rmSync(dir, { recursive: true, force: true });
   renameSync(tmp, dir);
-  return { sha: full, dir };
+  return dir;
+}
+
+/**
+ * A pull request's preview (previews.ts) at `sha`, which must be the head GitHub has for refs/pull/<n>/head right now. Its
+ * own bare repo (the preview's name), so it never races the parent's deploys; only that ref is fetched and no branch name
+ * ever reaches git.
+ */
+export async function checkoutPr(env: GitEnv, app: App, sha: string): Promise<{ sha: string; dir: string }> {
+  checkOrg(env, app);
+  if (!app.preview || !/^[0-9a-f]{40}$/.test(sha)) throw new Error("a preview checks out one PR head by its full sha");
+  const bare = `${env.gitDir}/${app.name}.git`;
+  if (!existsSync(bare)) {
+    mkdirSync(env.gitDir, { recursive: true });
+    await git(env, ["init", "--bare", "-q", bare]);
+  }
+  const gd = `--git-dir=${bare}`;
+  await git(env, [gd, "fetch", url(app), `+refs/pull/${app.preview.pr}/head:refs/remotes/pr/head`], undefined, {}, app);
+  const head = await git(env, [gd, "rev-parse", "--verify", "refs/remotes/pr/head^{commit}"]);
+  if (head !== sha) throw new Error(`PR #${app.preview.pr} moved to ${head.slice(0, 8)}`);
+  return { sha, dir: await workTree(env, app, gd, sha) };
 }
 
 /** A deployed commit's full message, from the app's bare repo (its deploy fetched it). Read by code only, never shown. */
