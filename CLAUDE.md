@@ -33,6 +33,7 @@ never in this file.
 ## Build and test
 
 Everything runs offline; no live instance or paid key is needed. Node 24. Install each package once with `npm ci`.
+On macOS the `flock` apply-lock tests (scripts, runner) fail; that's expected, and CI judges them.
 
 ```sh
 cd scripts && npm test                       # compiler, setup, paperclip-tasks-mcp, sync-shared drift
@@ -60,9 +61,11 @@ merging those.
 ## Conventions
 
 - **Generic core.** The core knows nothing about specific workflows. New behaviour is an agent definition, handbook
-  text or a tool, never a special-case branch.
+  text or a tool, never a special-case branch. Code finds an agent by its role (grants table `roles`), never by its key.
 - **One shared tools repository.** Every tool is usable by any agent it is granted; grants and roles decide access.
-- **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model.
+- **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model. Gate
+  only real risk (writes, spend, auth and security boundaries, the sandbox, untrusted text); set a default at its
+  source, never re-enforce it downstream.
   Writes are approval records tiered in code (`services/runner/src/tiers.mjs`): Tier 0 runs, Tier 1 the AI reviewer
   decides, Tier 2 the owner; setting `autonomy`. Every reviewer false reject becomes a planted case in
   `services/runner/test/reviewer-cases/`.
