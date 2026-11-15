@@ -122,7 +122,7 @@ services:
   # grafana-mcp share, is the boundary.
   mcp-grafana:
     extends: { file: ../../compose.base.yaml, service: hardened }
-    image: grafana/mcp-grafana:0.17.2@sha256:d5b51db0c8eaafc6ed3fede5bfcc8d67b2384a40cf3d493086e378855ceba882
+    image: grafana/mcp-grafana:2.2.0@sha256:697336440e34878f8e0b26a69675db8d7e97b4d0daec25ec5441c85ac6c60e81
     user: "${PUID:-1000}:${PGID:-100}" # reads its token from the vault (0600, the user's)
     read_only: true
     entrypoint: [ "/app/mcp-grafana", "--transport", "streamable-http", "--address", "0.0.0.0:8000", "--endpoint-path", "/mcp", "--allowed-hosts", "mcp-grafana:8000", "--disable-write" ]
