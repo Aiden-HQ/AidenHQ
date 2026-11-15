@@ -2,16 +2,35 @@
 
 ## Apply, upgrade, rollback
 
-`ops/apply-config.sh [<instance commit sha>]` is the whole apply, run on the host from the product checkout. It:
+`ops/apply-config.sh [<instance commit sha>]` is the whole apply, run on the host from the product checkout. It is the
+locked entry point: it opens `data/apply.lock` at that fixed path (before `.env` is read, so nothing the apply reads
+decides what it locks), holds the lock on fd 9 and execs `ops/apply-config-work.sh`, which takes no lock of its own. One
+apply runs at a time; a second one exits at once with `another apply is running` rather than queueing behind a whole
+apply. The lock is held across the hand-over to a newer script too.
 
-1. refuses to run if either checkout has local changes to tracked files;
-2. fast-forwards the instance repo (`AIDENHQ_INSTANCE_DIR`) to `origin/main`, or to exactly the commit given;
-3. checks out the product commit pinned by `product:` in `instance.yaml` (it must be on the product's `origin/main`); if
-   that commit changes `ops/apply-config.sh`, it hands over to the new script once (`exec`, with the previous product in
-   `AIDENHQ_APPLY_BEFORE` so restarts are still decided against it), so one run is always enough;
-4. runs `node scripts/compile.mjs`, builds agent computer images, `docker compose up -d --build --remove-orphans`, and
+`ops/apply-config-work.sh` is the body:
+
+1. checks the descriptor it was handed: fd 9 must carry a lock this process holds and must be `data/apply.lock` itself,
+   by device and inode (`ops/lib/apply-lock.sh`). `AIDENHQ_APPLY_LOCKED` is only the hand-over marker, so a descriptor
+   locked on any other file is refused, naming the lock, and nothing below runs. The entry point refuses the same claim
+   before it execs this script, so a marker over an unrelated descriptor never causes the real lock to be taken;
+2. refuses to run if either checkout has local changes to tracked files;
+3. fast-forwards the instance repo (`AIDENHQ_INSTANCE_DIR`) to `origin/main`, or to exactly the commit given;
+4. checks out the product commit pinned by `product:` in `instance.yaml` (it must be on the product's `origin/main`); if
+   that commit changes `ops/apply-config.sh` or `ops/apply-config-work.sh`, it hands over to the new script once (`exec`,
+   with the previous product in `AIDENHQ_APPLY_BEFORE` so restarts are still decided against it), so one run is always
+   enough;
+5. runs `node scripts/compile.mjs`, builds agent computer images, runs `ops/compose-recreate.sh`, and
    `node scripts/paperclip-setup.mjs`;
-5. schedules a runner restart when runner code changed.
+6. schedules a runner restart when runner code changed.
+
+`ops/compose-recreate.sh` is the compose step. It stops before building, dumping or removing anything when the config
+lists no services; dumps the warehouse first, when this host runs one (a fresh file created exclusively under `umask 077`
+in a `0700` directory, so a taken name is skipped rather than truncated and the dump is `0600`; older dumps keep their
+bytes and only have their mode tightened); builds every image; recreates only the services whose image or compose config
+moved; removes compose's leftovers for services this config dropped, never a CI job's runner; and retries once for the
+daemon's two races (a removal already in progress, a container name still in use). It prints one line per service saying
+what became of it: `recreated`, `kept`, or `leftover cleaned`.
 
 Each phase prints one line, `apply timing: <phase> <seconds>s`, and a total; setup prints its own sections on one
 `setup timing:` line. A cached image build costs a few seconds; a changed one is the real build (the board's tsc and vite
