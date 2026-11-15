@@ -46,7 +46,11 @@ for c in $containers; do
   [ "$(docker inspect "$c" --format '{{.HostConfig.Privileged}}')" = "false" ] && pass "$c: not privileged" || fail "$c is privileged"
   docker inspect "$c" --format '{{json .HostConfig.SecurityOpt}}' | grep -q 'no-new-privileges' && pass "$c: no-new-privileges" || fail "$c lacks no-new-privileges"
   docker inspect "$c" --format '{{json .HostConfig.CapDrop}}' | grep -q 'ALL' && pass "$c: all capabilities dropped" || fail "$c keeps capabilities"
-  [ "$(docker inspect "$c" --format '{{.HostConfig.NetworkMode}}')" != "host" ] && pass "$c: not host networking" || fail "$c uses host networking"
+  if [ "$(docker inspect "$c" --format '{{index .Config.Labels "com.docker.compose.service"}}')" = "gate" ]; then
+    pass "$c: host networking allowed (the gate binds only the addresses checked below)"
+  else
+    [ "$(docker inspect "$c" --format '{{.HostConfig.NetworkMode}}')" != "host" ] && pass "$c: not host networking" || fail "$c uses host networking"
+  fi
   case "$c" in
     *paperclip*)
       echo "$mounts" | grep -q '/vault' && fail "paperclip has vault access" || pass "paperclip: no vault mount"
@@ -223,6 +227,12 @@ PROBES
       binds="$(ss -Hltn 'sport = :3130' 2>/dev/null | awk '{print $4}' | sort -u | tr '\n' ' ')"
       [ -n "$binds" ] && ! echo "$binds" | tr ' ' '\n' | grep -v '^$' | grep -qv '^127\.0\.0\.1:3130$' \
         && pass "gate: listens on 127.0.0.1:3130 only" || fail "gate: port 3130 is not loopback-only: ${binds:-not listening}"
+      # app_login header-jwt: the front listener (settings.edge.front) binds only its tailnet address, never 0.0.0.0.
+      front="$(node -e 'const f=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).front; if (f) console.log(f.address + ":" + f.port)' config/gate.json 2>/dev/null)"
+      if [ -n "$front" ]; then
+        fbinds="$(ss -Hltn "sport = :${front##*:}" 2>/dev/null | awk '{print $4}' | sort -u | tr '\n' ' ')"
+        [ "$(echo $fbinds)" = "$front" ] && pass "gate: front listener on $front only" || fail "gate: front port binds ${fbinds:-nothing}, want $front only"
+      fi
       # Its one secret is its own signing key (identity/gate.pem), never apps-mcp's agent key or app secrets.
       echo "$mounts" | tr ';' '\n' | grep -q '/identity/gate.pem|/secrets/identity_key|false' && ! echo "$mounts" | grep -q 'apps.pem\|/apps/' \
         && pass "gate: only its own identity key mounted (read-only)" || fail "gate: unexpected key mounts: $mounts"
