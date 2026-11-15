@@ -401,6 +401,13 @@ export function checkoutRequest(body, { agentsOrg, cacheRoot }) {
   return { cache: `${cacheRoot}/${agentsOrg}/${name}`, sha, dest: `/workspace/repos/${name}` };
 }
 
+/**
+ * `git` arguments for the snapshot of `sha` in `cache`, as a tar on stdout. Every `.aidenhq/` folder is left out: that is
+ * AidenHQ's scratch space (an agent's screenshots and reports), never the app, and one committed by an earlier change shows
+ * that change, not this commit. A reviewer judges only what it captures itself.
+ */
+export const archiveArgs = (cache, sha) => ["-C", cache, "archive", "--format=tar", sha, "--", ".", ":(exclude,glob)**/.aidenhq/**"];
+
 /** Runs in the box (sh -c, $1 = the folder): replaces the folder with the tar on stdin. */
 export const UNTAR_SCRIPT = 'rm -rf "$1" && mkdir -p "$1" && tar -x --no-same-owner -C "$1"';
 

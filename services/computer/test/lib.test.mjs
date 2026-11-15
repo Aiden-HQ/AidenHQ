@@ -2,12 +2,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
-import { Tokens, admit, builtImage, dockerRunArgs, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, replyRefusal, REPLY_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
+import { Tokens, admit, builtImage, dockerRunArgs, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, replyRefusal, REPLY_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
 
 test("only execs carrying a CODEX_HOME are wrapped", () => {
   assert.deepEqual(wrapExec("ls", ["-l"], {}), ["ls", ["-l"]]);
@@ -138,6 +138,28 @@ test("repo-checkout: only the agents org, only a full SHA; the launcher picks th
     assert.throws(() => checkoutRequest(bad, opts));
   }
   assert.throws(() => checkoutRequest({ repo: "acme-agents/x", sha }, { cacheRoot: "/w/repos" }), /agents org/);
+});
+
+// A design review passed on PNGs an earlier PR had committed under .aidenhq/out/: the checkout carried them as if they
+// showed the head. The snapshot leaves every .aidenhq/ folder out, so a reviewer has only its own captures to look at.
+test("repo-checkout's snapshot leaves out every .aidenhq/ folder", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "checkout-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const repo = join(dir, "repo");
+  for (const f of ["src/app.ts", ".aidenhq/out/final/plan-1440-light.png", "web/.aidenhq/out/home.png"]) {
+    mkdirSync(dirname(join(repo, f)), { recursive: true });
+    writeFileSync(join(repo, f), "x");
+  }
+  execFileSync("git", ["init", "-q", repo]);
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  execFileSync("git", ["-C", repo, "-c", "user.email=a@example.com", "-c", "user.name=a", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
+  const sha = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const tar = execFileSync("git", archiveArgs(repo, sha));
+  const dest = join(dir, "box", "repos", "repo");
+  execFileSync("sh", ["-c", UNTAR_SCRIPT, "sh", dest], { input: tar });
+  assert.ok(existsSync(join(dest, "src/app.ts")));
+  assert.ok(!existsSync(join(dest, ".aidenhq")), "the top-level .aidenhq/ is left out");
+  assert.ok(!existsSync(join(dest, "web/.aidenhq")), "and a nested one");
 });
 
 test("repo-checkout reads this run's token from the launcher's file, never a stale env value", () => {

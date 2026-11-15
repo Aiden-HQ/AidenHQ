@@ -688,6 +688,11 @@ describe("task workspaces", async () => {
     assert.equal(await git(path, "config", "remote.origin.pushurl"), "DISABLED_BY_AIDENHQ");
     assert.equal(await git(path, "config", "remote.origin.url"), remote);
     assert.equal(await git(path, "branch", "--list"), "* main");
+    // The task's scratch (screenshots under .aidenhq/out/, at any depth) never goes into a commit.
+    mkdirSync(join(path, "web", ".aidenhq", "out"), { recursive: true });
+    writeFileSync(join(path, "web", ".aidenhq", "out", "home.png"), "x");
+    await git(path, "add", "-A");
+    assert.equal(await git(path, "status", "--porcelain"), "", "nothing staged from .aidenhq/");
     // Repos are found by their origin; a second ensureRepo reuses the clone.
     execFileSync("git", ["-C", path, "remote", "set-url", "origin", "git@github.com:acme/api.git"]);
     assert.deepEqual((await workspaceRepos(ws)).map((r) => r.slug), ["acme/api"]);
