@@ -1,5 +1,5 @@
-// app_view and web_view: look at a page the way a person would, through one renderer. A one-shot, hardened headless-Chrome
-// container per call (GET only: no clicks, forms, cookies or credentials) returns the page's accessibility snapshot and,
+// app_view and web_view: look at a page the way a person would, through one renderer. A one-shot, hardened container of the
+// browser image (agent-browser and its pinned Chrome, services/computer/images/browser) per call (GET only: no clicks, forms, cookies or credentials) returns the page's accessibility snapshot and,
 // on request, a viewport screenshot. app_view runs it inside the app's own network namespace (like app_api, with a read-only
 // identity token); web_view runs it on the agent computers' network, whose host firewall (ops/vm/computer-net.sh) keeps it off the
 // LAN, the tailnet, the host and other containers. The address check here is a second, thinner layer.
@@ -8,9 +8,9 @@ import { apiTarget, plainPath, targetContainer, type Resolve } from "./api.js";
 import { IDENTITY_HEADER, type Sign } from "./identity.js";
 import type { App } from "./registry.js";
 
-/** Puppeteer's official image (Node, the library and its Chrome; amd64), pinned by digest. The Playwright images ship browsers
- * but not the library. Pulled once on first use, then `--pull never`. */
-export const VIEW_IMAGE = "ghcr.io/puppeteer/puppeteer:25.15.0@sha256:6fe165bf38791ad7bec3a276e29c2e167dd0a9b1c02bb4c8e8ac269bdf274b03";
+/** The one browser image (services/computer/images/browser: Node, agent-browser and its pinned Chrome), built on the host by
+ * ops/computer-images.sh, which points this name at the current build. Local only: `--pull never`. */
+export const BROWSER_IMAGE = "aidenhq/computer-browser:current";
 export const WEB_NETWORK = "aidenhq-computers";
 /** Replace the identity token wherever the page could have echoed it back (or an error quoted it). */
 const redact = (s: string, secret?: string) => (secret ? s.replaceAll(secret, "***") : s);
@@ -125,7 +125,7 @@ export function renderArgs(network: string, image: string, script = VIEW_SCRIPT)
   if (!/^container:[0-9a-f]{64}$/.test(network) && network !== WEB_NETWORK) throw new Error(`bad render network ${network}`);
   return [
     "run", "--rm", "-i", "--init", "--pull", "never", "--network", network,
-    "--user", "pptruser", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m", "-e", "HOME=/tmp", "-e", "PUPPETEER_CACHE_DIR=/home/pptruser/.cache/puppeteer",
+    "--user", "65534:65534", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m", "-e", "HOME=/tmp",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "512", "--shm-size", "256m",
     image, "node", "-e", script,
   ];
@@ -138,61 +138,112 @@ export function viewContent(r: ViewResult) {
   return { content: [{ type: "text" as const, text }, ...(png ? [{ type: "image" as const, data: png, mimeType: "image/png" }] : [])] };
 }
 
-// The renderer, run as `node -e` in the image's /home/pptruser (where puppeteer is installed), with the request JSON on stdin.
-// Exits itself at 40 s. The accessibility tree is printed as an indented outline (role "name"), like Playwright's aria snapshot.
-export const VIEW_SCRIPT = String.raw`
-const puppeteer = require("puppeteer");
+/**
+ * What every renderer script starts with (view and the post-deploy check, checks.ts), run as `node -e` in the browser image.
+ * agent-browser drives the image's Chrome: one daemon and browser for the container, its launch options only in the
+ * environment so every command shares the one launch, Chrome's background services off (they only slow a one-shot render) and
+ * no version check (it would reach the internet from inside the app's namespace). `timeout` is the launch's default for each
+ * navigation and wait. The DevTools socket carries what agent-browser
+ * doesn't: the read-only request guard with the identity header on the page's own origin only, and the page's own event log.
+ * Losing that socket ends the render with an error, never a render without the guard.
+ */
+export const browserKit = (timeout: number) => String.raw`
+const { execFile } = require("node:child_process");
+const { readFileSync } = require("node:fs");
+const CHROME_ARGS = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-extensions", "--disable-component-extensions-with-background-pages", "--disable-background-networking", "--disable-component-update", "--disable-default-apps", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider"];
+Object.assign(process.env, { AGENT_BROWSER_ARGS: CHROME_ARGS.join("\n"), AGENT_BROWSER_NO_VERSION_CHECK: "1", AGENT_BROWSER_DEFAULT_TIMEOUT: "${timeout}" });
 let done = false; // exit only once stdout is flushed (a pipe truncates at 64 KB otherwise)
 const out = (o) => { if (done) return; done = true; process.stdout.write(JSON.stringify(o), () => process.exit(0)); };
-setTimeout(() => out({ error: "render timed out (40 s)" }), 40000);
-const outline = (n, d, acc) => {
-  if (!n) return acc;
-  const skip = n.role === "none" || (n.role === "generic" && !n.name);
-  if (!skip) {
-    let l = "  ".repeat(d) + "- " + n.role + (n.name ? " " + JSON.stringify(n.name) : "");
-    if (n.level) l += " [level=" + n.level + "]";
-    if (n.checked !== undefined) l += " [checked=" + n.checked + "]";
-    if (n.value !== undefined && n.value !== "") l += ": " + JSON.stringify(String(n.value));
-    acc.push(l);
+const line = (e) => String((e && e.message) || e).split("\n")[0].slice(0, 300);
+const ab = (...a) => new Promise((ok, no) => execFile("agent-browser", [...a, "--json"], { encoding: "utf8", maxBuffer: 64 << 20 }, (e, so) => {
+  let r; try { r = JSON.parse(so); } catch { return no(new Error(line(e || "agent-browser gave no answer"))); }
+  return r.success ? ok(r.data || {}) : no(new Error(r.error || a[0] + " failed"));
+}));
+const timedOut = (e) => /timed out/i.test(line(e));
+// A page that never settles (polling, streaming, or a dropped connection) still gets read: each step has its own limit.
+const within = (p, ms, fallback) => Promise.race([p.catch(() => fallback), new Promise((ok) => setTimeout(() => ok(fallback), ms))]);
+async function devtools() {
+  const { cdpUrl } = await ab("get", "cdp-url");
+  const ws = new WebSocket(cdpUrl);
+  await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = () => no(new Error("the browser's DevTools socket didn't open")); });
+  ws.onclose = () => out({ error: "lost the browser's DevTools socket" });
+  let n = 0;
+  const pending = new Map(), on = {};
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); return m.error ? p.no(new Error(m.error.message)) : p.ok(m.result); }
+    if (on[m.method]) on[m.method](m.params);
+  };
+  const send = (method, params = {}, sessionId) => new Promise((ok, no) => { const id = ++n; pending.set(id, { ok, no }); ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
+  return { send, on };
+}
+// Reads only: a non-GET/HEAD request is failed (the page never writes); the headers go to the page's own origin alone, per
+// request (redirects and subresources included). Browser-wide, before the first navigation.
+async function guard(dt, headers, own) {
+  dt.on["Fetch.requestPaused"] = ({ requestId, request: q }) => {
+    if (q.method !== "GET" && q.method !== "HEAD") return dt.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }).catch(() => {});
+    let ok = false; try { ok = new URL(q.url).origin === own; } catch {}
+    dt.send("Fetch.continueRequest", ok ? { requestId, headers: Object.entries({ ...q.headers, ...headers }).map(([name, value]) => ({ name, value: String(value) })) } : { requestId }).catch(() => {});
+  };
+  await dt.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
+}
+// The tab agent-browser drives (launched on about:blank): its target id (also its main frame's id), with a DevTools session on
+// it. With "Page", settled(ms) says whether the page's network went idle (Chrome's own networkIdle: 500 ms without requests).
+let idle = false;
+const idlers = [];
+const settled = (ms) => idle ? Promise.resolve(true) : new Promise((ok) => { const t = setTimeout(() => ok(false), ms); idlers.push(() => { clearTimeout(t); ok(true); }); });
+async function tab(dt, domains) {
+  const { tabs } = await ab("tab", "list");
+  const targetId = (tabs.find((t) => t.active) || tabs[0]).targetId;
+  const { sessionId } = await dt.send("Target.attachToTarget", { targetId, flatten: true });
+  for (const d of domains) await dt.send(d + ".enable", {}, sessionId);
+  if (domains.includes("Page")) {
+    dt.on["Page.lifecycleEvent"] = (p) => {
+      if (p.frameId !== targetId) return;
+      if (p.name === "init") idle = false;
+      if (p.name === "networkIdle") { idle = true; idlers.splice(0).forEach((f) => f()); }
+    };
+    await dt.send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId);
   }
-  for (const c of n.children || []) outline(c, skip ? d : d + 1, acc);
-  return acc;
-};
+  return targetId;
+}
+`;
+
+// The renderer, run as `node -e` in the browser image with the request JSON on stdin. Exits itself at 40 s. The accessibility
+// tree is agent-browser's snapshot (an indented outline, role "name" [attributes], like Playwright's aria snapshot) without
+// its element refs, which mean nothing outside the one session.
+export const VIEW_SCRIPT = browserKit(20_000) + String.raw`
+setTimeout(() => out({ error: "render timed out (40 s)" }), 40000);
 let s = "";
 process.stdin.on("data", (c) => (s += c)).on("end", async () => {
   try {
-    const r = JSON.parse(s), mobile = r.width < 600;
-    const b = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] });
-    const page = await b.newPage();
-    if (r.headers) { // gate headers go only to the page's own origin, per request (redirects and subresources included)
-      const own = new URL(r.url).origin;
-      await page.setRequestInterception(true);
-      // Reads only: a non-GET/HEAD request is aborted (app_view never writes); the headers go only to the app's own origin.
-      page.on("request", (q) => {
-        if (q.method() !== "GET" && q.method() !== "HEAD") return q.abort();
-        let ok = false; try { ok = new URL(q.url()).origin === own; } catch {}
-        q.continue(ok ? { headers: { ...q.headers(), ...r.headers } } : {});
-      });
-    }
-    await page.setViewport({ width: r.width, height: mobile ? 844 : 900, isMobile: mobile, hasTouch: mobile });
-    let resp = null, timed_out = false;
+    const r = JSON.parse(s);
+    await ab("open"); // the launch, on about:blank
+    const dt = await devtools();
+    if (r.headers) await guard(dt, r.headers, new URL(r.url).origin);
+    const status = [];
+    const main = await tab(dt, ["Network", "Page"]);
+    dt.on["Network.responseReceived"] = (p) => { if (p.type === "Document" && p.frameId === main) status.push(p.response.status); };
+    await ab("set", "viewport", String(r.width), String(r.width < 600 ? 844 : 900));
+    const t0 = Date.now();
+    let timed_out = false;
     try {
-      resp = await page.goto(r.url, { waitUntil: "networkidle0", timeout: 20000 });
+      await ab("open", r.url); // to the load event, within 20 s
+      timed_out = !(await settled(Math.max(1000, 20000 - (Date.now() - t0))));
     } catch (e) {
-      if (e && e.name === "TimeoutError") timed_out = true;
-      else return out({ error: String((e && e.message) || e).split("\n")[0].slice(0, 300) });
+      if (timedOut(e)) timed_out = true;
+      else return out({ error: line(e) });
     }
-    // A page that never settles (polling, streaming, or a dropped connection) still gets read: each step has its own limit.
-    const within = (p, ms, fallback) => Promise.race([p.catch(() => fallback), new Promise((ok) => setTimeout(() => ok(fallback), ms))]);
-    if (!resp && timed_out) await within(page.evaluate(() => window.stop()), 2000, null);
-    if (!resp && page.url() === "about:blank") return out({ error: "the page didn't answer within 20 s" });
-    const tree = await within(page.accessibility.snapshot(), 6000, null);
-    const snap = tree ? outline(tree, 0, []).join("\n") : "";
-    const o = { status: resp ? resp.status() : 0, url: page.url(), title: await within(page.title(), 2000, ""), timed_out, snapshot: snap.slice(0, ${SNAPSHOT_CAP}), truncated: snap.length > ${SNAPSHOT_CAP} };
-    if (r.screenshot) o.png = await within(page.screenshot({ encoding: "base64", type: "png" }), 8000, undefined);
+    if (timed_out) await within(ab("eval", "window.stop()"), 2000, null);
+    const url = (await within(ab("get", "url"), 2000, {})).url || "about:blank";
+    if (!status.length && url === "about:blank") return out({ error: "the page didn't answer within 20 s" });
+    const tree = await within(ab("snapshot"), 6000, {});
+    const snap = String(tree.snapshot || "").replace(/ \[ref=e\d+\]/g, "").replace(/, ref=e\d+\]/g, "]").replace(/\[ref=e\d+, /g, "[");
+    const o = { status: status.length ? status[status.length - 1] : 0, url, title: (await within(ab("get", "title"), 2000, {})).title || "", timed_out, snapshot: snap.slice(0, ${SNAPSHOT_CAP}), truncated: snap.length > ${SNAPSHOT_CAP} };
+    if (r.screenshot && (await within(ab("screenshot", "/tmp/view.png"), 8000, null))) o.png = readFileSync("/tmp/view.png").toString("base64");
     out(o);
   } catch (e) {
-    out({ error: String((e && e.message) || e).split("\n")[0].slice(0, 300) });
+    out({ error: line(e) });
   }
 });
 `;

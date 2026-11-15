@@ -11,7 +11,11 @@
 //
 // Options: --widths 390,768,1280  --modes light,dark  --full (whole-page screenshots)  --palettes a,b (adds ?palette=&mode=,
 // for pages that read them, like the catalog)  --wait-text "<text>" (wait for it before each screenshot)  --no-routes (skip
-// the route check: by default every in-app link on the pages is clicked and must render on click, Back/Forward and reload).
+// the route check: by default every in-app link on the pages is clicked and must render on click, Back/Forward and reload)
+// --commit <sha> (the commit the app was built from; default: the current folder's git HEAD and working tree).
+//
+// Every screenshot is stamped with that commit, its URL, width and mode and the time (an `aidenhq` PNG text chunk), so a
+// grader or reviewer can tell a picture of the head under review from an older one.
 //
 // With --baseline, a finding the base's own report also had is not this change's: it's listed under "Already on this
 // base" and doesn't fail the run (a change is judged on what it introduced, not on gaps that predate it). With no
@@ -21,11 +25,12 @@
 const { execFileSync } = require("node:child_process");
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
+const { crc32 } = require("node:zlib");
 
 const args = process.argv.slice(2);
 const opt = (name, dflt) => { const i = args.indexOf(`--${name}`); return i < 0 ? dflt : args[i + 1]; };
 const base = args.find((a) => /^https?:\/\//.test(a));
-if (!base) { console.error("usage: ui-review <base url> [--paths /,/x] [--out dir] [--baseline dir] [--widths 390,768,1280] [--modes light,dark] [--palettes a,b] [--full] [--wait-text t] [--no-routes]"); process.exit(2); }
+if (!base) { console.error("usage: ui-review <base url> [--paths /,/x] [--out dir] [--baseline dir] [--widths 390,768,1280] [--modes light,dark] [--palettes a,b] [--full] [--wait-text t] [--no-routes] [--commit sha]"); process.exit(2); }
 const paths = opt("paths", "/").split(",");
 const out = opt("out", "ui-review");
 const baseline = opt("baseline", null);
@@ -34,7 +39,35 @@ const modes = opt("modes", "light,dark").split(",");
 const palettes = opt("palettes", "").split(",").filter(Boolean);
 const waitText = opt("wait-text", null);
 const full = args.includes("--full");
+// What the screenshots show: --commit (a checkout without git), else this folder's git HEAD and the tree of its working files
+// (uncommitted changes included, as aidenhq-browse records it).
+function source() {
+  if (opt("commit", "")) return { commit: opt("commit") };
+  try {
+    const git = (a, env) => execFileSync("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, ...env } }).trim();
+    const commit = git(["rev-parse", "HEAD"]);
+    const index = join(require("node:fs").mkdtempSync(join(require("node:os").tmpdir(), "ui-review-tree-")), "index");
+    git(["read-tree", "HEAD"], { GIT_INDEX_FILE: index });
+    git(["add", "-A", "--", git(["rev-parse", "--show-toplevel"])], { GIT_INDEX_FILE: index });
+    return { commit, tree: git(["write-tree"], { GIT_INDEX_FILE: index }) };
+  } catch {
+    return {};
+  }
+}
+const at = source();
 mkdirSync(out, { recursive: true });
+
+/** A PNG with an `aidenhq` text chunk after IHDR: the capture's stamp (JSON, ASCII-escaped). */
+function stampPng(file, stamp) {
+  const buf = readFileSync(file);
+  if (buf.length < 33 || buf.readUInt32BE(0) !== 0x89504e47) return;
+  const json = JSON.stringify(stamp).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  const body = Buffer.concat([Buffer.from("tEXtaidenhq\0", "latin1"), Buffer.from(json, "latin1")]);
+  const len = Buffer.alloc(4), crc = Buffer.alloc(4);
+  len.writeUInt32BE(body.length - 4);
+  crc.writeUInt32BE(crc32(body));
+  writeFileSync(file, Buffer.concat([buf.subarray(0, 33), len, body, crc, buf.subarray(33)]));
+}
 
 const AB = process.env.AGENT_BROWSER || "agent-browser";
 const ab = (...a) => execFileSync(AB, a, { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe"] });
@@ -84,6 +117,7 @@ for (const path of paths) for (const palette of variants) {
       if (waitText) ab("wait", "--text", waitText);
       const name = `${slug}-${w}-${mode}.png`;
       ab("screenshot", join(out, name), ...(full ? ["--full"] : []));
+      stampPng(join(out, name), { ...at, url, width: w, mode, takenAt: new Date().toISOString() });
       const shot = { name, width: w, mode };
       if (baseline) shot.compare = compare(name);
       page.shots.push(shot);

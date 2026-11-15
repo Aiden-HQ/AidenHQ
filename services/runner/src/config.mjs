@@ -149,7 +149,7 @@ export function loadConfig() {
     // The monitoring module's textfile directory (node-exporter reads it): the runner's metrics (metrics.mjs).
     metricsFile: join(resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data")), "monitoring", "textfile", "runner.prom"),
     ghWrapperDir: join(REPO_ROOT, "services/runner/bin"),
-    // The pinned Chromium headless shell and playwright-core (ops/vm/setup.sh), read-only in jobs (bin/aidenhq-browse).
+    // agent-browser and its pinned Chrome (ops/vm/setup.sh, the browser image's build), read-only in jobs (bin/aidenhq-browse).
     browserDir: "/opt/aidenhq/browser",
   };
 }

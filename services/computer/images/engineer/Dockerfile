@@ -17,7 +17,3 @@ RUN curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.2
 ENV PATH=/opt/rust/cargo/bin:$PATH
 # Global npm installs land in /usr/local (the node image's prefix), readable by all.
 RUN npm i -g pnpm@10.20.0 typescript@5.9.3 && npm cache clean --force
-# agent-browser's Chrome (installed by the base under root's home): moved to /opt/chrome, readable by all, and named for every uid.
-RUN chrome="$(find /root -type f -name chrome -perm -u+x 2>/dev/null | head -1)" && test -n "$chrome" \
-    && mv "$(dirname "$chrome")" /opt/chrome && chmod -R a+rX /opt/chrome && /opt/chrome/chrome --version
-ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/chrome/chrome

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Resolve } from "../src/api.js";
 import type { Scope, Sign } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
-import { graderView, isPublicIp, renderArgs, viewApp, viewContent, VIEW_IMAGE, VIEW_SCRIPT, webView, WEB_NETWORK, type Render, type ViewResult } from "../src/view.js";
+import { graderView, isPublicIp, renderArgs, viewApp, viewContent, BROWSER_IMAGE, VIEW_SCRIPT, webView, WEB_NETWORK, type Render, type ViewResult } from "../src/view.js";
 
 const app = (o: object = {}) => parseApp({ name: "roadmap-keeper", repo: "example-org/roadmap-keeper", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, ...o });
 const ID = "c".padEnd(64, "0");
@@ -50,8 +50,9 @@ describe("app_view identity", () => {
     const { render } = fake();
     await viewApp(app({ port: 8080, share: { host: "r.example.com", aud: "aud-12345678" } }), agent("scout"), {}, { resolve, render, sign });
     expect(signed).toEqual([{ app: "roadmap-keeper", agent: "scout", scope: { role: "member", methods: ["GET", "HEAD"] } }]);
-    expect(VIEW_SCRIPT).toContain("new URL(q.url()).origin === own"); // per-request origin check
-    expect(VIEW_SCRIPT).toMatch(/q\.method\(\) !== "GET" && q\.method\(\) !== "HEAD"\) return q\.abort\(\)/); // a POST from the page is aborted
+    expect(VIEW_SCRIPT).toContain("ok = new URL(q.url).origin === own"); // per-request origin check
+    expect(VIEW_SCRIPT).toMatch(/q\.method !== "GET" && q\.method !== "HEAD"\) return dt\.send\("Fetch\.failRequest"/); // a POST from the page is failed
+    expect(VIEW_SCRIPT.indexOf("await guard(")).toBeLessThan(VIEW_SCRIPT.indexOf("await ab(\"open\", r.url)")); // before the first navigation
     const echo: Render = async () => ({ ...PAGE, url: `http://127.0.0.1:8080/?k=${TOKEN}`, title: TOKEN, snapshot: `- text "${TOKEN}"` });
     const r = await viewApp(app(), agent("scout"), {}, { resolve, render: echo, sign });
     expect(JSON.stringify(r)).not.toContain(TOKEN);
@@ -81,16 +82,16 @@ describe("web_view", () => {
 });
 
 describe("renderer", () => {
-  it("runs pinned, non-root, without capabilities, read-only and limited, with no mounts, secrets or token", () => {
-    const a = renderArgs(`container:${ID}`, VIEW_IMAGE);
+  it("runs the host's browser image, non-root, without capabilities, read-only and limited, with no mounts, secrets or token", () => {
+    const a = renderArgs(`container:${ID}`, BROWSER_IMAGE);
     const after = (f: string) => a[a.indexOf(f) + 1];
-    expect([after("--network"), after("--pull"), after("--cap-drop"), after("--security-opt"), after("--user")]).toEqual([`container:${ID}`, "never", "ALL", "no-new-privileges", "pptruser"]);
+    expect([after("--network"), after("--pull"), after("--cap-drop"), after("--security-opt"), after("--user")]).toEqual([`container:${ID}`, "never", "ALL", "no-new-privileges", "65534:65534"]);
     for (const f of ["--rm", "-i", "--init", "--read-only", "--memory", "--cpus", "--pids-limit"]) expect(a).toContain(f);
-    expect(a.slice(-4)).toEqual([VIEW_IMAGE, "node", "-e", VIEW_SCRIPT]);
-    expect(VIEW_IMAGE).toMatch(/@sha256:[0-9a-f]{64}$/);
+    expect(a.slice(-4)).toEqual([BROWSER_IMAGE, "node", "-e", VIEW_SCRIPT]);
+    expect(BROWSER_IMAGE).toBe("aidenhq/computer-browser:current"); // the host's own build (ops/computer-images.sh), never pulled
     expect(a.slice(0, -1).join(" ")).not.toMatch(/token|secret|authorization|bearer|-v |--volume|--mount|--privileged|--cap-add/i);
-    expect(renderArgs(WEB_NETWORK, VIEW_IMAGE)).toContain(WEB_NETWORK);
-    for (const n of ["host", "bridge", "container:abc", "app-roadmap-keeper"]) expect(() => renderArgs(n, VIEW_IMAGE), n).toThrow(/network/);
+    expect(renderArgs(WEB_NETWORK, BROWSER_IMAGE)).toContain(WEB_NETWORK);
+    for (const n of ["host", "bridge", "container:abc", "app-roadmap-keeper"]) expect(() => renderArgs(n, BROWSER_IMAGE), n).toThrow(/network/);
   });
   it("answers with the fenced snapshot, and the screenshot only when taken", () => {
     const c = viewContent(PAGE);

@@ -9,7 +9,7 @@ import { apiTarget, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, t
 import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type ProbeResult } from "./checks.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { RENDER_TIMEOUT_MS, renderArgs, VIEW_IMAGE, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
+import { BROWSER_IMAGE, RENDER_TIMEOUT_MS, renderArgs, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
 import { checkout, checkoutPr, commitMessage, diffForDeploy, resolveCommit, show, type GitEnv } from "./git.js";
 import { loadRegistry, type App } from "./registry.js";
 import { pickService, scriptCommand } from "./run.js";
@@ -244,19 +244,19 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   });
   const auditApi = (o: object) => log.info(o, "app_api"); // who called which app path, and the status; never bodies or the token
 
-  // app_view / web_view: at most two renders at once; the pinned image is pulled once (it is ~1 GB, so never inside a render).
+  // app_view / web_view: at most two renders at once, in the browser image the apply builds on this host (never pulled).
   let renders = 0;
   const queue: (() => void)[] = [];
-  let pulled: Promise<unknown> | undefined;
-  const ensureImage = () => (pulled ??= exec(["image", "inspect", VIEW_IMAGE]).catch(() => exec(["pull", "-q", VIEW_IMAGE], { timeout: 600_000 })).catch((e) => { pulled = undefined; throw e; }));
+  const haveImage = () => exec(["image", "inspect", BROWSER_IMAGE]).then(() => true, () => false);
+  const NO_IMAGE = `the browser image (${BROWSER_IMAGE}) isn't built on this host yet: ops/computer-images.sh builds it on every apply`;
   /** One run of a renderer script (view.ts's image and hardening) on a docker network: its stdout. */
   const renderWith = async (network: string, script: string, input: object, timeout: number): Promise<string> => {
-    await ensureImage();
+    if (!(await haveImage())) throw new Error(NO_IMAGE);
     if (renders >= 2) await new Promise<void>((ok) => queue.push(ok));
     renders++;
     const name = `aidenhq-view-${randomBytes(6).toString("hex")}`;
     try {
-      const args = renderArgs(network, VIEW_IMAGE, script);
+      const args = renderArgs(network, BROWSER_IMAGE, script);
       args.splice(1, 0, "--name", name);
       return await exec(args, { input: JSON.stringify(input), timeout });
     } catch (e) {
@@ -288,14 +288,10 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     const container = await targetContainer(app, t.service, resolveApi);
     const base = `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}`;
     const out: ProbeResult[] = [];
-    // The renderer image (~1 GB) is never pulled inside a deploy: absent, the render probes are skipped and it is pulled
-    // in the background for next time.
-    const haveImage = p.render.length ? await exec(["image", "inspect", VIEW_IMAGE]).then(() => true, () => false) : false;
-    if (p.render.length && !haveImage) {
-      void ensureImage().catch(() => undefined);
-      out.push(...p.render.map((x) => probeResult("render", x.path, [{ hard: false, what: "not checked: the renderer image is being pulled (try app_check in a few minutes)" }])));
-    }
-    if (p.render.length && haveImage) {
+    // Without the browser image (built by the apply), the render probes are skipped with a warning, never failed.
+    const browser = p.render.length ? await haveImage() : false;
+    if (p.render.length && !browser) out.push(...p.render.map((x) => probeResult("render", x.path, [{ hard: false, what: `not checked: ${NO_IMAGE}` }])));
+    if (p.render.length && browser) {
       const secret = sign(app.name, "deploy-check", { role: "member", methods: ["GET", "HEAD"] });
       const headers = { [IDENTITY_HEADER]: secret };
       let facts: { pages: PageFacts[]; error?: string } = { pages: [] };

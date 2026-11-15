@@ -23,6 +23,10 @@ test("the instance switches one agent on; the launcher learns the image tag and 
   assert.equal(r.paperclip.agents.assistant.image, "agent-base");
   const c = computersConfig(r.paperclip, product);
   assert.match(c.images["agent-base"], /^aidenhq\/computer-agent-base:[0-9a-f]{12}$/);
+  // The browser image is always built (apps-mcp renders in it), and agents can't name it.
+  assert.match(c.images.browser, /^aidenhq\/computer-browser:[0-9a-f]{12}$/);
+  assert.match(computersConfig(compile(product, inst({})).paperclip, product).images.browser, /^aidenhq\/computer-browser:/);
+  assert.throws(() => validateImages({ x: { image: "browser" } }), /image must be one of agent-base, engineer/);
   assert.deepEqual(c.connections.apps, { url: "http://apps-mcp:8090/mcp", tool_timeout_sec: 600 });
   assert.equal(c.connections.slack_live.bearer_secret, "slack_live_mcp_token");
   // The board token is host-only: the stdio tasks bridge runs in the box without it.

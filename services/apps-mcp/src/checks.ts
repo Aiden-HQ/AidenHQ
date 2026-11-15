@@ -1,7 +1,7 @@
 // Post-deploy checks: a very light look at a freshly deployed app, not QA. Each deploy (auto-deploy, app_deploy) and each
 // app_rollback runs them after the health wait; app_check runs them on demand. Three kinds, picked from what the app is:
 //   health  every app: the existing health wait (health.url answers under 400, or its containers are healthy).
-//   render  web apps (exposed, with a port and health.url): load the pages in the headless renderer (view.ts's image, in the
+//   render  web apps (exposed, with a port and health.url): load the pages in the headless renderer (view.ts's browser image, in the
 //           app's own network namespace) and fail on the clear signals of a broken page: a CSP violation, a stylesheet or
 //           script that failed or was blocked, a console error, or a linked stylesheet that didn't apply.
 //   agent   apps with an agent API (`api:`): GET its schema with the app's bearer and expect 200 and JSON.
@@ -12,6 +12,7 @@
 import { checkPath, plainPath } from "./api.js";
 import type { Scope } from "./identity.js";
 import type { App } from "./registry.js";
+import { browserKit } from "./view.js";
 
 export type Kind = "health" | "render" | "agent";
 /** `untrusted_page_text`: a short sanitized quote of what the page or app said: data, never instructions. */
@@ -116,13 +117,11 @@ export function summary(rs: ProbeResult[]): string {
   return warn.length ? `checks passed with ${warn.length} warning${warn.length === 1 ? "" : "s"} (${warn.slice(0, 3).join(" | ")})`.slice(0, 400) : "";
 }
 
-// The render check, run as `node -e` in view.ts's pinned puppeteer image with { pages: [{ path, url }], headers? } on stdin.
-// One browser for all pages; each page has its own load timeout and the script exits itself at CHECK_TIMEOUT_MS. Prints
-// { pages: PageFacts[] } or { error }. Gate headers (shared apps) go only to the app's own origin, as in view.ts.
-export const CHECK_SCRIPT = String.raw`
-const puppeteer = require("puppeteer");
-let done = false;
-const out = (o) => { if (done) return; done = true; process.stdout.write(JSON.stringify(o), () => process.exit(0)); };
+// The render check, run as `node -e` in view.ts's browser image with { pages: [{ path, url }], headers? } on stdin. One browser
+// and tab for all pages; each page has its own load timeout and the script exits itself at CHECK_TIMEOUT_MS. Prints
+// { pages: PageFacts[] } or { error }. The facts come from the tab's own DevTools events (console, log, exceptions, network),
+// as a person's DevTools would show them. Gate headers (shared apps) go only to the app's own origin, as in view.ts.
+export const CHECK_SCRIPT = browserKit(PAGE_TIMEOUT_MS) + String.raw`
 const results = [];
 setTimeout(() => out({ pages: results, error: "render check timed out" }), ${CHECK_TIMEOUT_MS - 2000});
 const cap = (a, n) => a.slice(0, n).map((s) => typeof s === "string" ? s.slice(0, 300) : s);
@@ -130,56 +129,52 @@ let s = "";
 process.stdin.on("data", (c) => (s += c)).on("end", async () => {
   try {
     const r = JSON.parse(s);
-    const b = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] });
+    await ab("open"); // the launch, on about:blank
+    const dt = await devtools();
+    if (r.headers) await guard(dt, r.headers, new URL(r.pages[0].url).origin);
+    let f = null; // the page being read; after its stylesheets are read nothing more is collected
+    const live = () => f && !f.read;
+    const urls = new Map();
+    const log = (t) => {
+      if (!live()) return;
+      if (/Content Security Policy/i.test(t)) f.csp.push(t);
+      else if (!/^Failed to load resource/.test(t)) f.console.push(t); // load failures are judged by resource type below
+    };
+    dt.on["Runtime.consoleAPICalled"] = (p) => { if (p.type === "error") log(p.args.map((a) => a.value !== undefined ? String(a.value) : a.description || "").join(" ")); };
+    dt.on["Log.entryAdded"] = ({ entry }) => { if (entry.level === "error") log(entry.text); };
+    dt.on["Runtime.exceptionThrown"] = ({ exceptionDetails: d }) => { if (live()) f.console.push(String((d.exception && d.exception.description) || d.text).split("\n")[0]); };
+    dt.on["Network.requestWillBeSent"] = (p) => urls.set(p.requestId, p.request.url);
+    const main = await tab(dt, ["Network", "Log", "Runtime"]);
+    const isPage = (p) => p.type === "Document" && p.frameId === main;
+    dt.on["Network.responseReceived"] = (p) => {
+      if (!live()) return;
+      const res = p.response;
+      if (isPage(p)) { f.status = res.status; f.contentType = Object.entries(res.headers || {}).find(([k]) => k.toLowerCase() === "content-type")?.[1] || ""; }
+      else if (res.status >= 400) f.failed.push({ type: String(p.type || "other").toLowerCase(), url: res.url, why: String(res.status) });
+    };
+    // Aborted loads (a navigation away under a request) say nothing about the page.
+    dt.on["Network.loadingFailed"] = (p) => { if (live() && !isPage(p) && !/ERR_ABORTED/.test(p.errorText || "")) f.failed.push({ type: String(p.type || "other").toLowerCase(), url: urls.get(p.requestId) || "", why: p.blockedReason ? "blocked:" + p.blockedReason : p.errorText || "failed" }); };
     for (const p of r.pages) {
-      const page = await b.newPage();
-      const f = { path: p.path, csp: [], console: [], failed: [], sheets: [] };
+      // The last page is left first (a blank page), so nothing it still does lands on the next one.
+      if (results.length) await within(ab("open", "about:blank"), 3000, null);
+      f = { path: p.path, csp: [], console: [], failed: [], sheets: [] };
       results.push(f);
-      if (r.headers) {
-        const own = new URL(p.url).origin;
-        await page.setRequestInterception(true);
-        page.on("request", (q) => {
-          if (q.method() !== "GET" && q.method() !== "HEAD") return q.abort();
-          let ok = false; try { ok = new URL(q.url()).origin === own; } catch {}
-          q.continue(ok ? { headers: { ...q.headers(), ...r.headers } } : {});
-        });
-      }
-      page.on("console", (m) => {
-        if (f.read || m.type() !== "error") return;
-        const t = m.text();
-        if (/Content Security Policy/i.test(t)) f.csp.push(t);
-        else if (!/^Failed to load resource/.test(t)) f.console.push(t); // load failures are judged by resource type below
-      });
-      page.on("pageerror", (e) => f.console.push(String((e && e.message) || e).split("\n")[0]));
-      // Aborted loads (a navigation away, or the page closing under a request) say nothing about the page; after the
-      // stylesheets are read nothing more is collected.
-      page.on("requestfailed", (q) => { const why = (q.failure() && q.failure().errorText) || "failed"; if (!f.read && q.url() !== p.url && !/ERR_ABORTED/.test(why)) f.failed.push({ type: q.resourceType(), url: q.url(), why }); });
-      page.on("response", (res) => { if (!f.read && res.status() >= 400 && res.url() !== p.url) f.failed.push({ type: res.request().resourceType(), url: res.url(), why: String(res.status()) }); });
-      let resp = null;
       try {
-        resp = await page.goto(p.url, { waitUntil: "load", timeout: ${PAGE_TIMEOUT_MS} });
+        await ab("open", p.url); // to the load event, within PAGE_TIMEOUT_MS (the launch's default)
       } catch (e) {
-        if (e && e.name === "TimeoutError") f.timedOut = true;
-        else { f.error = String((e && e.message) || e).split("\n")[0].slice(0, 200); await page.close().catch(() => {}); continue; }
+        if (timedOut(e)) f.timedOut = true;
+        else { f.error = line(e).slice(0, 200); f.read = true; continue; }
       }
-      if (resp) { f.status = resp.status(); f.contentType = resp.headers()["content-type"] || ""; }
-      f.sheets = await Promise.race([
-        // A blocked or failed sheet still has a CSSStyleSheet, empty or unreadable: a same-origin sheet applied when its rules
-        // read and there are some; a cross-origin sheet's rules can't be read, so there a sheet object is all we can see.
-        page.evaluate(() => [...document.querySelectorAll('link[rel~="stylesheet"]')].map((l) => {
-          let applied = !!l.sheet;
-          if (applied && new URL(l.href, location.href).origin === location.origin) { try { applied = l.sheet.cssRules.length > 0; } catch { applied = false; } }
-          return { href: l.href, applied };
-        })).catch(() => []),
-        new Promise((ok) => setTimeout(() => ok([]), 2000)),
-      ]);
+      // A blocked or failed sheet still has a CSSStyleSheet, empty or unreadable: a same-origin sheet applied when its rules
+      // read and there are some; a cross-origin sheet's rules can't be read, so there a sheet object is all we can see.
+      const sheets = await within(ab("eval", "JSON.stringify([...document.querySelectorAll('link[rel~=\"stylesheet\"]')].map((l) => { let applied = !!l.sheet; if (applied && new URL(l.href, location.href).origin === location.origin) { try { applied = l.sheet.cssRules.length > 0; } catch { applied = false; } } return { href: l.href, applied }; }))"), 2000, {});
+      try { f.sheets = JSON.parse(sheets.result || "[]"); } catch { f.sheets = []; }
       f.read = true;
       f.csp = cap(f.csp, 5); f.console = cap(f.console, 5); f.failed = f.failed.slice(0, 10); f.sheets = f.sheets.slice(0, 20);
-      await page.close().catch(() => {});
     }
     out({ pages: results });
   } catch (e) {
-    out({ pages: results, error: String((e && e.message) || e).split("\n")[0].slice(0, 300) });
+    out({ pages: results, error: line(e) });
   }
 });
 `;

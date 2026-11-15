@@ -151,8 +151,10 @@ follow-up fixes.
    folder). The code lands in `/workspace/repos/<name>` as plain files with no git, replacing what was there: move each
    checkout aside (`mv /workspace/repos/<name> /workspace/head-<sha7>`) before the next. If the commit isn't in the
    runner's copy yet, wait a minute and try once more; then hand your task back with one line saying so.
-4. **Run both and look once:** start the base on one port, run `ui-review` on it into `review-<head sha7>/before`, then
-   start the head and run `ui-review --baseline review-<head sha7>/before` into `review-<head sha7>/after` (a fresh
+4. **Run both and look once:** start the base on one port, run `ui-review --commit <base sha>` on it into
+   `review-<head sha7>/before`, then start the head and run `ui-review --commit <head sha> --baseline
+   review-<head sha7>/before` into `review-<head sha7>/after` (`--commit` stamps each screenshot with the commit it
+   shows, since a checkout has no git; a fresh
    folder per head, so nothing from an earlier review is mixed in), on the pages the PR touches (`--paths`). Never set `success`
    without this run of the head and a look at its screenshots: it is the evidence for your verdict. Then try the main
    flow the PR touches once with `agent-browser`. With a mockup, also run `ui-review --baseline <the mockup folder>`
