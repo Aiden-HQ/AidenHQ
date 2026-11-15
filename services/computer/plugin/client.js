@@ -34,8 +34,8 @@ export async function call(c, route, body, { fetch: f = fetch } = {}) {
   return j;
 }
 
-async function riding(fn, retry, { sleep, now }) {
-  const until = now() + RESTART_WINDOW_MS;
+async function riding(fn, retry, { sleep, now }, windowMs = RESTART_WINDOW_MS) {
+  const until = now() + windowMs;
   for (;;) {
     try {
       return await fn();
@@ -62,7 +62,8 @@ export function request(c, route, body, o = {}) {
 export async function execute(c, body, o = {}) {
   const d = defaults(o);
   const long = !(body.timeoutMs > 0) || body.timeoutMs > LONG_EXEC_MS;
-  if (!long) return request(c, "exec", body, d);
+  // A short one waits no longer than its own timeout: its caller has given up by then.
+  if (!long) return riding(() => call(c, "exec", body, d), (e) => e.refused, d, body.timeoutMs);
   const execId = randomUUID();
   const t0 = d.now();
   try {

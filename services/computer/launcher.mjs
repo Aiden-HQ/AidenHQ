@@ -191,17 +191,17 @@ async function makeRoom() {
     await new Promise((r) => setTimeout(r, 1000));
   }
 }
-/** A detached exec's result: waits for its exit code in the box, then its output (the box removes the folder). */
+/** A detached exec's result: waits for its exit code in the box, then its output. */
 async function collect(container, dir, timeoutMs) {
   const r = await docker(["exec", container, "sh", "-c", EXEC_WAIT_SCRIPT, "sh", dir], { timeoutMs });
-  if (r.exitCode === 97 && r.stderr.includes(EXEC_MISSING)) throw fail(404, `no exec ${path.basename(dir)} in ${container}: it never started, or its result was collected already`);
+  if (r.exitCode === 97 && r.stderr.includes(EXEC_MISSING)) throw fail(404, `no exec ${path.basename(dir)} in ${container}: it never started`);
   return unlessGone(container, r);
 }
 
 /** A failed exec in a box that is no longer running says so (the run ends with that reason), not as a bare exit code. */
 async function unlessGone(container, r) {
   if (r.exitCode === 0) return r;
-  if (!boxes.has(container) || (await state(container)) !== "running") throw fail(404, `computer gone: ${container} went away during the command (destroyed, stopped or out of memory)`);
+  if (!boxes.has(container) || ["missing", "exited", "dead", "removing"].includes(await jobState(container))) throw fail(404, `computer gone: ${container} went away during the command (destroyed, stopped or out of memory)`);
   return r;
 }
 const newName = () => CFG.prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);

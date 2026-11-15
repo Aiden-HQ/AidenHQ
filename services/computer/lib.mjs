@@ -153,15 +153,17 @@ export async function builtImage(tag, docker, log = () => {}) {
 /**
  * A long exec (the plugin names it with an execId: an agent's whole turn) runs detached in the box, its stdin, output and exit
  * code in a folder there, so a launcher restart (a deploy) mid-turn never ends it: the next launcher collects the result for the
- * plugin (/attach). Three shell scripts, each `sh -c SCRIPT sh <folder> ...`: write the stdin; run the command; wait for its
- * exit code, print its output and remove the folder. A folder that isn't there prints EXEC_MISSING and exits 97.
+ * plugin (/attach). Three shell scripts, each `sh -c SCRIPT sh <folder> ...`: write the stdin (and remove folders finished over
+ * 10 minutes ago); run the command; wait for its exit code and print its output. Waiting is idempotent: the old launcher's
+ * waiter lives on in the box after a restart, and both see the same result. A folder that isn't there prints EXEC_MISSING and
+ * exits 97.
  */
 export const EXEC_ID = /^[a-z0-9-]{8,64}$/;
 export const EXEC_ROOT = "/tmp/aidenhq-exec";
 export const EXEC_MISSING = "aidenhq: no such exec";
-export const EXEC_PREP_SCRIPT = 'mkdir -p "$1" && cat > "$1/in"';
+export const EXEC_PREP_SCRIPT = 'find "${1%/*}" -mindepth 2 -maxdepth 2 -name code -mmin +10 2>/dev/null | while read -r f; do rm -rf "${f%/code}"; done; mkdir -p "$1" && cat > "$1/in"';
 export const EXEC_RUN_SCRIPT = 'd=$1; shift; "$@" < "$d/in" > "$d/out" 2> "$d/err"; echo $? > "$d/code.tmp" && mv "$d/code.tmp" "$d/code"';
-export const EXEC_WAIT_SCRIPT = `d=$1; while [ ! -f "$d/code" ]; do [ -d "$d" ] || { echo "${EXEC_MISSING}" >&2; exit 97; }; sleep 1; done; cat "$d/out"; cat "$d/err" >&2; c=$(cat "$d/code"); rm -rf "$d"; exit "$c"`;
+export const EXEC_WAIT_SCRIPT = `d=$1; while [ ! -f "$d/code" ]; do [ -d "$d" ] || { echo "${EXEC_MISSING}" >&2; exit 97; }; sleep 1; done; cat "$d/out"; cat "$d/err" >&2; exit "$(cat "$d/code")"`;
 
 /** `docker run` arguments: image, limits, network and mounts all come from the launcher's own config. */
 export function dockerRunArgs({ name, image, agentId, network, limits, mounts, user, labels = [], home = "/root" }) {

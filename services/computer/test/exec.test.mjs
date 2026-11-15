@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,18 +11,21 @@ import { execute } from "../plugin/client.js";
 
 const sh = (script, args, input) => spawnSync("sh", ["-c", script, "sh", ...args], { input, encoding: "utf8" });
 
-test("a detached exec keeps its stdin, output and exit code in the box until it is collected once", () => {
+test("a detached exec keeps its stdin, output and exit code in the box; any waiter collects it; old ones are cleared", () => {
   const root = mkdtempSync(join(tmpdir(), "aidenhq-exec-"));
   const dir = join(root, "e1");
   try {
     assert.equal(sh(EXEC_PREP_SCRIPT, [dir], "the prompt").status, 0);
     assert.equal(sh(EXEC_RUN_SCRIPT, [dir, "sh", "-c", 'cat; echo " done"; echo oops >&2; exit 3']).status, 0);
-    const r = sh(EXEC_WAIT_SCRIPT, [dir]);
-    assert.deepEqual([r.status, r.stdout, r.stderr], [3, "the prompt done\n", "oops\n"]);
-    assert.ok(!existsSync(dir));
-    const again = sh(EXEC_WAIT_SCRIPT, [dir]);
-    assert.equal(again.status, 97);
-    assert.match(again.stderr, new RegExp(EXEC_MISSING));
+    // The old launcher's waiter (still alive in the box after a restart) and the new one's see the same result.
+    for (const r of [sh(EXEC_WAIT_SCRIPT, [dir]), sh(EXEC_WAIT_SCRIPT, [dir])]) assert.deepEqual([r.status, r.stdout, r.stderr], [3, "the prompt done\n", "oops\n"]);
+    // A later exec's prep clears folders finished over 10 minutes ago.
+    utimesSync(join(dir, "code"), new Date(Date.now() - 20 * 60_000), new Date(Date.now() - 20 * 60_000));
+    assert.equal(sh(EXEC_PREP_SCRIPT, [join(root, "e2")], "").status, 0);
+    assert.ok(!existsSync(dir) && existsSync(join(root, "e2", "in")));
+    const gone = sh(EXEC_WAIT_SCRIPT, [dir]);
+    assert.equal(gone.status, 97);
+    assert.match(gone.stderr, new RegExp(EXEC_MISSING));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
