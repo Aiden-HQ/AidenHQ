@@ -16,6 +16,12 @@ if (args[0] === "pr" && args[1] === "edit") {
   log("gh", args);
   process.exit(0);
 }
+// A new PR (a publish), opt-in (FAKE_PR_CREATE=1): logged with the base it was asked for, and its URL printed.
+if (args[0] === "pr" && args[1] === "create" && process.env.FAKE_PR_CREATE) {
+  log("gh", args);
+  console.log("https://github.com/acme/app/pull/99");
+  process.exit(0);
+}
 const dir = dirname(process.env.FAKE_LOG);
 // A race (opt-in, once: a move-branch.json { repo, branch, slug? } next to $FAKE_LOG): while the runner reads a PR's state
 // on its way to publishing, a commit lands on that workspace branch (and, with `slug`, the workspace spells the repository

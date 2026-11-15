@@ -313,6 +313,49 @@ export async function baseRef(path, { branch, base, taskBranches = [] }) {
 /** Whether the clone has a local branch of that name. */
 export const hasBranch = async (path, branch) => (await snapshot(path)).refs.has(`refs/heads/${branch}`);
 
+/**
+ * The base a new PR opens into, resolved against GitHub first: a stacked branch's base only while GitHub still has that
+ * branch and the head has commits on top of it. A base branch that was squash-merged leaves no ref (or a head it already
+ * contains), and a PR into it could never merge, so the PR goes into the repository's default branch instead. A head with
+ * nothing of its own gives one sentence saying so, rather than GitHub's raw "No commits between …" error.
+ * Only confirmed absence falls back: a read that fails (network, auth) returns an error and opens nothing, because a base
+ * that can't be shown to be gone may still be the one the branch's own commits must not be read without.
+ */
+export async function resolvePrBase(path, { branch, base, defaultBranch }) {
+  let reading = base;
+  const unread = () => ({ base: "", from: "", error: `couldn't read GitHub's \`${reading}\`, so no PR was opened: try again in a few minutes` });
+  /** False only when GitHub itself says the branch isn't there (a clean `ls-remote` with no ref). A failed read throws. */
+  const onGitHub = async (name) => {
+    reading = name;
+    const remote = (await git(path, "ls-remote", "--heads", "origin", name)).trim();
+    if (!remote) return false;
+    await git(path, "fetch", "--quiet", "origin", `+refs/heads/${name}:refs/remotes/origin/${name}`);
+    return true;
+  };
+  /** Commits on `branch` GitHub's `name` doesn't have. Throws when either side can't be read. */
+  const ahead = async (name) => {
+    reading = name;
+    const tip = await git(path, "rev-parse", "--verify", `refs/remotes/origin/${name}^{commit}`);
+    return Number(await git(path, "rev-list", "--count", `${tip}..${branch}`));
+  };
+  let into;
+  let own;
+  try {
+    const stacked = base !== defaultBranch && (await onGitHub(base)) && (await ahead(base)) > 0;
+    into = stacked ? base : defaultBranch;
+    if (!stacked && !(await onGitHub(into))) return { base: into, from: "", error: `\`${into}\` isn't on GitHub, so there's no branch to open a PR into` };
+    own = await ahead(into);
+  } catch {
+    return unread();
+  }
+  if (!Number.isFinite(own)) return unread();
+  if (!own) {
+    const why = base === into ? `\`${branch}\` has no commits that aren't already on \`${into}\`` : `its base \`${base}\` is gone or already has every commit on \`${branch}\`, and \`${branch}\` has none that aren't on \`${into}\``;
+    return { base: into, from: "", error: `not opened: ${why}, so a PR would carry nothing` };
+  }
+  return { base: into, from: `origin/${into}` };
+}
+
 /** Commits on `branch` that aren't on GitHub yet (oldest first), and the diffstat against its base. */
 const changes = new Map();
 export async function branchChanges(path, { branch, base, taskBranches = [] }) {

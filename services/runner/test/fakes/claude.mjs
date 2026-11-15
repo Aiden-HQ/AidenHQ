@@ -124,6 +124,21 @@ if (step === "commit") {
   else writeFileSync(join(repo, `${branch.replace(/\W/g, "-")}.txt`), `${branch}\n`);
   git("add", "-A");
   git("commit", "-qm", `feat: ${branch}`);
+} else if (step === "stacked") {
+  // A branch stacked on GitHub's `feat/base`, with one commit of its own.
+  git("fetch", "-q", "origin");
+  git("switch", "-qc", "feat/base", "origin/feat/base");
+  git("switch", "-qc", "feat/stacked", "feat/base");
+  writeFileSync(join(repo, "stacked.txt"), "stacked\n");
+  git("add", "stacked.txt");
+  git("commit", "-qm", "feat: stacked change");
+} else if (step.startsWith("stale ")) {
+  // A stack whose commits are already on main (someone merged it there) but whose workspace still has main where it
+  // was: the stacked branch is fetched by name only, and its base branch, gone from GitHub, is made locally.
+  const branch = step.slice("stale ".length);
+  git("fetch", "-q", "origin", `refs/heads/${branch}:refs/remotes/origin/${branch}`);
+  git("switch", "-qc", branch, `origin/${branch}`);
+  git("branch", "feat/landed-base", `origin/${branch}~1`);
 } else if (step.startsWith("hunk-moved ")) {
   // The approved one-line edit made to policy.txt's other, identical block instead (same hunk text, other place).
   git("fetch", "-q", "origin");

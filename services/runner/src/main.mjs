@@ -24,7 +24,7 @@ import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
 import { startRepoHelper } from "./repohelper.mjs";
 import { createMetrics, writeMetrics } from "./metrics.mjs";
-import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, messagesSince, moveOffDefault, readManifest, repairWorkspaceGit, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
+import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, messagesSince, moveOffDefault, readManifest, repairWorkspaceGit, resolvePrBase, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.mjs";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.mjs";
 import * as merges from "./merges.mjs";
@@ -3465,8 +3465,9 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   if (r.prUrl) return `${pushed || "Up to date"}. PR: ${r.prUrl}`;
   if (command === "push") return `${pushed} → https://github.com/${r.repo}/compare/${r.base}...${encodeURIComponent(r.branch)}?expand=1`;
   // Written for the repository's reviewers: nothing about AidenHQ, tasks or this machine.
-  const from = r.baseRef;
-  if (!from) throw new UserError(`its base \`${r.base}\` isn't on GitHub, so there's nothing to open a PR into`);
+  // The base as GitHub has it now: a stacked branch's base only while it still exists and this branch has commits on it.
+  const { base, from, error } = await resolvePrBase(r.path, { branch: r.branch, base: r.base, defaultBranch: r.defaultBase });
+  if (error) throw new UserError(error);
   const messages = cleanMessages((await messagesSince(r.path, from, r.branch)).join("\x1e"));
   const stat = await git(r.path, "diff", "--stat", `${from}...${r.branch}`).catch(() => "");
   const diff = await git(r.path, "diff", `${from}...${r.branch}`).catch(() => "");
@@ -3477,18 +3478,18 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   // The agent's own title and description (it knows the conversation), unless they mention internal names.
   const own = text?.title && (ownRepo(r.repo) || !leaksInternal(`${text.title}\n${text.body ?? ""}`)) ? { title: String(text.title).slice(0, 200), body: String(text.body ?? "").slice(0, 60_000), generated: false } : undefined;
   const pr = own ?? await writePrDescription({
-    cfg, repo: r.repo, base: r.base,
+    cfg, repo: r.repo, base,
     request: [
       await prRequest(full),
       siblings.length ? `This pull request is one of ${siblings.length + 1} from this request; it covers only the branch \`${r.branch}\`${r.purpose ? ` (${r.purpose})` : ""}. Describe only its own changes.` : "",
-      r.base !== r.defaultBase ? `It is stacked on \`${r.base}\`, which has its own pull request.` : "",
+      base !== r.defaultBase ? `It is stacked on \`${base}\`, which has its own pull request.` : "",
     ].filter(Boolean).join("\n\n"),
     messages, stat, diff, report: siblings.length ? undefined : await lastReport(issue.id).catch(() => undefined), fallbackTitle,
   });
   const body = leaksInternal(pr.body) ? "" : pr.body;
   log("pr description", { issue: issue.identifier, branch: r.branch, generated: pr.generated, rejected: Boolean(pr.rejected), own: Boolean(own), ownRefused: Boolean(text?.title && !own) });
   let adopted;
-  const { stdout } = await execFileP(await findRealGh(), ["pr", "create", "--draft", "--repo", r.repo, "--head", r.branch, "--base", r.base, "--title", pr.title, "--body", body], await gho(r.repo, WRITE, { cwd: r.path })).catch((err) => {
+  const { stdout } = await execFileP(await findRealGh(), ["pr", "create", "--draft", "--repo", r.repo, "--head", r.branch, "--base", base, "--title", pr.title, "--body", body], await gho(r.repo, WRITE, { cwd: r.path })).catch((err) => {
     // The branch already has an open PR (another task opened it): this task takes it over, with the new commits on it.
     adopted = existingPrUrl(err.stderr, r.repo);
     if (adopted) return { stdout: adopted };
