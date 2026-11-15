@@ -80,8 +80,12 @@ overrides:
   `app_api` are governed by grants. Setting or changing a routine's autonomy is always a Tier 2 change.
 - **Instance agents** (`agents/<key>/`) take `name`, `description` (the routing contract), `reports_to`, `model`,
   `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules, `model` and `autonomy` only), `budget` (USD, required), `max_parallel`,
-  `image`, `trial` and `heartbeat`. They cannot have roles. `trial: true` keeps writes to reporting on the agent's own
-  tasks. The Agent Architect designs these and the Platform Engineer commits them after the owner approves.
+  `image`, `trial`, `trial_writes` and `heartbeat`. They cannot have roles. `trial: true` keeps writes to reporting on the
+  agent's own tasks; `trial_writes: [connection.tool, …]` on a trial agent says which more it may use, so a definition can
+  give it the owner-channel writes before tap 2: `paperclip_tasks.task_create`, `slack_live.wake_at`,
+  `slack_live.chat_send`, `slack_live.notify_owner` (any other name, an entry it doesn't grant, or one on an agent not in
+  trial is a compile error). Every other granted write stays refused until trial ends. The Agent Architect designs these
+  and the Platform Engineer commits them after the owner approves.
 - `private_reads: true` on a `dispatch: runner` agent: its jobs get the private reads (Grafana, Slack, Glean, ClickHouse,
   the job's gcloud session, other tasks) and no web search. Without it (the Software and Platform Engineers), Primer and
   web search only. `engine:` on a runner agent picks its engine (`codex-openrouter` or `openrouter` for `opencode_local`).

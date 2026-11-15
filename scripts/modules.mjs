@@ -43,7 +43,7 @@ const ROLES = {
 };
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
-const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "heartbeat", "web_search", "graded", "department", "chat"];
+const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "department", "chat"];
 // An instance agent's fast chat lane (`chat:`, owner-channel's slack-live-mcp): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
 const CHAT_FIELDS = ["model", "reasoning", "tools", "deadline_s", "telegram"];
@@ -52,6 +52,10 @@ const INSTANCE_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedul
 // paperclip-tasks-mcp limits these to the trial agent's own tasks (the grants table marks it in trial); source_ack moves only
 // the caller's own source cursor.
 export const TRIAL_WRITES = { paperclip_tasks: ["task_comment", "task_handoff", "task_finish", "task_set_status"], apps: ["source_ack"] };
+// The writes a trial agent may declare in `trial_writes:`: the owner-channel ones (creating its own background task, a
+// reminder, a reply in its own chat, asking the owner), as connection.tool. Everything else it may only read, or report on
+// its own tasks (TRIAL_WRITES).
+export const TRIAL_WRITE_ALLOWED = ["paperclip_tasks.task_create", "slack_live.wake_at", "slack_live.chat_send", "slack_live.notify_owner"];
 // A tool whose name says it deletes (Jira's camelCase too) must be tagged `destructive`, never plain write or read: the
 // `write` shorthand never grants a destructive tool; an agent gets one only by naming it.
 export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
@@ -112,6 +116,22 @@ export function grantEntry(key, a, routines = {}) {
   const ids = [a.model, ...(a.models ?? []), ...Object.values(routines).filter((r) => r.agent === key).map((r) => r.model)];
   const models = [...new Set(ids.filter((m) => typeof m === "string" && m.trim()).map((m) => m.replace(/^openrouter\//, "")))];
   return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true };
+}
+
+/**
+ * A trial agent's `trial_writes:` list, checked: a list of writes it may use in trial, each one of TRIAL_WRITE_ALLOWED and
+ * granted by the definition, written connection.tool as its grants name it. Returns the names; errors name the agent and tool.
+ */
+export function trialWrites(key, list, tools) {
+  if (!Array.isArray(list)) fail(`agent ${key}: trial_writes must be a list of tools, written connection.tool`);
+  for (const raw of list) {
+    const parts = typeof raw === "string" ? raw.split(".") : [];
+    if (parts.length !== 2 || !parts[0] || !parts[1]) fail(`agent ${key}: trial_writes names ${JSON.stringify(raw)}, not a tool written connection.tool`);
+    const [conn, tool] = parts;
+    if (!TRIAL_WRITE_ALLOWED.includes(raw)) fail(`agent ${key}: trial_writes names ${raw}, which it may not use in trial (only ${TRIAL_WRITE_ALLOWED.join(", ")})`);
+    if (!(tools[conn] ?? []).includes(tool)) fail(`agent ${key}: trial_writes names ${raw}, which the definition does not grant`);
+  }
+  return [...new Set(list)];
 }
 
 /** `---\nkey: value\n---\nbody` → { meta, body }. */
@@ -415,14 +435,33 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       if (!ROLES[r]) fail(`${key}: unknown role ${r} (known: ${Object.keys(ROLES).join(", ")})`);
       if (!ROLES[r].includes(a.module)) fail(`${key}: module ${a.module} may not grant ${r}`);
     }
-    // In trial (tap 1): read-only but for reporting on its own tasks, and reporting to the Agent Architect, which reviews its work.
+    // In trial (tap 1): read-only but for reporting on its own tasks, and reporting to the Agent Architect, which reviews its
+    // work. A definition may also declare `trial_writes:`, the owner-channel writes it keeps before tap 2. The agent then gets
+    // exactly those writes and the trial ones; every other write it grants is withheld (trial_withheld) and refused by name
+    // until tap 2 (the tool isn't offered, and the grants table lacks it). Without a list, today's rule: no write tools
+    // beyond TRIAL_WRITES, or the build fails.
     if (a.trial) {
       if (a.reports_to !== "architect") fail(`${key}: an agent in trial reports to architect (got ${a.reports_to ?? "nobody"})`);
-      for (const [name, list] of Object.entries(tools)) {
-        const writes = list.filter((t) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name] ?? []).includes(t));
-        if (writes.length) fail(`${key}: an agent in trial may not have ${name} write tools (${writes.join(", ")}); they come with tap 2`);
+      const declared = a.trial_writes == null ? [] : trialWrites(key, a.trial_writes, tools);
+      if (!declared.length) {
+        for (const [name, list] of Object.entries(tools)) {
+          const writes = list.filter((t) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name] ?? []).includes(t));
+          if (writes.length) fail(`${key}: an agent in trial may not have ${name} write tools (${writes.join(", ")}); they come with tap 2`);
+        }
+      } else {
+        const withheld = [];
+        for (const [name, list] of Object.entries(tools)) {
+          const writes = list.filter((t) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name] ?? []).includes(t));
+          for (const t of writes) if (!declared.includes(`${name}.${t}`)) withheld.push(`${name}.${t}`);
+          tools[name] = list.filter((t) => !writes.includes(t) || declared.includes(`${name}.${t}`));
+          if (!tools[name].length) delete tools[name];
+        }
+        a.enabled_tools = tools;
+        a.mcp_servers = Object.keys(tools);
+        // What it granted but keeps out of trial: the handbook check doesn't warn about these (it intends them for tap 2).
+        if (withheld.length) a.trial_withheld = withheld; else delete a.trial_withheld;
       }
-    }
+    } else if (a.trial_writes != null) fail(`${key}: trial_writes is for an agent in trial (add trial: true, or grant the tools plainly)`);
     // The module's own isolation counts too: an agent can't opt itself out of an untrusted module.
     if (a.isolation === "untrusted" || all.get(a.module)?.def.isolation === "untrusted") {
       if (a.roles.length) fail(`${key}: an untrusted module's agent may not have roles`);
