@@ -240,8 +240,8 @@ describe("merge queue: a run through", () => {
     await advance(q, { github: gh, now: at(0) });
     const step = await advance(q, { github: gh, now: at(2) });
     assert.equal(step.done, "stopped");
-    assert.match(step.say[0], /CI failed on `master` after merging #1 \(its failing checks are on GitHub\)/);
-    assert.doesNotMatch(step.say[0], /buildkite/, "check names are repo-controlled: never in the runner's words");
+    assert.match(step.say[0], /CI failed on `master` after merging #1: buildkite\/deploy failed/);
+    assert.match(step.say[0], /its failing checks are on GitHub/);
     assert.match(step.say[0], /continue from #2/);
     assert.equal(gh.writes.length, 1);
     assert.deepEqual(await advance(q, { github: gh, now: at(30) }), { queue: q, say: [] }); // stays stopped
@@ -261,14 +261,72 @@ describe("merge queue: a run through", () => {
     assert.match(step.say[0], /Merged https:\/\/github.com\/o\/r\/pull\/1 \(1 of 2\) and `master` is green/);
   });
 
+  it("reports a cancelled run on the merge commit as cancelled, never as a CI failure", async () => {
+    // Nothing newer on master to judge, so the merge commit's own rollup stands: it is red only because its checks were
+    // cancelled (someone cancelled the run, or a push superseded it and this read raced the tip), and a cancelled check
+    // never judged the commit. The receipt says cancelled; it must not announce a red base.
+    const gh = fakeGithub({ 1: pr(1), 2: pr(2) }, { merge1: cancelled });
+    const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 0, now: at(0) });
+    await advance(q, { github: gh, now: at(0) });
+    const step = await advance(q, { github: gh, now: at(2) });
+    assert.equal(step.done, "stopped");
+    assert.match(step.say[0], /CI was cancelled on `master` after merging #1/);
+    assert.match(step.say[0], /cancelled, so it never tested that commit/);
+    assert.doesNotMatch(step.say[0], /CI failed/, "a cancelled run is not a red base");
+  });
+
+  it("reports a cancelled run whose only red check is the aggregate gate its cancelled jobs failed", async () => {
+    // The shape after #152: ci-required fails because its dependencies were cancelled, and no job failed. The gate's own
+    // failure is derived from a cancelled sibling, so there is no failed check to name and the base is not red.
+    const gateOnly = { state: "FAILURE", contexts: { nodes: [
+      { __typename: "CheckRun", name: "supply-chain", status: "COMPLETED", conclusion: "SUCCESS" },
+      { __typename: "CheckRun", name: "packages", status: "COMPLETED", conclusion: "CANCELLED" },
+      { __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "FAILURE" },
+    ] } };
+    const gh = fakeGithub({ 1: pr(1), 2: pr(2) }, { merge1: gateOnly });
+    const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 0, now: at(0) });
+    await advance(q, { github: gh, now: at(0) });
+    const step = await advance(q, { github: gh, now: at(2) });
+    assert.equal(step.done, "stopped");
+    assert.match(step.say[0], /CI was cancelled on `master` after merging #1/);
+    assert.doesNotMatch(step.say[0], /CI failed/);
+  });
+
+  it("a genuinely failed check is still reported, naming the check", async () => {
+    // A cancelled job beside a real failure does not hide it: the failure is what stopped the base, and it is named.
+    const mixed = { state: "FAILURE", contexts: { nodes: [
+      { __typename: "CheckRun", name: "supply-chain", status: "COMPLETED", conclusion: "CANCELLED" },
+      { __typename: "CheckRun", name: "runner-unit", status: "COMPLETED", conclusion: "SUCCESS" },
+      { __typename: "CheckRun", name: "packages", status: "COMPLETED", conclusion: "FAILURE" },
+      { __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "FAILURE" },
+    ] } };
+    const gh = fakeGithub({ 1: pr(1), 2: pr(2) }, { merge1: mixed });
+    const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 0, now: at(0) });
+    await advance(q, { github: gh, now: at(0) });
+    const step = await advance(q, { github: gh, now: at(2) });
+    assert.equal(step.done, "stopped");
+    assert.match(step.say[0], /CI failed on `master` after merging #1: packages failed/);
+    assert.match(step.say[0], /its failing checks are on GitHub/);
+    assert.doesNotMatch(step.say[0], /cancelled/);
+  });
+
+  it("a green run on the merge commit says the base is green, with no failure wording", async () => {
+    const gh = fakeGithub({ 1: pr(1), 2: pr(2) });
+    const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 15, now: at(0) });
+    await advance(q, { github: gh, now: at(0) });
+    const step = await advance(q, { github: gh, now: at(6) });
+    assert.equal(step.done, undefined);
+    assert.match(step.say[0], /`master` is green/);
+    assert.doesNotMatch(step.say.join("\n"), /CI failed|cancelled/);
+  });
+
   it("still stops on a real failure on the merge commit when the base moved on", async () => {
     const gh = fakeGithub({ 1: pr(1), 2: pr(2) }, { merge1: red, tip: green }, { master: { tip: "tip" } });
     const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 0, now: at(0) });
     await advance(q, { github: gh, now: at(0) });
     const step = await advance(q, { github: gh, now: at(2) });
     assert.equal(step.done, "stopped");
-    assert.match(step.say[0], /CI failed on `master` after merging #1 \(its failing checks are on GitHub\)/);
-    assert.doesNotMatch(step.say[0], /buildkite/, "check names are repo-controlled: never in the runner's words");
+    assert.match(step.say[0], /CI failed on `master` after merging #1: buildkite\/deploy failed/);
   });
 
   it("skips a PR someone else merged and stops on one that isn't approved", async () => {

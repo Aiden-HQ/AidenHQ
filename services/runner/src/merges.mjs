@@ -227,10 +227,30 @@ export function skippedImageScan(pr) {
 
 const FAILING = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 
-/** Names of the checks that failed in a status rollup (advisory ones left out). */
-export function failedChecks(rollup) {
-  return (rollup?.contexts?.nodes ?? []).filter((n) => !advisory(n) && FAILING.has(n.conclusion ?? n.state)).map((n) => n.name ?? n.context);
+const checkLabel = (n) => n.name ?? n.context;
+
+/**
+ * A red rollup split into { failed, cancelled } check nodes (advisory ones left out). A check that ended CANCELLED never
+ * judged the commit — a newer push superseded its run — so it is unknown, not failed. The aggregate gate is the one check
+ * whose FAILURE is derived rather than observed: its step only asks whether the jobs it lists passed, so one cancelled
+ * dependency makes it fail while no check failed (ci.yml's `ci-required`). The real failure is the job behind it, so the
+ * gate is named only when it is the only red check: a cancelled run then has no failed check and is not a red base.
+ */
+export function redChecks(rollup) {
+  const nodes = (rollup?.contexts?.nodes ?? []).filter((n) => !advisory(n));
+  const cancelled = nodes.filter((n) => (n.conclusion ?? n.state) === "CANCELLED");
+  const red = nodes.filter((n) => FAILING.has(n.conclusion ?? n.state) && (n.conclusion ?? n.state) !== "CANCELLED");
+  const failed = red.filter((n) => checkLabel(n) !== GATE_CHECK);
+  // Only the gate is red: its own failure stands unless a cancelled run is what it saw, and then there is none to name.
+  if (!failed.length && !cancelled.length) failed.push(...red.filter((n) => checkLabel(n) === GATE_CHECK));
+  return { failed, cancelled };
 }
+
+/** A red rollup that no check failed on: it is red only because checks were cancelled, so it never judged the commit. */
+export const cancelledRun = (rollup) => {
+  const red = redChecks(rollup);
+  return red.cancelled.length > 0 && red.failed.length === 0;
+};
 
 /** Conclusions that say a check never judged the commit: its job was cancelled, ran out of time or never started. */
 const INFRA = new Set(["CANCELLED", "TIMED_OUT", "STARTUP_FAILURE"]);
@@ -402,15 +422,6 @@ async function retryInfra(github, repo, number, pr) {
   return { key: "rerun", limit: RERUN_SHOWS_MINUTES };
 }
 const RERUN_WAIT = { rerun: "a check that failed for infrastructure reasons is being re-run once", running: "checks are running (one that failed for infrastructure reasons is re-run once they're done)" };
-
-/**
- * The rollup is red only because its runs were cancelled: a newer push superseded them and GitHub ended them with no
- * result. That is unknown, not failed, so it says nothing about the commit.
- */
-function cancelledOnly(rollup) {
-  const bad = (rollup?.contexts?.nodes ?? []).filter((n) => !advisory(n) && FAILING.has(n.conclusion ?? n.state));
-  return bad.length > 0 && bad.every((n) => (n.conclusion ?? n.state) === "CANCELLED");
-}
 
 /**
  * The named checks in a status rollup, advisory ones left out, each { name, ok, pending } (tiering and reviewer-approved merges need at least one,
@@ -605,19 +616,28 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     let head = last.sha;
     let rollup = (await github.commit(last.repo, head))?.statusCheckRollup;
     let ci = ciState(rollup);
+    let cancelled = ci === "red" && cancelledRun(rollup);
     // A newer push to the base supersedes the merge commit's run and cancels it: the merge commit has no result, but
     // the base's current tip includes it, so judge that instead of calling the base red.
-    if (ci === "red" && cancelledOnly(rollup)) {
+    if (cancelled) {
       const tip = (await github.baseStatus(last.repo, last.base)).tip;
       if (tip && tip !== head) {
         head = tip;
         rollup = (await github.commit(last.repo, head))?.statusCheckRollup;
         ci = ciState(rollup);
+        cancelled = ci === "red" && cancelledRun(rollup);
       }
     }
     // Checks show up a little after the merge: no checks yet is only green after a short settle.
     const settled = t - Date.parse(last.mergedAt) >= settleMinutes * 60_000;
-    if (ci === "red") return stop(`CI failed on \`${last.base}\` after merging #${last.number} (its failing checks are on GitHub)`);
+    // Red means a check failed. A cancelled run never judged the commit (a newer push superseded it, or someone cancelled
+    // it), so it is reported as cancelled, never as a red base: the gate failing only because its dependencies were
+    // cancelled is not a check failure either.
+    if (cancelled) return stop(`CI was cancelled on \`${last.base}\` after merging #${last.number}: the run on \`${head.slice(0, 12)}\` was cancelled, so it never tested that commit and says nothing about \`${last.base}\``);
+    if (ci === "red") {
+      const failed = redChecks(rollup).failed.map((n) => checkName(checkLabel(n)));
+      return stop(`CI failed on \`${last.base}\` after merging #${last.number}: ${failed.join(", ")} failed (its failing checks are on GitHub)`);
+    }
     // A tip we moved to has no grace: without a check of its own it is still starting up.
     if (ci === "pending" || !settled || (head !== last.sha && !namedChecks(rollup).length)) {
       return waiting(`ci:${head}`, `CI is running on \`${last.base}\` after #${last.number}${runningChecks(rollup)}`);
