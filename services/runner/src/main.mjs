@@ -18,7 +18,7 @@ import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOr
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
-import { isTransient, retryTransient } from "./retry.ts";
+import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine, coversHead } from "./prompt.ts";
@@ -3635,6 +3635,7 @@ async function endTurn(issue, tools) {
  */
 async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep }) {
   let result;
+  let reporting = false;
   try {
     result = await watch;
     keep?.();
@@ -3665,6 +3666,7 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
       return;
     }
 
+    reporting = true; // from here a transient failure may run the turn again (retryTurn); a stop or a closed task never gets here
     const after = await workspaceRepos(workspace);
     // Agents commit as they go: the run changed something if any branch moved or appeared.
     const committedNow = (await branchTips(workspace)) !== tipsBefore;
@@ -3707,12 +3709,13 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
       ].filter(Boolean).join("\n\n");
       await retryTransient(() => pc.finishStatus(issue.id, "in_review", failure));
     }
+    state.set(`endretry:${issue.id}`, "0");
     log("job finished", { issue: issue.identifier, code: result.code, timedOut: result.timedOut, finished: outcome.finished, branches: rows.length });
   } catch (err) {
     state.finishJob(jobId, "failed", String(err).slice(0, 500));
     // Still unreachable after the retries: the task would sit in progress with no job. The poll runs the turn again
     // (same session and workspace) once Paperclip answers, and the agent reports it.
-    if (isTransient(err)) retryTurn(issue, "its last run ended, but the runner couldn't report it (the network failed)");
+    if (shouldRetryTurn({ reporting, cancelled: Boolean(result?.cancelled), err, retries: Number(state.get(`endretry:${issue.id}`) || 0) })) retryTurn(issue, "its last run ended, but the runner couldn't report it (the network failed)");
     else await reportError(issue, err);
   } finally {
     if (!result?.detached) {
@@ -4474,6 +4477,7 @@ function adoptRuns() {
 
 /** A turn whose end couldn't be reported: kept (it survives a restart) for the next poll to run again. */
 function retryTurn(issue, why) {
+  state.set(`endretry:${issue.id}`, String(Number(state.get(`endretry:${issue.id}`) || 0) + 1));
   log("turn kept to run again", { issue: issue.identifier, why });
   state.set(RESUME_KEY, JSON.stringify([...JSON.parse(state.get(RESUME_KEY) || "[]"), { issueId: issue.id, instructions: running.get(issue.id)?.request ?? "", why }]));
 }
@@ -4488,6 +4492,8 @@ async function resumeInterrupted() {
       continue;
     }
     if (!issue?.identifier || ["done", "cancelled"].includes(issue.status)) continue;
+    // A kept turn is dropped if the task's latest job isn't the failed one: the owner stopped it, or newer work ran since.
+    if (why.includes("couldn't report") && state.lastJob(issueId)?.status !== "failed") continue;
     const waiting = queue.find((j) => j.issue.id === issueId);
     if (waiting) {
       waiting.instructions = `${waiting.instructions}\n\n${instructions}`;

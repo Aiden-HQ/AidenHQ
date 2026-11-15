@@ -15,3 +15,10 @@ export async function retryTransient<T>(fn: () => Promise<T>, delaysMs: number[]
     }
   }
 }
+
+export const MAX_TURN_RETRIES = 2;
+
+/** Whether a failed turn end runs the turn again: only when its report step hit a transient error, the owner didn't stop it, and it hasn't already been retried twice. */
+export function shouldRetryTurn({ reporting, cancelled, err, retries }: { reporting: boolean; cancelled: boolean; err: unknown; retries: number }): boolean {
+  return reporting && !cancelled && isTransient(err) && retries < MAX_TURN_RETRIES;
+}

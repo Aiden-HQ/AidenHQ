@@ -19,3 +19,15 @@ describe("retryTransient", () => {
     assert.ok(isTransient(new Error("Paperclip GET /x → 503: unavailable")));
   });
 });
+
+describe("shouldRetryTurn", () => {
+  it("never re-runs a stopped turn or a failure outside the report step, and stops after two retries", async () => {
+    const { shouldRetryTurn } = await import("../src/retry.ts");
+    const err = new TypeError("fetch failed");
+    const base = { reporting: true, cancelled: false, err, retries: 0 };
+    assert.ok(shouldRetryTurn(base));
+    assert.ok(!shouldRetryTurn({ ...base, cancelled: true }), "a user stop");
+    assert.ok(!shouldRetryTurn({ ...base, reporting: false }), "before the report step");
+    assert.ok(!shouldRetryTurn({ ...base, retries: 2 }), "after two retries");
+  });
+});
