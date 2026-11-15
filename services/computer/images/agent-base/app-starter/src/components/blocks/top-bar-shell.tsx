@@ -1,6 +1,7 @@
 import type { ReactNode } from "react"
 import type { LucideIcon } from "lucide-react"
 import { PoweredBy } from "@/components/powered-by"
+import { Link } from "@/lib/navigation"
 import { cn } from "@/lib/utils"
 
 // An optional app shell for an app with a few destinations: a slim top bar (logo and name, links, actions) over the
@@ -34,17 +35,17 @@ export function TopBarShell({
         className={cn("sticky top-0 z-10", brand ? "bg-sidebar text-sidebar-foreground" : "border-b bg-background/95 backdrop-blur")}
       >
         <div className="mx-auto flex h-14 max-w-6xl items-center gap-4 px-4 md:px-8">
-          <a
+          <Link
             href="/"
             className={cn("flex shrink-0 items-center gap-2 font-semibold tracking-tight", brand && "text-sidebar-accent-foreground")}
             aria-label={appName}
           >
             {logo}
             <span className="max-sm:sr-only">{appName}</span>
-          </a>
+          </Link>
           <nav aria-label="Primary" className="flex min-w-0 items-center gap-1 overflow-x-auto">
             {nav.map((n) => (
-              <a
+              <Link
                 key={n.href}
                 href={n.href}
                 aria-current={n.href === path ? "page" : undefined}
@@ -57,7 +58,7 @@ export function TopBarShell({
               >
                 {n.icon && <n.icon aria-hidden />}
                 {n.label}
-              </a>
+              </Link>
             ))}
           </nav>
           {actions && <div className="ml-auto flex items-center gap-1">{actions}</div>}

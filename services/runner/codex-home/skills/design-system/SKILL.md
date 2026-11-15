@@ -57,6 +57,10 @@ passing (it builds, serves and checks the CSP), and an existing app's server mus
 - With a mockup, screenshot your pages at its width and mode (`--width 1280`, the width its screenshots use) and open
   each one beside the mockup's: fix every difference a person would see at a glance that isn't the real data (greyer,
   flatter, sparser, smaller or bigger type, missing hover or detail), and say in your report what still differs and why.
+- Every page renders at its own URL on a link click, Back/Forward and a reload: routes and links use the starter's
+  navigation (`src/lib/navigation.tsx`: `useLocation`, `Link`, `navigate`, `useUrlState`) and every route is in the
+  server's `PAGES`. Your click-through clicks each nav link you added or changed and shots the page it opens, then
+  `goto`s that path and shots it again (the reload): both show the same page.
 - Go through the checklist's "Self-review" by reading your code: the mockup matched when there is one, every data
   view's empty, loading and error states, details that reopen from the URL, plain-word copy, phone layout (`max-md:`/`md:` classes, nothing
   wider than the screen).

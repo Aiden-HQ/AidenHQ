@@ -16,6 +16,7 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 import { PoweredBy } from "@/components/powered-by"
+import { Link } from "@/lib/navigation"
 import { cn } from "@/lib/utils"
 
 // An optional app shell for apps with many destinations or nested groups: a
@@ -49,10 +50,10 @@ export function SidebarShell({
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton size="lg" asChild>
-                <a href="/">
+                <Link href="/">
                   {logo}
                   <span className="truncate font-semibold tracking-tight">{appName}</span>
-                </a>
+                </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
@@ -64,10 +65,10 @@ export function SidebarShell({
                 {nav.map((n) => (
                   <SidebarMenuItem key={n.href}>
                     <SidebarMenuButton asChild isActive={n.href === path} tooltip={n.label}>
-                      <a href={n.href} aria-current={n.href === path ? "page" : undefined}>
+                      <Link href={n.href} aria-current={n.href === path ? "page" : undefined}>
                         <n.icon />
                         <span>{n.label}</span>
-                      </a>
+                      </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))}
@@ -81,9 +82,9 @@ export function SidebarShell({
         <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur lg:px-6">
           <SidebarTrigger className="-ml-1 max-md:hidden" />
           <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-4 max-md:hidden" />
-          <a href="/" className="flex items-center gap-2 md:hidden" aria-label={appName}>
+          <Link href="/" className="flex items-center gap-2 md:hidden" aria-label={appName}>
             {logo}
-          </a>
+          </Link>
           <span className="text-sm font-medium">{title}</span>
           <div className="ml-auto">{actions}</div>
         </header>
@@ -95,7 +96,7 @@ export function SidebarShell({
         className="fixed inset-x-0 bottom-0 z-20 flex h-16 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
       >
         {nav.slice(0, 5).map((n) => (
-          <a
+          <Link
             key={n.href}
             href={n.href}
             aria-current={n.href === path ? "page" : undefined}
@@ -106,7 +107,7 @@ export function SidebarShell({
           >
             <n.icon className="size-5" aria-hidden />
             {n.label}
-          </a>
+          </Link>
         ))}
       </nav>
     </SidebarProvider>

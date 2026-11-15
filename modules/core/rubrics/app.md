@@ -6,3 +6,5 @@ Used when a delegation names an `app` deliverable without its own rubric (see pr
 - The app is healthy, with no open incident.
 - The app's recent deploys show the change's commit with status healthy.
 - The behaviour the task asked for is what the change does (the diff or the agent's evidence shows it).
+- Every nav link's page renders at its own path: the capture of each path named here shows that page, not another
+  page or a not-found one.

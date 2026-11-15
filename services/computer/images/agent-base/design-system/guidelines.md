@@ -27,6 +27,9 @@ density, depth, motion) is the designer's, made for each app's people and job. W
 - **Details live in the URL:** opening an item shows it in a `Sheet` (or a page for long detail) whose state is in the
   URL (`?item=…`, added with `push`). Loading that URL opens the same item, so a link can be shared and a refresh keeps
   it; Back closes it, and the list keeps its scroll and filters.
+- **Every page has its own URL:** a link click, Back and Forward, and a reload of that URL all show the same page,
+  with the state the URL carries (`?item=`, filters). The starter's navigation (`src/lib/navigation.tsx`: `Link`,
+  `useLocation`, `useUrlState`) does this; the server answers 200 for every route.
 - **Empty, loading and error states** for every data view, written for that view, where the content would be. Empty:
   what goes here and the one action that fills it (after filtering: say that nothing matches and offer Clear filters).
   Loading: a skeleton shaped like the content (`role="status"`). Error: what went wrong in plain words, what was kept,

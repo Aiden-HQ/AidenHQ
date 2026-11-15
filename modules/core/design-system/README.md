@@ -50,7 +50,7 @@ gate check and migrations stay as they are: only the UI moves.
    (`script-src 'self'; style-src 'self' 'nonce-…'`, no `'unsafe-inline'`), hashed assets from `/assets/`, and the same
    HTML for every client route. A multi-stage Dockerfile builds the client.
 3. **Rebuild one page at a time,** most-used first, following its mockup when it has one: navigation that fits the
-   number of destinations, filters in the URL (`useUrlState`) with the same parameter names as before so old links keep
+   number of destinations, routes and links through the starter's navigation (`src/lib/navigation.tsx`), filters in the URL (`useUrlState`) with the same parameter names as before so old links keep
    working, details in a `Sheet` at `?item=`, and every state. Everything people could see and do before (every lane,
    group and view) stays unless the page's mockup changes it. Until a page moves, its old server-rendered route keeps working;
    switch routes over as they land.
