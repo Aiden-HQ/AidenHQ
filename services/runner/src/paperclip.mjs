@@ -182,6 +182,23 @@ export class Paperclip {
     if (comment) body.comment = `${comment}\n\n${RUNNER_MARKER}`;
     return this.api("PATCH", `/api/issues/${encodeURIComponent(issueId)}`, body);
   }
+
+  /**
+   * setStatus for the end of a job. Another agent may have set the task blocked while the run finished; Paperclip then
+   * refuses the status change (422 "blocked by unresolved blockers"). The job's outcome stands: post the receipt as a plain
+   * comment instead. Returns true when the status was refused for that reason; anything else throws.
+   */
+  async finishStatus(issueId, status, comment) {
+    try {
+      await this.setStatus(issueId, status, comment);
+      return false;
+    } catch (err) {
+      if (!/→ 422:.*blocked by unresolved blockers/i.test(String(err.message))) throw err;
+      console.log(JSON.stringify({ t: new Date().toISOString(), msg: "final status refused: task is blocked", issue: issueId, status }));
+      if (comment) await this.comment(issueId, comment);
+      return true;
+    }
+  }
 }
 
 const ORIGIN_MAX = 24;

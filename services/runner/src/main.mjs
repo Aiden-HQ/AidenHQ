@@ -3083,13 +3083,13 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     if (outcome.finished) {
       // The agent's reply, in its own words. None: a comment that needed no answer ("thanks").
       const reply = [outcome.silent ? "" : stripCommitLine(result.lastMessage), primerNote, sharedNote, ...(footer.length ? ["---", ...footer] : [])].filter(Boolean).join("\n\n");
-      await pc.setStatus(issue.id, "in_review", reply.trim() ? `${REPLY_MARKER}${reply}` : undefined);
+      await pc.finishStatus(issue.id, "in_review", reply.trim() ? `${REPLY_MARKER}${reply}` : undefined);
       // A graded deliverable's turn ended: the grader looks at it (a task without a rubric passes untouched).
       await mayClose(issue.id, "finish_turn");
     } else {
       // Failures also go to review (Paperclip refuses "blocked" without a blocker); the runner says what failed.
       const report = stripCommitLine(result.lastMessage);
-      await pc.setStatus(issue.id, "in_review", [
+      await pc.finishStatus(issue.id, "in_review", [
         outcome.headline,
         `Last lines of the log:\n\`\`\`\n${logTail(logPath)}\n\`\`\``,
         report ? `The agent's last message:\n\n> ${report.slice(0, 1500).replace(/\n/g, "\n> ")}` : "",
