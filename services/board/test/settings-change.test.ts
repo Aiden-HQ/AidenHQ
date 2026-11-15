@@ -24,6 +24,8 @@ writeFileSync(
 writeFileSync(join(dir, "modules.json"), JSON.stringify([{ name: "glean", enabled: true, settings: { glean_mcp_url: { default: "", type: "url", host: "*.glean.com" } } }, { name: "core", enabled: true, settings: { grading: { default: "on", values: ["on", "off"] } } }]));
 process.env.BOARD_PAPERCLIP_CONFIG = join(dir, "paperclip.yaml");
 process.env.BOARD_MODULES_FILE = join(dir, "modules.json");
+writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: { pe: { key: "fleet-engineer", roles: ["platform-engineer"], tools: {} } } }));
+process.env.AIDENHQ_GRANTS_FILE = join(dir, "grants.json");
 
 const created: Record<string, any>[] = [];
 const pc = {
