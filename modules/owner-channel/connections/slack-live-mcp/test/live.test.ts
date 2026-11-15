@@ -17,7 +17,7 @@ describe("slack-live-mcp", () => {
     expect(store.takePending(10)).toHaveLength(1);
   });
 
-  it("urgent DMs: one per thread per 60 min unless the text re-escalates", async () => {
+  it("urgent DMs: one per thread per 60 min unless escalate is passed", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
     vi.stubGlobal("fetch", fetchMock);
     const store = openStore(":memory:");
@@ -25,7 +25,7 @@ describe("slack-live-mcp", () => {
     const thread = { priority: "urgent" as const, channel_id: "C1", ts: "1.1", thread_ts: "1.0" };
     expect(await notifyOwner(store, cfg, { ...thread, text: "[C1] db is slow" })).toEqual({ sent: true });
     expect(await notifyOwner(store, cfg, { ...thread, text: "[C1] db is slow again" })).toEqual({ sent: false, reason: "cooldown" });
-    expect(await notifyOwner(store, cfg, { ...thread, text: "[C1] prod down" })).toEqual({ sent: true });
+    expect(await notifyOwner(store, cfg, { ...thread, text: "[C1] prod down", escalate: "customer impact" })).toEqual({ sent: true });
     expect(fetchMock.mock.calls.filter((c) => String((c as unknown[])[0]).includes("chat.postMessage"))).toHaveLength(2);
   });
 });
