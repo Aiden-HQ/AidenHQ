@@ -3,19 +3,15 @@
 import { readFileSync } from "node:fs";
 import { definePlugin, runWorker } from "/app/packages/plugins/sdk/dist/index.js";
 import { leftInProgress } from "./status.js";
+import { execute, request as call } from "./client.js";
 
 const TOKEN = readFileSync(process.env.AIDENHQ_LAUNCHER_TOKEN_FILE || "/run/secrets/computer_launcher_token", "utf8").trim();
 const cfg = (raw = {}) => ({
   timeoutMs: Number.isFinite(raw.timeoutMs) ? raw.timeoutMs : 3_600_000,
   launcherUrl: raw.launcherUrl || "http://10.231.0.1:8199",
 });
-async function call(c, route, body) {
-  const r = await fetch(`${c.launcherUrl}/${route}`, { method: "POST", headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const j = await r.json().catch(() => ({}));
-  // /exec answers 200 at once and reports a failure in the body (see the launcher's answerSlowly).
-  if (!r.ok || j.error) throw new Error(`computer launcher ${route}: ${j.status ?? r.status} ${j.error ?? ""}`.trim());
-  return j;
-}
+// A call's target: the config plus the launcher's key (never in the config Paperclip stores).
+const to = (raw) => ({ ...cfg(raw), token: TOKEN });
 const meta = (container, extra = {}) => ({ provider: "aidenhq-computer", remoteCwd: "/workspace", container, ...extra });
 
 let ctx;
@@ -52,14 +48,14 @@ const plugin = definePlugin({
   },
   // Always a new box: Paperclip itself resumes a warm one for the same agent and task (its lease matching), never across tasks.
   async onEnvironmentAcquireLease(p) {
-    const r = await call(cfg(p.config), "acquire", { agentId: p.agentId });
+    const r = await call(to(p.config), "acquire", { agentId: p.agentId });
     return { providerLeaseId: r.container, metadata: meta(r.container, { agentId: p.agentId, image: r.image }) };
   },
   async onEnvironmentResumeLease(p) {
     // A box reaped (idle), evicted (full) or destroyed (Stop) since the last run: report it expired, so Paperclip drops the
     // lease and acquires a fresh box. Throwing instead would fail the run.
     try {
-      await call(cfg(p.config), "resume", { container: p.providerLeaseId });
+      await call(to(p.config), "resume", { container: p.providerLeaseId });
     } catch (e) {
       if (/: 404 /.test(e.message)) return { providerLeaseId: null, metadata: { expired: true } };
       throw e;
@@ -69,7 +65,7 @@ const plugin = definePlugin({
   // End of a run: the run token is revoked (the box stays warm for this task). A Stop destroys the box. Then the status check.
   async onEnvironmentReleaseLease(p) {
     if (!p.providerLeaseId) return;
-    const c = cfg(p.config);
+    const c = to(p.config);
     const destroy = Boolean(p.cancelActiveWork) || p.config?.reuseLease === false;
     await call(c, "release", { container: p.providerLeaseId, destroy });
     if (!p.cancelActiveWork) await statusCheck(p).catch((e) => ctx?.logger.warn(`status check failed: ${e.message}`));
@@ -78,21 +74,21 @@ const plugin = definePlugin({
   },
   async onEnvironmentDestroyLease(p) {
     if (!p.providerLeaseId) return;
-    await call(cfg(p.config), "release", { container: p.providerLeaseId, destroy: true });
+    await call(to(p.config), "release", { container: p.providerLeaseId, destroy: true });
     return { providerLeaseId: p.providerLeaseId, state: "destroyed" };
   },
   async onEnvironmentInspectLease(p) {
-    const s = await call(cfg(p.config), "inspect", { container: p.providerLeaseId });
+    const s = await call(to(p.config), "inspect", { container: p.providerLeaseId });
     return { providerLeaseId: p.providerLeaseId, state: s.state === "running" ? "active" : s.state === "missing" ? "destroyed" : s.state === "exited" ? "stopped" : "unknown" };
   },
   async onEnvironmentRealizeWorkspace() {
     return { cwd: "/workspace", metadata: { provider: "aidenhq-computer", remoteCwd: "/workspace" } };
   },
   async onEnvironmentExecute(p) {
-    const c = cfg(p.config);
+    const c = to(p.config);
     const container = p.lease?.providerLeaseId ?? p.providerLeaseId;
-    if (p.env?.PAPERCLIP_RUN_ID) runs.set(p.env.PAPERCLIP_RUN_ID, { container, launcherUrl: c.launcherUrl });
-    return await call(c, "exec", { container, command: p.command, args: p.args ?? [], cwd: p.cwd, env: p.env ?? {}, stdin: p.stdin ?? null, timeoutMs: p.timeoutMs ?? c.timeoutMs });
+    if (p.env?.PAPERCLIP_RUN_ID) runs.set(p.env.PAPERCLIP_RUN_ID, { ...c, container });
+    return await execute(c, { container, command: p.command, args: p.args ?? [], cwd: p.cwd, env: p.env ?? {}, stdin: p.stdin ?? null, timeoutMs: p.timeoutMs ?? c.timeoutMs });
   },
 });
 

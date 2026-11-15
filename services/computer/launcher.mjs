@@ -4,7 +4,8 @@
 // Control API, on the backplane gateway (the plugin in paperclip calls it; bearer = secret computer_launcher_token):
 //   POST /acquire {agentId}   a fresh gVisor box for this agent's run; image, limits and mounts from config, never the caller
 //   POST /resume {container}  the same box for the next run of the same task (Paperclip scopes reuse); a new run token
-//   POST /exec {container, command, args, cwd, env, stdin, timeoutMs}
+//   POST /exec {container, command, args, cwd, env, stdin, timeoutMs, execId?}   with an execId (a long exec) it runs detached in
+//                             the box and outlives a launcher restart; POST /attach {container, execId, timeoutMs} collects it
 //   POST /release {container, destroy}   the run ended: its token is revoked (destroy: the box goes too)
 //   POST /inspect {container}
 //   POST /progress {agentId}  the tail of that agent's Codex session log from its live box → {lines} (the board's live view)
@@ -36,7 +37,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, builtImage, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, builtImage, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -190,6 +191,19 @@ async function makeRoom() {
     await new Promise((r) => setTimeout(r, 1000));
   }
 }
+/** A detached exec's result: waits for its exit code in the box, then its output. */
+async function collect(container, dir, timeoutMs) {
+  const r = await docker(["exec", container, "sh", "-c", EXEC_WAIT_SCRIPT, "sh", dir], { timeoutMs });
+  if (r.exitCode === 97 && r.stderr.includes(EXEC_MISSING)) throw fail(404, `no exec ${path.basename(dir)} in ${container}: it never started`);
+  return unlessGone(container, r);
+}
+
+/** A failed exec in a box that is no longer running says so (the run ends with that reason), not as a bare exit code. */
+async function unlessGone(container, r) {
+  if (r.exitCode === 0) return r;
+  if (!boxes.has(container) || ["missing", "exited", "dead", "removing"].includes(await jobState(container))) throw fail(404, `computer gone: ${container} went away during the command (destroyed, stopped or out of memory)`);
+  return r;
+}
 const newName = () => CFG.prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 const control = {
@@ -219,10 +233,11 @@ const control = {
     await writeRunToken(container, token);
     return { container };
   },
-  async exec({ container, command, args = [], cwd, env: e = {}, stdin, timeoutMs }) {
+  async exec({ container, command, args = [], cwd, env: e = {}, stdin, timeoutMs, execId }) {
     const b = boxes.get(container);
     if (!ours(container) || !b) throw fail(404, `computer gone: ${container}`);
     pluginBox(container);
+    if (execId != null && !EXEC_ID.test(String(execId))) throw fail(400, "bad execId");
     const token = tokens.current(container);
     if (token) await writeRunToken(container, token); // a launcher restart, or a box from before this code, still gets it
     const cred = token && runCredential(e);
@@ -236,14 +251,37 @@ const control = {
     const dir = mkdtempSync(path.join(os.tmpdir(), "aidenhq-exec-"));
     const f = path.join(dir, "env");
     writeFileSync(f, Object.entries(xenv).filter(([, v]) => !v.includes("\n")).map(([k, v]) => `${k}=${v}`).join("\n") + "\n", { mode: 0o600 });
+    const w = cwd ? ["-w", cwd] : [];
     b.busy++;
     b.lastUsed = Date.now();
     try {
-      return await docker(["exec", "-i", ...(cwd ? ["-w", cwd] : []), "--env-file", f, container, cmd, ...cargs], { stdin, timeoutMs });
+      if (!execId) return await unlessGone(container, await docker(["exec", "-i", ...w, "--env-file", f, container, cmd, ...cargs], { stdin, timeoutMs }));
+      // A long one runs detached (lib.mjs EXEC_RUN_SCRIPT): a launcher restart leaves it running; the plugin collects it (/attach).
+      const inBox = `${EXEC_ROOT}/${execId}`;
+      const prep = await docker(["exec", "-i", container, "sh", "-c", EXEC_PREP_SCRIPT, "sh", inBox], { stdin: stdin ?? "" });
+      if (prep.exitCode !== 0) return await unlessGone(container, prep);
+      const start = await docker(["exec", "-d", ...w, "--env-file", f, container, "sh", "-c", EXEC_RUN_SCRIPT, "sh", inBox, cmd, ...cargs]);
+      if (start.exitCode !== 0) return await unlessGone(container, start);
+      return await collect(container, inBox, timeoutMs);
     } finally {
       b.busy--;
       b.lastUsed = Date.now();
       rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  /** A long exec's result, from a launcher that wasn't there when it started (a restart mid-turn): the plugin asks again. */
+  async attach({ container, execId, timeoutMs }) {
+    const b = boxes.get(container);
+    if (!ours(container) || !b) throw fail(404, `computer gone: ${container}`);
+    pluginBox(container);
+    if (!EXEC_ID.test(String(execId))) throw fail(400, "execId required");
+    b.busy++;
+    b.lastUsed = Date.now();
+    try {
+      return await collect(container, `${EXEC_ROOT}/${execId}`, timeoutMs);
+    } finally {
+      b.busy--;
+      b.lastUsed = Date.now();
     }
   },
   async release({ container, destroy: d }) {
@@ -423,7 +461,7 @@ const controlServer = http.createServer((req, res) => {
     const fn = JOB_ROUTES.includes(req.url) ? runnerControl[req.url] : req.method === "POST" && Object.hasOwn(control, req.url.slice(1)) ? control[req.url.slice(1)] : null;
     if (!fn) return send(res, 404, { error: "no such route" });
     const t0 = Date.now();
-    if (req.url === "/exec") {
+    if (req.url === "/exec" || req.url === "/attach") {
       // The agent's whole turn: answer at once and keep the line busy (see answerSlowly).
       let p;
       try { p = JSON.parse(body || "{}"); } catch { return send(res, 400, { error: "invalid JSON" }); }
