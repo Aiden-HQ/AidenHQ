@@ -123,18 +123,18 @@ apt-get -y upgrade
 
 # The browser for Engineer jobs (services/runner/bin/aidenhq-browse: screenshots and click-throughs of the app they build):
 # AidenHQ's one browser, as in the browser image (services/computer/images/browser): agent-browser 0.41.2 and Chrome for
-# Testing 157.0.8103.50 (2026-11-07), checksummed, root-owned under /opt; the runner binds it read-only into every job. Move
+# Testing 157.0.8103.78 (2026-11-11, critical CVE fixes; supply-chain exception), checksummed, root-owned under /opt; the runner binds it read-only into every job. Move
 # both pins with the image's. Reinstalled only when a pin moves.
 browser=/opt/aidenhq/browser
 if [ "$(jq -r .version "$browser/lib/node_modules/agent-browser/package.json" 2>/dev/null)" != 0.41.2 ] \
-  || [ "$(cat "$browser/chrome/VERSION" 2>/dev/null)" != 157.0.8103.50 ]; then
+  || [ "$(cat "$browser/chrome/VERSION" 2>/dev/null)" != 157.0.8103.78 ]; then
   rm -rf "$browser"
   npm i -g --prefix="$browser" --ignore-scripts --no-audit --no-fund agent-browser@0.41.2
   chmod a+x "$browser/lib/node_modules/agent-browser/bin/agent-browser-linux-x64" # what its install script would do
-  curl -fsSLo /tmp/chrome.zip https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.50/linux64/chrome-linux64.zip
-  echo "d17167bc092eb495a3b768c7467f27e35f625aa03834233a1663af67dcb668c9  /tmp/chrome.zip" | sha256sum -c -
+  curl -fsSLo /tmp/chrome.zip https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.78/linux64/chrome-linux64.zip
+  echo "9223832977a13db3646201b1341c1f9cf08afa3ceae92540116d7b0c062364fb  /tmp/chrome.zip" | sha256sum -c -
   unzip -q /tmp/chrome.zip -d "$browser" && mv "$browser/chrome-linux64" "$browser/chrome" && rm /tmp/chrome.zip
-  echo 157.0.8103.50 >"$browser/chrome/VERSION"
+  echo 157.0.8103.78 >"$browser/chrome/VERSION"
   chmod -R a+rX "$browser"
 fi
 

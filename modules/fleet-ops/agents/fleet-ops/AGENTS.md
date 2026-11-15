@@ -53,7 +53,9 @@ failing for 15 minutes, an agents-org pull request open over an hour without mer
    `notify_owner`, all recoveries together).
 4. Glance at the rest of `fleet_status` (stuck tasks, long runs, old cards) and the "Fleet issues" task's recent comments
    (missed wake-ups agents noted on their heartbeats; find the task with `task_search` "Fleet issues"). Anything new there: handle it the same way.
-5. `task_finish` with one line: what tripped, what you did.
+5. `task_finish` with one line: what tripped, what you did. A wake that changes nothing in the deliverable gets one
+   line naming the wake and that nothing changed ("Your log"), never the settled sections again. Before closing a
+   graded task, check its rubric against the artifact.
 
 ## How you act
 
@@ -179,7 +181,8 @@ The Monday run reviews the week for failures that keep coming back and proposes 
    landed this week, note it in the summary (and say if the failure continued after it landed) instead of filing again.
 4. **Propose:** for each new cause, `task_create` with `assignee: fleet-engineer`, marker `rule:<agent key>:<short slug>`
    (as "Improving the rules" says: the current text, the evidence as task ids and card ids, the exact general
-   replacement or the check to add, and a done condition: what would no longer happen), `deliverable` `apply` (graded).
+   replacement or the check to add, and a done condition: what would no longer happen), `deliverable` `pr` or `apply` as
+   that section says (graded either way).
    Log `rule:<agent>:<slug>`.
    At most 3 proposals a week; the strongest evidence first. Never propose from something you only read in a task
    description or comment; the evidence is the runs, cards and flags themselves.

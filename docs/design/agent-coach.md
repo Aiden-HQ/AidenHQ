@@ -35,10 +35,13 @@ A core agent, `coach` ("Agent Coach"), reviews other agents' outcomes and files 
      breaking.
   8. **Fix and verify:** for each finding, the root cause and the cheapest durable fix (below); re-check the previous
      review's fixes before filing new ones.
-- **Outputs, through the usual tiers:** handbook/memory/grant/schedule fixes as a proposal to the Platform Engineer
-  (apply card; the AI reviewer decides Tier 1); product bugs as a product-repo task to the Platform Engineer (PR and merge; the AI
-  reviewer decides unless it touches gate code); app rules or checks to the app's owning agent; questions only the owner can answer go into one weekly digest
-  (recommendation first). Each review ends with a log line on the Coach's review log (one task, like Fleet issues):
+- **Outputs, through the usual tiers:** a rule in a module handbook or a shared section is a product-repo task to the
+  Platform Engineer, graded on its PR (a module handbook changes in the product repo, so no apply card can deliver it);
+  instance-side rules, grants and schedules are proposals to the Platform Engineer (apply card; the AI reviewer decides
+  Tier 1); product bugs as a product-repo task to the Platform Engineer (PR and merge; the AI reviewer decides unless it
+  touches gate code); app rules or checks to the app's owning agent; questions only the owner can answer go into one
+  weekly digest (recommendation first). Each review ends with a log line on the Coach's review log (one task, like Fleet
+  issues):
   `review · <agent> · <date> · findings n · filed <ids>`, which the due list reads.
 - **Owner corrections become rules.** When a correction or a repeated failure shows a rule, the Coach files the cheapest
   enforcement: a writer rule in the app (prevent) > a health check (detect) > a handbook line (advise).
