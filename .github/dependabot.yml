@@ -9,6 +9,7 @@ updates:
       - /services/apps-mcp
       - /services/board
       - /services/runner
+      - /services/gateway
       - /modules/security/scanner
       - /modules/clickhouse/connections/clickhouse-mcp
       - /modules/github/connections/github-mcp
