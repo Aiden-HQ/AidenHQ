@@ -227,7 +227,6 @@ agents:
     roles: [ fleet-read, fleet-audit ]
   fleet-engineer:
     department: platform
-    builder: true # its brief carries "How we build" (paperclip-setup HOW_WE_BUILD_SECTION)
     # platform-engineer: settings changes, rule proposals and Dependabot tasks are filed to the agent holding it.
     roles: [ platform-engineer ]
     brief: true
