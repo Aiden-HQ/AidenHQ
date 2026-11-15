@@ -31,6 +31,7 @@ the AidenHQ design system. `README.md` says what's where. These rules keep its p
   `'unsafe-inline'`. A `<style>` tag a component renders takes `nonce={cspNonce}` (`@/lib/csp`); a library that injects
   styles without one isn't used.
 - **Never edit** `src/styles/tokens.css` or `src/styles/shadcn.css` (the vendored theme). Re-theme in a `theme.css`.
+- **One way to do each thing.** A change that replaces a pattern, component or page deletes the old one in the same PR, so the code shows only the current way and the next change copies it.
 - **Keep it reviewable:** a seed or sample-data mode runs the app locally with realistic data, so the UI review can
   screenshot every state.
 - **Before a UI PR:** `npm ci && npm test && npm run build`, then the self-review in the design system's
