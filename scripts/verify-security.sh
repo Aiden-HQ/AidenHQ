@@ -99,8 +99,10 @@ for c in $containers; do
         && pass "grafana-mcp: published on 127.0.0.1:3124 only" || fail "grafana-mcp ports are not loopback 3124 only"
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3124/mcp)" = "401" ] \
         && pass "grafana-mcp: loopback endpoint requires the token" || fail "grafana-mcp: loopback endpoint answers without the token"
-      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
-        && pass "grafana-mcp: only its own token directory mounted" || fail "grafana-mcp has unexpected mounts: $mounts"
+      # Exactly: the grants table (scripts/modules.mjs adds it to every connection) and its two secrets, read-only, and its
+      # own token directory, the only writable mount.
+      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/grants|false /run/secrets/grafana_auth_token|false /run/secrets/grafana_mcp_token|false /state|true ' ] \
+        && pass "grafana-mcp: only the grants table and its secrets (read-only) and its own token directory mounted" || fail "grafana-mcp has unexpected mounts: $mounts"
       ;;
     *clickhouse-mcp*)
       # Loopback only, for the runner's Engineer jobs; bearer token required.
@@ -108,8 +110,10 @@ for c in $containers; do
         && pass "clickhouse-mcp: published on 127.0.0.1:3127 only" || fail "clickhouse-mcp ports are not loopback 3127 only"
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3127/mcp)" = "401" ] \
         && pass "clickhouse-mcp: loopback endpoint requires the token" || fail "clickhouse-mcp: loopback endpoint answers without the token"
-      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
-        && pass "clickhouse-mcp: only its own token directory mounted" || fail "clickhouse-mcp has unexpected mounts: $mounts"
+      # Exactly: its two secrets, read-only, and its own token directory, the only writable mount. No grants table: it serves
+      # only the runner's jobs, not a Paperclip connection, so scripts/modules.mjs mounts none.
+      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/clickhouse_auth_token|false /run/secrets/clickhouse_mcp_token|false /state|true ' ] \
+        && pass "clickhouse-mcp: only its secrets (read-only) and its own token directory mounted" || fail "clickhouse-mcp has unexpected mounts: $mounts"
       ;;
     *mcp-grafana*|*prometheus*|*alertmanager*|*cadvisor*)
       # The monitoring module's inner services: nothing published, and none on the backplane (their APIs take no auth:
@@ -285,7 +289,8 @@ if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-s
 else
   pass "no secret patterns in tracked files"
 fi
-git ls-files --cached --others --exclude-standard | grep -qE '(^|/)(\.env|system\.yaml|routing\.yaml|paperclip\.yaml)$' && fail "local config tracked in git" || pass "local config not tracked"
+# Plain grep, never grep -q: under pipefail, grep -q's early exit kills git ls-files with SIGPIPE and hides the match.
+git ls-files --cached --others --exclude-standard | grep -E '(^|/)(\.env|system\.yaml|routing\.yaml|paperclip\.yaml)$' >/dev/null && fail "local config tracked in git" || pass "local config not tracked"
 
 echo "Capabilities (by construction)"
 pass "ops-mcp exposes no delete/replace/arbitrary-write tools (see modules/meetings/connections/ops-mcp/src/mcp/tools.ts)"
@@ -468,26 +473,36 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # default branch once its parent merged, deleting a merged PR's own head branch (never the default branch, only at the
 # merged head, never under an open PR), `aidenhq close` (a comment, then the PR closed), and re-running a queued PR's
 # failed jobs when every red check is an infrastructure failure (once per check per head, only from a started queue:
-# merges.mjs infraRetry). A sequential queue on a card that is the review (agents org, product repo) may also replay a
+# merges.mjs infraRetry), or when a red check's job never started (merges.mjs environmentRetry: once per check per head, the
+# head never moves; from a started queue, or from watchProductPrs on the product repo's own same-repo PRs that a task here
+# opened, authored by the App's bot), and a `pending` commit status where the design review is woken (main.mjs, the
+# only status write; never success or failure, so the runner can only hold a merge, never pass the review). A sequential queue on a card that is the review (agents org, product repo) may also replay a
 # stacked PR's approved commits onto the default branch and push them as its head (github.rebuild: only when its parent
 # merged in the same queue at its approved head and the PR's head is still the approved one; the push is leased to that
 # head), then retarget it; the replayed head merges only with every named check green on it. A Tier 0 queue only
 # retargets and hands the PR back to be tiered again. allowedWrite refuses all but
-# PUT outside the agents org, except comments, PR edits and job re-runs (never a branch delete) on the product repo, for closing its
+# PUT outside the agents org, except comments, PR edits, job re-runs and statuses (never a branch delete) on the product repo, for closing its
 # Dependabot PRs (Tier 0 only when the runner read the author as dependabot[bot] from the API). The card is the review (bound to the head) in the agents org and the product repo, whose
 # merges go through the App; elsewhere the host gh login merges, behind GitHub's own review. WRITES allows paths, not
 # bodies or orgs, so the call sites and their gates are asserted here too. Pushes and draft PRs stay on the exact word.
 rm_="services/runner/src/merges.mjs"; rmain="services/runner/src/main.mjs"; rtiers="services/runner/src/tiers.mjs"
 merge_writes="$(sed -n '/^export const WRITES/,/^\];/p' "$rm_" | grep -oE 'method: "[A-Z]+", path: /[^ ]+/' | tr '\n' ' ')"
-merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'githubWrite\(repo, `[^`]*`, \{[^}]*\}(, "[A-Z]+")?(, RERUN)?\)' | tr '\n' ' ')"
-[ "$merge_writes" = 'method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/merge$/ method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/update-branch$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/issues\/\d+\/comments$/ method: "PATCH", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+$/ method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun-failed-jobs$/ ' ] \
+merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'githubWrite\(repo, `[^`]*`, \{[^}]*\}(, "[A-Z]+")?(, (RERUN|STATUS))?\)' | tr '\n' ' ')"
+[ "$merge_writes" = 'method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/merge$/ method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/update-branch$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/issues\/\d+\/comments$/ method: "PATCH", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+$/ method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun-failed-jobs$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/statuses\/[0-9a-f]{7,40}$/ ' ] \
   && [ "$(grep -o 'mutation([^)]*) { [A-Za-z]*' "$rm_" | awk '{print $NF}' | tr '\n' ' ')" = "markPullRequestReadyForReview " ] \
   && [ "$(grep -c '"-X"' "$rmain")" = 1 ] && grep -qF 'if (!merges.allowedWrite(method, path, cfg.agentsOrg, cfg.productRepo)) throw' "$rmain" \
   && grep -qF 'if (method === "PUT" || (Boolean(agentsOrg) && path.split("/")[1].toLowerCase() === agentsOrg.toLowerCase())) return true;' "$rm_" \
-  && grep -qF 'return Boolean(productRepo) && method !== "DELETE" && path.split("/").slice(1, 3).join("/").toLowerCase() === productRepo.toLowerCase();' "$rm_" &&[ "$(grep -c 'githubWrite(' "$rmain")" = 8 ] \
-  && [ "$merge_calls" = 'githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha }) githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head }) githubWrite(repo, `repos/${repo}/pulls/${number}`, { base }, "PATCH") githubWrite(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE") githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST") githubWrite(repo, `repos/${repo}/pulls/${number}`, { state: "closed" }, "PATCH") githubWrite(repo, `repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}, "POST", RERUN) ' ] \
+  && grep -qF 'return Boolean(productRepo) && method !== "DELETE" && path.split("/").slice(1, 3).join("/").toLowerCase() === productRepo.toLowerCase();' "$rm_" && [ "$(grep -c 'githubWrite(' "$rmain")" = 9 ] \
+  && [ "$merge_calls" = 'githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha }) githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head }) githubWrite(repo, `repos/${repo}/pulls/${number}`, { base }, "PATCH") githubWrite(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE") githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST") githubWrite(repo, `repos/${repo}/statuses/${sha}`, { state, context, description }, "POST", STATUS) githubWrite(repo, `repos/${repo}/pulls/${number}`, { state: "closed" }, "PATCH") githubWrite(repo, `repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}, "POST", RERUN) ' ] \
   && grep -qF 'const RERUN = { actions: "write" };' "$rmain" \
-  && [ "$(grep -c 'github\.rerun(' "$rm_")" = 1 ] && [ "$(grep -c 'retryInfra(' "$rm_")" = 3 ] \
+  && grep -qF 'const STATUS = { ...WRITE, statuses: "write" };' "$rmain" && [ "$(grep -c 'STATUS)' "$rmain")" = 1 ] \
+  && [ "$(grep -rhoE '\.status\(' services/runner/src | wc -l | tr -d ' ')" = 1 ] && [ "$(grep -c 'github\.status(' "$rm_")" = 0 ] \
+  && grep -qF '      .status(pr.repo, pr.head, { state: "pending", context: merges.DESIGN_REVIEW.name, description: "Waiting for the UI Reviewer" })' "$rmain" \
+  && [ "$(grep -c 'github\.rerun(' "$rm_")" = 2 ] && [ "$(grep -c 'retryInfra(' "$rm_")" = 3 ] \
+  && [ "$(grep -c 'environmentRetry(' "$rm_")" = 3 ] && [ "$(grep -c 'environmentRetry(' "$rmain")" = 1 ] \
+  && grep -qF '  if (checks.some((c) => reruns[c.name]?.head === head && reruns[c.name].id !== c.id)) return { stop: environmentReceipt(ref, shown, head), names };' "$rm_" \
+  && grep -qF '  if (checks.every((c) => reruns[c.name]?.head === head)) return { wait: RERUN_SHOWS_MINUTES };' "$rm_" \
+  && [ "$(awk '/^async function watchProductPrs/,/^}/' "$rmain" | grep -cE '^  const repo = cfg\.productRepo;$|^    if \(isDependabot\(pr\) \|\| pr\.isCrossRepository !== false\) continue;$|^    if \(!issueId \|\| \(bot && pr\.author\?\.login !== bot\)\) continue;$|await merges\.environmentRetry\(mergeGithub, repo, pr\.number, pr, pr\.url, want\.checks\);$')" = 4 ] \
   && grep -qF '    const retry = d.do === "stop" && d.red ? await retryInfra(github, next.repo, next.number, pr) : undefined;' "$rm_" \
   && grep -qF '        const retry = d.red ? await retryInfra(github, p.repo, p.number, pr) : undefined;' "$rm_" \
   && grep -qF '    if (was?.head === head) {' "$rm_" \
@@ -524,7 +539,7 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF 'if (p.dependabot !== true) return REJECT("core-repo-close"' "$rtiers" \
   && grep -qF 'if (!s.requester?.platform) return REJECT("product-close-requester"' "$rtiers" \
   && grep -qF '? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p' "$rmain" \
-  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues re-tier; reviewed queues replay the approved commits first, leased push), merged-head branch deletes (after any agents-org merge), one re-run of a queued PR's infrastructure-failed jobs, and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
+  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues re-tier; reviewed queues replay the approved commits first, leased push), merged-head branch deletes (after any agents-org merge), one re-run per head of a queued PR's infrastructure-failed jobs or of an agent's product PR's never-started jobs, a pending design-review status (never a verdict), and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
 # autonomy cap, a spend-cap raise or nothing recognised (the only Tier 2 rules left in tiers.mjs). The gate's own core is
 # authority-expanding: tiers, review, authorize, the reviewer policy and its eval cases, the board's approval routes and
@@ -547,7 +562,7 @@ rreview="services/runner/src/review.mjs"; bapprovals="services/board/src/approva
   && grep -qF 'if (a.panel && v.decision === "approve" && !v.second) return { ok: false' "$bapprovals" \
   && grep -qF 'if (v.second !== undefined && v.second === v.model) return { ok: false' "$bapprovals" \
   && grep -qF 'const veto = req.tier === 1 && this.ownerVetoed(req.issueId, req.action, req.digest, req.args);' "$bapprovals" \
-  && grep -qF '            panel: Boolean(input.panel || a.panel),' "$rmain" && grep -qF 'const panelMissing = (t.panel || claimed.panel) && !claimed.decidedBy.includes("+");' "$rmain" \
+  && [ "$(grep -cE '(^|[^A-Za-z.])review\(\{' "$rmain")" = 1 ] && awk '/^function askReviewer\(/,/^}/' "$rmain" | grep -F '    panel: Boolean(input.panel || a.panel),' >/dev/null && grep -qF 'const panelMissing = (t.panel || claimed.panel) && !claimed.decidedBy.includes("+");' "$rmain" \
   && grep -qF 'UPDATE approvals SET panel = 1 WHERE id = ? AND digest = ?' "$bapprovals" && ! grep -q 'SET panel = 0' "$bapprovals" \
   && grep -qF '    panel: migration,' services/board/src/fleet.ts && grep -qF 'const migration = touchesMigrations(diff);' services/board/src/fleet.ts \
   && grep -qF '"HEAD:modules/core/templates/ci/.github"' "$rmain" && grep -qF 'return treeIs(path, sha, ".github", want);' "$rmain" && grep -qF 'return Boolean(want) && got === want;' services/runner/src/git.mjs \
@@ -565,16 +580,18 @@ grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-set
 # (the Platform Engineer's line), refused anywhere else. A repository is created only by an approved create_repo card
 # (`create-repo` files it, the panel's): one call, in createRepoApproved, never from naming or cloning one. `review` asks the
 # AI reviewer about what `pr` would file, files and publishes nothing, and is capped per job.
+# A function body piped from awk is matched with plain grep (to /dev/null), never grep -q: under pipefail, grep -q's early
+# exit kills awk with SIGPIPE, failing a match and passing a negated one.
 tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelper.ts)"
 [ "$tools" = 'export const TOOLS = ["repo", "status", "review", "push", "pr", "merge", "close", "create-repo", "apply", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks", "advise"]' ] \
   && grep -qF 'close: agentClose,' "$rmain" \
-  && [ "$(grep -c 'createRepo(' "$rmain")" = 1 ] && awk '/^async function createRepoApproved/,/^}/' "$rmain" | grep -qF 'await app.createRepo(slug)' \
+  && [ "$(grep -c 'createRepo(' "$rmain")" = 1 ] && awk '/^async function createRepoApproved/,/^}/' "$rmain" | grep -F 'await app.createRepo(slug)' >/dev/null \
   && ! grep -qE 'POST.*/repos\b|/user/repos' services/runner/src/repos.ts \
   && [ "$(awk '/^async function agentTasks?\(/,/^}/' services/runner/src/main.mjs | grep -c '^  requireTaskReads(ctx);')" = 2 ] \
   && [ "$(awk '/^async function agentMerge/,/^}/' "$rmain" | grep -n 'tierFor(ctx.issue, "merge"' | head -1 | cut -d: -f1)" -lt "$(awk '/^async function agentMerge/,/^}/' "$rmain" | grep -n 'await fileApproval(ctx.issue, { action: "merge"' | cut -d: -f1)" ] \
-  && awk '/^async function agentMerge/,/^}/' "$rmain" | grep -qF 'const now = bound.filter((_, i) => tiers[i].tier === 0);' \
-  && awk '/^async function agentMerge/,/^}/' "$rmain" | grep -qF 'if (bad) throw new UserError(' \
-  && ! awk '/^async function agentApply/,/^}/' services/runner/src/main.mjs | grep -q '"push"' \
+  && awk '/^async function agentMerge/,/^}/' "$rmain" | grep -F 'const now = bound.filter((_, i) => tiers[i].tier === 0);' >/dev/null \
+  && awk '/^async function agentMerge/,/^}/' "$rmain" | grep -F 'if (bad) throw new UserError(' >/dev/null \
+  && ! awk '/^async function agentApply/,/^}/' services/runner/src/main.mjs | grep '"push"' >/dev/null \
   && [ "$(awk '/^async function agentPrimer/,/^}/' services/runner/src/main.mjs | grep -n 'await allowWrite(ctx, "primer"' | cut -d: -f1)" -lt "$(awk '/^async function agentPrimer/,/^}/' services/runner/src/main.mjs | grep -n 'savePrimer(' | head -1 | cut -d: -f1)" ] \
   && grep -q '^export function authorizePrompt({ user, action, task, earlier = \[\], recent = \[\], lastReply = "" })' services/runner/src/authorize.mjs \
   && grep -q 'primerTokenFile: join(secrets, "primer_mcp_read_token")' services/runner/src/config.mjs \
