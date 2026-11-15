@@ -18,26 +18,51 @@ const agents = [
   { id: "eng", name: "Engineer", companyId: "co" },
   { id: "cos", name: "Aiden", companyId: "co" },
   { id: "ra", name: "Alfred", companyId: "co" },
+  { id: "other", name: "Someone else", companyId: "co" },
 ];
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grades-")), "grants.json");
-const grantsTable = { agents_org: "acme", product_repo: "own/aidenhq", agents: { eng: { key: "engineer-openrouter", roles: [], tools }, cos: { key: "chief-of-staff", roles: [], tools }, ra: { key: "research-assistant", roles: ["engineer-dispatch"], tools: { paperclip_tasks: ["task_create_engineer_task"] } } } };
+const grantsTable = { agents_org: "acme", product_repo: "own/aidenhq", agents: { eng: { key: "engineer-openrouter", roles: [], tools }, cos: { key: "chief-of-staff", roles: [], tools }, ra: { key: "research-assistant", roles: ["engineer-dispatch"], tools: { paperclip_tasks: ["task_create_engineer_task", "task_set_status", "task_finish"] } }, other: { key: "someone", roles: [], tools } } };
 writeFileSync(grantsFile, JSON.stringify(grantsTable));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 const task = { id: "33333333-3333-3333-3333-333333333333", identifier: "WOR-7", title: "T", status: "in_progress", assigneeAgentId: "eng", createdByAgentId: "cos", labels: [] as { id: string }[] };
 // An Engineer sub-task the Researcher created (task_create_engineer_task): it has no task_delegate.
 const engineerTask = { ...task, id: "44444444-4444-4444-4444-444444444444", identifier: "WOR-8", createdByAgentId: "ra" };
+// A graded sub-task of Alfred's own task: Aiden (cos) owns the parent, so the escalation is addressed to it, while the task
+// itself was filed by the Researcher (ra). The two are different agents, which is the case the close has to allow.
+const parentTask = { ...task, id: "55555555-5555-5555-5555-555555555555", identifier: "WOR-9", assigneeAgentId: "cos", createdByAgentId: null };
+const childTask = { ...task, id: "66666666-6666-6666-6666-666666666666", identifier: "WOR-10", parentId: parentTask.id, createdByAgentId: "ra" };
 const patches: Record<string, unknown>[] = [];
 /** The task's saved Paperclip review path: its scheduled check, as a time. */
 const reviewCheck = (patch: Record<string, unknown>) => Date.parse((patch.executionPolicy as { monitor?: { nextCheckAt?: string } }).monitor?.nextCheckAt ?? "");
 const pc = {
   companyId: "co",
   agentMe: async (key: string) => agents.find((a) => a.id === key) ?? Promise.reject(new Error("401")),
-  issue: async (ref: string) => (ref === engineerTask.identifier || ref === engineerTask.id ? engineerTask : task),
+  issue: async (ref: string) => ({ [engineerTask.identifier]: engineerTask, [engineerTask.id]: engineerTask, [parentTask.identifier]: parentTask, [parentTask.id]: parentTask, [childTask.identifier]: childTask, [childTask.id]: childTask })[ref] ?? task,
   labels: async () => [{ id: "lbl-grading", name: "grading" }],
   agents: async () => agents,
-  updateIssue: async (id: string, body: Record<string, unknown>) => (patches.push(body), Object.assign(id === engineerTask.id ? engineerTask : task, body)),
+  updateIssue: async (id: string, body: Record<string, unknown>) => (patches.push(body), Object.assign({ [engineerTask.id]: engineerTask, [childTask.id]: childTask }[id] ?? task, body)),
 } as unknown as Paperclip;
+
+/** A board on its own store, and the escalated-or-not gate call one agent makes on a task there. */
+async function gateApp(store: Store): Promise<{ gateFor: (task: string, who: string) => Promise<{ status: number; json: any }>; close: () => void }> {
+  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY });
+  await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
+  const port = (app.address() as AddressInfo).port;
+  return {
+    gateFor: (task, who) =>
+      new Promise((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port, method: "POST", path: `/internal/grades/${task}/gate`, headers: { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-agent-key": who } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve({ status: res.statusCode!, json: text ? JSON.parse(text) : undefined }));
+        });
+        req.on("error", reject);
+        req.end(JSON.stringify({ via: "task_set_status" }));
+      }),
+    close: () => app.close(),
+  };
+}
 
 describe("grade routes", () => {
   const store = new Store(":memory:");
@@ -161,9 +186,51 @@ describe("grade routes", () => {
       expect((await call("GET", "/internal/owner/grades", { "x-owner-key": decideKey })).json).toEqual({ lines: [] });
       // Its delegator's close accepts the work.
       expect((await call("POST", "/internal/grades/WOR-7/gate", { "x-agent-key": "cos" }, { via: "task_set_status" })).json).toEqual({ pass: true });
-      expect(s.grades.get(task.id)!.state).toBe("satisfied");
+      const accepted = s.grades.get(task.id)!;
+      expect(accepted.state).toBe("satisfied");
+      expect(accepted.verdicts.at(-1)).toMatchObject({ verdict: "accepted", by: "cos" });
     } finally {
       app2.close();
+    }
+  });
+
+  it("the delegator the escalation was addressed to closes it: the agent on the parent task, not only the task's creator", async () => {
+    const s = new Store(":memory:");
+    // Alfred's sub-task of Aiden's task, graded, and escalated: the runner's note lands on the parent, so Aiden is woken.
+    s.grades.file(childTask.id, [], { kind: "report", ref: "" });
+    completionGate(s.grades, childTask.id, "task_finish");
+    for (let i = 0; i < 5; i++) s.grades.record(childTask.id, { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] });
+    expect(s.grades.get(childTask.id)!.state).toBe("escalated");
+    const { gateFor, close } = await gateApp(s);
+    try {
+      // An agent that is neither the assignee, the task's creator nor the parent's agent still can't close it.
+      expect((await gateFor("WOR-10", "other")).status).toBe(403);
+      expect(s.grades.get(childTask.id)!.state).toBe("escalated");
+      expect((await gateFor("WOR-10", "cos")).json).toEqual({ pass: true });
+      const accepted = s.grades.get(childTask.id)!;
+      expect(accepted.state).toBe("satisfied");
+      expect(accepted.verdicts.at(-1)).toMatchObject({ verdict: "accepted", by: "cos" });
+    } finally {
+      close();
+    }
+  });
+
+  it("a graded task still being graded is refused to everyone but its assignee, escalation or not", async () => {
+    const s = new Store(":memory:");
+    s.grades.file(childTask.id, [], { kind: "report", ref: "" });
+    completionGate(s.grades, childTask.id, "task_finish");
+    expect(s.grades.get(childTask.id)!.state).toBe("pending");
+    const { gateFor, close } = await gateApp(s);
+    try {
+      // Its delegator (the parent's agent) and the task's creator are both refused while it is still being graded.
+      for (const who of ["cos", "ra"]) {
+        const r = await gateFor("WOR-10", who);
+        expect(r.status).toBe(403);
+        expect(r.json.error).toMatch(/only its assignee finishes it/);
+      }
+      expect(s.grades.get(childTask.id)!.state).toBe("pending");
+    } finally {
+      close();
     }
   });
 });

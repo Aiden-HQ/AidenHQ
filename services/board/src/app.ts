@@ -1089,16 +1089,22 @@ export function createApp(opts: AppOptions): Server {
         const issue = await pc.issue(decodeURIComponent(m[1]!));
         // Only the task's own assignee moves its grade: anyone else closing a graded task is refused, and an ungraded one
         // passes without touching anything. The one exception: an escalated grade is its delegator's call, and its close
-        // accepts the work.
+        // accepts the work in place of a verdict. That delegator is the agent the escalation was addressed to: the one that
+        // filed the task, or the agent on its parent task (the runner's escalation is a note there, main.mjs tellOpenParent,
+        // and wake.ts watches the parent's agent), so the task is closable by whoever it was handed to. Nothing else is
+        // widened: a grade still being graded keeps its assignee-only close.
         if (agent && issue.assigneeAgentId !== agent.id) {
           const g = gradingOn() ? store.grades.get(issue.id) : undefined;
-          if (g?.state === "escalated" && issue.createdByAgentId === agent.id) {
-            store.grades.accept(issue.id);
-            const label = (await pc.labels()).find((l) => l.name === "grading");
-            const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
-            if (label && ids.includes(label.id)) await pc.updateIssue(issue.id, { labelIds: ids.filter((id) => id !== label.id) });
-            log.info({ task: issue.identifier }, "escalated grade accepted by its delegator");
-            return { pass: true };
+          if (g?.state === "escalated") {
+            const parent = issue.parentId ? await pc.issue(issue.parentId).catch(() => undefined) : undefined;
+            if (issue.createdByAgentId === agent.id || parent?.assigneeAgentId === agent.id) {
+              store.grades.accept(issue.id, agent.id);
+              const label = (await pc.labels()).find((l) => l.name === "grading");
+              const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
+              if (label && ids.includes(label.id)) await pc.updateIssue(issue.id, { labelIds: ids.filter((id) => id !== label.id) });
+              log.info({ task: issue.identifier, by: agent.id }, "escalated grade accepted by its delegator");
+              return { pass: true };
+            }
           }
           if (g && !(g.state === "satisfied" && issue.status === "done")) throw new HttpError(403, "this task is graded: the grader closes it once its rubric is met (only its assignee finishes it)");
           return { pass: true };

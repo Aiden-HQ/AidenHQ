@@ -23,7 +23,10 @@ export interface Verdict {
   at: string;
   version: string;
   model: string;
-  verdict: "satisfied" | "needs_revision" | "cannot_judge";
+  /** accepted: an escalated grade its delegator closed, which settles it in place of a rubric verdict. */
+  verdict: "satisfied" | "needs_revision" | "cannot_judge" | "accepted";
+  /** The delegator that accepted it (an accepted verdict has no grader model and no criteria). */
+  by?: string;
   criteria: { id: string; met: "yes" | "no" | "unknown"; evidence: string }[];
 }
 export interface Grade {
@@ -192,10 +195,15 @@ export class Grades {
     return this.get(issueId)!;
   }
 
-  /** An escalated grade accepted by the task's delegator (closing it): the row is settled, its verdicts kept. */
-  accept(issueId: string): void {
+  /**
+   * An escalated grade accepted by the task's delegator (closing it): the row is settled, its verdicts kept, and one more
+   * bound to the version it settles says who accepted it. The grader already declined to decide, so this takes the place
+   * of a rubric verdict rather than claiming one.
+   */
+  accept(issueId: string, by: string, now = Date.now()): void {
     const g = this.get(issueId)!;
-    this.set(issueId, "satisfied", g.attempts, g.verdicts, 0, null);
+    const verdict: Verdict = { at: new Date(now).toISOString(), version: g.verdicts.at(-1)?.version ?? "", model: "", verdict: "accepted", by, criteria: [] };
+    this.set(issueId, "satisfied", g.attempts, [...g.verdicts, verdict].slice(-20), 0, null, now);
   }
 
   /** Waiting for the grader again (the completion gate). */
