@@ -91,6 +91,11 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
   rows = await usage();
   assert.deepEqual([rows[2].agentId, rows[2].component, rows[2].kind], ["ag2", "Fast lane: Aria", "agent"]);
 
+  // The board's side chat (its own key): a capped call of its own kind, with no agent behind it.
+  assert.equal((await call("gw-board")).status, 200);
+  rows = await usage();
+  assert.deepEqual([rows[3].agentId, rows[3].component, rows[3].kind], [null, "Board side chat", "aside"]);
+
   // Run cap $0.05: the second call starts at $0.03 (allowed), the third at $0.06 is refused. A run cap is never filed for
   // raising (the next run has a new key): one ledger row, a message that says the run stops.
   assert.equal((await call(jwt("ag1", "run1"))).status, 200);

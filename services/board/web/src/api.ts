@@ -1,4 +1,4 @@
-import type { ActivityItem, Agents, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
+import type { ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -137,6 +137,11 @@ export const api = {
   costTop: (q: URLSearchParams) => call<CostTop>("GET", `/api/costs/top?${q}`),
   run: (id: string) => call<RunTrace>("GET", `/api/runs/${encodeURIComponent(id)}`),
   issue: (ref: string) => call<IssueView>("GET", `/api/issues/${encodeURIComponent(ref)}`),
+  lineage: (ref: string) => call<Lineage>("GET", `/api/issues/${encodeURIComponent(ref)}/lineage`),
+  settle: (ref: string, settled: boolean) => call<{ settled: boolean }>("POST", `/api/issues/${encodeURIComponent(ref)}/settle`, { settled }),
+  settledList: (q: string) => call<{ settled: SettledItem[] }>("GET", `/api/settled?q=${encodeURIComponent(q)}`),
+  /** The side chat: answered by a model, never posted on the task, never waking its agent. */
+  aside: (ref: string, messages: AsideMessage[]) => call<{ answer: string }>("POST", `/api/issues/${encodeURIComponent(ref)}/aside`, { messages }),
   update: (ref: string, u: Update) => call<IssueView>("PATCH", `/api/issues/${encodeURIComponent(ref)}`, u),
   /** `brief`: the chat's send, which refetches the chat itself; the board then skips building the whole task view. */
   comment: (ref: string, body: string, answer = false, brief = false) =>

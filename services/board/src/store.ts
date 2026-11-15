@@ -46,6 +46,15 @@ export interface UsageRecord {
   subject?: string | null;
 }
 
+export interface Settled {
+  issueId: string;
+  identifier: string;
+  title: string;
+  agent: string;
+  kind: "chat" | "task";
+  at: string;
+}
+
 export interface UsageTotal {
   component: string;
   model: string;
@@ -208,6 +217,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS usage (key TEXT PRIMARY KEY, at TEXT NOT NULL, component TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, cached INTEGER NOT NULL, output INTEGER NOT NULL, cost_usd REAL);
       -- Which account wrote a task or comment on the board: for the "by <name>" label, never in the text.
       CREATE TABLE IF NOT EXISTS authored (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, at TEXT NOT NULL);
+      -- Finished chats and tasks the owner settled out of the active lists (a snapshot, for the searchable Settled view).
+      CREATE TABLE IF NOT EXISTS settled (issue_id TEXT PRIMARY KEY, identifier TEXT NOT NULL, title TEXT NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS recurring_runs (issue_id TEXT NOT NULL, occurrence TEXT NOT NULL, output_id TEXT NOT NULL, output_identifier TEXT NOT NULL, since TEXT NOT NULL, until TEXT NOT NULL, previous TEXT, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, claimed_at TEXT NOT NULL, PRIMARY KEY (issue_id, occurrence));
     `);
     const columns = (this.db.prepare("PRAGMA table_info(placements)").all() as { name: string }[]).map((c) => c.name);
@@ -567,6 +578,36 @@ export class Store {
         this.unschedule(id);
       }
     });
+  }
+
+  settle(r: Omit<Settled, "at">, at = new Date().toISOString()): void {
+    this.db.prepare("INSERT OR REPLACE INTO settled (issue_id, identifier, title, agent, kind, at) VALUES (?, ?, ?, ?, ?, ?)").run(r.issueId, r.identifier, r.title, r.agent, r.kind, at);
+  }
+
+  unsettle(issueId: string): boolean {
+    return this.db.prepare("DELETE FROM settled WHERE issue_id = ?").run(issueId).changes > 0;
+  }
+
+  /** Settled items, newest first; `q` matches the identifier, title or agent. */
+  settledList(q = ""): Settled[] {
+    const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+    return this.db
+      .prepare("SELECT issue_id AS issueId, identifier, title, agent, kind, at FROM settled WHERE identifier LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\' OR agent LIKE ?1 ESCAPE '\\' ORDER BY at DESC LIMIT 200")
+      .all(like) as unknown as Settled[];
+  }
+
+  /** When each settled item was settled, by task id. */
+  settledAt(): Map<string, string> {
+    return new Map((this.db.prepare("SELECT issue_id, at FROM settled").all() as { issue_id: string; at: string }[]).map((r) => [r.issue_id, r.at]));
+  }
+
+  /** Tokens (input, cached and output) and billed cost per task, over every model call the ledger keeps for these ids. */
+  usageByIssue(ids: string[]): Map<string, { tokens: number; usd: number | null }> {
+    if (!ids.length) return new Map();
+    const rows = this.db
+      .prepare(`SELECT issue_id, SUM(input + cached + output) AS tokens, SUM(cost_usd) AS usd FROM usage WHERE issue_id IN (${ids.map(() => "?").join(",")}) GROUP BY issue_id`)
+      .all(...ids) as { issue_id: string; tokens: number; usd: number | null }[];
+    return new Map(rows.map((r) => [r.issue_id, { tokens: r.tokens, usd: r.usd }]));
   }
 
   seenAt(issueId: string): string {

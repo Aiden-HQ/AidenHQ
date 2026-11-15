@@ -4,6 +4,7 @@
 // Routes (OpenRouter-compatible; the caller's "API key" is its own per-run credential, never the OpenRouter key):
 //   POST /api/v1/responses | /api/v1/chat/completions            kind agent (or the service kind its credential fixes)
 //   POST /advisor/api/v1/... | /fanout/api/v1/...                kind advisor | fanout, counted against the caller's run
+//   POST /api/v1/chat/completions  (Bearer gateway_board_key) kind aside: the board's side chat, capped per UTC day
 //   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
 //   POST /internal/caps {scope, agentId, subject, cap}  (Bearer gateway_board_key) the owner raised a cap: the new cap
 //   GET /health
@@ -262,6 +263,10 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     }
     const as = (row: RunIdentity | null | undefined, kind: string, component: string, capped: boolean) => ({ runKey, agentId: row?.agent_id ?? null, runId: row?.run_id ?? null, issueId: row?.issue_id ?? null, perpetual: Boolean(row?.perpetual), rev: row?.rev ?? null, kind, component, capped }) as Caller;
     if (same(cred, secret("gateway_source_key"))) return as(null, "source", SYSTEM.source, false);
+    if (same(cred, secret("gateway_board_key"))) {
+      // The board's side chat ("ask about this task"): no agent and no task run, so its "run" is the UTC day, capped.
+      return { ...as(null, "aside", "Board side chat", true), runKey: `board-aside:${day(now())}` as RunKey } as Caller;
+    }
     if (same(cred, secret("gateway_harness_key"))) {
       // Paperclip's hello probe for a new agent: one shared key, so its "run" is the UTC day.
       return { ...as(null, routeKind, "agent", true), runKey: `harness:${day(now())}` as RunKey } as Caller;
