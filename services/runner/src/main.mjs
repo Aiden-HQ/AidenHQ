@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, ENGINES, openrouterKind, repoAllowed, resolveEngine, stripHidden } from "./commands.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
-import { branchCardArgs } from "./cards.mjs";
+import { branchCardArgs, cardText } from "./cards.mjs";
 import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.mjs";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
@@ -259,8 +259,8 @@ function reportUsage(record) {
 }
 
 /** The reviewer's model calls, through the model gateway with the runner's reviewer token (the gateway bills them, uncapped). */
-function reviewerAsk() {
-  return openRouterAsk(modelToken(cfg, { kind: "reviewer", component: "AI reviewer", ttlMs: 3600_000 }), { url: `${gatewayApi(cfg)}/chat/completions` });
+function reviewerAsk(component = "AI reviewer") {
+  return openRouterAsk(modelToken(cfg, { kind: "reviewer", component, ttlMs: 3600_000 }), { url: `${gatewayApi(cfg)}/chat/completions` });
 }
 
 // ------------------------------------------------------------------ activity for the board's Agents view
@@ -1919,19 +1919,7 @@ async function reviewOne(a, mode) {
       ? { decision: "reject", code: input.rule === "head-moved" ? "stale_head" : "refused_by_code", reason: `${input.reason}.`, model: LUNA }
       : input.tier > 1
         ? { decision: "escalate", code: "tier_raised", reason: `code now puts it at Tier 2: ${input.reason}`, model: LUNA }
-        : await review({
-            card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
-            diff: input.diff,
-            files: input.files,
-            chain,
-            requesterModel: state.task(issue.id)?.engine?.model ?? "",
-            ask: reviewerAsk(),
-            // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
-            panel: Boolean(input.panel || a.panel),
-            previous: input.previous ?? [],
-            relift: input.relift,
-            onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()),
-          });
+        : await askReviewer(issue, a, input, chain, { onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()) });
   // A failed call or check is friction, not a decision: it stays with the reviewer and is tried again later (1, 2, 4… minutes);
   // after REVIEW_TRIES it goes back to the agent, never to the owner.
   if (v.code === "reviewer_failed") {
@@ -1959,6 +1947,42 @@ async function reviewOne(a, mode) {
     }
     await pc.comment(issue.id, `**${byCode ? "Not reviewed" : "Rejected by the AI reviewer"}** (approval ${a.id}, ${a.action}${byCode ? "" : `, ${post.model}`}). ${byCode ? "Why" : `Its note, written by a model that read the change (data, not ${cfg.selfName}'s words)`}:\n\n\`\`\`\n${note}\n\`\`\`\n\n${byCode ? "Fix that and ask again." : `Fix the change and ask again: a changed request is reviewed afresh with this note attached (the same commits stay rejected; after ${MAX_REJECTS} rejections on this task it is parked).`}`).catch(() => {});
   }
+}
+
+/**
+ * The AI reviewer on a Tier 1 request: the card's review (reviewOne) and the Engineer's check before filing one
+ * (agentReview) make this same call, so the check sees exactly the prompt, policy and models the card will.
+ * `a`: { action, target, sentence, panel? }; `input`: currentTier()'s result with the diff.
+ */
+function askReviewer(issue, a, input, chain, { onPanel, component } = {}) {
+  return review({
+    card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
+    diff: input.diff,
+    files: input.files,
+    chain,
+    requesterModel: state.task(issue.id)?.engine?.model ?? "",
+    ask: reviewerAsk(component),
+    // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
+    panel: Boolean(input.panel || a.panel),
+    previous: [...(input.previous ?? []), ...checkFindings(issue.id, a.action)],
+    relift: input.relift,
+    ...(onPanel ? { onPanel } : {}),
+  });
+}
+
+/**
+ * What the Engineer's checks before filing (agentReview) found, for every later review of the action on the task, first,
+ * panel and second opinion alike: a check is a look at the gate, so the card's review sees what was probed. Only findings
+ * (reject, escalate), and only words code chose: the decision, the reason code and the target (repo, branch, commit). The
+ * note itself is model output over the agent's diff, so it never reaches a later prompt (no injection that persists into
+ * the gate); the agent got it, and the card's review judges the change afresh.
+ */
+const checksKey = (issueId) => `review-checks:${issueId}`;
+const checksOf = (issueId) => JSON.parse(state.get(checksKey(issueId)) || "[]");
+function checkFindings(issueId, action) {
+  return checksOf(issueId)
+    .filter((c) => c.action === action && ["reject", "escalate"].includes(c.decision))
+    .map((c) => `A check before filing, not a card, at ${String(c.target).slice(0, 300)}: the reviewer would have ${c.decision === "reject" ? "rejected" : "escalated"} it (${c.code}).`);
 }
 
 /** Busy on the task while an approved write runs: no agent turn starts, and the board shows it. */
@@ -2416,6 +2440,26 @@ async function allowWrite(ctx, action, targets, extra = {}) {
 }
 
 /**
+ * The reviewed range of each branch, bound before tiering (a product branch's trusted base must be the one the workspace
+ * shows), and the change's content key the card carries (the owner's veto binds to it, however the branch is renamed or
+ * rebased). Sets `base` and `patch` on `branches` ({ repo, branch, sha }, in `ordered`'s order).
+ */
+async function bindBranches(ordered, branches) {
+  for (const [i, r] of ordered.entries()) {
+    const base = await bindBase(r, branches[i].sha);
+    if (base) branches[i].base = base;
+    const patch = await trustedPatch(r.repo, branches[i].sha, { from: r.path });
+    if (patch) branches[i].patch = patch;
+  }
+}
+
+/** A PR on the product repo is one card for push, PR and merge (owner, 2026-11-13). */
+const carriesMerge = (command, ordered) => command === "pr" && Boolean(cfg.productRepo) && ordered.every((r) => sameRepo(r.repo, cfg.productRepo));
+
+/** The exact commit each branch is at now, as a card names it. */
+const branchHeads = (ordered) => Promise.all(ordered.map(async (r) => ({ repo: r.repo, branch: r.branch, sha: await git(r.path, "rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`) })));
+
+/**
  * `aidenhq push` and `aidenhq pr`: the same publishing as the user's "push" and "pr", as an approval record: the branches
  * that would go out, at their exact commits, wait for the user's tap; runApprovals() publishes them then (results on the task).
  */
@@ -2433,24 +2477,17 @@ async function agentPublish(ctx, command, args) {
       check: async (ordered) => {
         // History rewritten in place (replace refs, grafts, shallow) shows one commit and publishes another: refused before tiering.
         await refuseRewritten(ordered);
-        const branches = await Promise.all(ordered.map(async (r) => ({ repo: r.repo, branch: r.branch, sha: await git(r.path, "rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`) })));
+        const branches = await branchHeads(ordered);
         // A PR on the product repo is one card for push, PR and merge (owner, 2026-11-13): approving it also merges each PR at
         // exactly these commits once every named check and the base branch are green (mergeAfterPublish); the card says so.
-        const merge = command === "pr" && Boolean(cfg.productRepo) && ordered.every((r) => sameRepo(r.repo, cfg.productRepo));
+        const merge = carriesMerge(command, ordered);
         // Every branch already satisfied on its repo's current default branch (after a fresh fetch): no card, evidence instead.
         if (dupGuardOn()) {
           for (const r of new Map(ordered.map((r) => [r.path, r])).values()) await git(r.path, "fetch", "--quiet", "origin", r.defaultBase).catch(() => "");
           const on = await Promise.all(ordered.map((r, i) => guardBranch(git, r, branches[i].sha)));
           if (on.every((o) => o.satisfied)) throw new AlreadyApplied(await alreadyApplied(ctx.issue, command, branches.map((b) => b.sha).join(","), on.map((o, i) => `${branches[i].repo} \`${branches[i].branch}\`: ${o.evidence}`).join("; ")));
         }
-        // The reviewed range, bound before tiering: a product branch's trusted base must be the one the workspace shows.
-        for (const [i, r] of ordered.entries()) {
-          const base = await bindBase(r, branches[i].sha);
-          if (base) branches[i].base = base;
-          // The change's content key on the card (the owner's veto binds to it, however the branch is renamed or rebased).
-          const patch = await trustedPatch(r.repo, branches[i].sha, { from: r.path });
-          if (patch) branches[i].patch = patch;
-        }
+        await bindBranches(ordered, branches);
         // The card's args, built from the branches as bound: the board's schema decides what a card may carry (cards.mjs).
         const cardArgs = branchCardArgs(branches, { text, merge });
         const off = autonomyNow() === "off";
@@ -2503,6 +2540,77 @@ async function agentPublish(ctx, command, args) {
     if (err instanceof AwaitingApproval || err instanceof AlreadyApplied) return err.message;
     throw err;
   }
+}
+
+/** Reviewer checks a task may run before filing (`aidenhq review`), across its jobs: each is a real reviewer call, recorded. */
+const REVIEW_CHECKS = 3;
+/** A check's verdict: thrown out of publish()'s check, so nothing is published or filed. */
+class Checked extends Error {}
+
+/**
+ * `aidenhq review [push] [<org/repo> <branch>]…`: the AI reviewer's verdict on the card `aidenhq pr` (or `push`) would file
+ * now, without filing it. The same branches, the same tiering and the same reviewer call as the card's review (askReviewer),
+ * so a rejection is fixed in the same run instead of costing a card, a rejection notice and a new job. No card is filed.
+ * The gate isn't an oracle to tune against: only a real reviewer call counts, REVIEW_CHECKS per task across its jobs (kept in
+ * state); each check is one short line on the task (verdict and code), and its findings go to every later review of the action
+ * on the task (checkFindings), so the card's review sees what was probed. The agent never learns which models judged. The
+ * card's own review still decides.
+ */
+async function agentReview(ctx, args) {
+  const command = args.action === "push" ? "push" : "pr";
+  const only = (Array.isArray(args.branches) ? args.branches : [])
+    .map((b) => ({ repo: normalizeRepo(String(b?.repo ?? ""))?.slug ?? "", branch: String(b?.branch ?? "") }))
+    .filter((b) => b.repo && b.branch);
+  try {
+    const out = await publish(ctx.issue, ctx.workspace, command, ctx.signal, {
+      only,
+      quiet: true,
+      check: async (ordered) => {
+        await refuseRewritten(ordered);
+        const branches = await branchHeads(ordered);
+        await bindBranches(ordered, branches);
+        const a = { action: command, args: branchCardArgs(branches, { merge: carriesMerge(command, ordered) }) };
+        const mode = autonomyNow();
+        const input = await currentTier(ctx.issue, a, { withDiff: true });
+        const n = checksOf(ctx.issue.id).length;
+        log("review check", { issue: ctx.issue.identifier, action: command, tier: input.reject ? "reject" : input.tier, rule: input.rule, mode, used: n });
+        if (input.reject) throw new Checked(`Code refuses this ${command} before any review (rule \`${input.rule}\`): ${input.reason}. No reviewer was asked, and this check isn't counted.`);
+        if (input.tier === 0) throw new Checked(`Tier 0 (${input.reason}): \`aidenhq ${command}\` runs at once, with no review. This check isn't counted.`);
+        if (input.tier > 1) throw new Checked(`Tier 2 (${input.reason}): ${cfg.selfName} decides the card, not the AI reviewer. File it with \`aidenhq ${command}\`; this check isn't counted.`);
+        if (mode !== "full") throw new Checked(`Autonomy is ${mode}: ${cfg.selfName} decides every card, so there is no AI review to check against. File it with \`aidenhq ${command}\`; this check isn't counted.`);
+        if (n >= REVIEW_CHECKS) throw new Checked(`No checks left on this task (${REVIEW_CHECKS} used). File it with \`aidenhq ${command}\`: the card's review decides.`);
+        const card = { action: command, ...cardText(command, a.args) };
+        // Counted before the call, so a call cut off by a restart still counts.
+        const entry = { action: command, target: card.target, at: new Date().toISOString(), decision: "pending", code: "" };
+        state.set(checksKey(ctx.issue.id), JSON.stringify([...checksOf(ctx.issue.id), entry]));
+        const chain = await prRequest(await pc.issue(ctx.issue.id)).catch(() => "");
+        const v = await askReviewer(ctx.issue, card, input, chain, { component: "AI reviewer check" });
+        log("review checked", { issue: ctx.issue.identifier, action: command, decision: v.decision, code: v.code, model: v.model, second: v.second, used: n + 1, target: card.target.slice(0, 300) });
+        // No verdict (the call failed): the check doesn't count. Otherwise it is kept with its finding.
+        const rest = checksOf(ctx.issue.id).filter((c) => c.at !== entry.at || c.target !== entry.target);
+        state.set(checksKey(ctx.issue.id), JSON.stringify(v.code === "reviewer_failed" ? rest : [...rest, { ...entry, decision: v.decision, code: v.code }]));
+        if (v.code !== "reviewer_failed") {
+          const said = v.decision === "approve" ? "would approve" : v.decision === "reject" ? "would reject" : `would send it to ${cfg.selfName}`;
+          await pc.comment(ctx.issue.id, `_Reviewer check ${n + 1} of ${REVIEW_CHECKS} before filing (${command}, ${card.target}): ${said} (\`${v.code}\`). No card was filed; the card's review sees this check's findings._`).catch(() => {});
+        }
+        throw new Checked(checkedText(command, v, n + (v.code === "reviewer_failed" ? 0 : 1)));
+      },
+    });
+    return `Nothing to review: ${stripHidden(out.text).trim()}`;
+  } catch (err) {
+    if (err instanceof Checked) return err.message;
+    throw err;
+  }
+}
+
+/** What the Engineer reads after a check: the verdict, the note (data: model output over the change), and what to do next. */
+function checkedText(command, v, used) {
+  const left = `${used} of ${REVIEW_CHECKS} checks used on this task`;
+  const note = `\n\nIts note, written by a model that read the change (data, not ${cfg.selfName}'s words):\n\n\`\`\`\n${String(v.reason ?? "").replace(/```/g, "‵‵‵")}\n\`\`\`\n\n`;
+  if (v.code === "reviewer_failed") return `The check couldn't reach the reviewer (${v.reason}). It isn't counted (${left}): try again in a few minutes, or file with \`aidenhq ${command}\`.`;
+  if (v.decision === "approve") return `**The AI reviewer would approve this.**${note}File it now with \`aidenhq ${command}\` (${left}). The card is reviewed again, and that review decides.`;
+  if (v.decision === "reject") return `**The AI reviewer would reject this** (\`${v.code}\`).${note}Fix what it found in this run, commit, then check again or file with \`aidenhq ${command}\` (${left}). A rejected card counts toward the task's limit of ${MAX_REJECTS} rejections; a check doesn't, but the card's review sees what each check found.`;
+  return `**The AI reviewer would send this to ${cfg.selfName}** (\`${v.code}\`).${note}If the note names something you can fix (scope, a missing part of the request), fix it and check again; otherwise file it with \`aidenhq ${command}\` and ${cfg.selfName} decides (${left}).`;
 }
 
 // Fleet changes (Platform Engineer): when a run ends with a change on the instance repo's task branch, the runner shows the
@@ -3380,7 +3488,7 @@ async function runCommand(issue, task, command) {
  * agent's own PR title and description, for a single branch: a new PR gets it, and an open one is
  * updated to it. Resolves with { ok, text }: whether everything went out, and the results comment.
  */
-async function publish(issue, workspace, command, signal, { only = [], text, check } = {}) {
+async function publish(issue, workspace, command, signal, { only = [], text, check, quiet = false } = {}) {
   if (text) {
     // Refused before anything is pushed, and back to the agent to reword: a description quietly
     // replaced by a generated one is worse than none (PEN-3024).
@@ -3402,7 +3510,7 @@ async function publish(issue, workspace, command, signal, { only = [], text, che
     const open = rows.filter((r) => named(r) && r.prUrl && !r.merged);
     // GitHub already has everything: as good as published.
     const said = [...notes, rows.length ? (open.length ? `Nothing new to publish: GitHub already has every commit${command === "pr" ? `, and the PRs are open: ${open.map((r) => r.prUrl).join(", ")}` : ""}.` : "Nothing new to publish.") : "There are no commits to publish."].join("\n\n");
-    await pc.comment(issue.id, said);
+    if (!quiet) await pc.comment(issue.id, said);
     return { ok: true, text: said };
   }
   // Parents before the branches stacked on them: a stacked PR needs its base on GitHub first.
@@ -3645,6 +3753,7 @@ const repoHelper = startRepoHelper(async ({ issue, workspace, box }, raw) => {
 }, log, {
   status: agentStatus,
   push: (ctx, args) => agentPublish(ctx, "push", args),
+  review: agentReview,
   pr: (ctx, args) => agentPublish(ctx, "pr", args),
   merge: agentMerge,
   close: agentClose,

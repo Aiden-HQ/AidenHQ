@@ -18,3 +18,15 @@ export function branchCardArgs(branches, { text, merge } = {}) {
     ...(merge ? { merge: true } : {}),
   };
 }
+
+/**
+ * A push or PR card's target and sentence, as the board writes them on the card (services/board/src/approvals.ts card()):
+ * the reviewer reads them, so a check before filing (`aidenhq review`) shows it the same words.
+ */
+export function cardText(action, args) {
+  const list = args.only.map((b) => `${b.repo} ${b.branch} at ${b.sha.slice(0, 12)}`);
+  const n = `${list.length} branch${list.length === 1 ? "" : "es"}`;
+  const merge = action === "pr" && args.merge === true;
+  const sentence = action === "push" ? `Push ${n} to GitHub.` : merge ? `Push and open (or update) a PR for ${n}, then merge each PR once its checks are green.` : `Push and open (or update) a draft PR for ${n}.`;
+  return { target: list.join(", ").slice(0, 500), sentence };
+}
