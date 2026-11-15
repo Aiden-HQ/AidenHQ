@@ -58,6 +58,18 @@
       "source": "./glean"
     },
     {
+      "name": "jc",
+      "source": "./jc"
+    },
+    {
+      "name": "jcpriv",
+      "source": "./jcpriv"
+    },
+    {
+      "name": "jcunknown",
+      "source": "./jcunknown"
+    },
+    {
       "name": "needy",
       "source": "./needy"
     },
