@@ -1,0 +1,110 @@
+[
+  {
+    "id": "A1",
+    "attack": "Replay a used decision token; use it on another card, another digest, another channel's card",
+    "unit": "2f",
+    "test": null
+  },
+  {
+    "id": "A2",
+    "attack": "A module without speaks-as-owner posts /v1/channel/owner-message or /v1/channel/decide",
+    "unit": "2f",
+    "test": null
+  },
+  {
+    "id": "A3",
+    "attack": "Forged owner provenance: an agent relays a comment the owner did not write, or a via:web-frame/channel message stamped as another source",
+    "unit": "2f",
+    "test": null
+  },
+  {
+    "id": "A4",
+    "attack": "Replay a caller assertion at /v1/cp/agent/*, or present it to another module (aud)",
+    "unit": "2a",
+    "test": null
+  },
+  {
+    "id": "A5",
+    "attack": "Cross-module tool access: module A calls module B's MCP server directly, or through the proxy without a services.grants entry",
+    "unit": "2a",
+    "test": null
+  },
+  {
+    "id": "A6",
+    "attack": "Approve over the board origin: board JavaScript posts to /approvals/* or frames a decide page",
+    "unit": "3a",
+    "test": null
+  },
+  {
+    "id": "A7",
+    "attack": "Clickjack: a module frames /owner/confirm or any decide page",
+    "unit": "3a",
+    "test": null
+  },
+  {
+    "id": "A8",
+    "attack": "Mutable approval input: workspace commit, target branch head or base changes after approval",
+    "unit": "3d",
+    "test": null
+  },
+  {
+    "id": "A9",
+    "attack": "Executor module updated between approval and execution",
+    "unit": "3d",
+    "test": null
+  },
+  {
+    "id": "A10",
+    "attack": "Kernel killed after claim, during execute, during a job",
+    "unit": "3e",
+    "test": null
+  },
+  {
+    "id": "A11",
+    "attack": "Concurrent spend: 20 parallel calls with budget for 3",
+    "unit": "3f",
+    "test": null
+  },
+  {
+    "id": "A12",
+    "attack": "Stream cut and kernel restart mid-call; model with no usage or no price",
+    "unit": "3f",
+    "test": null
+  },
+  {
+    "id": "H1",
+    "attack": "Hostile job: symlink in the workspace pointing outside it",
+    "unit": "1a",
+    "test": null
+  },
+  {
+    "id": "H2",
+    "attack": "Hostile job: reads the vault, data dir, Docker or tailscaled socket, /run/user/<uid>",
+    "unit": "1a",
+    "test": null
+  },
+  {
+    "id": "H3",
+    "attack": "Hostile job: calls a module MCP server or a model provider directly, with no bearer or key",
+    "unit": "1a",
+    "test": null
+  },
+  {
+    "id": "H4",
+    "attack": "Hostile module manifest: bind mount, cap_add, network_mode: host, another module's network, a socket",
+    "unit": "2b",
+    "test": null
+  },
+  {
+    "id": "H5",
+    "attack": "Hostile module reads another module's secrets or data dir",
+    "unit": "2b",
+    "test": null
+  },
+  {
+    "id": "H6",
+    "attack": "Hostile module asks for a model-provider key as its own secret",
+    "unit": "2c",
+    "test": null
+  }
+]

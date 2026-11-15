@@ -1,0 +1,89 @@
+{
+  "name": "aidenhq",
+  "owner": {
+    "name": "AidenHQ"
+  },
+  "description": "Official AidenHQ modules",
+  "plugins": [
+    {
+      "name": "ci",
+      "source": "./ci"
+    },
+    {
+      "name": "clickhouse",
+      "source": "./clickhouse"
+    },
+    {
+      "name": "core",
+      "source": "./core"
+    },
+    {
+      "name": "design",
+      "source": "./design"
+    },
+    {
+      "name": "engineering",
+      "source": "./engineering"
+    },
+    {
+      "name": "fleet-ops",
+      "source": "./fleet-ops"
+    },
+    {
+      "name": "github",
+      "source": "./github"
+    },
+    {
+      "name": "glean",
+      "source": "./glean"
+    },
+    {
+      "name": "google",
+      "source": "./google"
+    },
+    {
+      "name": "grafana",
+      "source": "./grafana"
+    },
+    {
+      "name": "jira",
+      "source": "./jira"
+    },
+    {
+      "name": "librarian",
+      "source": "./librarian"
+    },
+    {
+      "name": "meetings",
+      "source": "./meetings"
+    },
+    {
+      "name": "monitoring",
+      "source": "./monitoring"
+    },
+    {
+      "name": "open-loops",
+      "source": "./open-loops"
+    },
+    {
+      "name": "owner-channel",
+      "source": "./owner-channel"
+    },
+    {
+      "name": "primer",
+      "source": "./primer"
+    },
+    {
+      "name": "security",
+      "source": "./security"
+    },
+    {
+      "name": "slack",
+      "source": "./slack"
+    },
+    {
+      "name": "warehouse",
+      "source": "./warehouse"
+    }
+  ]
+}

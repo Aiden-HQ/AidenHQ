@@ -141,7 +141,6 @@ export function frontmatter(text) {
   return m ? { meta: YAML.parse(m[1]) ?? {}, body: text.slice(m[0].length) } : { meta: {}, body: text };
 }
 
-/** Every module under <productDir>/modules, as { name, root, def }. */
 /** A module's settings for the board: default, allowed values, required, and the comment above each key as its `doc`. */
 function settingDefs(file, def) {
   const map = YAML.parseDocument(readFileSync(file, "utf8")).get("settings", true);
@@ -150,12 +149,30 @@ function settingDefs(file, def) {
   return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
+/** modules/marketplace.json: the modules this product ships, each `{ name, source: "./<name>" }`. Unknown fields are ignored. */
+export function readMarketplace(productDir) {
+  const file = join(productDir, "modules", "marketplace.json");
+  if (!existsSync(file)) fail("modules/marketplace.json is missing");
+  const m = JSON.parse(readFileSync(file, "utf8"));
+  if (!Array.isArray(m.plugins)) fail("modules/marketplace.json: plugins must be a list");
+  for (const p of m.plugins) {
+    if (typeof p.source !== "string" || !p.source.startsWith("./")) fail(`modules/marketplace.json: ${p.name}: remote sources are not supported yet (unit 5a)`);
+    if (p.source !== `./${p.name}`) fail(`modules/marketplace.json: ${p.name}: source is ${p.source}, expected ./${p.name}`);
+  }
+  return m;
+}
+
+/** Every module in modules/marketplace.json, as { name, root, def }, in name order. */
 function discover(productDir) {
   const dir = join(productDir, "modules");
+  const listed = new Set(readMarketplace(productDir).plugins.map((p) => p.name));
+  for (const name of readdirSync(dir)) {
+    if (existsSync(join(dir, name, "module.yaml")) && !listed.has(name)) fail(`modules/${name} is not in modules/marketplace.json`);
+  }
   const out = new Map();
-  for (const name of readdirSync(dir).sort()) {
+  for (const name of [...listed].sort()) {
     const file = join(dir, name, "module.yaml");
-    if (!existsSync(file)) continue;
+    if (!existsSync(file)) fail(`modules/marketplace.json: ${name} has no modules/${name}/module.yaml`);
     const def = readYaml(file);
     if (def.name !== name) fail(`modules/${name}/module.yaml: name is ${def.name}, expected ${name}`);
     out.set(name, { name, root: join(dir, name), def });

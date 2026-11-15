@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +21,22 @@ function inst(modules, settings = base, extra = {}, agents = {}) {
 }
 const enabledOf = (r) => r.catalog.filter((m) => m.enabled).map((m) => m.name).sort();
 
+/** A copy of the fixture product with its marketplace rewritten by `edit`. */
+function market(edit) {
+  const dir = mkdtempSync(join(tmpdir(), "product-"));
+  cpSync(mods, dir, { recursive: true });
+  const file = join(dir, "modules", "marketplace.json");
+  writeFileSync(file, JSON.stringify(edit(JSON.parse(readFileSync(file, "utf8")))));
+  return dir;
+}
+test("unknown marketplace fields are ignored", () => {
+  const dir = market((m) => ({ ...m, extra: 1, plugins: m.plugins.map((p) => ({ ...p, version: "1.0.0", tags: ["x"] })) }));
+  assert.deepEqual(enabledOf(compile(dir, inst(["a"]))), ["a", "b", "core"]);
+});
+test("a module directory missing from the marketplace fails", () =>
+  assert.throws(() => compile(market((m) => ({ ...m, plugins: m.plugins.filter((p) => p.name !== "b") })), inst(["a"])), /modules\/b is not in modules\/marketplace.json/));
+test("a remote source fails until unit 5a", () =>
+  assert.throws(() => compile(market((m) => ({ ...m, plugins: m.plugins.map((p) => (p.name === "b" ? { name: "b", source: { source: "github", repo: "acme/b" } } : p)) })), inst(["a"])), /remote sources/));
 test("requires pulls dependencies in", () => assert.deepEqual(enabledOf(compile(mods, inst(["a"]))), ["a", "b", "core"]));
 test("missing module is an error", () => assert.throws(() => compile(mods, inst(["nope"])), /unknown module: nope/));
 test("cycle is an error", () => assert.throws(() => compile(mods, inst(["cyc1"])), /module cycle: cyc1 → cyc2 → cyc1/));
