@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_DIFF, MAX_FILES, MODEL_CODES, fileContext, review, reviewPrompt } from "../src/review.mjs";
-import { siblingBlock } from "../src/siblings.mjs";
+import { siblingBlock } from "../src/siblings.ts";
 import { REPO_ROOT } from "../src/config.mjs";
 import { padCase } from "./case-pad.mjs";
 import { REVIEW_CODES } from "../../shared/reason-codes.ts";

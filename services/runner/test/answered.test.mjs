@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { splitAnswered } from "../src/answered.mjs";
+import { splitAnswered } from "../src/answered.ts";
 import { priorDecisions, priorPart } from "../src/tiers.mjs";
 
 const head = "a".repeat(40);

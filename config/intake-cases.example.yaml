@@ -1,5 +1,5 @@
 # Regression set for the go-ahead on Engineer sub-tasks (readApproval in
-# services/runner/src/intake.mjs): comments on a parent task and the reading each must get, run through
+# services/runner/src/intake.ts): comments on a parent task and the reading each must get, run through
 # the real call. Copy to config/intake-cases.yaml (gitignored) and fill it with real comments.
 
 #   npm run eval:intake --prefix services/runner [-- <id filter>]

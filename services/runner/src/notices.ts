@@ -38,12 +38,12 @@ export function wakesParent(kind: string): boolean {
 export const graderSpeaks = (state: string | null | undefined): boolean => ["open", "pending", "awaiting_evidence", "needs_revision", "grading_failed"].includes(state as string);
 
 /**
- * The kind of the summary posted when a parent's Engineer sub-tasks have all finished a turn (prompt.mjs subtaskSummary's
+ * The kind of the summary posted when a parent's Engineer sub-tasks have all finished a turn (prompt.ts subtaskSummary's
  * rows, each with `graded`: a grade will still speak for it, so not one already escalated to the delegator). Progress only when every row ended its turn, is graded, and asks
  * nothing (each committed change already has its card): the grade says the rest. Otherwise it is the outcome: work that
  * failed or stopped, a "pr" the delegator has to reply, or ungraded work whose result is now the delegator's to judge.
  */
-/** One finished Engineer sub-task in a parent's summary (prompt.mjs subtaskSummary). */
+/** One finished Engineer sub-task in a parent's summary (prompt.ts subtaskSummary). */
 export interface SummaryRow {
   status?: string;
   job?: string;

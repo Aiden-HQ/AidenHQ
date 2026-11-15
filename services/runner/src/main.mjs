@@ -9,18 +9,18 @@ import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, ENGINES, openrouterKind, repoAllowed, resolveEngine, stripHidden } from "./commands.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
-import { branchCardArgs, cardText } from "./cards.mjs";
+import { branchCardArgs, cardText } from "./cards.ts";
 import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg } from "./github-app.mjs";
-import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.mjs";
-import { splitAnswered } from "./answered.mjs";
-import { ALL_STATUSES, Paperclip, origins } from "./paperclip.mjs";
-import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.mjs";
-import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.mjs";
-import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine, coversHead } from "./prompt.mjs";
+import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
+import { splitAnswered } from "./answered.ts";
+import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
+import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
+import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
+import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine, coversHead } from "./prompt.ts";
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
 import { startRepoHelper } from "./repohelper.ts";
 import { createMetrics, writeMetrics } from "./metrics.ts";
@@ -28,10 +28,10 @@ import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBran
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.ts";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.ts";
 import * as merges from "./merges.mjs";
-import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf } from "./siblings.mjs";
-import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "./product-prs.mjs";
+import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf } from "./siblings.ts";
+import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "./product-prs.ts";
 import { State } from "./state.mjs";
-import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.mjs";
+import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.ts";
 import { authorize } from "./authorize.mjs";
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
@@ -41,7 +41,7 @@ import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from 
 import { ALREADY_APPLIED, guardBranch } from "./evidence.mjs";
 import { jobUsage } from "./usage.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
-import { readBusy } from "./busy.mjs";
+import { readBusy } from "./busy.ts";
 import { repoAccess } from "./repos.ts";
 
 const execFileP = promisify(execFile);
@@ -184,7 +184,7 @@ async function poll() {
     lastReviewCheck = Date.now();
     await closeReviewedTasks().catch((err) => log("review check failed", { err: String(err.stderr || err.message || err).slice(0, 300) }));
   }
-  // The product repo's open PRs (product-prs.mjs): Dependabot's become the Platform Engineer's tasks, conflicts wake theirs.
+  // The product repo's open PRs (product-prs.ts): Dependabot's become the Platform Engineer's tasks, conflicts wake theirs.
   if (Date.now() - lastProductPrCheck >= 60_000) {
     lastProductPrCheck = Date.now();
     await watchProductPrs().catch((err) => log("product PR check failed", { err: String(err.stderr || err.message || err).slice(0, 300) }));
@@ -397,7 +397,7 @@ const ownerMadeTask = (issue) => ownerMade(issue, runnerMade(issue?.id));
 const trialNoTap = (issue, grants) => trialNoTapBy(issue, grants, runnerMade(issue?.id));
 
 /**
- * Once a minute, one read of the product repo's open PRs (product-prs.mjs). A Dependabot PR whose checks have finished
+ * Once a minute, one read of the product repo's open PRs (product-prs.ts). A Dependabot PR whose checks have finished
  * gets one Platform Engineer task; a runner-made Dependabot task closes once its PR is merged or closed; an agent's PR
  * that conflicts with the default branch (or went red while behind it) wakes its task once per default-branch commit.
  */
@@ -1171,7 +1171,7 @@ const mergeGithub = {
   async updateBranch(repo, number, head) {
     await githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head });
   },
-  /** The base branch's files changed since `oid`, and its tip (siblings.mjs): paged or unread is `files: undefined`. */
+  /** The base branch's files changed since `oid`, and its tip (siblings.ts): paged or unread is `files: undefined`. */
   async prBaseFiles(repo, base, oid) {
     const [owner, name] = repo.split("/");
     const { stdout } = await execFileP(await findRealGh(), ["api", "graphql", "-f", `query=${BASE_FILES_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${name}`, "-f", `base=refs/heads/${base}`, "-f", `oid=${oid}`], await gho(repo, READ));
@@ -2935,7 +2935,7 @@ async function agentPublish(ctx, command, args) {
           if (on.every((o) => o.satisfied)) throw new AlreadyApplied(await alreadyApplied(ctx.issue, command, branches.map((b) => b.sha).join(","), on.map((o, i) => `${branches[i].repo} \`${branches[i].branch}\`: ${o.evidence}`).join("; ")));
         }
         await bindBranches(ordered, branches);
-        // The card's args, built from the branches as bound: the board's schema decides what a card may carry (cards.mjs).
+        // The card's args, built from the branches as bound: the board's schema decides what a card may carry (cards.ts).
         const cardArgs = branchCardArgs(branches, { text, merge });
         const off = autonomyNow() === "off";
         // Computed here, right before anything is published, from the branches as git sees them. With autonomy off only

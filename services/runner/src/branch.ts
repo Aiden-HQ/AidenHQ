@@ -3,9 +3,9 @@
 // AidenHQ. A short Codex call picks the name from the contributing guide, recent branch
 // names and the request; code checks it and falls back to <type>/<slug>. Branches from before this
 // (aidenhq/<task>) are renamed on their next run or push, unless already on GitHub.
-import { askCodex } from "./intake.mjs";
-import { leaksInternal } from "./describe.mjs";
-import { fence } from "./thread.mjs";
+import { askCodex } from "./intake.ts";
+import { leaksInternal } from "./describe.ts";
+import { fence } from "./thread.ts";
 
 export const BRANCH_SCHEMA = {
   type: "object",
@@ -15,14 +15,14 @@ export const BRANCH_SCHEMA = {
 };
 
 /** Local task branches: never pushed under this name. */
-export const isLocalBranch = (branch) => /^aidenhq\//.test(String(branch ?? ""));
+export const isLocalBranch = (branch: unknown) => /^aidenhq\//.test(String(branch ?? ""));
 
 /** Lines about branches from contributing guides and agent instructions in the repository. */
-export function branchGuidance(files) {
-  const out = [];
+export function branchGuidance(files: Iterable<[string, unknown]>) {
+  const out: string[] = [];
   for (const [name, text] of files) {
     const lines = String(text ?? "").split("\n");
-    const keep = new Set();
+    const keep = new Set<number>();
     lines.forEach((l, i) => {
       if (/\bbranch(es)?\b/i.test(l) && !/\bbranch protection\b/i.test(l)) for (let j = Math.max(0, i - 1); j <= Math.min(lines.length - 1, i + 2); j++) keep.add(j);
     });
@@ -32,10 +32,10 @@ export function branchGuidance(files) {
 }
 
 /** Recent PR branches by people (no bots, none of ours), the user's own first. */
-export function exampleBranches(prs, { login, base }) {
-  const seen = new Set();
-  const mine = [];
-  const others = [];
+export function exampleBranches(prs: any[] | null | undefined, { login, base }: { login?: string; base?: string }) {
+  const seen = new Set<string>();
+  const mine: string[] = [];
+  const others: string[] = [];
   for (const pr of prs ?? []) {
     const name = String(pr?.headRefName ?? "");
     const author = String(pr?.author?.login ?? "");
@@ -46,7 +46,7 @@ export function exampleBranches(prs, { login, base }) {
   return { mine: mine.slice(0, 15), others: others.slice(0, 30) };
 }
 
-export function branchPrompt({ repo, login, guidance, examples, request, messages }) {
+export function branchPrompt({ repo, login, guidance, examples, request, messages }: { repo: string; login?: string; guidance?: string; examples: { mine: string[]; others: string[] }; request: unknown; messages: string[] }) {
   return `Name the git branch for a change to ${repo}, following that repository's conventions. Answer with JSON. Do not run any tools.
 
 Rules:
@@ -68,7 +68,7 @@ ${fence("REQUEST", request, 4000)}`;
 }
 
 /** A usable branch name, or "" when it isn't one we would push. */
-export function checkBranchName(raw, { base, defaultBranch }) {
+export function checkBranchName(raw: unknown, { base, defaultBranch }: { base?: string; defaultBranch?: string }) {
   const name = String(raw ?? "").trim().replace(/^refs\/heads\//, "");
   if (!name || name.length > 80) return "";
   if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(name) || /\/\/|\.\.|\.lock(\/|$)|[./]$|\/\./.test(name)) return "";
@@ -78,9 +78,9 @@ export function checkBranchName(raw, { base, defaultBranch }) {
 }
 
 /** `feat: add X` → `feat/add-x`; anything else → `chore/<slug>`. */
-export function fallbackBranchName(subject) {
+export function fallbackBranchName(subject: unknown) {
   const m = String(subject ?? "").match(/^(\w+)(?:\([^)]*\))?!?:\s*(.*)$/);
-  const type = m && /^(feat|fix|chore|docs|refactor|test|ci|build|perf|style)$/i.test(m[1]) ? m[1].toLowerCase() : "chore";
+  const type = m && /^(feat|fix|chore|docs|refactor|test|ci|build|perf|style)$/i.test(m[1]!) ? m[1]!.toLowerCase() : "chore";
   const slug = String(m ? m[2] : subject ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -96,7 +96,7 @@ export function fallbackBranchName(subject) {
  * GitHub); a taken name gets -2, -3, … appended. `ask` answers the prompt (a Codex call by default).
  * Without commits yet, the fallback comes from `title` (the task's).
  */
-export async function chooseBranchName({ cfg, repo, base, defaultBranch, login, guidance, prs, request, messages, title = "", taken, ask = (prompt) => askCodex(cfg, prompt, BRANCH_SCHEMA) }) {
+export async function chooseBranchName({ cfg, repo, base, defaultBranch, login, guidance, prs, request, messages, title = "", taken, ask = (prompt) => askCodex(cfg, prompt, BRANCH_SCHEMA) }: { cfg?: any; repo: string; base?: string; defaultBranch?: string; login?: string; guidance?: string; prs?: any[]; request: unknown; messages: string[]; title?: string; taken: (name: string) => boolean | Promise<boolean>; ask?: (prompt: string) => Promise<any> }) {
   const subject = messages.at(-1)?.split("\n")[0] || title;
   let name = "";
   let generated = false;

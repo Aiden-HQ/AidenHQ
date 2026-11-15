@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { crewNames, findRepos, mentionedRepos, normalizeRepo, parseCommand, repoAllowed, resolveEngine } from "../src/commands.mjs";
 import { buildCommand, cowRoot, removeLayers } from "../src/engines.mjs";
 import { staleRoutineRuns } from "../src/recurring.ts";
-import { firstPrompt, followUpPrompt, latestReport, observeSection } from "../src/prompt.mjs";
+import { firstPrompt, followUpPrompt, latestReport, observeSection } from "../src/prompt.ts";
 import { accessToken, gcpSession } from "../src/gcp.ts";
 import { diskName, plan, syncFiles } from "../src/files.mjs";
 
@@ -362,7 +362,7 @@ describe("engine switches", () => {
 
 describe("an Engineer's part of the user's task", () => {
   it("adds the user's task an Engineer's part belongs to", async () => {
-    const { withParent } = await import("../src/intake.mjs");
+    const { withParent } = await import("../src/intake.ts");
     assert.equal(withParent(" go ahead ", undefined), "go ahead");
     assert.equal(
       withParent("go ahead", { identifier: "PEN-1", title: "Drop X", description: "Repos:\n- a/b\n" }),
@@ -372,7 +372,7 @@ describe("an Engineer's part of the user's task", () => {
 });
 
 describe("run outcome", async () => {
-  const { NO_REPLY, runOutcome } = await import("../src/prompt.mjs");
+  const { NO_REPLY, runOutcome } = await import("../src/prompt.ts");
   it("finishes on a clean exit with a reply, and knows when no reply is wanted", () => {
     assert.deepEqual(runOutcome({ code: 0, lastMessage: "Fixed the flaky test on `fix-ci`." }), { finished: true, silent: false, headline: "" });
     assert.equal(runOutcome({ code: 0, lastMessage: ` ${NO_REPLY}\n` }).silent, true);
@@ -464,7 +464,7 @@ describe("review requests handled on GitHub", async () => {
 
 describe("Engineer sub-tasks", async () => {
   const { isAgentSubtask } = await import("../src/commands.mjs");
-  const { approvalPrompt } = await import("../src/intake.mjs");
+  const { approvalPrompt } = await import("../src/intake.ts");
   it("only agent-created sub-tasks wait for a go-ahead", () => {
     assert.equal(isAgentSubtask({ parentId: "p", createdByAgentId: "assistant", createdByUserId: null }), true);
     assert.equal(isAgentSubtask({ parentId: "p", createdByAgentId: null, createdByUserId: "u" }), false);
@@ -478,7 +478,7 @@ describe("Engineer sub-tasks", async () => {
 });
 
 describe("run report footer", async () => {
-  const { branchesFooter, latestReport } = await import("../src/prompt.mjs");
+  const { branchesFooter, latestReport } = await import("../src/prompt.ts");
   const row = (o) => ({ repo: "acme/api", branch: "feat/a", base: "main", unpublished: [], stat: "", onGitHub: false, ...o });
   it("lists every branch and only offers to publish commits GitHub doesn't have", () => {
     const open = branchesFooter([row({ unpublished: ["abc fix"], prUrl: "https://x/pull/4", onGitHub: true })]);
@@ -502,7 +502,7 @@ describe("run report footer", async () => {
 });
 
 describe("parent summary", async () => {
-  const { subtaskSummary, coversHead } = await import("../src/prompt.mjs");
+  const { subtaskSummary, coversHead } = await import("../src/prompt.ts");
   it("tables every sub-task and counts what needs a look", () => {
     const s = subtaskSummary([
       { identifier: "PEN-390", title: "Deprecation notice: legacy-node", status: "in_review", job: "done", committed: true },
@@ -543,7 +543,7 @@ describe("parent summary", async () => {
 });
 
 describe("pr on the parent", async () => {
-  const { prSummary } = await import("../src/prompt.mjs");
+  const { prSummary } = await import("../src/prompt.ts");
   it("lists a link or the reason for every sub-task", () => {
     const s = prSummary([
       { identifier: "PEN-390", title: "Deprecation notice: cdk", prUrl: "https://github.com/Acme/cdk/pull/9", note: "" },
@@ -556,13 +556,13 @@ describe("pr on the parent", async () => {
 });
 
 describe("public PR text", async () => {
-  const { leaksInternal, cleanMessages, fallbackDescription, describePrompt } = await import("../src/describe.mjs");
+  const { leaksInternal, cleanMessages, fallbackDescription, describePrompt } = await import("../src/describe.ts");
   it("spots our tooling, task numbers and local paths", () => {
     for (const t of ["Draft opened by AidenHQ for Paperclip task PEN-406.", "see PEN-12", "[README](/home/dana/aidenhq/tasks/PEN-406/README.md)", "generated with opencode"]) assert.equal(leaksInternal(t), true, t);
     assert.equal(leaksInternal("chore: add deprecation notice\n\nAdds a deprecation notice ahead of archiving this repository."), false);
   });
   it("falls back to a Conventional Commit title, which a squash merge makes the commit", async () => {
-    const { prTitle } = await import("../src/prompt.mjs");
+    const { prTitle } = await import("../src/prompt.ts");
     assert.equal(prTitle("a1b2c3d fix(board): keep the drawer open", "Drawer closes"), "fix(board): keep the drawer open");
     assert.equal(prTitle("a1b2c3d test: cover it\nd4e5f6a feat(runner): retry merges", "Retry flaky merges"), "feat(runner): Retry flaky merges");
     assert.equal(prTitle("a1b2c3d docs: x\nd4e5f6a fix: y", "chore: tidy"), "chore: tidy");
@@ -581,7 +581,7 @@ describe("public PR text", async () => {
 });
 
 describe("branch names in the repository's style", async () => {
-  const { checkBranchName, chooseBranchName, exampleBranches, isLocalBranch } = await import("../src/branch.mjs");
+  const { checkBranchName, chooseBranchName, exampleBranches, isLocalBranch } = await import("../src/branch.ts");
   it("keeps people's branches, the user's first, and drops bots and our own", () => {
     const prs = [
       { headRefName: "danadev/add-notice", author: { login: "danadev" } },
@@ -1302,7 +1302,7 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
 
   // PEN-2799: Michael's DM was the request's real context, and the job couldn't open Slack.
   it("points the agent at the Slack message the task came from, and says Glean is connected", async () => {
-    const { slackSources } = await import("../src/prompt.mjs");
+    const { slackSources } = await import("../src/prompt.ts");
     const parent = "## Source\n\nType: Slack (pinned)\nPermalink: https://example.slack.com/archives/D0AC9RNC52B/p1793146287831739\n";
     const reply = "https://example.slack.com/archives/C0789MNOPQR/p1792784930026089?thread_ts=1792433425.464009&cid=C0789MNOPQR";
     const sources = slackSources(`${parent}\n${reply}\n${parent}`);

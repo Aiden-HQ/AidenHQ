@@ -4,7 +4,7 @@
 // can't authorize a write. The exact words "push" and "pr" never get here: the runner carries them out
 // itself, and they are left out of the words (they were done, so they can't allow anything again).
 import { stripHidden } from "./commands.mjs";
-import { askCodex } from "./intake.mjs";
+import { askCodex } from "./intake.ts";
 
 export const AUTH_SCHEMA = {
   type: "object",

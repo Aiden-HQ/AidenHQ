@@ -2,7 +2,7 @@
 // status write with a 422. The job's outcome stands and the receipt still lands as a comment.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Paperclip } from "../src/paperclip.mjs";
+import { Paperclip } from "../src/paperclip.ts";
 
 const client = (fail) => {
   const calls = [];

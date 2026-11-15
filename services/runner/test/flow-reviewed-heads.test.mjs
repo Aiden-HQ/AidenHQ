@@ -51,7 +51,7 @@ describe("flow-reviewed-heads", { concurrency: 1 }, () => {
     // The reviewer rejects it; the runner posts the one rejection notice, naming the ref.
     card.state = "review";
     await t.waitFor("the reviewer's verdict", () => calls.length > 0 && t.output.includes(`"approval":"${card.id}","issue":"PEN-2","action":"pr","decision":"reject"`));
-    // Dated after the turn's comment: nobody's reply answers it (answered.mjs).
+    // Dated after the turn's comment: nobody's reply answers it (answered.ts).
     Object.assign(card, { state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest", decidedAt: new Date(Date.now() + 3600_000).toISOString(), reviewCode: "out_of_scope", review: "second.txt isn't part of the request." });
     await t.waitFor("the rejection notice naming the ref", () => t.partComments().some((c) => /Rejected by the AI reviewer/.test(c) && c.includes(ref)));
     const notice = t.partComments().find((c) => c.includes(ref));

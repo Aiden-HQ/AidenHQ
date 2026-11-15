@@ -1,6 +1,6 @@
 // Short no-tools Codex calls with a JSON schema for their answer (askCodex), used by the runner's
 // small readings: the go-ahead on sub-tasks, the check on an Engineer's GitHub writes
-// (authorize.mjs) and comments that arrive while a task is busy (busy.mjs). Also the model names a
+// (authorize.mjs) and comments that arrive while a task is busy (busy.ts). Also the model names a
 // request can use. The runner no longer reads requests for the agent: every comment goes to the
 // Engineer (docs/design/conversational-engineers.md).
 import { spawn } from "node:child_process";
@@ -10,16 +10,16 @@ import { join } from "node:path";
 import { gatewayApi, modelToken } from "./engines.mjs";
 
 /** Codex model slugs known to the local Codex install (newest first, as Codex lists them). */
-export function codexModels(file = join(homedir(), ".codex/models_cache.json")) {
+export function codexModels(file = join(homedir(), ".codex/models_cache.json")): string[] {
   try {
-    return JSON.parse(readFileSync(file, "utf8")).models.map((m) => m.slug).filter(Boolean);
+    return JSON.parse(readFileSync(file, "utf8")).models.map((m: { slug?: string }) => m.slug).filter(Boolean);
   } catch {
     return [];
   }
 }
 
 /** "astra" → "gpt-6-astra": an exact slug, or the first model whose name contains the word. */
-export function resolveModelAlias(name, models) {
+export function resolveModelAlias(name: unknown, models: string[]) {
   const n = String(name ?? "").trim().toLowerCase();
   if (!n) return undefined;
   const exact = models.find((m) => m.toLowerCase() === n);
@@ -31,20 +31,20 @@ export function resolveModelAlias(name, models) {
  * "deepseek" → "deepseek/deepseek-v4.1-flash", "glm5.3-flash" → "z-ai/glm-5.3-flash": a known OpenRouter
  * model by id, by name, or by a word in it (first in the list wins); a full provider/model id is kept as is.
  */
-export function resolveOpenRouterModel(name, models) {
+export function resolveOpenRouterModel(name: unknown, models: string[]) {
   const n = String(name ?? "").trim().toLowerCase().replace(/^openrouter\//, "");
   if (!n) return undefined;
-  const flat = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const flat = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
   const known =
     models.find((m) => m.toLowerCase() === n) ??
-    models.find((m) => flat(m.split("/").pop()) === flat(n)) ??
+    models.find((m) => flat(m.split("/").pop()!) === flat(n)) ??
     models.find((m) => flat(m).includes(flat(n)));
   if (known) return known;
   return /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/.test(n) ? n : undefined;
 }
 
 /** A task's description, followed by the user's task it is part of, whose text the request builds on. */
-export function withParent(description, parent) {
+export function withParent(description: unknown, parent?: { identifier?: string; title?: string; description?: unknown } | null) {
   const own = String(description ?? "").trim();
   if (!parent) return own;
   return [own, `The task this is part of (${parent.identifier}): ${parent.title}`, String(parent.description ?? "").trim()].filter(Boolean).join("\n\n");
@@ -54,9 +54,9 @@ export function withParent(description, parent) {
  * One no-tools Codex call with a JSON schema for its answer; resolves with the parsed JSON. Models that ignore
  * the schema (OpenRouter) sometimes answer in plain text: ask once more, then fail closed.
  */
-export async function askCodex(cfg, prompt, schema) {
+export async function askCodex(cfg: any, prompt: string, schema: object): Promise<any> {
   try { return await askCodexOnce(cfg, prompt, schema); } catch (e) {
-    if (!/^no single JSON answer/.test(e.message)) throw e;
+    if (!/^no single JSON answer/.test((e as Error).message)) throw e;
     return askCodexOnce(cfg, `${prompt}\n\nAnswer with one JSON object only, matching the schema. No prose, no YAML.`, schema);
   }
 }
@@ -65,7 +65,7 @@ export async function askCodex(cfg, prompt, schema) {
 const OPENROUTER_ARGS = ["-c", 'model_provider="or"', "-c", 'model_providers.or.name="OpenRouter"', "-c", 'model_providers.or.base_url="https://openrouter.ai/api/v1"',
   "-c", 'model_providers.or.env_key="OPENROUTER_API_KEY"', "-c", 'model_providers.or.wire_api="responses"'];
 
-async function askCodexOnce(cfg, prompt, schema) {
+async function askCodexOnce(cfg: any, prompt: string, schema: object) {
   const dir = mkdtempSync(join(tmpdir(), "aidenhq-intake-"));
   try {
     writeFileSync(join(dir, "schema.json"), JSON.stringify(schema));
@@ -78,14 +78,14 @@ async function askCodexOnce(cfg, prompt, schema) {
       "--output-schema", join(dir, "schema.json"), "-o", out,
       ...(model ? ["-m", model] : []),
       // e.g. the OpenRouter provider, for a host without a ChatGPT login: always through the model gateway.
-      ...codexArgs.map((a) => (/^model_providers\.[\w-]+\.base_url=/.test(a) ? a.replace(/=.*/s, `="${gatewayApi(cfg)}"`) : a)),
+      ...codexArgs.map((a: string) => (/^model_providers\.[\w-]+\.base_url=/.test(a) ? a.replace(/=.*/s, `="${gatewayApi(cfg)}"`) : a)),
       "-",
     ];
     const env = { ...process.env };
     // The provider's env_key (OPENROUTER_API_KEY in codex_args) carries the runner's own gateway token, never the real key.
     if (codexArgs.length) env.OPENROUTER_API_KEY = modelToken(cfg, { kind: "source", component: "Runner intake", ttlMs: 3600_000 });
     delete env.SSH_AUTH_SOCK;
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       const child = spawn(argv[0], argv.slice(1), { cwd: dir, env, stdio: ["pipe", "ignore", "pipe"] });
       let err = "";
       child.stderr.on("data", (d) => (err = (err + d).slice(-2000)));
@@ -112,7 +112,7 @@ export const APPROVAL_SCHEMA = {
   properties: { decision: { type: "string", enum: ["start", "hold", "other"] } },
 };
 
-export function approvalPrompt({ user, title, waiting, comment }) {
+export function approvalPrompt({ user, title, waiting, comment }: { user: string; title: string; waiting: { identifier: string; title: string }[]; comment: unknown }) {
   return `${user} asked the Researcher to split the task "${title}" into Engineer tasks. These are created and waiting for ${user}'s go-ahead before any of them starts:
 
 ${waiting.map((w) => `- ${w.identifier}: ${String(w.title).replace(/[\r\n]+/g, " ").slice(0, 160)}`).join("\n")}
@@ -129,7 +129,7 @@ COMMENT>>>`;
 }
 
 /** Is the newest comment on a parent task the go-ahead for its waiting sub-tasks? Rejects on failure. */
-export async function readApproval({ cfg, user, title, waiting, comment }) {
+export async function readApproval({ cfg, user, title, waiting, comment }: { cfg: any; user: string; title: string; waiting: { identifier: string; title: string }[]; comment: unknown }) {
   const raw = await askCodex(cfg, approvalPrompt({ user, title, waiting, comment }), APPROVAL_SCHEMA);
   return ["start", "hold", "other"].includes(raw?.decision) ? raw.decision : "other";
 }
@@ -139,11 +139,11 @@ export async function readApproval({ cfg, user, title, waiting, comment }) {
  * Fail closed: the answer must be exactly one JSON object (the whole output, one fenced block, or the single
  * span from the first "{" to the last "}"); zero or several candidates throw.
  */
-export function parseJsonAnswer(text) {
+export function parseJsonAnswer(text: unknown): any {
   const t = String(text).trim();
   try { return JSON.parse(t); } catch {}
-  const parses = (c) => { try { return [JSON.parse(c)]; } catch { return []; } };
-  const fenced = [...t.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].flatMap((m) => parses(m[1]));
+  const parses = (c: string) => { try { return [JSON.parse(c)]; } catch { return []; } };
+  const fenced = [...t.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].flatMap((m) => parses(m[1]!));
   if (fenced.length > 1) throw new Error("ambiguous answer: several JSON blocks");
   if (fenced.length === 1) return fenced[0];
   const a = t.indexOf("{"), b = t.lastIndexOf("}");

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Regression set for the go-ahead on Engineer sub-tasks (readApproval in src/intake.mjs): real
+// Regression set for the go-ahead on Engineer sub-tasks (readApproval in src/intake.ts): real
 // comments on a parent task, each with the reading it must get, run through the real call. Run before
 // every change to the go-ahead prompt or its inputs:
 //
@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { stripHidden } from "../src/commands.mjs";
 import { loadConfig, REPO_ROOT } from "../src/config.mjs";
-import { readApproval } from "../src/intake.mjs";
+import { readApproval } from "../src/intake.ts";
 
 /** Compare one reading with the expectation: a value, or a list of acceptable values. */
 export function mismatches(read, expect) {

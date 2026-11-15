@@ -313,9 +313,9 @@ bad_ch="$(echo "$ch_tools" | grep -Ev '^(get_organizations|get_services_list|get
   && pass "clickhouse-mcp asks for mcp:access only and checks every query (one read statement, no external table functions, no SETTINGS)" || fail "clickhouse-mcp: scopes or query check changed"
 # Engineer jobs' Google Cloud: the user's own access, read-only by the prompt's rule; jobs get a
 # one-hour access token only, never the sign-in's refresh token.
-grep -q '\*\*Read only:\*\* describe, list, get, read and get-iam-policy commands' services/runner/src/prompt.mjs \
+grep -q '\*\*Read only:\*\* describe, list, get, read and get-iam-policy commands' services/runner/src/prompt.ts \
   && ! grep -q 'refresh_token' services/runner/src/engines.mjs \
-  && pass "runner: Google Cloud jobs get a one-hour token and the read-only rule (services/runner/src/gcp.ts, prompt.mjs)" || fail "runner: Google Cloud jobs lost the read-only rule, or got the refresh token"
+  && pass "runner: Google Cloud jobs get a one-hour token and the read-only rule (services/runner/src/gcp.ts, prompt.ts)" || fail "runner: Google Cloud jobs lost the read-only rule, or got the refresh token"
 grep -q '^export function layout(cfg' services/runner/src/engines.mjs && ! grep -q '"--dev-bind", "/", "/"' services/runner/src/engines.mjs && grep -q '"--tmpfs", "/tmp", "--tmpfs", home' services/runner/src/engines.mjs \
   && grep -q '"--unshare-pid", "--unshare-ipc",' services/runner/src/engines.mjs && grep -q '"--proc", "/proc"' services/runner/src/engines.mjs \
   && pass "runner: jobs see an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "runner: jobs bind the host's whole filesystem again"

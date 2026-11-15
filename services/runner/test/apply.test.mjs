@@ -28,7 +28,7 @@ test("apply-config reads the pin with the same parser (CLI), in every form YAML 
   }
 });
 test("paused Engineers are not assignment targets", async () => {
-  const { Paperclip } = await import("../src/paperclip.mjs");
+  const { Paperclip } = await import("../src/paperclip.ts");
   const pc = Object.create(Paperclip.prototype);
   pc.agents = async () => [{ status: "paused", metadata: { setupKey: "aidenhq:engineer" } }, { status: "idle", metadata: { setupKey: "aidenhq:engineer-openrouter" } }];
   assert.deepEqual((await pc.engineerAgents()).map((a) => a.metadata.setupKey), ["aidenhq:engineer-openrouter"]);
