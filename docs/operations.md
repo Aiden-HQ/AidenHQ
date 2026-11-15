@@ -32,7 +32,7 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
 - The board's Apps tab lists each app's health; the DevOps Engineer owns an unhealthy app and pages the owner only when
   it cannot fix it.
 - Fleet Ops (module `fleet-ops`): the board's detector (`services/board/src/fleet-ops.ts`) checks every
-  `fleet_ops_interval_minutes` for a Tier 2 card waiting over 2 hours, a run stuck past twice its timeout, an agent's last
+  `fleet_ops_interval_minutes` for a run stuck past twice its timeout, an agent's last
   3 runs failed, an app incident open over 15 minutes (or apps-mcp not answering for 15 minutes) a source with no good pass in an hour and an agents-org pull request open over an hour without merging (from the warehouse)
   (or failing for 15 minutes; apps-mcp's `/internal/sources`). It fires the "Fleet Ops: check" webhook once per incident
   and once on recovery (state in the board's store, meta `fleet_ops_detector`); Fleet Ops reads it from `fleet_status`

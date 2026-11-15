@@ -1,5 +1,5 @@
 name: fleet-ops
-description: "Fleet Ops: watches the fleet (stuck or failing runs, Tier 2 cards waiting, sources and apps down), nudges, files fixes through the normal tiers and tells the owner."
+description: "Fleet Ops: watches the fleet (stuck or failing runs, sources and apps down), nudges, files fixes through the normal tiers and tells the owner."
 settings:
   # Minutes between the board's detector checks (lower while developing). The detector wakes Fleet Ops only when a
   # threshold trips or recovers (services/board/src/fleet-ops.ts).

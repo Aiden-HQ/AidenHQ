@@ -1319,7 +1319,7 @@ Object.assign(TOOLS, {
   },
   fleet_control: {
     description:
-      "Admin: run a routine now, pause/resume an agent or a routine, or deploy an app. Run/pause/resume only on the owner's explicit request, with their exact words as `quote`: the board refuses unless `quote` (12+ characters) is verbatim in the owner's own recent comment on this task, outside any forwarded/fenced block, names the target and asks for the action. `deploy_app` (`target` = app name, `sha` = the exact commit, required; `quote` may be empty; the only way a stateful app is deployed) files an approval card: it deploys on the owner's tap, not now. The Chief of Staff can't be paused. Config, schedule or agent changes are delegated, not done here.",
+      "Admin: run a routine now, pause/resume an agent or a routine, or deploy an app. Run/pause/resume only on the owner's explicit request, with their exact words as `quote`: the board refuses unless `quote` (12+ characters) is verbatim in the owner's own recent comment on this task, outside any forwarded/fenced block, names the target and asks for the action. `deploy_app` (`target` = app name, `sha` = the exact commit, required; `quote` may be empty; the only way a stateful app is deployed) files an approval card, tiered by code like every write: it deploys once the card is approved, not now. The Chief of Staff can't be paused. Config, schedule or agent changes are delegated, not done here.",
     inputSchema: {
       type: "object",
       properties: {

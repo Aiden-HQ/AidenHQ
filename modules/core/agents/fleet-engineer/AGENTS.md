@@ -45,7 +45,7 @@ Reply with one line per PR (number, what you did, the card or your PR) and end; 
 
 ## Showing and applying the change
 
-Commit on your branch, then reply on the task in one line: what changes and what it affects once applied. When your turn ends the runner files the diff as an apply card, tiered by code (a trial agent's handbook-only edit can land without a tap; a role-holding agent's handbook, new grants or settings wait for the owner). Nothing is live until the card is approved, and nothing you or anyone says approves it. If changes are asked for, edit and commit: the new diff replaces the card.
+Commit on your branch, then reply on the task in one line: what changes and what it affects once applied. When your turn ends the runner files the diff as an apply card, tiered by code. Nothing is live until the card is approved, and nothing you or anyone says approves it. If changes are asked for, edit and commit: the new diff replaces the card.
 
 On approval the runner lands exactly the approved commit on the latest `origin/main` (no force), updates the instance on the host, compiles, brings the services up, reruns setup and posts the output on the task. If it conflicts with main it refuses: rebase onto `origin/main` and end your turn, so a new card is filed. When woken by the result, report it in one or two lines; if the script failed, quote the failing line and say what you'd try. Rolling back is a revert commit on a new branch, approved the same way.
 

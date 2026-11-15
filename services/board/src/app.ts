@@ -393,13 +393,18 @@ export function createApp(opts: AppOptions): Server {
 
   /** A rejection reaches the asking task (and the chat above an agent's sub-task), so nobody waits on a card that won't run. */
   async function toldRejected(a: Approval) {
-    // Fixed text and ids only: never the card's agent-supplied fields in a comment posted as the owner.
+    // Fixed text and ids only: never the card's agent-supplied fields in a comment posted as the owner. It names the AI
+    // reviewer's no as the reviewer's: posted with the board key it would otherwise read as the owner's, and agents told
+    // the owner about Tier 1 cards they never saw ("You rejected my card").
+    const reviewer = a.decidedBy?.startsWith("reviewer:");
     const text = a.decidedBy?.startsWith("stale:")
       ? `**Closed as stale or a duplicate** (approval ${a.id}, ${a.action}): not a no on the change. If it is still needed, ask again for its current state.\n\n${APPROVAL_MARKER}`
-      : `**Rejected** (approval ${a.id}, ${a.action}). Don't file it again unchanged; if it isn't clear why, ask what to change.\n\n${APPROVAL_MARKER}`;
+      : reviewer
+        ? `**Rejected by the AI reviewer** (approval ${a.id}, ${a.action}): not the owner's decision. Its note is on the card (\`task_approvals\`): fix what it names and file again; never unchanged.\n\n${APPROVAL_MARKER}`
+        : `**Rejected** (approval ${a.id}, ${a.action}). Don't file it again unchanged; if it isn't clear why, ask what to change.\n\n${APPROVAL_MARKER}`;
     await pc.addComment(a.issueId, text).catch((err) => log.warn({ err: String(err) }, "couldn't post the rejection"));
     const parentId = await pc.issue(a.issueId).then((i) => (i as { parentId?: string | null }).parentId, () => undefined);
-    if (parentId) await pc.addComment(parentId, `**Rejected** on ${a.identifier} (approval ${a.id}, ${a.action}).\n\n${APPROVAL_MARKER}`).catch(() => {});
+    if (parentId) await pc.addComment(parentId, `**Rejected${reviewer ? " by the AI reviewer" : ""}** on ${a.identifier} (approval ${a.id}, ${a.action})${reviewer ? ": not the owner's decision, and not news for them" : ""}.\n\n${APPROVAL_MARKER}`).catch(() => {});
   }
 
   /** Approve = apply, once: claimed before acting; the outcome (or the failure) goes on the card and the task. Never retried. */

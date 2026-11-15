@@ -14,7 +14,6 @@ import { alertIncidents } from "./monitoring.js";
 
 const MIN = 60_000;
 const STATE_KEY = "fleet_ops_detector";
-const CARD_WAIT_MS = 120 * MIN; // a Tier 2 card waiting this long
 const DOWN_MS = 15 * MIN; // an app incident open this long (the app-incident loop had its chance)
 const STALE_MS = 60 * MIN; // a source with no good pass this long
 /** Sources that pass on their own slower cadence: the security scanner runs daily. */
@@ -170,13 +169,9 @@ const age = (t: string | null | undefined, now: number) => (t ? now - Date.parse
 const mins = (ms: number) => `${Math.round(ms / MIN)} min`;
 
 /** The owner's alert list, as checks. */
-export function checks(pc: Paperclip, store: Pick<Store, "approvals" | "grades" | "meta" | "setMeta" | "refusalsSince">, now = () => Date.now(), env: NodeJS.ProcessEnv = process.env): Record<string, Check> {
+export function checks(pc: Paperclip, store: Pick<Store, "grades" | "meta" | "setMeta" | "refusalsSince">, now = () => Date.now(), env: NodeJS.ProcessEnv = process.env): Record<string, Check> {
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   return {
-    async card() {
-      const t = now();
-      return store.approvals.pending(t, 2).filter((a) => age(a.createdAt, t) > CARD_WAIT_MS).map((a) => ({ key: a.id, reason: `Tier 2 card ${a.id} (${a.action} ${a.target} on ${a.identifier}) waiting ${mins(age(a.createdAt, t))} for the owner` }));
-    },
     async run() {
       const t = now();
       const co = `/api/companies/${pc.companyId}`;

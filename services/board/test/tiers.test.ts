@@ -18,7 +18,8 @@ const WATCHER = "w".repeat(48);
 const REVIEWER = "r".repeat(48);
 const issue = { id: "11111111-1111-1111-1111-111111111111", identifier: "WOR-7", title: "T", description: "", status: "in_review", assigneeUserId: null, assigneeAgentId: "fe", createdAt: "", updatedAt: "" };
 const engineer = { id: "fe", name: "Fleet Engineer", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:engineer-fleet" } };
-const pc = { addComment: async () => {}, me: async () => "me-1", agents: async () => [engineer], labels: async () => [], company: async () => ({ issuePrefix: "WOR" }), issue: async (ref: string) => (ref === "WOR-9" || ref === "WOR-10" ? { ...issue, id: `00000000-0000-0000-0000-${ref.slice(4).padStart(12, "0")}`, identifier: ref } : issue) } as unknown as Paperclip;
+const posted: string[] = [];
+const pc = { addComment: async (_id: string, body: string) => void posted.push(body), me: async () => "me-1", agents: async () => [engineer], labels: async () => [], company: async () => ({ issuePrefix: "WOR" }), issue: async (ref: string) => (ref === "WOR-9" || ref === "WOR-10" ? { ...issue, id: `00000000-0000-0000-0000-${ref.slice(4).padStart(12, "0")}`, identifier: ref } : issue) } as unknown as Paperclip;
 const grants = join(mkdtempSync(join(tmpdir(), "tiers-")), "grants.json");
 const setAutonomy = (a: string) => writeFileSync(grants, JSON.stringify({ autonomy: a, agents: {} }));
 
@@ -118,6 +119,9 @@ describe("tiered approvals", () => {
     expect((await verdict(flaggedCard.id, { digest: flaggedCard.digest, decision: "approve" })).status).toBe(409);
     const reject = (await call("POST", "/internal/approvals", { issue: "WOR-7", action: "pr", tier: 1, panel: true, reason: "gate core", args: { only: [{ repo: "org/app", branch: `p${++n}`, sha: "d".repeat(40) }] } }, { "x-reviewer-key": REVIEWER })).json;
     expect((await verdict(reject.id, { digest: reject.digest, decision: "reject" })).json).toMatchObject({ state: "rejected" }); // a no needs one reviewer
+    // Its notice (posted with the board key) names the reviewer, so no agent reads it as the owner's no.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(posted.find((b) => b.includes(`approval ${reject.id}`))).toMatch(/^\*\*Rejected by the AI reviewer\*\*.*not the owner's decision/);
     // A reviewer's no never makes the next request the owner's.
     expect((await call("POST", "/internal/approvals", { issue: "WOR-7", action: "pr", tier: 1, reason: "r", args: { only: [{ repo: "org/app", branch: `p${++n}`, sha: "e".repeat(40) }] } }, { "x-reviewer-key": REVIEWER })).json.tier).toBe(1);
   });

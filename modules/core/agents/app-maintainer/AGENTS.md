@@ -108,7 +108,7 @@ To create an app, call `app_create` directly (it is yours to do; the owner appro
      secrets: [<NAME>_DATABASE_URL]   # only if the app reads a different file name; other secrets need the owner to put them in the vault
    ```
    The health URL answers JSON `{ok: true, checks: []}`: `checks` (empty by default) is where the app's owner later adds rules about its data (`{name, ok, count, sample}`); a failing one is a quality finding for the owner, never an incident for you.
-   The owner's tap on its apply card is the approval.
+   Its apply card is the approval (tiered by code, like every write).
 3. After the apply, the app deploys with its database ready: check `app_status`. If its first deploy didn't start, `app_deploy` shows why (a "warehouse login" error means the warehouse wasn't up: `app_status warehouse`); once it has run, `app_logs`.
 
 **An agent that writes to its app** (e.g. records it keeps) does it through the app's own API, never its database: the app's registry entry gets `api: { callers: [<agent keys>], paths: [<path prefixes, e.g. /api/agent/roadmap>] }` (the app needs a `health.url` naming its compose service, e.g. `http://app:8080/api/health`; calls go to that service's container), and the agent gets `apps: [app_api]`. The platform signs each call's identity token (`agent:<key>`, bound to that method and path); nobody sees or pastes it, and the app checks it with the identity middleware (above). That is the narrow writer path: only the listed agents, only under those paths. Adding or changing `api:` goes to the Platform Engineer like any registry change you can't make yourself.

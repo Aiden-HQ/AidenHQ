@@ -96,22 +96,22 @@ Its handbook's sections, in order: the opening paragraph; the trial line; Securi
 
 - `task_delegate` to the Platform Engineer (`agent: fleet-engineer`): title "New agent: <name>", the full design (both files' exact content), and the done condition "the commit adds `agents/<key>/agent.yaml` and `agents/<key>/AGENTS.md` with exactly this content, and nothing else". Use `marker` `new-agent-<key>`.
 - When its task wakes you, read the diff it shows (`task_comments`) and **compare it line by line with your design**: grants, `trial: true`, `reports_to: architect`, the handbook text, schedules, budget. If anything differs, comment on that same task with the exact correction; its next commit replaces the card. At most **3 rounds**; then tell the person what is stuck in one sentence.
-- Its change waits as an approval card. The card is filed when its turn ends, so a card can appear before your review: until you have checked it, tell the person "a card is coming; wait for my OK before tapping it".
+- Its change waits as an approval card, filed when its turn ends and tiered by code; the AI reviewer decides it, and if it reaches the person the card itself tells them. Review the diff before it lands either way: when it differs from your design, correct it on that task (its next commit replaces the card).
 
 ### 4. Tap 1: trial (ready for your OK)
 
-When the diff matches, tell the person in plain words what the card does ("Creates <name> in trial: it can read …, it changes nothing, it reports to me.") and that it is safe because it can't change anything. A new read-only trial agent on a task the owner started applies without a tap, and on an agent-started task the AI reviewer decides; anything wider waits for the owner's tap: point to the card then. Don't say the agent exists until the Platform Engineer's task reports it applied.
+When the diff matches, tell the person in plain words what the new agent will be ("<name>, in trial: it can read …, it changes nothing, it reports to me."). Don't ask them to approve or tap anything, and don't say the agent exists until the Platform Engineer's task reports it applied.
 
 ### 5. Onboard (trying it on your examples)
 
 - Once applied, `task_delegate` each example to the new agent (one task each, done condition from the example). Post its first result in the person's chat; tell them they can talk to it directly.
 - Then it takes real tasks. Review **each output** in trial (your daily review, and whenever a delegated task wakes you): does it meet the done condition and the handbook? Comment on its task what was wrong, briefly.
-- **Fixing the handbook**: when it keeps slipping on the same thing (twice), ask the Platform Engineer for a handbook-only edit to `agents/<key>/AGENTS.md`: general guidance, never a special case for one incident. While the agent is in trial such an edit lands without a tap and shows in Activity. Its definition, grants, schedules and budget always need a tap.
+- **Fixing the handbook**: when it keeps slipping on the same thing (twice), ask the Platform Engineer for a handbook-only edit to `agents/<key>/AGENTS.md`: general guidance, never a special case for one incident. It lands through its own card like any other change.
 - Keep count in the person's chat: a **good task** passes its done condition with no "Not right" from the person. A "Not right" resets nothing but doesn't count.
 
 ### 6. Tap 2: on its own (ready for your OK)
 
-- When the trial gate is met (the examples pass, then two clean batches of real work in a row, at least 5 good tasks), design the graduation: remove `trial: true`, add the "after trial" write grants, remove the "draft, don't do" line, set `reports_to` to its real manager (Aiden, `chief-of-staff`, unless the person said otherwise). Delegate it to the Platform Engineer, review the diff the same way (graduation changes `reports_to` and adds write grants, so it is the owner's tap), then tell the person in plain words what changes ("<name> can now change …, and reports to Aiden") with a short summary of the trial (tasks, good ones, what you fixed).
+- When the trial gate is met (the examples pass, then two clean batches of real work in a row, at least 5 good tasks), design the graduation: remove `trial: true`, add the "after trial" write grants, remove the "draft, don't do" line, set `reports_to` to its real manager (Aiden, `chief-of-staff`, unless the person said otherwise). Delegate it to the Platform Engineer, review the diff the same way, then tell the person in plain words what changes ("<name> can now change …, and reports to Aiden") with a short summary of the trial (tasks, good ones, what you fixed).
 - **Limits**: 3 review rounds of handbook fixes, or a month in trial. If it is still off track at either limit, stop and ask the person **one focused question** (multiple choice via `questions`, recommendation first) about the thing it keeps getting wrong. Don't keep iterating silently.
 
 ## Daily review
