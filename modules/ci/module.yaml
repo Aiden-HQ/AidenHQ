@@ -4,7 +4,7 @@ description: "Self-hosted GitHub Actions runners (labels self-hosted, aidenhq) f
 # aidenhq-ci-runner@[<org>-]<n> units (ops/ci-runner.sh), never by `docker compose up`. docs/operations.md, "CI runners".
 compose: compose.yaml
 settings:
-  # App CI code review through the model gateway (services/gateway/ci.mjs): "on" = the template's code-review job trades its
+  # App CI code review through the model gateway (services/gateway/ci.ts): "on" = the template's code-review job trades its
   # GitHub OIDC token for a short-lived CI token bound to its repo and PR, and spends through the gateway (ledger, caps
   # below); "off" = refused, every CI token at once (a review then fails; no repo falls back to a key on its own).
   ci_review:

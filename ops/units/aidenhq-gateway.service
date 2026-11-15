@@ -1,5 +1,5 @@
 [Unit]
-Description=AidenHQ model gateway (services/gateway/gateway.mjs)
+Description=AidenHQ model gateway (services/gateway/gateway.ts)
 After=network-online.target
 
 [Service]
@@ -7,7 +7,7 @@ After=network-online.target
 # backplane's gateway address (10.231.0.1), which exists once compose is up: the gateway retries that bind itself while
 # loopback serves.
 ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
-ExecStart=/usr/bin/env node --disable-warning=ExperimentalWarning %h/aidenhq/services/gateway/gateway.mjs
+ExecStart=/usr/bin/env node --disable-warning=ExperimentalWarning %h/aidenhq/services/gateway/gateway.ts
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5

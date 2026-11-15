@@ -358,7 +358,7 @@ const PulledRecord = z.object({
   output: z.number().int().min(0),
   costUsd: z.number().min(0).nullable(),
   ...Attribution,
-  /** App CI code review: `<owner>/<repo>#<pr>`, from the job's GitHub OIDC token (services/gateway/ci.mjs). */
+  /** App CI code review: `<owner>/<repo>#<pr>`, from the job's GitHub OIDC token (services/gateway/ci.ts). */
   subject: z.string().regex(/^[\w.-]{1,100}\/[\w.-]{1,100}#\d{1,9}$/).nullable().optional(),
 });
 

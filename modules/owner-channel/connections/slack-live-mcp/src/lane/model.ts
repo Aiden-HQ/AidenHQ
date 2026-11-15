@@ -10,7 +10,7 @@ export type ChatMsg =
 export interface ToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
 export interface ToolDef { type: "function"; function: { name: string; description?: string; parameters: unknown } }
 
-/** Same format as services/gateway/token.mjs: `ahqj_<payload>.<hmac>`, kind agent. */
+/** Same format as services/gateway/token.ts: `ahqj_<payload>.<hmac>`, kind agent. */
 export function laneToken(secret: string, agentId: string, name: string, ttlMs = 10 * 60_000, now = Date.now()): string {
   const body = Buffer.from(JSON.stringify({ k: "agent", a: agentId, i: null, c: name, x: now + ttlMs })).toString("base64url");
   return `ahqj_${body}.${createHmac("sha256", secret).update(body).digest("base64url")}`;

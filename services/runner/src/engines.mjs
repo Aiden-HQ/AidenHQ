@@ -5,7 +5,7 @@ import { StringDecoder } from "node:string_decoder";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { progressTracker } from "./progress.mjs";
-import { mintToken } from "../../gateway/token.mjs";
+import { mintToken } from "../../gateway/token.ts";
 import { CODEX_CONFIG_SCRUB } from "../../computer/lib.mjs";
 import { smallFile } from "./git.mjs";
 
@@ -305,7 +305,7 @@ export async function releaseBox(call, container, { everyMs = 2000, forMs = 20 *
 }
 
 /**
- * A model credential for the gateway (services/gateway/token.mjs), signed with gateway_job_secret: a job's (kind agent, capped,
+ * A model credential for the gateway (services/gateway/token.ts), signed with gateway_job_secret: a job's (kind agent, capped,
  * billed to its Engineer and task) or the runner's own (reviewer, grader, intake). Never the OpenRouter key.
  */
 export function modelToken(cfg, claims) {

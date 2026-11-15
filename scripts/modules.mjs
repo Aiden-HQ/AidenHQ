@@ -180,7 +180,7 @@ function resolveEnabled(all, wanted) {
 const agentsOrg = (settings) => settings.github_agents_org || (settings.instance_name ? `aidenhq-${settings.instance_name}` : "");
 
 /**
- * The gateway's CI code review switches (config/gateway.json `ci`, services/gateway/ci.mjs): only the agents org's app repos;
+ * The gateway's CI code review switches (config/gateway.json `ci`, services/gateway/ci.ts): only the agents org's app repos;
  * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped).
  */
 function ciReview(settings) {

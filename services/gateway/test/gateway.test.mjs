@@ -6,8 +6,8 @@ import http from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createGateway } from "../lib.mjs";
-import { mintToken } from "../token.mjs";
+import { createGateway } from "../lib.ts";
+import { mintToken } from "../token.ts";
 
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const json = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
