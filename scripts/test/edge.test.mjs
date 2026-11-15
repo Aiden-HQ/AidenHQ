@@ -47,6 +47,20 @@ test("edge on: every share.host goes to the gate with its own aud, then a 404; t
   assert.equal(hash(out), hash(compile(mods, inst({ edge }, [roadmap]))));
 });
 
+test("header-jwt: a front door needs no tunnel or team; identity and front compile into the gate, every host needs an aud", () => {
+  const e = { identity: { header: "x-front-identity", issuer: "https://auth.example.com", jwks_url: "https://auth.example.com/jwks.json", auth_method: "sso" }, front: { address: "100.101.102.103", port: 8445 }, my_apps: { host: "apps.acme.com", aud: "service:apps" } };
+  const app = { ...roadmap, share: { host: "roadmap.acme.com", aud: "service:roadmap", default_role: "member" } };
+  const out = compile(mods, inst({ app_login: "header-jwt", edge: e }, [app]));
+  assert.equal(out.edge.gate.login, "header-jwt");
+  assert.deepEqual(out.edge.gate.identity, e.identity);
+  assert.deepEqual(out.edge.gate.front, e.front);
+  assert.equal(out.edge.gate.hosts["roadmap.acme.com"].aud, "service:roadmap");
+  assert.equal(out.edge.cloudflared, null);
+  assert.equal(out.compose.services.cloudflared, undefined);
+  assert.throws(() => compile(mods, inst({ app_login: "header-jwt", edge: e }, [{ ...app, share: { host: "roadmap.acme.com" } }])), /needs share.aud/);
+  assert.throws(() => compile(mods, inst({ app_login: "header-jwt", edge: { ...e, front: { address: "203.0.113.5", port: 8445 } } }, [app])), /tailnet IPv4/);
+});
+
 test("edge off: nothing generated; share.host without edge, or an app joining a shared app's network, fails compile", () => {
   const out = compile(mods, inst({}, []));
   assert.equal(out.edge, null);

@@ -7,7 +7,7 @@ import { connect } from "node:net";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accessPage, authHeaders, createGate, mint, myAppsPage, requestsPage, signingKey, subOf } from "../gate.ts";
+import { accessPage, authHeaders, createGate, mint, myAppsPage, requestsPage, signingKey, subOf, verifyToken } from "../gate.ts";
 import { createIdentity } from "../../shared/aidenhq-identity.mjs";
 import { ensureIdentityKeys } from "../../../scripts/identity.mjs";
 
@@ -514,5 +514,50 @@ test("the gate's pages escape every value: emails, role names and meanings, app 
   for (const p of pages) {
     assert.doesNotMatch(p, /<script>/);
     assert.match(p, /&#60;script&#62;alert\(1\)&#60;\/script&#62;&#34;&#39;/);
+  }
+});
+
+test("header-jwt: the front door's token for this host signs a person in; wrong aud, no token, RS256 or magic-link are refused; the header never reaches the app", async () => {
+  const ec = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const IDP = "https://idp.example.com", HDR = "x-test-identity";
+  const es = (claims, { alg = "ES256" } = {}) => {
+    const body = `${b64({ alg, kid: "e1", typ: "JWT" })}.${b64({ iss: IDP, aud: "service:abc", email: "Viewer@Example.com", auth_method: "okta", exp: Math.floor(Date.now() / 1000) + 600, ...claims })}`;
+    return `${body}.${(alg === "ES256" ? sign("sha256", Buffer.from(body), { key: ec.privateKey, dsaEncoding: "ieee-p1363" }) : sign("sha256", Buffer.from(body), privateKey)).toString("base64url")}`;
+  };
+  const jwk = { ...ec.publicKey.export({ format: "jwk" }), kid: "e1" };
+  const cfg = {
+    login: "header-jwt", identity: { header: HDR, issuer: IDP, jwks_url: "http://jwks.invalid/jwks", auth_method: "okta" }, owner_email: "owner@example.com",
+    accounts_file: ACCOUNTS, identity_key_file: KEY, my_apps: { host: "apps.example.com", aud: "service:apps" },
+    hosts: { "roadmap.example.com": { app: "roadmap", port: app.address().port, aud: "service:abc", default_role: "member" }, "other.example.com": { app: "other", port: app.address().port, aud: "service:xyz" } },
+  };
+  const cookieApp = createServer((q, s) => s.writeHead(200, { "set-cookie": "theme=dark; Domain=example.com" }).end(JSON.stringify(q.headers)));
+  cfg.hosts["roadmap.example.com"].port = await listen(cookieApp);
+  const g = createGate({ config: () => cfg, fetch: async () => new Response(JSON.stringify({ keys: [jwk] })), log: () => {} });
+  const port = await listen(g);
+  const get = (headers, { host = "roadmap.example.com", path = "/" } = {}) => new Promise((resolve) => { seen = undefined; request({ host: "127.0.0.1", port, path, headers: { host, ...headers } }, (r) => { let b = ""; r.on("data", (c) => (b += c)).on("end", () => resolve({ status: r.statusCode, body: b, cookies: r.headers["set-cookie"] ?? [] })); }).end(); });
+  try {
+    const ok = await get({ [HDR]: es({}) });
+    assert.equal(ok.status, 200);
+    assert.equal(who(ok.body).email, "viewer@example.com");
+    assert.equal(JSON.parse(ok.body)[HDR], undefined);
+    assert.equal((await get({ [HDR]: es({}) }, { host: "other.example.com" })).status, 401); // app A's token on app B's host
+    assert.equal((await get({})).status, 401);
+    assert.equal((await get({ "cf-access-jwt-assertion": token({ email: "viewer@example.com" }) })).status, 401); // an Access token isn't the header
+    assert.equal((await get({ [HDR]: es({}, { alg: "RS256" }) })).status, 401);
+    // the key's type must match the alg: an ES256 token never verifies against an RSA key (nor RS256 against an EC key)
+    await assert.rejects(verifyToken(es({}), { issuer: IDP, aud: "service:abc", key: async () => publicKey, alg: "ES256" }), /key type/);
+    await assert.rejects(verifyToken(token({}), { issuer: ISSUER, aud: AUD, key: async () => ec.publicKey }), /key type/);
+    assert.equal((await get({ [HDR]: es({ auth_method: "magic-link" }) })).status, 401);
+    assert.equal((await get({ [HDR]: es({ email: "nobody@example.com" }) })).status, 403); // a valid identity that isn't allowed
+    assert.equal((await get({ [HDR]: es({}) }, { path: "/.auth/sign-in" })).status, 404);
+    // the app's Domain cookies are host-only
+    const c = await get({ [HDR]: es({}) }, { path: "/" });
+    assert.equal(c.cookies.some((x) => /domain=/i.test(x)), false);
+    assert.equal(seen, undefined);
+  } finally {
+    cookieApp.close();
+    cookieApp.closeAllConnections();
+    g.close();
+    g.closeAllConnections();
   }
 });

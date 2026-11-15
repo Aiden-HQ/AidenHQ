@@ -2,7 +2,8 @@
 // cloudflared → gate on 127.0.0.1:<port> → the app's 127.0.0.1:<port>. Per request: the Host names the app (unknown: 404);
 // the visitor is signed in (`login: access`: the Access token for that host's audience tag, RS256 from the team's JWKS;
 // `login: password`: the board's Better Auth session, checked on the auth listener, cached 60 s; a host with an aud still
-// needs the Access token too). Every inbound identity header and the Access token/cookie are stripped. Writes and WebSocket
+// needs the Access token too; `login: header-jwt`: a front door's signed ES256 token in a configured header, for that host's
+// aud, no /.auth at all). Every inbound identity header and the Access token/cookie are stripped. Writes and WebSocket
 // upgrades need a same-origin Origin (or Sec-Fetch-Site: same-origin), since sibling app hostnames are same-site.
 // The app gets X-AidenHQ-Identity: a JWT the gate mints per request (docs/design/app-identity.md; Ed25519, 5 minutes, aud =
 // the app), verified by the app with the shared middleware and the public keys. The upstream port comes only from the
@@ -56,6 +57,10 @@ export interface GateConfig {
   auth_secret_file?: string;
   accounts_file?: string;
   owner_email?: string;
+  /** login "header-jwt": a front door's signed ES256 identity token in `header`, from `issuer`'s keys at `jwks_url`. */
+  identity?: { header: string; issuer: string; jwks_url: string; auth_method?: string };
+  /** A second listener (a tailnet address the front door reaches) beside 127.0.0.1:port; same handler. */
+  front?: { address: string; port: number };
   my_apps: { host: string; aud?: string };
   identity_key_file: string;
   hosts: Record<string, HostSite>;
@@ -83,7 +88,7 @@ interface BoardReply { error?: string; code?: unknown; token?: unknown; requests
 /** A refusal (or a redirect to sign-in): the status and a short text. */
 interface Refusal { status: number; msg: string; location?: string; cookie?: string; email?: undefined }
 /** A sign-in method's answer: the email it verified. */
-interface SignIn { email: VerifiedEmail; idp: "access" | "password" }
+interface SignIn { email: VerifiedEmail; idp: "access" | "password" | "header-jwt" }
 interface Visitor { email: VerifiedEmail; name: string; idp: string | undefined }
 /** What authorize() decided; each kind's flags are absent (undefined) on every other kind, so a truthy flag narrows. */
 type Decision =
@@ -179,7 +184,7 @@ export function jwks(url: string, fetchImpl: typeof fetch = fetch, now: () => nu
     const r = await fetchImpl(url, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) throw new Error(`jwks ${r.status}`);
     const next = new Map();
-    for (const k of ((await r.json()) as { keys?: (JsonWebKey & { kid?: string })[] }).keys ?? []) if (k.kty === "RSA" && k.kid) next.set(k.kid, createPublicKey({ key: k, format: "jwk" }));
+    for (const k of ((await r.json()) as { keys?: (JsonWebKey & { kid?: string })[] }).keys ?? []) if ((k.kty === "RSA" || (k.kty === "EC" && k.crv === "P-256")) && k.kid) next.set(k.kid, createPublicKey({ key: k, format: "jwk" }));
     keys = next;
     at = now();
   };
@@ -193,16 +198,17 @@ export function jwks(url: string, fetchImpl: typeof fetch = fetch, now: () => nu
   };
 }
 
-/** The token's claims, or throws: RS256 only, a known kid, valid signature, the issuer, this app's aud, not expired. */
-export async function verifyToken(token: string, { issuer, aud, key }: { issuer: string | undefined; aud: string; key: KeyLookup }) {
+/** The token's claims, or throws: the one `alg` (RS256, or ES256 as JOSE's raw r||s), a known kid, valid signature, the issuer, this app's aud, not expired. */
+export async function verifyToken(token: string, { issuer, aud, key, alg = "RS256" }: { issuer: string | undefined; aud: string; key: KeyLookup; alg?: "RS256" | "ES256" }) {
   const parts = String(token).split(".") as [string, string, string];
   if (parts.length !== 3) throw new Error("malformed token");
   const header = b64json(parts[0]) as { alg?: unknown; kid?: unknown };
-  if (header.alg !== "RS256") throw new Error(`alg ${header.alg} not allowed`);
+  if (header.alg !== alg) throw new Error(`alg ${header.alg} not allowed`);
   const k = await key(String(header.kid ?? ""));
   if (!k) throw new Error("unknown signing key");
-  if (!verify("sha256", Buffer.from(`${parts[0]}.${parts[1]}`), k, Buffer.from(parts[2], "base64url"))) throw new Error("bad signature");
-  const c = b64json(parts[1]) as { iss?: unknown; aud?: unknown; exp?: unknown; nbf?: unknown; email?: unknown };
+  if (k.asymmetricKeyType !== (alg === "ES256" ? "ec" : "rsa")) throw new Error("signing key type doesn't match alg"); // never mix key types
+  if (!verify("sha256", Buffer.from(`${parts[0]}.${parts[1]}`), alg === "ES256" ? { key: k, dsaEncoding: "ieee-p1363" } : k, Buffer.from(parts[2], "base64url"))) throw new Error("bad signature");
+  const c = b64json(parts[1]) as { iss?: unknown; aud?: unknown; exp?: unknown; nbf?: unknown; email?: unknown; auth_method?: unknown };
   const now = Date.now() / 1000;
   if (c.iss !== issuer) throw new Error("wrong issuer");
   if (![c.aud].flat().includes(aud)) throw new Error("wrong audience");
@@ -245,9 +251,9 @@ export function sameOrigin(req: IncomingMessage, host: string) {
 }
 
 /** The request headers the app sees: no inbound identity, no Access token or cookie, no sign-in cookie; our token set. */
-export function upstreamHeaders(req: IncomingMessage, token: IdentityToken, { upgrade = false } = {}): OutgoingHttpHeaders {
+export function upstreamHeaders(req: IncomingMessage, token: IdentityToken, { upgrade = false, strip }: { upgrade?: boolean; strip?: string } = {}): OutgoingHttpHeaders {
   const h: IncomingHttpHeaders = {};
-  for (const [k, v] of Object.entries(req.headers)) if (!STRIP.test(k) && (upgrade ? !["proxy-connection", "keep-alive"].includes(k) : !HOP.includes(k))) h[k] = v;
+  for (const [k, v] of Object.entries(req.headers)) if (!STRIP.test(k) && k !== strip && (upgrade ? !["proxy-connection", "keep-alive"].includes(k) : !HOP.includes(k))) h[k] = v;
   if (h.cookie) {
     const kept = cookies(req).filter((c) => cookieName(c).toLowerCase() !== "cf_authorization" && !AUTH_COOKIE.test(cookieName(c)));
     if (kept.length) h.cookie = kept.join("; ");
@@ -436,6 +442,23 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
    */
   const adapters = {
     access: { authenticate: async (req: IncomingMessage, cfg: GateConfig, host: string, aud: string | undefined): Promise<SignIn | Refusal> => { const a = await accessEmail(req, cfg, host, aud); return a.email ? { email: a.email, idp: "access" } : (a as Refusal); } },
+    // A front door's signed identity header (docs/design/access.md): its token for this host's aud, a verified email, and the
+    // configured auth_method when there is one (a magic-link sign-in is refused where only SSO is meant).
+    headerJwt: { authenticate: async (req: IncomingMessage, cfg: GateConfig, host: string, aud: string | undefined): Promise<SignIn | Refusal> => {
+      const id = cfg.identity;
+      const token = id && req.headers[id.header];
+      try {
+        if (!id || !aud) throw new Error("no identity settings or aud for this host");
+        if (!token || Array.isArray(token)) throw new Error("no token");
+        const claims = await verifyToken(token, { issuer: id.issuer, aud, key: keyFor(id.jwks_url), alg: "ES256" });
+        if (id.auth_method && claims.auth_method !== id.auth_method) throw new Error(`auth_method ${String(claims.auth_method)} not allowed`);
+        const email = (typeof claims.email === "string" ? claims.email.trim().toLowerCase() : "") as VerifiedEmail;
+        return email ? { email, idp: "header-jwt" } : { status: 401, msg: "unauthorized: no email in the token" };
+      } catch (e) {
+        log({ msg: "denied", host, why: (e as Error).message });
+        return e instanceof KeysUnavailable ? { status: 503, msg: "unavailable: can't verify sign-ins right now" } : { status: 401, msg: "unauthorized" };
+      }
+    } },
     password: { authenticate: async (req: IncomingMessage, cfg: GateConfig): Promise<SignIn | null> => { const email = await sessionEmail(req, cfg); return email ? { email, idp: "password" } : null; } },
   };
 
@@ -459,7 +482,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     const url = String(req.url ?? "");
     if (!url.startsWith("/")) return { status: 400, msg: "bad request" };
     const login = cfg.login ?? "access";
-    if (!["access", "password"].includes(login)) {
+    if (!["access", "password", "header-jwt"].includes(login)) {
       log({ msg: "unknown login mode", login });
       return { status: 503, msg: "unavailable: misconfigured" };
     }
@@ -468,7 +491,11 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
 
     // Access: always in access mode (a host without an aud is refused), and on a password-mode host that has an aud.
     let email: VerifiedEmail | undefined, idp: string | undefined;
-    if (login === "access" || aud) {
+    if (login === "header-jwt") {
+      const a = await adapters.headerJwt.authenticate(req, cfg, host, aud);
+      if (!a.email) return a as Refusal;
+      ({ email, idp } = a);
+    } else if (login === "access" || aud) {
       const a = await adapters.access.authenticate(req, cfg, host, aud);
       if (!a.email) return a as Refusal; // a verified email is never empty
       ({ email, idp } = a);
@@ -776,7 +803,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     if (a.auth) {
       const u = new URL(config().auth_url);
       target = { host: u.hostname, port: Number(u.port) || 80, headers: authHeaders(req, boardSecret(config())) };
-    } else if (a.site) target = { host: "127.0.0.1", port: a.site.port, headers: upstreamHeaders(req, a.token) };
+    } else if (a.site) target = { host: "127.0.0.1", port: a.site.port, headers: upstreamHeaders(req, a.token, { strip: config().identity?.header }) };
     else return void res.writeHead(a.status, { "content-type": "text/plain", ...(a.location ? { location: a.location, "cache-control": "no-store" } : {}), ...(a.cookie ? { "set-cookie": a.cookie } : {}) }).end(`${a.msg}\n`);
     const up = httpRequest({ ...target, method: req.method, path: a.auth ? a.path : req.url });
     up.on("response", (r) => {
@@ -784,7 +811,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       for (const k of HOP) delete h[k];
       delete h["set-auth-token"]; // Better Auth's bearer header: the session token never leaves through the gate
       // An app can't set (or overwrite) any auth cookie; the auth listener's must be host-only (no Domain).
-      const kept = [h["set-cookie"] ?? []].flat().filter((c) => !AUTH_COOKIE.test(cookieName(c)) || (a.auth && !/;\s*domain\s*=/i.test(c))).map((c) => (a.site && config().previews ? hostOnly(c) : c));
+      const kept = [h["set-cookie"] ?? []].flat().filter((c) => !AUTH_COOKIE.test(cookieName(c)) || (a.auth && !/;\s*domain\s*=/i.test(c))).map((c) => (a.site && (config().previews || config().login === "header-jwt") ? hostOnly(c) : c));
       if (kept.length) h["set-cookie"] = kept;
       else delete h["set-cookie"];
       if (a.auth && (/json/i.test(String(h["content-type"] ?? "")) || a.path.startsWith(`${AUTH_PATH}api/`))) return void tokenless(r, res, h);
@@ -805,12 +832,12 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       const r = a as Refusal;
       return void socket.end(`HTTP/1.1 ${r.status} ${({ 400: "Bad Request", 401: "Unauthorized", 404: "Not Found", 503: "Service Unavailable" } as Record<number, string>)[r.status] ?? "Forbidden"}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${r.msg.length + 1}\r\n\r\n${r.msg}\n`);
     }
-    const up = httpRequest({ host: "127.0.0.1", port: a.site.port, method: req.method, path: req.url, headers: upstreamHeaders(req, a.token!, { upgrade: true }) });
+    const up = httpRequest({ host: "127.0.0.1", port: a.site.port, method: req.method, path: req.url, headers: upstreamHeaders(req, a.token!, { upgrade: true, strip: config().identity?.header }) });
     const raw = (status: number | undefined, message: string | undefined, rawHeaders: string[]) => {
       let s = `HTTP/1.1 ${status} ${message}\r\n`;
       for (let i = 0; i < rawHeaders.length; i += 2) {
         if (rawHeaders[i]!.toLowerCase() === "set-cookie" && AUTH_COOKIE.test(cookieName(rawHeaders[i + 1]!))) continue; // as for responses
-        s += `${rawHeaders[i]}: ${rawHeaders[i]!.toLowerCase() === "set-cookie" && config().previews ? hostOnly(rawHeaders[i + 1]!) : rawHeaders[i + 1]}\r\n`;
+        s += `${rawHeaders[i]}: ${rawHeaders[i]!.toLowerCase() === "set-cookie" && (config().previews || config().login === "header-jwt") ? hostOnly(rawHeaders[i + 1]!) : rawHeaders[i + 1]}\r\n`;
       }
       return `${s}\r\n`;
     };
