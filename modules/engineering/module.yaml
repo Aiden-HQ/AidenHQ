@@ -27,6 +27,8 @@ agents:
       - openrouter/moonshotai/kimi-k3
       - openrouter/qwen/qwen3-coder-next
     dispatch: runner
+    # Primer through the model gateway (optional: only with the primer module).
+    jobcaps: [ primer-read? ]
   app-engineer:
     department: engineering
     # Routed since 2026-11-14, after the live checks (restart, cancel, peak memory: docs/design/sandboxing.md).

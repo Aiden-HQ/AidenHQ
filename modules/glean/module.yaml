@@ -16,4 +16,7 @@ connections:
     tools:
       read: [ search, read_document, employee_search, meeting_lookup, code_search, chat ]
       write: []
+# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries).
+jobcaps:
+  - { id: glean-read, connection: glean, tools: read, private: true, read_url: "http://127.0.0.1:3126/mcp/read", read_secret: glean_mcp_read_token }
 compose: compose.yaml

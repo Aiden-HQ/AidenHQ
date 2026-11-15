@@ -5,9 +5,9 @@
 // cache (hardlinked objects), so they are quick and keep every write inside the workspace.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { normalizeRepo } from "./commands.mjs";
 import { readOwn } from "./files.ts";
 import { SAFE_GIT_ARGS, defaultBranch, git, smallFile } from "./git.mjs";
@@ -26,6 +26,31 @@ function sharesObjects(clone: string): boolean {
 const MANIFEST = join(".aidenhq", "branches.json");
 
 export const workspacePath = (workDir: string, identifier: string) => join(workDir, "tasks", identifier);
+
+/** A refusal whose message is for the user as it stands (the runner posts it on the task). */
+export class UserError extends Error {}
+
+/**
+ * A job's workspace, checked before the job gets it read-write: inside `root` (the work dir), with no symlink from `root` down
+ * (bwrap binds a link's target, so a linked task folder would hand the job another directory). Returns its real path.
+ */
+export function safeWorkspace(root: string, path: string): string {
+  const base = realpathSync(root);
+  let rel = relative(resolve(root), resolve(path));
+  if (rel.startsWith("..") || isAbsolute(rel)) rel = relative(base, resolve(path));
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new UserError(`workspace refused: ${path} is not inside ${root}`);
+  let at = base;
+  for (const part of rel.split(sep)) {
+    at = join(at, part);
+    const st = lstatSync(at, { throwIfNoEntry: false });
+    if (!st) break;
+    if (st.isSymbolicLink()) throw new UserError(`workspace refused: ${at} is a symlink`);
+  }
+  const full = join(base, rel);
+  const real = existsSync(full) ? realpathSync(full) : full;
+  if (!real.startsWith(base + sep)) throw new UserError(`workspace refused: ${path} resolves outside ${root}`);
+  return real;
+}
 
 const hasRef = (cwd: string, ref: string) => git(cwd, "rev-parse", "--verify", "--quiet", ref).then(() => true, () => false);
 

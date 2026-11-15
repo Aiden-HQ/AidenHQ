@@ -25,7 +25,7 @@ the model gateway. It is the `codex` engine with a different model provider:
 
 ## Private reads: per Engineer, not per engine
 
-Private reads (Grafana, Slack, Glean and ClickHouse, `PRIVATE_READS`; the job's gcloud session; the `aidenhq` commands
+Private reads (Grafana, Slack, Glean and ClickHouse, now private jobcaps; the job's gcloud session; the `aidenhq` commands
 that read other tasks) used to follow the engine kind (`codex` and `claude` got them). They now follow the Engineer: an
 agent definition opts in with `private_reads: true`, setup stores it as `metadata.privateReads`, and the runner's
 `pickedEngine` sets `reads` on the job's engine from it (`observes(engine)`). A job with no assigned Engineer, or an
@@ -102,7 +102,8 @@ The product's `codex-home` contains:
   `supply-chain` (pinning, the 7-day rule, `best-version.mjs`), and
   `design-system` (building UI with `modules/core/design-system/`).
 
-**MCP servers.** Primer, plus the four private reads for an Engineer with `private_reads`, each with `default_tools_approval_mode="approve"` (the same as
+**MCP servers.** The agent's jobcaps (Primer; the four private reads for an Engineer with `private_reads`), each at the
+model gateway's `/c/<connection>/mcp` with the job token (`AIDENHQ_JOB_TOKEN`), each with `default_tools_approval_mode="approve"` (the same as
 `codex`). There are no local stdio servers. A stdio MCP server is a child of Codex, outside the tool sandbox, so any
 server that executes repository code (a language server does) would escape the write boundary.
 

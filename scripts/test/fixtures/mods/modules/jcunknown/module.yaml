@@ -1,0 +1,4 @@
+name: jcunknown
+description: an unknown jobcap
+agents:
+  lost: { adapter: opencode_local, dispatch: runner, jobcaps: [ nope-read ] }

@@ -1,0 +1,5 @@
+name: jcpriv
+description: a private jobcap without private reads
+requires: [jc]
+agents:
+  nosy: { adapter: opencode_local, dispatch: runner, jobcaps: [ jc-secret ] }

@@ -10,7 +10,7 @@ import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, is
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { branchCardArgs, cardText } from "./cards.ts";
-import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
+import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
@@ -26,7 +26,7 @@ import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./prime
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.ts";
 import { createMetrics, writeMetrics } from "./metrics.ts";
-import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos } from "./workspace.ts";
+import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos, UserError, safeWorkspace } from "./workspace.ts";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.ts";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.ts";
 import * as merges from "./merges.mjs";
@@ -3455,7 +3455,6 @@ async function agentTasks(ctx, args) {
   return list.slice(0, 25).map((i) => `${i.identifier} · ${i.status} · with ${assigneeName(i, agents)} · ${String(i.updatedAt ?? "").slice(0, 10)} · ${i.title}`).join("\n");
 }
 
-class UserError extends Error {}
 /** The card's branch or head moved before review: the card is stale, not rejected, and costs no review slot. */
 class MovedHead extends UserError {}
 
@@ -3503,6 +3502,8 @@ async function startJob({ issue, instructions }) {
     const engine = task.engine ?? resolveEngine({}, cfg);
 
     const workspace = await prepareWorkspace(issue, state.task(issue.id), { copy: Boolean(engine.box) });
+    // The folder a job gets read-write: inside the work dir, no symlink on the way (bwrap would bind its target).
+    safeWorkspace(cfg.workDir, workspace);
     // PRs merged or closed since the last run: never keep working on them.
     const prNotes = await leaveFinishedPrs(issue, workspace);
     if (prNotes.length) instructions = `(Runner note: ${prNotes.join(" ")} Build on what is there now.)\n\n${instructions}`;
@@ -3535,23 +3536,28 @@ async function startJob({ issue, instructions }) {
     const crewHash = crewCtx ? createHash("sha256").update(JSON.stringify(crewCtx)).digest("hex") : "";
     const crew = crewCtx && (!resumed || state.get(crewKey) !== crewHash) ? crewCtx : undefined;
     if (crewHash) state.set(crewKey, crewHash);
-    // Private reads for an Engineer with them, and the Slack messages the task came from.
-    const observe = observes(engine) && !engine.box
-      ? {
-          grafana: existsSync(cfg.grafanaTokenFile),
-          slack: existsSync(cfg.slackTokenFile),
-          glean: existsSync(cfg.gleanTokenFile),
-          clickhouse: existsSync(cfg.clickhouseTokenFile),
-          sources: slackSources(`${full.description ?? ""}\n${parent?.description ?? ""}\n${instructions}`),
-          gcp: { state: gcp.state, detail: gcp.detail, projects: cfg.gcp.projects },
-        }
-      : undefined;
     const engineers = await pc.engineerAgents().catch(() => []);
     // A specialised Engineer (Platform Engineer) brings its own handbook; the others share one persona per engine.
     const assigned = engineers.find((a) => a.id === full.assigneeAgentId);
     const brief = typeof assigned?.metadata?.brief === "string" ? assigned.metadata.brief : "";
     const build = typeof assigned?.metadata?.build === "string" ? assigned.metadata.build : "";
     const persona = brief ? undefined : personaFor(engine.kind, engineers, assigned);
+    const agentId = assigned?.id ?? engineers.find((a) => a.adapterType === "opencode_local" && a.metadata?.box !== true)?.id ?? null; // billed to the Engineer (a label-only task: the OpenRouter one)
+    // The agent's jobcaps (grants table): its reads of connections, through the gateway with the job token. A box job reaches
+    // its connections through the launcher instead.
+    const jobcaps = engine.box ? [] : jobcapsFor(cfg, engine, readGrants()?.agents?.[agentId]?.jobcaps ?? []);
+    const reading = new Set(jobcapServers(cfg, jobcaps).map((s) => s.name));
+    // Private reads for an Engineer with them, and the Slack messages the task came from.
+    const observe = observes(engine) && !engine.box
+      ? {
+          grafana: reading.has("grafana"),
+          slack: reading.has("slack"),
+          glean: reading.has("glean"),
+          clickhouse: reading.has("clickhouse"),
+          sources: slackSources(`${full.description ?? ""}\n${parent?.description ?? ""}\n${instructions}`),
+          gcp: { state: gcp.state, detail: gcp.detail, projects: cfg.gcp.projects },
+        }
+      : undefined;
     // Comments while it works reach a session that takes them (Claude Code).
     const channel = {};
     Object.assign(running.get(issue.id), { channel, who: persona?.name });
@@ -3565,7 +3571,6 @@ async function startJob({ issue, instructions }) {
     const tipsBefore = await branchTips(workspace);
     const identity = await botIdentity();
     const ghToken = engine.box ? undefined : await jobGhToken(repos).catch((err) => (log("no gh token for the job", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), undefined));
-    const agentId = assigned?.id ?? engineers.find((a) => a.adapterType === "opencode_local" && a.metadata?.box !== true)?.id ?? null; // billed to the Engineer (a label-only task: the OpenRouter one)
     // A box job: its box first (the task's last one confirmed gone), bound to this task and to the helper token it will use.
     const helperToken = randomBytes(24).toString("hex");
     if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity });
@@ -3576,9 +3581,9 @@ async function startJob({ issue, instructions }) {
     const sessionId = resumed ? state.task(issue.id).session_id : undefined;
     const startedAt = Date.now();
     // The job's gateway credential comes from its agent, task and start time: `aidenhq advise` mints the same one (advise.ts).
-    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, at: startedAt }, box });
+    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, at: startedAt, jobcaps, observing: observes(engine) }, box });
     // What the next runner needs to adopt the run and finish its turn after a restart.
-    tools.run = { pid: run.pid, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, agentId, repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
+    tools.run = { pid: run.pid, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, observing: observes(engine), repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
     state.saveRun(jobId, tools.run);
     running.get(issue.id).pid = run.pid;
     const watch = watchAgent(run, { engine, sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });

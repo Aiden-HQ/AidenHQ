@@ -10,3 +10,13 @@ settings:
 # How to set it up (the board's Settings, Connections).
 setup: "Set ClickHouse Cloud's MCP server URL on the board (Settings, Connections) and approve the change, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120). Used by the runner's Engineer jobs."
 compose: compose.yaml
+# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries).
+# Queries run up to two minutes (clickhouse-mcp caps them), past Codex's 60-second tool timeout.
+jobcaps:
+  - id: clickhouse-read
+    connection: clickhouse
+    private: true
+    read_url: "http://127.0.0.1:3127/mcp"
+    read_secret: clickhouse_mcp_token
+    tool_timeout_s: 180
+    tools: [ get_organizations, get_services_list, get_service_details, list_databases, list_tables, run_select_query ]

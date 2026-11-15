@@ -12,7 +12,8 @@ fails=0
 pass() { printf '  ok    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 # A service's /mcp/read for the runner's jobs: its read token opens only /mcp/read, which lists
-# no write tools, and the service's main token doesn't open it. Jobs hold only the read token.
+# no write tools, and the service's main token doesn't open it. Only the model gateway holds the read token: jobs reach
+# /mcp/read through its jobcap route (POST /c/<connection>/mcp) with their own job token (checked below).
 read_split() { # service port
   local rt mt list
   rt="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/$1_mcp_read_token" 2>/dev/null)"
@@ -369,18 +370,19 @@ else
   fail "runner: jobs reach: ${job_probe:-the probe failed to run}"
 fi
 # Live, in a job's own network (engines.mjs jailed): every host listener outside the jail (loopback, the LAN address,
-# Docker bridges, the tailnet) is out of reach from inside it, except the ports a job is given (a helper, the MCP
-# endpoints); the Internet and those ports must work, so a broken jail can't pass as "blocked".
+# Docker bridges, the tailnet) is out of reach from inside it, except the ports a job is given (a helper, the model
+# gateway: its model calls and its jobcaps, the one MCP port); the connections' own read ports (3123-3127) are refused like
+# any other; the Internet and the allowed ports must work, so a broken jail can't pass as "blocked".
 if net_probe="$(node --input-type=module -e '
   import { spawn, spawnSync } from "node:child_process";
   import { loadConfig } from "./services/runner/src/config.mjs";
-  import { hiding, jailProblem, loopbackPorts } from "./services/runner/src/engines.mjs";
+  import { gatewayUrl, hiding, jailProblem, loopbackPorts } from "./services/runner/src/engines.mjs";
   const cfg = loadConfig();
   const problem = jailProblem(cfg);
   if (problem) { process.stdout.write(`no network jail: ${problem}`); process.exit(1); }
   const helper = spawn(process.execPath, ["-e", "require(\"http\").createServer((q, s) => s.end(\"ok\")).listen(0, \"127.0.0.1\", function () { console.log(this.address().port) })"]);
   const hp = Number(await new Promise((r) => helper.stdout.once("data", (d) => r(String(d).trim()))));
-  const mcp = [cfg.primerMcpUrl, cfg.grafanaMcpUrl, cfg.slackMcpUrl, cfg.gleanMcpUrl, cfg.clickhouseMcpUrl];
+  const mcp = [gatewayUrl(cfg)];
   const allowed = loopbackPorts([...mcp, `http://127.0.0.1:${hp}`]);
   // Every IPv4 address of the host (the LAN, Docker bridges, the tailnet): a wildcard listener answers on each.
   const own = [...spawnSync("ip", ["-4", "-o", "addr"], { encoding: "utf8" }).stdout.matchAll(/inet (\d+\.\d+\.\d+\.\d+)\//g)].map((m) => m[1]);
@@ -414,6 +416,30 @@ if net_probe="$(node --input-type=module -e '
   pass "runner: a job has its own network: the Internet, its helper and MCP ports only; no other host listener ($net_probe)"
 else
   fail "runner: job network: ${net_probe:-the probe failed to run}"
+fi
+# Live, the model gateway's jobcap route (services/gateway/jobcaps.ts): a job token with primer-read lists no write and gets
+# tool-unlisted for a write; the read token itself (not a job token) is refused. Only where config/jobcaps.json has primer-read.
+if grep -q '"primer-read"' config/jobcaps.json 2>/dev/null; then
+  if jc_probe="$(node --input-type=module -e '
+    import { readFileSync } from "node:fs";
+    import { mintToken } from "./services/gateway/token.ts";
+    const dir = process.env.AIDENHQ_SECRETS_DIR;
+    const read = (n) => readFileSync(`${dir}/${n}`, "utf8").trim();
+    const job = mintToken(read("gateway_job_secret"), { kind: "agent", component: "verify-security", ttlMs: 120_000, jobcaps: ["primer-read"] });
+    const call = (token, body) => fetch("http://127.0.0.1:8201/c/primer/mcp", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, ...body }), signal: AbortSignal.timeout(30_000) });
+    const bad = [];
+    if ((await call(read("primer_mcp_read_token"), { method: "tools/list" })).status !== 401) bad.push("the read token opens it");
+    const w = await (await call(job, { method: "tools/call", params: { name: "primer_create_document", arguments: {} } })).text();
+    if (!w.includes("tool-unlisted")) bad.push(`a write was not refused: ${w.slice(0, 120)}`);
+    const r = await (await call(job, { method: "resources/list" })).text();
+    if (!r.includes("method-refused")) bad.push(`resources/list was not refused: ${r.slice(0, 120)}`);
+    process.stdout.write(bad.join(", "));
+    process.exit(bad.length ? 1 : 0);
+  ' 2>&1)"; then
+    pass "gateway: the jobcap route takes only a job token, and refuses a tool or method outside the jobcap"
+  else
+    fail "gateway: jobcap route: ${jc_probe:-the probe failed to run}"
+  fi
 fi
 # Live, from a container on the CI runners' network (modules/ci): the model gateway's CI listener (10.231.4.1:8201) is the
 # only host listener it reaches, and it takes CI tokens only and serves no other route; the Internet works.
@@ -594,15 +620,18 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && ! awk '/^async function agentApply/,/^}/' services/runner/src/main.mjs | grep '"push"' >/dev/null \
   && [ "$(awk '/^async function agentPrimer/,/^}/' services/runner/src/main.mjs | grep -n 'await allowWrite(ctx, "primer"' | cut -d: -f1)" -lt "$(awk '/^async function agentPrimer/,/^}/' services/runner/src/main.mjs | grep -n 'savePrimer(' | head -1 | cut -d: -f1)" ] \
   && grep -q '^export function authorizePrompt({ user, action, task, earlier = \[\], recent = \[\], lastReply = "" })' services/runner/src/authorize.mjs \
-  && grep -q 'primerTokenFile: join(secrets, "primer_mcp_read_token")' services/runner/src/config.mjs \
+  && grep -qF 'jobcapsFile: join(configDir, "jobcaps.json"),' services/runner/src/config.mjs \
+  && ! grep -qE '_mcp_read_token|_mcp_token' services/runner/src/config.mjs services/runner/src/engines.mjs \
   && ! grep -q primerPublishTokenFile services/runner/src/engines.mjs \
-  && grep -q 'slackTokenFile: join(secrets, "slack_mcp_read_token")' services/runner/src/config.mjs \
-  && grep -q 'gleanTokenFile: join(secrets, "glean_mcp_read_token")' services/runner/src/config.mjs \
-  && grep -q 'const reads = observes(engine) ? privateReads(cfg) : \[\];' services/runner/src/engines.mjs \
+  && ! grep -qF '"codex", "sandbox"' services/runner/src/engines.mjs \
+  && grep -qF 'url: `${gatewayUrl(cfg)}/c/${c.connection}/mcp`' services/runner/src/engines.mjs \
+  && grep -qF 'if (j.private && a.private_reads !== true) fail(' scripts/modules.mjs \
+  && grep -qF 'filter((id) => all[id] && (!all[id].private || observes(engine)))' services/runner/src/engines.mjs \
+  && grep -qF 'const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live";' services/runner/src/engines.mjs \
+  && grep -qF '(!c.private || who.o === true)' services/gateway/jobcaps.ts \
   && grep -q 'export const observes = (engine) => engine?.reads === true;' services/runner/src/engines.mjs \
   && grep -q 'agent.metadata?.privateReads === true ? { reads: true }' services/runner/src/commands.mjs \
-  && grep -q 'const search = observes(engine) ? "disabled" : "live";' services/runner/src/engines.mjs \
-  && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed, apply only files a card at the turn's end, and Primer publishing is checked against the user's words (services/runner/src/authorize.mjs); jobs hold only read tokens, and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
+  && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed, apply only files a card at the turn's end, and Primer publishing is checked against the user's words (services/runner/src/authorize.mjs); jobs hold no connection URL or token (their jobcaps go through the gateway with the job token), and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
 pass "no email/Slack/Telegram send or calendar write tool is configured for any agent"
 
 echo

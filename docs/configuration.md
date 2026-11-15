@@ -88,9 +88,12 @@ overrides:
   `slack_live.chat_send`, `slack_live.notify_owner` (any other name, an entry it doesn't grant, or one on an agent not in
   trial is a compile error). Every other granted write stays refused until trial ends. The Agent Architect designs these
   and the Platform Engineer commits them after the owner approves.
-- `private_reads: true` on a `dispatch: runner` agent: its jobs get the private reads (Grafana, Slack, Glean, ClickHouse,
-  the job's gcloud session, other tasks) and no web search. Without it (the Software and Platform Engineers), Primer and
-  web search only. `engine:` on a runner agent picks its engine (`codex-openrouter` or `openrouter` for `opencode_local`).
+- `private_reads: true` on a `dispatch: runner` agent: its jobs may hold private data (the private jobcaps: Grafana, Slack,
+  Glean, ClickHouse; the job's gcloud session; other tasks) and get no web search. Without it (the Software and Platform
+  Engineers), web search and only the non-private jobcaps (Primer).
+- `jobcaps: [<id>]` on a `dispatch: runner` agent (`<id>?` when its module is optional): what its jobs read, through the
+  model gateway's `/c/<connection>/mcp` with the job's own token; no connection URL or token enters a job. A module declares
+  them under `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on a runner agent picks its engine (`codex-openrouter` or `openrouter` for `opencode_local`).
 - `max_parallel` on an agent: how many of its runs go at once (Paperclip's `maxConcurrentRuns`). For a `dispatch: runner`
   agent (the Engineers, the Platform Engineer) it caps that agent's parallel runner jobs, each in its own task workspace,
   within the host's `max_concurrent` (config/runner.yaml); unset, only the host's cap applies.

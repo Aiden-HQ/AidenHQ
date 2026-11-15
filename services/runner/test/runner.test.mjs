@@ -75,20 +75,18 @@ describe("engines and modes", () => {
     assert.deepEqual(resolveEngine({ model: "gpt-6-astra" }, cfg, { kind: "claude", model: "opus" }), { kind: "codex", model: "gpt-6-astra" });
   });
 
-  it("runs Claude Code headless inside the codex sandbox, without the user's Claude setup", () => {
+  it("runs Claude Code headless under bwrap alone, without the user's Claude setup", () => {
     const dir = mkdtempSync(join(tmpdir(), "pw-claude-"));
     const tokenFile = join(dir, "token");
     writeFileSync(tokenFile, "tok\n");
     const c = { ...cfg, claudeTokenFile: tokenFile, claudeConfigDir: join(dir, "home"), sandbox: { extra_writable_roots: [] } };
-    const { argv, env, promptAsArg } = buildCommand({ cfg: c, engine: { kind: "claude", model: "opus" }, worktree: "/w", sessionId: "abc", lastMessageFile: "/x" });
-    assert.deepEqual(argv.slice(0, 2), ["codex", "sandbox"]);
-    assert.ok(argv.includes(`sandbox_workspace_write.writable_roots=${JSON.stringify(["/w", join(dir, "home")])}`));
-    const claude = argv.slice(argv.indexOf("--") + 1);
-    assert.deepEqual(claude.slice(0, 2), ["claude", "-p"]);
-    for (const flag of ["--strict-mcp-config", "--setting-sources", "--tools"]) assert.ok(claude.includes(flag), flag);
-    assert.equal(claude[claude.indexOf("--setting-sources") + 1], "");
-    assert.doesNotMatch(claude[claude.indexOf("--tools") + 1], /RemoteTrigger|PushNotification|Cron|SendMessage|Workflow/);
-    assert.deepEqual(claude.slice(-4), ["--model", "opus", "--resume", "abc"]);
+    const { argv, env, promptAsArg, rw } = buildCommand({ cfg: c, engine: { kind: "claude", model: "opus" }, worktree: "/w", sessionId: "abc", lastMessageFile: "/x" });
+    assert.deepEqual(argv.slice(0, 2), ["claude", "-p"]);
+    assert.ok(rw.includes(join(dir, "home")));
+    for (const flag of ["--strict-mcp-config", "--setting-sources", "--tools"]) assert.ok(argv.includes(flag), flag);
+    assert.equal(argv[argv.indexOf("--setting-sources") + 1], "");
+    assert.doesNotMatch(argv[argv.indexOf("--tools") + 1], /RemoteTrigger|PushNotification|Cron|SendMessage|Workflow/);
+    assert.deepEqual(argv.slice(-4), ["--model", "opus", "--resume", "abc"]);
     assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, "tok");
     assert.equal(env.CLAUDE_CONFIG_DIR, join(dir, "home"));
     assert.equal(env.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
@@ -96,99 +94,75 @@ describe("engines and modes", () => {
     assert.throws(() => buildCommand({ cfg: { ...c, claudeTokenFile: join(dir, "missing") }, engine: { kind: "claude" }, worktree: "/w" }), /claude setup-token/);
   });
 
-  it("gives every engine Primer's read-only endpoint, with the token only in the environment", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pw-primer-"));
-    for (const [f, v] of [["claude", "tok"], ["or", "sk-or-realkey"], ["primer", "ptok\n"]]) writeFileSync(join(dir, f), v);
-    const url = "http://127.0.0.1:3123/mcp/read";
-    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "claude"), primerMcpUrl: url, primerTokenFile: join(dir, "primer"), sandbox: { extra_writable_roots: [] } };
-    for (const kind of ["codex", "claude", "openrouter"]) {
-      const { argv, env } = buildCommand({ cfg: c, engine: { kind, model: "m" }, worktree: "/w", lastMessageFile: "/x" });
-      assert.equal(env.PRIMER_MCP_TOKEN, "ptok", kind);
-      assert.ok(!argv.some((a) => a.includes("ptok")), `${kind}: token on the command line`);
+  // Jobcaps (config/jobcaps.json): every read goes through the model gateway's /c/<connection>/mcp with the job's own token.
+  const jobcapsCfg = (dir, extra = {}) => {
+    for (const [f, v] of [["claude", "tok"], ["or", "sk-or-realkey"], ["secret", "job-secret"]]) writeFileSync(join(dir, f), v);
+    writeFileSync(join(dir, "jobcaps.json"), JSON.stringify({
+      "primer-read": { connection: "primer", url: "http://127.0.0.1:3123/mcp/read", bearer_secret: "primer_mcp_read_token", tools: ["primer_get_document"] },
+      "slack-read": { connection: "slack", url: "http://127.0.0.1:3125/mcp/read", bearer_secret: "slack_mcp_read_token", tools: ["slack_read_thread"] },
+      "clickhouse-read": { connection: "clickhouse", url: "http://127.0.0.1:3127/mcp", bearer_secret: "clickhouse_mcp_token", tools: ["run_select_query"], tool_timeout_s: 180 },
+    }));
+    return { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "secret"), codexOpenrouterHome: join(dir, "homes"), jobcapsFile: join(dir, "jobcaps.json"), sandbox: { extra_writable_roots: [] }, ...extra };
+  };
+
+  it("gives every engine its jobcaps through the gateway, with only the job's token in the environment", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pw-jobcaps-"));
+    const c = jobcapsCfg(dir);
+    const job = { agentId: "eng1", issueId: "i1", jobcaps: ["slack-read", "primer-read"] };
+    for (const kind of ["codex", "claude", "openrouter", "codex-openrouter"]) {
+      const { argv, env } = buildCommand({ cfg: c, engine: { kind, model: "m" }, worktree: "/w", lastMessageFile: "/x", job });
+      const claims = JSON.parse(Buffer.from(env.AIDENHQ_JOB_TOKEN.slice(5).split(".")[0], "base64url"));
+      assert.deepEqual([claims.k, claims.a, claims.i, claims.j], ["agent", "eng1", "i1", ["primer-read", "slack-read"]], kind);
+      assert.ok(!argv.some((a) => a.includes("ahqj_")), `${kind}: token on the command line`);
       const where = kind === "openrouter" ? env.OPENCODE_CONFIG_CONTENT : argv.join(" ");
-      assert.ok(where.includes(url), kind);
+      for (const conn of ["primer", "slack"]) assert.ok(where.includes(`http://127.0.0.1:8201/c/${conn}/mcp`), `${kind} ${conn}`);
+      assert.doesNotMatch(where, /3123|3125|mcp\/read/, kind);
     }
-    // opencode: the model gateway with the job's own token, never the OpenRouter key; the gateway's port reaches the jail.
-    const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "m" }, worktree: "/w", job: { agentId: "eng1", issueId: "i1" } });
+    const codex = buildCommand({ cfg: c, engine: { kind: "codex" }, worktree: "/w", lastMessageFile: "/x", job }).argv;
+    assert.ok(codex.includes('mcp_servers.slack.bearer_token_env_var="AIDENHQ_JOB_TOKEN"'));
+    assert.ok(codex.includes('shell_environment_policy.exclude=["AIDENHQ_JOB_TOKEN"]'));
+    const claude = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w", job }).argv;
+    const servers = JSON.parse(claude[claude.indexOf("--mcp-config") + 1]).mcpServers;
+    assert.deepEqual(servers.primer, { type: "http", url: "http://127.0.0.1:8201/c/primer/mcp", headers: { Authorization: "Bearer ${AIDENHQ_JOB_TOKEN}" } });
+    // ClickHouse queries outlast Codex's default tool timeout.
+    const ch = buildCommand({ cfg: c, engine: { kind: "codex" }, worktree: "/w", lastMessageFile: "/x", job: { ...job, jobcaps: ["clickhouse-read"] } }).argv;
+    assert.ok(ch.includes("mcp_servers.clickhouse.tool_timeout_sec=180"));
+    // No jobcaps: no MCP servers and no job token (a codex job needs no gateway at all).
+    const none = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w", job: { issueId: "i2" } });
+    assert.equal(none.argv[none.argv.indexOf("--mcp-config") + 1], '{"mcpServers":{}}');
+    assert.equal(none.env.AIDENHQ_JOB_TOKEN, undefined);
+    // opencode: the model gateway with the job's own token, never the OpenRouter key.
+    const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "m" }, worktree: "/w", job });
     assert.match(or.env.OPENROUTER_API_KEY, /^ahqj_/);
+    assert.equal(or.argv[0], "opencode");
     assert.ok(!JSON.stringify(or).includes("sk-or-realkey"), "the OpenRouter key is nowhere in the job");
     assert.equal(JSON.parse(or.env.OPENCODE_CONFIG_CONTENT).provider.openrouter.options.baseURL, "http://127.0.0.1:8201/api/v1");
-    const claude = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w" }).argv;
-    assert.deepEqual(Object.keys(JSON.parse(claude[claude.indexOf("--mcp-config") + 1]).mcpServers), ["primer"]);
-    // Not set up yet: no Primer, and the job still runs.
-    const none = buildCommand({ cfg: { ...c, primerTokenFile: join(dir, "missing") }, engine: { kind: "claude" }, worktree: "/w" });
-    assert.equal(none.argv[none.argv.indexOf("--mcp-config") + 1], '{"mcpServers":{}}');
-    assert.equal(none.env.PRIMER_MCP_TOKEN, undefined);
+    assert.match(observeSection("Dana", { clickhouse: true }), /\*\*ClickHouse\*\*.*LIMIT/);
+    assert.doesNotMatch(observeSection("Dana", { clickhouse: false, grafana: true }), /ClickHouse/);
   });
 
-  it("runs codex-openrouter as Codex through the model gateway, with the job's token, effort, every read and its own Codex home", () => {
+  it("runs codex-openrouter as Codex through the model gateway, with the job's token, effort and its own Codex home", () => {
     const dir = mkdtempSync(join(tmpdir(), "cor-"));
-    for (const f of ["or", "secret", "primer", "slack", "glean", "grafana", "clickhouse"]) writeFileSync(join(dir, f), f === "or" ? "sk-or-realkey" : `${f}-token\n`);
-    const c = { ...cfg, openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "secret"), codexOpenrouterHome: join(dir, "homes"), primerMcpUrl: "http://127.0.0.1:3123/mcp/read", primerTokenFile: join(dir, "primer"), slackMcpUrl: "http://127.0.0.1:3125/mcp/read", slackTokenFile: join(dir, "slack"), gleanMcpUrl: "http://127.0.0.1:3126/mcp/read", gleanTokenFile: join(dir, "glean"), grafanaMcpUrl: "http://127.0.0.1:3124/mcp", grafanaTokenFile: join(dir, "grafana"), clickhouseMcpUrl: "http://127.0.0.1:3127/mcp", clickhouseTokenFile: join(dir, "clickhouse"), sandbox: { extra_writable_roots: [] } };
-    const built = buildCommand({ cfg: c, engine: { kind: "codex-openrouter", model: "~deepseek/deepseek-flash-latest", effort: "medium", reads: true }, worktree: "/w", lastMessageFile: "/x", sessionId: "s1", job: { agentId: "eng1", issueId: "i1" } });
+    const c = jobcapsCfg(dir);
+    const built = buildCommand({ cfg: c, engine: { kind: "codex-openrouter", model: "~deepseek/deepseek-flash-latest", effort: "medium", reads: true }, worktree: "/w", lastMessageFile: "/x", sessionId: "s1", job: { agentId: "eng1", issueId: "i1", jobcaps: ["primer-read"] } });
     const { argv, env } = built;
     assert.deepEqual(argv.slice(0, 4), ["codex", "exec", "resume", "s1"]);
-    for (const a of ['model_provider="or"', 'model_providers.or.base_url="http://127.0.0.1:8201/api/v1"', 'model_providers.or.env_key="AIDENHQ_GATEWAY_KEY"', 'model_providers.or.wire_api="responses"', 'model_reasoning_effort="medium"', 'sandbox_mode="workspace-write"', "features.apps=false", "features.hooks=false"]) assert.ok(argv.includes(a), a);
+    for (const a of ['model_provider="or"', 'model_providers.or.base_url="http://127.0.0.1:8201/api/v1"', 'model_providers.or.env_key="AIDENHQ_GATEWAY_KEY"', 'model_providers.or.wire_api="responses"', 'model_reasoning_effort="medium"', 'sandbox_mode="workspace-write"', "features.apps=false", "features.hooks=false", 'shell_environment_policy.exclude=["AIDENHQ_GATEWAY_KEY","AIDENHQ_JOB_TOKEN"]']) assert.ok(argv.includes(a), a);
     assert.equal(argv[argv.indexOf("-m") + 1], "~deepseek/deepseek-flash-latest");
-    for (const r of ["primer", "slack", "glean", "grafana", "clickhouse"]) assert.ok(argv.some((a) => a.startsWith(`mcp_servers.${r}.url=`)), r);
-    // The job's own gateway token (kind agent, its Engineer and task), never the OpenRouter key; read tokens only in the env.
+    // The job's own gateway token (kind agent, its Engineer and task), never the OpenRouter key; the same one reads.
     const claims = JSON.parse(Buffer.from(env.AIDENHQ_GATEWAY_KEY.slice(5).split(".")[0], "base64url"));
     assert.deepEqual([claims.k, claims.a, claims.i], ["agent", "eng1", "i1"]);
+    assert.equal(env.AIDENHQ_JOB_TOKEN, env.AIDENHQ_GATEWAY_KEY);
     assert.ok(!JSON.stringify(built).includes("sk-or-realkey"), "the OpenRouter key is nowhere in the job");
-    assert.ok(!argv.some((a) => /-token|ahqj_/.test(a)), "no token on the command line");
-    assert.equal(env.SLACK_MCP_TOKEN, "slack-token");
+    assert.ok(!argv.some((a) => /ahqj_/.test(a)), "no token on the command line");
     // A Codex home per task, the product's instructions and skills in it, nothing of the host's.
     assert.equal(env.CODEX_HOME, join(dir, "homes", "i1"));
     for (const f of ["AGENTS.md", "skills/supply-chain/SKILL.md", "skills/supply-chain/best-version.mjs", "skills/design-system/files/tokens.css"]) assert.ok(existsSync(join(env.CODEX_HOME, f)), f);
     assert.ok(!existsSync(join(env.CODEX_HOME, "config.toml")));
-    // With private reads, no web search (private data can't leave in a query); a light Engineer gets Primer and the web.
+    // With private reads, no web search (private data can't leave in a query); a light Engineer keeps the web.
     assert.ok(argv.includes('web_search="disabled"'));
     const light = buildCommand({ cfg: c, engine: { kind: "codex-openrouter", model: "m" }, worktree: "/w", lastMessageFile: "/x", job: { issueId: "i2" } });
     assert.ok(light.argv.includes('web_search="live"'));
-    assert.ok(light.argv.some((a) => a.startsWith("mcp_servers.primer.url=")));
-    assert.ok(!light.argv.some((a) => /mcp_servers\.(slack|glean|grafana|clickhouse)\./.test(a)));
-    assert.equal(light.env.SLACK_MCP_TOKEN, undefined);
-  });
-
-  // The user's Slack and the company's Glean, read-only, for an Engineer with private reads only.
-  it("gives an Engineer with private reads the Slack and Glean read endpoints, a light one never", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reads-"));
-    for (const f of ["claude", "or", "slack", "glean"]) writeFileSync(join(dir, f), `${f}-token\n`);
-    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), primerTokenFile: join(dir, "missing"), grafanaTokenFile: join(dir, "missing"), slackMcpUrl: "http://127.0.0.1:3125/mcp/read", slackTokenFile: join(dir, "slack"), gleanMcpUrl: "http://127.0.0.1:3126/mcp/read", gleanTokenFile: join(dir, "glean"), sandbox: { extra_writable_roots: [] } };
-    const claude = buildCommand({ cfg: c, engine: { kind: "claude", reads: true }, worktree: "/w" });
-    const servers = JSON.parse(claude.argv[claude.argv.indexOf("--mcp-config") + 1]).mcpServers;
-    assert.deepEqual(Object.keys(servers), ["slack", "glean"]);
-    assert.equal(servers.slack.url, "http://127.0.0.1:3125/mcp/read");
-    assert.equal(servers.glean.headers.Authorization, "Bearer ${GLEAN_MCP_TOKEN}");
-    assert.equal(claude.env.SLACK_MCP_TOKEN, "slack-token");
-    assert.ok(!claude.argv.join(" ").includes("slack-token"), "tokens only in the environment");
-    const codex = buildCommand({ cfg: c, engine: { kind: "codex", reads: true }, worktree: "/w", lastMessageFile: "/x" }).argv;
-    assert.ok(codex.includes('mcp_servers.slack.url="http://127.0.0.1:3125/mcp/read"'));
-    assert.ok(codex.includes('mcp_servers.glean.bearer_token_env_var="GLEAN_MCP_TOKEN"'));
-    const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "z-ai/glm" }, worktree: "/w" });
-    assert.equal(or.env.SLACK_MCP_TOKEN, undefined);
-    assert.equal(or.env.GLEAN_MCP_TOKEN, undefined);
-    assert.doesNotMatch(or.env.OPENCODE_CONFIG_CONTENT, /slack|glean/);
-  });
-
-  // ClickHouse, read-only, for Claude Code and Codex only; queries outlast Codex's default tool timeout.
-  it("gives an Engineer with private reads ClickHouse with a longer tool timeout, a light one never", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reads-"));
-    for (const f of ["claude", "or", "clickhouse"]) writeFileSync(join(dir, f), `${f}-token\n`);
-    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), primerTokenFile: join(dir, "missing"), clickhouseMcpUrl: "http://127.0.0.1:3127/mcp", clickhouseTokenFile: join(dir, "clickhouse"), sandbox: { extra_writable_roots: [] } };
-    const claude = buildCommand({ cfg: c, engine: { kind: "claude", reads: true }, worktree: "/w" });
-    const servers = JSON.parse(claude.argv[claude.argv.indexOf("--mcp-config") + 1]).mcpServers;
-    assert.deepEqual(servers, { clickhouse: { type: "http", url: "http://127.0.0.1:3127/mcp", headers: { Authorization: "Bearer ${CLICKHOUSE_MCP_TOKEN}" } } });
-    assert.equal(claude.env.CLICKHOUSE_MCP_TOKEN, "clickhouse-token");
-    assert.ok(!claude.argv.join(" ").includes("clickhouse-token"), "tokens only in the environment");
-    const codex = buildCommand({ cfg: c, engine: { kind: "codex", reads: true }, worktree: "/w", lastMessageFile: "/x" }).argv;
-    assert.ok(codex.includes('mcp_servers.clickhouse.url="http://127.0.0.1:3127/mcp"'));
-    assert.ok(codex.includes("mcp_servers.clickhouse.tool_timeout_sec=180"));
-    const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "z-ai/glm" }, worktree: "/w" });
-    assert.equal(or.env.CLICKHOUSE_MCP_TOKEN, undefined);
-    assert.doesNotMatch(or.env.OPENCODE_CONFIG_CONTENT, /clickhouse|3127/);
-    assert.match(observeSection("Dana", { clickhouse: true }), /\*\*ClickHouse\*\*.*LIMIT/);
-    assert.doesNotMatch(observeSection("Dana", { clickhouse: false, grafana: true }), /ClickHouse/);
   });
 });
 
@@ -1060,30 +1034,25 @@ describe("an Engineer's part of a task", () => {
 describe("Grafana and Google Cloud for Engineer jobs", () => {
   const setup = () => {
     const dir = mkdtempSync(join(tmpdir(), "pw-observe-"));
-    for (const [f, v] of [["claude", "tok"], ["or", "ork"], ["grafana", "gtok\n"]]) writeFileSync(join(dir, f), v);
+    for (const [f, v] of [["claude", "tok"], ["or", "ork"]]) writeFileSync(join(dir, f), v);
+    writeFileSync(join(dir, "jobcaps.json"), JSON.stringify({ "grafana-read": { connection: "grafana", url: "http://127.0.0.1:3124/mcp", bearer_secret: "grafana_mcp_token", tools: ["query_prometheus"] } }));
     mkdirSync(join(dir, "gcloud-user"));
-    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), grafanaMcpUrl: "http://127.0.0.1:3124/mcp", grafanaTokenFile: join(dir, "grafana"), gcp: { hidden: [join(dir, "gcloud-user"), join(dir, "not-there")] }, sandbox: { extra_writable_roots: [] } };
+    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), jobcapsFile: join(dir, "jobcaps.json"), gcp: { hidden: [join(dir, "gcloud-user"), join(dir, "not-there")] }, sandbox: { extra_writable_roots: [] } };
     const gcp = { root: join(dir, "job-gcloud"), env: { CLOUDSDK_CONFIG: join(dir, "job-gcloud/config") } };
     mkdirSync(gcp.root);
     return { dir, c, gcp };
   };
 
-  it("gives Grafana and gcloud to an Engineer with private reads, never to a light one", () => {
+  it("gives gcloud to an Engineer with private reads, never to a light one; Grafana through its jobcap", () => {
     const { c, gcp } = setup();
     for (const kind of ["codex", "claude"]) {
-      const { argv, env } = buildCommand({ cfg: c, engine: { kind, reads: true }, worktree: "/w", lastMessageFile: "/x", gcp });
-      assert.equal(env.GRAFANA_MCP_TOKEN, "gtok", kind);
+      const { argv, env, rw } = buildCommand({ cfg: c, engine: { kind, reads: true }, worktree: "/w", lastMessageFile: "/x", gcp, job: { issueId: "i1", jobcaps: ["grafana-read"] } });
       assert.equal(env.CLOUDSDK_CONFIG, gcp.env.CLOUDSDK_CONFIG, kind);
-      assert.ok(!argv.some((a) => a.includes("gtok")), `${kind}: token on the command line`);
-      assert.ok(argv.join(" ").includes("http://127.0.0.1:3124/mcp"), kind);
-      assert.ok(argv.some((a) => a.startsWith("sandbox_workspace_write.writable_roots=") && a.includes(gcp.root)), `${kind}: gcloud dir writable`);
+      assert.ok(argv.join(" ").includes("http://127.0.0.1:8201/c/grafana/mcp"), kind);
+      assert.ok(rw.includes(gcp.root), `${kind}: gcloud dir writable`);
     }
-    const claude = buildCommand({ cfg: c, engine: { kind: "claude", reads: true }, worktree: "/w", gcp }).argv;
-    assert.deepEqual(Object.keys(JSON.parse(claude[claude.indexOf("--mcp-config") + 1]).mcpServers), ["grafana"]);
     const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "m" }, worktree: "/w", gcp });
-    assert.equal(or.env.GRAFANA_MCP_TOKEN, undefined);
     assert.equal(or.env.CLOUDSDK_CONFIG, undefined);
-    assert.ok(!or.env.OPENCODE_CONFIG_CONTENT.includes("3124"));
     assert.ok(!or.argv.some((a) => a.includes(gcp.root)));
   });
 
@@ -1205,10 +1174,9 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     assert.ok(!existsSync(cowRoot(cc, join(tasks, "WOR-1"))));
   });
 
-  it("with pasta, a job gets its own network: of the host's loopback only its helper and the MCP endpoints it is wired to", () => {
+  it("with pasta, a job gets its own network: of the host's loopback only its helper and the model gateway", () => {
     const { dir, c } = setup();
-    writeFileSync(join(dir, "primer"), "ptok");
-    const jc = { ...c, pasta: "/usr/bin/pasta", primerMcpUrl: "http://127.0.0.1:3123/mcp/read", primerTokenFile: join(dir, "primer") };
+    const jc = { ...c, pasta: "/usr/bin/pasta" };
     const loopback = ["http://127.0.0.1:41000"];
     // The host's addresses, as `ip -4 -o addr show` gives them: its LAN is 10.0.2.0/24, the first link candidate.
     mkdirSync(join(dir, "bin"));
@@ -1217,23 +1185,25 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     chmodSync(join(dir, "bin/ip"), 0o755);
     const path = process.env.PATH;
     process.env.PATH = `${join(dir, "bin")}:${path}`;
-    const claude = buildCommand({ cfg: jc, engine: { kind: "claude", reads: true }, worktree: "/w", loopback }).argv;
+    const claude = buildCommand({ cfg: jc, engine: { kind: "claude", reads: true }, worktree: "/w", loopback, job: { issueId: "i1", jobcaps: ["grafana-read"] } }).argv;
     const or = buildCommand({ cfg: jc, engine: { kind: "openrouter", model: "m" }, worktree: "/w", loopback }).argv;
+    const codex = buildCommand({ cfg: jc, engine: { kind: "codex" }, worktree: "/w", lastMessageFile: "/x", loopback }).argv;
     process.env.PATH = path;
     assert.equal(claude[0], process.execPath);
     assert.ok(claude[1].endsWith("/netjail.ts"));
-    assert.deepEqual([...claude.slice(2, 4), ...claude.slice(5, 8)], ["/usr/bin/pasta", "3123,3124,41000", "bwrap", "--unshare-pid", "--unshare-ipc"]);
+    assert.deepEqual([...claude.slice(2, 4), ...claude.slice(5, 8)], ["/usr/bin/pasta", "8201,41000", "bwrap", "--unshare-pid", "--unshare-ipc"]);
     assert.equal(claude[4], "192.168.254"); // pasta's link: apart from the host's 10.0.2.0/24 and the routed 172.31.254.0/24
     assert.ok(claude.includes("--unshare-net") && claude.includes("--die-with-parent"));
     // The public resolvers sit on the job's own tmpfs, not on the host's resolver file (whose rewrites detach a bind).
     const rc = claude.indexOf("/etc/resolv.conf");
     assert.deepEqual(claude.slice(rc - 4, rc), ["--tmpfs", "/run/systemd/resolve", "--ro-bind-data", "5"]);
     const jail = claude.indexOf("aidenhq-jail");
-    assert.equal(claude[jail + 1], "codex"); // the engine in codex sandbox, after the jail's own setup
+    assert.equal(claude[jail + 1], "claude"); // the engine itself, after the jail's own setup: bwrap is its boundary
     // The job's first step: private and reserved ranges, and each of the host's own addresses (a public one too), are unreachable.
     for (const n of ["192.168.0.0/16", "240.0.0.0/4", "10.0.2.7/32", "203.0.113.9/32"]) assert.ok(claude[jail - 1].split(/[ ;]/).includes(n), n);
-    // OpenRouter never gets the private reads (Grafana's 3124), so not their ports either.
-    assert.equal(or[3], "3123,8201,41000"); // and the model gateway's
+    // The model gateway's port for its model calls; a job with neither jobcaps nor gateway models gets only its helper.
+    assert.equal(or[3], "8201,41000");
+    assert.equal(codex[3], "41000");
   });
 
   it("masks the state db (every run's helper token) but not the state dir, where a job's gcloud session lives", async () => {

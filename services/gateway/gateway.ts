@@ -32,6 +32,7 @@ const gw = createGateway({
   dbFile: path.join(dataDir, "gateway", "usage.db"),
   grantsFile: path.join(configDir, "grants", "grants.json"),
   settingsFile: path.join(configDir, "gateway.json"),
+  jobcapsFile: path.join(configDir, "jobcaps.json"), // runner jobs' reads of connections (POST /c/<connection>/mcp)
   secret,
   upstream: env("AIDENHQ_GATEWAY_UPSTREAM", "https://openrouter.ai/api/v1"),
   paperclipUrl: env("PAPERCLIP_URL", "http://127.0.0.1:3100"),

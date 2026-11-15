@@ -7,6 +7,7 @@
 //   POST /api/v1/chat/completions  (Bearer gateway_board_key) kind aside: the board's side chat, capped per UTC day
 //   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
 //   POST /internal/caps {scope, agentId, subject, cap}  (Bearer gateway_board_key) the owner raised a cap: the new cap
+//   POST /c/<connection>/mcp      (Bearer: a job's own `ahqj_` token) the job's reads of a connection, its jobcaps only (jobcaps.ts)
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
 //   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at}: an opaque CI token
@@ -27,6 +28,7 @@ import { dirname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.ts";
+import { jobcapRoute, type Jobcap } from "./jobcaps.ts";
 import { verifyToken } from "./token.ts";
 
 type Brand<T, B extends string> = T & { readonly __brand: B };
@@ -175,8 +177,8 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, boardUrl, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }: {
-  dbFile: string; grantsFile: string; settingsFile: string; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
+export function createGateway({ dbFile, grantsFile, settingsFile, jobcapsFile, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, boardUrl, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }: {
+  dbFile: string; grantsFile: string; settingsFile: string; jobcapsFile?: string; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
   boardUrl?: string; launcherUrl?: string; githubJwksUrl?: string; log?: Log; now?: () => number;
 }) {
   const db = openLedger(dbFile);
@@ -185,6 +187,7 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
   // CI code review (compile writes it from the ci module's settings): { enabled, orgs, models, repo_day_usd, day_usd } or null.
   const ciConf = watched<CiConf | null>(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? (j.ci as CiConf) : null), null);
   const keyFor = githubKeys(githubJwksUrl, now);
+  const jobcap = jobcapRoute({ jobcaps: jobcapsFile ? watched(jobcapsFile, (j) => j as Record<string, Jobcap>, {}) : () => ({}), secret, log, now });
   const inflight = new Map<string, { runKey: RunKey; agentId: string | null; subject: string | null; day: string; est: number; ciRepo: string | undefined }>(); // id → { runKey, agentId, subject, day, est, ciRepo }
   const q = {
     run: db.prepare("SELECT * FROM runs WHERE run_key = ?"),
@@ -556,6 +559,8 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
         if (req.method === "POST" && path === "/api/v1/chat/completions") return await model(req, res, "agent", "chat/completions", true);
         return send(res, 404, { error: { code: 404, type: "not_found", message: "no such route" } });
       }
+      const c = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(path);
+      if (c) return await jobcap(req, res, c[1]!);
       const m = ROUTE.exec(path);
       if (req.method === "POST" && m) return await model(req, res, m[1] ?? "agent", m[2]!);
       if (req.method === "POST" && path === "/usage") {

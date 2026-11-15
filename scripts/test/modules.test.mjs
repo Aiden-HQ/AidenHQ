@@ -94,6 +94,15 @@ test("grants entry: models, fleet caps under the agent's override, graded off by
   assert.deepEqual(grantEntry("x", r.agents.x, { r1: { agent: "x", model: "m3" }, r2: { agent: "y", model: "m4" } }), { models: ["m2", "m3"], caps: { run_usd: 2, task_usd: 20, day_usd: 30 }, graded: false });
   assert.throws(() => compile(mods, inst(["a"], base, { overrides: { agents: { x: { caps: { month_usd: 5 } } } } })), /x: caps\.month_usd isn't a cap/);
 });
+test("jobcaps: compiled for the gateway, carried in the grants entry; unknown or private-without-private_reads fail", () => {
+  const out = compile(mods, inst(["jc"]));
+  assert.deepEqual(out.jobcaps["jc-read"], { connection: "jconn", url: "http://127.0.0.1:3199/mcp/read", bearer_secret: "j_mcp_read_token", tools: ["j_get", "j_list"] });
+  assert.equal(out.jobcaps["jc-secret"].tool_timeout_s, 90);
+  assert.deepEqual(grantEntry("eng", out.paperclip.agents.eng).jobcaps, ["jc-read"]); // nope-read? is optional
+  assert.deepEqual(out.paperclip.agents.deep.jobcaps, ["jc-read", "jc-secret"]);
+  assert.throws(() => compile(mods, inst(["jcunknown"])), /lost: unknown jobcap nope-read/);
+  assert.throws(() => compile(mods, inst(["jcpriv"])), /nosy: jobcap jc-secret reads private data: set private_reads: true/);
+});
 test("reports_to a disabled agent is an error", () => assert.throws(() => compile(mods, inst(["orphan"])), /z: reports_to y, which is not enabled/));
 test("untrusted app compiles to untrusted: true", () => {
   const [app] = compile(mods, inst(["appmod"])).apps.apps;

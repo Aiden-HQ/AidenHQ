@@ -1,0 +1,10 @@
+name: jc
+description: jobcaps
+connections:
+  jconn: { url: "http://j-mcp:1/mcp", tools: { read: [j_get, j_list], write: [j_set] } }
+jobcaps:
+  - { id: jc-read, connection: jconn, tools: read, read_url: "http://127.0.0.1:3199/mcp/read", read_secret: j_mcp_read_token }
+  - { id: jc-secret, connection: jsecret, tools: [s_get], private: true, tool_timeout_s: 90, read_url: "http://127.0.0.1:3198/mcp", read_secret: s_mcp_token }
+agents:
+  eng: { adapter: opencode_local, dispatch: runner, jobcaps: [ jc-read, nope-read? ] }
+  deep: { adapter: opencode_local, dispatch: runner, private_reads: true, jobcaps: [ jc-secret, jc-read ] }

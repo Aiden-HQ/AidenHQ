@@ -9,4 +9,7 @@ connections:
     tools:
       read: [ slack_search_public, slack_search_public_and_private, slack_search_channels, slack_search_users, slack_read_channel, slack_read_thread, slack_read_user_profile, slack_list_user_channels ]
       write: [ slack_send_message_draft ]
+# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries).
+jobcaps:
+  - { id: slack-read, connection: slack, tools: read, private: true, read_url: "http://127.0.0.1:3125/mcp/read", read_secret: slack_mcp_read_token }
 compose: compose.yaml

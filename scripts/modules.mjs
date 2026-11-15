@@ -116,7 +116,33 @@ export function chatBlock(key, c, tools) {
 export function grantEntry(key, a, routines = {}) {
   const ids = [a.model, ...(a.models ?? []), ...Object.values(routines).filter((r) => r.agent === key).map((r) => r.model)];
   const models = [...new Set(ids.filter((m) => typeof m === "string" && m.trim()).map((m) => m.replace(/^openrouter\//, "")))];
-  return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true };
+  return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}) };
+}
+
+const JOBCAP_FIELDS = ["id", "connection", "tools", "prompt", "tool_timeout_s", "read_url", "read_secret", "private"];
+/**
+ * A module's `jobcaps:` (spec §3.1): what a runner job may read of a connection, through the model gateway's
+ * /c/<connection>/mcp with its own token (services/gateway/jobcaps.ts). `tools`: a list, or `read` for the module's connection
+ * of that name's read tools. `read_url` (a host-loopback MCP endpoint) and `read_secret` (the vault file the gateway forwards
+ * as the bearer) bridge to today's read endpoints. `private: true`: private data, so only an Engineer with private_reads (no
+ * web search) may hold it. Returns config/jobcaps.json's entries, by id.
+ */
+export function jobcapEntries(name, def) {
+  const out = {};
+  for (const j of def.jobcaps ?? []) {
+    const where = `module ${name}: jobcap ${j?.id}`;
+    for (const f of Object.keys(j ?? {})) if (!JOBCAP_FIELDS.includes(f)) fail(`${where}: unknown field ${f} (known: ${JOBCAP_FIELDS.join(", ")})`);
+    if (!/^[a-z][a-z0-9-]{0,40}$/.test(j?.id ?? "")) fail(`module ${name}: a jobcap needs an id (a-z, 0-9, -)`);
+    if (!/^[a-z0-9_]{1,40}$/.test(j.connection ?? "")) fail(`${where}: connection must be a name (a-z, 0-9, _)`);
+    const tools = j.tools === "read" ? def.connections?.[j.connection]?.tools?.read ?? fail(`${where}: tools: read, but ${name} has no connection ${j.connection}`) : j.tools;
+    if (!Array.isArray(tools) || !tools.length || tools.some((t) => typeof t !== "string" || !t)) fail(`${where}: tools must list its tools (or be read)`);
+    if (!/^http:\/\/127\.0\.0\.1:\d{2,5}\/[\w/.-]*$/.test(j.read_url ?? "")) fail(`${where}: read_url must be an http://127.0.0.1:<port>/ endpoint`);
+    if (!/^[a-z0-9_]+_mcp(_read)?_token$/.test(j.read_secret ?? "")) fail(`${where}: read_secret must name a <service>_mcp_token or <service>_mcp_read_token`);
+    if (j.tool_timeout_s != null && !(Number.isInteger(j.tool_timeout_s) && j.tool_timeout_s > 0 && j.tool_timeout_s <= 600)) fail(`${where}: tool_timeout_s is 1-600`);
+    if (j.private != null && typeof j.private !== "boolean") fail(`${where}: private is true or false`);
+    out[j.id] = { connection: j.connection, url: j.read_url, bearer_secret: j.read_secret, tools: [...tools], ...(j.tool_timeout_s ? { tool_timeout_s: j.tool_timeout_s } : {}), ...(j.prompt ? { prompt: String(j.prompt) } : {}), ...(j.private ? { private: true } : {}) };
+  }
+  return out;
 }
 
 /**
@@ -329,6 +355,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const compose = { services: {}, secrets: {}, volumes: {}, networks: {} };
   const labelNames = new Set();
   const routineTitles = new Set();
+  const jobcaps = {};
 
   for (const name of enabled) {
     const { root } = all.get(name);
@@ -336,6 +363,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     const isolation = isolationOf(def.isolation, `module ${name}`);
     if (isolation === "untrusted" && (Object.keys(def.connections ?? {}).length || def.compose)) fail(`untrusted module ${name} may not declare connections or compose services`);
     for (const l of def.labels ?? []) { if (labelNames.has(l.name)) fail(`duplicate label: ${l.name}`); labelNames.add(l.name); paperclip.labels.push(l); }
+    for (const [id, j] of Object.entries(jobcapEntries(name, def))) { if (jobcaps[id]) fail(`duplicate jobcap: ${id}`); jobcaps[id] = j; }
     for (const [k, c] of Object.entries(def.connections ?? {})) {
       if (!Array.isArray(c.tools?.read) || !Array.isArray(c.tools?.write)) fail(`connection ${k}: tools.read and tools.write must list its tools`);
       if (c.tools.destructive != null && !Array.isArray(c.tools.destructive)) fail(`connection ${k}: tools.destructive must be a list`);
@@ -444,6 +472,19 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       if (memory) a.memory = memory;
     }
     delete a.connections;
+    // jobcaps: [<id>] (`<id>?`: only when its module is on): the agent's runner jobs read through the gateway with their token.
+    if (a.jobcaps != null) {
+      if (!Array.isArray(a.jobcaps)) fail(`${key}: jobcaps is a list of jobcap ids`);
+      const ids = [];
+      for (const raw of a.jobcaps) {
+        const id = String(raw).replace(/\?$/, "");
+        const j = jobcaps[id];
+        if (!j) { if (String(raw).endsWith("?")) continue; fail(`${key}: unknown jobcap ${id} (enable its module, or write "${id}?" to make it optional)`); }
+        if (j.private && a.private_reads !== true) fail(`${key}: jobcap ${id} reads private data: set private_reads: true (its jobs then get no web search), or drop it`);
+        ids.push(id);
+      }
+      a.jobcaps = [...new Set(ids)].sort();
+    }
     a.mcp_servers = Object.keys(tools);
     a.enabled_tools = tools;
     if (a.chat != null) a.chat = chatBlock(key, a.chat, tools);
@@ -578,7 +619,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
   // The model gateway's switches (config/gateway.json, re-read per call): spend_caps off stops refusals, tracking stays.
   const gateway = { enforce_caps: String(settings.spend_caps ?? "on") !== "off", ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}) };
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, gateway, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, gateway, jobcaps, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**

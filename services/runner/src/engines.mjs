@@ -21,17 +21,6 @@ function sandboxConfig(cfg, worktree, stateRoots = []) {
   ];
 }
 
-/** `codex sandbox` around a whole process: writes only in the worktree, the given state dirs and the build caches. */
-function codexSandbox(cfg, worktree, stateRoots, argv) {
-  return [
-    "codex", "sandbox",
-    "-c", 'sandbox_mode="workspace-write"',
-    "-c", "sandbox_workspace_write.network_access=true", // the engine itself talks to its model API
-    "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify([worktree, ...stateRoots, ...(cfg.sandbox?.extra_writable_roots ?? []).map(expand)])}`,
-    "--", ...argv,
-  ];
-}
-
 // Claude Code's built-in tools for coding jobs. Everything else (scheduling, remote triggers,
 // notifications, messaging, workflows) is left out; MCP servers, plugins and claude.ai connectors
 // are off entirely.
@@ -39,20 +28,10 @@ function codexSandbox(cfg, worktree, stateRoots, argv) {
 const CLAUDE_TOOLS = "Bash,Read,Edit,Write,NotebookEdit,Task,TaskStop,TaskCreate,TaskUpdate,TaskList,WebFetch,WebSearch";
 
 /**
- * Primer, read-only, for every engine: primer-mcp's /mcp/read on loopback. The bearer token
- * goes in through the environment (PRIMER_MCP_TOKEN), never on the command line. Skipped until
- * Primer is set up.
- */
-function primer(cfg) {
-  if (!cfg.primerMcpUrl || !cfg.primerTokenFile || !existsSync(cfg.primerTokenFile)) return undefined;
-  return { url: cfg.primerMcpUrl, token: readFileSync(cfg.primerTokenFile, "utf8").trim() };
-}
-
-/**
- * Whether a job gets the private reads (Grafana, Slack, Glean, ClickHouse), its gcloud session and other tasks: only an
- * Engineer whose definition opts in (`private_reads: true`, setup's metadata.privateReads; commands.mjs pickedEngine), on
- * any engine. Such a job gets no web search, so private data can't leave through search queries. Light Engineers (the
- * Software and Platform Engineers) don't: they get Primer and web search.
+ * Whether a job holds private data: its gcloud session, other tasks, and the private jobcaps (Grafana, Slack, Glean,
+ * ClickHouse; compile gives those only to such an Engineer). Only an Engineer whose definition opts in (`private_reads: true`,
+ * setup's metadata.privateReads; commands.mjs pickedEngine), on any engine. Such a job gets no web search, so private data
+ * can't leave through search queries. Light Engineers (the Software and Platform Engineers) keep web search.
  */
 export const observes = (engine) => engine?.reads === true;
 
@@ -60,27 +39,31 @@ export const observes = (engine) => engine?.reads === true;
 export const viaGateway = (kind) => kind === "openrouter" || kind === "codex-openrouter";
 
 /**
- * The private reads for the engines that observe: Grafana, Slack and Glean,
- * the user's own messages and the company's documents, and ClickHouse, production data. Each is an MCP server on loopback that serves
- * reads only, with a token the job gets through the environment, never on the command line. Skipped
- * until set up.
+ * A job's MCP servers: its jobcaps (the agent's `jobcaps:`, compiled into config/jobcaps.json), each reached through the model
+ * gateway's /c/<connection>/mcp with the job's own token (env AIDENHQ_JOB_TOKEN). The job holds no connection URL and no service
+ * token; the gateway forwards with the read secret and only the jobcap's tools. Named by connection (the prompts say "the slack
+ * MCP tools"); ids the file doesn't know are skipped.
  */
-const PRIVATE_READS = [
-  { name: "grafana", url: "grafanaMcpUrl", tokenFile: "grafanaTokenFile", env: "GRAFANA_MCP_TOKEN" },
-  { name: "slack", url: "slackMcpUrl", tokenFile: "slackTokenFile", env: "SLACK_MCP_TOKEN" },
-  { name: "glean", url: "gleanMcpUrl", tokenFile: "gleanTokenFile", env: "GLEAN_MCP_TOKEN" },
-  // Queries run up to two minutes (clickhouse-mcp caps them), past Codex's 60-second tool timeout.
-  { name: "clickhouse", url: "clickhouseMcpUrl", tokenFile: "clickhouseTokenFile", env: "CLICKHOUSE_MCP_TOKEN", toolTimeout: 180 },
-];
-export function privateReads(cfg) {
-  return PRIVATE_READS.filter((s) => cfg[s.url] && cfg[s.tokenFile] && existsSync(cfg[s.tokenFile])).map((s) => ({
-    name: s.name,
-    url: cfg[s.url],
-    env: s.env,
-    ...(s.toolTimeout ? { toolTimeout: s.toolTimeout } : {}),
-    token: readFileSync(cfg[s.tokenFile], "utf8").trim(),
-  }));
+export function jobcapServers(cfg, ids = []) {
+  const all = readJobcaps(cfg);
+  const out = new Map();
+  for (const id of ids) {
+    const c = all[id];
+    if (!c?.connection || out.has(c.connection)) continue;
+    out.set(c.connection, { name: c.connection, url: `${gatewayUrl(cfg)}/c/${c.connection}/mcp`, ...(c.tool_timeout_s ? { toolTimeout: c.tool_timeout_s } : {}), ...(c.private ? { private: true } : {}) });
+  }
+  return [...out.values()];
 }
+const readJobcaps = (cfg) => { try { return JSON.parse(readFileSync(cfg.jobcapsFile, "utf8")); } catch { return {}; } };
+/**
+ * The jobcaps a job of this engine gets: the private ones (Slack, Glean, Grafana, ClickHouse) only when it observes (private_reads,
+ * web search off), so private data and the live web never meet in one job. Sorted: the job token's claims are stable.
+ */
+export const jobcapsFor = (cfg, engine, ids = []) => {
+  const all = readJobcaps(cfg);
+  return [...new Set(ids)].filter((id) => all[id] && (!all[id].private || observes(engine))).sort();
+};
+export const JOB_TOKEN_ENV = "AIDENHQ_JOB_TOKEN";
 
 // The host's toolchains, read-only in every job: the system (merged-/usr links are recreated as links) and /etc.
 const SYSTEM_RO = ["/usr", "/etc", "/opt", "/snap"];
@@ -216,15 +199,15 @@ function jailed({ pasta, bwrap = "bwrap" }, masks, loopback, argv) {
 }
 
 /**
- * Command line for one engine run. Codex sandboxes its own tool calls; opencode and Claude Code run
- * inside `codex sandbox`. `gcp` is the job's gcloud session (src/gcp.mjs), for engines that observe.
- * `loopback`: further host URLs the job may reach (the run's helper), besides the MCP endpoints it is wired to.
+ * Command line for one engine run. bwrap (hiding) is the write boundary for every engine; Codex also sandboxes its own tool
+ * calls. `gcp` is the job's gcloud session (src/gcp.mjs), for engines that observe. `loopback`: further host URLs the job may
+ * reach (the run's helper), besides the model gateway (its model calls and its jobcaps).
  */
 export function buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, loopback = [], job = {}, box }) {
   if (engine.box) return boxCommand({ cfg, engine, sessionId, job, box });
   const built = engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp: observes(engine) ? gcp : undefined, job });
-  // OpenRouter engines' model calls go to the model gateway on host loopback (forwarded into the job's network jail).
-  const mcp = [primer(cfg)?.url, ...(observes(engine) ? privateReads(cfg).map((r) => r.url) : []), ...(viaGateway(engine.kind) ? [gatewayUrl(cfg)] : [])];
+  // OpenRouter engines' model calls and every job's jobcaps go to the model gateway on host loopback (forwarded into the jail).
+  const mcp = viaGateway(engine.kind) || jobcapsFor(cfg, engine, job.jobcaps).length ? [gatewayUrl(cfg)] : [];
   // The engine writes its last message there (-o): the file alone is bound, made beforehand (bwrap binds what exists).
   if (lastMessageFile && !existsSync(lastMessageFile)) try { writeFileSync(lastMessageFile, ""); } catch {}
   const rw = [worktree, ...(built.rw ?? []), lastMessageFile];
@@ -317,10 +300,10 @@ export const gatewayApi = (cfg) => `${gatewayUrl(cfg)}/api/v1`;
 
 /**
  * The job's own credential to the model gateway, valid past its deadline (an adopted run keeps its env). Minted from the job's
- * agent, task and start time (`job.at`), so the same job always gets the same token: its `aidenhq advise` calls, also from a
- * runner that adopted it after a restart, share its run key (the same run cap and run page).
+ * agent, task, jobcaps and start time (`job.at`), so the same job always gets the same token: its `aidenhq advise` calls, also
+ * from a runner that adopted it after a restart, share its run key (the same run cap and run page).
  */
-export const jobToken = (cfg, job) => job.token ?? modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 }, job.at);
+export const jobToken = (cfg, job) => job.token ?? modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, jobcaps: [...(job.jobcaps ?? [])].sort(), observing: job.observing === true, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 }, job.at);
 
 const GATEWAY_KEY_ENV = "AIDENHQ_GATEWAY_KEY";
 // Off for codex-openrouter, as for Paperclip's Codex agents: ChatGPT connectors, the desktop's browser and computer, OpenAI's
@@ -350,26 +333,22 @@ export function codexHome(cfg, issueId) {
 }
 
 function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, job = {} }) {
-  const p = primer(cfg);
-  const reads = observes(engine) ? privateReads(cfg) : [];
-  const search = observes(engine) ? "disabled" : "live"; // no web search for a job holding private data
-  const mcpEnv = { ...(p ? { PRIMER_MCP_TOKEN: p.token } : {}), ...Object.fromEntries(reads.map((r) => [r.env, r.token])), ...(gcp?.env ?? {}) };
+  const caps = jobcapsFor(cfg, engine, job.jobcaps);
+  job = { ...job, jobcaps: caps, observing: observes(engine) };
+  const servers = jobcapServers(cfg, caps);
+  let minted;
+  const token = () => (minted ??= jobToken(cfg, job)); // one credential per job: its model calls and its reads
+  const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live"; // no web search for a job holding private data
+  const mcpEnv = { ...(servers.length ? { [JOB_TOKEN_ENV]: token() } : {}), ...(gcp?.env ?? {}) };
   const gcpRoots = gcp ? [gcp.root] : [];
   if (engine.kind === "codex" || engine.kind === "codex-openrouter") {
     const base = sessionId ? ["codex", "exec", "resume", sessionId] : ["codex", "exec"];
     // The workspace holds several clones and isn't a git repository itself.
     const args = [...base, "--json", "--skip-git-repo-check", "-o", lastMessageFile, ...sandboxConfig(cfg, worktree, gcpRoots)];
-    if (p) {
-      args.push(
-        "-c", `mcp_servers.primer.url=${JSON.stringify(p.url)}`,
-        "-c", 'mcp_servers.primer.bearer_token_env_var="PRIMER_MCP_TOKEN"',
-        "-c", 'mcp_servers.primer.default_tools_approval_mode="approve"',
-      );
-    }
-    for (const r of reads) {
+    for (const r of servers) {
       args.push(
         "-c", `mcp_servers.${r.name}.url=${JSON.stringify(r.url)}`,
-        "-c", `mcp_servers.${r.name}.bearer_token_env_var="${r.env}"`,
+        "-c", `mcp_servers.${r.name}.bearer_token_env_var="${JOB_TOKEN_ENV}"`,
         "-c", `mcp_servers.${r.name}.default_tools_approval_mode="approve"`,
       );
       if (r.toolTimeout) args.push("-c", `mcp_servers.${r.name}.tool_timeout_sec=${r.toolTimeout}`);
@@ -378,7 +357,8 @@ function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp,
     if (engine.effort) args.push("-c", `model_reasoning_effort="${engine.effort}"`);
     args.push("-c", `web_search="${search}"`);
     if (engine.kind === "codex") {
-      args.push("-");
+      // The job token stays with Codex and its MCP clients, out of every command it runs.
+      args.push("-c", `shell_environment_policy.exclude=${JSON.stringify([JOB_TOKEN_ENV])}`, "-");
       return { argv: args, env: mcpEnv, rw: [...gcpRoots, join(homedir(), ".codex")] };
     }
     // codex-openrouter: OpenRouter through the model gateway with the job's own token (as for opencode), in a Codex home of
@@ -390,30 +370,30 @@ function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp,
       "-c", `model_providers.or.base_url=${JSON.stringify(gatewayApi(cfg))}`,
       "-c", `model_providers.or.env_key="${GATEWAY_KEY_ENV}"`,
       "-c", 'model_providers.or.wire_api="responses"',
-      // The model key and the read tokens stay with Codex and its MCP clients, out of every command it runs.
-      "-c", `shell_environment_policy.exclude=${JSON.stringify([GATEWAY_KEY_ENV, "*_MCP_TOKEN"])}`,
+      // The model key and the job token stay with Codex and its MCP clients, out of every command it runs.
+      "-c", `shell_environment_policy.exclude=${JSON.stringify([GATEWAY_KEY_ENV, JOB_TOKEN_ENV])}`,
       ...CODEX_OFF.flatMap((f) => ["-c", `features.${f}=false`]),
       "-",
     );
-    return { argv: args, env: { ...mcpEnv, [GATEWAY_KEY_ENV]: jobToken(cfg, job), CODEX_HOME: home }, rw: [...gcpRoots, home] };
+    return { argv: args, env: { ...mcpEnv, [GATEWAY_KEY_ENV]: token(), CODEX_HOME: home }, rw: [...gcpRoots, home] };
   }
   if (engine.kind === "openrouter") {
-    const key = jobToken(cfg, job);
+    const key = token();
     const opencode = ["opencode", "run", "--format", "json", "--model", `openrouter/${engine.model}`];
     // The reasoning effort (OpenRouter's reasoning.effort) as opencode's model variant.
     if (engine.effort) opencode.push("--variant", engine.effort);
     if (sessionId) opencode.push("--session", sessionId);
-    // OS-level confinement for opencode's tools: Codex's sandbox around the whole process.
+    // Its writes: the worktree and these state dirs, under bwrap (hiding).
     const stateRoots = ["~/.local/share/opencode", "~/.local/state/opencode", "~/.cache/opencode", "~/.config/opencode"].map(expand);
     return {
-      argv: codexSandbox(cfg, worktree, stateRoots, opencode),
+      argv: opencode,
       rw: stateRoots,
       env: {
         ...mcpEnv,
         OPENROUTER_API_KEY: key,
         // Non-interactive: opencode must not stop to ask for permission, because an unanswered prompt
         // is auto-rejected and ends the run. Reading outside the worktree (reference repos) is
-        // fine: the codex sandbox around opencode still limits writes to the worktree. Its default asks
+        // fine: bwrap around opencode still limits writes to the worktree. Its default asks
         // before reading `.env` files, which repositories track too (PEN-2421).
         OPENCODE_CONFIG_CONTENT: JSON.stringify({
           permission: { read: "allow", edit: "allow", bash: "allow", webfetch: observes(engine) ? "deny" : "allow", websearch: observes(engine) ? "deny" : "allow", external_directory: "allow", doom_loop: "allow" },
@@ -422,10 +402,7 @@ function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp,
           // Through the model gateway; its title calls use the job's model, not opencode's default small model.
           provider: { openrouter: { options: { baseURL: gatewayApi(cfg) } } },
           small_model: `openrouter/${engine.model}`,
-          mcp: {
-            ...(p ? { primer: { type: "remote", url: p.url, headers: { Authorization: "Bearer {env:PRIMER_MCP_TOKEN}" }, oauth: false, enabled: true } } : {}),
-            ...Object.fromEntries(reads.map((r) => [r.name, { type: "remote", url: r.url, headers: { Authorization: `Bearer {env:${r.env}}` }, oauth: false, enabled: true }])),
-          },
+          mcp: Object.fromEntries(servers.map((r) => [r.name, { type: "remote", url: r.url, headers: { Authorization: `Bearer {env:${JOB_TOKEN_ENV}}` }, oauth: false, enabled: true }])),
         }),
       },
       promptAsArg: true,
@@ -435,13 +412,10 @@ function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp,
     if (!existsSync(cfg.claudeTokenFile)) throw new Error(`Claude Code isn't set up for the runner: run \`claude setup-token\` and save the token to \`${cfg.claudeTokenFile}\` (0600).`);
     const token = readFileSync(cfg.claudeTokenFile, "utf8").trim();
     mkdirSync(cfg.claudeConfigDir, { recursive: true, mode: 0o700 });
-    // Headless, no prompts (the codex sandbox is the write boundary), and nothing from your own
+    // Headless, no prompts (bwrap is the write boundary), and nothing from your own
     // Claude setup: a runner-owned config dir, no settings files (yours or the repo's: no hooks),
-    // no MCP servers but the read-only endpoints (Primer; Grafana, Slack, Glean, ClickHouse), and no claude.ai connectors.
-    const mcpServers = {
-      ...(p ? { primer: { type: "http", url: p.url, headers: { Authorization: "Bearer ${PRIMER_MCP_TOKEN}" } } } : {}),
-      ...Object.fromEntries(reads.map((r) => [r.name, { type: "http", url: r.url, headers: { Authorization: `Bearer \${${r.env}}` } }])),
-    };
+    // no MCP servers but the job's jobcaps through the gateway, and no claude.ai connectors.
+    const mcpServers = Object.fromEntries(servers.map((r) => [r.name, { type: "http", url: r.url, headers: { Authorization: `Bearer \${${JOB_TOKEN_ENV}}` } }]));
     const claude = [
       // Streamed input, so the user's comments can reach a run in progress; each one is echoed back
       // once taken in (--replay-user-messages), which tells runAgent when the conversation is done.
@@ -455,7 +429,7 @@ function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp,
     if (engine.effort) claude.push("--effort", engine.effort === "minimal" ? "low" : engine.effort);
     if (sessionId) claude.push("--resume", sessionId);
     return {
-      argv: codexSandbox(cfg, worktree, [cfg.claudeConfigDir, ...gcpRoots], claude),
+      argv: claude,
       rw: [cfg.claudeConfigDir, ...gcpRoots],
       env: {
         ...mcpEnv,
