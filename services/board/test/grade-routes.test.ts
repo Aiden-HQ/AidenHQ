@@ -7,7 +7,7 @@ import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { checks } from "../src/fleet-ops.js";
-import { completionGate } from "../src/grades.js";
+import { backfillEscalatedDelegators, completionGate } from "../src/grades.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
@@ -33,21 +33,27 @@ const engineerTask = { ...task, id: "44444444-4444-4444-4444-444444444444", iden
 // itself was filed by the Researcher (ra). The two are different agents, which is the case the close has to allow.
 const parentTask = { ...task, id: "55555555-5555-5555-5555-555555555555", identifier: "WOR-9", assigneeAgentId: "cos", createdByAgentId: null };
 const childTask = { ...task, id: "66666666-6666-6666-6666-666666666666", identifier: "WOR-10", parentId: parentTask.id, createdByAgentId: "ra" };
+// A task filed by no agent at all: an escalated grade on it has no delegator to fall back to.
+const orphanTask = { ...task, id: "77777777-7777-7777-7777-777777777777", identifier: "WOR-11", createdByAgentId: null };
 const patches: Record<string, unknown>[] = [];
+/** A comment on the task that reads like an escalation note, written by an agent the grade was never addressed to. */
+const lookalike = { id: "c1", body: "Escalation: this grade is now other's call, so other may close it.", authorAgentId: "other", createdAt: "2026-11-14T09:00:00.000Z" };
+const comments = vi.fn(async () => [lookalike]);
 /** The task's saved Paperclip review path: its scheduled check, as a time. */
 const reviewCheck = (patch: Record<string, unknown>) => Date.parse((patch.executionPolicy as { monitor?: { nextCheckAt?: string } }).monitor?.nextCheckAt ?? "");
 const pc = {
   companyId: "co",
   agentMe: async (key: string) => agents.find((a) => a.id === key) ?? Promise.reject(new Error("401")),
-  issue: async (ref: string) => ({ [engineerTask.identifier]: engineerTask, [engineerTask.id]: engineerTask, [parentTask.identifier]: parentTask, [parentTask.id]: parentTask, [childTask.identifier]: childTask, [childTask.id]: childTask })[ref] ?? task,
+  issue: async (ref: string) => ({ [engineerTask.identifier]: engineerTask, [engineerTask.id]: engineerTask, [parentTask.identifier]: parentTask, [parentTask.id]: parentTask, [childTask.identifier]: childTask, [childTask.id]: childTask, [orphanTask.identifier]: orphanTask, [orphanTask.id]: orphanTask })[ref] ?? task,
+  comments,
   labels: async () => [{ id: "lbl-grading", name: "grading" }],
   agents: async () => agents,
   updateIssue: async (id: string, body: Record<string, unknown>) => (patches.push(body), Object.assign({ [engineerTask.id]: engineerTask, [childTask.id]: childTask }[id] ?? task, body)),
 } as unknown as Paperclip;
 
 /** A board on its own store, and the escalated-or-not gate call one agent makes on a task there. */
-async function gateApp(store: Store): Promise<{ gateFor: (task: string, who: string) => Promise<{ status: number; json: any }>; close: () => void }> {
-  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY });
+async function gateApp(store: Store, paperclip: Paperclip = pc): Promise<{ gateFor: (task: string, who: string) => Promise<{ status: number; json: any }>; close: () => void }> {
+  const app = createApp({ paperclip, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY });
   await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
   const port = (app.address() as AddressInfo).port;
   return {
@@ -267,6 +273,106 @@ describe("grade routes", () => {
       expect(s.grades.get(childTask.id)!.state).toBe("escalated");
     } finally {
       Object.assign(parentTask, { assigneeAgentId: "cos" });
+      close();
+    }
+  });
+
+  it("an escalated row that saved no delegators falls back to its creator, and one with no creator fails closed", async () => {
+    const s = new Store(":memory:");
+    s.grades.file(task.id, [], { kind: "report", ref: "" });
+    completionGate(s.grades, task.id, "task_finish");
+    // Escalated before the delegators column was populated: the row has none saved.
+    s.grades.record(task.id, { version: "c1", outcome: "cannot_judge", model: "glm", criteria: [] });
+    expect(s.grades.get(task.id)).toMatchObject({ state: "escalated", delegators: null });
+    const { gateFor, close } = await gateApp(s);
+    try {
+      expect((await gateFor("WOR-7", "cos")).json).toEqual({ pass: true });
+      expect(s.grades.get(task.id)!.verdicts.at(-1)).toMatchObject({ verdict: "accepted", by: "cos" });
+    } finally {
+      close();
+    }
+    // The same row on a task no agent filed: no fallback exists, so nobody but its assignee closes it.
+    const noCreator = new Store(":memory:");
+    noCreator.grades.file(orphanTask.id, [], { kind: "report", ref: "" });
+    completionGate(noCreator.grades, orphanTask.id, "task_finish");
+    noCreator.grades.record(orphanTask.id, { version: "c1", outcome: "cannot_judge", model: "glm", criteria: [] });
+    expect(noCreator.grades.get(orphanTask.id)).toMatchObject({ state: "escalated", delegators: null });
+    const o = await gateApp(noCreator);
+    try {
+      for (const who of ["cos", "ra", "other"]) {
+        expect((await o.gateFor("WOR-11", who)).status).toBe(403);
+      }
+      expect(noCreator.grades.get(orphanTask.id)!.state).toBe("escalated");
+    } finally {
+      o.close();
+    }
+  });
+
+  it("an empty delegators list falls back to the creator; a non-empty list decides alone", async () => {
+    const s = new Store(":memory:");
+    s.grades.file(task.id, [], { kind: "report", ref: "" });
+    completionGate(s.grades, task.id, "task_finish");
+    s.grades.record(task.id, { version: "c1", outcome: "cannot_judge", model: "glm", criteria: [] }, Date.now(), []);
+    expect(s.grades.get(task.id)).toMatchObject({ state: "escalated", delegators: [] });
+    const { gateFor, close } = await gateApp(s);
+    try {
+      expect((await gateFor("WOR-7", "cos")).json).toEqual({ pass: true });
+    } finally {
+      close();
+    }
+    // A saved list without the caller refuses it, whatever the task's creator is.
+    const saved = new Store(":memory:");
+    saved.grades.file(task.id, [], { kind: "report", ref: "" });
+    completionGate(saved.grades, task.id, "task_finish");
+    saved.grades.record(task.id, { version: "c1", outcome: "cannot_judge", model: "glm", criteria: [] }, Date.now(), ["ra"]);
+    const g = await gateApp(saved);
+    try {
+      expect((await g.gateFor("WOR-7", "cos")).status).toBe(403);
+      expect((await g.gateFor("WOR-7", "other")).status).toBe(403);
+      expect(saved.grades.get(task.id)!.state).toBe("escalated");
+      expect((await g.gateFor("WOR-7", "ra")).json).toEqual({ pass: true });
+    } finally {
+      g.close();
+    }
+  });
+
+  it("an escalation-lookalike comment grants nothing: its author is refused like any other outsider", async () => {
+    const s = new Store(":memory:");
+    s.grades.file(task.id, [], { kind: "report", ref: "" });
+    completionGate(s.grades, task.id, "task_finish");
+    s.grades.record(task.id, { version: "c1", outcome: "cannot_judge", model: "glm", criteria: [] }, Date.now(), ["ra"]);
+    comments.mockClear();
+    const { gateFor, close } = await gateApp(s);
+    try {
+      expect((await gateFor("WOR-7", "other")).status).toBe(403);
+      expect(s.grades.get(task.id)!.state).toBe("escalated");
+      expect(comments).not.toHaveBeenCalled();
+    } finally {
+      close();
+    }
+  });
+
+  it("the backfill saves the creator on an escalated row that has no delegators, once, and leaves a row without one alone", async () => {
+    const s = new Store(":memory:");
+    for (const t of [task, orphanTask]) {
+      s.grades.file(t.id, [], { kind: "report", ref: "" });
+      completionGate(s.grades, t.id, "task_finish");
+      s.grades.record(t.id, { version: "c1", outcome: "cannot_judge", model: "glm", criteria: [] });
+    }
+    const before = s.grades.get(task.id)!;
+    const filled = await backfillEscalatedDelegators(s.grades, (id) => pc.issue(id));
+    expect(filled.map((g) => g.issueId)).toEqual([task.id]);
+    expect(s.grades.get(task.id)).toMatchObject({ delegators: ["cos"], state: "escalated", updatedAt: before.updatedAt });
+    // A task with no creator is not filled: that row keeps failing closed.
+    expect(s.grades.get(orphanTask.id)!.delegators).toBeNull();
+    // Idempotent: a second run writes nothing and moves no timestamp.
+    expect(await backfillEscalatedDelegators(s.grades, (id) => pc.issue(id))).toEqual([]);
+    expect(s.grades.get(task.id)!.updatedAt).toBe(before.updatedAt);
+    // The saved creator is the one that can now close it.
+    const { gateFor, close } = await gateApp(s);
+    try {
+      expect((await gateFor("WOR-7", "cos")).json).toEqual({ pass: true });
+    } finally {
       close();
     }
   });

@@ -1154,8 +1154,10 @@ export function createApp(opts: AppOptions): Server {
           const g = gradingOn() ? store.grades.get(issue.id) : undefined;
           if (g?.state === "escalated") {
             // Judged against the delegators saved when it escalated, never today's creator or parent (both can be changed
-            // later); a row escalated before they were saved falls back to the creator.
-            if ((g.delegators ?? [issue.createdByAgentId]).includes(agent.id)) {
+            // later). A row that escalated before they were saved falls back to the task's creator only (the backfill in
+            // grades.ts fills those rows in), and a row with no creator matches no one.
+            const delegators = g.delegators?.length ? g.delegators : [issue.createdByAgentId].filter((id): id is string => Boolean(id));
+            if (delegators.includes(agent.id)) {
               store.grades.accept(issue.id, agent.id);
               const label = (await pc.labels()).find((l) => l.name === "grading");
               const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);

@@ -5,7 +5,7 @@ import { webhookWake, type Manifest } from "./app-access.js";
 import { appsApi } from "./fleet.js";
 import { createSigninServer } from "./signin.js";
 import { startDetector } from "./fleet-ops.js";
-import { settleClosedGrades } from "./grades.js";
+import { backfillEscalatedDelegators, settleClosedGrades } from "./grades.js";
 import { loadConfig } from "./config.js";
 import { pullUsage } from "./costs.js";
 import { McpAuth } from "./mcpauth.js";
@@ -38,13 +38,22 @@ function rollover() {
 }
 rollover();
 setInterval(rollover, 60_000).unref();
-/** Every five minutes: a graded task closed before the grader settled it (a cancel in Paperclip itself) has nothing to grade. */
+/**
+ * Every five minutes: a graded task closed before the grader settled it (a cancel in Paperclip itself) has nothing to grade,
+ * and an escalated row that saved no delegators gets its task's creator saved.
+ */
 async function settleGrades() {
   try {
     const settled = await settleClosedGrades(store.grades, (id) => paperclip.issue(id));
     if (settled.length) log.info({ tasks: settled.map((g) => g.issueId), reason: settled[0]!.closedReason }, "graded rows settled on a closed task");
   } catch (err) {
     log.warn({ err: String(err) }, "settling closed grades failed");
+  }
+  try {
+    const filled = await backfillEscalatedDelegators(store.grades, (id) => paperclip.issue(id));
+    if (filled.length) log.info({ tasks: filled.map((g) => g.issueId) }, "escalated grades given their creator as delegator");
+  } catch (err) {
+    log.warn({ err: String(err) }, "backfilling escalated delegators failed");
   }
 }
 setInterval(() => void settleGrades(), 5 * 60_000).unref();

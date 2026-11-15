@@ -188,6 +188,26 @@ export class Grades {
     return (this.db.prepare("SELECT * FROM grades WHERE state NOT IN ('satisfied', 'not_graded') ORDER BY updated_at").all() as unknown as Row[]).map(fromRow);
   }
 
+  /**
+   * Escalated rows with no saved delegators: escalated before the column was populated (NULL), or with an empty list. The
+   * backfill fills these in from the task's creator; nothing else is read.
+   */
+  escalatedWithoutDelegators(): Grade[] {
+    return (this.db.prepare("SELECT * FROM grades WHERE state = 'escalated' AND (delegators IS NULL OR delegators = '[]' OR delegators = '') ORDER BY updated_at").all() as unknown as Row[]).map(fromRow);
+  }
+
+  /**
+   * Saves the delegators of a row that still has none: an escalated row only, and only while its list is NULL or empty, so a
+   * second run writes nothing. `updated_at` is left alone: the row's escalation did not move.
+   */
+  saveDelegators(issueId: string, delegators: string[]): boolean {
+    const r = this.db
+      .prepare("UPDATE grades SET delegators = ? WHERE issue_id = ? AND state = 'escalated' AND (delegators IS NULL OR delegators = '[]' OR delegators = '')")
+      .run(JSON.stringify(delegators), issueId);
+    if (Number(r.changes) > 0) this.events?.emit("grades", issueId);
+    return Number(r.changes) > 0;
+  }
+
   /** Escalated rows finished again since: the runner checks each for a new deliverable version. */
   resubmitted(): Grade[] {
     return (this.db.prepare("SELECT g.* FROM grades g JOIN grade_resubmits r ON r.issue_id = g.issue_id WHERE g.state = 'escalated'").all() as unknown as Row[]).map(fromRow);
@@ -310,6 +330,25 @@ export async function settleClosedGrades(grades: Grades, issue: (id: string) => 
     if (row) settled.push(row);
   }
   return settled;
+}
+
+/**
+ * An escalated row with no saved delegators (it escalated before the column was populated) falls back to its task's creator:
+ * the guard reads that creator live, and this stores it on the row so the answer stops depending on a mutable task record.
+ * The creator is Paperclip's structured `createdByAgentId`; nothing is read from text, and a task with no creator is left
+ * alone (that row keeps failing closed). Idempotent: a filled row is never selected, and `updated_at` is not touched.
+ */
+export async function backfillEscalatedDelegators(grades: Grades, issue: (id: string) => Promise<{ createdByAgentId?: string | null } | undefined>): Promise<Grade[]> {
+  const filled: Grade[] = [];
+  for (const g of grades.escalatedWithoutDelegators()) {
+    const i = await Promise.resolve()
+      .then(() => issue(g.issueId))
+      .catch(() => undefined);
+    const creator = i?.createdByAgentId;
+    if (!creator) continue;
+    if (grades.saveDelegators(g.issueId, [creator])) filled.push(grades.get(g.issueId)!);
+  }
+  return filled;
 }
 
 /** A held task's scheduled check sits at the runner's evidence deadline, well past a normal grader pass. */
