@@ -52,6 +52,7 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 | `services/runner` | `npm test` |
 | `services/computer` | `node --test test/*.test.mjs` |
 | `services/gate` | `npm test && npm run typecheck` |
+| `services/gateway` | `npm test && npm run typecheck` |
 | `services/board` | `npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build` |
 | `services/apps-mcp`, `modules/*/connections/*`, `modules/security/scanner` | `npm test && npm run typecheck` |
 
