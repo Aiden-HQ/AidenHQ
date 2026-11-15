@@ -301,10 +301,12 @@ jobs:
           }
           # Reads a run: prints "<kind>\t<cause>". kind: ok (it has a verdict), permanent (exit 2: arguments, config or git
           # refs; a bad key; the provider's usage limit), budget (its call budget ran out; an unexplained failure on an
-          # already boosted diff counts too: #131, #134 at 13-17k lines) or transient (no review output, a provider error or
-          # timeout, anything else). cause goes into a PR comment, so it is only a fixed class (config, auth, usage-limit,
-          # no-review-output, budget, rate-limit, provider-5xx, timeout, unknown) and codegenie's own error codes, masked;
-          # the detail (stderr, telemetry errors) goes to the job log only, where GitHub masks secrets.
+          # already boosted diff counts too: #131, #134 at 13-17k lines), too-large (the model's review of an already
+          # boosted diff came back schema-invalid, llm_schema_invalid: roadmap-keeper#161 at 3,091 lines, where retries cost
+          # about 30 minutes more; smaller PRs review reliably) or transient (no review output, a provider error or timeout, anything else). cause goes
+          # into a PR comment, so it is only a fixed class (config, auth, usage-limit, no-review-output, budget, schema,
+          # rate-limit, provider-5xx, timeout, unknown) and codegenie's own error codes, masked; the detail (stderr,
+          # telemetry errors) goes to the job log only, where GitHub masks secrets.
           # Output with stray lines around codegenie's JSON is cut back to the JSON (#141: exit 0, yet no readable review).
           failure() {
             node -e '
@@ -333,6 +335,7 @@ jobs:
                 : has("auth") || /authentication failed/i.test(fatal) ? ["permanent", "auth"]
                 : has("usage_limit") || /usage limit reached/i.test(fatal) ? ["permanent", "usage-limit"]
                 : r?.coverage?.budgetStopped || has("budget_exhausted", "max_model_calls", "max_budget_tokens") || /budget exhausted/i.test(fatal) ? ["budget", "budget"]
+                : has("llm_schema_invalid") && Number(boost) > 1 ? ["too-large", "schema"]
                 : !Array.isArray(r?.findings) ? ["transient", "no-review-output"]
                 : /\b429\b|rate.?limit/i.test(fatal) ? ["transient", "rate-limit"]
                 : /HTTP 5\d\d|overloaded|bad gateway|service unavailable/i.test(fatal) ? ["transient", "provider-5xx"]
@@ -345,7 +348,8 @@ jobs:
           }
           # No verdict is never a pass: the gate fails it. But one retry here, inside the job, recovers most of them: with
           # double the budget after a budget stop, else after a short wait. The retry gets a --max-time whose hard stop
-          # (twice it) still ends before the job's timeout, and none when under 10 minutes are left.
+          # (twice it) still ends before the job's timeout, and none when under 10 minutes are left. A diff too large for one
+          # review ends here at once: the gate says to split the PR.
           review 40
           attempts=1
           IFS=$'\t' read -r kind cause < <(failure)
@@ -366,6 +370,7 @@ jobs:
               echo "::warning::Not enough of the job's time is left for a retry."
             fi
           fi
+          [ "$kind" = too-large ] && echo "::warning::codegenie's review came back schema-invalid (${cause}): the diff is too large for one review, so the check ends now."
           echo "CODEGENIE_EXIT=$code" >> "$GITHUB_ENV"
           echo "CODEGENIE_ATTEMPTS=$attempts" >> "$GITHUB_ENV"
           echo "CODEGENIE_FAILURE=$kind" >> "$GITHUB_ENV"

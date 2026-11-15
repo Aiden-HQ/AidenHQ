@@ -16,11 +16,12 @@ const mask = (s) => s.replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{6,}/g, "$1-***").repla
   .replace(/\b(key|token|secret|password|api_key|apikey|access_token|auth)=[^\s&"']+/gi, "$1=***").replace(/\bgh[pousr]_[A-Za-z0-9]{10,}/g, "gh*_***");
 const clip = (s, n) => { const t = mask(String(s ?? "").trim()); return t.length > n ? `${t.slice(0, n)}…` : t; };
 
-// What to do when no review came out, by the workflow's CODEGENIE_FAILURE (it retries those two once, time permitting:
-// a retry shows as "2 attempts").
+// What to do when no review came out, by the workflow's CODEGENIE_FAILURE (it retries budget and transient once, time
+// permitting: a retry shows as "2 attempts"; too-large ends at once).
 const NEXT = {
   budget: "It ran out of its review budget: the PR is too big to review in one go. Split it into stacked PRs (each a few hundred to ~2,000 changed lines) and push those.",
   transient: "The model provider failed or timed out. Re-run the check; if it fails the same way again, read the job log.",
+  "too-large": "Diff too large for one review: split the PR or review by part, as stacked PRs of a few hundred to ~2,000 changed lines each, and push those.",
 };
 const FALLBACK = "See the job log, fix the cause and re-run the check.";
 
@@ -50,6 +51,9 @@ function judge(exitCode, stdout, sha, { failure, cause, attempts }) {
   const at = sha ? ` on \`${sha.slice(0, 7)}\`` : "";
   const next = NEXT[failure] ?? FALLBACK;
   const tries = Number(attempts) > 1 ? `, ${attempts} attempts` : "";
+  // Its own headline: the runner re-runs a check whose comment says the review failed or was incomplete
+  // (services/runner/src/merges.mjs codeReviewInfra), and this one is final for the diff.
+  if (failure === "too-large") return { block: true, body: `${MARKER}\n**Diff too large for one review${at}** (codegenie exit ${exitCode}${tries}${cause ? `: ${clip(cause, 300)}` : ""}). ${next}` };
   if (exitCode !== 0 || !review || !Array.isArray(review.findings) || review.health?.status === "failed") {
     const why = cause || review?.health?.diagnostics?.map((d) => d.reason).filter(Boolean).slice(0, 3).join("; ");
     return { block: true, body: `${MARKER}\n**Code review failed${at}** (codegenie exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${next}` };

@@ -151,20 +151,26 @@ test("no verdict: a budget stop retries with double the budget, a provider error
   g("add", ".");
   g("commit", "-qm", "change");
   const head = g("rev-parse", "HEAD");
-  const run = (...responses) => {
+  // A 2,100-line change on top: big enough for --budget-boost 2.
+  writeFileSync(join(dir, "big.ts"), Array.from({ length: 2100 }, (_, i) => `line ${i}\n`).join(""));
+  g("add", ".");
+  g("commit", "-qm", "big change");
+  const bigHead = g("rev-parse", "HEAD");
+  const runAt = (at, ...responses) => {
     const bin = mkdtempSync(join(tmpdir(), "ci-bin-"));
     responses.forEach((r, i) => writeFileSync(join(bin, `resp${i + 1}`), r));
     writeFileSync(join(bin, "npx"), `#!/bin/sh\nn=$(( $(cat "${bin}/count" 2>/dev/null || echo 0) + 1 )); echo $n > "${bin}/count"\necho "$*" >> "${bin}/args"\n. "${bin}/resp$n"\n`);
     writeFileSync(join(bin, "sleep"), `#!/bin/sh\ntouch "${bin}/slept"\n`);
     chmodSync(join(bin, "npx"), 0o755);
     chmodSync(join(bin, "sleep"), 0o755);
-    const env = testEnv({ PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: head, PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin });
+    const env = testEnv({ PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: at, PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin });
     writeFileSync(env.GITHUB_ENV, "");
     execFileSync("bash", ["-e", "-c", script], { cwd: dir, env, stdio: "pipe" });
     const out = Object.fromEntries(readFileSync(env.GITHUB_ENV, "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
     const boosts = readFileSync(join(bin, "args"), "utf8").trim().split("\n").map((a) => a.match(/--budget-boost (\d+)/)[1]);
     return { ...out, boosts, slept: existsSync(join(bin, "slept")), stdout: readFileSync(join(bin, "review.json"), "utf8") };
   };
+  const run = (...responses) => runAt(head, ...responses);
   const budget = run(`echo "llm_call_failed: LLM provider call budget exhausted" >&2; exit 1`, ok);
   assert.deepEqual([budget.boosts, budget.slept, budget.CODEGENIE_EXIT, budget.CODEGENIE_FAILURE], [["1", "2"], false, "0", "ok"]);
   const transient = run(`echo "llm_call_failed: LLM provider call failed" >&2; echo "502 Bad Gateway" >&2; exit 1`, ok);
@@ -198,6 +204,18 @@ test("no verdict: a budget stop retries with double the budget, a provider error
   assert.match(body, /provider-5xx/);
   // A gate run from an older workflow (no cause) still masks what it posts from the review's diagnostics.
   assert.doesNotMatch(verdict(1, leak.stdout, "abcdef123").body, /sk-or-v1-abc/);
+  // roadmap-keeper#161 (3,091 lines): a boosted review that comes back schema-invalid is too large for one review. It ends at
+  // once, and its comment is one the runner leaves alone (it re-runs a check whose comment says "failed" or "incomplete").
+  const schema = `echo '${review([], { health: { status: "failed", diagnostics: [{ code: "llm_schema_invalid", reason: "model submit payload failed schema validation after repair" }] } })}'; exit 1`;
+  const big = runAt(bigHead, schema, ok);
+  assert.deepEqual([big.boosts, big.slept, big.CODEGENIE_FAILURE, big.CODEGENIE_ATTEMPTS, big.CODEGENIE_CAUSE], [["2"], false, "too-large", "1", "schema (llm_schema_invalid)"]);
+  const said = verdict(Number(big.CODEGENIE_EXIT), big.stdout, "abcdef123", { failure: big.CODEGENIE_FAILURE, cause: big.CODEGENIE_CAUSE, attempts: big.CODEGENIE_ATTEMPTS });
+  assert.equal(said.block, true);
+  assert.match(said.body, /^<!-- ci:code-review -->\n\*\*Diff too large for one review on `abcdef1`\*\* \(codegenie exit 1: schema \(llm_schema_invalid\)\)\. Diff too large for one review: split the PR or review by part/);
+  assert.doesNotMatch(said.body, /\*\*Code review (failed|incomplete) on/);
+  // The same after a budget stop's boosted retry (the order #161 met them in): two runs, no third.
+  const after = run(`echo "llm_call_failed: LLM provider call budget exhausted" >&2; exit 1`, schema, ok);
+  assert.deepEqual([after.boosts, after.CODEGENIE_FAILURE], [["1", "2"], "too-large"]);
 });
 
 test("a review that never came out says what to do next: split the PR after a budget stop, re-run after a provider error", () => {
