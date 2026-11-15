@@ -937,6 +937,20 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
       assert.deepEqual(step.wake.map((w) => w.head), ["head1"]);
     });
 
+    // roadmap-keeper#167: the review task came only after a slow check finished, not when the head's review went pending.
+    it("the reviewer is asked while the other checks still run, once per head, and not for a draft", async () => {
+      const running = { __typename: "CheckRun", name: "code-review", status: "IN_PROGRESS", conclusion: null };
+      const gh = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([running, review("PENDING")]) }) });
+      const q = ui(1);
+      assert.deepEqual((await advance(q, { github: gh, now: at(0) })).wake.map((w) => w.head), ["head1"], "asked at once");
+      assert.equal((await advance(q, { github: gh, now: at(1) })).wake.length, 0, "once per head");
+      gh.prs[1] = own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("PENDING")]) });
+      assert.equal((await advance(q, { github: gh, now: at(2) })).wake.length, 0, "not again when the checks go green");
+      const draft = fakeGithub({ 1: own(1, { isDraft: true, ...rolled([running, review("PENDING")]) }) });
+      assert.equal((await advance(ui(1), { github: draft, now: at(0) })).wake.length, 0);
+      assert.deepEqual(gh.writes, [], "nothing merged");
+    });
+
     it("a failed design review stops it with the reviewer's reason", async () => {
       const gh = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("FAILURE")]) }) });
       const step = await advance(ui(1), { github: gh, now: at(0) });

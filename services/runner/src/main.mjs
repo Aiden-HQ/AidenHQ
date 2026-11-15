@@ -504,7 +504,7 @@ async function fileDesignReviewTask(pr, { waits = true } = {}) {
   if (state.get(`asked:${marker}`)) return;
   const title = `Design review${pr.again ? " (asked again)" : ""}: ${pr.repo}#${pr.number}`;
   const then = waits
-    ? `its checks are green on head \`${pr.head}\`, and its merge waits for your \`design-review\` verdict on that exact head`
+    ? `its head is \`${pr.head}\` (its checks may still be running), and its merge waits for your \`design-review\` verdict on that exact head`
     : `${cfg.selfName} approved its merge at head \`${pr.head}\`, which doesn't wait for you, so your \`design-review\` verdict on that head says whether it needs a follow-up fix`;
   const after = waits ? ` With no verdict ${DESIGN_REVIEW_HOURS} hours after ${pr.again ? "this request" : "its checks went green"}, ${pr.again ? "the merge is parked" : "you are asked once more, and then the merge is parked"}.` : "";
   const prKey = `design-review:${pr.repo.toLowerCase()}/${pr.number}`;
