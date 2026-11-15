@@ -164,6 +164,8 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     if (path === "/internal/approvals" && req.method === "GET" && url.searchParams.get("issue")) return send({ approvals: [...approvals.values()].filter((a) => a.issueId === find(url.searchParams.get("issue"))?.id) });
     if (path === "/internal/approvals" && req.method === "GET") return send({ approvals: [...approvals.values()].filter((a) => a.state === url.searchParams.get("state")) });
     // Graded done: the board's grades contract (services/board/src/grades.ts), simplified, and a scripted grader model.
+    const gradeOne = /^\/internal\/grades\/([^/]+)$/.exec(path);
+    if (gradeOne && req.method === "GET") return send({ state: (!gradingOff && grades.get(find(decodeURIComponent(gradeOne[1]))?.id)?.state) || null });
     const gradeRoute = /^\/internal\/grades\/([^/]+)\/(gate|verdict|release)$/.exec(path);
     if (gradeRoute) {
       const id = find(decodeURIComponent(gradeRoute[1]))?.id;

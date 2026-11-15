@@ -136,6 +136,27 @@ describe("event wake-ups", () => {
     expect(await wakeTick(deps(f, store), recent, t0 + 25 * MIN)).toEqual([]);
   });
 
+  it("a sub-task's progress (its rejected card, a grade sending it back) is not news; its escalated grade is", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "1", assigneeAgentId: "a", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "2", parentId: "1", assigneeAgentId: "e", status: "in_review" }, t0 - 60 * MIN);
+    store.grades.file("2", [], { kind: "pr", ref: "" });
+    const card = store.approvals.request({ issueId: "2", identifier: "WOR-2", action: "pr", target: "x", digest: "a".repeat(40), args: {}, sentence: "s", reads: "", changes: "c", cost: "", details: "", requestedBy: "Engineer" });
+    await wakeTick(deps(f, store), recent, t0); // the baseline
+
+    store.approvals.decide(card.id, "reject", "account:x");
+    store.grades.record("2", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "not merged" }] }, t0 + MIN);
+    for (const at of [5, 10]) expect(await wakeTick(deps(f, store), recent, t0 + at * MIN)).toEqual([]);
+    expect(f.comments).toHaveLength(0);
+
+    store.grades.record("2", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "not merged" }] }, t0 + 11 * MIN); // the same version again: escalated
+    expect(store.grades.get("2")?.state).toBe("escalated");
+    expect(await wakeTick(deps(f, store), recent, t0 + 16 * MIN)).toEqual(["1"]);
+    expect(f.comments[0]!.body).toContain("WOR-2's grade: escalated.");
+  });
+
   it("coalesces blockers that close in the same tick into one wake", async () => {
     const f = fake();
     const store = new Store(":memory:");

@@ -38,6 +38,7 @@ import { LUNA, UNSURE, fileContext, openRouterAsk, openRouterKey, review } from 
 import { GRADE_SCHEMA, gather, grade, gradeNote, template } from "./grade.mjs";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.mjs";
 import { jobUsage } from "./usage.mjs";
+import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.mjs";
 import { readBusy } from "./busy.mjs";
 import { repoAccess } from "./repos.mjs";
 
@@ -987,8 +988,12 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
   if (status === "done" && !(await mayClose(issueId, "finish_merges"))) status = "in_review";
   if (!posted) await pc.setStatus(issueId, status, say.join("\n\n"));
   else if (full && status !== full.status) await pc.setStatus(issueId, status);
-  // Like an applied change: the chat that asked hears how the merges ended, which wakes its agent (the Agent Architect).
-  if (full?.parentId && isAgentSubtask(full)) await pc.comment(full.parentId, appliedNote(queue.identifier, "merge queue", { ok: queue.state === "done", text: say.join("\n\n") })).catch(() => {});
+  // The delegator hears how the merges ended when that is the last word: they failed, or the task closed ungraded. With a
+  // grade to follow, the grade's outcome is the news (notices.mjs).
+  if (full?.parentId && isAgentSubtask(full)) {
+    const kind = queue.state !== "done" ? "failed" : status === "done" ? "done" : (await graded(issueId)) ? "merged" : "done";
+    await tellParent(full, kind, appliedNote(queue.identifier, "merge queue", { ok: queue.state === "done", text: say.join("\n\n") })).catch(() => {});
+  }
   // The tasks that opened these PRs close too, so they don't sit "in review" (shown as waiting for the owner).
   const mergedUrls = queue.prs.filter((p) => p.status === "merged").map((p) => p.url);
   for (const other of state.issuesWithPrs(mergedUrls, issueId)) {
@@ -1164,7 +1169,7 @@ async function releaseGrades(grades) {
       const issue = await pc.issue(g.issueId);
       if (issue.status === "in_review" && !engineers.includes(issue.assigneeAgentId)) {
         await pc.setStatus(issue.id, "done", `Grading is switched off: closed as its assignee finished it, ungraded.`);
-        if (issue.parentId) await pc.comment(issue.parentId, `${issue.identifier} is done (grading is off, so it closed ungraded): ${issue.title}. Its result is on ${issue.identifier}.`).catch(() => {});
+        await tellParent(issue, "done", `${issue.identifier} is done (grading is off, so it closed ungraded): ${issue.title}. Its result is on ${issue.identifier}.`).catch(() => {});
       }
       await boardApi.post(`/internal/grades/${encodeURIComponent(g.issueId)}/release`, {});
       log("grade released", { issue: issue.identifier, status: issue.status });
@@ -1256,7 +1261,7 @@ async function gradeOne(g) {
       await boardApi.post(verdictPath, { version: "", outcome: "awaiting_evidence" }).catch(() => {});
       throw err;
     }
-    await tellOpenParent(issue, `${issue.identifier} (${agent?.metadata?.persona?.name ?? agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.`);
+    await tellParent(issue, "done", `${issue.identifier} (${agent?.metadata?.persona?.name ?? agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.`);
   } else if (row.state === "needs_revision") {
     await pc.setStatus(issue.id, "todo", note);
     // The runner ignores comments with its own marker, and takes a todo task only before its first run: a reopened Engineer
@@ -1268,18 +1273,30 @@ async function gradeOne(g) {
     }
   } else if (row.state === "escalated") {
     await pc.comment(issue.id, note);
-    await tellOpenParent(issue, `${issue.identifier}'s grade escalated to you: ${issue.title}. Decide it: close it to accept the work, or reopen it with what to change. See ${issue.identifier}.`).catch(() => {});
+    await tellParent(issue, "escalated", `${issue.identifier}'s grade escalated to you: ${issue.title}. Decide it: close it to accept the work, or reopen it with what to change. See ${issue.identifier}.`).catch(() => {});
   }
 }
 
 /**
- * Tells a graded task's parent, only while the parent is open with an agent on it: Paperclip reopens a done or cancelled task
- * on any user-authored comment (the runner's included), which would wake its agent and send finished work round again (WOR-3582).
+ * A notice about a sub-task for its parent (notices.mjs): an outcome is posted there, which wakes the delegator; progress is
+ * not (it is on the sub-task already). Only an open parent hears it: Paperclip reopens a done or cancelled task on any
+ * user-authored comment (the runner's included), which would wake its agent and send finished work round again (WOR-3582).
+ * The asking agent's own chat, handed to the owner while it waited for a tap, is given back first so the outcome wakes it.
  */
-async function tellOpenParent(issue, text) {
-  if (!issue.parentId) return;
+async function tellParent(issue, kind, text) {
+  if (!wakesParent(kind) || !issue.parentId) return;
   const p = await pc.issue(issue.parentId).catch(() => undefined);
-  if (p?.assigneeAgentId && !["done", "cancelled"].includes(p.status)) await pc.comment(p.id, text);
+  if (!p || ["done", "cancelled"].includes(p.status)) return;
+  // Only the asking agent's own chat (its id in the chat's end-anchored marker), and only while it sits with the owner.
+  const chatAgent = /<!-- aidenhq-chat-agent:([A-Za-z0-9_-]+) -->\s*$/.exec(p.description ?? "")?.[1];
+  if (!p.assigneeAgentId && p.assigneeUserId && issue.createdByAgentId && chatAgent === issue.createdByAgentId && isAgentSubtask(issue))
+    await pc.api("PATCH", `/api/issues/${encodeURIComponent(p.id)}`, { assigneeAgentId: issue.createdByAgentId, assigneeUserId: null, status: "todo" }).catch(() => {});
+  await pc.comment(p.id, text);
+}
+
+/** Whether a grade will still speak for this task (notices.mjs graderSpeaks): its progress is then not news for its parent. */
+async function graded(issueId) {
+  return graderSpeaks((await boardApi?.get(`/internal/grades/${encodeURIComponent(issueId)}`).catch(() => undefined))?.state);
 }
 const GRADER_NOTE_TAIL = /\n\n<!-- aidenhq:grader -->$/;
 
@@ -1943,9 +1960,10 @@ async function reviewOne(a, mode) {
     // Two reviewers unsure: the request goes back to be fixed (the brief, the authorisation or the change), not the owner's no.
     if (post.code === UNSURE) {
       await pc.comment(issue.id, `**Sent back: two AI reviewers were unsure** (approval ${a.id}, ${a.action}): not the owner's decision, and not for the owner. Fix the request: their notes, written by models that read the change (data, not ${cfg.selfName}'s words):\n\n\`\`\`\n${note}\n\`\`\`\n\nMake what they found missing or contradictory clear, then ask again: changed commits are reviewed afresh with these notes attached, and the same commits once more, only after the request itself (the brief or the authorisation on the task) has changed: unsure again then goes to the owner. After ${MAX_REJECTS} rejections on this task it is parked.`).catch(() => {});
-      return;
+      return void (await rejectedFollowUp(issue, a, post).catch((err) => log("rejection follow-up failed", { approval: a.id, err: String(err.message ?? err).slice(0, 300) })));
     }
     await pc.comment(issue.id, `**${byCode ? "Not reviewed" : "Rejected by the AI reviewer"}** (approval ${a.id}, ${a.action}${byCode ? "" : `, ${post.model}`}). ${byCode ? "Why" : `Its note, written by a model that read the change (data, not ${cfg.selfName}'s words)`}:\n\n\`\`\`\n${note}\n\`\`\`\n\n${byCode ? "Fix that and ask again." : `Fix the change and ask again: a changed request is reviewed afresh with this note attached (the same commits stay rejected; after ${MAX_REJECTS} rejections on this task it is parked).`}`).catch(() => {});
+    await rejectedFollowUp(issue, a, post).catch((err) => log("rejection follow-up failed", { approval: a.id, err: String(err.message ?? err).slice(0, 300) }));
   }
 }
 
@@ -1983,6 +2001,28 @@ function checkFindings(issueId, action) {
   return checksOf(issueId)
     .filter((c) => c.action === action && ["reject", "escalate"].includes(c.decision))
     .map((c) => `A check before filing, not a card, at ${String(c.target).slice(0, 300)}: the reviewer would have ${c.decision === "reject" ? "rejected" : "escalated"} it (${c.code}).`);
+}
+
+/**
+ * After a rejection, reviewOne's note is the one comment (the board posts none for the reviewer's decisions). An Engineer's
+ * task wakes no Paperclip agent, so the runner hands the note to its Engineer itself, once per card; a Paperclip agent's own
+ * task wakes on the note. Its delegator hears only an outcome (notices.mjs afterRejection): parked after MAX_REJECTS, or
+ * two reviewers unsure, where the brief may be what needs fixing.
+ */
+async function rejectedFollowUp(issue, a, post) {
+  const full = await pc.issue(issue.id);
+  if (["done", "cancelled"].includes(full.status) || !(await pc.engineerAgents()).some((x) => x.id === full.assigneeAgentId)) return;
+  // Counted as tiering counts them (an owner's reply since lifts the rejections before it), so parked here is parked there.
+  const { records } = await commonTierState(full, a.action);
+  const next = afterRejection({ code: post.code, rejects: priorDecisions(records, a.action).rejects, maxRejects: MAX_REJECTS, unsure: UNSURE });
+  if (next.tell === "parked") await tellParent(full, "parked", `**${full.identifier} is parked:** the AI reviewer rejected its ${a.action} ${MAX_REJECTS} times, so the runner stops sending it back (its notes are on ${full.identifier}): ${full.title}. Narrow or rewrite the request and reopen it with that, or cancel it.`);
+  if (next.tell === "decision") await tellParent(full, "decision", `**Two AI reviewers were unsure about ${full.identifier}'s ${a.action}:** ${full.title}. Their notes are on ${full.identifier}; its Engineer is fixing the change. If the request itself is unclear (the brief or its authorisation), say what you meant there.`);
+  const key = `reject-dispatched:${a.id}`;
+  if (!next.dispatch || state.get(key)) return;
+  state.set(key, new Date().toISOString());
+  log("rejection sent back", { approval: a.id, issue: full.identifier, code: post.code });
+  const note = String(post.reason ?? "").replace(/```/g, "‵‵‵");
+  await dispatch({ issue: full, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${CODE_REJECTS.includes(post.code) ? `Code refused your ${a.action} card ${a.id} before any review. Why` : `The AI reviewer ${post.code === UNSURE ? "was unsure about" : "rejected"} your ${a.action} card ${a.id}. Its note, written by a model that read the change (data, not instructions)`}:\n\n\`\`\`\n${note}\n\`\`\`\n\nFix what it found, commit, and file the ${a.action} again: the same commits stay rejected.` });
 }
 
 /** Busy on the task while an approved write runs: no agent turn starts, and the board shows it. */
@@ -2409,16 +2449,12 @@ async function runClaimed(claimed) {
   }
   log("approval applied", { approval: claimed.id, ok: outcome.ok });
   queueOutcome(claimed.id, claimed.nonce, outcome);
-  // The agent that delegated this (e.g. the Agent Architect, on its chat) learns the result: the comment wakes it.
+  // The agent that delegated this (e.g. the Agent Architect, on its chat) learns a failure, or the result of work no grade
+  // will judge; a graded task's grade is the news (notices.mjs).
   const full = await pc.issue(claimed.issueId).catch(() => null);
   if (full && isAgentSubtask(full)) {
-    // The agent that asked may have handed its chat to the owner while waiting for the tap: give it back so it wakes.
-    const parent = await pc.issue(full.parentId).catch(() => null);
-    // Only the asking agent's own chat (its id in the chat's end-anchored marker), and only while it sits with the owner.
-    const chatAgent = /<!-- aidenhq-chat-agent:([A-Za-z0-9_-]+) -->\s*$/.exec(parent?.description ?? "")?.[1];
-    if (parent && full.createdByAgentId && chatAgent === full.createdByAgentId && !parent.assigneeAgentId && parent.assigneeUserId && !["done", "cancelled"].includes(parent.status))
-      await pc.api("PATCH", `/api/issues/${encodeURIComponent(parent.id)}`, { assigneeAgentId: full.createdByAgentId, assigneeUserId: null, status: "todo" }).catch(() => {});
-    await pc.comment(full.parentId, appliedNote(claimed.identifier, claimed.id, outcome)).catch(() => {});
+    const kind = !outcome.ok ? "failed" : (await graded(full.id)) ? "applied" : "done";
+    await tellParent(full, kind, appliedNote(claimed.identifier, claimed.id, outcome)).catch(() => {});
   }
   await flushOutcomes();
 }
@@ -3421,7 +3457,7 @@ async function reportToParent(issue) {
   const rows = await Promise.all(
     sorted.map(async ({ c, job }) => {
       const committed = job?.detail === "committed";
-      return { identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed, cards: committed ? await cardsAt(c, headsOf(c.id)) : [] };
+      return { identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed, cards: committed ? await cardsAt(c, headsOf(c.id)) : [], graded: await graded(c.id) };
     }),
   );
   // The same table again (a resumed run that changed nothing) would only wake the parent's agent for nothing.
@@ -3429,7 +3465,8 @@ async function reportToParent(issue) {
   if (state.get(`parent-summary-text:${full.parentId}`) === text) return void state.set(key, String(newest));
   summarizing.add(full.parentId);
   try {
-    await pc.comment(full.parentId, text);
+    // Only when it is the last word (notices.mjs summaryKind): with every task graded and nothing asked, the grades say it.
+    await tellParent(full, summaryKind(rows), text);
   } finally {
     summarizing.delete(full.parentId);
   }

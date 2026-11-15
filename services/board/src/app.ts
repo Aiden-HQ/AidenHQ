@@ -392,27 +392,25 @@ export function createApp(opts: AppOptions): Server {
     return { approvals: r.approvals.map((a) => shownApproval(names, a)) };
   }
 
-  /** A rejection reaches the asking task (and the chat above an agent's sub-task), so nobody waits on a card that won't run. */
+  /**
+   * A rejection reaches the asking task, so nobody waits on a card that won't run. The AI reviewer's is the runner's to say:
+   * it posts the one notice, with the reviewer's note, and sends it back to an Engineer itself. The owner's no is an outcome
+   * (notices inform; only an outcome wakes an agent), so the chat above an agent's sub-task hears it too; a card closed as
+   * stale is not news there.
+   */
   async function toldRejected(a: Approval) {
+    if (a.decidedBy?.startsWith("reviewer:")) return;
     // A task closed since the card was filed hears nothing: a comment on it reopens it in Paperclip, so a leftover
     // rejection would bring a finished or cancelled task back. An unreadable task counts as closed here too.
     const issue = await pc.issue(a.issueId).catch(() => undefined);
     if (!issue || ["done", "cancelled"].includes(issue.status)) return;
-    // Fixed text and ids only: never the card's agent-supplied fields in a comment posted as the owner. It names the AI
-    // reviewer's no as the reviewer's: posted with the board key it would otherwise read as the owner's, and agents told
-    // the owner about Tier 1 cards they never saw ("You rejected my card").
-    const reviewer = a.decidedBy?.startsWith("reviewer:");
-    // Two reviewers unsure: the request goes back to be fixed, not a no on the change (the runner posts their notes).
-    const unsure = reviewer && a.reviewCode === "reviewer_unsure";
-    const text = a.decidedBy?.startsWith("stale:")
+    // Fixed text and ids only: never the card's agent-supplied fields in a comment posted as the owner.
+    const stale = a.decidedBy?.startsWith("stale:");
+    const text = stale
       ? `**Closed as stale or a duplicate** (approval ${a.id}, ${a.action}): not a no on the change. If it is still needed, ask again for its current state.\n\n${APPROVAL_MARKER}`
-      : unsure
-        ? `**Sent back: two AI reviewers were unsure** (approval ${a.id}, ${a.action}): not the owner's decision. Their notes are on the card (\`task_approvals\`): fix the request (the brief, the authorisation or the change) and file again.\n\n${APPROVAL_MARKER}`
-        : reviewer
-        ? `**Rejected by the AI reviewer** (approval ${a.id}, ${a.action}): not the owner's decision. Its note is on the card (\`task_approvals\`): fix what it names and file again; never unchanged.\n\n${APPROVAL_MARKER}`
-        : `**Rejected** (approval ${a.id}, ${a.action}). Don't file it again unchanged; if it isn't clear why, ask what to change.\n\n${APPROVAL_MARKER}`;
+      : `**Rejected** (approval ${a.id}, ${a.action}). Don't file it again unchanged; if it isn't clear why, ask what to change.\n\n${APPROVAL_MARKER}`;
     await pc.addComment(a.issueId, text).catch((err) => log.warn({ err: String(err) }, "couldn't post the rejection"));
-    if (issue.parentId) await pc.addComment(issue.parentId, `**${unsure ? "Sent back (two AI reviewers were unsure)" : `Rejected${reviewer ? " by the AI reviewer" : ""}`}** on ${a.identifier} (approval ${a.id}, ${a.action})${reviewer ? ": not the owner's decision, and not news for them" : ""}.\n\n${APPROVAL_MARKER}`).catch(() => {});
+    if (issue.parentId && !stale) await pc.addComment(issue.parentId, `**Rejected** on ${a.identifier} (approval ${a.id}, ${a.action}).\n\n${APPROVAL_MARKER}`).catch(() => {});
   }
 
   /** Approve = apply, once: claimed before acting; the outcome (or the failure) goes on the card and the task. Never retried. */
@@ -1190,6 +1188,15 @@ export function createApp(opts: AppOptions): Server {
       handle: async (_m, _b, _u, req) => {
         requireRunner(req, "grades");
         return { on: gradingOn(), grades: store.grades.due(), resubmitted: store.grades.resubmitted() };
+      },
+    },
+    {
+      // One task's grade state (null: ungraded, or grading off): a sub-task whose grade will speak keeps its progress to itself.
+      method: "GET",
+      path: /^\/internal\/grades\/([0-9a-f-]{36})$/i,
+      handle: async (m, _b, _u, req) => {
+        requireRunner(req, "reads grades");
+        return { state: (gradingOn() && store.grades.get(m[1]!)?.state) || null };
       },
     },
     {

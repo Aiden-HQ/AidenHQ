@@ -4,14 +4,16 @@
  * comments, Paperclip's wake when every child closes); this reconciler covers only what they miss. Thin events: every
  * two minutes it lists the state and compares it with per-task cursors, never trusting update times or comment text.
  *
- * What it watches, per open task of an agent with an active "Heartbeat: <key>" routine:
+ * What it watches, per open task of an agent with an active "Heartbeat: <key>" routine. Only outcomes, as the primary paths
+ * post them (notices inform; only an outcome wakes an agent: runner notices.mjs): a sub-task's progress (its cards, its
+ * PRs, a grade sending it back to its assignee) is the sub-task's own, and its outcome follows.
  *   - each sub-task delegated to someone else: its status (done or cancelled, or reopened from one; intermediate
  *     updates such as in progress or in review are not news);
- *   - approval cards on the task and its sub-tasks: rejected, or applied/failed (approved-not-yet-applied is not an event:
- *     the runner's outcome follows);
- *   - each sub-task's grade: satisfied, needs revision, escalated;
- *   - pull requests named on the task or a sub-task (description, merge card, PR deliverable): merged or closed (warehouse
- *     src_github through apps-mcp; it lags GitHub by up to 15 minutes and has no check runs).
+ *   - approval cards on the task itself: rejected, or applied/failed (approved-not-yet-applied is not an event: the
+ *     runner's outcome follows);
+ *   - each sub-task's grade: satisfied or escalated;
+ *   - pull requests named on the task itself (description, merge card): merged or closed (warehouse src_github through
+ *     apps-mcp; it lags GitHub by up to 15 minutes and has no check runs).
  *
  * A change is the agent's to see unless a run of that agent on that task is live or queued (it coalesces) or finished
  * after the change (the agent saw it, or made it itself: reopening a child in its own run never wakes it). Otherwise,
@@ -88,35 +90,32 @@ const latest = (...xs: (string | null | undefined)[]) => xs.filter(Boolean).sort
 /** A sub-task's status as an event: only a terminal state is news (picking a task up, reviewing it or blocking it is not). */
 const childState = (status: string) => (status === "done" || status === "cancelled" ? status : "open");
 
-/** The PRs a task or sub-task names: its description, its merge cards, its PR deliverable. */
-function prsOf(x: Issue, store: WakeDeps["store"], sub: boolean): string[] {
+/** The PRs a task names: its description and its merge cards. */
+function prsOf(x: Issue, store: WakeDeps["store"]): string[] {
   const refs = prRefs(x.description);
   for (const a of store.approvals.on(x.id)) if (a.action === "merge") for (const p of (a.args as { prs?: { url: string }[] }).prs ?? []) refs.push(...prRefs(p.url));
-  const g = sub ? store.grades.get(x.id) : undefined;
-  if (g?.deliverable.kind === "pr") refs.push(...prRefs(g.deliverable.ref));
   return refs;
 }
 
-/** The signals for one task: its sub-tasks (others' only), its and their cards, their grades, and the PRs they name. */
+/** The signals for one task: its sub-tasks (others' only) and their grades' outcomes, its own cards and the PRs it names. */
 function signals(task: Issue, kids: Issue[], store: WakeDeps["store"], prs: Map<string, PrState>): Map<string, Signal> {
   const out = new Map<string, Signal>();
-  const refs = new Set(prsOf(task, store, false));
+  const refs = new Set(prsOf(task, store));
   for (const k of kids) {
     const st = childState(k.status);
     out.set(`child:${k.id}`, { value: st, at: latest(k.completedAt, k.cancelledAt, k.updatedAt), line: (was) => `${k.identifier} is ${was === "done" || was === "cancelled" ? `reopened (${k.status})` : `now ${k.status}`}.` });
     const g = store.grades.get(k.id);
     if (g) {
-      const gs = ["satisfied", "needs_revision", "escalated", "not_graded"].includes(g.state) ? g.state : "open";
-      out.set(`grade:${k.id}`, { value: gs, at: g.updatedAt, line: () => `${k.identifier}'s grade: ${gs.replace("_", " ")}.` });
+      // A grade sending the work back is the assignee's to act on, not the delegator's: only satisfied and escalated are news.
+      // Its own key (not `grade:`), so a cursor saved before this rule is dropped, never read as a change.
+      const gs = ["satisfied", "escalated"].includes(g.state) ? g.state : "open";
+      out.set(`graded:${k.id}`, { value: gs, at: g.updatedAt, line: () => `${k.identifier}'s grade: ${gs}.` });
     }
-    for (const r of prsOf(k, store, true)) refs.add(r);
   }
-  for (const t of [task, ...kids]) {
-    for (const a of store.approvals.on(t.id)) {
-      // Approved and not yet applied is not news: the runner's outcome follows. An outcome carries no time of its own.
-      const terminal = a.outcome != null || a.state === "rejected" || a.state === "stale";
-      out.set(`card:${a.id}`, { value: terminal ? `${a.state}|${a.outcome ?? ""}` : "open", at: a.state === "rejected" || a.state === "stale" ? (a.decidedAt ?? undefined) : undefined, line: () => `The ${a.action} card on ${a.identifier} is ${a.outcome ?? a.state}.` });
-    }
+  for (const a of store.approvals.on(task.id)) {
+    // Approved and not yet applied is not news: the runner's outcome follows. An outcome carries no time of its own.
+    const terminal = a.outcome != null || a.state === "rejected" || a.state === "stale";
+    out.set(`card:${a.id}`, { value: terminal ? `${a.state}|${a.outcome ?? ""}` : "open", at: a.state === "rejected" || a.state === "stale" ? (a.decidedAt ?? undefined) : undefined, line: () => `The ${a.action} card on ${a.identifier} is ${a.outcome ?? a.state}.` });
   }
   for (const r of refs) {
     const p = prs.get(r);
@@ -160,7 +159,7 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   const tasks = open.filter((t) => t.assigneeAgentId && watched.has(t.assigneeAgentId) && OPEN_STATUSES.has(t.status) && !t.title.startsWith("Heartbeat: "));
   const ownKids = (t: Issue) => (kidsOf.get(t.id) ?? []).filter((k) => k.assigneeAgentId !== t.assigneeAgentId);
 
-  const refs = [...new Set(tasks.flatMap((t) => [...prsOf(t, store, false), ...ownKids(t).flatMap((k) => prsOf(k, store, true))]))].slice(0, 100);
+  const refs = [...new Set(tasks.flatMap((t) => prsOf(t, store)))].slice(0, 100);
   const prs = new Map<string, PrState>();
   const found = refs.length ? await deps.prStates(refs).catch(() => undefined) : [];
   for (const p of found ?? []) prs.set(`${p.repo.toLowerCase()}#${p.number}`, p);

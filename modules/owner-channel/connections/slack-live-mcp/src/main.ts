@@ -62,7 +62,10 @@ const lane = makeLane({
 const laneTools = { store: laneStore, lane, agents: laneAgents, timezone: process.env.OWNER_TIMEZONE || "UTC" };
 const routeLane = laneRoutes({ lane, store: laneStore, agents: laneAgents, token: env("BOARD_INTERNAL_TOKEN"), log });
 
-// At most one triage webhook per 60 s; signed like scripts/trigger-meeting-scan.sh.
+// One triage run per window, with every event that arrived in it: the first event after a quiet window fires at once, and
+// the rest wait for the window to end (one run per Slack event was 67 runs a day, 50 of them finding nothing). An urgent
+// event in a busy window waits up to the window. Signed like scripts/trigger-meeting-scan.sh.
+const TRIAGE_WINDOW_MS = 30 * 60_000;
 const webhookUrl = env("TRIAGE_WEBHOOK_URL");
 const webhookSecret = env("TRIAGE_WEBHOOK_SECRET");
 let lastPoke = 0;
@@ -86,7 +89,7 @@ function poke(): void {
     } catch (err) {
       log.warn({ err: String(err) }, "triage webhook failed");
     }
-  }, Math.max(0, lastPoke + 60_000 - Date.now()));
+  }, Math.max(0, lastPoke + TRIAGE_WINDOW_MS - Date.now()));
 }
 
 function authorized(req: IncomingMessage): boolean {
