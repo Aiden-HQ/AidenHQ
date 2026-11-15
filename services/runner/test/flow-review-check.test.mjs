@@ -44,7 +44,9 @@ describe("flow-review-check", { concurrency: 1 }, () => {
       { decision: "approve", reason_code: "in_scope", reason: "Does what was asked.", second_review: false },
     );
     t.step("second\naidenhq review\naidenhq review acme/app feat/second\naidenhq review\naidenhq review");
-    await t.turn("Add the second change, then check it with the reviewer.");
+    // Four checks in one turn (a new comment would reset the count), each the whole publish path short of pushing: 1-3 s
+    // alone, but 15-20 s on a loaded CI host, past the default minute. Under the runner's own two-minute job timeout.
+    await t.turn("Add the second change, then check it with the reviewer.", 110_000);
     const outs = t.toolRuns().slice(-4);
     for (const o of outs) assert.equal(o.code, 0, o.out);
     assert.match(outs[0].out, /would reject this[\s\S]*second\.txt isn't part of the request[\s\S]*1 of 3 checks used/, outs[0].out);

@@ -62,7 +62,14 @@ describe("flow-reviewed-heads", { concurrency: 1 }, () => {
     assert.deepEqual(JSON.parse(readFileSync(join(t.dir, "github-prs.json"), "utf8")), {}, "no PR");
     assert.ok(!t.fakeLog().some((e) => e.kind === "gh" && e.data.some((a) => /^pr$/.test(a) && /create/.test(a))), "nothing tried to open a PR");
 
-    // The rejection sends the Engineer back with the note; let that run finish before the task ends.
+    // The rejection sends the Engineer back with the note; let that run finish before the task ends. "Nothing running" alone
+    // isn't that: the notice comes before the dispatch, and a starting job's activity report races its read of the task, so
+    // the run can be past its closed-task check yet not reported, then take the successor's commands in a new PEN-2 clone.
+    const sentBack = () => {
+      const rest = t.output.split(`"msg":"rejection sent back","approval":"${card.id}"`)[1] ?? "";
+      return /"msg":"job started","issue":"PEN-2"[\s\S]*"msg":"job finished","issue":"PEN-2"/.test(rest);
+    };
+    await t.waitFor("the sent-back run to finish", sentBack);
     await t.waitFor("quiet", () => !t.running());
     // The task ends, and its workspace goes away: the cache clone is all that is left.
     assert.equal(existsSync(workspace), true);
