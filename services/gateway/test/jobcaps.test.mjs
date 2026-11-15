@@ -28,7 +28,10 @@ test("jobcap route: listed tools only, job tokens only, the read secret upstream
     });
   });
   const jobcapsFile = join(dir, "jobcaps.json");
-  writeFileSync(jobcapsFile, JSON.stringify({ "primer-read": { connection: "primer", url: `${upstream.url}/mcp/read`, bearer_secret: "primer_mcp_read_token", tools: ["read_a"] } }));
+  writeFileSync(jobcapsFile, JSON.stringify({
+    "primer-read": { connection: "primer", url: `${upstream.url}/mcp/read`, bearer_secret: "primer_mcp_read_token", tools: ["read_a"] },
+    "slack-read": { connection: "slack", url: `${upstream.url}/mcp/read`, bearer_secret: "primer_mcp_read_token", tools: ["read_a"], private: true },
+  }));
   const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), jobcapsFile, secret: (n) => secrets[n] ?? "" });
   const server = await serve((req, res) => gw.handle(req, res));
   t.after(() => { server.s.close(); upstream.s.close(); gw.close(); });
@@ -79,6 +82,16 @@ test("jobcap route: listed tools only, job tokens only, the read secret upstream
   // The jobcap is for primer only.
   assert.equal((await call(job, { method: "tools/list" }, { path: "/c/slack/mcp" })).status, 401);
   assert.equal(seen.length, forwarded);
+
+  // A notification outside the list gets no JSON-RPC answer.
+  r = await fetch(`${server.url}/c/primer/mcp`, { method: "POST", headers: { authorization: `Bearer ${job}`, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: {} }) });
+  assert.equal(r.status, 403);
+  // A private jobcap: refused to a token not minted as observing (a job with web search), served to one that is.
+  const light = mintToken("job-secret", { kind: "agent", agentId: "ag1", issueId: "iss1", jobcaps: ["slack-read"] });
+  assert.equal((await call(light, { method: "tools/list" }, { path: "/c/slack/mcp" })).status, 401);
+  assert.equal(seen.length, forwarded);
+  const observing = mintToken("job-secret", { kind: "agent", agentId: "ag1", issueId: "iss1", jobcaps: ["slack-read"], observing: true });
+  assert.equal((await call(observing, { method: "tools/list" }, { path: "/c/slack/mcp" })).status, 200);
 
   // The job token never reaches the connection: every forwarded call carried the read secret.
   assert.ok(seen.length >= 3);

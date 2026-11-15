@@ -626,9 +626,11 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && ! grep -qF '"codex", "sandbox"' services/runner/src/engines.mjs \
   && grep -qF 'url: `${gatewayUrl(cfg)}/c/${c.connection}/mcp`' services/runner/src/engines.mjs \
   && grep -qF 'if (j.private && a.private_reads !== true) fail(' scripts/modules.mjs \
+  && grep -qF 'filter((id) => all[id] && (!all[id].private || observes(engine)))' services/runner/src/engines.mjs \
+  && grep -qF 'const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live";' services/runner/src/engines.mjs \
+  && grep -qF '(!c.private || who.o === true)' services/gateway/jobcaps.ts \
   && grep -q 'export const observes = (engine) => engine?.reads === true;' services/runner/src/engines.mjs \
   && grep -q 'agent.metadata?.privateReads === true ? { reads: true }' services/runner/src/commands.mjs \
-  && grep -q 'const search = observes(engine) ? "disabled" : "live";' services/runner/src/engines.mjs \
   && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed, apply only files a card at the turn's end, and Primer publishing is checked against the user's words (services/runner/src/authorize.mjs); jobs hold no connection URL or token (their jobcaps go through the gateway with the job token), and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
 pass "no email/Slack/Telegram send or calendar write tool is configured for any agent"
 

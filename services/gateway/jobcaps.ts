@@ -9,7 +9,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { verifyToken } from "./token.ts";
 
 /** One jobcap (config/jobcaps.json, by id). */
-export type Jobcap = { connection: string; url: string; bearer_secret: string; tools: string[]; tool_timeout_s?: number; prompt?: string };
+export type Jobcap = { connection: string; url: string; bearer_secret: string; tools: string[]; tool_timeout_s?: number; prompt?: string; private?: boolean };
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
 
 const MAX_BODY = 4 * 1024 * 1024;
@@ -57,7 +57,8 @@ export function jobcapRoute({ jobcaps, secret, log = () => {}, now = Date.now }:
     const who = verifyToken(secret("gateway_job_secret"), token, now());
     if (!who || who.k !== "agent") throw fail(401, "unauthorized", "a job's own token is required");
     const all = jobcaps();
-    const caps = (who.j ?? []).map((id) => all[id]).filter((c): c is Jobcap => c?.connection === connection);
+    // A private jobcap only for a job minted as observing (private_reads, web search off): private data never meets the web.
+    const caps = (who.j ?? []).map((id) => all[id]).filter((c): c is Jobcap => c?.connection === connection && (!c.private || who.o === true));
     if (!caps.length) throw fail(401, "unauthorized", `this job has no jobcap on ${connection}`);
     // Streamable HTTP: no server-initiated stream (405 tells the client so); DELETE ends a session.
     if (req.method !== "POST" && req.method !== "DELETE") { res.writeHead(405, { allow: "POST, DELETE" }).end(); return; }
@@ -74,6 +75,8 @@ export function jobcapRoute({ jobcaps, secret, log = () => {}, now = Date.now }:
       const params = msg.params && typeof msg.params === "object" && !Array.isArray(msg.params) ? msg.params : undefined;
       const refuse = (code: number, message: string) => {
         log("jobcap refused", { url: `/c/${connection}/mcp`, agent: who.a, issue: who.i, method, ...(tool ? { tool } : {}) });
+        // A notification (no id) expects no JSON-RPC answer: a plain 403.
+        if (!("id" in msg)) { res.writeHead(403, { "content-type": "text/plain" }).end(message); return; }
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }));
       };
       if (!FORWARDED.has(method)) return refuse(-32601, "method-refused");

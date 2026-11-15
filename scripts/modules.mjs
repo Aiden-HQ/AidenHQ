@@ -116,7 +116,7 @@ export function chatBlock(key, c, tools) {
 export function grantEntry(key, a, routines = {}) {
   const ids = [a.model, ...(a.models ?? []), ...Object.values(routines).filter((r) => r.agent === key).map((r) => r.model)];
   const models = [...new Set(ids.filter((m) => typeof m === "string" && m.trim()).map((m) => m.replace(/^openrouter\//, "")))];
-  return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, jobcaps: a.jobcaps ?? [] };
+  return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}) };
 }
 
 const JOBCAP_FIELDS = ["id", "connection", "tools", "prompt", "tool_timeout_s", "read_url", "read_secret", "private"];

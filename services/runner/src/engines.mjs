@@ -45,16 +45,24 @@ export const viaGateway = (kind) => kind === "openrouter" || kind === "codex-ope
  * MCP tools"); ids the file doesn't know are skipped.
  */
 export function jobcapServers(cfg, ids = []) {
-  let all = {};
-  try { all = JSON.parse(readFileSync(cfg.jobcapsFile, "utf8")); } catch {}
+  const all = readJobcaps(cfg);
   const out = new Map();
   for (const id of ids) {
     const c = all[id];
     if (!c?.connection || out.has(c.connection)) continue;
-    out.set(c.connection, { name: c.connection, url: `${gatewayUrl(cfg)}/c/${c.connection}/mcp`, ...(c.tool_timeout_s ? { toolTimeout: c.tool_timeout_s } : {}) });
+    out.set(c.connection, { name: c.connection, url: `${gatewayUrl(cfg)}/c/${c.connection}/mcp`, ...(c.tool_timeout_s ? { toolTimeout: c.tool_timeout_s } : {}), ...(c.private ? { private: true } : {}) });
   }
   return [...out.values()];
 }
+const readJobcaps = (cfg) => { try { return JSON.parse(readFileSync(cfg.jobcapsFile, "utf8")); } catch { return {}; } };
+/**
+ * The jobcaps a job of this engine gets: the private ones (Slack, Glean, Grafana, ClickHouse) only when it observes (private_reads,
+ * web search off), so private data and the live web never meet in one job. Sorted: the job token's claims are stable.
+ */
+export const jobcapsFor = (cfg, engine, ids = []) => {
+  const all = readJobcaps(cfg);
+  return [...new Set(ids)].filter((id) => all[id] && (!all[id].private || observes(engine))).sort();
+};
 export const JOB_TOKEN_ENV = "AIDENHQ_JOB_TOKEN";
 
 // The host's toolchains, read-only in every job: the system (merged-/usr links are recreated as links) and /etc.
@@ -199,7 +207,7 @@ export function buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile
   if (engine.box) return boxCommand({ cfg, engine, sessionId, job, box });
   const built = engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp: observes(engine) ? gcp : undefined, job });
   // OpenRouter engines' model calls and every job's jobcaps go to the model gateway on host loopback (forwarded into the jail).
-  const mcp = viaGateway(engine.kind) || jobcapServers(cfg, job.jobcaps).length ? [gatewayUrl(cfg)] : [];
+  const mcp = viaGateway(engine.kind) || jobcapsFor(cfg, engine, job.jobcaps).length ? [gatewayUrl(cfg)] : [];
   // The engine writes its last message there (-o): the file alone is bound, made beforehand (bwrap binds what exists).
   if (lastMessageFile && !existsSync(lastMessageFile)) try { writeFileSync(lastMessageFile, ""); } catch {}
   const rw = [worktree, ...(built.rw ?? []), lastMessageFile];
@@ -295,7 +303,7 @@ export const gatewayApi = (cfg) => `${gatewayUrl(cfg)}/api/v1`;
  * agent, task, jobcaps and start time (`job.at`), so the same job always gets the same token: its `aidenhq advise` calls, also
  * from a runner that adopted it after a restart, share its run key (the same run cap and run page).
  */
-export const jobToken = (cfg, job) => job.token ?? modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, jobcaps: [...(job.jobcaps ?? [])].sort(), ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 }, job.at);
+export const jobToken = (cfg, job) => job.token ?? modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, jobcaps: [...(job.jobcaps ?? [])].sort(), observing: job.observing === true, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 }, job.at);
 
 const GATEWAY_KEY_ENV = "AIDENHQ_GATEWAY_KEY";
 // Off for codex-openrouter, as for Paperclip's Codex agents: ChatGPT connectors, the desktop's browser and computer, OpenAI's
@@ -325,10 +333,12 @@ export function codexHome(cfg, issueId) {
 }
 
 function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, job = {} }) {
-  const servers = jobcapServers(cfg, job.jobcaps);
+  const caps = jobcapsFor(cfg, engine, job.jobcaps);
+  job = { ...job, jobcaps: caps, observing: observes(engine) };
+  const servers = jobcapServers(cfg, caps);
   let minted;
   const token = () => (minted ??= jobToken(cfg, job)); // one credential per job: its model calls and its reads
-  const search = observes(engine) ? "disabled" : "live"; // no web search for a job holding private data
+  const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live"; // no web search for a job holding private data
   const mcpEnv = { ...(servers.length ? { [JOB_TOKEN_ENV]: token() } : {}), ...(gcp?.env ?? {}) };
   const gcpRoots = gcp ? [gcp.root] : [];
   if (engine.kind === "codex" || engine.kind === "codex-openrouter") {

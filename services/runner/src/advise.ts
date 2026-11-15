@@ -15,7 +15,7 @@ export async function jobAdvise(ctx: any, brief: unknown, { cfg, save = (_ctx: a
   ctx.advised ??= { advisor: ctx.run.advised ?? 0 };
   ctx.advisor ??= modelTools({
     grant: async () => ({ id: ctx.agentId }), grantsFile: "", gatewayUrl: gatewayUrl(cfg), fetchFn, used: ctx.advised,
-    key: jobToken(cfg, { agentId: ctx.agentId, issueId: ctx.issue.id, at: ctx.run.startedAt, jobcaps: ctx.run.jobcaps }),
+    key: jobToken(cfg, { agentId: ctx.agentId, issueId: ctx.issue.id, at: ctx.run.startedAt, jobcaps: ctx.run.jobcaps, observing: ctx.run.observing }),
   }).advisor_ask;
   const b = String(brief ?? "").trim();
   try {

@@ -358,5 +358,21 @@ describe("hostile jobs", () => {
       if (kind !== "codex") assert.ok(!argv.some((a, i) => a === "codex" && argv[i + 1] === "sandbox"), `${kind}: codex sandbox`);
       assert.ok(!text.includes("primer_mcp_read_token"), `${kind}: the read secret's name`);
     }
+    // Private data never meets the web: a job that doesn't observe (web search on) gets no private jobcap, and its token
+    // isn't minted as observing (the gateway refuses private jobcaps to it); one that observes gets both, with search off.
+    writeFileSync(join(dir, "jobcaps.json"), JSON.stringify({
+      "primer-read": { connection: "primer", url: "http://127.0.0.1:3123/mcp/read", bearer_secret: "primer_mcp_read_token", tools: ["primer_get_document"] },
+      "slack-read": { connection: "slack", url: "http://127.0.0.1:3125/mcp/read", bearer_secret: "slack_mcp_read_token", tools: ["slack_read_thread"], private: true },
+    }));
+    const claims = (env) => JSON.parse(Buffer.from(env.AIDENHQ_JOB_TOKEN.slice(5).split(".")[0], "base64url"));
+    const job = { agentId: "a1", issueId: "i1", jobcaps: ["slack-read", "primer-read"] };
+    const light = buildCommand({ cfg, engine: { kind: "codex" }, worktree: join(dir, "w"), lastMessageFile: join(dir, "last"), job });
+    assert.ok(!light.argv.some((a) => a.includes("/c/slack/")));
+    assert.deepEqual([claims(light.env).j, claims(light.env).o], [["primer-read"], undefined]);
+    assert.ok(light.argv.includes('web_search="live"'));
+    const deep = buildCommand({ cfg, engine: { kind: "codex", reads: true }, worktree: join(dir, "w"), lastMessageFile: join(dir, "last"), job });
+    assert.ok(deep.argv.some((a) => a.includes("/c/slack/")));
+    assert.deepEqual([claims(deep.env).j, claims(deep.env).o], [["primer-read", "slack-read"], true]);
+    assert.ok(deep.argv.includes('web_search="disabled"'));
   });
 });

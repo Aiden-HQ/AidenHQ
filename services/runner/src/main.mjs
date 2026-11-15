@@ -10,7 +10,7 @@ import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, is
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { branchCardArgs, cardText } from "./cards.ts";
-import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, jobcapServers, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
+import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
@@ -3545,7 +3545,7 @@ async function startJob({ issue, instructions }) {
     const agentId = assigned?.id ?? engineers.find((a) => a.adapterType === "opencode_local" && a.metadata?.box !== true)?.id ?? null; // billed to the Engineer (a label-only task: the OpenRouter one)
     // The agent's jobcaps (grants table): its reads of connections, through the gateway with the job token. A box job reaches
     // its connections through the launcher instead.
-    const jobcaps = engine.box ? [] : [...(readGrants()?.agents?.[agentId]?.jobcaps ?? [])].sort();
+    const jobcaps = engine.box ? [] : jobcapsFor(cfg, engine, readGrants()?.agents?.[agentId]?.jobcaps ?? []);
     const reading = new Set(jobcapServers(cfg, jobcaps).map((s) => s.name));
     // Private reads for an Engineer with them, and the Slack messages the task came from.
     const observe = observes(engine) && !engine.box
@@ -3581,9 +3581,9 @@ async function startJob({ issue, instructions }) {
     const sessionId = resumed ? state.task(issue.id).session_id : undefined;
     const startedAt = Date.now();
     // The job's gateway credential comes from its agent, task and start time: `aidenhq advise` mints the same one (advise.ts).
-    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, at: startedAt, jobcaps }, box });
+    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, at: startedAt, jobcaps, observing: observes(engine) }, box });
     // What the next runner needs to adopt the run and finish its turn after a restart.
-    tools.run = { pid: run.pid, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
+    tools.run = { pid: run.pid, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, observing: observes(engine), repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
     state.saveRun(jobId, tools.run);
     running.get(issue.id).pid = run.pid;
     const watch = watchAgent(run, { engine, sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
