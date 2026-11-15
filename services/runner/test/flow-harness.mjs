@@ -279,11 +279,11 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
   };
   const reviews = () => paperclip.patches.filter((p) => p.issue === "PEN-2" && p.status === "in_review");
   const starts = () => paperclip.patches.filter((p) => p.issue === "PEN-2" && p.status === "in_progress");
-  /** One turn: the user's comment, then the agent's reply (the part back in review). */
-  const turn = async (comment) => {
+  /** One turn: the user's comment, then the agent's reply (the part back in review). `ms`: a turn doing more than usual. */
+  const turn = async (comment, ms) => {
     const n = reviews().length;
     say(comment);
-    await waitFor(`the reply to "${comment}"`, () => reviews().length > n);
+    await waitFor(`the reply to "${comment}"`, () => reviews().length > n, ms);
     return reviews().at(-1);
   };
   const githubTip = (branch = "fix/remove-legacy") => git(dir, "--git-dir", join(dir, "github/acme/app.git"), "rev-parse", branch);
@@ -397,7 +397,9 @@ ${runnerYaml}`,
   after(() => {
     runner?.kill("SIGKILL");
     paperclip?.server.close();
-    if (dir) rmSync(dir, { recursive: true, force: true });
+    // A job the runner left going (jobs are detached) may still be writing here: retried, so a failed flow ends instead of
+    // throwing here and skipping the file's later after hooks (a server left listening keeps the process alive).
+    if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
   });
   // An agent turn or publishing in progress (the merge queue runs on in the background: GitHub fails here).
   const running = () => (paperclip.activity.at(-1)?.running ?? []).some((r) => r.identifier === "PEN-2" && r.mode !== "merging PRs");

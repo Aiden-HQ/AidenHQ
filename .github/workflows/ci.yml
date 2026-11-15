@@ -174,7 +174,9 @@ jobs:
             for (const f of files.sort((a, b) => (w[b] ?? 30) - (w[a] ?? 30) || a.localeCompare(b))) { const i = load[0] <= load[1] ? 0 : 1; load[i] += w[f] ?? 30; out[i].push(f); }
             console.log(out[shard].join(" "));')
           echo "Shard $SHARD: $files"
-          npm ci && node --disable-warning=ExperimentalWarning --test $files
+          # As many files at once as the job has CPUs (cpus: 4 in modules/ci/compose.yaml; ubuntu-latest has 4 too): node
+          # counts the host's CPUs, not the container's, and runs the whole shard at once, starving every flow's turns.
+          npm ci && node --disable-warning=ExperimentalWarning --test --test-concurrency=4 $files
 
   board:
     needs: image-changes
