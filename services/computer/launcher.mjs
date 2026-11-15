@@ -271,7 +271,6 @@ const control = {
 
 // A runner job's box: the runner's uid (workspace files stay the runner's), a HOME outside every clone.
 const JOB_USER = `${process.getuid()}:${process.getgid()}`;
-const HOST_BROWSER = "/opt/aidenhq/browser";
 const HELPER_TOKEN = /^[0-9a-f]{16,128}$/;
 const IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
@@ -302,8 +301,7 @@ const runnerControl = {
     try {
       mkdirSync(outDir, { mode: 0o700 });
       const mounts = [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${path.join(CFG.runnerWork, ".guard-hooks")}:/opt/aidenhq/hooks:ro`, `${path.join(repo, "services/runner/bin")}:/opt/aidenhq/bin:ro`];
-      // aidenhq-browse's pinned headless browser (ops/vm/setup.sh), read-only, where the command looks for it.
-      if (existsSync(HOST_BROWSER)) mounts.push(`${HOST_BROWSER}:/opt/aidenhq/browser:ro`);
+      // aidenhq-browse uses the image's own agent-browser and Chrome (the browser image every computer builds on).
       const r = await docker(dockerRunArgs({ name, image, agentId, network: CFG.network, limits: { ...CFG.limits, memory: CFG.jobMemory }, mounts, user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME }));
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
       writeFileSync(envFile, jobEnvFile({ token, mcp: mcpFor(agentId), gatewayUrl: GATEWAY_URL, identity }), { mode: 0o600 });

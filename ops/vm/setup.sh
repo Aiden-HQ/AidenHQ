@@ -55,9 +55,9 @@ fi
 runuser -u "$USER_NAME" -- /opt/aidenhq/bwrap/bwrap --ro-bind / / --dev-bind /dev /dev --unshare-user --unshare-net \
   --cap-add CAP_NET_ADMIN -- ip route add unreachable 192.0.2.0/24 \
   || { echo "the runner's bwrap can't set up a job's network (AppArmor profile aidenhq-bwrap?)" >&2; exit 1; }
-# The libraries and a font set Chromium's headless shell needs (the browser Engineer jobs use, below).
+# The libraries and a font set Chrome needs headless (the browser Engineer jobs use, below), and unzip for its archive.
 apt-get -y install libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-  libgbm1 libasound2t64 libnss3 libxkbcommon0 libcups2t64 libpango-1.0-0 libcairo2 fonts-liberation
+  libgbm1 libasound2t64 libnss3 libxkbcommon0 libcups2t64 libpango-1.0-0 libcairo2 fonts-liberation unzip
 # Secret vault (ops/vault): gocryptfs, and the TPM2 libraries systemd-creds loads to seal its password.
 apt-get -y install gocryptfs libtss2-esys-3.0.2-0t64 libtss2-rc0t64 libtss2-mu-4.0.1-0t64
 # The vault view is mounted by the AidenHQ user with allow_other so the Docker daemon can bind-mount secrets from it.
@@ -121,15 +121,20 @@ apt-mark hold docker-ce docker-ce-cli docker-ce-rootless-extras containerd.io do
 # Distro updates, after the holds so they never move a pinned package.
 apt-get -y upgrade
 
-# A headless browser for Engineer jobs (services/runner/bin/aidenhq-browse: screenshots and click-throughs of the app
-# they build): playwright-core 1.65.0 (released 2026-11-05) and the Chromium headless shell its manifest names
-# (revision 1254), root-owned under /opt; the runner binds it read-only into every job. Reinstalled only when the pin moves.
+# The browser for Engineer jobs (services/runner/bin/aidenhq-browse: screenshots and click-throughs of the app they build):
+# AidenHQ's one browser, as in the browser image (services/computer/images/browser): agent-browser 0.41.2 and Chrome for
+# Testing 157.0.8103.50 (2026-11-07), checksummed, root-owned under /opt; the runner binds it read-only into every job. Move
+# both pins with the image's. Reinstalled only when a pin moves.
 browser=/opt/aidenhq/browser
-if [ "$(jq -r .version "$browser/lib/node_modules/playwright-core/package.json" 2>/dev/null)" != 1.65.0 ] \
-  || [ ! -e "$browser/ms-playwright/chromium_headless_shell-1254/INSTALLATION_COMPLETE" ]; then
+if [ "$(jq -r .version "$browser/lib/node_modules/agent-browser/package.json" 2>/dev/null)" != 0.41.2 ] \
+  || [ "$(cat "$browser/chrome/VERSION" 2>/dev/null)" != 157.0.8103.50 ]; then
   rm -rf "$browser"
-  npm i -g --prefix="$browser" --ignore-scripts --no-audit --no-fund playwright-core@1.65.0
-  PLAYWRIGHT_BROWSERS_PATH="$browser/ms-playwright" "$browser/bin/playwright-core" install --only-shell chromium
+  npm i -g --prefix="$browser" --ignore-scripts --no-audit --no-fund agent-browser@0.41.2
+  chmod a+x "$browser/lib/node_modules/agent-browser/bin/agent-browser-linux-x64" # what its install script would do
+  curl -fsSLo /tmp/chrome.zip https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.50/linux64/chrome-linux64.zip
+  echo "d17167bc092eb495a3b768c7467f27e35f625aa03834233a1663af67dcb668c9  /tmp/chrome.zip" | sha256sum -c -
+  unzip -q /tmp/chrome.zip -d "$browser" && mv "$browser/chrome-linux64" "$browser/chrome" && rm /tmp/chrome.zip
+  echo 157.0.8103.50 >"$browser/chrome/VERSION"
   chmod -R a+rX "$browser"
 fi
 

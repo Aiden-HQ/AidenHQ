@@ -69,7 +69,7 @@ main() {
   # Shared access: the tunnel may only point at the gate (never the board, Paperclip or an app port directly).
   node scripts/edge.mjs check config/cloudflared.yml || { echo "refusing: config/cloudflared.yml targets something other than the gate" >&2; exit 1; }
   lap compile
-  ops/computer-images.sh # agent computers: only the images an agent names (scripts/computers.mjs)
+  ops/computer-images.sh # the browser image (always: apps-mcp renders in it) and the computer images an agent names
   lap computer-images
   # The model gateway (every model call passes it): installed and started if missing, restarted only when its own code or
   # unit changed (a restart cuts the streams in flight; Codex and opencode retry). Before compose and setup point callers at

@@ -15,8 +15,11 @@ const DRIVER = "aidenhq-computer";
 const ENVIRONMENT_NAME = "AidenHQ computer";
 const RUN_TOKEN_ENV = "AIDENHQ_RUN_TOKEN";
 
-/** Images an agent may name, and the image each builds FROM (services/computer/images/<name>/Dockerfile). */
-const IMAGES = { "agent-base": null, engineer: "agent-base" };
+/** The images, and the image each builds FROM (services/computer/images/<name>/Dockerfile). `browser` is the one browser image
+ * (agent-browser and its pinned Chrome): every computer builds on it and apps-mcp renders its views in it, so it is always built. */
+const IMAGES = { browser: null, "agent-base": "browser", engineer: "agent-base" };
+/** The images an agent may name. */
+const AGENT_IMAGES = ["agent-base", "engineer"];
 
 function dirHash(dir) {
   const h = createHash("sha256");
@@ -47,7 +50,8 @@ export function imageTags(productDir, names) {
 
 /**
  * config/computers.json for the launcher: image tags, and each connection a computer may reach through the gateway (the
- * service's URL and the secret file holding its bearer, which stays on the host). Only images some agent names are listed.
+ * service's URL and the secret file holding its bearer, which stays on the host). Only images some agent names are listed, and
+ * always the browser image.
  */
 /**
  * A runner box agent's grants that read private data: every connection but apps and GitHub's (each a private source: Slack,
@@ -62,7 +66,7 @@ export const privateGrants = (tools = {}) =>
 export function validateImages(agents) {
   for (const [key, a] of Object.entries(agents)) {
     if (a.image == null) continue;
-    if (!(a.image in IMAGES)) throw new Error(`${key}: image must be one of ${Object.keys(IMAGES).join(", ")} (got ${a.image})`);
+    if (!AGENT_IMAGES.includes(a.image)) throw new Error(`${key}: image must be one of ${AGENT_IMAGES.join(", ")} (got ${a.image})`);
     // A runner agent with a computer (the App Engineer): its runner jobs run in an `engineer` box, Codex through the gateway.
     if (a.dispatch === "runner") {
       if (a.engine !== "codex-openrouter" || a.image !== "engineer") throw new Error(`${key}: a runner agent gets a computer only with engine: codex-openrouter and image: engineer`);
@@ -92,7 +96,7 @@ export function computersConfig(paperclip, productDir) {
       : { command: c.command, args: c.args ?? [], env_vars: [...(c.env_vars ?? []).filter((v) => !/^AIDENHQ_/.test(v)), RUN_TOKEN_ENV], tool_timeout_sec: c.tool_timeout_sec ?? 300 };
   }
   // agents_org: the only org a box's repo-checkout may name (the launcher's POST /repo).
-  return { images: imageTags(productDir, used), connections, ...(paperclip.github_agents_org ? { agents_org: paperclip.github_agents_org } : {}) };
+  return { images: imageTags(productDir, ["browser", ...used]), connections, ...(paperclip.github_agents_org ? { agents_org: paperclip.github_agents_org } : {}) };
 }
 
 const COMPUTER_SECTION = `

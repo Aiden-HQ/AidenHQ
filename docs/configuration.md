@@ -120,10 +120,13 @@ run `node scripts/sync-shared.mjs`.
   An agent may set `web_search: cached` or `disabled` (module or instance `agent.yaml`); computers inherit both.
 - **`web_view(url, screenshot?, width?)`** and **`app_view(name, path?, screenshot?, width?)`** (apps-mcp, read tools):
   every codex agent is granted both explicitly (`apps: [web_view, app_view]`). One renderer
-  (`services/apps-mcp/src/view.ts`): a one-shot container of the pinned Puppeteer image (Node, the library and Chrome;
-  amd64, ~3 GB on disk, pulled on first use), non-root, `--cap-drop ALL`, read-only with a `/tmp` tmpfs, 1 GB / 1 CPU /
-  512 pids, no mounts, secrets or token, at most two at once, 40 s. GET only: no clicks, forms or cookies. It returns the
-  page's accessibility snapshot (≤20 KB, fenced as untrusted) and, with `screenshot: true`, a PNG of the first screen.
+  (`services/apps-mcp/src/view.ts`): a one-shot container of the browser image (`services/computer/images/browser`:
+  agent-browser and its pinned Chrome, ~1.3 GB, built on the host by `ops/computer-images.sh` on every apply; every agent
+  computer builds on it, and Engineer jobs on the host use the same build from `ops/vm/setup.sh`), non-root, `--cap-drop
+  ALL`, read-only with a `/tmp` tmpfs, 1 GB / 1 CPU / 512 pids, no mounts, secrets or token, at most two at once, 40 s.
+  GET only: no clicks, forms or cookies (`app_view` fails any other method, and sends its identity header to the app's own
+  origin alone). It returns the page's accessibility snapshot (agent-browser's, ≤20 KB, fenced as untrusted) and, with
+  `screenshot: true`, a PNG of the first screen. The post-deploy render check (`checks.ts`) runs in the same image.
 - `web_view` runs on the `aidenhq-computers` network, whose host firewall (`ops/vm/computer-net.sh`) is the SSRF control:
   no LAN, tailnet, host (except the launcher gateway, which refuses without a run token), Docker networks or IPv6.
   apps-mcp also refuses non-http(s) URLs, `user:pass@`, URLs over 2,000 characters and hosts resolving to a non-public
