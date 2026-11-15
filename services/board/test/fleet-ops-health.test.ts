@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checks, missedFires, takeOwnerLines, tick } from "../src/fleet-ops.js";
+import { checks, detectorState, missedFires, takeOwnerLines, tick } from "../src/fleet-ops.js";
 import { completionGate } from "../src/grades.js";
 import { Store } from "../src/store.js";
 
@@ -155,5 +155,31 @@ describe("health flags", () => {
     expect(store.grades.get("i-revise")).toMatchObject({ state: "not_graded" });
     expect(store.grades.get("i-delegated")).toMatchObject({ state: "not_graded" });
     expect(store.grades.get("i-open")!.state).toBe("awaiting_evidence");
+  });
+
+  it("a grade: key stranded before the fix leaves detector.open on the next tick", async () => {
+    const store = new Store(":memory:");
+    // The state an instance carries after the bug: two cancelled tasks, each with a row still awaiting evidence, and both
+    // already reported by an earlier tick (so they are in `open` and were fired at Fleet Ops).
+    const status: Record<string, string> = { "i-stranded-a": "cancelled", "i-stranded-b": "cancelled" };
+    for (const id of Object.keys(status)) {
+      store.grades.file(id, [], { kind: "report", ref: "" });
+      completionGate(store.grades, id, "task_finish");
+      store.grades.record(id, { version: "", outcome: "awaiting_evidence", model: "", criteria: [] }, now - 3 * 24 * 60 * 60_000);
+    }
+    const opened: Record<string, unknown> = {};
+    for (const id of Object.keys(status)) opened[`grade:${id}`] = { reason: `graded task ${id} awaiting_evidence for 4320`, at: iso(1), fired: true };
+    store.setMeta("fleet_ops_detector", JSON.stringify({ open: opened, recovered: [] }));
+    expect(Object.keys(detectorState(store).open)).toHaveLength(2);
+
+    const pc = { companyId: "co", issue: async (id: string) => ({ id, status: status[id] }) };
+    const found = await checks(pc as never, store as never, () => now, {}).grade!();
+    expect(found).toEqual([]);
+    const fired: unknown[] = [];
+    await tick(store, { grade: checks(pc as never, store as never, () => now, {}).grade! }, async (body) => (fired.push(body), true), new Date(now));
+
+    // Neither task is reported any more, and both keys are gone from `open` (Fleet Ops hears they recovered).
+    expect(detectorState(store).open).toEqual({});
+    expect((fired[0] as { recovered: { key: string }[] }).recovered.map((r) => r.key).sort()).toEqual(["grade:i-stranded-a", "grade:i-stranded-b"]);
   });
 });
