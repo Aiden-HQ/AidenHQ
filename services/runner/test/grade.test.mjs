@@ -4,8 +4,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
-import { fileEvidence } from "../src/evidence.mjs";
-import { GRADE_SCHEMA, gather, grade, gradeNote, gradePrompt, graderModels, rubricPaths } from "../src/grade.mjs";
+import { fileEvidence, presentNow, taskMergePrs } from "../src/evidence.mjs";
+import { GRADE_SCHEMA, escalationFor, evidencePremise, gather, grade, gradeNote, gradePrompt, graderModels, rubricPaths } from "../src/grade.mjs";
 import { DEEPSEEK, LUNA, openRouterAsk } from "../src/review.mjs";
 
 const pr = ({ state = "OPEN", check = "SUCCESS", head = "h".repeat(40), merge = "m".repeat(40), imageScan = null, files = undefined } = {}) => {
@@ -447,3 +447,82 @@ test("another task the rubric names: its file list (not contents) is a trusted f
 });
 
 const gradePromptOf = (ev) => gradePrompt({ rubric: ["x"], deliverable: { kind: "file" }, facts: ev.facts, data: ev.data, request: "" }).user;
+
+// The graded-task evidence wait must not escalate work that has landed: before it escalates it re-reads the task's own
+// record, and the premise it writes says what that read found. A merged PR whose head rollup still lists a running check is
+// exactly the case that escalated shipped work: the row keeps waiting (a check can still turn), but it never escalates.
+test("a merged PR whose head rollup still lists a running check holds the row and is never escalated", async () => {
+  const data = pr({ state: "MERGED", check: "PENDING" });
+  // The row waits: a check GitHub still reports running can yet turn, so this is not graded as met either.
+  assert.match((await gather({ kind: "pr", ref }, deps({ pr: async () => data }))).awaiting, /checks still running/);
+  // But the guard sees the merge and the row is held rather than escalated.
+  const now = await presentNow({ kind: "pr", ref }, deps({ pr: async () => data }));
+  assert.equal(now.present, true);
+  assert.match(now.facts[0], /is merged.*merge commit/);
+});
+
+test("only the runner's own records for the task name a PR when no branch row does", async () => {
+  const queue = [{ repo: "acme/app", number: 7, url: ref, status: "merged" }, { repo: "acme/app", number: 7, url: ref, status: "merged" }];
+  assert.deepEqual(taskMergePrs(queue).map((p) => `${p.repo}#${p.number}`), ["acme/app#7"], "one row per PR, however many records name it");
+  assert.deepEqual(taskMergePrs([{ repo: "acme/app", number: 8 }]).map((p) => p.url), ["https://github.com/acme/app/pull/8"]);
+
+  // The wait itself reads it: with no branch row, the recorded PR is fetched, and what GitHub says decides.
+  const read = [];
+  const over = { taskPrs: async () => [], taskMerged: async () => queue, pr: async (repo, n) => (read.push(`${repo}#${n}`), pr({ state: "MERGED" })), diff: async () => "+x" };
+  const ev = await gather({ kind: "pr", ref: "" }, deps(over));
+  assert.deepEqual(read, ["acme/app#7"]);
+  assert.match(ev.facts[0], /named by the runner's own record for this task/);
+  assert.match((await gather({ kind: "pr", ref: "" }, deps({ ...over, pr: async () => pr({ state: "OPEN", check: "SUCCESS" }) }))).awaiting, /not merged yet/);
+  assert.match((await gather({ kind: "pr", ref: "" }, deps({ ...over, pr: async () => pr({ state: "CLOSED" }) }))).awaiting, /closed without merging/);
+
+  // A comment saying "merged" is not a record: its runner marker is text any writer can copy, so it names nothing.
+  const said = { taskPrs: async () => [], comments: async () => [{ authorType: "user", authorUserId: "user-1", body: `Merged ${ref} (1 of 1).\n\n<!-- aidenhq-runner -->` }], pr: async (repo, n) => (read.push(`${repo}#${n}`), pr({ state: "MERGED" })), diff: async () => "+x" };
+  assert.match((await gather({ kind: "pr", ref: "" }, deps(said))).awaiting, /no pull request/);
+  assert.deepEqual((await presentNow({ kind: "pr", ref: "" }, deps(said))), { present: false, facts: [] });
+  assert.equal(read.filter((r) => r === "acme/app#7").length, 1, "the guard never read a PR a comment named");
+});
+
+test("the evidence-wait guard finds a merge and a matching healthy deploy, and nothing where the work is not", async () => {
+  const merge = "m".repeat(40);
+  const app = (deploys) => ({ name: "keeper", sha: merge, state: "healthy", healthy: true, auto_deploy: false, deploys });
+  const healthy = [{ sha: merge, status: "healthy", at: 1, by: "auto-deploy" }];
+  const over = { pr: async () => pr({ state: "MERGED" }), appOfRepo: async () => app(healthy) };
+  const here = await presentNow({ kind: "pr", ref: "" }, deps(over));
+  assert.equal(here.present, true);
+  assert.ok(here.facts.some((f) => /is merged.*\(merge commit m{12}\)/.test(f)), here.facts.join("\n"));
+  assert.ok(here.facts.some((f) => /keeper: m{12} deployed .*healthy/.test(f)), here.facts.join("\n"));
+
+  // No receipt and no branch row, an open PR, and a merge whose app has no healthy deploy of it: the escalation stands.
+  assert.deepEqual(await presentNow({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => [] })), { present: false, facts: [] });
+  const open = await presentNow({ kind: "pr", ref: "" }, deps({ pr: async () => pr({ check: "PENDING" }) }));
+  assert.equal(open.present, false);
+  assert.match(open.facts[0], /open, not merged yet.*checks still running: test/);
+  const unhealthy = await presentNow({ kind: "pr", ref: "" }, deps({ ...over, appOfRepo: async () => app([{ sha: merge, status: "failed", at: 1, by: "auto-deploy" }]) }));
+  assert.equal(unhealthy.present, true, "a merged PR is the receipt by itself; a bad deploy is the rubric's to judge, not a wait");
+  assert.match(unhealthy.facts.at(-1), /no healthy deploy of m{12}/);
+
+  // An app deliverable: a healthy deploy of its deployed commit.
+  assert.equal((await presentNow({ kind: "app", ref: "keeper" }, deps({ app: async () => app(healthy) }))).present, true);
+  assert.equal((await presentNow({ kind: "app", ref: "keeper" }, deps({ app: async () => null }))).present, false);
+});
+
+test("a held grade holds when the deliverable is there, and escalates on today's facts when it is not", async () => {
+  const waiting = { awaiting: `checks still running on ${ref}` };
+  // The merge landed after the wait captured its reason: the row is held, and nobody is asked to decide shipped work.
+  assert.deepEqual(await escalationFor(waiting, { kind: "pr", ref }, deps({ pr: async () => pr({ state: "MERGED" }) })), { hold: true, facts: [`${ref} is merged (merge commit m${"m".repeat(11)})`] });
+  // Nothing there: the escalation stands, and its reason is what GitHub says now, not the captured text.
+  const open = await escalationFor(waiting, { kind: "pr", ref }, deps({ pr: async () => pr({ state: "OPEN", check: "SUCCESS" }) }));
+  assert.equal(open.hold, undefined);
+  assert.match(open.reason, /^still waiting for its evidence a day after it was finished: .*is open, not merged yet$/m);
+  assert.doesNotMatch(open.reason, /checks still running/, "the captured reason is not replayed");
+  // A deliverable that never existed keeps its own wording, and is not read against the record.
+  assert.deepEqual(await escalationFor({ awaiting: "no pull request yet", missing: true }, { kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => assert.fail("read a deliverable that never existed") })), { reason: "finished without its deliverable: no pull request yet", facts: [] });
+});
+
+test("an escalation's premise is the facts read now, never the reason the wait captured", () => {
+  const premise = evidencePremise("checks still running on https://github.com/acme/app/pull/7", ["https://github.com/acme/app/pull/7 is open, not merged yet"]);
+  assert.equal(premise, "still waiting for its evidence a day after it was finished: https://github.com/acme/app/pull/7 is open, not merged yet");
+  assert.doesNotMatch(premise, /checks still running/, "the captured reason is not replayed");
+  // A report or file has nothing outside the task to read: the reason gathered on this pass is all there is.
+  assert.match(evidencePremise("nothing posted on the task yet"), /nothing posted on the task yet$/);
+});

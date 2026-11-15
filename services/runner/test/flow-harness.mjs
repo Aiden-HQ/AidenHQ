@@ -255,7 +255,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
  * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
-export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], onIssueCreated } = {}) {
+export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], onIssueCreated, setup } = {}) {
   let dir, runner, runnerEnv, paperclip, output = "";
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -390,6 +390,8 @@ ${runnerYaml}`,
         AIDENHQ_GRADER_URL: `${url}/grader`,
         ...env,
     };
+    // Fixtures a scenario needs before the first poll: GitHub's PRs (github-prs.json) or the runner's own state rows.
+    setup?.({ dir });
     startRunner();
   });
   after(() => {
