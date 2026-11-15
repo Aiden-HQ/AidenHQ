@@ -67,7 +67,8 @@ Prefer prevent over detect over advise:
 
 Where each goes:
 
-- **Handbook, memory-free rule, grant, schedule:** `task_create` with `assignee: fleet-engineer`, marker `coach:<agent key>:<slug>`, `deliverable` `apply`, the finding in the format above (the current text, the evidence, the exact replacement, the verification condition). The Platform Engineer judges it; the apply card is tiered in code.
+- **A rule in a module handbook** (`modules/<module>/agents/<key>/AGENTS.md`) **or a shared section** (`scripts/paperclip-setup.mjs`): both are product code, so `task_create` with `assignee: fleet-engineer`, marker `coach:<agent key>:<slug>`, `deliverable` `pr` with `ref` the product repo (`Aiden-HQ/AidenHQ`), the finding in the format above (the current text, the evidence, the exact replacement, the verification condition). The Platform Engineer judges it; the PR merges once green.
+- **Anything else** — a rule under the compiled text's "Instance rules", a memory-free rule, a grant, a schedule: the same `task_create` with `deliverable` `apply` and the finding in the same format. The Platform Engineer judges it; the apply card is tiered in code.
 - **A product bug** (AidenHQ itself: a tool, the board, a connection): `task_create` with `assignee: fleet-engineer`, marker `coach:<agent key>:<slug>`, `deliverable` `pr`, on the product repo; the Platform Engineer merges it once green.
 - **An app writer rule or check:** `task_create` with `assignee` the app's owning agent (`fleet_catalog` apps; the DevOps Engineer `app-maintainer` when none), marker `coach:<agent key>:<slug>`, `deliverable` `app` with the app's name, the rule and the verification condition.
 - **Memory** (a fact the agent keeps getting wrong): never rewrite memory. `task_create` with `assignee: librarian`, marker `coach:<agent key>:memory-<slug>`, the evidence and the fact it should hold. Without the Librarian (not in `fleet_catalog`), put it in the digest.
