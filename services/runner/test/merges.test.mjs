@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it, test } from "node:test";
 import { classify } from "../src/tiers.mjs";
-import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, environmentFailure, environmentReceipt, findPrs, finishedStatus, jobFor, newQueue, prDecision, startOrResume, supersededDesignReview, touchesUi, WRITES, withGate, ciState, namedChecks } from "../src/merges.mjs";
+import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, environmentFailure, environmentalChecks, environmentReceipt, findPrs, finishedStatus, jobFor, newQueue, prDecision, startOrResume, supersededDesignReview, touchesUi, WRITES, withGate, ciState, namedChecks } from "../src/merges.mjs";
 import { prAttention } from "../src/product-prs.mjs";
 
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
@@ -850,6 +850,29 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     assert.match(receipt, /"billing"/);
     assert.match(receipt, /rebase or a new head would change nothing/);
     assert.doesNotMatch(receipt, /fix the cause on the PR|rerun the tests/, "no code action");
+  });
+
+  // Owner, 2026-11-15: the breaker on identical failures counts the code's failures only. A red head's fix names the checks
+  // that were the environment's (timed out, never started, a runner that died), and the breaker leaves them out.
+  it("a red head's fix names its environmental checks for the breaker to leave out", async () => {
+    const H = "4567".repeat(10);
+    const run = (name, conclusion, databaseId) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion, databaseId, checkSuite: { workflowRun: { databaseId: 100 + databaseId } } });
+    const nodes = [run("tests", "FAILURE", 1), run("lint", "TIMED_OUT", 2), run("image-scan", "FAILURE", 3), run("build", "FAILURE", 4), run("ci-required", "FAILURE", 5), run("deploy", "FAILURE", 6), run("docs", "FAILURE", 7)];
+    const gh = fakeGithub({ 1: own(1, { headRefOid: H, mergeStateStatus: "UNSTABLE", ...head({ state: "FAILURE", contexts: { nodes } }) }) });
+    gh.jobs = {
+      tests: { steps: [{ name: "Run tests" }], annotations: [{ annotation_level: "failure", message: "Process completed with exit code 1." }] },
+      "image-scan": { steps: [], annotations: [{ annotation_level: "failure", message: "The job was not started because your spending limit needs to be increased." }] },
+      build: { steps: [{ name: "Build", conclusion: null }], annotations: [{ annotation_level: "failure", message: "The self-hosted runner: ci-3 lost communication with the server. Verify the machine is running." }] },
+      // A failing step that prints GitHub's words is still the code's failure: it can't dodge the breaker.
+      deploy: { steps: [{ name: "Deploy", conclusion: "failure" }], annotations: [{ annotation_level: "failure", message: "The runner has received a shutdown signal." }] },
+      docs: { steps: [{ name: "Docs", conclusion: null }], annotations: [{ annotation_level: "failure", message: "Error: The runner has received a shutdown signal." }] },
+    };
+    const step = await advance(addEach(undefined, [{ repo: "o/r", number: 1, url: "u1", head: H }], { now: at(0) }), { github: gh, now: at(0) });
+    assert.equal(step.fixes.length, 1, "a real failure is beside them: the Engineer is still asked to fix it");
+    assert.deepEqual(step.fixes[0].environment, [2, 3, 4], "check run ids; the gate stays: it also rolls up the real failures");
+    // Only the environment's checks are red: the gate's roll-up is theirs too, so nothing is left for the breaker to count.
+    const envOnly = own(2, { headRefOid: H, ...head({ state: "FAILURE", contexts: { nodes: nodes.slice(1, 5) } }) });
+    assert.deepEqual(await environmentalChecks(gh, "o/r", 2, envOnly), [2, 3, 4, 5]);
   });
 
   // Owner, 2026-11-13 (roadmap-keeper#108 merged an unstyled page while its review was pending): on a UI PR the design review blocks.

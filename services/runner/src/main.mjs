@@ -685,10 +685,15 @@ function requestFrom(full) {
 }
 
 async function handleRequest(issue, latest, { fromAgent = false } = {}) {
-  // A new word from whoever asked (the delegator or the owner) lifts a stop on identical failures.
+  // A new word from whoever asked (the delegator or the owner) lifts a stop on identical failures, and gives the task its
+  // reviewer checks before filing again (agentReview).
   if (latest && stopped(issue.id)) {
     state.set(breakerKey(issue.id), "{}");
     log("breaker cleared", { issue: issue.identifier });
+  }
+  if (latest && checksOf(issue.id).length) {
+    state.set(checksFromKey(issue.id), new Date().toISOString());
+    log("review checks reset", { issue: issue.identifier });
   }
   const full = await pc.issue(issue.id);
   let instructions = latest;
@@ -1047,10 +1052,14 @@ async function rejectedAgain(issue, a, code) {
   return noteFailure(issue, `review:${a.action}`, { sig, short: "" }, a.id, `the AI reviewer rejected the same ${a.action} change twice for the same reason (\`${code}\`), under new commits`);
 }
 
-/** A PR's head whose checks failed (the merge queue's `fixes`): GitHub's failure text read, and recorded with the breaker. */
+/**
+ * A PR's head whose checks failed (the merge queue's `fixes`): GitHub's failure text read, and recorded with the breaker.
+ * The environment's check runs (`f.environment`, by id: cancelled, timed out, never started, a runner that died) are left out, so a
+ * head that only met a broken environment is no failure at all.
+ */
 async function redHead(issue, f) {
-  const s = checkSignature(await failedChecks(f.repo, f.head));
-  if (!s) return Boolean(stopped(issue.id)); // unread is never "the same"
+  const s = checkSignature(await failedChecks(f.repo, f.head, f.environment));
+  if (!s) return Boolean(stopped(issue.id)); // unread, or only the environment's, is never "the same"
   return noteFailure(issue, `checks:${f.url.toLowerCase()}`, s, f.head, `${f.url}'s checks failed the same way on two heads in a row`);
 }
 
@@ -1059,11 +1068,11 @@ async function redHead(issue, f) {
  * error lines of its Actions job log (timestamps and colour codes cut). [{ name, lines }]; empty when nothing failed or a
  * log couldn't be read (a check outside Actions has none), so the breaker never stops on a guess.
  */
-async function failedChecks(repo, head) {
+async function failedChecks(repo, head, environment = []) {
   const gh = await findRealGh();
   const opts = await gho(repo, READ, { maxBuffer: 32 * 1024 * 1024 });
   const api = async (path, jq) => JSON.parse((await execFileP(gh, ["api", path, ...(jq ? ["--jq", jq] : [])], opts)).stdout || "null");
-  const runs = (await api(`repos/${repo}/commits/${head}/check-runs?per_page=100`, '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | { id, name, title: .output.title, summary: .output.summary }]')) ?? [];
+  const runs = (await api(`repos/${repo}/commits/${head}/check-runs?per_page=100`, '[.check_runs[] | select(.conclusion == "failure") | { id, name, title: .output.title, summary: .output.summary }]'))?.filter((r) => !environment.includes(r.id)) ?? [];
   const out = await Promise.all(
     runs.map(async (r) => {
       const notes = (await api(`repos/${repo}/check-runs/${r.id}/annotations`, '[.[] | select(.annotation_level == "failure") | .message]').catch(() => [])) ?? [];
@@ -2152,6 +2161,9 @@ function askReviewer(issue, a, input, chain, { onPanel, component, siblings } = 
  */
 const checksKey = (issueId) => `review-checks:${issueId}`;
 const checksOf = (issueId) => JSON.parse(state.get(checksKey(issueId)) || "[]");
+/** The checks counted against REVIEW_CHECKS: those since the last new word from whoever asked (handleRequest). All stay findings. */
+const checksFromKey = (issueId) => `review-checks-from:${issueId}`;
+const checksUsed = (issueId) => checksOf(issueId).filter((c) => c.at > (state.get(checksFromKey(issueId)) || "")).length;
 function checkFindings(issueId, action) {
   return checksOf(issueId)
     .filter((c) => c.action === action && ["reject", "escalate"].includes(c.decision))
@@ -2936,8 +2948,9 @@ class Checked extends Error {}
  * now, without filing it. The same branches, the same tiering and the same reviewer call as the card's review (askReviewer),
  * so a rejection is fixed in the same run instead of costing a card, a rejection notice and a new job. No card is filed.
  * The gate isn't an oracle to tune against: only a real reviewer call counts, REVIEW_CHECKS per task across its jobs (kept in
- * state); each check is one short line on the task (verdict and code), and its findings go to every later review of the action
- * on the task (checkFindings), so the card's review sees what was probed. The agent never learns which models judged. The
+ * state; the next word of whoever asked, the delegator or the owner, gives REVIEW_CHECKS more); each check is one short line
+ * on the task (verdict and code), and its findings go to every later review of the action on the task (checkFindings), so
+ * the card's review sees what was probed. The agent never learns which models judged. The
  * card's own review still decides.
  */
 async function agentReview(ctx, args) {
@@ -2956,13 +2969,13 @@ async function agentReview(ctx, args) {
         const a = { action: command, args: branchCardArgs(branches, { merge: carriesMerge(command, ordered) }) };
         const mode = autonomyNow();
         const input = await currentTier(ctx.issue, a, { withDiff: true });
-        const n = checksOf(ctx.issue.id).length;
+        const n = checksUsed(ctx.issue.id);
         log("review check", { issue: ctx.issue.identifier, action: command, tier: input.reject ? "reject" : input.tier, rule: input.rule, mode, used: n });
         if (input.reject) throw new Checked(`Code refuses this ${command} before any review (rule \`${input.rule}\`): ${input.reason}. No reviewer was asked, and this check isn't counted.`);
         if (input.tier === 0) throw new Checked(`Tier 0 (${input.reason}): \`aidenhq ${command}\` runs at once, with no review. This check isn't counted.`);
         if (input.tier > 1) throw new Checked(`Tier 2 (${input.reason}): ${cfg.selfName} decides the card, not the AI reviewer. File it with \`aidenhq ${command}\`; this check isn't counted.`);
         if (mode !== "full") throw new Checked(`Autonomy is ${mode}: ${cfg.selfName} decides every card, so there is no AI review to check against. File it with \`aidenhq ${command}\`; this check isn't counted.`);
-        if (n >= REVIEW_CHECKS) throw new Checked(`No checks left on this task (${REVIEW_CHECKS} used). File it with \`aidenhq ${command}\`: the card's review decides.`);
+        if (n >= REVIEW_CHECKS) throw new Checked(`No checks left on this task (${REVIEW_CHECKS} used; the next word from whoever asked gives ${REVIEW_CHECKS} more). File it with \`aidenhq ${command}\`: the card's review decides.`);
         const card = { action: command, ...cardText(command, a.args) };
         // Counted before the call, so a call cut off by a restart still counts.
         const entry = { action: command, target: card.target, at: new Date().toISOString(), decision: "pending", code: "" };

@@ -317,6 +317,39 @@ export async function environmentFailure(github, repo, pr) {
   return out;
 }
 
+/**
+ * GitHub's own annotation when the machine running a job went away mid-run, anchored to its exact wording: a job's output
+ * can print these words anywhere, so only the whole system message counts, and only with no step that failed (below).
+ */
+const RUNNER_LOST = /^(?:The (?:self-hosted|hosted) runner: .{1,200} lost communication with the server\.|The runner has received a shutdown signal\.)/;
+
+/**
+ * The red check runs on the PR's head, by id, that are the environment's and not the code's: cancelled, timed out or never
+ * started (INFRA, neverStarted), code-review's own "didn't finish", or a job whose runner died (GitHub's annotation, and no
+ * step of the job failed: a step that failed is the code's, whatever it printed). The breaker on identical failures leaves
+ * them out (owner, 2026-11-15): two heads that met the same broken environment are not the same failure twice. By id, so a
+ * real failure sharing a name is never dropped. The gate check (`ci-required`) is theirs too when every check it rolls up is.
+ */
+export async function environmentalChecks(github, repo, number, pr) {
+  const red = (pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).filter((n) => !advisory(n) && FAILING.has(n.conclusion ?? n.state));
+  const own = red.filter((n) => checkLabel(n) !== GATE_CHECK);
+  const out = [];
+  for (const n of own) {
+    if (n.__typename !== "CheckRun" || !n.databaseId) continue;
+    if (INFRA.has(n.conclusion) || (await neverStarted(github, repo, n))) out.push(n.databaseId);
+    else if (n.conclusion === "FAILURE") {
+      if (checkLabel(n) === CODE_REVIEW.name && (await github.codeReviewInfra(repo, number, pr.headRefOid))) out.push(n.databaseId);
+      else {
+        const job = await github.job(repo, n).catch(() => undefined);
+        const lost = (job?.annotations ?? []).some((a) => a.annotation_level === "failure" && RUNNER_LOST.test(String(a.message ?? "")));
+        if (lost && job.steps?.length && !job.steps.some((st) => st.conclusion === "failure")) out.push(n.databaseId);
+      }
+    }
+  }
+  if (own.length && out.length === own.length) out.push(...red.filter((n) => checkLabel(n) === GATE_CHECK && n.databaseId).map((n) => n.databaseId));
+  return out;
+}
+
 /** The receipt for a merge stopped by checks that never ran: the checks and GitHub's annotation, and no code change asked for. */
 export function environmentReceipt(ref, checks, head, { retried = true } = {}) {
   const clean = (s) => String(s ?? "").replace(/[\p{Cc}`"]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 240);
@@ -907,7 +940,8 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
           if (retry) wait(`${pr.headRefOid}:${retry.key}`, RERUN_WAIT[retry.key], retry.limit);
           else {
             fail(d.why);
-            if (d.red) fixes.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid, why: d.why });
+            // `environment`: the red check runs (ids) the breaker leaves out (environmentalChecks).
+            if (d.red) fixes.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid, why: d.why, environment: await environmentalChecks(github, p.repo, p.number, pr) });
           }
         }
       } else if (d.do === "wait") {

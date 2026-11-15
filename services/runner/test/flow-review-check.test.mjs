@@ -1,6 +1,6 @@
 // End to end (see flow-harness.mjs), the reviewer check before filing (owner, 2026-11-15): `aidenhq review` asks the AI
 // reviewer what it would say about the card `aidenhq pr` would file, through the same call the card's review makes, and
-// files nothing. Only real reviewer calls count, three per task; each is one line on the task, and its findings go to every
+// files nothing. Only real reviewer calls count, three per task until whoever asked says more; each is one line on the task, and its findings go to every
 // later review, so the gate is never an unrecorded oracle.
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -74,6 +74,15 @@ describe("flow-review-check", { concurrency: 1 }, () => {
     assert.match(lines[0], /would reject \(`out_of_scope`\)/);
     assert.ok(!lines.some((c) => /second\.txt isn't part/.test(c)), "the line has the verdict, not the note");
     assert.equal((t.output.match(/"msg":"review checked"/g) ?? []).length, 3, "each check is in the runner's log");
+
+    // A new word from whoever asked (here the owner) gives three more checks; the earlier findings still reach the review.
+    answers.push({ decision: "approve", reason_code: "in_scope", reason: "Does what was asked.", second_review: false });
+    t.step("none\naidenhq review");
+    await t.turn("second.txt is in scope after all: check it again.");
+    const again = t.toolRuns().at(-1);
+    assert.match(again.out, /would approve this[\s\S]*1 of 3 checks used/, again.out);
+    assert.equal(calls.length, 4);
+    assert.match(calls[3].messages[1].content, /the reviewer would have rejected it \(out_of_scope\)/, "the old finding is kept");
     t.noErrors();
   });
 });
