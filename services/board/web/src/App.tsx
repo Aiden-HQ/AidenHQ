@@ -183,6 +183,10 @@ export function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tab, setTab] = useState<Bucket>("today");
   const [view, setViewState] = useState<View>(savedView);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  /** When the board was last asked for (the timer below); opening Tasks asks again when that is over 10s ago. */
+  const boardAt = useRef(Date.now());
   const setView = useCallback((v: View) => {
     setViewState(v);
     try {
@@ -236,13 +240,24 @@ export function App() {
   }, [session]);
 
   useEffect(() => {
+    if (view !== "board" || Date.now() - boardAt.current < 10_000) return;
+    boardAt.current = Date.now();
+    void refresh();
+  }, [view, refresh]);
+
+  useEffect(() => {
     // Also slide the session cookie's expiry forward (Better Auth refreshes it on get-session).
     load("session", api.session, false).then((s) => {
       setSession(s);
       if (s.account) void accountsApi.refresh().catch(() => {});
     }, () => {});
     void refresh(true);
-    const t = setInterval(() => document.visibilityState === "visible" && !dragFrom.current && void refresh(), 10_000);
+    // Every 10s on Tasks; elsewhere only the header reads it (the working dot, sign-in banners, the brief): once a minute.
+    const t = setInterval(() => {
+      if (document.visibilityState !== "visible" || dragFrom.current || (viewRef.current !== "board" && Date.now() - boardAt.current < 60_000)) return;
+      boardAt.current = Date.now();
+      void refresh();
+    }, 10_000);
     const vis = () => document.visibilityState === "visible" && void refresh();
     document.addEventListener("visibilitychange", vis);
     const hash = () => {

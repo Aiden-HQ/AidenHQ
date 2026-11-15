@@ -15,6 +15,9 @@ import { weekdayOf } from "./recurrence.js";
 import { Store, localDate } from "./store.js";
 import { startWake } from "./wake.js";
 import { startRollover } from "./rollover.js";
+import { startWatch } from "./watch.js";
+import { liveActivity } from "./live-activity.js";
+import type { RunnerReport } from "./activity.js";
 
 const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
@@ -68,7 +71,11 @@ const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...
   manifest: (app) => appsApi<Manifest>(`/internal/apps/${encodeURIComponent(app)}/manifest`, undefined, { auth: true }),
   wake: webhookWake(process.env.APP_REQUEST_WEBHOOK_URL_FILE ?? "/run/secrets/app_request_webhook_url", process.env.APP_REQUEST_WEBHOOK_SECRET_FILE ?? "/run/secrets/app_request_webhook_secret", log),
   log });
-const common = { paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity: {}, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway, lane: cfg.internal && { url: process.env.SLACK_LIVE_URL ?? "http://slack-live-mcp:8089", token: cfg.internal.token } };
+// The runner's Engineer jobs, as it last reported them (shared by the listeners: it reports to the internal one).
+const activity: { runner?: RunnerReport } = {};
+// Open boards hear what agents change in their chats (watch.ts): one look at Paperclip every 2s while any board listens.
+startWatch({ pc: paperclip, events: store.events, log, runner: () => activity.runner, session: liveActivity(cfg.sessions) });
+const common = { paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway, lane: cfg.internal && { url: process.env.SLACK_LIVE_URL ?? "http://slack-live-mcp:8089", token: cfg.internal.token } };
 const server = createApp({ ...common, allowedHosts: cfg.allowedHosts, mode: "local", operatorKey: cfg.operatorKey });
 server.listen(cfg.port, "0.0.0.0", () => log.info({ port: cfg.port, hosts: cfg.allowedHosts }, "board listening"));
 // The board's https address (`tailscale serve`) and phones on the home network: a separate port, signed in as on 3120.

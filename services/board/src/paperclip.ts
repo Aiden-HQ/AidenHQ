@@ -58,6 +58,9 @@ export interface LiveRun {
   issueId: string | null;
   startedAt: string | null;
   createdAt: string;
+  /** Where its output stream is: it moves as the agent says more. */
+  lastOutputSeq?: number | null;
+  lastOutputAt?: string | null;
   currentStatusMessage?: string | null;
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
@@ -148,7 +151,7 @@ export class PaperclipError extends Error {
 }
 
 export class Paperclip {
-  private cache = new Map<string, { at: number; value: unknown }>();
+  private cache = new Map<string, { at: number; value: Promise<unknown>; done: boolean }>();
 
   constructor(
     private readonly baseUrl: string,
@@ -158,6 +161,8 @@ export class Paperclip {
   ) {}
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    // A write may change the open tasks: a read that starts after it never shares one already on its way.
+    if (method !== "GET") this.cache.delete("open");
     const res = await this.fetchImpl(new URL(path, this.baseUrl), {
       method,
       headers: { authorization: `Bearer ${this.key}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
@@ -169,12 +174,23 @@ export class Paperclip {
     return (text ? JSON.parse(text) : {}) as T;
   }
 
-  private async cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  /**
+   * `load`, kept for `ttlMs` after it lands; callers that ask while it is on its way share it (several routes and open
+   * boards ask for the same lists at once). A failure is never kept.
+   */
+  private cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
     const hit = this.cache.get(key);
-    if (hit && Date.now() - hit.at < ttlMs) return hit.value as T;
-    const value = await load();
-    this.cache.set(key, { at: Date.now(), value });
-    return value;
+    if (hit && (!hit.done || Date.now() - hit.at < ttlMs)) return hit.value as Promise<T>;
+    const entry = { at: Date.now(), done: false, value: undefined as unknown as Promise<unknown> };
+    entry.value = load().then(
+      (v) => ((entry.at = Date.now()), (entry.done = true), v),
+      (err) => {
+        if (this.cache.get(key) === entry) this.cache.delete(key);
+        throw err;
+      },
+    );
+    this.cache.set(key, entry);
+    return entry.value as Promise<T>;
   }
 
   /** The agent a credential (run JWT or agent key) belongs to; the board uses it to know who is calling. */
@@ -209,7 +225,13 @@ export class Paperclip {
    * concurrent list requests per client, so the board filters by assignee itself.
    */
   openIssues(): Promise<Issue[]> {
-    return this.list(OPEN);
+    // The biggest read the board makes: requests made while one is on its way share it (never a finished one).
+    return this.cached("open", 0, () => this.list(OPEN));
+  }
+
+  /** Every task (routine runs left out) updated after `since`, newest first: what the live watch (watch.ts) announces. */
+  changedSince(since: string): Promise<Issue[]> {
+    return this.list(`${OPEN},done,cancelled`, since, "200");
   }
 
   /** A task's sub-tasks, open and closed. The list filter isn't trusted, so it's checked here too. */

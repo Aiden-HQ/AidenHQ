@@ -2,15 +2,17 @@
 // tasks it posts, Fleet Ops ticks) is announced to every open board as a named event, so the views refetch at once instead
 // of on their next poll. Events carry names and ids only, never content; the reader refetches through the usual routes.
 // One hub per Store: the local, LAN and internal listeners share it, so a Telegram decision (internal) reaches the board.
-// Other code emits through `store.events.emit` (wake-ups from Paperclip, later).
+// Other code emits through `store.events.emit`: what agents change in Paperclip arrives through the live watch (watch.ts).
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 /**
  * The names a board view listens for. approvals: a card was filed, decided, claimed or finished (also the needs-you badge);
- * chat: the board posted on a task or opened one (`issue` is its id); grades: a grade changed state; fleet: a Fleet Ops tick.
+ * chat: a chat changed (a message, its state, its run, or the work handed out from it; `issue` is the chat's id); tasks: a
+ * task changed or its run started or ended (`issue` is its id); progress: a run on that task (or one handed out from that
+ * chat) said more, for its live words; grades: a grade changed state; fleet: a Fleet Ops tick.
  */
-export type EventName = "approvals" | "chat" | "grades" | "fleet" | "tasks";
+export type EventName = "approvals" | "chat" | "progress" | "grades" | "fleet" | "tasks";
 
 const HEARTBEAT_MS = 25_000;
 

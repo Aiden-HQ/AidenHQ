@@ -34,6 +34,8 @@ const at = () => new Date(Date.now() - 600_000 + ++seq * 1000).toISOString();
 const add = (issueId: string, c: Omit<Comment, "id" | "createdAt">) => {
   const made = { id: `00000000-0000-4000-8000-${String(++seq).padStart(12, "0")}`, createdAt: at(), ...c } as Comment;
   comments[issueId]!.push(made);
+  // As Paperclip does: a comment bumps its task's updatedAt.
+  for (const i of [chat, child]) if (i.id === issueId) i.updatedAt = made.createdAt;
   return made;
 };
 // What notify_owner(task, questions) posts on the sub-agent's own task (slack-live-mcp replyBody), with its own key.

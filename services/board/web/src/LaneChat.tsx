@@ -40,7 +40,8 @@ export function LaneChat({ agent, mobile, crew, go }: { agent: LaneAgent; mobile
   // Re-armed after each poll, so the interval follows `busy` and a recent send.
   useEffect(() => {
     const ms = busy || Date.now() - sentAt.current < 10_000 ? 1_500 : 15_000;
-    const t = setTimeout(() => void poll(), ms);
+    // A hidden tab checks only at the slow pace.
+    const t = setTimeout(() => void poll(), document.visibilityState === "visible" ? ms : 15_000);
     return () => clearTimeout(t);
   }, [poll, busy, tick, pending.length]);
   useEffect(() => void end.current?.scrollIntoView?.({ block: "end" }), [messages.length, pending.length]);

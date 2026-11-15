@@ -504,14 +504,25 @@ export function createApp(opts: AppOptions): Server {
     }
   }
 
+  /** The owner's last comment on a crew part, by the part's last activity (closeLeftoverParts). */
+  const ownComments = new Map<string, { stamp: string; at: string | undefined }>();
   /** Close the crew parts of tasks closed elsewhere (`partsToClose`), and return the open tasks left. */
   async function closeLeftoverParts(open: Issue[], closed: Issue[], ctx: Awaited<ReturnType<typeof context>>): Promise<Issue[]> {
     const known = new Map([...open, ...closed].map((i) => [i.id, i]));
     const crew = (i: Issue) => ctx.assignees.some((a) => a.kind !== "me" && a.key === i.assigneeAgentId);
     // A parent closed before the recent window isn't loaded: fetch it.
     const missing = [...new Set(open.filter((i) => i.parentId && crew(i) && !known.has(i.parentId)).map((i) => i.parentId!))];
-    for (const p of await Promise.all(missing.map((id) => pc.issue(id).catch(() => null)))) if (p) known.set(p.id, p);
-    const ownCommentAt = async (part: Issue) => (await pc.comments(part.id)).filter((c) => commentView(c, ctx.me, []).author.kind === "me").at(-1)?.createdAt;
+    // Every board refresh asks again: a parent closed long ago changes rarely (a minute's cache), and a part's comments are
+    // read again only when the part has changed.
+    for (const p of await Promise.all(missing.map((id) => pc.issueSummary(id).catch(() => null)))) if (p) known.set(p.id, p);
+    const ownCommentAt = async (part: Issue) => {
+      const stamp = part.lastActivityAt ?? part.updatedAt;
+      const hit = ownComments.get(part.id);
+      if (hit?.stamp === stamp) return hit.at;
+      const at = (await pc.comments(part.id)).filter((c) => commentView(c, ctx.me, []).author.kind === "me").at(-1)?.createdAt;
+      ownComments.set(part.id, { stamp, at });
+      return at;
+    };
     const leftover = await partsToClose(open, known, ctx.assignees, ownCommentAt, (part) => gradePassed(store.grades, part.id));
     if (!leftover.length) return open;
     const busy = (await working(ctx)).map;
@@ -729,12 +740,23 @@ export function createApp(opts: AppOptions): Server {
    * agent or the owner put under it counts: another agent can't hang a task under his chat to collect his words.
    */
   /** A sub-task of the chat that its own agent or the owner created. */
+  const asks = new Map<string, { stamp: string; ask: ReturnType<typeof openAsk> }>();
   const handedOutBy = (chat: Issue, k: Issue, me: string) =>
     k.parentId === chat.id && (k.createdByAgentId ? k.createdByAgentId === chatAgent(chat) : k.createdByUserId === me);
 
   async function askingKids(chat: Issue, kids: Issue[], me: string) {
     const open = kids.filter((k) => k.assigneeAgentId && !["done", "cancelled"].includes(k.status) && handedOutBy(chat, k, me));
-    const found = await Promise.all(open.map(async (task) => ({ task, ask: openAsk(await pc.comments(task.id).catch(() => []), task.assigneeAgentId, me) })));
+    // A task's comments are read again only when it has changed (every open chat refresh asks).
+    const askOf = async (task: Issue) => {
+      const stamp = `${task.lastActivityAt ?? task.updatedAt}|${task.assigneeAgentId}`;
+      const hit = asks.get(task.id);
+      if (hit?.stamp === stamp) return hit.ask;
+      const comments = await pc.comments(task.id).catch(() => undefined);
+      const ask = openAsk(comments ?? [], task.assigneeAgentId, me);
+      if (comments) asks.set(task.id, { stamp, ask });
+      return ask;
+    };
+    const found = await Promise.all(open.map(async (task) => ({ task, ask: await askOf(task) })));
     return found.filter((x): x is { task: Issue; ask: NonNullable<typeof x.ask> } => Boolean(x.ask));
   }
 

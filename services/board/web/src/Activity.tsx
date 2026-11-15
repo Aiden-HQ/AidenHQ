@@ -6,7 +6,7 @@ import { DaysSkeleton, Updating } from "./Skeleton";
 export function ActivityView({ onSignIn }: { onSignIn: () => void }) {
   const { data, stale, error, reload } = useQuery(QUERIES.activity, onSignIn);
   useEffect(() => {
-    const t = setInterval(() => void reload(), 60_000);
+    const t = setInterval(() => document.visibilityState === "visible" && void reload(), 60_000);
     return () => clearInterval(t);
   }, [reload]);
   const days = data?.days;

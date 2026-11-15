@@ -120,6 +120,7 @@ describe("board accounts", () => {
     for (const where of ["local", "lan"] as const) {
       const b = browser(where);
       expect((await b.call("GET", "/api/board")).status).toBe(401);
+      expect((await b.call("GET", "/api/events")).status).toBe(401); // the live stream too
       expect((await b.call("GET", "/api/issues/WOR-1/files/00000000-0000-0000-0000-000000000000")).status).toBe(401);
       // The operator key isn't a session.
       expect((await b.call("GET", "/api/board", undefined, { "x-operator-key": OPERATOR })).status).toBe(401);

@@ -10,7 +10,7 @@ import { QUERIES, chatQuery, peekingChat, prefetchChat, useQuery } from "./queri
 import { ChatListSkeleton, SkeletonLines } from "./Skeleton";
 import { ApprovalCard, StateChip } from "./Chat";
 import { LaneChat } from "./LaneChat";
-import { useEvents } from "./events";
+import { live as streaming, useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
 import { anyLive, groupChats, groupTasks, showsChip, taskSummary, type AgentGroup } from "./sidebar";
@@ -46,10 +46,18 @@ export function Monogram({ name, size = 28, front, avatar }: { name: string; siz
   return <AgentAvatar className="monogram" name={name} portrait={avatar} size={size} front={front} />;
 }
 
-/** Refetch on a timer (the cache fetched on mount already). */
+/**
+ * The fallback timer (the cache fetched on mount already; live updates, events.ts, refetch on every change): at the old
+ * pace while the live stream is down, once a minute while it is up, and only while the page is visible.
+ */
 function usePoll(load: () => Promise<unknown>, fast: boolean, idleMs: number) {
   useEffect(() => {
-    const t = setInterval(() => void load(), fast ? 2_000 : idleMs);
+    let last = Date.now();
+    const t = setInterval(() => {
+      if (document.visibilityState !== "visible" || (streaming() && Date.now() - last < 60_000)) return;
+      last = Date.now();
+      void load();
+    }, fast ? 2_000 : idleMs);
     return () => clearInterval(t);
   }, [load, fast, idleMs]);
 }
@@ -388,8 +396,9 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
   }, [chat, pending, setPending]);
   const live = anyLive(chat ? [chat, ...chat.handedOut] : []);
   usePoll(load, live, 8_000);
-  // The board's own changes arrive at once: a message posted here, a card filed or decided, a grade (events.ts).
-  useEvents(["chat"], load, chat?.id);
+  // Changes arrive at once (events.ts): a message from either side, the run starting, saying more or ending, the work
+  // handed out moving on, a card filed or decided, a grade.
+  useEvents(["chat", "tasks", "progress"], load, chat?.id);
   useEvents(["approvals", "grades"], load);
 
   const scroller = useRef<HTMLDivElement>(null);
