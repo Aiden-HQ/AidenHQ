@@ -81,7 +81,7 @@ main() {
       && systemctl --user restart aidenhq-gateway && echo "gateway unit installed/updated"
   elif ! systemctl --user is-active --quiet aidenhq-gateway; then
     systemctl --user restart aidenhq-gateway && echo "gateway started"
-  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/gateway; then
+  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/gateway services/paperclip-tasks-mcp/models.mjs; then
     systemctl --user restart aidenhq-gateway && echo "gateway code changed: restarted"
   fi
   ops/compose-recreate.sh # build what moved, recreate only those services, and clean up what this config dropped

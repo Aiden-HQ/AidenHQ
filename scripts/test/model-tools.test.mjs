@@ -1,5 +1,6 @@
 // advisor_ask and fanout_map (services/paperclip-tasks-mcp/models.mjs) against a fake gateway: the per-run limit (5 calls,
-// all on GPT Sol) and the fan-out bound refuse without calling the gateway; failed items come back not_covered.
+// all on GPT Sol), a placeholder brief and the fan-out bound refuse without calling the gateway; failed items come back
+// not_covered.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -51,12 +52,15 @@ async function run(models) {
   return { call, calls, close: () => { child.kill(); server.close(); } };
 }
 
-test("advisor_ask: every call on GPT Sol, 5 per run, the 6th refused; a gateway error gives its slot back", async () => {
+test("advisor_ask: every call on GPT Sol, 5 per run, the 6th refused; placeholders refused; a gateway error gives its slot back", async () => {
   const r = await run(["~deepseek/deepseek-flash-latest"]);
+  const q = (s) => `${s}: retry the failing deploy, or roll back first?`;
   try {
-    assert.match((await r.call("advisor_ask", { question: "BAD" })).error, /upstream broke/);
-    for (let i = 0; i < 5; i++) assert.equal((await r.call("advisor_ask", { question: `q${i}`, context: "facts" })).out.model, SOL);
-    assert.match((await r.call("advisor_ask", { question: "sixth" })).error, /advisor_limit/);
+    assert.match((await r.call("advisor_ask", { question: "placeholder", context: "x".repeat(50) })).error, /empty or a placeholder/);
+    assert.match((await r.call("advisor_ask", { question: "ok?" })).error, /empty or a placeholder/);
+    assert.match((await r.call("advisor_ask", { question: q("BAD") })).error, /upstream broke/);
+    for (let i = 0; i < 5; i++) assert.equal((await r.call("advisor_ask", { question: q(`q${i}`), context: "facts" })).out.model, SOL);
+    assert.match((await r.call("advisor_ask", { question: q("sixth") })).error, /advisor_limit/);
     assert.equal(r.calls.length, 6);
     assert.ok(r.calls.every((c) => c.model === SOL && c.url === "/advisor/api/v1/chat/completions" && c.auth === "Bearer eyJrun"));
   } finally { r.close(); }
