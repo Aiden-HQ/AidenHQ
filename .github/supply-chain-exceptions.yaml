@@ -19,3 +19,4 @@ exceptions:
   - { ecosystem: docker, package: anchore/syft, version: v1.57.1, advisory: GHSA-c9gr-gmg4-2vqv, reason: "syft v1.57.1 (2026-11-09) is a security release" }
   - { ecosystem: docker, package: tailscale/tailscale, version: v1.104.7, advisory: GO-2026-6859, reason: "v1.104.7 (2026-11-12) ships go1.27.4 which fixes the Go stdlib HTTP/1 server crash (GO-2026-6859); the release is under 7 days old" }
   - { ecosystem: apt, package: tailscale, version: 1.104.7, advisory: GO-2026-6859, reason: "1.104.7 (2026-11-12) ships go1.27.4 which fixes the Go stdlib HTTP/1 server crash (GO-2026-6859); the release is under 7 days old; installed on the host 2026-11-14" }
+  - { ecosystem: docker, package: postgres, version: 17.12, advisory: CVE-2026-120142, reason: "fixes PostgreSQL core-server arbitrary-code-execution CVEs (CVSS 8.8) reachable from our apps and agents" }
