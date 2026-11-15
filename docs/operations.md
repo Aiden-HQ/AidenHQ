@@ -278,7 +278,7 @@ org) or `aidenhq-ci-runner@<org>-<n>` unit (another org the App is installed on)
 the unit then starts the next. Nothing carries between jobs. The container has no host mounts, no docker socket and none
 of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host,
 only the model gateway's CI listener `10.231.4.1:8201`; no LAN, tailnet, other host ports or other containers). Limits
-per runner: 2 CPUs, 4 GB.
+per runner: 4 CPUs, 8 GB.
 
 **Code review spend (the model gateway).** The template's `code-review` job needs no model key: on our runners
 (`AIDENHQ_GATEWAY_URL`, set on the runner container) it asks GitHub for its OIDC token (`id-token: write`, that job only)
@@ -338,6 +338,6 @@ A push runs about 21 jobs (the test matrix is 18), each in a fresh container tha
 runners some weeks after a newer release, so bump when the org's runners page warns.
 
 **Scale.** One unit per concurrent job: `systemctl --user enable --now aidenhq-ci-runner@3`, or `disable --now` one to
-shrink. Every unit is up to 2 CPUs and 4 GB while it runs a job, whichever org it serves: keep the total at 2-4 on a VM of
+shrink. Every unit is up to 4 CPUs and 8 GB while it runs a job, whichever org it serves: keep the total at 2-4 on a VM of
 the size SETUP.md suggests (e.g. 2 for the product org, 1-2 for the agents org). Stop all: `systemctl --user stop 'aidenhq-ci-runner@*'` (a running job
 is cancelled; GitHub retries nothing, so re-run it).
