@@ -39,6 +39,21 @@ describe("graded done", () => {
     expect(grades.get("t")!.verdicts.at(-1)).toMatchObject({ verdict: "needs_revision", criteria: [{ id: "1", met: "no", evidence: "still a draft" }] });
   });
 
+  it("criteria the grader couldn't verify, with none unmet, go to the delegator at once: no rework, no attempt counted", () => {
+    const { grades } = new Store(":memory:");
+    grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
+    completionGate(grades, "t", "finish_turn");
+    const crit = (met: string[]) => met.map((m, i) => ({ id: String(i + 1), met: m as "yes" | "no" | "unknown", evidence: "e" }));
+    expect(grades.record("t", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: crit(["yes", "unknown", "yes"]) }, Date.now(), ["cos"])).toMatchObject({ state: "escalated", attempts: 0, delegators: ["cos"] });
+    // One unmet criterion among the unknowns is still the assignee's to fix.
+    grades.file("u", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
+    completionGate(grades, "u", "finish_turn");
+    expect(grades.record("u", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: crit(["no", "unknown", "yes"]) })).toMatchObject({ state: "needs_revision", attempts: 1 });
+    // Closing it is the delegator's acceptance.
+    grades.accept("t", "cos");
+    expect(grades.get("t")).toMatchObject({ state: "satisfied" });
+  });
+
   it("a board cascade closes a graded task done only with a passing grade", () => {
     const { grades } = new Store(":memory:");
     expect(gradePassed(grades, "plain")).toBe(true);

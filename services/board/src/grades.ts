@@ -122,6 +122,9 @@ export function prRefAllowed(ref: string, grantsFile = process.env.AIDENHQ_GRANT
 
 const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, delegators: r.delegators ? JSON.parse(r.delegators) : null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
 
+/** A verdict whose criteria are met or unknown, at least one unknown, none shown unmet: the grader couldn't verify, not "no". */
+export const unverifiedOnly = (criteria: { met: string }[]) => criteria.some((c) => c.met === "unknown") && !criteria.some((c) => c.met === "no");
+
 export class Grades {
   constructor(
     private db: DatabaseSync,
@@ -279,8 +282,8 @@ export class Grades {
 
   /**
    * One grading pass's outcome. A rejected version counts once (loops are distinct versions). A version rejected before and
-   * handed in again unchanged, the MAX_LOOPS-th rejected version, cannot_judge, a grader refusal and evidence that never came
-   * (error) escalate to the delegator. A grader that failed or returned no usable criteria (grading_failed) is retried on the
+   * handed in again unchanged, the MAX_LOOPS-th rejected version, a verdict with criteria unverified but none unmet,
+   * cannot_judge, a grader refusal and evidence that never came (error) escalate to the delegator. A grader that failed or returned no usable criteria (grading_failed) is retried on the
    * 1-5-15-60 minute ladder and only escalates after MAX_GRADER_FAILURES passes; any real verdict clears that count.
    */
   record(issueId: string, v: z.infer<typeof VerdictSchema>, now = Date.now(), delegators?: string[]): Grade {
@@ -297,6 +300,9 @@ export class Grades {
       return set(state, g.attempts, verdicts, failures, new Date(now).toISOString(), now);
     }
     if (v.outcome !== "needs_revision") return set("escalated", g.attempts, verdicts, 0, null, now);
+    // Nothing shown unmet, only unverified: no rework (the assignee can't make evidence the grader isn't given). The delegator
+    // gets one question about what couldn't be verified, and closing the task accepts it (accept()).
+    if (unverifiedOnly(v.criteria)) return set("escalated", g.attempts, verdicts, 0, null, now);
     if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return set("escalated", g.attempts, verdicts, 0, null, now);
     const attempts = g.attempts + 1;
     return set(attempts >= MAX_LOOPS ? "escalated" : "needs_revision", attempts, verdicts, 0, null, now);

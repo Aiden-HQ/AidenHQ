@@ -183,7 +183,8 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       gradeLog.push(v);
       if (v.outcome === "awaiting_evidence") stamp("awaiting_evidence");
       else if (v.outcome === "satisfied") stamp("satisfied");
-      else if (v.outcome === "needs_revision") stamp(++g.attempts >= 3 ? "escalated" : "needs_revision");
+      // Unverified only (nothing unmet): the delegator's at once, no attempt counted (grades.ts unverifiedOnly).
+      else if (v.outcome === "needs_revision") stamp(v.criteria.some((c) => c.met === "unknown") && !v.criteria.some((c) => c.met === "no") ? "escalated" : ++g.attempts >= 3 ? "escalated" : "needs_revision");
       else if (v.outcome === "grading_failed") stamp("grading_failed");
       else stamp("escalated");
       return send(g);
@@ -245,7 +246,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
  * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
-export function flow({ parent: parentOver, part: partOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [] } = {}) {
+export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [] } = {}) {
   let dir, runner, runnerEnv, paperclip, output = "";
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -352,7 +353,7 @@ ${runnerYaml}`,
     const alfred = { id: "assistant", name: "Researcher", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:assistant", persona: { name: "Alfred" } } };
     const parentComments = [{ id: "alfred-report", authorType: "agent", authorAgentId: "assistant", body: "## Legacy usage — preliminary\n\nLegacy is still read by the infra alerts.", createdAt: new Date(Date.now() - 60_000).toISOString() }];
     // Alfred's part of the same task: his chat, where the user may write to Ada from.
-    const alfredPart = { id: "alfred-part", identifier: "PEN-3", title: "Drop Legacy support", status: "todo", parentId: "parent", assigneeAgentId: "assistant", assigneeUserId: null, labels: [], description: "Draft the changelog entry" };
+    const alfredPart = { id: "alfred-part", identifier: "PEN-3", title: "Drop Legacy support", status: "todo", parentId: "parent", assigneeAgentId: "assistant", assigneeUserId: null, labels: [], description: "Draft the changelog entry", ...alfredOver };
     const alfredChat = [
       { id: "alfred-1", authorType: "user", authorUserId: USER, body: "Draft the changelog entry", createdAt: new Date(Date.now() - 50_000).toISOString() },
       { id: "alfred-2", authorType: "agent", authorAgentId: "assistant", body: "Draft: Legacy support is removed from the app and the alerts.", createdAt: new Date(Date.now() - 40_000).toISOString() },

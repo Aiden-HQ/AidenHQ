@@ -472,6 +472,18 @@ function gradingOff() {
 const NEGATIVE = /^(?:no|nothing|never)\s|\bunchanged\b|\bnot (?:been )?(?:changed|modified|touched)\b|\bno\b[^.;]{0,80}\bchanges?\b/i;
 const CHECKABLE_NEGATIVE = /\b(?:errors?|warnings?|incidents?|failing|failed|findings?|cves?|overflow|horizontal scroll\w*|broken links?|404s?|conflicts?|vulnerabilit\w*|secrets?|dependenc\w*|tests? pass\w*|regressions?)\b/i;
 const unprovable = (c) => NEGATIVE.test(c) && !CHECKABLE_NEGATIVE.test(c);
+// Graded on evidence (owner, 2026-11-15): a criterion names a fact the grader is given. 73% of the criteria it could not
+// confirm in a day of grades were "unknown", asked of facts nobody gives it; these are the ones code can tell apart.
+const FACTS = "a PR merged into its base; a named check green on the PR's head; what the PR's diff changes (a file, a line, a test that covers X); an app deployed at a commit (the PR's merge commit) and healthy, with no open incident; what a live page at a path shows; an apply card applied, and the change it carried; a file attached to the task (its name, its contents); what a comment on the task says";
+const NO_FACT = [
+  [/\bafter (?:the |its |a )?deploy\w*\b|\bpost-deploy\b|\bthe next \d+\b|\bover (?:the next |a |\d+ ?)(?:h|hours?|days?|weeks?)\b|\b(?:\d+|two|three) consecutive\b|\bconsecutive runs?\b/i, "it asks what happens after the work is finished (later runs, a time window), and the grader sees the work as it stands when it finishes. Name what the change shows now instead, e.g. \"a test in the diff covers X\" or \"the /x page shows Y\""],
+  [/\b(?:returns?|responds? with) (?:an? )?(?:HTTP |status )?[1-5]\d\d\b/i, "the grader calls no API. Name a page at a path instead (it renders the page and sees its HTTP status and text), or \"a test in the diff covers the 400 for X\""],
+  [/\b(?:npm|pnpm|yarn) (?:run )?test\b|\bpytest\b|\bgo test\b|\bcargo test\b/i, "the grader runs no tests. Name the CI check instead: \"the tests check is green on the PR's head\", and \"a test in the diff covers X\" for what it must cover"],
+];
+// A page path the grader renders (grade.mjs rubricPaths): "/health returns 200" is its HTTP status, which it does see.
+const PAGE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._~-]/;
+/** Why the grader can't check this criterion from any fact it is given, or undefined. */
+const noFact = (c) => NO_FACT.find(([re], i) => re.test(c) && !(i === 1 && PAGE_PATH.test(c)))?.[1];
 /** The rubric to file for a delegation to `target`, or undefined (not graded); throws when a graded assignee gets no deliverable. */
 function gradeFor(target, rubric, deliverable) {
   if (!BOARD_TOKEN || gradingOff()) return undefined;
@@ -481,7 +493,10 @@ function gradeFor(target, rubric, deliverable) {
   if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");
   const negative = list.find(unprovable);
   if (negative) throw new Error(`rubric: "${negative.slice(0, 120)}" is a negative no evidence can show (the grader sees only what exists, so it fails every time): name what was delivered instead (e.g. "the PR changes only docs/plan.md", not "no code changed"). Checkable negatives such as "no console errors" or "no open incident" are fine.`);
-  if (kind === "none") return undefined;
+  const blind = list.find(noFact);
+  if (blind) throw new Error(`rubric: "${blind.slice(0, 120)}" names nothing the grader can see: ${noFact(blind)}. Each criterion names one of the facts the grader is given: ${FACTS}.`);
+  // Read-only work (a report, a question) ships nothing to check: its answer is the deliverable, and the delegator reads it.
+  if (kind === "none" || kind === "report") return undefined;
   if (!kind) {
     if (gradedAgent(target.id)) throw new Error(`${target.metadata?.persona?.name || target.name}'s work is graded: name the deliverable ({kind: pr | app | apply | file | report, ref}, or kind none when nothing ships, e.g. a question) and, ideally, a rubric (see "Graded work" in your instructions)`);
     if (list.length) throw new Error("a rubric needs its deliverable ({kind, ref})");
@@ -500,12 +515,12 @@ const gradedText = (grade) => (grade ? `\n\nGraded before done (${grade.delivera
 const fileGrade = (issueId, grade) => (grade ? boardApi("/internal/grades", { issue: issueId, ...grade }).then(() => ({ graded: true }), (err) => ({ graded: false, grade_error: String(err.message ?? err).slice(0, 200) })) : Promise.resolve({}));
 const DELIVERABLE_INPUT = {
   type: "object",
-  description: "what the task ships, graded before it may close: pr (ref: the repo or PR link), app (ref: the app name), apply, file, report; none when nothing ships (a question, research). Required for an assignee whose work is graded (Engineers, the DevOps, Platform and UI/UX Engineers)",
+  description: "what the task ships, graded before it may close: pr (ref: the repo or PR link), app (ref: the app name), apply, file. report (a diagnosis, research or another read-only answer) and none (a question) are not graded: you read the answer yourself. Required for an assignee whose work is graded (Engineers, the DevOps, Platform and UI/UX Engineers)",
   properties: { kind: { type: "string", enum: DELIVERABLES }, ref: { type: "string" } },
   required: ["kind"],
   additionalProperties: false,
 };
-const RUBRIC_INPUT = { type: "array", items: { type: "string" }, description: "3-8 criteria the grader checks from evidence (each observable: merged, checks green, the page shows X, the test covers Y; never \"high quality\"). Omit for the standard criteria of the deliverable's kind" };
+const RUBRIC_INPUT = { type: "array", items: { type: "string" }, description: `3-8 criteria the grader checks from evidence, each naming a fact it is given: ${FACTS}. Never "high quality". Omit for the standard criteria of the deliverable's kind` };
 /**
  * The completion gate: whether closing this task (the fetched issue) may go ahead, or it waits for the grader (the board
  * moves it to in_review). The board unreachable passes unless the assignee's work is graded: an outage never blocks

@@ -1198,6 +1198,7 @@ async function mayClose(issueId, via) {
 let gradesRunning = false;
 const grading = new Set();
 const GRADE_WAIT_MS = 24 * 60 * 60_000; // evidence still missing a day after the close: it escalates to the delegator
+const MISSING_WAIT_MS = 10 * 60_000; // finished with no deliverable at all and nothing moving: the delegator decides now
 const gradeLooked = new Map(); // issueId → when its evidence was last looked at while waiting
 /** The board's waiting rows: grade each (one at a time per task), and check escalated tasks finished again for a new version. */
 async function runGrades() {
@@ -1301,6 +1302,17 @@ function gradeDeps(issue) {
   };
 }
 
+/**
+ * When a graded task last moved, for a deliverable that doesn't exist yet: its grade row, its last job's end, or a card on it
+ * decided or run. An open sub-task (the work handed on) is movement now. A row long held is not stale while the work goes
+ * round: a rejection between two jobs, or an Engineer sub-task still building the PR, is not "finished without it".
+ */
+async function lastMoved(issue, g) {
+  if ((await pc.children(issue.id)).length) return Date.now();
+  const cards = await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.id)}`).then((r) => r.approvals ?? [], () => []);
+  return Math.max(Date.parse(g.updatedAt) || 0, Date.parse(state.lastJob(issue.id)?.finished_at ?? "") || 0, ...cards.map((a) => Date.parse(a.usedAt ?? a.decidedAt ?? a.createdAt ?? "") || 0));
+}
+
 async function gradeOne(g) {
   const issue = await pc.issue(g.issueId);
   // Closed meanwhile (the owner accepted or cancelled it): nothing to grade.
@@ -1314,14 +1326,15 @@ async function gradeOne(g) {
   let v;
   if (ev.awaiting) {
     // Evidence that never comes (a PR nobody merges, a deploy that never lands) escalates to the delegator after a day, saying why;
-    // a task still moving (a run, its merges) is never cut short.
-    if (ev.busy || Date.now() - Date.parse(g.updatedAt) < GRADE_WAIT_MS) {
+    // a deliverable that doesn't exist at all (finished with no PR, no apply, nothing posted) after MISSING_WAIT_MS, since
+    // nothing is coming. A task still moving (a run, its merges, an open card) is never cut short.
+    if (ev.busy || (ev.missing ? Date.now() - (await lastMoved(issue, g)) < MISSING_WAIT_MS : Date.now() - Date.parse(g.updatedAt) < GRADE_WAIT_MS)) {
       if (g.state !== "awaiting_evidence") await boardApi.post(verdictPath, { version: "", outcome: "awaiting_evidence" });
       log("grading waits for evidence", { issue: issue.identifier, why: ev.awaiting });
       return;
     }
     ev.version = "";
-    v = { outcome: "error", model: "", criteria: [], reason: `still waiting for its evidence a day after it was finished: ${ev.awaiting}` };
+    v = { outcome: "error", model: "", criteria: [], reason: ev.missing ? `finished without its deliverable: ${ev.awaiting}` : `still waiting for its evidence a day after it was finished: ${ev.awaiting}` };
   } else if (g.state === "awaiting_evidence" && last?.verdict === "satisfied" && last.version === ev.version) {
     // Graded satisfied before, but closing the task failed: the same version keeps its verdict, no second grader call.
     v = { outcome: "satisfied", model: last.model, criteria: last.criteria };
@@ -1356,8 +1369,10 @@ async function gradeOne(g) {
       state.set(key, new Date().toISOString());
     }
   } else if (row.state === "escalated") {
-    await pc.comment(issue.id, note);
-    await tellParent(issue, "escalated", `${issue.identifier}'s grade escalated to you: ${issue.title}. Decide it: close it to accept the work, or reopen it with what to change. See ${issue.identifier}.`).catch(() => {});
+    // One question to the delegator, with the grader's note in it; on the task itself only when no open parent hears it (a
+    // note there would wake its assignee, who has nothing left to do).
+    const ask = `**${issue.identifier} needs your decision** (its grade escalated to you): ${issue.title}. Close it if you're satisfied (that accepts the work), or reopen it with what to change.`;
+    if (!(await tellParent(issue, "escalated", `${ask}\n\n${note}`).catch(() => false))) await pc.comment(issue.id, note);
   }
 }
 
@@ -1366,16 +1381,18 @@ async function gradeOne(g) {
  * not (it is on the sub-task already). Only an open parent hears it: Paperclip reopens a done or cancelled task on any
  * user-authored comment (the runner's included), which would wake its agent and send finished work round again (WOR-3582).
  * The asking agent's own chat, handed to the owner while it waited for a tap, is given back first so the outcome wakes it.
+ * True when it was posted.
  */
 async function tellParent(issue, kind, text) {
-  if (!wakesParent(kind) || !issue.parentId) return;
+  if (!wakesParent(kind) || !issue.parentId) return false;
   const p = await pc.issue(issue.parentId).catch(() => undefined);
-  if (!p || ["done", "cancelled"].includes(p.status)) return;
+  if (!p || ["done", "cancelled"].includes(p.status)) return false;
   // Only the asking agent's own chat (its id in the chat's end-anchored marker), and only while it sits with the owner.
   const chatAgent = /<!-- aidenhq-chat-agent:([A-Za-z0-9_-]+) -->\s*$/.exec(p.description ?? "")?.[1];
   if (!p.assigneeAgentId && p.assigneeUserId && issue.createdByAgentId && chatAgent === issue.createdByAgentId && isAgentSubtask(issue))
     await pc.api("PATCH", `/api/issues/${encodeURIComponent(p.id)}`, { assigneeAgentId: issue.createdByAgentId, assigneeUserId: null, status: "todo" }).catch(() => {});
   await pc.comment(p.id, text);
+  return true;
 }
 
 /** Whether a grade will still speak for this task (notices.mjs graderSpeaks): its progress is then not news for its parent. */

@@ -65,6 +65,30 @@ test("a graded assignee needs a deliverable; the rubric goes to the board with t
 
   const none = await call("task_delegate", { ...ask, deliverable: { kind: "none" } });
   assert.equal(none.filed.length, 0);
+  // Read-only work (a diagnosis, research) is not graded: its answer is the deliverable, read by the delegator.
+  const report = await call("task_delegate", { ...ask, deliverable: { kind: "report" }, rubric: ["it names the failing step", "it links the run", "it says the cause"] });
+  assert.equal(report.r.result?.isError, undefined, report.text);
+  assert.equal(report.filed.length, 0);
+  assert.doesNotMatch(report.created[0].description, /Graded before done/);
+});
+
+test("a criterion no fact the grader is given can show is refused, saying what it is given and how to phrase it", async () => {
+  for (const [c, hint] of [
+    ["npm test passes", /tests check is green on the PR's head/],
+    ["after deploy, the feed no longer lists draft PRs", /what happens after the work is finished/],
+    ["the items API returns 400 for a blank source URL", /calls no API/],
+    ["the next 5 tasks carry the label", /what happens after the work is finished/],
+  ]) {
+    const bad = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "acme/app" }, rubric: [...rubric, c] });
+    assert.equal(bad.r.result?.isError, true, c);
+    assert.match(bad.text, /names nothing the grader can see/);
+    assert.match(bad.text, hint);
+    assert.match(bad.text, /a named check green on the PR's head/);
+    assert.equal(bad.created.length, 0);
+  }
+  // A page the grader renders is a fact: its path and HTTP status.
+  const page = await call("task_delegate", { ...ask, deliverable: { kind: "app", ref: "acme-app" }, rubric: [...rubric, "/health returns 200"] });
+  assert.equal(page.r.result?.isError, undefined, page.text);
 });
 
 test("a rubric criterion that is only an unprovable negative is refused; checkable negatives pass", async () => {

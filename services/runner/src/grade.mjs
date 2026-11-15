@@ -60,7 +60,8 @@ export async function gather(deliverable, deps, rubric = []) {
   const kind = deliverable.kind;
   let app = kind === "app" ? await deps.app(deliverable.ref) : null; // the deployed app whose live pages are evidence
   const ev = kind === "pr" ? await prEvidence(await deps.taskPrs(), deliverable.ref, deps) : kind === "app" ? appEvidence(app, deliverable.ref) : kind === "apply" ? applyEvidence(cards) : null;
-  if (ev?.awaiting) return { awaiting: ev.awaiting };
+  // `missing`: the deliverable doesn't exist at all (no PR, no apply, nothing posted), as opposed to evidence still coming.
+  if (ev?.awaiting) return { awaiting: ev.awaiting, missing: ev.missing };
   if (kind === "pr" && deps.appOfRepo) {
     // A pr on an app's repo: the app's deploy facts too (its rubric may ask for "deployed at the merged commit").
     // Only the PRs graded (by the ref), and only when they sit in exactly one repo.
@@ -109,7 +110,7 @@ export async function gather(deliverable, deps, rubric = []) {
     Object.assign(ev.data, live.data);
   }
   if (ev) return { version: ev.version, facts: [...ev.facts, ...files.facts, ...other.facts], data: { ...ev.data, ...w.data, ...files.data, ...other.data }, images: files.images };
-  if (!w.version) return { awaiting: "nothing posted on the task yet" };
+  if (!w.version) return { awaiting: "nothing posted on the task yet", missing: true };
   // Files landing on the named task make a new version too.
   return { version: other.version ? `${w.version}+${other.version}` : w.version, facts: [...w.facts, ...files.facts, ...other.facts], data: { ...w.data, ...files.data, ...other.data }, images: files.images };
 }
@@ -276,6 +277,9 @@ export async function grade({ rubric, deliverable, facts, data, request, images 
   return { outcome: "error", model: models.at(-1), criteria: [], reason: "every grader model refused" };
 }
 
+/** Criteria met or unverified, at least one unverified and none shown unmet: the board escalates it (grades.ts unverifiedOnly). */
+export const unverifiedOnly = (criteria = []) => criteria.some((c) => c.met === "unknown") && !criteria.some((c) => c.met === "no");
+
 /** The grader's note on the task: what it found, per criterion, and what follows. */
 export function gradeNote(g, rubric, outcome, { version, reason } = {}) {
   const lines = g.criteria.map((c) => `- ${c.met === "yes" ? "met" : c.met === "no" ? "**not met**" : "**not shown**"}: ${rubric[Number(c.id) - 1] ?? `criterion ${c.id}`}. ${c.evidence}`);
@@ -288,6 +292,8 @@ export function gradeNote(g, rubric, outcome, { version, reason } = {}) {
           ? `**Grading failed; retrying.** (${reason ?? g.reason ?? "the grader failed or returned no usable criteria"}). No rubric verdict yet: the grader runs again shortly.`
           : outcome === "escalated" && g.outcome === "grading_failed"
             ? `**Grading failed; escalated to the delegator.** The grader failed 5 times and no rubric criterion was assessed. The delegator judges the work from its evidence: closing the task accepts it; reopening it with what to change sends a new version to the grader.`
-            : `**Graded: escalated to the delegator** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader.`;
+            : outcome === "escalated" && unverifiedOnly(g.criteria)
+              ? "**Graded: unverified, so it is the delegator's call.** Nothing was shown unmet, but the evidence the grader is given doesn't show the criteria marked not shown. The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader."
+              : `**Graded: escalated to the delegator** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader.`;
   return [head, lines.join("\n"), `_Grader: ${g.model || "none"}; version ${String(version ?? "").slice(0, 80) || "(none)"}. The grader's words, not the owner's._`, GRADER_MARKER].filter(Boolean).join("\n\n");
 }

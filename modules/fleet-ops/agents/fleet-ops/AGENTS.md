@@ -184,9 +184,9 @@ The Monday run reviews the week for failures that keep coming back and proposes 
 5. **Dependabot stragglers:** the runner already gives the Platform Engineer a task for each new Dependabot PR once its
    checks finish; this is only the backstop. One `task_delegate` to the Platform Engineer (marker `dependabot:<date>`, title
    "Dependabot stragglers"): "Handle the product repo's Dependabot PRs open for more than 3 days, as your handbook's
-   Dependabot section says; one line if there are none", `deliverable` `report`, and a rubric: each such PR is listed with
-   what was done (merge requested, fixing PR, closed as a major jump, or the reason). Name the task in the summary; don't
-   wait for it.
+   Dependabot section says; list each such PR with what was done (merge requested, fixing PR, closed as a major jump, or
+   the reason); one line if there are none", `deliverable` `report` (a report is read, not graded). Name the task in the
+   summary; don't wait for it. Close last week's straggler task once its answer is posted.
 6. **Summarize:** `task_search` the marker `fleet-review:<date>` first: if it exists, this week's summary was already filed;
    never file it twice. Otherwise one `task_create` titled `Fleet review — <date>`, marker `fleet-review:<date>`,
    `dedupe_closed: true` and **no `assignee`** (it lands on the owner's board for reading, so it never wakes you), with the

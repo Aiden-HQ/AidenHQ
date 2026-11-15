@@ -56,7 +56,7 @@ function checkState(pr, c, gate) {
  */
 export async function prEvidence(prs, ref, deps) {
   prs = byRef(prs, ref);
-  if (!prs.length) return { awaiting: "no pull request yet" };
+  if (!prs.length) return { awaiting: "no pull request yet", missing: true };
   const facts = [];
   const versions = [];
   const prs_ = []; // each graded PR with its merge commit ("" while unmerged)
@@ -121,7 +121,7 @@ export function appEvidence(app, name) {
 /** The task's latest fleet apply (its approval records) as evidence: its state and outcome. */
 export function applyEvidence(cards) {
   const applied = cards.filter((a) => a.action === "apply").at(-1);
-  if (!applied) return { awaiting: "no apply filed yet" };
+  if (!applied) return { awaiting: "no apply filed yet", missing: true };
   const facts = [`apply ${applied.id}: ${applied.state}${applied.outcome ? `, ${applied.outcome}` : ""}`];
   return { version: applied.id, facts, data: { APPLY_OUTCOME: applied.outcomeText ?? "", APPLY_CHANGE: applied.details ?? "" } };
 }

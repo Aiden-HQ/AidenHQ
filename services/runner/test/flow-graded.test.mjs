@@ -10,7 +10,7 @@ const answer = (met) => ({ verdict: met.every((m) => m === "yes") ? "satisfied" 
 const delegated = (name) => ({
   parent: { createdByUserId: null, createdByAgentId: "assistant", assigneeUserId: null, assigneeAgentId: "assistant" },
   part: { createdByUserId: null, createdByAgentId: "assistant", description: `Report where Legacy is used in acme/app (${name}).` },
-  grades: { part: { rubric, deliverable: { kind: "report", ref: "" } } },
+  grades: { part: { rubric, deliverable: { kind: "file", ref: "" } } },
 });
 
 // Each describe below is its own runner and fake Paperclip, so they run side by side.
@@ -40,12 +40,28 @@ describe("flow-graded", { concurrency: true }, () => {
     it("after 3 rejected versions the task goes to the delegator, not back to the Engineer", async () => {
       const { waitFor, paperclip, partComments } = t;
       paperclip.graderAnswers.push(answer(["no", "yes", "yes"]), answer(["no", "yes", "yes"]), answer(["no", "yes", "yes"]));
-      await waitFor("the escalation", () => partComments().some((c) => /Graded: escalated to the delegator/.test(c)), 90_000);
+      // One question on the delegator's task, with the grader's note; nothing on the part, whose assignee has nothing to do.
+      await waitFor("the escalation", () => (paperclip.comments.get("parent") ?? []).some((c) => /PEN-2 needs your decision[\s\S]*Graded: escalated to the delegator/.test(c.body)), 90_000);
+      assert.ok(!partComments().some((c) => /Graded: escalated/.test(c)), "no note on the part");
       assert.deepEqual(paperclip.gradeLog.map((v) => v.outcome), ["needs_revision", "needs_revision", "needs_revision"]);
       assert.equal(paperclip.grades.get("part").state, "escalated");
       assert.notEqual(paperclip.issues.get("part").status, "done");
       await t.idle(600);
       assert.equal(paperclip.gradeLog.length, 3, "no further grading");
+    });
+  });
+
+  describe("flow-graded: unverified criteria go to the delegator", () => {
+    const t = flow(delegated("unverified"));
+
+    it("asks the delegator about what couldn't be verified, and never sends the Engineer back", async () => {
+      const { waitFor, paperclip, claudeRuns } = t;
+      paperclip.graderAnswers.push(answer(["yes", "unknown", "yes"]));
+      await waitFor("the question", () => (paperclip.comments.get("parent") ?? []).some((c) => /PEN-2 needs your decision[\s\S]*Graded: unverified[\s\S]*\*\*not shown\*\*: each claim links its source/.test(c.body)), 60_000);
+      assert.equal(paperclip.grades.get("part").state, "escalated");
+      await t.idle(600);
+      assert.equal(claudeRuns().length, 1, "no rework");
+      assert.notEqual(paperclip.issues.get("part").status, "todo");
     });
   });
 
@@ -56,15 +72,26 @@ describe("flow-graded", { concurrency: true }, () => {
   };
 
   describe("flow-graded: evidence that never comes", () => {
-    // Held two days for a PR the task never opened: the delegator hears of it, with the reason.
-    const t = flow(held("stale", { rubric: [], deliverable: { kind: "pr", ref: "" }, state: "awaiting_evidence", updatedAt: new Date(Date.now() - 2 * 86_400_000).toISOString() }));
+    // Finished with no PR at all and nothing moving: the delegator hears of it once the short wait is over, with the reason.
+    const t = flow(held("stale", { rubric: [], deliverable: { kind: "pr", ref: "" }, state: "awaiting_evidence", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString() }));
 
-    it("escalates after a day without asking the grader", async () => {
-      const { waitFor, paperclip, partComments } = t;
-      await waitFor("the escalation", () => partComments().some((c) => /escalated to the delegator\*\* \(still waiting for its evidence a day after it was finished: no pull request yet\)/.test(c)));
+    it("escalates a missing deliverable without asking the grader", async () => {
+      const { waitFor, paperclip } = t;
+      await waitFor("an open parent is told", () => (paperclip.comments.get("parent") ?? []).some((c) => /PEN-2 needs your decision[\s\S]*escalated to the delegator\*\* \(finished without its deliverable: no pull request yet\)/.test(c.body)));
       assert.equal(paperclip.grades.get("part").state, "escalated");
       assert.equal(paperclip.graderCalls.length, 0);
-      await waitFor("an open parent is told", () => (paperclip.comments.get("parent") ?? []).some((c) => /grade escalated to you/.test(c.body)));
+    });
+  });
+
+  describe("flow-graded: a deliverable still being built on a sub-task", () => {
+    // The same missing PR, but the work was handed to a sub-task that is still open: that is movement, not "finished without it".
+    const t = flow({ ...held("handed-on", { rubric: [], deliverable: { kind: "pr", ref: "" }, state: "awaiting_evidence", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString() }), alfredPart: { parentId: "part", status: "in_progress" } });
+
+    it("waits instead of escalating", async () => {
+      const { paperclip } = t;
+      await t.idle(1500);
+      assert.equal(paperclip.grades.get("part").state, "awaiting_evidence");
+      assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /needs your decision/.test(c.body)));
     });
   });
 
@@ -78,14 +105,15 @@ describe("flow-graded", { concurrency: true }, () => {
       const { waitFor, paperclip } = t;
       await waitFor("the escalation", () => paperclip.grades.get("part")?.state === "escalated");
       await t.idle(300);
-      assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /grade escalated to you/.test(c.body)), "no comment on the finished parent");
+      assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /needs your decision/.test(c.body)), "no comment on the finished parent");
+      assert.ok(t.partComments().some((c) => /Graded: escalated to the delegator/.test(c)), "the note stays on the part");
       assert.equal(paperclip.issues.get("parent").status, "done");
     });
   });
 
   describe("flow-graded: a grader timeout is retried, not the owner's", () => {
     const t = flow({
-      ...held("timeout", { rubric, deliverable: { kind: "report", ref: "" }, state: "pending" }),
+      ...held("timeout", { rubric, deliverable: { kind: "file", ref: "" }, state: "pending" }),
       partComments: [{ id: "report-1", authorType: "agent", body: "The report is ready.", createdAt: new Date(0).toISOString() }],
     });
 
@@ -95,7 +123,7 @@ describe("flow-graded", { concurrency: true }, () => {
       await waitFor("the failed grading pass", () => paperclip.gradeLog.some((v) => v.outcome === "grading_failed"));
       await waitFor("grading_failed", () => paperclip.grades.get("part").state === "grading_failed");
       assert.ok(!partComments().some((c) => /Graded: escalated to the delegator/.test(c)), "a timeout is not an escalation");
-      assert.ok(!paperclip.comments.get("parent").some((c) => /grade escalated to you/.test(c.body)), "the parent is not told of an escalation");
+      assert.ok(!paperclip.comments.get("parent").some((c) => /needs your decision/.test(c.body)), "the parent is not told of an escalation");
       assert.notEqual(paperclip.issues.get("part").status, "done");
       // The next pass picks it up again and can still close the task.
       await waitFor("the retry to pass", () => paperclip.issues.get("part").status === "done", 90_000);
@@ -104,7 +132,7 @@ describe("flow-graded", { concurrency: true }, () => {
   });
 
   describe("flow-graded: the kill switch lets held tasks go", () => {
-    const t = flow(held("off", { rubric, deliverable: { kind: "report", ref: "" }, state: "pending" }, { gradingOff: true }));
+    const t = flow(held("off", { rubric, deliverable: { kind: "file", ref: "" }, state: "pending" }, { gradingOff: true }));
 
     it("closes the held task as finished and drops its row", async () => {
       const { waitFor, paperclip } = t;
