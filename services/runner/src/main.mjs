@@ -407,7 +407,7 @@ const trialNoTap = (issue, grants) => trialNoTapBy(issue, grants, runnerMade(iss
  */
 async function watchProductPrs() {
   const repo = cfg.productRepo;
-  const pe = Object.entries(readGrants()?.agents ?? {}).find(([, a]) => a?.key === "fleet-engineer")?.[0];
+  const pe = Object.entries(readGrants()?.agents ?? {}).find(([, a]) => (a?.roles ?? []).includes("platform-engineer"))?.[0];
   if (!repo || !pe) return;
   const [owner, name] = repo.split("/");
   const { stdout } = await execFileP(await findRealGh(), ["api", "graphql", "-f", `query=${OPEN_PRS_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${name}`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }));
@@ -1828,7 +1828,6 @@ async function commonTierState(issue, action, also = []) {
   let root = full;
   for (let i = 0; i < 6 && root.parentId; i++) root = await pc.issue(root.parentId);
   const walked = !root.parentId; // a chain longer than the walk is unknown: never owner-started
-  const key = grants?.agents?.[full.assigneeAgentId]?.key;
   const creator = grants?.agents?.[full.createdByAgentId];
   // A task the runner filed itself (a Dependabot PR's) carries the board key's user, but is never the owner's.
   const ownerMade = ownerMadeTask(full);
@@ -1845,7 +1844,7 @@ async function commonTierState(issue, action, also = []) {
     instanceRepo: cfg.apply?.repo,
     // The Platform Engineer, a task the Agent Architect made, or the owner's own task (ruling: the owner may always ask).
     // Only these write to the product repo below Tier 2; an Engineer's product push stays the owner's.
-    requester: { platform: key === "fleet-engineer" || (creator?.roles ?? []).includes("architect") || ownerMade },
+    requester: { platform: (grants?.agents?.[full.assigneeAgentId]?.roles ?? []).includes("platform-engineer") || (creator?.roles ?? []).includes("architect") || ownerMade },
     taskStatus: full.status,
     records,
     also,

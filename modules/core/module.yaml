@@ -227,6 +227,8 @@ agents:
     roles: [ fleet-read, fleet-audit ]
   fleet-engineer:
     department: platform
+    # platform-engineer: settings changes, rule proposals and Dependabot tasks are filed to the agent holding it.
+    roles: [ platform-engineer ]
     brief: true
     graded: true
     adapter: opencode_local

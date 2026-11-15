@@ -908,7 +908,7 @@ const TOOLS = {
       if (!COMPANY) throw new Error("PAPERCLIP_COMPANY_ID not set");
       const me = await api("GET", "/api/agents/me");
       const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY)}/agents`);
-      const engineer = all.find((a) => a.status !== "terminated" && keyOf(a) === "fleet-engineer");
+      const engineer = all.find((a) => a.status !== "terminated" && (grantsTable()[a.id]?.roles ?? []).includes("platform-engineer"));
       if (!engineer) throw new Error("the Platform Engineer is not installed");
       // A proposal the Platform Engineer may decline: its judgment, not a deliverable to grade.
       return assignTask(me, engineer, { title, description, marker, deliverable: { kind: "none" } }, "Rule proposal from");
