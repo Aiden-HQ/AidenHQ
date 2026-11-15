@@ -292,6 +292,7 @@ async function isOwnPart(issue) {
 
 async function findByMarker(marker, statuses = OPEN_STATUSES) {
   if (!COMPANY) return undefined;
+  marker = String(marker).trim().replace(/^(source:)+/, ""); // agents often include the prefix
   const token = marker.split(":").pop();
   const q = new URLSearchParams({ q: token.slice(0, 200), status: statuses, limit: "50", excludeRoutineExecutions: "true" });
   const list = await api("GET", `/api/companies/${encodeURIComponent(COMPANY)}/issues?${q}`);
