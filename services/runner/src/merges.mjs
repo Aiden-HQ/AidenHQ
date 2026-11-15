@@ -331,12 +331,28 @@ export function namedChecks(rollup) {
 }
 
 /**
- * The checks still running on a PR's head, counted: " (3 checks still running: `gh pr checks 38` names them)", so a stall
- * is diagnosable without opening GitHub. Check names are set by whoever can push: never in the runner's own words.
+ * A check name as the receipt may print it. Whoever can push to the repo sets it, so it can't break the receipt: control
+ * characters (newlines included) and backslashes come out, and every Markdown metacharacter is backslash-escaped, so a
+ * name can't open a link, an image, a code span, emphasis or raw HTML and render from a host of its choosing. The name is
+ * always mid-line, so block markers (`-`, `.`, `#`, `+`) need nothing. Capped, then escaped, so the cap can't split an escape.
  */
-function runningChecks(rollup, number) {
-  const n = namedChecks(rollup).filter((c) => c.pending).length;
-  return n ? ` (${n} check${n === 1 ? "" : "s"} still running: \`gh pr checks ${number}\` names ${n === 1 ? "it" : "them"})` : "";
+const checkName = (n) =>
+  String(n ?? "")
+    .replace(/[\p{Cc}\\]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80)
+    .replace(/[\\`*_{}[\]()!|<>~]/g, "\\$&");
+
+/**
+ * The checks still running on a PR's head, named: " (still running: test, build)". A stall then says which check is stuck
+ * without opening GitHub. Listed at most six, then a count.
+ */
+function runningChecks(rollup) {
+  const names = namedChecks(rollup).filter((c) => c.pending).map((c) => checkName(c.name)).filter(Boolean);
+  if (!names.length) return "";
+  const shown = names.slice(0, 6).join(", ");
+  return ` (still running: ${shown}${names.length > 6 ? `, and ${names.length - 6} more` : ""})`;
 }
 
 /**
@@ -419,26 +435,26 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
     case "BEHIND":
       return pr.headRefOid === updatedHead ? { do: "wait", why: `${ref} is being updated with \`${pr.baseRefName}\`` } : { do: "update", why: `${ref} is behind \`${pr.baseRefName}\`` };
     case "UNSTABLE":
-      if (ci === "pending") return { do: "wait", why: `${ref}'s checks are running${runningChecks(checks, pr.number)}`, key: "checks" };
+      if (ci === "pending") return { do: "wait", why: `${ref}'s checks are running${runningChecks(checks)}`, key: "checks" };
       // GitHub counts an advisory check that isn't green; with every other check green, that's no reason to wait.
       if (required(checks) === checks) return { do: "stop", why: `${ref} has failing checks`, red: true };
       break;
     case "BLOCKED":
-      return ci === "pending" ? { do: "wait", why: `${ref}'s checks are running${runningChecks(checks, pr.number)}`, key: "checks" } : { do: "stop", why: `GitHub won't merge ${ref} yet (blocked by a branch rule)` };
+      return ci === "pending" ? { do: "wait", why: `${ref}'s checks are running${runningChecks(checks)}`, key: "checks" } : { do: "stop", why: `GitHub won't merge ${ref} yet (blocked by a branch rule)` };
     case "CLEAN":
     case "HAS_HOOKS":
       break;
     default: // UNKNOWN: GitHub is still working it out
       return { do: "wait", why: `GitHub is still checking whether ${ref} can merge` };
   }
-  if (ci === "pending") return { do: "wait", why: `${ref}'s checks are running${runningChecks(checks, pr.number)}`, key: "checks" };
+  if (ci === "pending") return { do: "wait", why: `${ref}'s checks are running${runningChecks(checks)}`, key: "checks" };
   if (skippedImageScan(pr)) return { do: "stop", why: `${ref} changes an image but its image-scan check was skipped` };
   // A merge the AI reviewer approved: no checks is not green; every named check must have passed on this head.
   if (strictChecks) {
     const named = namedChecks(checks);
     // CI starts a little after a push (a card's merge is stepped seconds after it): no checks yet waits, ten minutes at most.
     if (!named.length) return { do: "wait", why: `${ref} has no checks yet, and a merge without the owner's tap needs green checks`, limit: 10 };
-    if (named.some((c) => c.pending)) return { do: "wait", why: `${ref}'s checks are running${runningChecks(checks, pr.number)}`, key: "checks" };
+    if (named.some((c) => c.pending)) return { do: "wait", why: `${ref}'s checks are running${runningChecks(checks)}`, key: "checks" };
     if (named.some((c) => !c.ok)) return { do: "stop", why: `${ref}: ${named.filter((c) => !c.ok).length} named check(s) not green (\`gh pr checks ${pr.number}\` names them)`, red: true };
   }
   const base = ciState(pr.baseRef?.target?.statusCheckRollup);
@@ -450,10 +466,7 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
     if (behind > 0) return pr.headRefOid === updatedHead ? { do: "wait", why: `${ref} is being updated with \`${pr.baseRefName}\`` } : { do: "update", why: `\`${pr.baseRefName}\` is red and ${ref} is behind it` };
     return { do: "stop", why: `\`${pr.baseRefName}\` is red before merging ${ref} (its failing checks are on GitHub)` };
   }
-  if (base === "pending") {
-    const n = namedChecks(pr.baseRef.target.statusCheckRollup).filter((c) => c.pending).length;
-    return { do: "wait", why: `CI is running on \`${pr.baseRefName}\`${n ? ` (${n} check${n === 1 ? "" : "s"} still running)` : ""}`, key: "base-checks" };
-  }
+  if (base === "pending") return { do: "wait", why: `CI is running on \`${pr.baseRefName}\`${runningChecks(pr.baseRef.target.statusCheckRollup)}`, key: "base-checks" };
   return { do: "merge" };
 }
 
@@ -517,10 +530,8 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     const settled = t - Date.parse(last.mergedAt) >= settleMinutes * 60_000;
     if (ci === "red") return stop(`CI failed on \`${last.base}\` after merging #${last.number} (its failing checks are on GitHub)`);
     // A tip we moved to has no grace: without a check of its own it is still starting up.
-    // A tip we moved to has no grace: without a check of its own it is still starting up.
     if (ci === "pending" || !settled || (head !== last.sha && !namedChecks(rollup).length)) {
-      const n = namedChecks(rollup).filter((c) => c.pending).length;
-      return waiting(`ci:${head}`, `CI is running on \`${last.base}\` after #${last.number}${n ? ` (${n} check${n === 1 ? "" : "s"} still running)` : ""}`);
+      return waiting(`ci:${head}`, `CI is running on \`${last.base}\` after #${last.number}${runningChecks(rollup)}`);
     }
     last.ciAt = now.toISOString();
     last.checks = rollup?.contexts?.nodes?.length ?? 0;
@@ -679,11 +690,11 @@ export function eachDecision(pr, p) {
   const red = named.filter((c) => !c.ok && !c.pending);
   // Check names and descriptions are set by whoever can push to the repo: never in the runner's own words (count only).
   if (red.length) return { do: "fail", why: `${red.length} named check(s) failed on its head (\`gh pr checks ${pr.number}\` names them)`, red: true };
-  if (named.some((c) => c.pending)) return { do: "wait", why: `checks are running${runningChecks(rollup, pr.number)}`, key: "checks" };
+  if (named.some((c) => c.pending)) return { do: "wait", why: `checks are running${runningChecks(rollup)}`, key: "checks" };
   if (skippedImageScan(pr)) return { do: "fail", why: "it changes an image but its image-scan check was skipped" };
   const ci = ciState(rollup);
   if (ci === "red") return { do: "fail", why: "GitHub reports failing checks", red: true };
-  if (ci !== "green") return { do: "wait", why: `checks are running${runningChecks(rollup, pr.number)}`, key: "checks" };
+  if (ci !== "green") return { do: "wait", why: `checks are running${runningChecks(rollup)}`, key: "checks" };
   // A UI PR merges at Tier 0 only once the UI Reviewer's design review passed on this head: `p.ui` when tiering decided it,
   // else the PR's own files here, so a queue without the flag can't skip the gate. Missing counts as pending (the reviewer
   // is woken for it); still none 2 hours after the checks went green: the reviewer is asked once more, and after that the

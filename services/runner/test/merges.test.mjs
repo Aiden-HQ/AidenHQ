@@ -334,13 +334,13 @@ describe("merge queue: a run through", () => {
     const q = newQueue(findPrs("o/r#1"), { gapMinutes: 15, now: at(0) });
     const first = await advance(q, { github: gh, now: at(0), timeoutMinutes: 30 });
     assert.equal(first.done, undefined);
-    assert.equal(first.queue.waiting, "#1's checks are running (1 check still running: `gh pr checks 1` names it)");
+    assert.equal(first.queue.waiting, "#1's checks are running (still running: build)");
     assert.equal((await advance(q, { github: gh, now: at(20), timeoutMinutes: 30 })).done, undefined);
     const step = await advance(q, { github: gh, now: at(31), timeoutMinutes: 30 });
     assert.equal(step.done, "stopped");
     assert.equal(step.queue.prs[0].status, "failed");
-    assert.equal(step.queue.reason, "stuck for 30 minutes: #1's checks are running (1 check still running: `gh pr checks 1` names it)");
-    assert.match(step.say.join("\n"), /\*\*Not merged:\*\* https:\/\/github.com\/o\/r\/pull\/1: stuck for 30 minutes: #1's checks are running \(1 check still running/);
+    assert.equal(step.queue.reason, "stuck for 30 minutes: #1's checks are running (still running: build)");
+    assert.match(step.say.join("\n"), /\*\*Not merged:\*\* https:\/\/github.com\/o\/r\/pull\/1: stuck for 30 minutes: #1's checks are running \(still running: build\)/);
   });
 
   it("a stuck head no longer holds the PRs behind it: the next one still merges", async () => {
@@ -354,7 +354,7 @@ describe("merge queue: a run through", () => {
     assert.equal(step.queue.prs[1].status, "merged");
     const last = await advance(q, { github: gh, now: at(38), timeoutMinutes: 30 });
     assert.equal(last.done, "stopped");
-    assert.match(last.queue.reason, /stuck for 30 minutes: #1's checks are running \(1 check still running/);
+    assert.match(last.queue.reason, /stuck for 30 minutes: #1's checks are running \(still running: build\)/);
     assert.match(last.say.at(-1), /\*\*Merges finished:\*\* 1 merged, 1 not/);
   });
 
@@ -367,12 +367,37 @@ describe("merge queue: a run through", () => {
     assert.equal(gh.writes.length, 0, "nothing merges while #1's check runs");
     const step = await advance(q, { github: gh, now: at(31), timeoutMinutes: 30 });
     assert.equal(q.prs[0].status, "failed");
-    assert.match(q.prs[0].note, /stuck for 30 minutes: #1's checks are running \(1 check still running/);
+    assert.match(q.prs[0].note, /stuck for 30 minutes: #1's checks are running \(still running: build\)/);
     assert.equal(q.prs[1].status, "failed");
     assert.equal(q.prs[1].note, "stacked on #1, which did not merge");
     assert.match(step.say.join("\n"), /#2 skipped: stacked on #1, which did not merge/);
     assert.deepEqual(gh.writes.at(-1), { merge: 3, sha: "head3", method: "squash" });
     assert.equal(step.queue.prs[2].status, "merged");
+  });
+
+  it("names the running checks, and a hostile name can't break the receipt or render from another host", async () => {
+    const node = (name) => ({ __typename: "CheckRun", name, status: "IN_PROGRESS", conclusion: null });
+    const hostile = "![x](https://evil.example/p.png) [l](https://evil.example) `c` **b** <img src=x> a\nb";
+    const rollup = { state: "PENDING", contexts: { nodes: [node("tests"), node(hostile), ...Array.from({ length: 6 }, (_, i) => node(`job-${i}`))] } };
+    const gh = fakeGithub({ 1: pr(1, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } }) });
+    const step = await advance(newQueue(findPrs("o/r#1"), { gapMinutes: 0, now: at(0) }), { github: gh, now: at(0), timeoutMinutes: 30 });
+    const line = step.queue.waiting;
+    assert.match(line, /\(still running: tests, /);
+    assert.match(line, /and 2 more\)/, "at most six names, then a count");
+    assert.ok(!line.includes("\n"), "one line");
+    // Every Markdown metacharacter is escaped, so no link, image, code span, emphasis or raw HTML survives to render.
+    assert.doesNotMatch(line, /(?<!\\)\[/, "no unescaped [ to open a link or image");
+    assert.doesNotMatch(line, /(?<!\\)\]\(/, "no unescaped ]( to close a link target");
+    assert.doesNotMatch(line, /(?<!\\)!/, "no unescaped ! to open an image");
+    assert.doesNotMatch(line, /(?<!\\)[`*_<>]/, "no unescaped code, emphasis or HTML");
+    assert.match(line, /\\!\\\[x\\\]\\\(https:\/\/evil\.example\/p\.png\\\)/, "the hostile name is shown escaped, not dropped");
+  });
+
+  it("ordinary check names print as they are", async () => {
+    const rollup = { state: "PENDING", contexts: { nodes: [{ __typename: "CheckRun", name: "code-review", status: "IN_PROGRESS", conclusion: null }, { __typename: "CheckRun", name: "services/runner", status: "IN_PROGRESS", conclusion: null }] } };
+    const gh = fakeGithub({ 1: pr(1, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } }) });
+    const step = await advance(newQueue(findPrs("o/r#1"), { gapMinutes: 0, now: at(0) }), { github: gh, now: at(0), timeoutMinutes: 30 });
+    assert.equal(step.queue.waiting, "#1's checks are running (still running: code-review, services/runner)");
   });
 
   it("stops with GitHub's words when a merge is refused", async () => {

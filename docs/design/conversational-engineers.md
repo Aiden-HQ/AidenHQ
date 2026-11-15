@@ -68,8 +68,8 @@ for the turn. Being a shell command, it works the same in all three engines.
 
 Help is answered inside the CLI, so asking how a command works never reaches the runner as a request. The merge queue
 keeps running after the turn ends, because merges are spread over hours; its progress comments land in the thread. A
-check still running past its bound marks that PR not merged, saying how many checks are stuck and where to read them,
-so the PRs after it still merge one at a time.
+check still running past its bound marks that PR not merged, naming the checks it waited on, so the PRs after it still
+merge one at a time. Those names come from the repository, so they are escaped before they print.
 Writes also pass through the tier rules in [approvals.md](approvals.md).
 
 ## The user's word
