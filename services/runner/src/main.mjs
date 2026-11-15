@@ -10,7 +10,7 @@ import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, is
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
 import { branchCardArgs, cardText } from "./cards.ts";
-import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
+import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, gatewayUrl, jailProblem, jobToken, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
@@ -24,6 +24,7 @@ import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, 
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine, coversHead } from "./prompt.ts";
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
 import { startRepoHelper } from "./repohelper.ts";
+import { jobAdvisor } from "./advise.mjs";
 import { createMetrics, writeMetrics } from "./metrics.ts";
 import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.ts";
@@ -3538,13 +3539,15 @@ async function startJob({ issue, instructions }) {
     if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity });
     if (stopping) return; // the runner is restarting: the job resumes after it (RESUME_KEY)
     // From here on nothing waits before the run is recorded: a restart either cuts the job before it or adopts the run.
-    tools = { issue, workspace, words, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box };
+    // The job's gateway credential, minted once: its own model calls and its `aidenhq advise` share one run key. In memory only.
+    const modelKey = viaGateway(engine.kind) ? jobToken(cfg, { agentId, issueId: issue.id }) : undefined;
+    tools = { issue, workspace, words, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box, agentId, modelKey };
     const helper = repoHelper.register(tools, helperToken);
     const sessionId = resumed ? state.task(issue.id).session_id : undefined;
     const startedAt = Date.now();
-    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id }, box });
+    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, token: modelKey }, box });
     // What the next runner needs to adopt the run and finish its turn after a restart.
-    tools.run = { pid: run.pid, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
+    tools.run = { pid: run.pid, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, agentId, repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
     state.saveRun(jobId, tools.run);
     running.get(issue.id).pid = run.pid;
     const watch = watchAgent(run, { engine, sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
@@ -4200,6 +4203,17 @@ async function prepareWorkspace(issue, task, { clone = true, copy = false } = {}
   return workspace;
 }
 
+/**
+ * `aidenhq advise "<brief>"`: a second opinion from the advisor (src/advise.mjs) on the job's own model credential (after an
+ * adoption, a fresh one for the same Engineer and task), at most 5 per job. Changes nothing.
+ */
+async function agentAdvise(ctx, args) {
+  ctx.advisor ??= jobAdvisor({ gatewayUrl: gatewayUrl(cfg), key: ctx.modelKey ?? jobToken(cfg, { agentId: ctx.agentId, issueId: ctx.issue.id }), agentId: ctx.agentId });
+  const advice = await ctx.advisor(args.brief);
+  log("advisor consulted", { issue: ctx.issue.identifier });
+  return advice;
+}
+
 /** `aidenhq-repo <org/name>` from a running job: clone another repository into its workspace. */
 const repoHelper = startRepoHelper(async ({ issue, workspace, box }, raw) => {
   const repo = normalizeRepo(raw);
@@ -4229,6 +4243,7 @@ const repoHelper = startRepoHelper(async ({ issue, workspace, box }, raw) => {
   cleanup: async (ctx) => agentCleanup(ctx).finally(() => saveTools(ctx)),
   task: agentTask,
   tasks: agentTasks,
+  advise: agentAdvise,
 }, Number(state.get("helper_port") ?? 0));
 // One port across restarts: runs a restart left going keep reaching their tools.
 repoHelper.listening.then((port) => state.set("helper_port", String(port)));
@@ -4441,7 +4456,7 @@ function adoptRuns() {
     const controller = new AbortController();
     const channel = {}; // no input: the session's stdin closed with the old runner
     // Its tools keep working: the same helper port, its own token, what it already asked for.
-    const tools = { issue, workspace: run.workspace, words: run.words, instructions: run.instructions, brief: run.brief, kind: run.engine.kind, reads: observes(run.engine), who: run.who, signal: controller.signal, jobId: job.id, run, reset: run.reset, engine: run.switchTo, cleanup: run.cleanup, box: run.box };
+    const tools = { issue, workspace: run.workspace, words: run.words, instructions: run.instructions, brief: run.brief, kind: run.engine.kind, reads: observes(run.engine), who: run.who, signal: controller.signal, jobId: job.id, run, reset: run.reset, engine: run.switchTo, cleanup: run.cleanup, box: run.box, agentId: run.agentId ?? null };
     const helper = repoHelper.register(tools, run.token);
     running.set(issue.id, { controller, jobId: job.id, identifier: issue.identifier, startedAt: job.started_at, request: run.instructions, pid: run.pid, channel, who: run.who, info: { engine: engineLabel(run.engine), mode: "working", repo: run.repos } });
     log("adopted a running job", { issue: issue.identifier, pid: run.pid });

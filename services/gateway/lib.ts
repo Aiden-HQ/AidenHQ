@@ -3,7 +3,8 @@
 //
 // Routes (OpenRouter-compatible; the caller's "API key" is its own per-run credential, never the OpenRouter key):
 //   POST /api/v1/responses | /api/v1/chat/completions            kind agent (or the service kind its credential fixes)
-//   POST /advisor/api/v1/... | /fanout/api/v1/...                kind advisor | fanout, counted against the caller's run
+//   POST /advisor/api/v1/... | /fanout/api/v1/...                kind advisor | fanout, counted against the caller's run; every
+//                                                                advisor call runs on ADVISOR_MODEL, whatever the caller asked
 //   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
 //   POST /internal/caps {scope, agentId, subject, cap}  (Bearer gateway_board_key) the owner raised a cap: the new cap
 //   GET /health
@@ -26,6 +27,7 @@ import { dirname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.ts";
+import { ADVISOR_MODEL } from "../paperclip-tasks-mcp/models.mjs";
 import { verifyToken } from "./token.ts";
 
 type Brand<T, B extends string> = T & { readonly __brand: B };
@@ -438,6 +440,7 @@ export function createGateway({ dbFile, grantsFile, settingsFile, secret, upstre
     const who = await identify(bearer(req), routeKind, ci);
     let body: Record<string, unknown>;
     try { body = JSON.parse(await readBody(req, ci ? CI_MAX_BODY : MAX_BODY)); } catch (e) { throw (e as GatewayError).status ? e : fail(400, "bad_request", "the body must be JSON"); }
+    if (routeKind === "advisor" && body && typeof body === "object") body.model = ADVISOR_MODEL; // the owner's advisor, set in models.mjs
     if (!body || typeof body !== "object" || typeof body.model !== "string") throw fail(400, "bad_request", "a model call needs a model");
     if (who.ci) {
       // CI's own gates, whatever the kill switch says: the models and fields it may use, calls in flight, its day caps. A

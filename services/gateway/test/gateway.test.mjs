@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGateway } from "../lib.ts";
 import { mintToken } from "../token.ts";
+import { ADVISOR_MODEL } from "../../paperclip-tasks-mcp/models.mjs";
 
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const json = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
@@ -22,10 +23,12 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
   const settingsFile = join(dir, "gateway.json");
   let cost = 0.03;
   const seen = [];
+  const asked = [];
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
       const body = JSON.parse(b);
       seen.push({ auth: req.headers.authorization, zdr: body.provider?.zdr, url: req.url });
+      asked.push(body.model);
       const id = `gen-${seen.length}`;
       if (body.model === "breaks") { res.writeHead(200, { "content-type": "text/event-stream" }); res.write(`data: {"id":"${id}"}\n\n`); return setTimeout(() => res.destroy(), 20); }
       if (req.url.endsWith("/chat/completions")) {
@@ -162,6 +165,12 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
   rows = await usage();
   assert.deepEqual(rows.filter((r) => r.kind === "reviewer").map((r) => r.component), ["AI reviewer", "AI reviewer"]);
   assert.equal(rows.filter((r) => r.kind === "source").length, 1);
+
+  // The advisor route runs every call on the configured advisor model, whatever the caller asked for, as kind advisor.
+  assert.equal((await call(mintToken("job-secret", { agentId: "ag2", issueId: "iss9" }, now), { path: "/advisor/api/v1/chat/completions", model: "moonshotai/kimi-k3.1-pro" })).status, 200);
+  assert.equal(asked.at(-1), ADVISOR_MODEL);
+  const last = (await usage()).at(-1);
+  assert.deepEqual([last.kind, last.agentId, last.issueId], ["advisor", "ag2", "iss9"]);
 });
 
 // An agent computer: box → the launcher's model route (forwardModel) → this gateway, named by the launcher's /whoami. Its

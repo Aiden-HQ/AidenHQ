@@ -62,7 +62,7 @@ override them):
 | UI/UX Designer (mockups) | `~deepseek/deepseek-flash-latest` at high effort |
 | UI Reviewer (screenshot reviews of UI PRs) | `~openai/gpt-luna-latest` at medium effort |
 | Red Teamer (fewer refusals on offensive security work) | `~z-ai/glm-flash-latest` (high effort) |
-| Advisor (`advisor_ask`, a second opinion at a hard decision) | `~openai/gpt-sol-latest` |
+| Advisor (`advisor_ask`, and `aidenhq advise` for Engineers: a second opinion at a decision point) | `~openai/gpt-sol-latest` |
 | Engineers (coding jobs on the runner) | `~deepseek/deepseek-flash-latest`, with a picker of others in `modules/engineering/module.yaml` |
 | AI reviewer (Tier 1 approvals) and grader | `~openai/gpt-luna-latest` (medium effort), or `~deepseek/deepseek-flash-latest` (high) for an OpenAI-family requester: never the requesting model's family |
 

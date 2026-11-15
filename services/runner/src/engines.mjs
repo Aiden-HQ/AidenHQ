@@ -236,7 +236,7 @@ export function buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile
   return { ...built, argv: hiding(cfg, built.argv, [...mcp, ...loopback], { rw, ro, cow }) };
 }
 
-const gatewayUrl = (cfg) => cfg.gatewayUrl ?? "http://127.0.0.1:8201";
+export const gatewayUrl = (cfg) => cfg.gatewayUrl ?? "http://127.0.0.1:8201";
 /** A task's copy-on-write cache layers: beside the task folders, never inside one (no job sees another's, or its own raw). */
 export const cowRoot = (cfg, worktree) => join(cfg.workDir ?? dirname(dirname(worktree)), ".cache-layers", basename(worktree));
 
@@ -315,8 +315,11 @@ export function modelToken(cfg, claims) {
 }
 export const gatewayApi = (cfg) => `${gatewayUrl(cfg)}/api/v1`;
 
-/** The job's own credential to the model gateway, valid past its deadline (an adopted run keeps its env). */
-const jobToken = (cfg, job) => modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 });
+/**
+ * The job's own credential to the model gateway, valid past its deadline (an adopted run keeps its env). The runner mints it
+ * once per job (`job.token`) so the job's `aidenhq advise` calls share its run key: the same run cap and run page.
+ */
+export const jobToken = (cfg, job) => job.token ?? modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 });
 
 const GATEWAY_KEY_ENV = "AIDENHQ_GATEWAY_KEY";
 // Off for codex-openrouter, as for Paperclip's Codex agents: ChatGPT connectors, the desktop's browser and computer, OpenAI's

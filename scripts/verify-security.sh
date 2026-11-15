@@ -556,7 +556,7 @@ grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-set
 # (`create-repo` files it, the panel's): one call, in createRepoApproved, never from naming or cloning one. `review` asks the
 # AI reviewer about what `pr` would file, files and publishes nothing, and is capped per job.
 tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelper.ts)"
-[ "$tools" = 'export const TOOLS = ["repo", "status", "review", "push", "pr", "merge", "close", "create-repo", "apply", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks"]' ] \
+[ "$tools" = 'export const TOOLS = ["repo", "status", "review", "push", "pr", "merge", "close", "create-repo", "apply", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks", "advise"]' ] \
   && grep -qF 'close: agentClose,' "$rmain" \
   && [ "$(grep -c 'createRepo(' "$rmain")" = 1 ] && awk '/^async function createRepoApproved/,/^}/' "$rmain" | grep -qF 'await app.createRepo(slug)' \
   && ! grep -qE 'POST.*/repos\b|/user/repos' services/runner/src/repos.ts \
