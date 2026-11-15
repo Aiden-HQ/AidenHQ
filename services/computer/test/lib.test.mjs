@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
-import { Tokens, admit, builtImage, dockerRunArgs, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, replyRefusal, REPLY_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
+import { Tokens, admit, builtImage, dockerRunArgs, oomMessage, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, replyRefusal, REPLY_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
 
 test("only execs carrying a CODEX_HOME are wrapped", () => {
   assert.deepEqual(wrapExec("ls", ["-l"], {}), ["ls", ["-l"]]);
@@ -87,6 +87,10 @@ test("docker run: gVisor, the computers network, limits and mounts from config",
   const a = dockerRunArgs({ name: "aidenhq-computer-1", image: "img:1", agentId: "ag", network: "aidenhq-computers", limits: { memory: "2g", cpus: 2, shm: "512m", pids: 1024 }, mounts: ["/r:/etc/resolv.conf:ro"] });
   for (const want of ["--runtime=runsc", "aidenhq-computers", "2g", "aidenhq.agent=ag", "/r:/etc/resolv.conf:ro"]) assert.ok(a.includes(want), want);
   assert.deepEqual(a.slice(-3), ["img:1", "sleep", "infinity"]);
+});
+
+test("an out-of-memory kill says so and names the limit", () => {
+  assert.match(oomMessage("aidenhq-computer-1", "6g"), /killed for running out of memory \(limit 6g\)/);
 });
 
 test("admission: room → go; full → evict the least recently used idle box; all busy → wait; idle boxes are reaped", () => {
