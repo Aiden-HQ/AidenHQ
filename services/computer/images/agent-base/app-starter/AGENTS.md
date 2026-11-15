@@ -34,6 +34,6 @@ the AidenHQ design system. `README.md` says what's where. These rules keep its p
 - **One way to do each thing.** A change that replaces a pattern, component or page deletes the old one in the same PR, so the code shows only the current way and the next change copies it.
 - **Keep it reviewable:** a seed or sample-data mode runs the app locally with realistic data, so the UI review can
   screenshot every state.
-- **Before a UI PR:** `npm ci && npm test && npm run build`, then the self-review in the design system's
+- **Before a UI PR:** `npm ci && npm run lint && npm test && npm run build`, then the self-review in the design system's
   `review-checklist.md`. `ui-review` (in agent computers) clicks every link on the pages it reviews and reports any
   route that doesn't render on click, Back/Forward or reload.

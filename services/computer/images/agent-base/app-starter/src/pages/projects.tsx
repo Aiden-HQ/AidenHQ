@@ -14,7 +14,7 @@ import { ToastAction } from "@/components/ui/toast"
 import { ProjectSheet } from "@/components/project-sheet"
 import { useProjects } from "@/hooks/use-projects"
 import { toast } from "@/hooks/use-toast"
-import { useUrlState } from "@/lib/navigation"
+import { Link, useUrlState } from "@/lib/navigation"
 import {
   applyFilters,
   formatDate,
@@ -245,18 +245,18 @@ export function ProjectsPage() {
                     onClick={() => openItem(p.id)}
                   >
                     <TableCell className="py-3 pl-4 whitespace-normal">
-                      <a
+                      <Link
                         href={itemHref(p.id)}
                         className="font-medium underline-offset-4 outline-none hover:underline focus-visible:underline"
                         onClick={(e) => {
-                          if (e.metaKey || e.ctrlKey || e.shiftKey) return e.stopPropagation()
-                          e.preventDefault()
                           e.stopPropagation()
+                          if (e.metaKey || e.ctrlKey || e.shiftKey) return
+                          e.preventDefault()
                           openItem(p.id)
                         }}
                       >
                         {p.name}
-                      </a>
+                      </Link>
                       {/* The meta line under the name instead of a low-value column of its own. */}
                       <div className="mt-0.5 text-xs text-muted-foreground">
                         {p.team}

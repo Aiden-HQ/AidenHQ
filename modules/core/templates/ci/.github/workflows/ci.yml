@@ -55,7 +55,7 @@ jobs:
           node "$d/pins.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
           exit $status
       - name: Test
-        run: npm ci && npm test
+        run: npm ci && npm run --if-present lint && npm test
 
   # Secret scan over the PR's new commits: the pinned, checksummed scanner binary (no licence key, no secrets used).
   # Fake test values go in a .gitleaks.toml by exact value; it is read from the base commit, so land it in its own PR.
