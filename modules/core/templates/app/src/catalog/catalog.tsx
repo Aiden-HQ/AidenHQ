@@ -41,7 +41,7 @@ import { StatStrip } from "@/components/blocks/stat-strip"
 import { StatePanel, TableSkeleton } from "@/components/blocks/states"
 import { useThemeMode } from "@/components/theme-toggle"
 import { toast } from "@/hooks/use-toast"
-import { useUrlState } from "@/hooks/use-url-state"
+import { useUrlState } from "@/lib/navigation"
 import { MoreBlocks, MoreComponents, PresetGallery, PRESETS, ShellGallery, Variants } from "./more"
 
 // Every building block and component the starter has, themed, in one page (dev-only: `npm run catalog`). ?palette= and

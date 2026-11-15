@@ -14,7 +14,7 @@ import { ToastAction } from "@/components/ui/toast"
 import { ProjectSheet } from "@/components/project-sheet"
 import { useProjects } from "@/hooks/use-projects"
 import { toast } from "@/hooks/use-toast"
-import { useUrlState } from "@/hooks/use-url-state"
+import { useUrlState } from "@/lib/navigation"
 import {
   applyFilters,
   formatDate,

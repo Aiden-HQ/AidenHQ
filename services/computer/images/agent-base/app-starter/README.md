@@ -25,8 +25,9 @@ npm run catalog   # the starter's dev-only component catalog (catalog.html): eve
 | Path | What |
 |---|---|
 | `server.mjs` | Serves `dist/`, `/api/health` (`{ok: true, checks: []}`) and the example API (`/api/items`), with the CSP and the identity check (`aidenhq-identity.mjs`, copied unchanged: `req.user` is the signed-in person or agent). Replace `ITEMS` with the app's store. |
-| `src/App.tsx` | The example's shell (`TopBarShell`) and routes. Pick the shell that fits the app's navigation: `TopBarShell` (variants `plain`, `brand`), `SidebarShell` (`sidebar`, `floating`, `inset`), `BareShell` (`full`, `centered`), or your own. |
+| `src/App.tsx` | The example's shell (`TopBarShell`) and routes (`ROUTES`, picked by `useLocation().path`; each one is also in `server.mjs` `PAGES`, so a reload answers 200). Pick the shell that fits the app's navigation: `TopBarShell` (variants `plain`, `brand`), `SidebarShell` (`sidebar`, `floating`, `inset`), `BareShell` (`full`, `centered`), or your own. |
 | `src/pages/projects.tsx` | The example page (list, filters, summary, paged table, detail sheet, every state). Copy its patterns, not its data. |
+| `src/pages/teams.tsx` | A second route: a small table whose team links open the projects page filtered (`/?team=…`). |
 | `src/components/blocks/` | Optional building blocks, one line each below. |
 | `catalog.html`, `src/catalog/` | The dev-only catalog (`npm run catalog`): every block, component and variant, the shells and the theme presets side by side, with palette and mode pickers (`?palette=crisp&mode=dark`). Not an app route, never built; apps leave it out. |
 | `AGENTS.md` | The short rules for anyone (people or agents) changing this app's UI. Keep it in the app's repo. |
@@ -34,7 +35,7 @@ npm run catalog   # the starter's dev-only component catalog (catalog.html): eve
 | `src/styles/tokens.css`, `src/styles/shadcn.css` | The design system's theme, vendored unchanged. Never edit them here. |
 | `src/styles/presets/` | Theme presets (palette light and dark, accent, radius, fonts, density), vendored unchanged: `crisp`, `polished`, `editorial`, `dense`, `ops`, `indigo`, `soft`, `slate`, `minimal`, `graphite`. Pick one by importing it after `shadcn.css` in `src/index.css` and setting `<html data-palette="<name>">` in `index.html`, or adapt it in a `theme.css`. A starting point, not a rule. |
 | `THIRD_PARTY.md` | Where vendored component code comes from, and its licence. |
-| `src/hooks/use-url-state.ts` | Filter state in the URL (`set` replaces, `push` adds a history entry for details). |
+| `src/lib/navigation.tsx` | The app's navigation: `useLocation()` (path and query; re-renders on every change), `Link` (an `<a href>` that moves without a page load), `navigate(href)`, and `useUrlState()` for state in the query (`set` replaces, `push` adds a history entry for details). A link click, Back/Forward and a reload all render the page the URL names. |
 | `src/lib/csp.ts`, `public/theme.js` | The CSP nonce for Radix's run-time styles, and light/dark/palette before first paint. |
 
 ## The library

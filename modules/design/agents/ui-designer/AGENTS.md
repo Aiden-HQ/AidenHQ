@@ -57,9 +57,11 @@ Apps are **shadcn/ui + Tailwind** (Vite + React) from the app starter, themed by
 
 - **Your computer:** shell, node, Chrome with `agent-browser`, `repo-checkout` for a commit of an agents-org repo, and
   `ui-review`.
-- **`ui-review <url> --paths /,/x --out <dir> [--baseline <dir>]`** takes screenshots at 390, 768 and 1280 in light and
+- **`ui-review <url> --paths /,/x --out <dir> [--baseline <dir>] [--no-routes]`** takes screenshots at 390, 768 and 1280 in light and
   dark, runs axe (WCAG 2.2 AA), measures web vitals, collects page errors and checks layout. Read `<dir>/report.md`
-  first, then **open every screenshot**. `--palettes neutral,warm` loops themes on pages that read `?palette=`.
+  first, then **open every screenshot**. `--palettes neutral,warm` loops themes on pages that read `?palette=`. It
+  also clicks the pages' links and checks each one renders on click, Back/Forward and reload; `--no-routes` skips that
+  for a mockup whose links lead nowhere yet.
 - **agent-browser** for states and interactions (the commands below cover the work; its `--help` is huge):
   ```sh
   agent-browser open <url>; agent-browser wait --load networkidle      # or: wait --text "Hello"

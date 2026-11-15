@@ -10,7 +10,8 @@
 //   ui-review http://127.0.0.1:8080 --paths /catalog --palettes neutral,warm,contrast,data   (the app starter's catalog)
 //
 // Options: --widths 390,768,1280  --modes light,dark  --full (whole-page screenshots)  --palettes a,b (adds ?palette=&mode=,
-// for pages that read them, like the catalog)  --wait-text "<text>" (wait for it before each screenshot).
+// for pages that read them, like the catalog)  --wait-text "<text>" (wait for it before each screenshot)  --no-routes (skip
+// the route check: by default every in-app link on the pages is clicked and must render on click, Back/Forward and reload).
 //
 // With --baseline, a finding the base's own report also had is not this change's: it's listed under "Already on this
 // base" and doesn't fail the run (a change is judged on what it introduced, not on gaps that predate it). With no
@@ -24,7 +25,7 @@ const { join } = require("node:path");
 const args = process.argv.slice(2);
 const opt = (name, dflt) => { const i = args.indexOf(`--${name}`); return i < 0 ? dflt : args[i + 1]; };
 const base = args.find((a) => /^https?:\/\//.test(a));
-if (!base) { console.error("usage: ui-review <base url> [--paths /,/x] [--out dir] [--baseline dir] [--widths 390,768,1280] [--modes light,dark] [--palettes a,b] [--full] [--wait-text t]"); process.exit(2); }
+if (!base) { console.error("usage: ui-review <base url> [--paths /,/x] [--out dir] [--baseline dir] [--widths 390,768,1280] [--modes light,dark] [--palettes a,b] [--full] [--wait-text t] [--no-routes]"); process.exit(2); }
 const paths = opt("paths", "/").split(",");
 const out = opt("out", "ui-review");
 const baseline = opt("baseline", null);
@@ -111,6 +112,87 @@ for (const path of paths) for (const palette of variants) {
   }
 }
 
+// Routes: every link on the reviewed pages to another page of the app is clicked, and that page must render on the
+// click, again after Back and Forward, and on a reload (answering under 400 and showing what the click showed). A URL
+// that changes while the page stays the same is the commonest navigation bug in apps. Once, at the widest width in the
+// first mode; one link per kind (its path and query names: ten "?item=" rows are one check), up to 12, the navigation's
+// first. Skipped with --palettes (the catalog) and --no-routes (a mockup
+// whose links lead nowhere yet). Findings name the link and its path only, so a baseline run can match them.
+const ROUTE_LINKS = `/*routes:links*/(() => JSON.stringify([...document.querySelectorAll("a[href]")].map((a) => {
+  const u = new URL(a.href, location.href), r = a.getBoundingClientRect();
+  const ok = u.origin === location.origin && !a.target && !a.hasAttribute("download") && !u.pathname.startsWith("/api/") && !/\\.[a-z0-9]{2,5}$/i.test(u.pathname)
+    && !/log-?out|sign-?out/i.test(u.pathname + " " + a.textContent) && u.pathname + u.search !== location.pathname + location.search && r.width > 0 && r.height > 0;
+  return ok && { href: a.getAttribute("href"), to: u.pathname + u.search, kind: u.pathname + "?" + [...u.searchParams.keys()].sort(), label: (a.textContent || a.getAttribute("aria-label") || "").trim().replace(/\\s+/g, " ").slice(0, 40), nav: !!a.closest("nav,header,aside,[role=navigation]") };
+}).filter(Boolean)))()`;
+const ROUTE_MARK = (href) => `/*routes:mark*/(() => { document.querySelectorAll("[data-ui-review-link]").forEach((e) => e.removeAttribute("data-ui-review-link"));
+  const a = [...document.querySelectorAll("a[href]")].find((e) => e.getAttribute("href") === ${JSON.stringify(href)} && e.getBoundingClientRect().width > 0);
+  if (a) a.setAttribute("data-ui-review-link", ""); return a ? "ok" : "missing"; })()`;
+const ROUTE_PAGE = `/*routes:page*/(() => JSON.stringify({ at: location.pathname + location.search, status: performance.getEntriesByType("navigation")[0]?.responseStatus ?? 0,
+  text: (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 20000) }))()`;
+/** How alike two pages' text is (shared words over all words, 0..1): live clocks and counts don't make two views of one page differ. */
+function alike(a, b) {
+  const words = (t) => new Set(t.toLowerCase().replace(/\d+/g, "#").split(/[^\p{L}#]+/u).filter(Boolean));
+  const A = words(a), B = words(b);
+  let both = 0;
+  for (const w of A) if (B.has(w)) both++;
+  return A.size + B.size === 0 ? 1 : both / (A.size + B.size - both);
+}
+report.routes = [];
+if (!palettes.length && !args.includes("--no-routes")) {
+  ab("set", "viewport", String(Math.max(...widths)), "900");
+  ab("set", "media", modes[0]);
+  const settle = () => { ab("wait", "--load", "networkidle"); ab("wait", "300"); };
+  const look = () => JSON.parse(run(ROUTE_PAGE));
+  const links = [], seen = new Set();
+  for (const path of paths) {
+    try {
+      ab("open", path === "/" ? base : new URL(path, base).href);
+      settle();
+      for (const l of JSON.parse(run(ROUTE_LINKS)).sort((a, b) => b.nav - a.nav)) {
+        if (seen.has(l.kind)) continue;
+        if (links.length === 12) { report.routesCut = true; break; }
+        seen.add(l.kind);
+        links.push({ ...l, from: path });
+      }
+    } catch (e) {
+      report.routes.push({ from: path, link: "", to: "", problems: [], skipped: `couldn't read its links: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}` });
+    }
+  }
+  for (const l of links) {
+    const route = { from: l.from, link: l.label, to: l.to, problems: [] };
+    report.routes.push(route);
+    try {
+      ab("open", l.from === "/" ? base : new URL(l.from, base).href);
+      settle();
+      const start = look();
+      if (run(ROUTE_MARK(l.href)) !== "ok") { route.skipped = "the link wasn't on the page when it was opened again"; continue; }
+      try { ab("click", "[data-ui-review-link]"); } catch { run(`document.querySelector("[data-ui-review-link]").click()`); }
+      settle();
+      const clicked = look();
+      if (clicked.at === start.at) route.problems.push(`clicking it leaves the URL at ${start.at}`);
+      else if (clicked.text === start.text) route.problems.push(`clicking it changes the URL to ${clicked.at} but the page stays the same`);
+      ab("back");
+      settle();
+      const back = look();
+      if (back.at !== start.at) route.problems.push(`Back goes to ${back.at}, not ${start.at}`);
+      else if (alike(back.text, start.text) < 0.8) route.problems.push(`Back to ${start.at} doesn't show that page again`);
+      ab("forward");
+      settle();
+      const fwd = look();
+      if (fwd.at !== clicked.at) route.problems.push(`Forward goes to ${fwd.at}, not ${clicked.at}`);
+      else if (alike(fwd.text, clicked.text) < 0.8) route.problems.push(`Forward to ${clicked.at} doesn't show that page again`);
+      ab("open", new URL(clicked.at, base).href);
+      settle();
+      const fresh = look();
+      if (fresh.status >= 400) route.problems.push(`a reload of ${clicked.at} answers ${fresh.status}`);
+      else if (alike(fresh.text, clicked.text) < 0.8) route.problems.push(`a reload of ${clicked.at} shows a different page than the click did`);
+    } catch (e) {
+      route.skipped = `couldn't check it: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}`;
+    }
+    for (const p of route.problems) blocking.push(`${l.from} link "${l.label || l.href}" (${l.to}): ${p}`);
+  }
+}
+
 /**
  * Split `found` (the head's findings) against `baseFound` (the base commit's). Findings are matched by their text, once
  * each: a base finding cancels one head finding, so a second instance of the same defect on the head is still the head's.
@@ -142,6 +224,7 @@ for (const p of report.pages) {
   if (small) lines.push(`Phone: ${small} controls are 24-43px tall (44px is the phone rule; check the main ones).`);
   lines.push("", "Screenshots (open each one):", ...p.shots.map((s) => `- ${s.name}${s.compare ? ` · before|after: ${s.compare.compare ?? "–"} · diff: ${s.compare.diff} (${s.compare.diffResult})` : ""}`), "");
 }
+if (report.routes.length) lines.push("## Routes (click, Back, Forward, reload)", "", ...report.routes.map((r) => `- ${r.from} → "${r.link}" ${r.to}: ${r.skipped ?? (r.problems.join("; ") || "renders")}`), ...(report.routesCut ? ["- (more kinds of link than the 12 checked: review the rest with --paths on their pages)"] : []), "");
 lines.push("Automated checks find maybe a third of what matters. Now look at every screenshot against the review checklist.");
 writeFileSync(join(out, "report.md"), lines.join("\n"));
 writeFileSync(join(out, "report.json"), JSON.stringify({ ...report, blocking: introduced, preexisting }, null, 2));

@@ -39,6 +39,8 @@ reliable look.
 **Only these block**, and only when this PR introduced them (the checklist's blocking list):
 - the page doesn't render (or renders unstyled), or errors;
 - a core flow the PR touches doesn't work;
+- a link's page doesn't render: `ui-review`'s route check reports a nav or in-app link whose page doesn't show on
+  click, Back/Forward or reload;
 - data on screen is missing or wrong, including something people could see or do before that is gone when neither the
   request nor its mockup dropped it;
 - the layout is broken enough to be unusable at desktop width;
@@ -80,7 +82,8 @@ the page is broken outright. Any other issue is a non-blocking note, never a sec
   `ui-review`.
 - **`ui-review <url> --paths /,/x --out <dir> [--baseline <dir>]`** is your main instrument. It takes screenshots at 390,
   768 and 1280 in light and dark, runs axe (WCAG 2.2 AA) in both modes, measures web vitals, collects page errors and
-  checks layout (sideways scroll, text under 12px, controls under 44px on phone). With `--baseline` (an earlier run's
+  checks layout (sideways scroll, text under 12px, controls under 44px on phone). It also clicks each link on those pages
+  (one per kind) and checks the page renders on click, Back, Forward and reload ("Routes" in the report). With `--baseline` (an earlier run's
   folder) it writes pixel diffs and before|after pictures. Read `<dir>/report.md` first, then look at the screenshots of
   the changed pages. `--full` takes whole pages.
 - **agent-browser** to try the PR's main flow once (never run `agent-browser --help`; it is huge):

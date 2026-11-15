@@ -23,6 +23,10 @@ the AidenHQ design system. `README.md` says what's where. These rules keep its p
   start from its files and wire them to the real data: its layout, components and states, and its finish (theme
   colours, type scale, spacing, depth, the interactions it lists). Compare your screenshots with its own, side by side
   at the same width and mode, before a PR.
+- **Navigation:** routes and links use the starter's navigation (`src/lib/navigation.tsx`): pick the page from
+  `useLocation().path` (as `src/App.tsx` does), link with `Link`, move from code with `navigate`, and keep page state in
+  the query with `useUrlState`. Every route is also in `server.mjs` `PAGES`. Then every page works on a link click, on
+  Back and Forward, and on a reload or a shared link, with the state its URL carries.
 - **The CSP stays strict:** `script-src 'self'; style-src 'self' 'nonce-…'`. No inline scripts, no CDN, no
   `'unsafe-inline'`. A `<style>` tag a component renders takes `nonce={cspNonce}` (`@/lib/csp`); a library that injects
   styles without one isn't used.
@@ -30,4 +34,5 @@ the AidenHQ design system. `README.md` says what's where. These rules keep its p
 - **Keep it reviewable:** a seed or sample-data mode runs the app locally with realistic data, so the UI review can
   screenshot every state.
 - **Before a UI PR:** `npm ci && npm test && npm run build`, then the self-review in the design system's
-  `review-checklist.md`.
+  `review-checklist.md`. `ui-review` (in agent computers) clicks every link on the pages it reviews and reports any
+  route that doesn't render on click, Back/Forward or reload.

@@ -42,6 +42,7 @@ test("built app: page, CSP, assets, routes, health and API", async () => {
     }
     assert.equal((await fetch(`${base}/theme.js`)).status, 200);
     assert.equal((await fetch(`${base}/catalog`)).status, 404, "the catalog is a dev-only preview, never an app route");
+    for (const route of ["/teams"]) assert.equal((await fetch(base + route)).status, 200, `${route} is a client route, so a reload of it answers 200`);
     assert.equal((await fetch(`${base}/no-such-page`)).status, 404);
 
     assert.deepEqual(await (await fetch(`${base}/api/health`)).json(), { ok: true, checks: [] });
