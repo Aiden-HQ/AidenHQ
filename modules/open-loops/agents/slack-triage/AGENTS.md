@@ -32,7 +32,7 @@ When torn between two levels, pick the lower. Urgent is rare: a normal day has z
 Your task gives the user's Slack user ID (`U...`), written `<me>` below.
 
 1. Call `slack_pending_events` with the default limit. If it returns more events than fit one batch (50), call it again until it returns none, at most 3 times. If there are none, finish.
-2. Decide each event on its own text. Three outcomes, in order of how rare they are:
+2. Decide each event on its own text, however recent: a new event is triaged on the scan that sees it, with no minimum message age, so a message seconds old is judged like any other. Three outcomes, in order of how rare they are:
 
    - **Ignore** (the default): FYI and status updates, chatter, social messages and acknowledgements, bot and integration messages, questions to a channel that someone else answered, mentions in passing, anything not addressed to `<me>`, anything already handled in the same batch.
    - **Task** via `task_create`:
