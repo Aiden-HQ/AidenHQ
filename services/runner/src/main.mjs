@@ -18,6 +18,7 @@ import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOr
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
+import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine, coversHead } from "./prompt.ts";
@@ -151,6 +152,8 @@ const handledAt = new Map();
 async function poll() {
   const since = state.get("last_poll");
   const now = new Date().toISOString();
+  // Turns kept because their end couldn't be reported (retryTurn): run again now (those Paperclip still can't answer for stay kept).
+  if (!stopping && JSON.parse(state.get(RESUME_KEY) || "[]").length) await resumeInterrupted();
   // Overlap the window so comments landing during a poll are never missed (handled IDs dedupe).
   const updatedSince = since ? new Date(Date.parse(since) - 120_000).toISOString() : undefined;
   // Writes the user approved first, before anything else the tick reads: an approved card must be claimed and run even
@@ -3623,7 +3626,7 @@ async function endTurn(issue, tools) {
   await afterTurn(issue, tools).catch((err) => reportError(issue, err));
   drainQueue();
   reportActivity();
-  void reportToParent(issue).catch((err) => log("parent summary failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 300) }));
+  void retryTransient(() => reportToParent(issue)).catch((err) => log("parent summary failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 300) }));
 }
 
 /**
@@ -3632,6 +3635,7 @@ async function endTurn(issue, tools) {
  */
 async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep }) {
   let result;
+  let reporting = false;
   try {
     result = await watch;
     keep?.();
@@ -3647,21 +3651,22 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
       state.set(`session_engine:${issue.id}`, engine.kind);
     }
     // Closed while it ran: the task stays closed. A status or a reply here would reopen it (and send it to the grader).
-    const closed = running.get(issue.id)?.closed ?? [(await pc.issue(issue.id).catch(() => undefined))?.status].find((s) => CLOSED.includes(s));
+    const closed = running.get(issue.id)?.closed ?? [(await retryTransient(() => pc.issue(issue.id)).catch(() => undefined))?.status].find((s) => CLOSED.includes(s));
     if (closed) {
       state.finishJob(jobId, "cancelled", `task ${closed}`);
       log("job stopped: its task was closed", { issue: issue.identifier, status: closed });
       return;
     }
     // Adopted: the task as it is now (its tools' context holds the same issue object).
-    if (!full) Object.assign(issue, (full = await pc.issue(issue.id)));
+    if (!full) Object.assign(issue, (full = await retryTransient(() => pc.issue(issue.id))));
 
     if (result.cancelled) {
       state.finishJob(jobId, "cancelled");
-      await pc.setStatus(issue.id, "in_review", "Stopped on request. Whatever the run had changed is still in the workspace.");
+      await retryTransient(() => pc.setStatus(issue.id, "in_review", "Stopped on request. Whatever the run had changed is still in the workspace."));
       return;
     }
 
+    reporting = true; // from here a transient failure may run the turn again (retryTurn); a stop or a closed task never gets here
     const after = await workspaceRepos(workspace);
     // Agents commit as they go: the run changed something if any branch moved or appeared.
     const committedNow = (await branchTips(workspace)) !== tipsBefore;
@@ -3689,24 +3694,29 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     if (outcome.finished) {
       // The agent's reply, in its own words. None: a comment that needed no answer ("thanks").
       const reply = [outcome.silent ? "" : stripCommitLine(result.lastMessage), primerNote, sharedNote, ...(footer.length ? ["---", ...footer] : [])].filter(Boolean).join("\n\n");
-      await pc.finishStatus(issue.id, "in_review", reply.trim() ? `${REPLY_MARKER}${reply}` : undefined);
+      await retryTransient(() => pc.finishStatus(issue.id, "in_review", reply.trim() ? `${REPLY_MARKER}${reply}` : undefined));
       // A graded deliverable's turn ended: the grader looks at it (a task without a rubric passes untouched).
       await mayClose(issue.id, "finish_turn");
     } else {
       // Failures also go to review (Paperclip refuses "blocked" without a blocker); the runner says what failed.
       const report = stripCommitLine(result.lastMessage);
-      await pc.finishStatus(issue.id, "in_review", [
+      const failure = [
         outcome.headline,
         `Last lines of the log:\n\`\`\`\n${logTail(logPath)}\n\`\`\``,
         report ? `The agent's last message:\n\n> ${report.slice(0, 1500).replace(/\n/g, "\n> ")}` : "",
         ...(footer.length ? ["---", ...footer] : []),
         `_${engineLabel(engine)} · log: \`${logPath}\`_`,
-      ].filter(Boolean).join("\n\n"));
+      ].filter(Boolean).join("\n\n");
+      await retryTransient(() => pc.finishStatus(issue.id, "in_review", failure));
     }
+    state.set(`endretry:${issue.id}`, "0");
     log("job finished", { issue: issue.identifier, code: result.code, timedOut: result.timedOut, finished: outcome.finished, branches: rows.length });
   } catch (err) {
     state.finishJob(jobId, "failed", String(err).slice(0, 500));
-    await reportError(issue, err);
+    // Still unreachable after the retries: the task would sit in progress with no job. The poll runs the turn again
+    // (same session and workspace) once Paperclip answers, and the agent reports it.
+    if (shouldRetryTurn({ reporting, cancelled: Boolean(result?.cancelled), err, retries: Number(state.get(`endretry:${issue.id}`) || 0) })) retryTurn(issue, "its last run ended, but the runner couldn't report it (the network failed)");
+    else await reportError(issue, err);
   } finally {
     if (!result?.detached) {
       // OpenRouter jobs (opencode and Codex) are billed by the model gateway; only the other engines' tokens are self-reported.
@@ -4394,7 +4404,7 @@ async function reportError(issue, err) {
   const userFacing = err instanceof UserError || /not allowed|unknown engine|isn't set up|this task's workspace/.test(String(err.message));
   log("error", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 500) });
   try {
-    await pc.comment(issue.id, userFacing ? err.message : `Runner error: \`${String(err.message ?? err).slice(0, 400)}\``);
+    await retryTransient(() => pc.comment(issue.id, userFacing ? err.message : `Runner error: \`${String(err.message ?? err).slice(0, 400)}\``));
   } catch {
     /* Paperclip unavailable: logged above */
   }
@@ -4465,19 +4475,32 @@ function adoptRuns() {
   if (lost.length) state.set(RESUME_KEY, JSON.stringify([...JSON.parse(state.get(RESUME_KEY) || "[]"), ...lost]));
 }
 
+/** A turn whose end couldn't be reported: kept (it survives a restart) for the next poll to run again. */
+function retryTurn(issue, why) {
+  state.set(`endretry:${issue.id}`, String(Number(state.get(`endretry:${issue.id}`) || 0) + 1));
+  log("turn kept to run again", { issue: issue.identifier, why });
+  state.set(RESUME_KEY, JSON.stringify([...JSON.parse(state.get(RESUME_KEY) || "[]"), { issueId: issue.id, instructions: running.get(issue.id)?.request ?? "", why }]));
+}
+
 async function resumeInterrupted() {
   const jobs = JSON.parse(state.get(RESUME_KEY) || "[]");
   state.set(RESUME_KEY, "[]");
-  for (const { issueId, instructions } of jobs) {
-    const issue = await pc.issue(issueId).catch(() => undefined);
+  for (const { issueId, instructions, why = "your last run on this was cut off by a runner restart" } of jobs) {
+    const issue = await pc.issue(issueId).catch((err) => (isTransient(err) ? null : undefined));
+    if (issue === null) {
+      state.set(RESUME_KEY, JSON.stringify([...JSON.parse(state.get(RESUME_KEY) || "[]"), { issueId, instructions, why }]));
+      continue;
+    }
     if (!issue?.identifier || ["done", "cancelled"].includes(issue.status)) continue;
+    // A kept turn is dropped if the task's latest job isn't the failed one: the owner stopped it, or newer work ran since.
+    if (why.includes("couldn't report") && state.lastJob(issueId)?.status !== "failed") continue;
     const waiting = queue.find((j) => j.issue.id === issueId);
     if (waiting) {
       waiting.instructions = `${waiting.instructions}\n\n${instructions}`;
       continue;
     }
-    queue.push({ issue, instructions: `(Runner note: your last run on this was cut off by a runner restart. Carry on from where it stopped; whatever it changed is still in the workspace.)\n\n${instructions}` });
-    await pc.comment(issueId, "Resumed after a runner restart.").catch(() => {});
+    queue.push({ issue, instructions: `(Runner note: ${why}. Carry on from where it stopped; whatever it changed is still in the workspace.)\n\n${instructions}` });
+    await pc.comment(issueId, why.includes("restart") ? "Resumed after a runner restart." : "Resumed: the last run's report didn't get through.").catch(() => {});
     log("resumed after a restart", { issue: issue.identifier });
   }
   drainQueue();
