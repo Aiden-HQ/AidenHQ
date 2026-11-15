@@ -32,6 +32,7 @@ import { OPEN_PRS_QUERY, dependabotDue, isDependabot, rebaseReason, redChecks } 
 import { State } from "./state.mjs";
 import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.mjs";
 import { authorize } from "./authorize.mjs";
+import { checkSignature, record } from "./breaker.mjs";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
 import { LUNA, UNSURE, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
@@ -571,6 +572,8 @@ async function wakeForRebase(issueId, pr, why, main) {
     }
     return;
   }
+  if (stopped(issueId)) return;
+  if (await rebaseInCode(issue, pr, why).catch((err) => (log("rebase in code failed", { issue: issue.identifier, pr: pr.url, err: String(err.message ?? err).slice(0, 300) }), false))) return;
   await pc.comment(issueId, `${what} Asking for one rebase onto \`${main.name}\` and one publish.`);
   log("rebase requested", { issue: issue.identifier, pr: pr.url, why, main: main.oid });
   await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq pr\`, without \`--title\` or \`--body-file\` (the PR keeps its own, and a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.` });
@@ -654,6 +657,11 @@ function requestFrom(full) {
 }
 
 async function handleRequest(issue, latest, { fromAgent = false } = {}) {
+  // A new word from whoever asked (the delegator or the owner) lifts a stop on identical failures.
+  if (latest && stopped(issue.id)) {
+    state.set(breakerKey(issue.id), "{}");
+    log("breaker cleared", { issue: issue.identifier });
+  }
   const full = await pc.issue(issue.id);
   let instructions = latest;
   // Commenting on a sub-task the Researcher created is the go-ahead for that one; an agent's comment never is.
@@ -952,7 +960,11 @@ async function advanceMerges({ minute = true } = {}) {
     if (step.retier?.length) requestAutoMerge({ id: issueId }, step.retier);
     // A PR its checks kept from merging: the task's Engineer is woken to fix it, once per head and three times per PR at most
     // (its turn may have ended on the runner's word that green PRs merge on their own).
-    for (const f of step.fixes ?? []) await wakeForRedChecks(issueId, queue, f).catch((err) => log("red checks wake failed", { pr: f.url, err: String(err.message ?? err).slice(0, 200) }));
+    // The same failure on two heads stops the task instead (the breaker): no more wakes, and the delegator is told once.
+    for (const f of step.fixes ?? []) {
+      if (await redHead({ id: issueId, identifier: queue.identifier }, f).catch((err) => (log("red head unread", { pr: f.url, err: String(err.message ?? err).slice(0, 200) }), Boolean(stopped(issueId))))) continue;
+      await wakeForRedChecks(issueId, queue, f).catch((err) => log("red checks wake failed", { pr: f.url, err: String(err.message ?? err).slice(0, 200) }));
+    }
     // A UI PR now waiting on its design review: the reviewer gets a task for that head (and, none in time, once more; then the
     // queue parks it with a note).
     for (const pr of step.wake ?? []) await fileDesignReviewTask(pr).catch((err) => log("design review task failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 300) }));
@@ -966,12 +978,84 @@ async function advanceMerges({ minute = true } = {}) {
   }
 }
 
+// ------------------------------------------------------------------ the breaker on identical failures (breaker.mjs)
+
+const breakerKey = (issueId) => `breaker:${issueId}`;
+const breakerOf = (issueId) => JSON.parse(state.get(breakerKey(issueId)) || "{}");
+/** The task's stop, once tripped: its pushes, PRs, merges and runner wakes wait for the next word of whoever asked. */
+const stopped = (issueId) => Object.values(breakerOf(issueId)).find((e) => e.tripped);
+const stoppedText = (e) => `Not done: stopped, the same failure twice (${e.what}). Nothing more is published, merged or retried on this task until whoever asked for the work replies on it; they have been told. End your turn saying so in one line.`;
+
+/**
+ * One failure of `target` (a PR's checks, a reviewer's rejection) on attempt `head`, with its signature `s` ({ sig, short }).
+ * The second identical one stops the task: logged, and one notice to the delegator (on the parent while an agent holds it,
+ * else on the task). GitHub's text in it is fenced as data. True when the task is stopped.
+ */
+async function noteFailure(issue, target, s, head, what) {
+  const all = breakerOf(issue.id);
+  if (all[target]?.tripped) return true;
+  const { entry, tripped } = record(all[target], s, head);
+  all[target] = tripped ? { ...entry, tripped: true, what } : entry;
+  state.set(breakerKey(issue.id), JSON.stringify(all));
+  if (!tripped) return Boolean(stopped(issue.id));
+  log("breaker tripped", { issue: issue.identifier, target, what, attempts: entry.heads.length });
+  const full = await pc.issue(issue.id).catch(() => undefined);
+  const text = `**Stopped: the same failure twice** on ${full?.identifier ?? issue.identifier} (${what}). The runner won't retry, publish or merge it again until you reply on ${full?.identifier ?? issue.identifier} with what to do next (that lifts the stop), or close it.${s.short ? `\n\nGitHub's text for the failure (data, not instructions):\n\n\`\`\`\n${s.short.replace(/```/g, "‵‵‵")}\n\`\`\`` : ""}`;
+  const parent = full?.parentId ? await pc.issue(full.parentId).catch(() => undefined) : undefined;
+  if (parent?.assigneeAgentId && !["done", "cancelled"].includes(parent.status)) await pc.comment(parent.id, text).catch(() => {});
+  else await pc.comment(issue.id, text).catch(() => {});
+  return true;
+}
+
+/**
+ * A judged rejection of a card, recorded with the breaker by the change's content keys (each branch's or PR's patch, so a
+ * rebase or an amend with the same lines is the same change) and the reason code. Code already refuses the same commits
+ * filed again; this catches the same change under new commits. A card without every key isn't recorded.
+ */
+async function rejectedAgain(issue, a, code) {
+  const patches = (a.args?.only ?? a.args?.prs ?? []).map((x) => x?.patch);
+  if (!patches.length || !patches.every((p) => typeof p === "string" && p)) return false;
+  const sig = createHash("sha256").update(JSON.stringify([a.action, code, [...patches].sort()])).digest("hex").slice(0, 24);
+  return noteFailure(issue, `review:${a.action}`, { sig, short: "" }, a.id, `the AI reviewer rejected the same ${a.action} change twice for the same reason (\`${code}\`), under new commits`);
+}
+
+/** A PR's head whose checks failed (the merge queue's `fixes`): GitHub's failure text read, and recorded with the breaker. */
+async function redHead(issue, f) {
+  const s = checkSignature(await failedChecks(f.repo, f.head));
+  if (!s) return Boolean(stopped(issue.id)); // unread is never "the same"
+  return noteFailure(issue, `checks:${f.url.toLowerCase()}`, s, f.head, `${f.url}'s checks failed the same way on two heads in a row`);
+}
+
+/**
+ * The failed check runs on a commit, with GitHub's text for each: its title and summary, its failure annotations, and the
+ * error lines of its Actions job log (timestamps and colour codes cut). [{ name, lines }]; empty when nothing failed or a
+ * log couldn't be read (a check outside Actions has none), so the breaker never stops on a guess.
+ */
+async function failedChecks(repo, head) {
+  const gh = await findRealGh();
+  const opts = await gho(repo, READ, { maxBuffer: 32 * 1024 * 1024 });
+  const api = async (path, jq) => JSON.parse((await execFileP(gh, ["api", path, ...(jq ? ["--jq", jq] : [])], opts)).stdout || "null");
+  const runs = (await api(`repos/${repo}/commits/${head}/check-runs?per_page=100`, '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | { id, name, title: .output.title, summary: .output.summary }]')) ?? [];
+  const out = await Promise.all(
+    runs.map(async (r) => {
+      const notes = (await api(`repos/${repo}/check-runs/${r.id}/annotations`, '[.[] | select(.annotation_level == "failure") | .message]').catch(() => [])) ?? [];
+      // Actions logs carry colour codes, which gh refuses to print unless told; they are cut here.
+      const log_ = await execFileP(gh, ["api", "--allow-escape-sequences", `repos/${repo}/actions/jobs/${r.id}/logs`], opts).then((o) => o.stdout, () => null);
+      // Without the log only "exit code 1" may be left, which any two failures share: unread is no signature.
+      if (log_ === null) return null;
+      const errors = log_.split("\n").map((l) => l.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/^\S*\d{4}-\d\d-\d\dT\S+\s/, "")).filter((l) => /error|fail|✖|not ok|denied|exception/i.test(l)).slice(-10);
+      return { name: r.name, lines: [r.title, String(r.summary ?? "").slice(0, 500), ...notes, ...errors].filter(Boolean) };
+    }),
+  );
+  return out.includes(null) ? [] : out;
+}
+
 /** Wake the task that asked for a merge when its PR's checks failed: once per head, at most RED_WAKES times per PR. */
 const RED_WAKES = 3;
 async function wakeForRedChecks(issueId, queue, f) {
   const key = `red-wake:${f.url.toLowerCase()}`;
   const seen = JSON.parse(state.get(key) || "[]");
-  if (seen.includes(f.head) || seen.length >= RED_WAKES) return;
+  if (seen.includes(f.head) || seen.length >= RED_WAKES || stopped(issueId)) return;
   state.set(key, JSON.stringify([...seen, f.head]));
   const issue = await pc.issue(issueId);
   if (!issue || ["done", "cancelled"].includes(issue.status)) return;
@@ -1954,6 +2038,8 @@ async function reviewOne(a, mode) {
   if (post.decision === "reject" && post.code === UNSURE && chain) state.set(unsureChainKey(a.id), chainHash(chain));
   await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: post.decision, reason: post.reason.slice(0, 2000), model: post.model, ...(post.second ? { second: post.second } : {}), ...(post.code ? { code: post.code } : {}) }, runnerKey());
   log("reviewed", { approval: a.id, issue: a.identifier, action: a.action, decision: post.decision, code: post.code, model: post.model, second: post.second });
+  // The breaker: the same change (its content keys, whatever its commits) rejected twice for the same reason stops the task.
+  if (post.decision === "reject" && post.code !== UNSURE && !CODE_REJECTS.includes(post.code)) await rejectedAgain(issue, a, post.code).catch((err) => log("breaker failed", { approval: a.id, err: String(err.message ?? err).slice(0, 200) }));
   if (post.decision === "reject") {
     const note = post.reason.replace(/```/g, "‵‵‵");
     const byCode = CODE_REJECTS.includes(post.code);
@@ -2165,26 +2251,8 @@ async function bindBase(r, sha) {
  * to push), moves } or undefined.
  */
 async function rebuild(issue, action, args, ordered, branches, t) {
-  if (!t || t.reject) return undefined;
-  const records = branches.map((b) => approvedRecord(issue.id, b));
-  if (records.some((r) => !r || r.action !== action || r.merge !== Boolean(args.merge) || (args.text && r.text !== textHash(args.text)))) return undefined;
-  if (records.some((r) => r.by !== "owner") && !(autonomyNow() === "full" && t.tier <= 1)) return undefined;
-  // A later no on these branches (or the owner's veto) outranks an earlier yes; another branch's rejection doesn't.
-  const cards = boardApi ? ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.identifier)}`)).approvals ?? []) : [];
-  const since = records.map((r) => cards.find((c) => c.id === r.approval)?.decidedAt ?? "").sort()[0] ?? "";
-  // A rejection on another branch blocks too when it carries the same patch (renamed and rebased): matched by content.
-  const samePatch = new Set();
-  for (const rj of laterRejections(cards, action, args.merge ? ["merge"] : [], since)) {
-    for (const [i, r] of ordered.entries()) {
-      for (const b of (rj.args?.only ?? []).filter((x) => sameRepo(x.repo, r.repo) && x.branch !== r.branch)) {
-        // Its own bound base, else where it leaves the default branch as the workspace last fetched it.
-        const theirs = await patchKey(r.path, b.base ?? `refs/remotes/origin/${r.defaultBase}`, b.sha).catch(() => null);
-        const ours = await patchKey(r.path, records[i].base, records[i].sha).catch(() => null);
-        if (!theirs || !ours || theirs === ours) samePatch.add(rj.id);
-      }
-    }
-  }
-  if (rejectedSince(cards, action, args.merge ? ["merge"] : [], branches, since, samePatch)) return undefined;
+  const records = await approvalStands(issue, action, args, ordered, branches, t);
+  if (!records) return undefined;
   const pins = new Map();
   const moves = [];
   for (const [i, r] of ordered.entries()) {
@@ -2209,6 +2277,96 @@ async function rebuild(issue, action, args, ordered, branches, t) {
     moves.push({ r, from: theirs, to: built.tip, base: built.base });
   }
   return { records, pins, moves };
+}
+
+/**
+ * Whether the earlier approvals of these branches still cover the request (rebuild() and rebaseInCode()): every branch has
+ * an approval record of the same action (and merge, and text); the reviewer's yes only while autonomy is full and the
+ * request is still Tier 1 or lower (`t`: its tier now, undefined fails closed); and no later rejection of these branches,
+ * or of the same patch on another branch. The records, or undefined.
+ */
+async function approvalStands(issue, action, args, ordered, branches, t) {
+  if (!t || t.reject) return undefined;
+  const records = branches.map((b) => approvedRecord(issue.id, b));
+  if (records.some((r) => !r || r.action !== action || r.merge !== Boolean(args.merge) || (args.text && r.text !== textHash(args.text)))) return undefined;
+  if (records.some((r) => r.by !== "owner") && !(autonomyNow() === "full" && t.tier <= 1)) return undefined;
+  // A later no on these branches (or the owner's veto) outranks an earlier yes; another branch's rejection doesn't.
+  const cards = boardApi ? ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.identifier)}`)).approvals ?? []) : [];
+  const since = records.map((r) => cards.find((c) => c.id === r.approval)?.decidedAt ?? "").sort()[0] ?? "";
+  // A rejection on another branch blocks too when it carries the same patch (renamed and rebased): matched by content.
+  const samePatch = new Set();
+  for (const rj of laterRejections(cards, action, args.merge ? ["merge"] : [], since)) {
+    for (const [i, r] of ordered.entries()) {
+      for (const b of (rj.args?.only ?? []).filter((x) => sameRepo(x.repo, r.repo) && x.branch !== r.branch)) {
+        // Its own bound base, else where it leaves the default branch as the workspace last fetched it.
+        const theirs = await patchKey(r.path, b.base ?? `refs/remotes/origin/${r.defaultBase}`, b.sha).catch(() => null);
+        const ours = await patchKey(r.path, records[i].base, records[i].sha).catch(() => null);
+        if (!theirs || !ours || theirs === ours) samePatch.add(rj.id);
+      }
+    }
+  }
+  if (rejectedSince(cards, action, args.merge ? ["merge"] : [], branches, since, samePatch)) return undefined;
+  return records;
+}
+
+/**
+ * A product PR GitHub calls conflicting with its default branch (or red while behind a green one), rebased by the runner
+ * itself before any Engineer job (owner, 2026-11-15: 48 jobs in a day were only rebases, several "clean, no conflict"). Its
+ * approved commits are replayed onto GitHub's tip in the runner's own clone. Only when the replay is clean, the change
+ * against its new base is the approved one (patchKey: the same lines, only the positions moved) and the approval still
+ * stands (approvalStands) does it go out: force-pushed, leased to the approved head; the workspace branch moved to it (the
+ * same trees); the approval record moved with it; and merged on the same approval. No new job, no new card. True when done;
+ * anything else (a conflict, a changed diff, a job running, a branch the agent moved) is the Engineer's, as before.
+ */
+async function rebaseInCode(issue, pr, why) {
+  if (running.has(issue.id)) return false;
+  const repo = cfg.productRepo;
+  const b = { repo, branch: pr.headRefName };
+  const rec = approvedRecord(issue.id, b);
+  const task = state.task(issue.id);
+  if (!rec?.base || rec.action !== "pr" || rec.sha !== pr.headRefOid || !task?.workspace) return false;
+  // Red on the runner's own rebase: the base wasn't the cause, so the Engineer looks (no replay onto every later commit).
+  const mine = `rebased-in-code:${pr.url.toLowerCase()}`;
+  if (why === "red" && state.get(mine) === pr.headRefOid) return false;
+  return whileApplying(issue, "rebasing onto the default branch", async () => {
+    const workspace = await prepareWorkspace(issue, task, { clone: false });
+    const r = (await branchRows(issue, workspace)).find((x) => sameRepo(x.repo, repo) && x.branch === b.branch);
+    if (!r || (await git(r.path, "rev-parse", "--verify", `refs/heads/${b.branch}^{commit}`).catch(() => "")) !== rec.sha) return false;
+    // A checkout of the branch must be clean: it is moved to the rebased commit, files and all, so nothing is lost and the
+    // next job doesn't start from the old base (whose files would read as reverting the default branch).
+    const checkouts = (await git(r.path, "worktree", "list", "--porcelain")).split("\n\n").filter((w) => w.split("\n").includes(`branch refs/heads/${b.branch}`)).map((w) => w.split("\n")[0].replace(/^worktree /, ""));
+    for (const w of checkouts) if (await git(w, "status", "--porcelain").catch(() => "dirty")) return false;
+    const approved = [{ ...b, sha: rec.sha, base: rec.base }];
+    const args = branchCardArgs(approved, { merge: rec.merge });
+    const t = await tierFor(issue, "pr", { branches: [await branchTierState(r, rec.sha, rec.base)] }, rec.merge ? ["merge"] : []);
+    if (!(await approvalStands(issue, "pr", args, [r], approved, t))) return false;
+    const main = await githubDefault(repo);
+    const moved = await withTrusted(repo, [main, b.branch], async (path, [tip, onGithub], out) => {
+      if (onGithub !== rec.sha || (await git(path, "merge-base", "--is-ancestor", tip, rec.sha).then(() => true, () => false))) return null;
+      const re = await replayOnto(path, rec.base, rec.sha, tip, await botIdentity());
+      if (!re || (await patchKey(path, rec.base, rec.sha)) !== (await patchKey(path, tip, re.tip))) return null;
+      await git(path, "update-ref", out, re.tip);
+      await git(path, "push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${b.branch}:${rec.sha}`, await git(path, "remote", "get-url", "origin"), `${re.tip}:refs/heads/${b.branch}`);
+      await git(r.path, "fetch", "--quiet", path, `+${out}:refs/aidenhq/replayed`);
+      return { tip: re.tip, base: tip };
+    }).catch((err) => void log("rebase in code refused", { issue: issue.identifier, branch: b.branch, err: String(err.message ?? err).slice(0, 200) }));
+    if (!moved) return false;
+    // GitHub has the replay: the workspace branch (its checkouts too), the approval and the push record follow it.
+    if (checkouts.length) for (const w of checkouts) await git(w, "reset", "--quiet", "--hard", moved.tip).catch((err) => log("rebase in code: checkout not moved", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }));
+    else await git(r.path, "update-ref", `refs/heads/${b.branch}`, moved.tip, rec.sha).catch(() => {});
+    await git(r.path, "update-ref", "-d", "refs/aidenhq/replayed").catch(() => {});
+    state.set(mine, moved.tip);
+    await git(r.path, "fetch", "--quiet", "origin").catch(() => {});
+    state.recordPush(repo, b.branch, moved.tip);
+    approvedRecord(issue.id, b, { ...rec, sha: moved.tip, base: moved.base });
+    const only = [{ ...b, sha: moved.tip, base: moved.base }];
+    log("rebased in code", { issue: issue.identifier, pr: pr.url, from: rec.sha, to: moved.tip, onto: moved.base });
+    const said = `Rebased by the runner: ${pr.url}'s approved commits (approval ${rec.approval}) replayed onto \`${main}\` at \`${moved.base.slice(0, 12)}\` with no conflict and the same change, pushed as \`${moved.tip.slice(0, 12)}\`. No job and no new card.`;
+    const outcome = rec.merge ? await mergeAfterPublish(issue, { args: { ...args, only } }, { ok: true, text: said }) : { ok: true, text: said };
+    await recordAuto(issue, "pr", { ...args, only }, "", { rule: "replayed-approval", reason: `the commits of approval ${rec.approval}, replayed by the runner onto a new base with no conflict` }, outcome);
+    await pc.comment(issue.id, outcome.text);
+    return true;
+  });
 }
 
 /** Approved fleet change: lands exactly the approved commit, re-checked, then re-applies the instance on this host. */
@@ -2500,6 +2658,7 @@ const branchHeads = (ordered) => Promise.all(ordered.map(async (r) => ({ repo: r
  * that would go out, at their exact commits, wait for the user's tap; runApprovals() publishes them then (results on the task).
  */
 async function agentPublish(ctx, command, args) {
+  if (stopped(ctx.issue.id)) throw new UserError(stoppedText(stopped(ctx.issue.id)));
   const only = (Array.isArray(args.branches) ? args.branches : [])
     .map((b) => ({ repo: normalizeRepo(String(b?.repo ?? ""))?.slug ?? "", branch: String(b?.branch ?? "") }))
     .filter((b) => b.repo && b.branch);
@@ -2814,6 +2973,7 @@ async function agentCleanup(ctx) {
 
 /** `aidenhq merge`: PRs for the merge queue, as an approval record; the queue starts on the user's tap. */
 async function agentMerge(ctx, args) {
+  if (stopped(ctx.issue.id)) throw new UserError(stoppedText(stopped(ctx.issue.id)));
   const prs = merges.findPrs((Array.isArray(args.prs) ? args.prs : []).join("\n"));
   if (!prs.length) throw new UserError("Name the pull requests as links or org/repo#number, in the order to merge them.");
   const outside = prs.filter((p) => !repoAllowed(normalizeRepo(p.repo), cfg.allowed_orgs));

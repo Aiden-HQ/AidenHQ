@@ -9,7 +9,7 @@
 // took a turn longer with every branch it had seen (3s, growing to 13s).
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
 import { State } from "../src/state.mjs";
@@ -129,6 +129,38 @@ describe("flow-merge-path", { concurrency: true }, () => {
     await restart(); // a card queue steps once a minute: a fresh runner steps it now
     await t.waitFor("the merge", () => merged().some((e) => e.data.some((x) => /pulls\/14\/merge$/.test(x))));
     assert.ok(merged().at(-1).data.includes(`sha=${rebased}`), "at exactly the replayed commit");
+  });
+
+  scenario("an approved PR GitHub calls conflicting is rebased by the runner when its commits replay cleanly: no job, no new card, merging on the same approval", async ({ t, prs, setPrs, tip, restart, moveMain, approved }) => {
+    await t.settled();
+    const first = await approved("feat/third", 14, "third");
+    moveMain();
+    const moved = git(t.dir, "--git-dir", join(t.dir, "github/acme/app.git"), "diff-tree", "--no-commit-id", "--name-only", "-r", "main");
+    const cards = t.paperclip.approvals.size;
+    const runs = t.claudeRuns().length;
+    prs[14] = { ...prs[14], mergeable: "CONFLICTING" };
+    setPrs();
+    await restart(); // the open-PR read runs once a minute: a fresh runner reads it now
+    await t.waitFor("the runner's rebase", () => t.partComments().some((c) => /Rebased by the runner/.test(c)));
+    const rebased = tip("feat/third");
+    assert.notEqual(rebased, first, "a new commit is on GitHub");
+    assert.equal(git(t.dir, "--git-dir", join(t.dir, "github/acme/app.git"), "rev-parse", `${rebased}^`), tip("main"), "on top of GitHub's main");
+    assert.equal(t.paperclip.approvals.size, cards, "no new card");
+    assert.ok(t.paperclip.autos.some((r) => r.rule === "replayed-approval" && r.args.only[0].sha === rebased), "an audit row says which approval covered it");
+    const s = new State(join(t.dir, "state"));
+    const queue = JSON.parse(s.get("merges:part"));
+    const record = JSON.parse(s.get(`approved-commits:part:acme/app|feat/third`));
+    s.db.close();
+    assert.ok(queue.prs.some((p) => p.number === 14 && p.status === "pending" && p.head === rebased), "its merge is queued, bound to the rebased commit");
+    assert.equal(record.sha, rebased, "the approval moved with it, so the next rebase replays again");
+    // The workspace's checkout moved with it: clean, on the rebased commit, with main's new file.
+    const ws = t.fakeLog().filter((e) => e.kind === "workspace").at(-1).data.repo;
+    assert.equal(git(ws, "rev-parse", "HEAD"), rebased);
+    assert.equal(git(ws, "status", "--porcelain"), "", "nothing reads as reverting main");
+    assert.ok(existsSync(join(ws, moved)), "main's new file is there");
+    await t.idle(1000);
+    assert.ok(!t.claudeRuns().slice(runs).some((r) => /Rebase the PR's branch/.test(r.prompt)), "no Engineer job");
+    assert.ok(!t.partComments().some((c) => /Asking for one rebase/.test(c)), "no rebase request");
   });
 
   scenario("a first publish over a forged origin/main, an unreadable main and a replace ref are refused before any card", async ({ t, tip, setPrs, onGithub, moveMain, refused }) => {

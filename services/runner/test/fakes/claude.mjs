@@ -108,6 +108,10 @@ if (step === "commit") {
   writeFileSync(join(repo, "chains.txt"), `chain\n# ${Date.now()}\n`);
   git("add", "chains.txt");
   git("commit", "-q", "--amend", "-m", "fix: drop Legacy");
+} else if (step.startsWith("reword ")) {
+  // The same change under a new commit: only the message differs.
+  git("switch", "-q", step.slice("reword ".length));
+  git("commit", "-q", "--amend", "-m", `feat: reworded at ${Date.now()}`);
 } else if (step.startsWith("rebase ")) {
   // `rebase <branch>`: onto GitHub's main as it is now, cleanly (the same change on a new base).
   git("fetch", "-q", "origin");
