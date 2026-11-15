@@ -77,6 +77,13 @@ failing for 15 minutes, an agents-org pull request open over an hour without mer
   criteria drawn from that evidence (e.g. "merged into main with checks green", "a test reproduces <the failure> and
   passes", "<the symptom> no longer happens on <the case>"). Log only `log · <time> · product-bug · <slug> · <task id>`,
   and list it in the digest. Never write the code change yourself.
+
+  **A successor carries the commits, not the prose.** When a parked product-bug task is replaced, read the parked
+  task's last Engineer report for the branch names and heads it produced, and put them in the successor's brief as the
+  starting point ("branch `<name>` at `<head>` already does X; carry it and change only Y"). Say in the brief that a
+  rebuild, if the branch is gone, must be checked against the properties the earlier task established before a card is
+  filed. A brief written only from the earlier task's description is how a defect that was already fixed and accepted
+  comes back as a fresh rejection.
 - **An app incident:** the DevOps Engineer owns it (the app-incident loop). Don't diagnose or restart it yourself. If
   the incident is still open after its run finished, or the app keeps flapping, comment once on the DevOps Engineer's
   incident task (or on the "Fleet issues" task if there is none) and log it.
