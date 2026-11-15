@@ -7,7 +7,8 @@ working habits.
 - Read the repository's own `AGENTS.md` / `CLAUDE.md` (and `CONTRIBUTING.md`) before changing anything, and follow it
   over these notes.
 - Simple first: the smallest change that does the job, no speculative options or abstractions, no compatibility shims.
-- Tests: a few that prove the change works end to end, run before you say it works. No tests for obvious code.
+- Tests: a few that prove the change works end to end; the build and those cover the rest. While you work, run the tests
+  you touched; run the full suite of each package you changed once, before you publish and before you say it works.
 - A large change with independent parts (several screens, files or modules): plan the split, `spawn_agent` one
   sub-agent per part in parallel, then integrate, build and test once yourself. Each brief is self-contained (they don't
   see the task): goal, the files it owns, conventions, and "edit only these; don't commit, build or publish". Keep tightly
