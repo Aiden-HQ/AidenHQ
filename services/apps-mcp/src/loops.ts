@@ -20,7 +20,7 @@ export async function healthTick(p: Platform, log: Log, now: () => number = Date
       if (last && (last.status !== "failed" || p.store.goodDeploys(app.name).length) && !p.engine.locked(app) && now() - last.at >= app.health.grace_sec * 1000) {
         if (await p.probe(app)) {
           streaks.delete(app.name);
-          p.store.closeIncident(app.name, ["unhealthy", "exited", "deploy_failed"]); // healthy again (e.g. after a rollback)
+          p.store.closeIncident(app.name, ["unhealthy", "exited"]); // healthy again; a deploy_failed or rolled_back incident waits for a fixed deploy
         } else {
           // The webhook and incident carry only short text generated here, never app output (logs stay behind app_logs).
           // App-side evidence: a container down (exited, restarting), or its health answering an HTTP error. A probe that got

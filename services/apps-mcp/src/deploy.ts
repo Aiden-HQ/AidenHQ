@@ -120,7 +120,8 @@ export function createEngine(d: Deps) {
       if (next.ok) {
         const r: Result = { sha: next.sha, status: "healthy", images: next.images, checks };
         record(app, r, o.by, summary(checks!));
-        d.store.closeIncident(app.name);
+        // Redeploying the commit a failed deploy rolled back to is not the fix: that incident waits for another commit.
+        if (!(next.sha === prev?.sha && d.store.openIncident(app.name)?.kind === "deploy_failed")) d.store.closeIncident(app.name);
         await d.expose?.(app);
         return r;
       }
