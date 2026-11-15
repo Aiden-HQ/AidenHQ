@@ -231,7 +231,7 @@ jobs:
           packages=$(cat <<'PACKAGES'
           scripts|npm ci && npm test|*
           services/runner|(its own job)|services/runner services/computer services/gateway services/shared modules scripts
-          services/runner#flows|(its own jobs)|services/runner services/shared|services/runner/src/prompt.mjs services/runner/codex-home/AGENTS.md
+          services/runner#flows|(its own jobs)|services/runner services/shared|services/runner/src/prompt.ts services/runner/codex-home/AGENTS.md
           services/computer|node --test test/*.test.mjs|services/computer services/runner/src services/runner/bin modules/core/design-system modules/design
           services/gateway|npm ci && npm test && npm run typecheck|services/gateway services/computer
           modules/core/templates/app|npm ci && npm test && npm run build|modules/core/templates/app modules/core/design-system
