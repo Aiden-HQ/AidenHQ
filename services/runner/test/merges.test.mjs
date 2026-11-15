@@ -329,14 +329,50 @@ describe("merge queue: a run through", () => {
     assert.deepEqual(gh.writes.at(-1), { merge: 1, sha: "head1", method: "squash" });
   });
 
-  it("gives up on a PR whose checks never finish", async () => {
+  it("names the check still running, then fails that PR at the bound instead of waiting forever", async () => {
     const gh = fakeGithub({ 1: pr(1, { commits: { nodes: [{ commit: { statusCheckRollup: pending } }] } }) });
     const q = newQueue(findPrs("o/r#1"), { gapMinutes: 15, now: at(0) });
-    assert.equal((await advance(q, { github: gh, now: at(0), timeoutMinutes: 30 })).done, undefined);
+    const first = await advance(q, { github: gh, now: at(0), timeoutMinutes: 30 });
+    assert.equal(first.done, undefined);
+    assert.equal(first.queue.waiting, "#1's checks are running (1 check still running: `gh pr checks 1` names it)");
     assert.equal((await advance(q, { github: gh, now: at(20), timeoutMinutes: 30 })).done, undefined);
     const step = await advance(q, { github: gh, now: at(31), timeoutMinutes: 30 });
     assert.equal(step.done, "stopped");
-    assert.match(step.queue.reason, /stuck for 30 minutes: #1's checks are running/);
+    assert.equal(step.queue.prs[0].status, "failed");
+    assert.equal(step.queue.reason, "stuck for 30 minutes: #1's checks are running (1 check still running: `gh pr checks 1` names it)");
+    assert.match(step.say.join("\n"), /\*\*Not merged:\*\* https:\/\/github.com\/o\/r\/pull\/1: stuck for 30 minutes: #1's checks are running \(1 check still running/);
+  });
+
+  it("a stuck head no longer holds the PRs behind it: the next one still merges", async () => {
+    const gh = fakeGithub({ 1: pr(1, { commits: { nodes: [{ commit: { statusCheckRollup: pending } }] } }), 2: pr(2) });
+    const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 0, now: at(0) });
+    await advance(q, { github: gh, now: at(0), timeoutMinutes: 30 });
+    assert.equal(gh.writes.length, 0, "nothing merges while #1's check runs");
+    const step = await advance(q, { github: gh, now: at(31), timeoutMinutes: 30 });
+    assert.equal(q.prs[0].status, "failed");
+    assert.deepEqual(gh.writes.at(-1), { merge: 2, sha: "head2", method: "squash" });
+    assert.equal(step.queue.prs[1].status, "merged");
+    const last = await advance(q, { github: gh, now: at(38), timeoutMinutes: 30 });
+    assert.equal(last.done, "stopped");
+    assert.match(last.queue.reason, /stuck for 30 minutes: #1's checks are running \(1 check still running/);
+    assert.match(last.say.at(-1), /\*\*Merges finished:\*\* 1 merged, 1 not/);
+  });
+
+  it("a PR stacked on a head the queue gave up on is skipped by name, and an independent PR still merges", async () => {
+    const stuck = pr(1, { headRefName: "feat/one", commits: { nodes: [{ commit: { statusCheckRollup: pending } }] } });
+    const child = pr(2, { headRefName: "feat/two", baseRefName: "feat/one" });
+    const gh = fakeGithub({ 1: stuck, 2: child, 3: pr(3) }, {}, { "feat/one": { tip: "head1", open: true } });
+    const q = newQueue(findPrs("o/r#1 o/r#2 o/r#3"), { gapMinutes: 0, now: at(0) });
+    await advance(q, { github: gh, now: at(0), timeoutMinutes: 30 });
+    assert.equal(gh.writes.length, 0, "nothing merges while #1's check runs");
+    const step = await advance(q, { github: gh, now: at(31), timeoutMinutes: 30 });
+    assert.equal(q.prs[0].status, "failed");
+    assert.match(q.prs[0].note, /stuck for 30 minutes: #1's checks are running \(1 check still running/);
+    assert.equal(q.prs[1].status, "failed");
+    assert.equal(q.prs[1].note, "stacked on #1, which did not merge");
+    assert.match(step.say.join("\n"), /#2 skipped: stacked on #1, which did not merge/);
+    assert.deepEqual(gh.writes.at(-1), { merge: 3, sha: "head3", method: "squash" });
+    assert.equal(step.queue.prs[2].status, "merged");
   });
 
   it("stops with GitHub's words when a merge is refused", async () => {

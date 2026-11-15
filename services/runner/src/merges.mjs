@@ -331,6 +331,15 @@ export function namedChecks(rollup) {
 }
 
 /**
+ * The checks still running on a PR's head, counted: " (3 checks still running: `gh pr checks 38` names them)", so a stall
+ * is diagnosable without opening GitHub. Check names are set by whoever can push: never in the runner's own words.
+ */
+function runningChecks(rollup, number) {
+  const n = namedChecks(rollup).filter((c) => c.pending).length;
+  return n ? ` (${n} check${n === 1 ? "" : "s"} still running: \`gh pr checks ${number}\` names ${n === 1 ? "it" : "them"})` : "";
+}
+
+/**
  * A card filed seconds after the PR opened sees no checks yet, though CI is about to start. Re-reads the tier state (`read()`) until
  * every PR whose head matches the card has a named check, or `until` ms pass, then returns what it last read.
  */
@@ -410,26 +419,26 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
     case "BEHIND":
       return pr.headRefOid === updatedHead ? { do: "wait", why: `${ref} is being updated with \`${pr.baseRefName}\`` } : { do: "update", why: `${ref} is behind \`${pr.baseRefName}\`` };
     case "UNSTABLE":
-      if (ci === "pending") return { do: "wait", why: `${ref}'s checks are running` };
+      if (ci === "pending") return { do: "wait", why: `${ref}'s checks are running${runningChecks(checks, pr.number)}`, key: "checks" };
       // GitHub counts an advisory check that isn't green; with every other check green, that's no reason to wait.
       if (required(checks) === checks) return { do: "stop", why: `${ref} has failing checks`, red: true };
       break;
     case "BLOCKED":
-      return ci === "pending" ? { do: "wait", why: `${ref}'s checks are running` } : { do: "stop", why: `GitHub won't merge ${ref} yet (blocked by a branch rule)` };
+      return ci === "pending" ? { do: "wait", why: `${ref}'s checks are running${runningChecks(checks, pr.number)}`, key: "checks" } : { do: "stop", why: `GitHub won't merge ${ref} yet (blocked by a branch rule)` };
     case "CLEAN":
     case "HAS_HOOKS":
       break;
     default: // UNKNOWN: GitHub is still working it out
       return { do: "wait", why: `GitHub is still checking whether ${ref} can merge` };
   }
-  if (ci === "pending") return { do: "wait", why: `${ref}'s checks are running` };
+  if (ci === "pending") return { do: "wait", why: `${ref}'s checks are running${runningChecks(checks, pr.number)}`, key: "checks" };
   if (skippedImageScan(pr)) return { do: "stop", why: `${ref} changes an image but its image-scan check was skipped` };
   // A merge the AI reviewer approved: no checks is not green; every named check must have passed on this head.
   if (strictChecks) {
     const named = namedChecks(checks);
     // CI starts a little after a push (a card's merge is stepped seconds after it): no checks yet waits, ten minutes at most.
     if (!named.length) return { do: "wait", why: `${ref} has no checks yet, and a merge without the owner's tap needs green checks`, limit: 10 };
-    if (named.some((c) => c.pending)) return { do: "wait", why: `${ref}'s checks are running` };
+    if (named.some((c) => c.pending)) return { do: "wait", why: `${ref}'s checks are running${runningChecks(checks, pr.number)}`, key: "checks" };
     if (named.some((c) => !c.ok)) return { do: "stop", why: `${ref}: ${named.filter((c) => !c.ok).length} named check(s) not green (\`gh pr checks ${pr.number}\` names them)`, red: true };
   }
   const base = ciState(pr.baseRef?.target?.statusCheckRollup);
@@ -441,7 +450,10 @@ export function prDecision(pr, { updatedHead, cardIsReview = false, approvedHead
     if (behind > 0) return pr.headRefOid === updatedHead ? { do: "wait", why: `${ref} is being updated with \`${pr.baseRefName}\`` } : { do: "update", why: `\`${pr.baseRefName}\` is red and ${ref} is behind it` };
     return { do: "stop", why: `\`${pr.baseRefName}\` is red before merging ${ref} (its failing checks are on GitHub)` };
   }
-  if (base === "pending") return { do: "wait", why: `CI is running on \`${pr.baseRefName}\`` };
+  if (base === "pending") {
+    const n = namedChecks(pr.baseRef.target.statusCheckRollup).filter((c) => c.pending).length;
+    return { do: "wait", why: `CI is running on \`${pr.baseRefName}\`${n ? ` (${n} check${n === 1 ? "" : "s"} still running)` : ""}`, key: "base-checks" };
+  }
   return { do: "merge" };
 }
 
@@ -473,6 +485,17 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     if (t - Date.parse(queue.wait.since) > limit * 60_000) return stop(`stuck for ${limit} minutes: ${why}`);
     return { queue, say };
   };
+  // One PR's own wait: past its bound that PR is "not merged", naming the check, and the queue goes on to the next one
+  // rather than holding every later PR behind a head that will not finish.
+  const waitOn = (next, pr, key, why, limit = timeoutMinutes) => {
+    if (queue.wait?.key !== key) queue.wait = { key, since: now.toISOString() };
+    queue.waiting = why;
+    if (t - Date.parse(queue.wait.since) <= limit * 60_000) return { queue, say };
+    Object.assign(next, { status: "failed", note: `stuck for ${limit} minutes: ${why}`, headRef: pr?.headRefName });
+    delete queue.wait;
+    say.push(`**Not merged:** ${next.url}: stuck for ${limit} minutes: ${why}. Re-run its checks at the same head, then ask for it again.`);
+    return "next";
+  };
 
   // 1. The last merge: its CI on the base branch must finish green.
   const last = queue.prs.filter((p) => p.status === "merged" && p.sha).at(-1);
@@ -494,7 +517,11 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     const settled = t - Date.parse(last.mergedAt) >= settleMinutes * 60_000;
     if (ci === "red") return stop(`CI failed on \`${last.base}\` after merging #${last.number} (its failing checks are on GitHub)`);
     // A tip we moved to has no grace: without a check of its own it is still starting up.
-    if (ci === "pending" || !settled || (head !== last.sha && !namedChecks(rollup).length)) return waiting(`ci:${head}`, `CI is running on \`${last.base}\` after #${last.number}`);
+    // A tip we moved to has no grace: without a check of its own it is still starting up.
+    if (ci === "pending" || !settled || (head !== last.sha && !namedChecks(rollup).length)) {
+      const n = namedChecks(rollup).filter((c) => c.pending).length;
+      return waiting(`ci:${head}`, `CI is running on \`${last.base}\` after #${last.number}${n ? ` (${n} check${n === 1 ? "" : "s"} still running)` : ""}`);
+    }
     last.ciAt = now.toISOString();
     last.checks = rollup?.contexts?.nodes?.length ?? 0;
     const merged = queue.prs.filter((p) => p.status === "merged").length;
@@ -518,6 +545,15 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     const pr = data?.repository?.pullRequest;
     if (!pr) return stop(`couldn't find ${next.url} on GitHub`);
     const defaultBranch = data.repository.defaultBranchRef?.name;
+    // Stacked on a head this queue gave up on: its commits would land on an unmerged parent, so it waits for a later
+    // request instead of spending its own bound on the open parent and holding the PRs after it. A parent that merged is
+    // replayed onto the default branch below, not skipped.
+    const dropped = queue.prs.find((p) => p.status === "failed" && p.headRef && p.repo.toLowerCase() === next.repo.toLowerCase() && p.headRef === pr.baseRefName);
+    if (dropped) {
+      Object.assign(next, { status: "failed", note: `stacked on #${dropped.number}, which did not merge`, headRef: pr.headRefName });
+      say.push(`#${next.number} skipped: stacked on #${dropped.number}, which did not merge.`);
+      continue;
+    }
     const review = pr.state === "OPEN" && cardIsReview(next.repo) && Boolean(next.head);
     const base = await settleBase(github, next.repo, pr, defaultBranch);
     if (base === "retarget") {
@@ -543,7 +579,11 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
       say.push(`Retargeted ${next.url} to \`${defaultBranch}\`: the branch it was stacked on merged with #${parent.number}, so its approved commits were replayed onto \`${defaultBranch}\` as \`${head.slice(0, 12)}\`.`);
       return waiting(`pr:${next.number}:retarget`, `#${next.number} was just retargeted to \`${defaultBranch}\``);
     }
-    if (base !== "ok") return waiting(`pr:${next.number}:base:${base.wait}`, `#${next.number} ${base.wait}`);
+    if (base !== "ok") {
+      const r = waitOn(next, pr, `pr:${next.number}:base:${base.wait}`, `#${next.number} ${base.wait}`);
+      if (r !== "next") return r;
+      continue;
+    }
     // A head the runner replayed merges only with named checks, all green on it.
     const d = prDecision(pr, { updatedHead: next.updatedHead, cardIsReview: cardIsReview(next.repo), approvedHead: next.head, strictChecks: Boolean(queue.strict || next.rebound) });
     if (d.do === "skip") {
@@ -552,19 +592,31 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
       continue;
     }
     const retry = d.do === "stop" && d.red ? await retryInfra(github, next.repo, next.number, pr) : undefined;
-    if (retry) return waiting(`pr:${next.number}:${pr.headRefOid}:${retry.key}`, `#${next.number}: ${RERUN_WAIT[retry.key]}`, retry.limit);
+    if (retry) {
+      const r = waitOn(next, pr, `pr:${next.number}:${pr.headRefOid}:${retry.key}`, `#${next.number}: ${RERUN_WAIT[retry.key]}`, retry.limit);
+      if (r !== "next") return r;
+      continue;
+    }
     if (d.do === "stop") return stop(d.why);
-    if (d.do === "wait") return waiting(`pr:${next.number}:${pr.headRefOid}:${d.why}`, d.why, d.limit);
+    if (d.do === "wait") {
+      const r = waitOn(next, pr, `pr:${next.number}:${pr.headRefOid}:${d.key ?? d.why}`, d.why, d.limit);
+      if (r !== "next") return r;
+      continue;
+    }
     if (d.do === "ready") {
       if (next.readied) return stop(`#${next.number} is still a draft after I marked it ready`);
       await github.markReady(pr.id, next.repo);
       next.readied = true;
-      return waiting(`pr:${next.number}:ready`, `#${next.number} was just marked ready for review`);
+      const r = waitOn(next, pr, `pr:${next.number}:ready`, `#${next.number} was just marked ready for review`);
+      if (r !== "next") return r;
+      continue;
     }
     if (d.do === "update") {
       await github.updateBranch(next.repo, next.number, pr.headRefOid);
       next.updatedHead = pr.headRefOid;
-      return waiting(`pr:${next.number}:update`, d.why);
+      const r = waitOn(next, pr, `pr:${next.number}:update`, d.why);
+      if (r !== "next") return r;
+      continue;
     }
     const method = mergeMethod(data.repository);
     if (!method) return stop(`\`${next.repo}\` allows no merge method I can use`);
@@ -580,11 +632,18 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     return { queue, say };
   }
 
-  // 4. Nothing left.
-  queue.state = "done";
+  // 4. Nothing left. A PR that stalled is reported by name; it doesn't keep the ones after it from merging.
+  const failed = queue.prs.filter((p) => p.status === "failed").length;
+  const merged = queue.prs.filter((p) => p.status === "merged").length;
+  queue.state = failed ? "stopped" : "done";
+  if (failed) queue.reason = queue.prs.find((p) => p.status === "failed").note;
   queue.finishedAt = now.toISOString();
   delete queue.waiting;
-  return { queue, say: [...say, summary(queue, `**Done:** every PR is merged and CI is green, ${minutes(t - Date.parse(queue.startedAt))} minutes in all.`)], done: "done" };
+  return {
+    queue,
+    say: [...say, summary(queue, failed ? `**Merges finished:** ${merged} merged, ${failed} not (see above).` : `**Done:** every PR is merged and CI is green, ${minutes(t - Date.parse(queue.startedAt))} minutes in all.`)],
+    done: queue.state,
+  };
 }
 
 
@@ -620,11 +679,11 @@ export function eachDecision(pr, p) {
   const red = named.filter((c) => !c.ok && !c.pending);
   // Check names and descriptions are set by whoever can push to the repo: never in the runner's own words (count only).
   if (red.length) return { do: "fail", why: `${red.length} named check(s) failed on its head (\`gh pr checks ${pr.number}\` names them)`, red: true };
-  if (named.some((c) => c.pending)) return { do: "wait", why: "checks are running" };
+  if (named.some((c) => c.pending)) return { do: "wait", why: `checks are running${runningChecks(rollup, pr.number)}`, key: "checks" };
   if (skippedImageScan(pr)) return { do: "fail", why: "it changes an image but its image-scan check was skipped" };
   const ci = ciState(rollup);
   if (ci === "red") return { do: "fail", why: "GitHub reports failing checks", red: true };
-  if (ci !== "green") return { do: "wait", why: "checks are running" };
+  if (ci !== "green") return { do: "wait", why: `checks are running${runningChecks(rollup, pr.number)}`, key: "checks" };
   // A UI PR merges at Tier 0 only once the UI Reviewer's design review passed on this head: `p.ui` when tiering decided it,
   // else the PR's own files here, so a queue without the flag can't skip the gate. Missing counts as pending (the reviewer
   // is woken for it); still none 2 hours after the checks went green: the reviewer is asked once more, and after that the
@@ -712,7 +771,7 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
           if (d.red) fixes.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid, why: d.why });
         }
       } else if (d.do === "wait") {
-        wait(`${pr.headRefOid}:${d.why}`, d.why, d.limit, d.again);
+        wait(`${pr.headRefOid}:${d.key ?? d.why}`, d.why, d.limit, d.again);
         // The design reviewer is asked once per head, when the merge starts waiting on it (the caller files its task).
         if (d.again && p.status === "pending" && p.reviewAsked !== pr.headRefOid) {
           p.reviewAsked = pr.headRefOid;
@@ -781,7 +840,9 @@ export function addEach(existing, prs, { now = new Date() } = {}) {
 export function summary(queue, headline) {
   const STATUS = { merged: "✅ merged", skipped: "↷ skipped", pending: "waiting", failed: "✗ not merged", escalated: "→ the owner's card" };
   const rows = queue.prs.map((p) => `| ${p.url} | ${STATUS[p.status] ?? p.status}${p.mergedAt ? ` at ${clock(p.mergedAt)}` : ""}${p.note ? ` (${p.note})` : ""} |`);
-  return [headline, "", "| PR | |", "|---|---|", ...rows].join("\n");
+  // A running queue names what it is waiting on, so a stall is diagnosable without opening GitHub.
+  const waiting = queue.state === "running" && queue.waiting ? [`Waiting on: ${queue.waiting}.`, ""] : [];
+  return [headline, "", ...waiting, "| PR | |", "|---|---|", ...rows].join("\n");
 }
 
 function stoppedComment(queue) {

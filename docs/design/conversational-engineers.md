@@ -67,7 +67,9 @@ for the turn. Being a shell command, it works the same in all three engines.
 | `task`, `tasks` | Read the user's other tasks | read-only |
 
 Help is answered inside the CLI, so asking how a command works never reaches the runner as a request. The merge queue
-keeps running after the turn ends, because merges are spread over hours; its progress comments land in the thread.
+keeps running after the turn ends, because merges are spread over hours; its progress comments land in the thread. A
+check still running past its bound marks that PR not merged, saying how many checks are stuck and where to read them,
+so the PRs after it still merge one at a time.
 Writes also pass through the tier rules in [approvals.md](approvals.md).
 
 ## The user's word

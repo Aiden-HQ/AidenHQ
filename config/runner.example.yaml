@@ -92,7 +92,7 @@ reviews:
 # Merging the PRs an Engineer task lists, one at a time, in code.
 merges:
   gap_minutes: 15        # between merges, unless the request says otherwise
-  timeout_minutes: 90    # stop the queue when a check or CI stays pending this long
+  timeout_minutes: 90    # a PR whose checks stay pending this long is reported as not merged; later PRs still merge
 
 # Platform Engineer's `aidenhq apply`: on your word, land the shown commit on main of your instance repo
 # (instance.yaml, apps.yaml, agents/<key>.md only), then run ops/apply-config.sh here. Needs a write deploy key for it.
