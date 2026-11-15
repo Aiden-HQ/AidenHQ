@@ -137,6 +137,19 @@ export function wrapExec(command, args, env) {
   return env?.CODEX_HOME ? ["sh", ["-c", CODEX_CONFIG_SCRUB, "aidenhq-computer", command, ...(args ?? [])]] : [command, args ?? []];
 }
 
+/**
+ * compile publishes a new image tag before ops/computer-images.sh has built it. Until it exists, run the newest built image
+ * of the same name (never a pull) rather than failing the agent's run.
+ */
+export async function builtImage(tag, docker, log = () => {}) {
+  if ((await docker(["image", "inspect", tag])).exitCode === 0) return tag;
+  const r = await docker(["images", "--filter", `reference=${tag.split(":")[0]}`, "--format", "{{.Repository}}:{{.Tag}}"]); // newest first
+  const older = r.stdout.split("\n").find((t) => t && !t.endsWith(":<none>"));
+  if (!older) throw Object.assign(new Error(`image ${tag} is not built yet (ops/computer-images.sh)`), { status: 500 });
+  log("image", tag, "not built yet; using", older);
+  return older;
+}
+
 /** `docker run` arguments: image, limits, network and mounts all come from the launcher's own config. */
 export function dockerRunArgs({ name, image, agentId, network, limits, mounts, user, labels = [], home = "/root" }) {
   const args = ["run", "-d", "--name", name, "--runtime=runsc", "--network", network,

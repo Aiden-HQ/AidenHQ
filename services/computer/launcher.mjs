@@ -36,7 +36,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, builtImage, dockerRunArgs, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -171,12 +171,12 @@ async function clearRunToken(container) {
 }
 
 /** The image this agent's computer runs: the grants table setup writes (agent id → image) and compile's tags. Never the caller. */
-function imageFor(agentId) {
+async function imageFor(agentId) {
   const g = readJson(CFG.grantsFile).agents?.[agentId];
   if (!g?.image) throw fail(403, `agent ${agentId} has no computer (no image: in its definition)`);
   const tag = readJson(CFG.computersFile).images?.[g.image];
   if (!tag) throw fail(500, `image ${g.image} has no tag in computers.json (run scripts/compile.mjs and ops/computer-images.sh)`);
-  return tag;
+  return builtImage(tag, docker, log);
 }
 const mcpFor = (agentId) => mcpBlock(readJson(CFG.grantsFile).agents?.[agentId]?.tools, readJson(CFG.computersFile).connections ?? {}, GATEWAY_URL);
 
@@ -195,7 +195,7 @@ const newName = () => CFG.prefix + Date.now().toString(36) + Math.random().toStr
 const control = {
   async acquire({ agentId }) {
     if (typeof agentId !== "string" || !agentId) throw fail(400, "agentId required");
-    const image = imageFor(agentId);
+    const image = await imageFor(agentId);
     await makeRoom();
     const name = newName();
     boxes.set(name, { agentId, lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
@@ -281,7 +281,7 @@ const runnerControl = {
     if (typeof agentId !== "string" || !agentId || typeof issueId !== "string" || !issueId) throw fail(400, "agentId and issueId required");
     if (typeof identifier !== "string" || !IDENTIFIER.test(identifier)) throw fail(400, "identifier must be the task's, e.g. PEN-7");
     if (!Number.isInteger(helperPort) || helperPort < 1 || helperPort > 65535 || !HELPER_TOKEN.test(String(helperToken))) throw fail(400, "helperPort and helperToken required");
-    const image = imageFor(agentId);
+    const image = await imageFor(agentId);
     // Exactly this task's folder and Codex home, real directories with no symlink below the runner's dirs: never the cache
     // clones, another task's folder or anything a path trick reaches.
     jobFolder(workspace, path.join(CFG.runnerWork, "tasks"), identifier);

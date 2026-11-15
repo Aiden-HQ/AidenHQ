@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
-import { Tokens, admit, dockerRunArgs, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, replyRefusal, REPLY_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
+import { Tokens, admit, builtImage, dockerRunArgs, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, replyRefusal, REPLY_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
 
 test("only execs carrying a CODEX_HOME are wrapped", () => {
   assert.deepEqual(wrapExec("ls", ["-l"], {}), ["ls", ["-l"]]);
@@ -178,4 +178,17 @@ test("the launcher hands the box its token on stdin and clears it at the end of 
   assert.match(WRITE_RUN_TOKEN_SCRIPT, /chmod 600/);
   assert.match(CLEAR_RUN_TOKEN_SCRIPT, /rm -f \/dev\/shm\/aidenhq\/run-token/);
   for (const s of [WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT]) assert.doesNotMatch(s, /ahqc_/);
+});
+
+test("a tag compile published but ops/computer-images.sh has not built yet runs the newest built image, never a pull", async () => {
+  const calls = [];
+  const docker = (built) => async (args) => {
+    calls.push(args[0]);
+    if (args[0] === "image") return { exitCode: built ? 0 : 1, stdout: "" };
+    return { exitCode: 0, stdout: "aidenhq/computer-agent-base:aaaaaaaaaaaa\naidenhq/computer-agent-base:bbbbbbbbbbbb\n" };
+  };
+  assert.equal(await builtImage("aidenhq/computer-agent-base:new", docker(true)), "aidenhq/computer-agent-base:new");
+  assert.equal(await builtImage("aidenhq/computer-agent-base:new", docker(false)), "aidenhq/computer-agent-base:aaaaaaaaaaaa");
+  await assert.rejects(builtImage("aidenhq/computer-agent-base:new", async () => ({ exitCode: 1, stdout: "" })), /not built yet/);
+  assert.ok(!calls.includes("pull"));
 });
