@@ -110,8 +110,10 @@ for c in $containers; do
         && pass "clickhouse-mcp: published on 127.0.0.1:3127 only" || fail "clickhouse-mcp ports are not loopback 3127 only"
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3127/mcp)" = "401" ] \
         && pass "clickhouse-mcp: loopback endpoint requires the token" || fail "clickhouse-mcp: loopback endpoint answers without the token"
-      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
-        && pass "clickhouse-mcp: only its own token directory mounted" || fail "clickhouse-mcp has unexpected mounts: $mounts"
+      # Exactly: its two secrets, read-only, and its own token directory, the only writable mount. No grants table: it serves
+      # only the runner's jobs, not a Paperclip connection, so scripts/modules.mjs mounts none.
+      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/clickhouse_auth_token|false /run/secrets/clickhouse_mcp_token|false /state|true ' ] \
+        && pass "clickhouse-mcp: only its secrets (read-only) and its own token directory mounted" || fail "clickhouse-mcp has unexpected mounts: $mounts"
       ;;
     *mcp-grafana*|*prometheus*|*alertmanager*|*cadvisor*)
       # The monitoring module's inner services: nothing published, and none on the backplane (their APIs take no auth:
@@ -287,7 +289,8 @@ if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-s
 else
   pass "no secret patterns in tracked files"
 fi
-git ls-files --cached --others --exclude-standard | grep -qE '(^|/)(\.env|system\.yaml|routing\.yaml|paperclip\.yaml)$' && fail "local config tracked in git" || pass "local config not tracked"
+# Plain grep, never grep -q: under pipefail, grep -q's early exit kills git ls-files with SIGPIPE and hides the match.
+git ls-files --cached --others --exclude-standard | grep -E '(^|/)(\.env|system\.yaml|routing\.yaml|paperclip\.yaml)$' >/dev/null && fail "local config tracked in git" || pass "local config not tracked"
 
 echo "Capabilities (by construction)"
 pass "ops-mcp exposes no delete/replace/arbitrary-write tools (see modules/meetings/connections/ops-mcp/src/mcp/tools.ts)"
