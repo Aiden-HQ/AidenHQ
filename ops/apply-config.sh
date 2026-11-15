@@ -28,6 +28,7 @@ main() {
     want="$(git -C "$inst" rev-parse origin/main)"
   fi
   git -C "$inst" merge --quiet --ff-only "$want"
+  lap instance
 
   # The product commit the instance pins. It must be on product main: nothing unmerged runs here.
   local product
@@ -41,6 +42,7 @@ main() {
   local before; before="${AIDENHQ_APPLY_BEFORE:-$(cat "$applied" 2>/dev/null || git rev-parse HEAD)}"
   git cat-file -e "$before^{commit}" 2>/dev/null || before="$(git rev-parse HEAD)"
   git checkout --quiet --detach "$product"
+  lap product
   # bash runs the script it started with: if the new product changes this script, hand over to the new one once (it sees
   # AIDENHQ_APPLY_BEFORE, so it never hands over again), so one apply is enough. Pinned to the instance commit just
   # checked. A script that predates the hand-over (a rollback) can't take `before`, so this one carries on instead.
@@ -53,13 +55,16 @@ main() {
   for d in scripts services/runner; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
+  lap npm
 
   # The compiled config before this apply: the live agent check fails only on connections granted since.
   local prev_config; prev_config="$(mktemp)"; cp config/paperclip.yaml "$prev_config" 2>/dev/null || true
   node scripts/compile.mjs
   # Shared access: the tunnel may only point at the gate (never the board, Paperclip or an app port directly).
   node scripts/edge.mjs check config/cloudflared.yml || { echo "refusing: config/cloudflared.yml targets something other than the gate" >&2; exit 1; }
+  lap compile
   ops/computer-images.sh # agent computers: only the images an agent names (scripts/computers.mjs)
+  lap computer-images
   # The model gateway (every model call passes it): installed and started if missing, restarted only when its own code or
   # unit changed (a restart cuts the streams in flight; Codex and opencode retry). Before compose and setup point callers at
   # it. Not keyed on a product change, so it also heals a missing unit.
@@ -76,8 +81,11 @@ main() {
   docker compose up -d --build --remove-orphans
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.mjs prune
+  lap compose # the gateway check, then compose: builds (cached unless a context changed) and recreates what changed
   node scripts/paperclip-setup.mjs
+  lap setup
   ops/warehouse-sources.sh # shared sources: roles, schemas, src_meta (skips while the warehouse isn't running)
+  lap warehouse
 
   # The runner's unit (KillMode=process: a restart leaves the agents' runs going). daemon-reload doesn't touch the runner.
   local unit="$HOME/.config/systemd/user/aidenhq-runner.service"
@@ -118,13 +126,22 @@ main() {
     systemctl --user disable --now --quiet aidenhq-host-metrics.timer
     rm -f "$units/aidenhq-host-metrics.service" "$units/aidenhq-host-metrics.timer" && systemctl --user daemon-reload && echo "host metrics timer removed (monitoring off)"
   fi
+  lap units
   echo "$product" > "$applied"
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"
   # The live agent check, last (everything above is applied either way): each connection an agent is granted answers and is
   # signed in. Fails the apply only when a newly granted one doesn't (scripts/agent-check.mjs).
   local check=0; node scripts/agent-check.mjs live --since "$prev_config" || check=$?
   rm -f "$prev_config"
+  lap agent-check
+  echo "apply timing: total $(apply_secs "$apply_t0")s"
   return "$check"
 }
+# One line per phase ("apply timing: compose 31.2s"), so every apply's log shows where its time went. Microseconds since the
+# epoch, from EPOCHREALTIME (bash 5) with its decimal point dropped, whatever the locale prints there.
+apply_now() { local t="${EPOCHREALTIME:-$(date +%s).000000}"; echo "${t//[!0-9]/}"; }
+apply_secs() { local us=$(( $(apply_now) - $1 )); printf '%d.%d' $((us / 1000000)) $((us % 1000000 / 100000)); }
+apply_t0="$(apply_now)"; apply_lap="$apply_t0"
+lap() { echo "apply timing: $1 $(apply_secs "$apply_lap")s"; apply_lap="$(apply_now)"; }
 # The whole script is read before it runs: the checkout above may rewrite this file.
 main "$@"; exit

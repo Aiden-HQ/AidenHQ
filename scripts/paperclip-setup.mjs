@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { heartbeatSection, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, memorySection, routineAutonomyDefault, sourcesSection } from "./modules.mjs";
+import { heartbeatSection, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, memorySection, routineAutonomyDefault, sourcesSection } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, computerSection, ensureComputers, runnerBox } from "./computers.mjs";
 import { assertNoShell } from "./no-shell.mjs";
@@ -455,11 +455,11 @@ const handbooks = {}; // each agent's compiled AGENTS.md (the fast lane's prompt
 async function ensureAgents(companyId, fleetIssues) {
   await ensureDummyOpenAiSecret(companyId);
   const { json: agents } = await api("GET", `/api/companies/${companyId}/agents`);
-  const result = {};
-  for (const [key, a] of Object.entries(cfg.agents ?? {})) {
+  // Everything that needs no Paperclip call first, in config order (revInputs and handbooks stay keyed by config).
+  const plans = Object.entries(cfg.agents ?? {}).map(([key, a]) => {
     const instructions = readInstructions(a) + personaSection(key, a) + computerSection(a) + (a.adapter === "codex_local" ? PROGRESS_SECTION + APPROVALS_SECTION + REPLIES_SECTION + (a.enabled_tools?.slack_live?.includes("notify_owner") ? ASKING_SECTION : "") + DELEGATING_SECTION + (cfg.agents?.["ui-designer"] && !["ui-designer", "ui-reviewer"].includes(key) ? DESIGN_REVIEW_LINE : "") + WEB_SECTION + PRIVACY_SECTION + DEPENDENCIES_SECTION + improvingSection(key, a) + (a.enabled_tools?.paperclip_tasks?.includes("advisor_ask") ? ADVISOR_SECTION : "") + (a.enabled_tools?.paperclip_tasks?.includes("fanout_map") ? FANOUT_SECTION : "") : "") + memorySection(a) + sourcesSection(a, cfg.mcp_servers ?? {}) + heartbeatSection(a, fleetIssues, repo);
     const keys = [key, PREVIOUS_KEYS[key]].filter(Boolean).map((k) => `aidenhq:${k}`);
-    let agent = agents.find((x) => keys.includes(x.metadata?.setupKey) && x.status !== "terminated") ?? agents.find((x) => x.name === a.name && x.status !== "terminated");
+    const agent = agents.find((x) => keys.includes(x.metadata?.setupKey) && x.status !== "terminated") ?? agents.find((x) => x.name === a.name && x.status !== "terminated");
     const body = agentBody(key, a, agent);
     revInputs[key] = instructions + JSON.stringify(body.adapterConfig); // the rev's text (revOf)
     // The lane gets the agent's own handbook and memory, not the shared run sections (task flow, notify_owner replies).
@@ -475,33 +475,49 @@ async function ensureAgents(companyId, fleetIssues) {
     // agent verifies with opencode on the model gateway (agent-probe.mjs), and the update below drops that env again.
     const probeBody = a.image && !runnerBox(a) ? agentBody(key, { ...a, image: undefined }, agent) : body;
     const unscoped = probeConfig(body.adapterType, probeBody.adapterConfig, { codexArgs: cfg.codex_args, harnessSecretId });
+    return { key, a, agent, body, unscoped, instructions };
+  });
+  // The agent's real (scoped) config. Paperclip merges adapterConfig: an OpenCode runner agent's probe env (the harness key) is cleared here.
+  const scope = async ({ agent, body }) => {
+    const adapterConfig = body.adapterType === "opencode_local" ? { ...body.adapterConfig, env: {} } : body.adapterConfig;
+    await api("PATCH", `/api/agents/${agent.id}`, { name: body.name, title: body.title, runner: "legacy", adapterConfig, runtimeConfig: body.runtimeConfig, metadata: body.metadata, budgetMonthlyCents: body.budgetMonthlyCents });
+  };
+  // An agent that is new, still verifying or paused by setup is handled whole, one at a time (each new one waits out its
+  // Paperclip probe): created or verified on the probe's unscoped config, scoped right after, and only then resumed, so no
+  // agent runs unscoped while others are set up. Rare after the first apply.
+  for (const p of plans) {
+    const { a, body, unscoped, instructions } = p;
     // Configured again (a module re-enabled): resume what setup paused. An agent the owner paused by hand has no pausedBy.
-    if (agent?.status === "paused" && agent.metadata?.pausedBy === "setup") {
-      await api("POST", `/api/agents/${agent.id}/resume`, {});
+    const resume = p.agent?.status === "paused" && p.agent.metadata?.pausedBy === "setup";
+    if (!p.agent) {
+      p.agent = (await api("POST", `/api/companies/${companyId}/agents`, { ...body, adapterConfig: unscoped, runner: "legacy", instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } } })).json;
+      step(`Created agent ${a.name}`);
+      await awaitVerified(p.agent.id, a.name);
+    } else if (["preparing", "verifying"].includes(p.agent.lifecycleState)) {
+      await api("PATCH", `/api/agents/${p.agent.id}`, { adapterConfig: unscoped });
+      await awaitVerified(p.agent.id, a.name);
+    } else if (!resume) continue;
+    await scope(p);
+    p.scoped = true;
+    if (resume) {
+      await api("POST", `/api/agents/${p.agent.id}/resume`, {});
       step(`Resumed ${a.name} (configured again)`);
     }
-    if (!agent) {
-      agent = (await api("POST", `/api/companies/${companyId}/agents`, { ...body, adapterConfig: unscoped, runner: "legacy", instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } } })).json;
-      step(`Created agent ${a.name}`);
-      await awaitVerified(agent.id, a.name);
-    } else if (["preparing", "verifying"].includes(agent.lifecycleState)) {
-      await api("PATCH", `/api/agents/${agent.id}`, { adapterConfig: unscoped });
-      await awaitVerified(agent.id, a.name);
-    }
-    {
-      // Paperclip merges adapterConfig: an OpenCode runner agent's probe env (the harness key) is cleared here.
-      const adapterConfig = body.adapterType === "opencode_local" ? { ...body.adapterConfig, env: {} } : body.adapterConfig;
-      await api("PATCH", `/api/agents/${agent.id}`, { name: body.name, title: body.title, runner: "legacy", adapterConfig, runtimeConfig: body.runtimeConfig, metadata: body.metadata, budgetMonthlyCents: body.budgetMonthlyCents });
-      // Instructions are revisioned (2026.1106): write against the current revision, and only when changed.
-      const cur = (await api("GET", `/api/agents/${agent.id}/instructions-bundle/file?path=AGENTS.md`, undefined, { allow: [404] })).json;
-      if (cur.content !== instructions) await api("PUT", `/api/agents/${agent.id}/instructions-bundle/file`, { path: "AGENTS.md", content: instructions, baseRevisionId: cur.revision?.id ?? null });
-      step(`Updated agent ${a.name}`);
-    }
-    agent = (await api("GET", `/api/agents/${agent.id}`)).json;
-    if (agent.adapterType !== body.adapterType) fail(`agent ${a.name}: Paperclip has adapter ${agent.adapterType} after setup, expected ${body.adapterType} on the legacy runner`);
-    result[key] = agent;
   }
-  return result;
+  // Every other agent already runs scoped: its new config replaces the old in one PATCH, so these run a few side by side
+  // (three round trips per agent otherwise add up), with the handbook sync and the read-back.
+  const updated = await mapLimit(plans, 4, async (p) => {
+    const { a, body, instructions } = p;
+    if (!p.scoped) await scope(p);
+    // Instructions are revisioned (2026.1106): write against the current revision, and only when changed.
+    const cur = (await api("GET", `/api/agents/${p.agent.id}/instructions-bundle/file?path=AGENTS.md`, undefined, { allow: [404] })).json;
+    if (cur.content !== instructions) await api("PUT", `/api/agents/${p.agent.id}/instructions-bundle/file`, { path: "AGENTS.md", content: instructions, baseRevisionId: cur.revision?.id ?? null });
+    step(`Updated agent ${a.name}`);
+    const agent = (await api("GET", `/api/agents/${p.agent.id}`)).json;
+    if (agent.adapterType !== body.adapterType) fail(`agent ${a.name}: Paperclip has adapter ${agent.adapterType} after setup, expected ${body.adapterType} on the legacy runner`);
+    return agent;
+  });
+  return Object.fromEntries(plans.map((p, i) => [p.key, updated[i]]));
 }
 
 /**
@@ -648,7 +664,8 @@ function updateSystemYaml(companyId) {
 async function ensureRoutines(companyId, agents) {
   const { json: routines } = await api("GET", `/api/companies/${companyId}/routines`);
   const mine = setupPaused();
-  for (const [key, r] of Object.entries(cfg.routines ?? {})) {
+  // One routine's calls (update, read, triggers) are independent of the next one's: a few side by side.
+  await mapLimit(Object.entries(cfg.routines ?? {}), 4, async ([key, r]) => {
     const agent = agents[r.agent];
     if (!agent) fail(`routine ${key}: unknown agent ${r.agent}`);
     const body = {
@@ -712,7 +729,7 @@ async function ensureRoutines(companyId, agents) {
         writeSecret(`${prefix}_secret${companySuffix}`, material.webhookSecret);
       }
     }
-  }
+  });
   writeSecret(`setup_paused_routines${companySuffix}`, JSON.stringify([...mine]));
 }
 
@@ -886,14 +903,20 @@ function restartOpsMcp() {
 
 // ------------------------------------------------------------------ main
 
+// Wall time per section, printed as one line at the end so a slow apply shows where setup spent it.
+const laps = [];
+let lapAt = Date.now();
+const lap = (name) => { const now = Date.now(); laps.push(`${name} ${((now - lapAt) / 1000).toFixed(1)}s`); lapAt = now; };
 const health = await waitForHealth();
 await ensureBoardKey(health);
 const company = await ensureCompany();
 await ensureLabels(company.id);
+lap("login");
 try { await checkLauncher(cfg); } catch (e) { fail(e.message); } // before any agent is switched to its computer
 // Heartbeat runs note missed wake-ups on one "Fleet issues" task; its identifier goes into their handbook section.
 const fleetIssues = Object.values(cfg.agents ?? {}).some((a) => a.heartbeat != null && a.heartbeat !== false) ? await ensureFleetIssues({ api, companyId: company.id, step }) : "";
 const agents = await ensureAgents(company.id, fleetIssues);
+lap("agents");
 const memoryInboxes = await ensureMemoryInboxes({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => x.enabled_tools?.paperclip_tasks?.includes("memory_note")).map(([k]) => k) });
 await dropOldOpenRouterSecret();
 await terminatePeople(company.id);
@@ -901,11 +924,13 @@ await ensureReportingLines(agents);
 // The Agent Coach's review log (one task per fleet-audit agent), found again by its setup marker, never by search at run time.
 const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => x.roles?.includes("fleet-audit")).map(([k]) => k) });
 writeGrants(agents, memoryInboxes, reviewLogs);
+lap("tasks");
 // Agent computers: the agents with image: get the computer environment; the others are pointed back to local (scripts/computers.mjs).
 try {
   const pluginVersion = JSON.parse(readFileSync(join(repo, "services/computer/plugin/package.json"), "utf8")).version;
   await ensureComputers({ api, companyId: company.id, cfg, agents, step, pluginVersion });
 } catch (e) { fail(e.message); }
+lap("computers");
 // ops-mcp acts in Paperclip as the agent with the ops-key role (the Meeting Librarian).
 const opsAgents = Object.keys(cfg.agents ?? {}).filter((k) => cfg.agents[k].roles?.includes("ops-key"));
 if (opsAgents.length > 1) fail(`only one agent may hold the ops-key role (${opsAgents.join(", ")})`);
@@ -917,11 +942,14 @@ const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
 if (librarian && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
 ensureCodexConfig();
 writeCatalog();
+lap("keys");
 await ensureRoutines(company.id, agents); // writes each routine's autonomy into the grants table before its triggers
 await reconcileOwned(company.id);
+lap("routines");
 
 const codexAuth = execFileSafe(["compose", "exec", "-T", "-u", "node", "paperclip", "test", "-s", "/paperclip/.codex/auth.json"]);
 console.log("\nPaperclip is configured.");
+console.log(`setup timing: ${laps.join(", ")}`);
 if (!codexAuth) {
   console.log("Next: log Codex in with your ChatGPT account (once):");
   console.log("  docker compose exec -it -u node paperclip codex -c 'cli_auth_credentials_store=\"file\"' login --device-auth");

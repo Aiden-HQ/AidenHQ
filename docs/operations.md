@@ -13,11 +13,17 @@
    `node scripts/paperclip-setup.mjs`;
 5. schedules a runner restart when runner code changed.
 
+Each phase prints one line, `apply timing: <phase> <seconds>s`, and a total; setup prints its own sections on one
+`setup timing:` line. A cached image build costs a few seconds; a changed one is the real build (the board's tsc and vite
+build is about 17s). Setup's Paperclip calls run four at a time.
+
 It is idempotent. The Platform Engineer runs it for you after you approve a change.
 
 - **Upgrade the product:** merge to product `main`, bump `product: <sha>` in the instance repo, commit and push, apply.
 - **Roll back:** revert the instance commit (or set `product:` to the earlier sha), push, apply again.
-- **After changing a connection service:** `docker compose up -d --force-recreate <svc>`.
+- **After changing a connection service:** nothing; apply rebuilds its image and recreates it. Force-recreate
+  (`docker compose up -d --force-recreate <svc>`) only after changing a file it reads once at start outside compose (a
+  secret such as a rotated token): running it after every apply restarts those services a second time for nothing.
 - **After changing runner code:** `ops/apply-config.sh` sends `systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`: the runner takes nothing new, exits as soon as nothing is half done (a reply being posted, a publish, an apply), and systemd starts it again 5s later. Running agent jobs are not touched (`KillMode=process`; each runs in its own process group, writing its log and exit status under the runner's state dir): the new runner adopts them, keeps their `aidenhq` tools working (same helper port and token) and reports each turn once. A plain `systemctl --user restart aidenhq-runner` does the same. A job that died while no runner was up (no exit status) resumes in the same session. apply-config installs the unit (and daemon-reloads) when `ops/units/aidenhq-runner.service` changes.
 
 - **The model gateway** (`services/gateway`, user unit `aidenhq-gateway`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `services/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (runner jobs through their jail, the AI reviewer, the intake, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Ledger: `data/gateway/usage.db`. Kill switch for caps: `settings.spend_caps: off`. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).

@@ -656,6 +656,23 @@ export function memorySection(agent) {
 }
 
 /**
+ * fn over items, at most `limit` at a time, results in input order: setup's independent Paperclip calls (one agent, one
+ * routine, one inbox each) run side by side instead of one round trip after another. The first failure rejects.
+ */
+export async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/**
  * One unassigned "Memory inbox: <key>" task per agent that has `memory_note` (marker memory-inbox:<key>): the agent's notes
  * land there as comments, for the Librarian's daily pass. Unassigned, so a note wakes nobody. Idempotent; a missing task is
  * recreated, an existing one is never touched. Only a task this identity created and nobody holds counts (an agent can't
@@ -663,26 +680,22 @@ export function memorySection(agent) {
  * where memory_note and the bridge's inbox guards read it; nothing searches for the marker at run time.
  */
 export async function ensureMemoryInboxes({ api, companyId, keys, step }) {
-  const inboxes = {};
-  if (!keys.length) return inboxes;
+  if (!keys.length) return {};
   const { json: me } = await api("GET", "/api/cli-auth/me");
-  for (const key of keys) {
+  const ids = await mapLimit(keys, 4, async (key) => {
     const marker = `memory-inbox:${key}`;
     const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
     const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
     const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
-    if (ours) {
-      inboxes[key] = ours.id;
-      continue;
-    }
+    if (ours) return ours.id;
     const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
       title: `Memory inbox: ${key}`, status: "backlog", priority: "low",
       description: `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.\n\n<!-- source:${marker} -->`,
     });
-    inboxes[key] = made.id;
     step(`Created task ${made.identifier} (memory inbox of ${key})`);
-  }
-  return inboxes;
+    return made.id;
+  });
+  return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
 }
 
 /**
@@ -691,26 +704,22 @@ export async function ensureMemoryInboxes({ api, companyId, keys, step }) {
  * this identity, held by nobody, so a review wakes nobody; never touched once made. Returns { key: issue id } for the grants table.
  */
 export async function ensureReviewLogs({ api, companyId, keys, step }) {
-  const logs = {};
-  if (!keys.length) return logs;
+  if (!keys.length) return {};
   const { json: me } = await api("GET", "/api/cli-auth/me");
-  for (const key of keys) {
+  const ids = await mapLimit(keys, 4, async (key) => {
     const marker = `review-log:${key}`;
     const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
     const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
     const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
-    if (ours) {
-      logs[key] = ours.id;
-      continue;
-    }
+    if (ours) return ours.id;
     const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
       title: `Agent reviews: ${key}`, status: "backlog", priority: "low",
       description: `The review log of ${key}: one record per agent review (coach_record), which decides who is due next. Read it for the history; nobody else writes here.\n\n<!-- source:${marker} -->`,
     });
-    logs[key] = made.id;
     step(`Created task ${made.identifier} (review log of ${key})`);
-  }
-  return logs;
+    return made.id;
+  });
+  return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
 }
 
 /** The shared "Heartbeats" handbook section (modules/core/heartbeat.md) for an agent with a heartbeat, naming the Fleet issues task. */

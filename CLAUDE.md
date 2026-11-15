@@ -116,7 +116,9 @@ after it is merged and that instance's owner bumps the pin.
    `origin/main`), commit only that file (`git commit -- instance.yaml`) and push.
 3. On the host, from the product checkout, run `ops/apply-config.sh`. Never `git pull` first: apply diffs the
    checkout's old product against the new one to decide restarts.
-4. Recreate changed connection services with `docker compose up -d --force-recreate <svc>`.
+4. Nothing else: apply rebuilds every image whose context changed and recreates the services whose image or compose
+   config changed. Force-recreate a service (`docker compose up -d --force-recreate <svc>`) only after changing a file it
+   reads once at start outside compose (a secret, e.g. a rotated token). Each apply prints `apply timing: <phase> <s>s`.
 
 Runner restarts never interrupt agents: jobs run detached (`KillMode=process`) and the next runner adopts them.
 `ops/apply-config.sh` sends SIGUSR2 (`systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`); the runner

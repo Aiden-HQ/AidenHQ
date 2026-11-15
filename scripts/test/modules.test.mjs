@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts } from "../modules.mjs";
+import { compile, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts, mapLimit } from "../modules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -191,4 +191,16 @@ test("health check probes call as the least-granted agent holding every probe to
   assert.equal(healthProbeAgent(agents, "google_workspace"), "inbox");
   assert.equal(healthProbeAgent(agents, "github"), "assistant");
   assert.equal(healthProbeAgent({ librarian: agents.librarian }, "google_workspace"), undefined);
+});
+
+test("mapLimit runs at most `limit` at a time and keeps the input order", async () => {
+  let running = 0, peak = 0;
+  const out = await mapLimit([30, 5, 20, 1, 10], 2, async (ms, i) => {
+    peak = Math.max(peak, ++running);
+    await new Promise((r) => setTimeout(r, ms));
+    running--;
+    return i;
+  });
+  assert.deepEqual(out, [0, 1, 2, 3, 4]);
+  assert.equal(peak, 2);
 });
