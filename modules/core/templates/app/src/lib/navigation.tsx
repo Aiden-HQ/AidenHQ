@@ -5,7 +5,8 @@ import * as React from "react"
 // - `useLocation()` gives `{ path, search, params }` and re-renders when either the path or the query changes.
 // - `Link` is an <a href> that moves without a page load. A modified or middle click, `target`, `download`, another
 //   origin and /api/ links do what the browser does.
-// - `navigate(href)` moves from code; `{ replace: true }` swaps the current history entry instead of adding one.
+// - `navigate(href)` moves from code; `{ replace: true }` swaps the current history entry instead of adding one (as does
+//   moving to the address already shown, so Back never steps through a duplicate).
 // - `useUrlState()` keeps a page's state in the query string (filters, `?item=`): `set` replaces the entry (Back doesn't
 //   step through every keystroke), `push` adds one (opening a detail: Back closes it). Empty values are dropped.
 // Each route is also listed in server.mjs `PAGES`, so a reload or a shared link to it answers 200.
@@ -20,6 +21,7 @@ export function navigate(href: string, { replace = false }: { replace?: boolean 
   const to = new URL(href, location.href)
   const newPage = to.pathname !== location.pathname
   const target = to.pathname + to.search + to.hash
+  if (target === location.pathname + location.search + location.hash) replace = true
   if (replace) history.replaceState(history.state, "", target)
   else history.pushState(null, "", target)
   notify()

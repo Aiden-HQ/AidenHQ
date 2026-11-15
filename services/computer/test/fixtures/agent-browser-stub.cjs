@@ -4,7 +4,8 @@
 // can put the same finding on two paths; STUB_OVERFLOW=px reports a sideways scroll instead.
 // Routes: STUB_PAGES='{"/": "text", "/teams": "text"}' is an app whose every page links to each of its pages, kept in the
 // STUB_STATE file between calls; STUB_BROKEN=1 makes it the query-only store bug (a click or Back/Forward changes the URL
-// and nothing else). Without STUB_PAGES a page has no links.
+// and nothing else); STUB_404=/a,/b answers 404 for those on a load. Pages are keyed by path and query. Without STUB_PAGES
+// a page has no links.
 "use strict";
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { dirname } = require("node:path");
@@ -22,7 +23,7 @@ const go = (st, i, render) => { st.i = i; if (render || !process.env.STUB_BROKEN
 if (cmd === "screenshot") { mkdirSync(dirname(args[1]), { recursive: true }); writeFileSync(args[1], "stub png"); }
 else if (pages && ["open", "click", "back", "forward"].includes(cmd)) {
   const st = load();
-  if (cmd === "open") { const at = new URL(args[1]).pathname; Object.assign(st, { hist: [at] }); go(st, 0, true); }
+  if (cmd === "open") { const u = new URL(args[1]), at = u.pathname + u.search; Object.assign(st, { hist: [at] }); go(st, 0, true); }
   if (cmd === "click") { st.hist = [...st.hist.slice(0, st.i + 1), st.mark]; go(st, st.i + 1, false); }
   if (cmd === "back" && st.i > 0) go(st, st.i - 1, false);
   if (cmd === "forward" && st.i < st.hist.length - 1) go(st, st.i + 1, false);
@@ -31,7 +32,7 @@ else if (pages && ["open", "click", "back", "forward"].includes(cmd)) {
   if (args[1].startsWith("/*routes:links*/"))
     reply({ result: JSON.stringify(Object.keys(pages ?? {}).filter((p) => p !== at).map((p) => ({ href: p, to: p, kind: p + "?", label: `Go ${p}`, nav: true }))) });
   else if (args[1].startsWith("/*routes:mark*/")) { st.mark = /=== "([^"]+)"/.exec(args[1])[1]; save(st); reply({ result: "ok" }); }
-  else reply({ result: JSON.stringify({ at, status: pages?.[at] ? 200 : 404, text: st.text }) });
+  else reply({ result: JSON.stringify({ at, status: (process.env.STUB_404 ?? "").split(",").includes(at) || !pages?.[at] ? 404 : 200, text: st.text }) });
 } else if (cmd === "eval") {
   const tiny = Number(process.env.STUB_TINY ?? 0), overflow = Number(process.env.STUB_OVERFLOW ?? 0);
   const tinyText = process.env.STUB_TINY_TEXT ? process.env.STUB_TINY_TEXT.split(",") : Array.from({ length: tiny }, (_, i) => `.tiny-${i}`);

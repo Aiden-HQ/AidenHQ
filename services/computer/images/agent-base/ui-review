@@ -128,10 +128,10 @@ const ROUTE_MARK = (href) => `/*routes:mark*/(() => { document.querySelectorAll(
   const a = [...document.querySelectorAll("a[href]")].find((e) => e.getAttribute("href") === ${JSON.stringify(href)} && e.getBoundingClientRect().width > 0);
   if (a) a.setAttribute("data-ui-review-link", ""); return a ? "ok" : "missing"; })()`;
 const ROUTE_PAGE = `/*routes:page*/(() => JSON.stringify({ at: location.pathname + location.search, status: performance.getEntriesByType("navigation")[0]?.responseStatus ?? 0,
-  text: (document.body?.innerText || "").replace(/\\d+/g, "#").replace(/\\s+/g, " ").trim().slice(0, 20000) }))()`;
+  text: (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 20000) }))()`;
 /** How alike two pages' text is (shared words over all words, 0..1): live clocks and counts don't make two views of one page differ. */
 function alike(a, b) {
-  const words = (t) => new Set(t.toLowerCase().split(/[^\p{L}#]+/u).filter(Boolean));
+  const words = (t) => new Set(t.toLowerCase().replace(/\d+/g, "#").split(/[^\p{L}#]+/u).filter(Boolean));
   const A = words(a), B = words(b);
   let both = 0;
   for (const w of A) if (B.has(w)) both++;
@@ -145,11 +145,18 @@ if (!palettes.length && !args.includes("--no-routes")) {
   const look = () => JSON.parse(run(ROUTE_PAGE));
   const links = [], seen = new Set();
   for (const path of paths) {
-    const from = path === "/" ? base : new URL(path, base).href;
-    ab("open", from);
-    settle();
-    for (const l of JSON.parse(run(ROUTE_LINKS)).sort((a, b) => b.nav - a.nav))
-      if (!seen.has(l.kind) && links.length < 12) { seen.add(l.kind); links.push({ ...l, from: path }); }
+    try {
+      ab("open", path === "/" ? base : new URL(path, base).href);
+      settle();
+      for (const l of JSON.parse(run(ROUTE_LINKS)).sort((a, b) => b.nav - a.nav)) {
+        if (seen.has(l.kind)) continue;
+        if (links.length === 12) { report.routesCut = true; break; }
+        seen.add(l.kind);
+        links.push({ ...l, from: path });
+      }
+    } catch (e) {
+      report.routes.push({ from: path, link: "", to: "", problems: [], skipped: `couldn't read its links: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}` });
+    }
   }
   for (const l of links) {
     const route = { from: l.from, link: l.label, to: l.to, problems: [] };
@@ -217,7 +224,7 @@ for (const p of report.pages) {
   if (small) lines.push(`Phone: ${small} controls are 24-43px tall (44px is the phone rule; check the main ones).`);
   lines.push("", "Screenshots (open each one):", ...p.shots.map((s) => `- ${s.name}${s.compare ? ` · before|after: ${s.compare.compare ?? "–"} · diff: ${s.compare.diff} (${s.compare.diffResult})` : ""}`), "");
 }
-if (report.routes.length) lines.push("## Routes (click, Back, Forward, reload)", "", ...report.routes.map((r) => `- ${r.from} → "${r.link}" ${r.to}: ${r.skipped ?? (r.problems.join("; ") || "renders")}`), "");
+if (report.routes.length) lines.push("## Routes (click, Back, Forward, reload)", "", ...report.routes.map((r) => `- ${r.from} → "${r.link}" ${r.to}: ${r.skipped ?? (r.problems.join("; ") || "renders")}`), ...(report.routesCut ? ["- (more kinds of link than the 12 checked: review the rest with --paths on their pages)"] : []), "");
 lines.push("Automated checks find maybe a third of what matters. Now look at every screenshot against the review checklist.");
 writeFileSync(join(out, "report.md"), lines.join("\n"));
 writeFileSync(join(out, "report.json"), JSON.stringify({ ...report, blocking: introduced, preexisting }, null, 2));

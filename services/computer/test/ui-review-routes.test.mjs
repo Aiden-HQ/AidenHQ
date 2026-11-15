@@ -11,13 +11,13 @@ import { fileURLToPath } from "node:url";
 const here = fileURLToPath(new URL(".", import.meta.url));
 const PAGES = JSON.stringify({ "/": "Projects: Billing export, Search v2", "/teams": "Teams: Payments, Platform, Mobile" });
 
-function review(env) {
+function review({ pages = PAGES, ...env } = {}) {
   const out = mkdtempSync(join(tmpdir(), "ui-review-routes-"));
   let code = 0;
   try {
     execFileSync("node", [join(here, "../images/agent-base/ui-review"), "http://127.0.0.1:9", "--paths", "/", "--out", out, "--widths", "1280", "--modes", "light"], {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, AGENT_BROWSER: join(here, "fixtures/agent-browser-stub.cjs"), STUB_PAGES: PAGES, STUB_STATE: join(out, "stub.json"), ...env },
+      env: { ...process.env, AGENT_BROWSER: join(here, "fixtures/agent-browser-stub.cjs"), STUB_PAGES: pages, STUB_STATE: join(out, "stub.json"), ...env },
     });
   } catch (e) {
     code = e.status;
@@ -39,4 +39,16 @@ test("every route rendering on click, Back, Forward and reload passes", () => {
   const r = review({});
   assert.equal(r.code, 0, r.md);
   assert.deepEqual(r.json.routes, [{ from: "/", link: "Go /teams", to: "/teams", problems: [] }]);
+});
+
+test("a route the server doesn't list renders on click but answers 404 on reload: that blocks", () => {
+  const r = review({ STUB_404: "/teams" });
+  assert.equal(r.code, 1);
+  assert.deepEqual(r.json.blocking, ['/ link "Go /teams" (/teams): a reload of /teams answers 404']);
+});
+
+test("a link that only changes the numbers on the page (a query such as ?range=) renders", () => {
+  const r = review({ pages: JSON.stringify({ "/": "Last 7 days: 12 items", "/?range=30": "Last 30 days: 48 items" }) });
+  assert.equal(r.code, 0, r.md);
+  assert.deepEqual(r.json.routes[0].problems, []);
 });

@@ -34,9 +34,9 @@ box): the task's workspace is `/workspace`, and nothing outside it survives the 
 - Every page lives at its own URL and renders there on a link click, on Back and Forward, and on a reload. Build routes
   and links with the starter's navigation (`src/lib/navigation.tsx`: `useLocation` picks the page, `Link` and
   `navigate` move, `useUrlState` keeps filters and `?item=` in the query) and list each route in the server's `PAGES`.
-  Before you publish, run `ui-review <the app's local url> --paths <its pages> --widths 1280 --modes light --out
-  .aidenhq/out/review`: its "Routes" section clicks every link on those pages, goes Back and Forward and reloads, and
-  every link reads "renders".
+  Before you publish, start the app and review it in one command, e.g. `PORT=4173 node server.mjs & sleep 2; ui-review
+  http://127.0.0.1:4173 --paths /,/teams --widths 1280 --modes light --out .aidenhq/out/review; kill $!`: the report's
+  "Routes" section clicks the links on those pages, goes Back and Forward and reloads, and every link reads "renders".
 - Publish the same way as every Engineer: commit on a branch, then `aidenhq pr` (or `aidenhq push`); the runner tiers each
   write. Ship what was asked, live: no feature flags or off-by-default switches unless asked.
 - Pin every dependency you add, to a version at least 7 days old (the supply-chain skill picks it).
