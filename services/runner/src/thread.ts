@@ -128,6 +128,23 @@ export function prSnapshot(pr: any): PrSnapshot {
 
 const prNumber = (url: string | null | undefined) => (/\/pull\/(\d+)/.exec(url ?? "")?.[1] ? `#${/\/pull\/(\d+)/.exec(url!)![1]}` : "");
 
+/** What `aidenhq wait` answers at once when only CI or the merge queue is left on PRs whose merges are requested. */
+export const MERGE_REQUESTED = "Your merge is requested; end your turn. The runner wakes you if a check fails and posts the merge.";
+
+/**
+ * True when the task has PRs in flight and each one reads open just now, has its branch's commits all on GitHub, has checks on
+ * its head and none failed, and has its merge requested or waiting in the merge queue (`asked`: those PRs' URLs, lowercased).
+ * A red check then reaches the agent through the merge queue (main.mjs wakeForRedChecks); a PR whose CI hasn't started keeps
+ * the wait polling.
+ */
+export function onlyMergesLeft(rows: StateRow[], prs: Map<string, PrSnapshot>, asked: string[]) {
+  const withPr = rows.filter((r) => r.prUrl && !r.merged);
+  return withPr.length > 0 && withPr.every((r) => {
+    const p = prs.get(r.prUrl!);
+    return !r.unpublished.length && !!p && ["open", "draft"].includes(p.state) && !!p.checks && !p.checks.failed && p.checks.passed + p.checks.pending > 0 && asked.includes(r.prUrl!.toLowerCase());
+  });
+}
+
 /**
  * Where the task's work stands, read just before the run: each branch with its PR (rows from the
  * runner's branchRows, `prs` by URL from prSnapshot), and the merge queue's summary. "" when empty.

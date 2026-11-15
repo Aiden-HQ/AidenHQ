@@ -109,6 +109,35 @@ describe("flow-autonomy", { concurrency: true }, () => {
     it("never errors or asks for a repository along the way", () => t.noErrors());
   });
 
+  describe("waiting on a requested merge, end to end", { concurrency: 1 }, () => {
+    const t = tier0();
+
+    // A wait that only CI or the merge queue can end keeps the job's slot for nothing: once the merge is requested, it
+    // answers at once and the turn ends (the runner wakes the agent on a red check).
+    it("aidenhq wait answers at once once the open PR's merge is requested", async () => {
+      const { toolRuns, step, turn, settled } = t;
+      await settled();
+      reviewerKey(t);
+      step("third\naidenhq push acme/app feat/third");
+      await turn("Add the third change and push it.");
+      const state = new State(join(t.dir, "state"));
+      state.updateBranch("part", "acme/app", "feat/third", { pr_url: "https://github.com/acme/app/pull/8" });
+      state.db.close();
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 8: { branch: "feat/third", files: ["third.txt"], checks: "PENDING" } }));
+      step("more\naidenhq push acme/app feat/third\naidenhq status\naidenhq wait");
+      const started = Date.now();
+      await turn("Add a bit more to it, push, and wait for it.");
+      const [status, wait] = toolRuns().slice(-2);
+      assert.equal(wait.code, 0, wait.out);
+      assert.match(wait.out, /^Your merge is requested; end your turn\. The runner wakes you if a check fails and posts the merge\./);
+      assert.match(wait.out, /#8 open \| no review needed \| 1 running/);
+      assert.doesNotMatch(status.out, /Your merge is requested/, "status only reports");
+      assert.ok(Date.now() - started < 60_000, "no minute-long poll");
+    });
+
+    it("never errors or asks for a repository along the way", () => t.noErrors());
+  });
+
   describe("autonomy tier0 with a design reviewer, end to end", { concurrency: 1 }, () => {
     const t = tier0();
 

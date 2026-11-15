@@ -33,7 +33,7 @@ import * as merges from "./merges.mjs";
 import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf } from "./siblings.ts";
 import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "./product-prs.ts";
 import { State } from "./state.mjs";
-import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.ts";
+import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.ts";
 import { authorize } from "./authorize.mjs";
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
@@ -1677,8 +1677,11 @@ async function conversation(issue, workspace, { instructions, resumed, persona }
   };
 }
 
-/** Where the task's work stands, read now: branches, their PRs on GitHub, and the merge queue. */
-async function liveState(issue, workspace) {
+/**
+ * Where the task's work stands, read now: branches, their PRs on GitHub, and the merge queue. For `wait`, led by
+ * MERGE_REQUESTED when every PR in flight has its merge requested or queued and only CI or the queue is left.
+ */
+async function liveState(issue, workspace, { wait = false } = {}) {
   const rows = await branchRows(issue, workspace).catch(() => []);
   const prs = new Map();
   const gh = await findRealGh().catch(() => "");
@@ -1689,14 +1692,18 @@ async function liveState(issue, workspace) {
     }),
   );
   const queue = mergeQueue(issue.id);
-  return stateSection({ rows, prs, merges: queue ? merges.summary(queue, queue.state === "running" ? "Running." : queue.state === "stopped" ? `Stopped: ${queue.reason}.` : "Done.") : "" });
+  const text = stateSection({ rows, prs, merges: queue ? merges.summary(queue, queue.state === "running" ? "Running." : queue.state === "stopped" ? `Stopped: ${queue.reason}.` : "Done.") : "" });
+  if (!wait) return text;
+  const requested = JSON.parse(state.get("auto_merges") || "{}")[issue.id]?.prs ?? [];
+  const queued = queue?.state === "running" ? queue.prs.filter((p) => p.status === "pending") : [];
+  return onlyMergesLeft(rows, prs, [...requested, ...queued].map((p) => p.url.toLowerCase())) ? `${MERGE_REQUESTED}\n\n${text}` : text;
 }
 
 // ------------------------------------------------------------------ the agent's tools (aidenhq …)
 
-/** `aidenhq status`: where the task's work stands, read now. */
-async function agentStatus({ issue, workspace }) {
-  return (await liveState(issue, workspace)) || "No branches, PRs or merges on this task yet.";
+/** `aidenhq status` (and `aidenhq wait`, with `wait`): where the task's work stands, read now. */
+async function agentStatus({ issue, workspace }, { wait } = {}) {
+  return (await liveState(issue, workspace, { wait: wait === true })) || "No branches, PRs or merges on this task yet.";
 }
 
 // ------------------------------------------------------------------ approval records

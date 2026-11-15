@@ -4,7 +4,8 @@
 //
 //   aidenhq status                                   branches, PRs, reviews, checks, merge queue (live)
 //   aidenhq wait [--minutes <n>]                     status again once it changes (a check, review or merge settles),
-//                                                       nothing is running any more, or after n minutes (default 20)
+//                                                       nothing is running any more, or after n minutes (default 20); at
+//                                                       once when only CI or the merge queue is left on requested merges
 //   aidenhq review [push] [<org/repo> <branch>]...   the AI reviewer's verdict on what `pr` (or `push`) would file now,
 //                                                       without filing it (a few per run)
 //   aidenhq push [<org/repo> <branch>]...            push the task's branches (or the ones named)
@@ -72,7 +73,7 @@ if (command === "repo" || command === "create-repo") {
   body = { query: words.join(" "), agent: flags.agent };
 } else if (command === "wait") {
   if (words.length || (flags.minutes !== undefined && !(Number(flags.minutes) > 0))) fail("usage: aidenhq wait [--minutes <n>]", 2);
-  body = {};
+  body = { wait: true };
 } else if (command === "merge") {
   if (!words.length) fail("name the pull requests to merge, in order", 2);
   body = { prs: words, gap: flags.gap === undefined ? undefined : Number(flags.gap) };
@@ -131,6 +132,11 @@ const started = Date.now();
 // A PR whose checks haven't started yet ("none") counts as in flight for its first 5 minutes: CI starts a little after a push.
 const inFlight = (t) => /\b\d+ running\b|\| waiting/.test(t) || (Date.now() - started < 5 * 60_000 && /#\d+ (open|draft) \|[^|\n]*\| none \|/.test(t));
 const first = await ask();
+// Every PR in flight has its merge requested or queued: the runner says so, and the turn can end now (thread.ts MERGE_REQUESTED).
+if (first.startsWith("Your merge is requested;")) {
+  console.log(first);
+  process.exit(0);
+}
 const deadline = Date.now() + Number(flags.minutes ?? 20) * 60_000;
 let now = first;
 while (now === first && inFlight(now) && Date.now() < deadline) {
