@@ -158,13 +158,16 @@ describe("merge queue: deciding", () => {
   });
 
   it("writes only merges, branch updates, closing a PR (comment, then state) and re-running a job", () => {
-    assert.deepEqual(WRITES.map((w) => w.method), ["PUT", "PUT", "POST", "PATCH", "DELETE", "POST"]);
+    assert.deepEqual(WRITES.map((w) => w.method), ["PUT", "PUT", "POST", "PATCH", "DELETE", "POST", "POST"]);
     assert.ok(WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/rerun-failed-jobs")));
     assert.ok(!WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/rerun")), "only the failed jobs, never a whole run");
     assert.ok(WRITES.some((w) => w.path.test("repos/o/r/pulls/1/merge")));
     assert.ok(!WRITES.some((w) => w.path.test("repos/o/r/pulls/1/reviews")));
     assert.ok(WRITES.some((w) => w.method === "DELETE" && w.path.test("repos/o/r/git/refs/heads/feat/x")));
     assert.ok(!WRITES.some((w) => w.method !== "DELETE" && w.path.test("repos/o/r/git/refs/heads/master")));
+    // The design review's wait: one status on a commit, never a whole-ref or check-run write.
+    assert.ok(WRITES.some((w) => w.method === "POST" && w.path.test("repos/o/r/statuses/0123456789abcdef0123456789abcdef01234567")));
+    assert.ok(!WRITES.some((w) => w.path.test("repos/o/r/check-runs") || w.path.test("repos/o/r/statuses/not-a-sha")));
   });
 
   it("comments, PR edits and branch deletes only in the agents org; merges anywhere", () => {

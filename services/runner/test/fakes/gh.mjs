@@ -49,13 +49,17 @@ const tip = (branch) => {
     return "0".repeat(40); // not on GitHub yet
   }
 };
-const rollup = (state) =>
-  state === "NONE"
-    ? null // no checks on the head yet
-    : state === "PENDING"
-    ? { state, contexts: { nodes: [{ __typename: "CheckRun", name: "test", status: "IN_PROGRESS", conclusion: null }] } }
-    : { state, contexts: { nodes: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: state }] } };
-const commits = (p) => ({ nodes: [{ commit: { parents: { nodes: [] }, signature: null, statusCheckRollup: rollup(p.checks) } }] });
+// The commit statuses the runner itself wrote on a head (a design review's pending wait), alongside the fake's checks.
+const written = (p) => (p.statuses ?? []).map((s) => ({ __typename: "StatusContext", context: s.context, state: s.state.toUpperCase(), description: s.description }));
+const rollup = (state, statuses = []) => {
+  const nodes = state === "NONE" ? [] : [{ __typename: "CheckRun", name: "test", status: state === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: state === "PENDING" ? null : state }];
+  const all = [...nodes, ...statuses];
+  // No rollup at all only when there is nothing on the head: a written status is something.
+  if (state === "NONE" && !statuses.length) return null;
+  const worst = all.some((n) => n.conclusion === "FAILURE" || n.state === "FAILURE") ? "FAILURE" : all.some((n) => n.state === "PENDING" || n.status === "IN_PROGRESS") ? "PENDING" : "SUCCESS";
+  return { state: worst, contexts: { nodes: all } };
+};
+const commits = (p) => ({ nodes: [{ commit: { parents: { nodes: [] }, signature: null, statusCheckRollup: rollup(p.checks, written(p)) } }] });
 
 if (field("query")?.includes("pullRequests(states: OPEN")) {
   const nodes = Object.entries(prs)
@@ -93,6 +97,19 @@ if (field("query")?.includes("stacked: pullRequests")) {
 // A commit's checks (merges.mjs COMMIT_QUERY): green.
 if (field("query")?.includes("object(oid")) {
   console.log(JSON.stringify({ data: { repository: { object: { committedDate: new Date().toISOString(), statusCheckRollup: rollup("SUCCESS") } } } }));
+  process.exit(0);
+}
+// A commit status the runner wrote (the design review's wait): recorded on the PR whose head it is, and logged.
+const statusRoute = /^repos\/acme\/app\/statuses\/([0-9a-f]{7,40})$/.exec(args.find((a) => a.startsWith("repos/acme/app/statuses/")) ?? "");
+if (statusRoute) {
+  const sha = statusRoute[1];
+  const entry = Object.entries(prs).find(([, q]) => q.branch && sha.startsWith(tip(q.branch))) ?? Object.entries(prs).find(([, q]) => q.branch);
+  if (!entry) process.exit(1);
+  const [num, q] = entry;
+  q.statuses = [...(q.statuses ?? []), { context: field("context"), state: field("state"), description: field("description"), sha }];
+  log("status", { number: Number(num), sha, status: q.statuses.at(-1) });
+  writeFileSync(fixture, JSON.stringify(prs));
+  console.log("{}");
   process.exit(0);
 }
 const route = args.find((a) => a.startsWith("repos/acme/app/pulls/"));
