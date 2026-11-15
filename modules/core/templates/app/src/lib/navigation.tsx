@@ -6,7 +6,8 @@ import * as React from "react"
 // - `Link` is an <a href> that moves without a page load. A modified or middle click, `target`, `download`, another
 //   origin and /api/ links do what the browser does.
 // - `navigate(href)` moves from code; `{ replace: true }` swaps the current history entry instead of adding one (as does
-//   moving to the address already shown, so Back never steps through a duplicate).
+//   moving to the address already shown, so Back never steps through a duplicate). Every move lands at the top of the new
+//   page, including one to the address already shown: a brand or a "home" link always takes you home, scrolled to the top.
 // - `useUrlState()` keeps a page's state in the query string (filters, `?item=`): `set` replaces the entry (Back doesn't
 //   step through every keystroke), `push` adds one (opening a detail: Back closes it). Empty values are dropped.
 // Each route is also listed in server.mjs `PAGES`, so a reload or a shared link to it answers 200.
@@ -17,15 +18,19 @@ if (typeof window !== "undefined") window.addEventListener("popstate", notify)
 const subscribe = (cb: () => void) => (listeners.add(cb), () => void listeners.delete(cb))
 const address = () => location.pathname + location.search
 
-export function navigate(href: string, { replace = false }: { replace?: boolean } = {}) {
+/** Move to `href`; `scroll` is off for a filter's query edit, which keeps the page where the reader left it. */
+function move(href: string, replace: boolean, scroll = true) {
   const to = new URL(href, location.href)
-  const newPage = to.pathname !== location.pathname
   const target = to.pathname + to.search + to.hash
   if (target === location.pathname + location.search + location.hash) replace = true
   if (replace) history.replaceState(history.state, "", target)
   else history.pushState(null, "", target)
   notify()
-  if (newPage && !replace) window.scrollTo({ top: 0 })
+  if (scroll) window.scrollTo({ top: 0 })
+}
+
+export function navigate(href: string, { replace = false }: { replace?: boolean } = {}) {
+  move(href, replace)
 }
 
 export function useLocation() {
@@ -67,5 +72,5 @@ function write(changes: Record<string, string | null>, replace: boolean) {
   const params = new URLSearchParams(location.search)
   for (const [k, v] of Object.entries(changes)) (v ? params.set(k, v) : params.delete(k))
   const qs = params.toString()
-  navigate(`${location.pathname}${qs ? `?${qs}` : ""}${location.hash}`, { replace })
+  move(`${location.pathname}${qs ? `?${qs}` : ""}${location.hash}`, replace, false)
 }

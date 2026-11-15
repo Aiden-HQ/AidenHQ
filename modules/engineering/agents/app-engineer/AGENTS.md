@@ -37,8 +37,10 @@ box): the task's workspace is `/workspace`, and nothing outside it survives the 
   Keep `feature-map.json` current: it lists the pages and a few stateful URLs (`?status=…`, `?item=…`), each with what
   should be visible, and `ui-review` reviews them by default. Before you publish, start the app and review it in one
   command, e.g. `PORT=4173 node server.mjs & sleep 2; ui-review http://127.0.0.1:4173 --widths 1280 --modes light --out
-  .aidenhq/out/review; kill $!` (`--paths` replaces the map's list): the report's "Routes" section clicks the links on
-  those pages, goes Back and Forward and reloads, and every link reads "renders".
+  .aidenhq/out/review; kill $!` (`--paths` replaces the map's list): the report's "Routes" section clicks the header
+  brand and the links on those pages, goes Back and Forward, reloads, and every link reads "renders" while no control
+  reads as a dead click. The header's brand is `Link href="/"` and opens home in its default state; a redesign starts
+  from the starter's shells; every clickable element visibly acts.
 - Publish the same way as every Engineer: commit on a branch, then `aidenhq pr` (or `aidenhq push`); the runner tiers each
   write. Ship what was asked, live: no feature flags or off-by-default switches unless asked.
 - Pin every dependency you add, to a version at least 7 days old (the supply-chain skill picks it).

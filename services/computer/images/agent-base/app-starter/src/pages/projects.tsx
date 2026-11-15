@@ -295,7 +295,10 @@ export function ProjectsPage() {
 function Summary({ items, loading, active, onPick }: { items: Project[]; loading: boolean; active: string; onPick: (s: string | null) => void }) {
   const count = (s: Status) => items.filter((p) => p.status === s).length
   const soon = items.filter((p) => p.status !== "done" && !isOverdue(p) && relativeDayCount(p.due) <= 7).length
-  const pick = (key: Status | null) => ({ pressed: key !== null && key === active, onPick: () => onPick(key === null || key === active ? null : key) })
+  // A figure whose click wouldn't change anything isn't a button: "All projects" while nothing is filtered has nothing
+  // to clear, so it stays a plain figure.
+  const pick = (key: Status | null) =>
+    key === null && !active ? {} : { pressed: key === active, onPick: () => onPick(key === null || key === active ? null : key) }
   return (
     <StatStrip
       loading={loading}
