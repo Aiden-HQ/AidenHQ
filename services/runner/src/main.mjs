@@ -83,6 +83,8 @@ const ownRepo = (slug) =>inOrg(cfg.agentsOrg, slug) || (Boolean(cfg.productRepo)
 const ghoMerge = async (slug, extra, perms = WRITE) => (ownRepo(slug) ? gho(slug, perms, extra) : extra);
 /** A re-run's token: only this (the App needs Actions: write; without it the re-run is refused and the check's failure stands). */
 const RERUN = { actions: "write" };
+/** The design review's pending status needs Commit statuses: write (the App's merge token has them read-only). */
+const STATUS = { ...WRITE, statuses: "write" };
 /**
  * The job's gh token: the App's, read-only (READ), narrowed to the task's repos it covers in the first such repo's org
  * (one token, one org), and fresh so it lasts the run. Undefined when it covers none: the job's gh then has no GitHub
@@ -515,17 +517,23 @@ async function fileDesignReviewTask(pr, { waits = true } = {}) {
   state.set(`reviewed:${prKey}`, [...(earlier ? earlier.split("; ") : []), `${issue.identifier} (head \`${pr.head}\`)`].slice(-3).join("; "));
   state.set(`runner-made:${issue.id}`, new Date().toISOString());
   log("design review task filed", { pr: pr.url, head: pr.head, issue: issue.identifier, waits });
-  // Wake it now: one comment on the task is Paperclip's task-scoped wake (as the board's notices are), and its text reaches
-  // the reviewer's prompt, which a bare agent wake's never does. Only while the head is still the one to review: one that
-  // merged, closed or moved on while this was filed wakes nobody. A PR the runner can't read is not "gone": its task is
-  // woken for, as before.
+  // Mark the head waiting and wake its reviewer, in one step. The status is the one the repo's design-review workflow sets
+  // (a UI head with no verdict waits), written here too so the wait and its run are one act: the runner does both for the
+  // same head, whether or not the repo carries the workflow. Then one comment on the task, which is Paperclip's task-scoped
+  // wake (as the board's notices are): its text reaches the reviewer's prompt, which a bare agent wake's never does. Only
+  // while the head is still the one to review: one that merged, closed or moved on while this was filed gets neither, so
+  // nothing waits and nobody is woken. A PR the runner can't read is not "gone": its review is marked and started, as before.
   const current = (await mergeGithub.pr(pr.repo, pr.number).catch(() => null))?.repository?.pullRequest;
   const gone = current ? merges.supersededDesignReview({ repo: pr.repo, number: pr.number, head: pr.head }, current) : undefined;
-  if (gone) log("design review not woken: its head is gone", { pr: pr.url, head: pr.head, issue: issue.identifier, why: gone });
-  else
+  if (gone) log("design review not started: its head is gone", { pr: pr.url, head: pr.head, issue: issue.identifier, why: gone });
+  else {
+    await mergeGithub
+      .status(pr.repo, pr.head, { state: "pending", context: merges.DESIGN_REVIEW.name, description: "Waiting for the UI Reviewer" })
+      .catch((err) => log("design review status failed", { pr: pr.url, head: pr.head, err: String(err.message ?? err).slice(0, 300) }));
     await pc
       .comment(issue.id, `Start now: this review is waiting on you, and the PR is not reviewed until you set \`design-review\` on head \`${pr.head.slice(0, 12)}\`. ${pr.url}`)
       .catch((err) => log("design review wake failed", { issue: issue.identifier, pr: pr.url, err: String(err.message ?? err).slice(0, 300) }));
+  }
   // The head it supersedes is no longer waiting on anyone: its task closes now, not when someone notices.
   await closeSupersededDesignReviews().catch((err) => log("superseded design review check failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 200) }));
 }
@@ -1198,6 +1206,10 @@ const mergeGithub = {
   },
   async comment(repo, number, body) {
     await githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST");
+  },
+  /** A commit status on the head (the design review's wait), as github-mcp's `commit_status_set` writes it. */
+  async status(repo, sha, { state, context, description }) {
+    await githubWrite(repo, `repos/${repo}/statuses/${sha}`, { state, context, description }, "POST", STATUS);
   },
   async close(repo, number) {
     await githubWrite(repo, `repos/${repo}/pulls/${number}`, { state: "closed" }, "PATCH");

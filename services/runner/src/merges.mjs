@@ -80,6 +80,8 @@ export const WRITES = [
   { method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ },
   // A workflow run whose red jobs all ended on an infrastructure failure: its failed jobs re-run once (infraRetry).
   { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun-failed-jobs$/ },
+  // The head is waiting for its design review: written where the runner files and wakes that review.
+  { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/statuses\/[0-9a-f]{7,40}$/ },
 ];
 
 /**

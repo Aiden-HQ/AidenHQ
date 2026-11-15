@@ -122,6 +122,8 @@ describe("flow-design-review: a pending design-review wakes its reviewer", () =>
   });
   const reviews = (n = 9) => t.paperclip.created.filter((c) => c.title === `Design review: acme/app#${n}`);
   const wakesOf = (task) => t.paperclip.wakes.filter((w) => w.issueId === task.id && w.agentId === "designer-1");
+  // The `design-review` statuses the runner itself wrote (the fake gh records them): the pending wait of a head.
+  const statuses = () => t.fakeLog().filter((e) => e.kind === "status").map((e) => e.data);
   const runsOf = (task) => t.paperclip.runs.filter((r) => r.issueId === task.id && r.agentId === "designer-1");
   const setPrs = (prs) => writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify(prs));
   const restart = async () => {
@@ -161,6 +163,11 @@ describe("flow-design-review: a pending design-review wakes its reviewer", () =>
     assert.deepEqual(wakesOf(task).map((w) => w.agentId), ["designer-1"], "one wake, of the reviewer, on that task");
     assert.equal(t.paperclip.issues.get(task.id).status, "in_progress", "the reviewer is running it");
     assert.match(String(wakesOf(task)[0].body), /design-review/);
+    // The same step marked the head waiting: the pending status the check shows, written by the runner, then the wake.
+    const pending = statuses().filter((s) => s.number === 21 && s.status?.context === "design-review");
+    assert.equal(pending.length, 1, "the head is marked pending once");
+    assert.equal(pending[0].status.state, "pending");
+    assert.equal(pending[0].status.description, "Waiting for the UI Reviewer");
   });
 
   it("the same head does not wake the reviewer again while its review is in flight", async () => {
@@ -174,6 +181,7 @@ describe("flow-design-review: a pending design-review wakes its reviewer", () =>
     assert.equal(runsOf(task).length, 1, "one run for it");
     assert.equal(t.paperclip.created.length, created, "nothing filed again");
     assert.equal(t.paperclip.patches.length, patches, "nothing else written");
+    assert.equal(statuses().filter((s) => s.number === 21).length, 1, "one pending status for the head, not another");
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
@@ -223,6 +231,7 @@ describe("flow-design-review: a head that is gone when its check would go pendin
     await t.idle(3000);
     assert.equal(mergedNow, true, "the race ran: the PR merged as its review task was filed");
     assert.equal(t.paperclip.wakes.length, 0, "nobody woken for a head that merged");
+    assert.equal(t.fakeLog().filter((e) => e.kind === "status").length, 0, "and nothing marked it waiting either");
     assert.equal(t.paperclip.runs.length, 0, "no run started for it");
     // The task the filing left behind is closed as superseded, not left for a reviewer to pick up.
     for (const task of reviews()) assert.equal(t.paperclip.issues.get(task.id).status, "cancelled", "its task closes as superseded");
