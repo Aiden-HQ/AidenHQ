@@ -78,7 +78,7 @@ main() {
   elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/gateway; then
     systemctl --user restart aidenhq-gateway && echo "gateway code changed: restarted"
   fi
-  docker compose up -d --build --remove-orphans
+  ops/apply-compose.sh # start the services, and remove only the ones this config dropped: never a CI runner one-off
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.mjs prune
   lap compose # the gateway check, then compose: builds (cached unless a context changed) and recreates what changed
