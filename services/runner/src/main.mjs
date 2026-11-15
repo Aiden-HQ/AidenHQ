@@ -948,6 +948,7 @@ async function runAutoMerges() {
       if (busy || !rest.length) continue;
       const said = rest.filter(([, t]) => t.reject);
       if (said.length) await pc.comment(issueId, said.map(([, t]) => `**Not merged:** ${t.reason}.${["checks-not-green", "no-checks", "head-moved"].includes(t.rule) ? " The merge is requested again when you publish again." : ""}`).join("\n"));
+      for (const [p, t] of said) await wakeForTurnedAway(issueId, { ...p, key: t.rule });
       const carded = rest.filter(([p]) => !said.some(([s]) => s === p));
       if (carded.length) {
         const tier = carded.some(([, t]) => t.tier !== 1) ? 2 : 1;
@@ -1025,6 +1026,7 @@ async function advanceMerges({ minute = true } = {}) {
     // A PR its checks kept from merging: the task's Engineer is woken to fix it, once per head and three times per PR at most
     // (its turn may have ended on the runner's word that green PRs merge on their own).
     // The same failure on two heads stops the task instead (the breaker): no more wakes, and the delegator is told once.
+    for (const f of step.turned ?? []) if (!(step.fixes ?? []).some((x) => x.url === f.url)) await wakeForTurnedAway(issueId, f);
     for (const f of step.fixes ?? []) {
       if (await redHead({ id: issueId, identifier: queue.identifier }, f).catch((err) => (log("red head unread", { pr: f.url, err: String(err.message ?? err).slice(0, 200) }), Boolean(stopped(issueId))))) continue;
       await wakeForRedChecks(issueId, queue, f).catch((err) => log("red checks wake failed", { pr: f.url, err: String(err.message ?? err).slice(0, 200) }));
@@ -1131,6 +1133,29 @@ async function wakeForRedChecks(issueId, queue, f) {
   log("red checks wake", { issue: queue.identifier, pr: f.url, head: f.head.slice(0, 12) });
   // A fixed reason in the runner's own words (never the repository's check names): the agent reads them with gh.
   await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${f.url} wasn't merged: its checks failed on \`${f.head.slice(0, 12)}\`. Run \`gh pr checks ${f.number}\` and read the failing runs' logs (and the code-review comment, if that check failed), fix the cause on the PR's branch, rerun the tests, then \`aidenhq pr\` and \`aidenhq merge ${f.url}\` again.` });
+}
+
+/**
+ * A requested merge turned away (before the queue, or by it for a reason other than red checks): the task's Engineer is woken with
+ * the reason, since the "Not merged" comment alone starts no turn. Once per head and reason, three times per PR at most; never on
+ * a stopped (breaker) or finished task.
+ */
+const TURNED_WHY = {
+  "no-checks": "its head has no checks yet (CI may not have started, or the commits aren't published)",
+  "checks-not-green": "named checks failed on its head",
+  "head-moved": "its head isn't the commit that was reviewed, or isn't published",
+  queue: "the merge queue turned it away",
+};
+async function wakeForTurnedAway(issueId, f) {
+  const key = `turned-wake:${f.url.toLowerCase()}`;
+  const mark = `${f.head}:${f.key}`;
+  const seen = JSON.parse(state.get(key) || "[]");
+  if (seen.includes(mark) || seen.length >= RED_WAKES || stopped(issueId)) return;
+  state.set(key, JSON.stringify([...seen, mark]));
+  const issue = await pc.issue(issueId).catch(() => undefined);
+  if (!issue || ["done", "cancelled"].includes(issue.status)) return;
+  log("turned-away merge wake", { issue: issueId, pr: f.url, rule: f.key });
+  await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${f.url} wasn't merged: ${TURNED_WHY[f.key] ?? `the runner's merge policy refused it (\`${f.key}\`)`}. Run \`gh pr checks ${f.number}\` and read the task's "Not merged" comment for the details. Fix the cause on the PR's branch, then \`aidenhq pr\` and \`aidenhq merge ${f.url}\` again.` }).catch((err) => log("turned-away wake failed", { pr: f.url, err: String(err.message ?? err).slice(0, 200) }));
 }
 
 /** A finished queue: the task's status (with `say`, unless already posted), the parent's note, and the tasks that opened its PRs. */
