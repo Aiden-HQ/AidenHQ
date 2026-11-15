@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { repoAccess } from "../src/repos.mjs";
+import { repoAccess } from "../src/repos.ts";
 
 function fake({ routed = "" } = {}) {
   const calls = [];

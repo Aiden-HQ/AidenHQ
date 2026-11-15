@@ -5,7 +5,7 @@
  * two minutes it lists the state and compares it with per-task cursors, never trusting update times or comment text.
  *
  * What it watches, per open task of an agent with an active "Heartbeat: <key>" routine. Only outcomes, as the primary paths
- * post them (notices inform; only an outcome wakes an agent: runner notices.mjs): a sub-task's progress (its cards, its
+ * post them (notices inform; only an outcome wakes an agent: runner notices.ts): a sub-task's progress (its cards, its
  * PRs, a grade sending it back to its assignee) is the sub-task's own, and its outcome follows.
  *   - each sub-task delegated to someone else: its status (done or cancelled, or reopened from one; intermediate
  *     updates such as in progress or in review are not news);

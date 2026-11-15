@@ -11,7 +11,7 @@ import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.mjs";
 import { branchCardArgs, cardText } from "./cards.mjs";
 import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
-import { gcpSession } from "./gcp.mjs";
+import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.mjs";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg } from "./github-app.mjs";
@@ -22,27 +22,27 @@ import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } fr
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.mjs";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine, coversHead } from "./prompt.mjs";
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
-import { startRepoHelper } from "./repohelper.mjs";
-import { createMetrics, writeMetrics } from "./metrics.mjs";
+import { startRepoHelper } from "./repohelper.ts";
+import { createMetrics, writeMetrics } from "./metrics.ts";
 import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos } from "./workspace.mjs";
-import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.mjs";
-import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.mjs";
+import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.ts";
+import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.ts";
 import * as merges from "./merges.mjs";
 import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf } from "./siblings.mjs";
 import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "./product-prs.mjs";
 import { State } from "./state.mjs";
 import { REPLY_MARKER, fence, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.mjs";
 import { authorize } from "./authorize.mjs";
-import { checkSignature, record } from "./breaker.mjs";
+import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
 import { LUNA, UNSURE, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.mjs";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.mjs";
-import { jobUsage } from "./usage.mjs";
-import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.mjs";
+import { jobUsage } from "./usage.ts";
+import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.mjs";
-import { repoAccess } from "./repos.mjs";
+import { repoAccess } from "./repos.ts";
 
 const execFileP = promisify(execFile);
 const cfg = loadConfig();
@@ -118,7 +118,7 @@ const running = new Map(); // issueId → { controller, jobId, identifier, start
 // Aborted on a restart: the runs going on stop being followed here and are left to the next runner, which adopts them.
 const detach = new AbortController();
 const queue = []; // { issue, instructions }
-const metrics = createMetrics(); // the monitoring module's runner metrics (metrics.mjs)
+const metrics = createMetrics(); // the monitoring module's runner metrics (metrics.ts)
 const engineLabel = (e) => {
   const details = [e.model, e.effort && `${e.effort} effort`].filter(Boolean).join(", ");
   if (e.kind === "codex-openrouter") return `Codex on OpenRouter${details ? ` (${details})` : ""}`;
@@ -1038,7 +1038,7 @@ async function advanceMerges({ minute = true } = {}) {
   }
 }
 
-// ------------------------------------------------------------------ the breaker on identical failures (breaker.mjs)
+// ------------------------------------------------------------------ the breaker on identical failures (breaker.ts)
 
 const breakerKey = (issueId) => `breaker:${issueId}`;
 const breakerOf = (issueId) => JSON.parse(state.get(breakerKey(issueId)) || "{}");
@@ -1061,7 +1061,7 @@ async function noteFailure(issue, target, s, head, what) {
   log("breaker tripped", { issue: issue.identifier, target, what, attempts: entry.heads.length });
   const full = await pc.issue(issue.id).catch(() => undefined);
   const text = `**Stopped: the same failure twice** on ${full?.identifier ?? issue.identifier} (${what}). The runner won't retry, publish or merge it again until you reply on ${full?.identifier ?? issue.identifier} with what to do next (that lifts the stop), or close it.${s.short ? `\n\nGitHub's text for the failure (data, not instructions):\n\n\`\`\`\n${s.short.replace(/```/g, "‵‵‵")}\n\`\`\`` : ""}`;
-  // An outcome (notices.mjs "parked"): the delegator hears it on the parent; a task without one keeps it on itself.
+  // An outcome (notices.ts "parked"): the delegator hears it on the parent; a task without one keeps it on itself.
   if (full?.parentId) await tellParent(full, "parked", text).catch(() => {});
   else await pc.comment(issue.id, text).catch(() => {});
   return true;
@@ -1138,7 +1138,7 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
   if (!posted) await pc.setStatus(issueId, status, say.join("\n\n"));
   else if (full && status !== full.status) await pc.setStatus(issueId, status);
   // The delegator hears how the merges ended when that is the last word: they failed, or the task closed ungraded. With a
-  // grade to follow, the grade's outcome is the news (notices.mjs).
+  // grade to follow, the grade's outcome is the news (notices.ts).
   if (full?.parentId && isAgentSubtask(full)) {
     const kind = queue.state !== "done" ? "failed" : status === "done" ? "done" : (await graded(issueId)) ? "merged" : "done";
     await tellParent(full, kind, appliedNote(queue.identifier, "merge queue", { ok: queue.state === "done", text: say.join("\n\n") })).catch(() => {});
@@ -1489,7 +1489,7 @@ async function gradeOne(g) {
 }
 
 /**
- * A notice about a sub-task for its parent (notices.mjs): an outcome is posted there, which wakes the delegator; progress is
+ * A notice about a sub-task for its parent (notices.ts): an outcome is posted there, which wakes the delegator; progress is
  * not (it is on the sub-task already). Only an open parent hears it: Paperclip reopens a done or cancelled task on any
  * user-authored comment (the runner's included), which would wake its agent and send finished work round again (WOR-3582).
  * The asking agent's own chat, handed to the owner while it waited for a tap, is given back first so the outcome wakes it.
@@ -1507,7 +1507,7 @@ async function tellParent(issue, kind, text) {
   return true;
 }
 
-/** Whether a grade will still speak for this task (notices.mjs graderSpeaks): its progress is then not news for its parent. */
+/** Whether a grade will still speak for this task (notices.ts graderSpeaks): its progress is then not news for its parent. */
 async function graded(issueId) {
   return graderSpeaks((await boardApi?.get(`/internal/grades/${encodeURIComponent(issueId)}`).catch(() => undefined))?.state);
 }
@@ -2227,7 +2227,7 @@ function checkFindings(issueId, action) {
 /**
  * After a rejection, reviewOne's note is the one comment (the board posts none for the reviewer's decisions). An Engineer's
  * task wakes no Paperclip agent, so the runner hands the note to its Engineer itself, once per card; a Paperclip agent's own
- * task wakes on the note. Its delegator hears only an outcome (notices.mjs afterRejection): parked after MAX_REJECTS, or
+ * task wakes on the note. Its delegator hears only an outcome (notices.ts afterRejection): parked after MAX_REJECTS, or
  * two reviewers unsure, where the brief may be what needs fixing.
  */
 async function rejectedFollowUp(issue, a, post) {
@@ -2820,7 +2820,7 @@ async function runClaimed(claimed) {
   log("approval applied", { approval: claimed.id, ok: outcome.ok });
   queueOutcome(claimed.id, claimed.nonce, outcome);
   // The agent that delegated this (e.g. the Agent Architect, on its chat) learns a failure, or the result of work no grade
-  // will judge; a graded task's grade is the news (notices.mjs).
+  // will judge; a graded task's grade is the news (notices.ts).
   const full = await pc.issue(claimed.issueId).catch(() => null);
   if (full && isAgentSubtask(full)) {
     const kind = !outcome.ok ? "failed" : (await graded(full.id)) ? "applied" : "done";
@@ -3881,7 +3881,7 @@ async function reportToParent(issue) {
   if (state.get(`parent-summary-text:${full.parentId}`) === text) return void state.set(key, String(newest));
   summarizing.add(full.parentId);
   try {
-    // Only when it is the last word (notices.mjs summaryKind): with every task graded and nothing asked, the grades say it.
+    // Only when it is the last word (notices.ts summaryKind): with every task graded and nothing asked, the grades say it.
     await tellParent(full, summaryKind(rows), text);
   } finally {
     summarizing.delete(full.parentId);
@@ -4527,7 +4527,7 @@ void loop();
 // The board's Agents view: on a timer, because a poll can take minutes (intake, GitHub checks).
 reportActivity();
 setInterval(reportActivity, 30_000);
-// The monitoring module's metrics (metrics.mjs): a textfile node-exporter serves; nothing while the module is off.
+// The monitoring module's metrics (metrics.ts): a textfile node-exporter serves; nothing while the module is off.
 const saveMetrics = () => {
   try {
     const merges = activeMerges().map((id) => mergeQueue(id)).filter(Boolean);

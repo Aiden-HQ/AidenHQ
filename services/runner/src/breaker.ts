@@ -11,7 +11,7 @@ export const TRIP_AT = 2;
  * numbers, run ids), whitespace collapsed. What still differs (a temp path, another test) reads as another failure, so
  * an unclear case keeps retrying rather than stopping good work.
  */
-export const normalize = (text) =>
+export const normalize = (text: unknown): string =>
   String(text ?? "")
     .replace(/\d{4}-\d\d-\d\dT[\d:.]+Z?/g, "")
     .replace(/\b[0-9a-f]{7,64}\b/gi, "#")
@@ -24,12 +24,26 @@ export const normalize = (text) =>
  * A head's failed checks [{ name, lines: [GitHub's failure text…] }] → { sig, short }, or undefined when nothing was read
  * (unknown is never "the same"). `short` is for the notice: the first failure line, as GitHub wrote it.
  */
-export function checkSignature(failed) {
-  const known = (failed ?? []).filter((f) => f?.name);
+/** A failed check as GitHub reported it: its name and its failure lines. */
+export interface FailedCheck {
+  name?: string;
+  lines?: string[];
+}
+export interface Signature {
+  sig: string;
+  short: string;
+}
+/** A target's breaker entry: the failure's signature, its first line, and the heads that failed that way. */
+export interface BreakerEntry extends Signature {
+  heads: string[];
+}
+
+export function checkSignature(failed: FailedCheck[] | null | undefined): Signature | undefined {
+  const known = (failed ?? []).filter((f): f is FailedCheck & { name: string } => Boolean(f?.name));
   if (!known.length) return undefined;
-  const parts = known.map((f) => [String(f.name), [...new Set((f.lines ?? []).map(normalize).filter(Boolean))].sort()]).sort((a, b) => a[0].localeCompare(b[0]));
+  const parts = known.map((f): [string, string[]] => [String(f.name), [...new Set((f.lines ?? []).map(normalize).filter(Boolean))].sort()]).sort((a, b) => a[0].localeCompare(b[0]));
   const sig = createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 24);
-  const first = known.find((f) => f.lines?.length) ?? known[0];
+  const first = known.find((f) => f.lines?.length) ?? known[0]!;
   const short = `${first.name}: ${String(first.lines?.find(Boolean) ?? "failed").replace(/\s+/g, " ").trim()}`.slice(0, 300);
   return { sig, short };
 }
@@ -39,7 +53,7 @@ export function checkSignature(failed) {
  * Counted per attempt: the same head seen again is one failure, a new head with the same signature is the next, and a
  * different signature starts over.
  */
-export function record(entry, { sig, short }, head) {
-  const next = entry?.sig === sig ? { ...entry, heads: entry.heads.includes(head) ? entry.heads : [...entry.heads, head] } : { sig, short, heads: [head] };
+export function record(entry: BreakerEntry | undefined, { sig, short }: Signature, head: string): { entry: BreakerEntry; tripped: boolean } {
+  const next: BreakerEntry = entry?.sig === sig ? { ...entry, heads: entry.heads.includes(head) ? entry.heads : [...entry.heads, head] } : { sig, short, heads: [head] };
   return { entry: next, tripped: next.heads.length >= TRIP_AT };
 }

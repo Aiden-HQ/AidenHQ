@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMetrics, writeMetrics } from "../src/metrics.mjs";
+import { createMetrics, writeMetrics } from "../src/metrics.ts";
 
 test("runner metrics: queue, jobs, durations and merge queues as exposition text", () => {
   const m = createMetrics();

@@ -305,8 +305,8 @@ export async function serveHelper(req, res, { tokens, jobs, retryForMs = 120_000
   }
 }
 
-// The runner's helper commands (services/runner/src/repohelper.mjs TOOLS; verify-security.sh checks that list).
-import { TOOLS as HELPER_COMMANDS } from "../runner/src/repohelper.mjs";
+// The runner's helper commands (services/runner/src/repohelper.ts TOOLS; verify-security.sh checks that list).
+import { TOOLS as HELPER_COMMANDS } from "../runner/src/repohelper.ts";
 
 /** POST to host loopback (http.request: an `aidenhq pr` can take many minutes, past fetch's silent-request limit). */
 function postLocal(port, urlPath, token, body) {

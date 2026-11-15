@@ -8,20 +8,24 @@ import { join } from "node:path";
  * token: the runner hands it a one-hour access token in a file its gcloud reads
  * (auth/access_token_file). Keeping to reads is the prompt's rule, and the user's IAM roles.
  */
+/** Where a job's Google Cloud sign-in stands: ok, or why it has none. */
+export type GcpState = "ok" | "missing" | "expired" | "refused" | "unavailable";
+
 export class GcpAuthError extends Error {
-  constructor(message, state = "expired") {
+  state: GcpState;
+  constructor(message: string, state: GcpState = "expired") {
     super(message);
     this.state = state;
   }
 }
 
 /** A one-hour access token from the sign-in's refresh token: { token, expiresAt }. */
-export async function accessToken(credentialsFile, fetchImpl = fetch) {
+export async function accessToken(credentialsFile: string, fetchImpl: typeof fetch = fetch): Promise<{ token: string; expiresAt: number }> {
   if (!existsSync(credentialsFile)) throw new GcpAuthError("Google Cloud isn't signed in for AidenHQ (run scripts/gcloud-auth.sh)", "missing");
   const c = JSON.parse(readFileSync(credentialsFile, "utf8"));
   const body = new URLSearchParams({ grant_type: "refresh_token", refresh_token: c.refresh_token, client_id: c.client_id, client_secret: c.client_secret ?? "" });
   const res = await fetchImpl("https://oauth2.googleapis.com/token", { method: "POST", body, signal: AbortSignal.timeout(15_000) });
-  const json = await res.json().catch(() => ({}));
+  const json: any = await res.json().catch(() => ({}));
   if (typeof json.access_token === "string" && json.access_token) return { token: json.access_token, expiresAt: Date.now() + Number(json.expires_in ?? 3600) * 1000 };
   if (res.status >= 500) throw new GcpAuthError(`Google's token endpoint answered ${res.status}`, "unavailable");
   const detail = String(json.error_description ?? "");
@@ -35,16 +39,16 @@ export async function accessToken(credentialsFile, fetchImpl = fetch) {
  * drops variables named *TOKEN* from its tool calls. `state` is ok, missing, expired, refused or unavailable; the job runs either way, and the
  * prompt tells the agent what it has. `done()` stops the refresh and removes the token.
  */
-export async function gcpSession({ credentialsFile, dir, project, log = () => {}, fetchImpl = fetch, refreshMinutes = 40 }) {
+export async function gcpSession({ credentialsFile, dir, project, log = () => {}, fetchImpl = fetch, refreshMinutes = 40 }: { credentialsFile: string; dir: string; project?: string; log?: (msg: string, fields?: object) => void; fetchImpl?: typeof fetch; refreshMinutes?: number }) {
   const config = join(dir, "config");
   const tokenFile = join(dir, "token");
   mkdirSync(config, { recursive: true, mode: 0o700 });
-  const write = ({ token }) => {
+  const write = ({ token }: { token: string }) => {
     const tmp = `${tokenFile}.tmp`;
     writeFileSync(tmp, token, { mode: 0o600 });
     renameSync(tmp, tokenFile);
   };
-  const properties = (auth) => {
+  const properties = (auth: boolean) => {
     mkdirSync(join(config, "configurations"), { recursive: true });
     writeFileSync(join(config, "active_config"), "default");
     writeFileSync(
@@ -53,8 +57,8 @@ export async function gcpSession({ credentialsFile, dir, project, log = () => {}
     );
   };
   const env = { CLOUDSDK_CONFIG: config };
-  let state = "ok";
-  let detail;
+  let state: GcpState = "ok";
+  let detail: string | undefined;
   try {
     write(await accessToken(credentialsFile, fetchImpl));
     properties(true);
@@ -67,7 +71,7 @@ export async function gcpSession({ credentialsFile, dir, project, log = () => {}
   const timer =
     state === "ok"
       ? setInterval(() => {
-          accessToken(credentialsFile, fetchImpl).then(write, (err) => log("gcp token refresh failed", { err: String(err.message ?? err).slice(0, 200) }));
+          accessToken(credentialsFile, fetchImpl).then(write, (err: any) => log("gcp token refresh failed", { err: String(err.message ?? err).slice(0, 200) }));
         }, refreshMinutes * 60_000)
       : undefined;
   timer?.unref();

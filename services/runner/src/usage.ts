@@ -6,11 +6,19 @@ import { readFileSync } from "node:fs";
  * opencode's step_finish (its cost is OpenRouter's), Codex's turn.completed (input_tokens includes the cached ones, output_tokens the reasoning ones),
  * Claude Code's result (a subscription: tokens only). Undefined when the log holds none.
  */
-export function usageFromLog(text) {
+/** Tokens and cost of model calls; `costUsd` is null when the engine reported no price. */
+export interface Usage {
+  input: number;
+  cached: number;
+  output: number;
+  costUsd: number | null;
+}
+
+export function usageFromLog(text: unknown): Usage | undefined {
   const u = { input: 0, cached: 0, output: 0, costUsd: 0, priced: false, seen: false };
   for (const line of String(text).split("\n")) {
     if (!line.startsWith("{") || !/"(step_finish|turn\.completed|result)"/.test(line)) continue;
-    let e;
+    let e: any;
     try {
       e = JSON.parse(line);
     } catch {
@@ -41,7 +49,7 @@ export function usageFromLog(text) {
 }
 
 /** A job's usage record for the board, keyed by the job's log so a re-report (an adopted job, a retry) counts once. */
-export function jobUsage(logPath, engine) {
+export function jobUsage(logPath: string, engine: { model?: string; kind: string }): (Usage & { key: string; component: string; model: string }) | undefined {
   let text = "";
   try {
     text = readFileSync(logPath, "utf8");
@@ -55,7 +63,15 @@ export function jobUsage(logPath, engine) {
 }
 
 /** OpenRouter's usage block on a chat completion: { input, cached, output, costUsd } (cost when OpenRouter included it). */
-export function usageFromCompletion(usage) {
+/** OpenRouter's `usage` on a chat completion. */
+export interface CompletionUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+  cost?: number;
+}
+
+export function usageFromCompletion(usage: CompletionUsage | null | undefined): Usage | undefined {
   if (!usage) return undefined;
   const cached = usage.prompt_tokens_details?.cached_tokens ?? 0;
   return { input: Math.max(0, (usage.prompt_tokens ?? 0) - cached), cached, output: usage.completion_tokens ?? 0, costUsd: typeof usage.cost === "number" ? usage.cost : null };

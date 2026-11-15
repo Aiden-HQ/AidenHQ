@@ -5,10 +5,33 @@
 const PR_URL = /https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)/g;
 
 /** Distinct GitHub PR links in free text. */
-export function prLinks(text) {
-  const found = new Map();
+/** A GitHub pull request, by owner, repo and number. */
+export interface PrRef {
+  owner: string;
+  repo: string;
+  number: number;
+}
+/** The Paperclip task fields a review ask is read from. */
+interface ReviewIssue {
+  title?: string | null;
+  description?: string | null;
+  createdAt?: string;
+}
+/** The PR as PR_QUERY returns it. */
+export interface ReviewedPr {
+  number: number;
+  title?: string;
+  url: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  merged?: boolean;
+  mergedBy?: { login?: string } | null;
+  reviews?: { nodes?: { author?: { login?: string } | null; state: string; submittedAt: string }[] };
+}
+
+export function prLinks(text: unknown): PrRef[] {
+  const found = new Map<string, PrRef>();
   for (const m of String(text ?? "").matchAll(PR_URL)) {
-    const pr = { owner: m[1], repo: m[2], number: Number(m[3]) };
+    const pr = { owner: m[1]!, repo: m[2]!, number: Number(m[3]) };
     found.set(`${pr.owner}/${pr.repo}#${pr.number}`.toLowerCase(), pr);
   }
   return [...found.values()];
@@ -20,23 +43,23 @@ export function prLinks(text) {
  * the title mentions a review and the task links exactly one PR. The ask time is the Slack message's
  * (from the source marker), else when the task was created.
  */
-export function reviewTarget(issue) {
+export function reviewTarget(issue: ReviewIssue | null | undefined): (PrRef & { asked: string | undefined }) | undefined {
   const description = String(issue?.description ?? "");
   const line = /^\s*PR:\s*<?(https?:\/\/github\.com\/\S+?)>?\s*$/im.exec(description);
   const links = prLinks(line ? line[1] : `${issue?.title ?? ""}\n${description}`);
   if (links.length !== 1 || (!line && !/\breview/i.test(issue?.title ?? ""))) return undefined;
   const ts = /<!-- source:(?:source:)?slack:[A-Z0-9]+:(\d{9,11})(?:\.\d+)? -->/.exec(description)?.[1];
-  return { ...links[0], asked: ts ? new Date(Number(ts) * 1000).toISOString() : issue.createdAt };
+  return { ...links[0]!, asked: ts ? new Date(Number(ts) * 1000).toISOString() : issue?.createdAt };
 }
 
-const DID = { APPROVED: "approved", CHANGES_REQUESTED: "requested changes on", COMMENTED: "reviewed", DISMISSED: "reviewed" };
-const day = (t) => new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+const DID: Record<string, string> = { APPROVED: "approved", CHANGES_REQUESTED: "requested changes on", COMMENTED: "reviewed", DISMISSED: "reviewed" };
+const day = (t: string) => new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC";
 
 /**
  * What to do with the task, given the PR as GitHub's GraphQL API returns it (state, merged,
  * mergedBy, url, reviews { author, state, submittedAt }): undefined while it still needs you.
  */
-export function reviewOutcome(pr, me, asked) {
+export function reviewOutcome(pr: ReviewedPr | null | undefined, me: string, asked: string): { status: "done" | "cancelled"; comment: string } | undefined {
   if (!pr) return undefined;
   const link = `[${pr.title ? `#${pr.number} ${pr.title}` : `#${pr.number}`}](${pr.url})`;
   const mine = (pr.reviews?.nodes ?? [])

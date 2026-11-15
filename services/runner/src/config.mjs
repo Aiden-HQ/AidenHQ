@@ -79,7 +79,7 @@ export function loadConfig() {
     reviewerKeyFile: join(secrets, "reviewer_key"),
     // The product repo (owner/name): AIDENHQ_PRODUCT_REPO, else this checkout's origin. Tiering treats it apart.
     productRepo: env.AIDENHQ_PRODUCT_REPO || productRepoOf(REPO_ROOT),
-    /** GitHub token that adds deploy keys (src/repos.mjs); optional, never in an agent's sandbox. */
+    /** GitHub token that adds deploy keys (src/repos.ts); optional, never in an agent's sandbox. */
     githubAdminTokenFile: join(secrets, "github_admin_token"),
     repoAccessScript: join(REPO_ROOT, "ops/vm/add-deploy-key.sh"),
     boardInternalUrl: env.BOARD_INTERNAL_URL ?? cfg.recurring?.board_url ?? "http://127.0.0.1:3122",
@@ -146,7 +146,7 @@ export function loadConfig() {
     pasta: (env.PATH ?? "").split(":").filter((d) => d.startsWith("/")).map((d) => join(d, "pasta")).find((p) => existsSync(p)),
     workDir: expand(cfg.work_dir ?? "~/aidenhq-work"),
     stateDir,
-    // The monitoring module's textfile directory (node-exporter reads it): the runner's metrics (metrics.mjs).
+    // The monitoring module's textfile directory (node-exporter reads it): the runner's metrics (metrics.ts).
     metricsFile: join(resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data")), "monitoring", "textfile", "runner.prom"),
     ghWrapperDir: join(REPO_ROOT, "services/runner/bin"),
     // agent-browser and its pinned Chrome (ops/vm/setup.sh, the browser image's build), read-only in jobs (bin/aidenhq-browse).

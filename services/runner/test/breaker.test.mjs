@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkSignature, record } from "../src/breaker.mjs";
+import { checkSignature, record } from "../src/breaker.ts";
 
 // WOR-4755 (2026-11-14): every head failed code-review the same way, with another run id, time and commit each time.
 const eacces = (run, sha) => [{ name: "code-review", lines: [`2026-11-14T16:2${run}:55.1Z Process completed with exit code 127.`, `EACCES: permission denied, mkdir '/opt/hostedtoolcache/node/22.23.5' (run ${run}00${run}, ${sha})`] }];

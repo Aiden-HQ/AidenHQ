@@ -6,7 +6,7 @@ import { RUNNER_MARKER } from "./commands.mjs";
 import { patchKey } from "./git.mjs";
 import { GATE_CHECK, findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
 import { MAX_DIFF } from "./review.mjs";
-import { downscalePng, imageInfo, pngStamp } from "./images.mjs";
+import { downscalePng, imageInfo, pngStamp } from "./images.ts";
 
 /** Marks the grader's own notes on a task, so they never count as the deliverable's evidence. */
 export const GRADER_MARKER = "<!-- aidenhq:grader -->";
