@@ -6,6 +6,7 @@ import { join } from "node:path";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { checks } from "../src/fleet-ops.js";
 import { completionGate } from "../src/grades.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
@@ -286,6 +287,42 @@ describe("grade routes", () => {
       expect(s.grades.get(childTask.id)!.state).toBe("pending");
     } finally {
       close();
+    }
+  });
+
+  it("cancelling a task while its evidence is awaited settles the row, and the detector raises no grade: key", async () => {
+    const s = new Store(":memory:");
+    const cancelled = { ...task, id: "55555555-5555-5555-5555-555555555555", identifier: "WOR-9", status: "cancelled", cancelledAt: "2026-11-14T09:00:00.000Z" } as unknown as typeof task;
+    const own = {
+      companyId: "co",
+      agentMe: async (key: string) => agents.find((a) => a.id === key) ?? Promise.reject(new Error("401")),
+      issue: async () => cancelled,
+      labels: async () => [{ id: "lbl-grading", name: "grading" }],
+      updateIssue: async () => cancelled,
+    } as unknown as Paperclip;
+    const app3 = createApp({ paperclip: own, store: s, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY });
+    await new Promise<void>((r) => app3.listen(0, "127.0.0.1", r));
+    const port3 = (app3.address() as AddressInfo).port;
+    const post3 = (path: string, body: unknown) =>
+      new Promise<{ status: number; json: any }>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port: port3, method: "POST", path, headers: { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-reviewer-key": RUNNER_KEY } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve({ status: res.statusCode!, json: text ? JSON.parse(text) : undefined }));
+        });
+        req.on("error", reject);
+        req.end(JSON.stringify(body));
+      });
+    try {
+      s.grades.file(cancelled.id, [], { kind: "report", ref: "" });
+      completionGate(s.grades, cancelled.id, "task_finish");
+      s.grades.record(cancelled.id, { version: "", outcome: "awaiting_evidence", model: "", criteria: [] }, Date.now() - 2 * 86_400_000);
+      // The runner's next look at the task: cancelled, so the close passes and the row ends settled.
+      expect((await post3(`/internal/grades/${cancelled.id}/gate`, { via: "finish_turn" })).json).toEqual({ pass: true });
+      expect(s.grades.get(cancelled.id)).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });
+      expect(await checks({ companyId: "co", issue: async () => cancelled } as never, s as never, () => Date.now(), {}).grade!()).toEqual([]);
+    } finally {
+      app3.close();
     }
   });
 });

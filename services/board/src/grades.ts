@@ -11,9 +11,10 @@ import type { Events } from "./events.js";
  * runner. awaiting_evidence: checks, a deploy or an approval still running. Then satisfied, needs_revision (back to the
  * assignee), grading_failed (the grader failed or returned no usable criteria: retried on a bounded ladder, never the
  * owner's) or escalated (3 rejected versions, cannot_judge, or 5 failed grader passes: the delegator decides, accepting
- * by closing the task or reopening it with what to change).
+ * by closing the task or reopening it with what to change). not_graded: the task was cancelled or otherwise closed before
+ * the grader settled it, so there is nothing left to grade.
  */
-export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "escalated";
+export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "escalated" | "not_graded";
 export interface Deliverable {
   kind: "pr" | "app" | "apply" | "file" | "report";
   ref: string;
@@ -44,6 +45,8 @@ export interface Grade {
   failedAt: string | null;
   /** The agents the escalation was addressed to, saved when the grade escalated (null: escalated before this was saved). */
   delegators: string[] | null;
+  /** Why the row ended not_graded (the task was cancelled or closed before the grader settled it); null otherwise. */
+  closedReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -58,6 +61,7 @@ interface Row {
   failures: number;
   failed_at: string | null;
   delegators: string | null;
+  closed_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -116,7 +120,7 @@ export function prRefAllowed(ref: string, grantsFile = process.env.AIDENHQ_GRANT
   return Boolean((t.agents_org && org === t.agents_org.toLowerCase()) || (t.product_repo && repo === t.product_repo.toLowerCase()));
 }
 
-const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, delegators: r.delegators ? JSON.parse(r.delegators) : null, createdAt: r.created_at, updatedAt: r.updated_at });
+const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, delegators: r.delegators ? JSON.parse(r.delegators) : null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
 
 export class Grades {
   constructor(
@@ -126,11 +130,12 @@ export class Grades {
     db.exec(`CREATE TABLE IF NOT EXISTS grades (
       issue_id TEXT PRIMARY KEY, rubric TEXT NOT NULL, deliverable TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
       state TEXT NOT NULL, verdicts TEXT NOT NULL DEFAULT '[]', failures INTEGER NOT NULL DEFAULT 0, failed_at TEXT,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+      closed_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
     const columns = (db.prepare("PRAGMA table_info(grades)").all() as { name: string }[]).map((c) => c.name);
     if (!columns.includes("failures")) db.exec("ALTER TABLE grades ADD COLUMN failures INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("failed_at")) db.exec("ALTER TABLE grades ADD COLUMN failed_at TEXT");
     if (!columns.includes("delegators")) db.exec("ALTER TABLE grades ADD COLUMN delegators TEXT");
+    if (!columns.includes("closed_reason")) db.exec("ALTER TABLE grades ADD COLUMN closed_reason TEXT");
     // An escalated task finished again: graded again only once the runner finds a new deliverable version (resubmit).
     db.exec("CREATE TABLE IF NOT EXISTS grade_resubmits (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL)");
   }
@@ -162,6 +167,27 @@ export class Grades {
     return (this.db.prepare("SELECT * FROM grades WHERE state = 'escalated' ORDER BY updated_at DESC LIMIT 50").all() as unknown as Row[]).map(fromRow);
   }
 
+  /**
+   * Every row that is not settled yet: what a task closing has to settle. One row per grade state, for a task already
+   * `done` or `cancelled`:
+   *
+   * open             settles: the delegation was never finished, so nothing is left to grade or to claim.
+   * pending          settles: the gate was waiting for a runner that will never be asked again.
+   * awaiting_evidence settles: the evidence will not be read for a closed task.
+   * needs_revision   settles: there is nothing left to revise.
+   * grading_failed   settles: the retry ladder has no task to retry.
+   * escalated        settles: the delegator's decision is moot once the task is closed any other way.
+   * satisfied        never swept: a real verdict stands, and a settled row keeps its `satisfied` (the close did not undo it).
+   * not_graded       never swept: already terminal, and the first reason is kept.
+   *
+   * So the sweep takes everything except the two settled states, which is what the query says. It reads each task's status
+   * first, so a task still open keeps its row whatever its state, and the detector's own reporting is unchanged (`due()` and
+   * `escalated()` are the only states it counts).
+   */
+  unsettled(): Grade[] {
+    return (this.db.prepare("SELECT * FROM grades WHERE state NOT IN ('satisfied', 'not_graded') ORDER BY updated_at").all() as unknown as Row[]).map(fromRow);
+  }
+
   /** Escalated rows finished again since: the runner checks each for a new deliverable version. */
   resubmitted(): Grade[] {
     return (this.db.prepare("SELECT g.* FROM grades g JOIN grade_resubmits r ON r.issue_id = g.issue_id WHERE g.state = 'escalated'").all() as unknown as Row[]).map(fromRow);
@@ -191,10 +217,24 @@ export class Grades {
     this.events?.emit("grades", issueId);
   }
 
+  /**
+   * The task closed before the grader settled its row (cancelled, or done another way): there is nothing left to grade, so
+   * the row ends `not_graded` with the reason. A satisfied row keeps its verdict; a row already settled keeps its first
+   * reason. Called wherever a close is seen, and by the detector for a close it wasn't (a cancel in Paperclip itself).
+   */
+  settle(issueId: string, reason: string, now = Date.now()): Grade | undefined {
+    const g = this.get(issueId);
+    if (!g || g.state === "satisfied" || g.state === "not_graded") return g;
+    this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
+    this.db.prepare("UPDATE grades SET state = 'not_graded', closed_reason = ?, updated_at = ? WHERE issue_id = ?").run(reason.slice(0, 300), new Date(now).toISOString(), issueId);
+    this.events?.emit("grades", issueId);
+    return this.get(issueId);
+  }
+
   private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, now = Date.now(), delegators?: string[]): Grade {
     // The delegators belong to the escalation: written in the same UPDATE that escalates, cleared when the grade leaves it.
     this.db
-      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, updated_at = ?, delegators = CASE WHEN ? = 'escalated' THEN COALESCE(?, delegators) ELSE NULL END WHERE issue_id = ?")
+      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, closed_reason = NULL, updated_at = ?, delegators = CASE WHEN ? = 'escalated' THEN COALESCE(?, delegators) ELSE NULL END WHERE issue_id = ?")
       .run(state, attempts, JSON.stringify(verdicts), failures, failedAt, new Date(now).toISOString(), state, delegators ? JSON.stringify(delegators) : null, issueId);
     this.events?.emit("grades", issueId);
     return this.get(issueId)!;
@@ -254,6 +294,24 @@ export function gradePassed(grades: Grades, issueId: string, on = gradingOn()): 
   return !g || g.state === "satisfied";
 }
 
+/**
+ * A task closed before the grader settled its row has nothing left to grade: settle each such row `not_graded`, with the
+ * close as the reason. Runs on the board's timer and in the detector's check, so a close made anywhere (the board, the tasks
+ * bridge, Paperclip itself) resolves the row; a row whose task can't be read is left alone.
+ */
+export async function settleClosedGrades(grades: Grades, issue: (id: string) => Promise<{ status: string } | undefined>, now = Date.now()): Promise<Grade[]> {
+  const settled: Grade[] = [];
+  for (const g of grades.unsettled()) {
+    const i = await Promise.resolve()
+      .then(() => issue(g.issueId))
+      .catch(() => undefined);
+    if (!i || (i.status !== "done" && i.status !== "cancelled")) continue;
+    const row = grades.settle(g.issueId, `the task was ${i.status} before the grader settled it`, now);
+    if (row) settled.push(row);
+  }
+  return settled;
+}
+
 /** A held task's scheduled check sits at the runner's evidence deadline, well past a normal grader pass. */
 export const GRADE_CHECK_MS = 24 * 60 * 60_000;
 /**
@@ -280,7 +338,8 @@ export type GateResult = { pass: true } | { pass: false; state: "pending" | "awa
  */
 export function completionGate(grades: Grades, issueId: string, _via: CompletionPath, { done = false, on = gradingOn() }: { done?: boolean; on?: boolean } = {}): GateResult {
   const g = on ? grades.get(issueId) : undefined;
-  if (!g || (g.state === "satisfied" && done)) return { pass: true };
+  // Settled rows: satisfied (graded) and not_graded (closed before the grader settled it) pass a task that is already done.
+  if (!g || (done && (g.state === "satisfied" || g.state === "not_graded"))) return { pass: true };
   if (g.state === "pending" || g.state === "awaiting_evidence" || g.state === "grading_failed") return { pass: false, state: g.state, label: "grading" };
   if (g.state === "needs_revision") {
     // Unmet criteria are never a close: wait for the runner to grade a new deliverable version.

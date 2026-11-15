@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checks, missedFires, takeOwnerLines, tick } from "../src/fleet-ops.js";
+import { completionGate } from "../src/grades.js";
 import { Store } from "../src/store.js";
 
 const now = Date.parse("2026-11-13T12:00:00Z");
@@ -129,5 +130,30 @@ describe("health flags", () => {
     };
     const found = await checks(pc as never, store as never, () => now, {}).silent!();
     expect(found!.map((i) => i.key)).toEqual(["cx"]); // oc is not codex; cy has one
+  });
+
+  it("the grade check raises nothing for a task cancelled or done while its row awaited evidence", async () => {
+    const store = new Store(":memory:");
+    const status: Record<string, string> = { "i-cancelled": "cancelled", "i-done": "done", "i-revise": "done", "i-delegated": "done", "i-open": "in_review" };
+    for (const id of ["i-cancelled", "i-done", "i-open"]) {
+      store.grades.file(id, [], { kind: "report", ref: "" });
+      completionGate(store.grades, id, "task_finish");
+      store.grades.record(id, { version: "", outcome: "awaiting_evidence", model: "", criteria: [] }, now - 3 * 24 * 60 * 60_000);
+    }
+    // A row sent back to its assignee, on a task closed before it came back.
+    store.grades.file("i-revise", [], { kind: "report", ref: "" });
+    completionGate(store.grades, "i-revise", "task_finish");
+    store.grades.record("i-revise", { version: "c1", outcome: "needs_revision", model: "glm", criteria: [] }, now - 3 * 24 * 60 * 60_000);
+    // A delegation filed but never finished, on a task that closed anyway.
+    store.grades.file("i-delegated", [], { kind: "report", ref: "" });
+    const pc = { companyId: "co", issue: async (id: string) => ({ id, status: status[id] }) };
+    const found = await checks(pc as never, store as never, () => now, {}).grade!();
+    // The open task is still stuck work; the closed ones are settled and never raised.
+    expect(found!.map((i) => i.key)).toEqual(["i-open"]);
+    expect(store.grades.get("i-cancelled")).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });
+    expect(store.grades.get("i-done")).toMatchObject({ state: "not_graded" });
+    expect(store.grades.get("i-revise")).toMatchObject({ state: "not_graded" });
+    expect(store.grades.get("i-delegated")).toMatchObject({ state: "not_graded" });
+    expect(store.grades.get("i-open")!.state).toBe("awaiting_evidence");
   });
 });

@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import type { Agent, Paperclip } from "./paperclip.js";
 import type { Store } from "./store.js";
 import { appsApi } from "./fleet.js";
+import { settleClosedGrades } from "./grades.js";
 import { parseRunLog } from "./runs.js";
 import { alertIncidents } from "./monitoring.js";
 import { TOO_LONG } from "./rollover.js";
@@ -259,9 +260,11 @@ export function checks(pc: Paperclip, store: Pick<Store, "grades" | "meta" | "se
       }
       return [...byAgent].filter(([, n]) => n >= SILENT_RUNS).map(([agentId, n]) => ({ key: agentId, reason: `agent ${agentId}: ${n} runs in 24h ended with no tool calls and no output` }));
     },
-    // A graded task waiting on grading, or escalated, for over a day.
+    // A graded task waiting on grading, or escalated, for over a day. A task that closed before the grader settled it has
+    // nothing left to grade: its row is settled first (so it stops being stuck work and never raises a flag).
     async grade() {
       const t = now();
+      await settleClosedGrades(store.grades, (id) => pc.issue(id), t);
       return [...store.grades.due(), ...store.grades.escalated()].filter((g) => age(g.updatedAt, t) > DAY_MS).map((g) => ({ key: g.issueId, reason: `graded task ${g.issueId} ${g.state} for ${mins(age(g.updatedAt, t))}` }));
     },
     async app() {

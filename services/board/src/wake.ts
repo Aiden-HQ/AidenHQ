@@ -106,7 +106,7 @@ function signals(task: Issue, kids: Issue[], store: WakeDeps["store"], prs: Map<
     out.set(`child:${k.id}`, { value: st, at: latest(k.completedAt, k.cancelledAt, k.updatedAt), line: (was) => `${k.identifier} is ${was === "done" || was === "cancelled" ? `reopened (${k.status})` : `now ${k.status}`}.` });
     const g = store.grades.get(k.id);
     if (g) {
-      const gs = ["satisfied", "needs_revision", "escalated"].includes(g.state) ? g.state : "open";
+      const gs = ["satisfied", "needs_revision", "escalated", "not_graded"].includes(g.state) ? g.state : "open";
       out.set(`grade:${k.id}`, { value: gs, at: g.updatedAt, line: () => `${k.identifier}'s grade: ${gs.replace("_", " ")}.` });
     }
     for (const r of prsOf(k, store, true)) refs.add(r);

@@ -5,6 +5,7 @@ import { webhookWake, type Manifest } from "./app-access.js";
 import { appsApi } from "./fleet.js";
 import { createSigninServer } from "./signin.js";
 import { startDetector } from "./fleet-ops.js";
+import { settleClosedGrades } from "./grades.js";
 import { loadConfig } from "./config.js";
 import { pullUsage } from "./costs.js";
 import { McpAuth } from "./mcpauth.js";
@@ -34,6 +35,17 @@ function rollover() {
 }
 rollover();
 setInterval(rollover, 60_000).unref();
+/** Every five minutes: a graded task closed before the grader settled it (a cancel in Paperclip itself) has nothing to grade. */
+async function settleGrades() {
+  try {
+    const settled = await settleClosedGrades(store.grades, (id) => paperclip.issue(id));
+    if (settled.length) log.info({ tasks: settled.map((g) => g.issueId), reason: settled[0]!.closedReason }, "graded rows settled on a closed task");
+  } catch (err) {
+    log.warn({ err: String(err) }, "settling closed grades failed");
+  }
+}
+setInterval(() => void settleGrades(), 5 * 60_000).unref();
+void settleGrades();
 // Fleet Ops' detector: only when the fleet-ops module is enabled (it sets FLEET_OPS_INTERVAL_MINUTES).
 startDetector(paperclip, store, log);
 // Event wake-ups for heartbeat agents (wake.ts): on unless the instance setting wake_ups is off.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GRADER_RETRY_MS, MAX_GRADER_FAILURES, completionGate, gradePassed } from "../src/grades.js";
+import { GRADER_RETRY_MS, MAX_GRADER_FAILURES, completionGate, gradePassed, settleClosedGrades, type GradeState } from "../src/grades.js";
 import { Store } from "../src/store.js";
 
 describe("graded done", () => {
@@ -135,4 +135,121 @@ describe("graded done", () => {
     expect(grades.escalated().map((x) => x.issueId)).toEqual(["t"]);
     expect(grades.due(Date.now() + 365 * 24 * 60 * 60_000)).toEqual([]);
   });
+
+  it("a task cancelled while awaiting evidence settles its row not_graded, with the close as the reason", () => {
+    const { grades } = new Store(":memory:");
+    grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
+    completionGate(grades, "t", "task_finish");
+    grades.record("t", { version: "", outcome: "awaiting_evidence", model: "", criteria: [] });
+    expect(grades.due()).toHaveLength(1);
+
+    const row = grades.settle("t", "the task was cancelled before the grader settled it")!;
+    expect(row).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });
+    // Nothing left for the runner or the owner, and a done task reopened and closed again passes.
+    expect(grades.due()).toEqual([]);
+    expect(grades.escalated()).toEqual([]);
+    expect(grades.unsettled()).toEqual([]);
+    expect(completionGate(grades, "t", "task_set_status", { done: true })).toEqual({ pass: true });
+    // A settled row keeps its first reason.
+    expect(grades.settle("t", "some other reason")!.closedReason).toBe("the task was cancelled before the grader settled it");
+  });
+
+  it("settles an escalated row too, and leaves a satisfied verdict alone", () => {
+    const { grades } = new Store(":memory:");
+    for (const [id, outcome] of [["esc", "cannot_judge"], ["ok", "satisfied"]] as const) {
+      grades.file(id, [], { kind: "report", ref: "" });
+      completionGate(grades, id, "task_finish");
+      grades.record(id, { version: "c1", outcome, model: "glm", criteria: [] });
+    }
+    expect(grades.escalated().map((g) => g.issueId)).toEqual(["esc"]);
+    expect(grades.settle("esc", "the task was cancelled before the grader settled it")!.state).toBe("not_graded");
+    expect(grades.settle("ok", "the task was cancelled before the grader settled it")).toMatchObject({ state: "satisfied", closedReason: null });
+  });
+
+  it("the sweep settles every closed task's waiting row and leaves open ones alone", async () => {
+    const { grades } = new Store(":memory:");
+    const status: Record<string, string> = { a: "cancelled", b: "done", c: "in_review", gone: "cancelled" };
+    for (const id of Object.keys(status)) {
+      grades.file(id, [], { kind: "report", ref: "" });
+      completionGate(grades, id, "task_finish");
+      grades.record(id, { version: "", outcome: "awaiting_evidence", model: "", criteria: [] });
+    }
+    const issue = async (id: string) => (id === "gone" ? Promise.reject(new Error("404")) : { status: status[id]! });
+    const settled = await settleClosedGrades(grades, issue);
+    expect(settled.map((g) => g.issueId)).toEqual(["a", "b"]);
+    expect(settled[0]).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });
+    expect(grades.get("c")!.state).toBe("awaiting_evidence"); // still waiting: still the runner's
+    expect(grades.get("gone")!.state).toBe("awaiting_evidence"); // unreadable: left for the next sweep
+  });
+
+  it("a needs_revision row on a task closed outside the board settles too, instead of waiting for a revision forever", async () => {
+    const { grades } = new Store(":memory:");
+    grades.file("t", ["merged into main"], { kind: "pr", ref: "" });
+    completionGate(grades, "t", "task_finish");
+    expect(grades.record("t", { version: "c1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "draft" }] }).state).toBe("needs_revision");
+    expect(grades.unsettled().map((g) => g.issueId)).toEqual(["t"]);
+
+    const settled = await settleClosedGrades(grades, async () => ({ status: "cancelled" }));
+    expect(settled.map((g) => g.issueId)).toEqual(["t"]);
+    expect(settled[0]).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });
+    // Nothing left to revise, and no detector key on the next look.
+    expect(grades.unsettled()).toEqual([]);
+    expect(await settleClosedGrades(grades, async () => ({ status: "cancelled" }))).toEqual([]);
+  });
+
+  it("an open row on a task closed before it was ever finished settles too", async () => {
+    const { grades } = new Store(":memory:");
+    grades.file("t", ["merged into main"], { kind: "report", ref: "" });
+    expect(grades.get("t")!.state).toBe("open");
+    expect(grades.unsettled().map((g) => g.issueId)).toEqual(["t"]);
+    // Its task is still open: the delegation is untouched.
+    expect(await settleClosedGrades(grades, async () => ({ status: "in_review" }))).toEqual([]);
+    expect(grades.get("t")!.state).toBe("open");
+
+    const settled = await settleClosedGrades(grades, async () => ({ status: "cancelled" }));
+    expect(settled.map((g) => g.issueId)).toEqual(["t"]);
+    expect(settled[0]).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });
+    expect(grades.unsettled()).toEqual([]);
+  });
+
+  it("a task reopened after its row settled is graded again when it finishes", () => {
+    const { grades } = new Store(":memory:");
+    grades.file("t", [], { kind: "report", ref: "" });
+    completionGate(grades, "t", "task_finish");
+    grades.record("t", { version: "", outcome: "awaiting_evidence", model: "", criteria: [] });
+    grades.settle("t", "the task was cancelled before the grader settled it");
+    expect(completionGate(grades, "t", "task_finish")).toEqual({ pass: false, state: "pending", label: "grading" });
+    expect(grades.get("t")).toMatchObject({ state: "pending", closedReason: null });
+    expect(grades.due().map((g) => g.issueId)).toEqual(["t"]);
+  });
+
+  it("the sweep's answer for every grade state: all but satisfied and not_graded settle on a closed task", async () => {
+    const build: Record<GradeState, (g: Store["grades"]) => void> = {
+      open: () => {},
+      pending: (g) => completionGate(g, "t", "task_finish"),
+      awaiting_evidence: (g) => g.record("t", { version: "", outcome: "awaiting_evidence", model: "", criteria: [] }),
+      needs_revision: (g) => g.record("t", { version: "c1", outcome: "needs_revision", model: "glm", criteria: [] }),
+      grading_failed: (g) => g.record("t", { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] }),
+      escalated: (g) => g.record("t", { version: "c1", outcome: "cannot_judge", model: "glm", criteria: [] }),
+      satisfied: (g) => g.record("t", { version: "c1", outcome: "satisfied", model: "glm", criteria: [] }),
+      not_graded: (g) => void g.settle("t", "the task was cancelled before the grader settled it"),
+    };
+    const settledStates = ["satisfied", "not_graded"];
+    for (const [state, buildIt] of Object.entries(build) as [GradeState, (g: Store["grades"]) => void][]) {
+      const { grades } = new Store(":memory:");
+      grades.file("t", ["merged into main"], { kind: "report", ref: "" });
+      buildIt(grades);
+      expect(grades.get("t")!.state, state).toBe(state);
+      const settled = await settleClosedGrades(grades, async () => ({ status: "cancelled" }));
+      if (settledStates.includes(state)) {
+        expect(settled, state).toEqual([]);
+        expect(grades.get("t")!.state, state).toBe(state);
+      } else {
+        expect(settled.map((g) => g.issueId), state).toEqual(["t"]);
+        expect(grades.get("t")).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });
+        expect(await settleClosedGrades(grades, async () => ({ status: "cancelled" })), state).toEqual([]);
+      }
+    }
+  });
+
 });

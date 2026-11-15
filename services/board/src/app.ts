@@ -1098,6 +1098,13 @@ export function createApp(opts: AppOptions): Server {
         const runner = via === "finish_turn" || via === "finish_merges";
         const agent = runner ? (requireRunner(req, `closes a task by ${via}`), undefined) : await requireAgentTool(req, via);
         const issue = await pc.issue(decodeURIComponent(m[1]!));
+        // A cancelled task is never graded: no deliverable is left to check, so its row settles and the path may close as an
+        // ungraded one would (the caller leaves a task that is already closed as it is). This comes before the delegator's
+        // acceptance: closing a cancelled task cancels it, it does not accept the work.
+        if (issue.status === "cancelled") {
+          store.grades.settle(issue.id, "the task was cancelled before the grader settled it");
+          return { pass: true };
+        }
         // Only the task's own assignee moves its grade: anyone else closing a graded task is refused, and an ungraded one
         // passes without touching anything. The one exception: an escalated grade is its delegator's call, and its close
         // accepts the work in place of a verdict. That delegator is the agent the escalation was addressed to: the one that
@@ -1169,6 +1176,8 @@ export function createApp(opts: AppOptions): Server {
         // An escalation is addressed to the agent that filed the task and the agent on its parent task, as of now; fetched
         // before recording so they are saved in the same write that escalates.
         const parent = issue.parentId ? await pc.issue(issue.parentId).catch(() => undefined) : undefined;
+        // Cancelled while the pass was running: no verdict, the cancel settles the row (a reopened task is graded again).
+        if (issue.status === "cancelled") return store.grades.settle(issue.id, "the task was cancelled before the grader settled it");
         const g = store.grades.record(issue.id, v, Date.now(), [issue.createdByAgentId, parent?.assigneeAgentId].filter((x): x is string => Boolean(x)));
         // Done waiting: the label goes (the runner moves the task on).
         if (g.state !== "awaiting_evidence") {
@@ -1796,6 +1805,9 @@ export function createApp(opts: AppOptions): Server {
         const patch = paperclipUpdate(issue, update, ctx);
         if (Object.keys(patch).length) await pc.updateIssue(issue.id, patch);
         log.info({ issue: issue.identifier, fields: Object.keys(patch) }, "task updated");
+        // Closed before the grader settled it: there is nothing left to grade, so its row ends (a timer catches closes made
+        // elsewhere, e.g. a cancel in Paperclip itself).
+        if (update.status === "done" || update.status === "cancelled") store.grades.settle(issue.id, `the task was ${update.status} before the grader settled it`);
         // Done or cancelled closes the crew's open parts too, except one an agent is busy with.
         if ((update.status === "done" || update.status === "cancelled") && issue.assigneeUserId === ctx.me) {
           const [kids, busy] = await Promise.all([pc.children(issue.id), working(ctx)]);
