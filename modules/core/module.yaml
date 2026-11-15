@@ -90,10 +90,11 @@ settings:
     default: "on"
     values: ["on", "off"]
   # Shared apps' sign-in (with `edge`): "access" = Cloudflare Access on every gate host; "password" =
-  # the gate signs people in with their AidenHQ account (the board's auth listener); a host with an Access aud keeps Access too.
+  # the gate signs people in with their AidenHQ account (the board's auth listener); a host with an Access aud keeps Access too;
+  # "header-jwt" = a front door's signed identity header over the tailnet (settings.edge.identity, edge.front).
   app_login:
     default: access
-    values: [access, password]
+    values: [access, password, header-jwt]
 # The owner's email for the board (merged into the root compose's board service).
 compose: compose.yaml
 agents:
