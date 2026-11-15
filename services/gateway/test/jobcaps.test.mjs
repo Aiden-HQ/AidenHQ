@@ -18,7 +18,7 @@ test("jobcap route: listed tools only, job tokens only, the read secret upstream
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
       const msg = JSON.parse(b);
-      seen.push({ auth: req.headers.authorization, method: msg.method, name: msg.params?.name });
+      seen.push({ auth: req.headers.authorization, method: msg.method, name: msg.params?.name, raw: b });
       const tools = [{ name: "read_a" }, { name: "write_b" }];
       if (msg.method === "tools/list" && req.headers.accept?.includes("event-stream")) {
         res.writeHead(200, { "content-type": "text/event-stream" });
@@ -58,6 +58,19 @@ test("jobcap route: listed tools only, job tokens only, the read secret upstream
   assert.equal(r.status, 400);
   assert.equal(seen.length, before);
 
+  // Deny by default: resources, prompts and unknown methods never reach the connection.
+  for (const method of ["resources/read", "prompts/get", "sampling/createMessage", "x/unknown"]) {
+    r = await call(job, { method, params: { uri: "file:///etc/passwd" } });
+    assert.equal((await r.json()).error.message, "method-refused", method);
+  }
+  assert.equal(seen.length, before);
+  // A duplicate `name` key: upstream runs the name that was checked, from a re-serialized message.
+  r = await fetch(`${server.url}/c/primer/mcp`, { method: "POST", headers: { authorization: `Bearer ${job}`, "content-type": "application/json", accept: "application/json" }, body: '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"write_b","name":"read_a","arguments":{}}}' });
+  assert.equal((await r.json()).result.content[0].text, "doc");
+  assert.equal(seen.at(-1).name, "read_a");
+  assert.equal(seen.at(-1).raw.includes("write_b"), false);
+  const forwarded = seen.length;
+
   // No token, the read secret itself, a lane token, a system token or a job token without the jobcap: 401.
   const lane = mintToken("lane-secret", { kind: "agent", agentId: "ag1", jobcaps: ["primer-read"] });
   const reviewer = mintToken("job-secret", { kind: "reviewer", jobcaps: ["primer-read"] });
@@ -65,7 +78,7 @@ test("jobcap route: listed tools only, job tokens only, the read secret upstream
   for (const tok of [undefined, "read-secret", lane, reviewer, bare]) assert.equal((await call(tok, { method: "tools/list" })).status, 401);
   // The jobcap is for primer only.
   assert.equal((await call(job, { method: "tools/list" }, { path: "/c/slack/mcp" })).status, 401);
-  assert.equal(seen.length, before);
+  assert.equal(seen.length, forwarded);
 
   // The job token never reaches the connection: every forwarded call carried the read secret.
   assert.ok(seen.length >= 3);
