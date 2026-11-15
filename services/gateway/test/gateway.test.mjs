@@ -8,7 +8,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGateway } from "../lib.ts";
 import { mintToken } from "../token.ts";
-import { ADVISOR_MODEL } from "../../paperclip-tasks-mcp/models.mjs";
 
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const json = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
@@ -166,9 +165,8 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
   assert.deepEqual(rows.filter((r) => r.kind === "reviewer").map((r) => r.component), ["AI reviewer", "AI reviewer"]);
   assert.equal(rows.filter((r) => r.kind === "source").length, 1);
 
-  // The advisor route runs every call on the configured advisor model, whatever the caller asked for, as kind advisor.
-  assert.equal((await call(mintToken("job-secret", { agentId: "ag2", issueId: "iss9" }, now), { path: "/advisor/api/v1/chat/completions", model: "moonshotai/kimi-k3.1-pro", models: ["moonshotai/kimi-k3.1-pro"] })).status, 200);
-  assert.equal(asked.at(-1), ADVISOR_MODEL);
+  // An advisor call is counted against the caller's run as kind advisor.
+  assert.equal((await call(mintToken("job-secret", { agentId: "ag2", issueId: "iss9" }, now), { path: "/advisor/api/v1/chat/completions" })).status, 200);
   const last = (await usage()).at(-1);
   assert.deepEqual([last.kind, last.agentId, last.issueId], ["advisor", "ag2", "iss9"]);
 });

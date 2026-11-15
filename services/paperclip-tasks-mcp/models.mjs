@@ -6,7 +6,7 @@
 //
 // Limits live here for now (the bridge is one process per run; the runner keeps one set per job): 5 advisor calls per run,
 // every one on ADVISOR_MODEL (GPT Sol, the owner's pick after a blind bake-off, 2026-11-13). ADVISOR_MODEL is the one place
-// it is set: the gateway imports it and puts it on every /advisor call, whatever the caller sent. Fan-out takes at most 25
+// it is set; advisor_ask and the runner's `aidenhq advise` both send it. Fan-out takes at most 25
 // items of 8,000 characters, 8 at a time.
 // Kill switch: settings.model_tools: off (compile drops both tools from every agent's grants).
 
