@@ -8,7 +8,7 @@
 // its Access application and the Access token; `password` = the gate signs people in through the board's auth listener
 // (AUTH_URL) and Access becomes optional per host (a host with an `aud` still needs it: password never removes Access).
 // In password mode sign-in lives only on the my-apps host; each app host gets its own host-only session cookie through a
-// one-time handoff code (services/gate/gate.mjs), and the gate strips auth cookies before any app.
+// one-time handoff code (services/gate/gate.ts), and the gate strips auth cookies before any app.
 // settings.edge.previews: true: pull request previews of shared apps (services/apps-mcp/src/previews.ts) at
 // pr-<n>.<host> under each share.host, through the gate, with the parent's access: one ingress rule *.<host> per shared
 // app behind the parent's own aud (its Access application must cover *.<host> too). apps-mcp writes which previews run

@@ -58,7 +58,7 @@ describe("the gate, the sign-in listener and app access", () => {
   });
 
   async function startGate(config: unknown, fetchImpl?: typeof fetch): Promise<Server> {
-    const { createGate } = (await import("../../gate/gate.mjs" as string)) as { createGate: (o: unknown) => Server };
+    const { createGate } = (await import("../../gate/gate.ts" as string)) as { createGate: (o: unknown) => Server };
     const g = createGate({ config: () => config, log: () => {}, ...(fetchImpl ? { fetch: fetchImpl } : {}) });
     await new Promise<void>((r) => g.listen(0, "127.0.0.1", r));
     return g;

@@ -41,7 +41,7 @@ Accounts use Better Auth inside the board process, stored in its own SQLite file
 
 ## Shared apps: the gate
 
-`services/gate/gate.mjs` is unprivileged: no Docker socket, a read-only compiled config (`config/gate.json`) and the
+`services/gate/gate.ts` is unprivileged: no Docker socket, a read-only compiled config (`config/gate.json`) and the
 board's account map (`accounts.json`), its signing key (the vault's `identity/gate.pem`), and reach only to the apps'
 loopback ports. `scripts/edge.mjs` generates its
 config and cloudflared's ingress (every `share.host` to the gate, then a 404), and apply refuses any ingress rule whose
