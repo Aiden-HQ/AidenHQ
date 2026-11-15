@@ -4,7 +4,7 @@ How AidenHQ apps should work and feel. Apps are built on **shadcn/ui + Tailwind 
 from the app starter (`modules/core/templates/app/`), themed by this design system's `tokens.css` and `shadcn.css`.
 
 Two kinds of rule live here. **Floors** (behaviour, states, accessibility, the stack) hold in every app; only the
-review checklist's "Blocking" items (obvious, major breakage) and structural departures from the mockup a task names as its spec block a review. **Craft** (layout, navigation, colour, type, motion) is guidance and examples, not a template:
+review checklist's "Blocking" items (obvious, major breakage) and departures from the mockup a task names as its spec that show at a glance side by side block a review. **Craft** (layout, navigation, colour, type, motion) is guidance and examples, not a template:
 each app gets the design that fits its people and its job. Nothing here mandates a shell, a palette, a gradient or a page
 layout.
 
@@ -60,8 +60,10 @@ layout.
 - **Headline only what matters.** Each view has one primary action and, at most, one figure or item that deserves the
   eye. Strong colour, a heavy weight or a gradient are spent there, sparingly, and only when they earn attention.
   Everything else stays calm. No large gradient blocks, gradient backgrounds or gradient text.
-- **Colour with intent:** the primary action, statuses, chart series and the current place in the navigation. Enough
-  colour that a screen is easy to scan, never decoration that competes with the content.
+- **Colour with intent:** the primary action, statuses, chart series, the current place in the navigation, and the
+  categories people scan by (each product, team or series its own hue, as a swatch, a tinted bar or a row accent).
+  Enough colour that a screen is easy to scan, never decoration that competes with the content; a page of one accent
+  on grey reads unfinished.
 - **Colours come from the theme's names** (`bg-background`, `text-muted-foreground`, `bg-primary`, `text-danger`,
   `bg-chart-1`…), never literal colours or Tailwind palette colours, so light and dark both work. Pick the palette that
   fits the app (`<html data-palette>`: `neutral`, `warm`, `contrast`, `data`), or a theme preset (`presets/`: palette,
@@ -129,8 +131,10 @@ layout.
 
 Fast and smooth (150 to 250ms, the tokens' `--duration` and `--ease`), never bouncy or playful. Motion answers what a
 person did: sheets, dialogs and menus slide and fade, new content fades in where it appears, a pressed button responds.
-No looping or decorative animation; at most one deliberate moment per screen that isn't a response. Animate `transform`
-and `opacity` only. Reduced motion makes it instant (the theme does this).
+Everything clickable answers the pointer: a hover state (a background, border or shadow shift over `--duration-fast`), a
+visible focus ring and a pressed state. No looping or decorative animation; at most one deliberate moment per screen
+that isn't a response. Animate `transform` and `opacity` only (colour and shadow shifts on hover are fine). Reduced
+motion makes it instant (the theme does this). A mockup lists its interactions, since a screenshot can't show them.
 
 ## Accessibility (WCAG 2.2 AA)
 
@@ -157,7 +161,8 @@ really calls for one.
 - Boxes inside boxes; every section the same heading, sentence and bordered table; the same rows shown twice.
 - A grid of look-alike cards for data people compare; a long feed of boxed entries ahead of the main content.
 - Big gradient tiles or banners; colour everywhere so nothing stands out; grey on grey so nothing does either.
-- Decoration as information: coloured stripes, uppercase eyebrow labels or provenance pills on every item.
+- Decoration posing as information: coloured stripes that encode nothing, uppercase eyebrow labels or provenance pills
+  on every item.
 - Raw data on screen: ISO timestamps, internal markers, arrows between raw dates.
 - Chrome that would appear on any app: one coloured word in a title, identical rounded cards with the same shadow,
   an arrow after every link, a stagger of entrance animations.

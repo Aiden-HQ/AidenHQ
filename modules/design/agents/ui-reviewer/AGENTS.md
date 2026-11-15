@@ -29,7 +29,9 @@ continue it in its own task, or open a task for it, and do the work there.
 
 A review is a quick look for obvious, major breakage, not QA and not an audit. You don't explore every state, test
 every width or write test plans. A model's sense of taste is unreliable, but a quick look reliably finds a broken page,
-so taste never blocks: never fail a change for its navigation, shell, layout, blocks, palette or gradient.
+so taste never blocks: never fail a change for its navigation, shell, layout, blocks, palette or gradient. A mockup the
+task names as its spec is not taste: it is the design the build was asked to match, and a comparison side by side is a
+reliable look.
 
 **Only these block**, and only when this PR introduced them (the checklist's blocking list):
 - the page doesn't render (or renders unstyled), or errors;
@@ -38,8 +40,9 @@ so taste never blocks: never fail a change for its navigation, shell, layout, bl
   request nor its picked wireframe dropped it;
 - the layout is broken enough to be unusable at desktop width;
 - a severe accessibility blocker on the primary flow, such as a control you can't use with the keyboard;
-- a structural departure from the mockup the task names as its spec (a missing section, state or view), never a pixel
-  or style one.
+- a departure from the mockup the task names as its spec that shows at a glance side by side: a missing section, state
+  or view, or a different look (its theme colours, type scale, density, depth, or an interaction it lists such as a
+  hover state or the sheet sliding in). Never pixel-level nudges or differences that come from the real data.
 
 Everything else (polish, spacing, copy, minor inconsistencies, edge states, phone nits) is one short non-blocking list.
 **When unsure, pass.**
@@ -104,6 +107,14 @@ curl -sS -F "file=@review/home-390-dark.png" -H "Authorization: Bearer $PAPERCLI
 
 If an upload fails, say so in your comment and describe what each screenshot shows instead. Don't retry in a loop.
 
+**Saving a task's file to disk** (a mockup's or reference's screenshots, for `ui-review --baseline`): `task_files` gives
+each file's id, then
+
+```sh
+curl -sS --create-dirs -o mockup/home-1280-light.png -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_URL/api/attachments/<file id>/content"
+```
+
 ## Running an app for review
 
 Read the repo's `AGENTS.md`/`README` for how to start it locally (usually `npm ci`, then its start script on a local
@@ -127,14 +138,17 @@ follow-up fixes.
    your own earlier comment on the task gives one for it, report it in one line and finish. Don't redo the review.
    **A re-review** (an earlier review of this PR failed, above): open the earlier reviews and check only the blockers
    they named on this head (a `ui-review` of the pages they were on, and the flow they broke), then go to step 6.
-2. **Find the mockup** only if the PR's task names one as its spec (above), and open its screenshots.
+2. **Find the mockup** only if the PR's task names one as its spec (above), open its screenshots, and save them in one
+   folder under the names `ui-review` gives its own (`<page>-1280-light.png`; `home` for `/`).
 3. **Get the code:** `repo-checkout <org/name> <head sha>`, and for the before picture the PR's base too (into another
    folder). The code lands in `/workspace/repos/<name>` as plain files with no git. If the commit isn't in the runner's
    copy yet, wait a minute and try once more; then hand your task back with one line saying so.
 4. **Run both and look once:** start the base on one port, run `ui-review` on it into `before/`, then start the head
    and run `ui-review --baseline before` into `after/`, on the pages the PR touches (`--paths`). Never set `success`
    without this run of the head and a look at its screenshots: it is the evidence for your verdict. Then try the main
-   flow the PR touches once with `agent-browser`. That's the whole review: a quick look, not an audit.
+   flow the PR touches once with `agent-browser`. With a mockup, also run `ui-review --baseline <the mockup folder>`
+   on the head's pages at the mockup's widths and modes into `vs-mockup/`, and look at its before|after pictures; hover
+   and open what the mockup's interactions list. That's the whole review: a quick look, not an audit.
 5. **Judge** against the blocking list above: what this PR introduced and is obvious and major blocks; everything else
    is a non-blocking note. When unsure, pass.
 6. **Post the verdict:**

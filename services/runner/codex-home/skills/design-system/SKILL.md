@@ -24,9 +24,12 @@ URL (`useUrlState`), applied as they change; details open over the list in a `Sh
 states. Colours only from the theme's names (`bg-background`, `text-muted-foreground`, `bg-primary`,
 `text-danger`, `bg-chart-1`…), never literal colours or Tailwind palette colours.
 
-**A mockup is the spec.** When the task comes with a mockup (a page's `.tsx` file and screenshots in `.aidenhq/files/`),
-build from it: its layout, components and states, wired to the real data. A new app or screen without a mockup: build it
-from the starter's patterns, and say in your reply that no mockup came with it.
+**A mockup is the spec.** When the task comes with a mockup (a page's `.tsx` file, often a `theme.css`, and screenshots in
+`.aidenhq/files/`), start from its files: copy its `.tsx` and `theme.css` into the app and wire them to the real data,
+rather than rewriting from the screenshots. Keep its layout, components and states, and its finish: theme colours, type
+scale, spacing, depth (shadows, borders, radii), icons and the interactions its task lists (hover, focus, what slides or
+fades). A new app or screen without a mockup: build it from the starter's patterns, and say in your reply that no mockup
+came with it.
 
 **It must render under the CSP.** The starter's server sends `script-src 'self'; style-src 'self' 'nonce-…'`: no inline
 `<script>`, no `style="…"` in HTML the server writes, no CDN, no `'unsafe-inline'`. A component that renders a `<style>`
@@ -51,6 +54,9 @@ passing (it builds, serves and checks the CSP), and an existing app's server mus
   what looks wrong (overlap, clipping, unstyled or empty areas, a misaligned table) and every reported problem, then run it
   again until it prints `clean`. `--width 390` checks the phone layout. Files in `.aidenhq/out/` (at most 20) are
   attached to the task after the run; name them in your report.
+- With a mockup, screenshot your pages at its width and mode (`--width 1280`, the width its screenshots use) and open
+  each one beside the mockup's: fix every difference a person would see at a glance that isn't the real data (greyer,
+  flatter, sparser, smaller or bigger type, missing hover or detail), and say in your report what still differs and why.
 - Go through the checklist's "Self-review" by reading your code: the mockup matched when there is one, every data
   view's empty, loading, error and no-match states, plain-word copy, phone layout (`max-md:`/`md:` classes, nothing
   wider than the screen).

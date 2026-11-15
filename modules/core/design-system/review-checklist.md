@@ -2,13 +2,16 @@
 
 The UI Reviewer applies this to every pull request that changes what people see; the UI/UX Designer applies it in an
 app's design audit and to its own mockups. A review is a quick look for obvious, major breakage, not QA and not a
-judgement of taste: shell, blocks, palette and layout are the designer's choices. It judges a pull request against its
+judgement of taste: shell, blocks, palette and layout are the designer's choices, and a mockup the task names as its
+spec fixes them for the build. It judges a pull request against its
 base: only what the PR introduced blocks, and a finding the base already had is not this PR's, even in a file it touches
 (`ui-review --baseline` lists the base's own findings under "already on this base").
 
 1. **Evidence:** run `ui-review <url> --paths <changed pages> --out after` (and `--baseline before` against the base
-   when you can run both), read `report.md` and look at the screenshots of the changed pages once. Try the main flow the
-   PR touches once. Don't explore every state or width.
+   when you can run both), read `report.md` and look at the screenshots of the changed pages once. With a named mockup,
+   also put the head beside the mockup's screenshots (`ui-review --baseline <dir of the mockup's screenshots>`, named
+   as `ui-review` names its own, writes before|after pictures). Try the main flow the PR touches once. Don't explore
+   every state or width.
 2. **Report:** the verdict, each blocker (screenshot or region, what is broken, the fix), then one short non-blocking
    list. When unsure, it is non-blocking.
 
@@ -21,8 +24,9 @@ base: only what the PR introduced blocks, and a finding the base already had is 
 - [ ] The layout is broken enough to be unusable at desktop width (1280px): content cut off, overlapping or unreachable.
 - [ ] A severe accessibility blocker on the primary flow: a control you can't use with the keyboard, or text you can't
       read (axe critical).
-- [ ] A structural departure from the mockup the task names as its spec: a missing section, state or view. Never
-      pixel, spacing or style differences.
+- [ ] A departure from the mockup the task names as its spec that shows at a glance side by side: a missing section,
+      state or view, or a different look (its theme colours, type scale, density, depth, or an interaction it lists).
+      Never pixel-level nudges or differences that come from the real data.
 
 ## Non-blocking: one short list, never a failure
 
@@ -33,7 +37,9 @@ follow: suggest a mockup from the UI/UX Designer.
 ## Self-review before any UI PR (Engineers)
 
 - [ ] On the starter's stack; colours from theme names; `tokens.css` and `shadcn.css` unchanged.
-- [ ] Matches its mockup when it had one; anything it drops is dropped by the request or its picked wireframe.
+- [ ] Matches its mockup when it had one, side by side at the mockup's width and mode: same theme colours, type scale,
+      spacing, depth and detail, and the hover, focus and open/close motion it lists; anything it drops is dropped by
+      the request or its picked wireframe.
 - [ ] Checked at 1280 and 390, light and dark, with no console errors or CSP violations, and `npm test` passes (it
       checks the CSP). Engineer jobs: `aidenhq-browse` screenshots the changed pages and clicks through the changed
       flow; its screenshots are attached to the task.

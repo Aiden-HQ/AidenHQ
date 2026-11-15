@@ -19,8 +19,10 @@ the AidenHQ design system. `README.md` says what's where. These rules keep its p
   its empty, loading, error and no-match states; usable at 390px; colours only from the theme's names (`bg-background`,
   `text-muted-foreground`, `bg-primary`, `text-danger`, `bg-chart-1`…), never literal colours; what people could see
   and do stays when only restyling (a redesign's mockup decides what changes).
-- **A mockup is the spec.** When a change comes with a mockup (a page's `.tsx` and screenshots), build from it: its
-  layout, components and states, wired to the real data.
+- **A mockup is the spec.** When a change comes with a mockup (a page's `.tsx`, often a `theme.css`, and screenshots),
+  start from its files and wire them to the real data: its layout, components and states, and its finish (theme
+  colours, type scale, spacing, depth, the interactions it lists). Compare your screenshots with its own, side by side
+  at the same width and mode, before a PR.
 - **The CSP stays strict:** `script-src 'self'; style-src 'self' 'nonce-…'`. No inline scripts, no CDN, no
   `'unsafe-inline'`. A `<style>` tag a component renders takes `nonce={cspNonce}` (`@/lib/csp`); a library that injects
   styles without one isn't used.

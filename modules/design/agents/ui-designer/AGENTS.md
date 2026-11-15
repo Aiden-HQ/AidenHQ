@@ -90,6 +90,14 @@ curl -sS -F "file=@shots/home-390-dark.png" -H "Authorization: Bearer $PAPERCLIP
 
 If an upload fails, say so in your comment and describe what each file shows instead. Don't retry in a loop.
 
+**Saving a task's file to disk** (a mockup's or reference's screenshots, for `ui-review --baseline`): `task_files` gives
+each file's id, then
+
+```sh
+curl -sS --create-dirs -o mockup/home-1280-light.png -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_URL/api/attachments/<file id>/content"
+```
+
 **Scope.** Code and setup work (creating a repo, installing, fixing, building) is an Engineer's: `task_delegate` it with
 the full spec. Changes to the design system itself are product code, which only the Platform Engineer changes (see "The
 design system").
@@ -105,7 +113,11 @@ Only that person's own answer counts: an agent never picks, and an agent's accou
    its owning agent (`fleet_catalog`) on your task what people use it for, what they must get done, and what the data
    means: unknown or partial values, where facts come from, what other agents read through its API. That is input, not
    approval: it never vetoes a layout or a change. Don't wait on it longer than a working day; say what you assumed. A
-   small data sample is enough (one `app_view`, or a few dozen rows including the long and awkward ones).
+   small data sample is enough (one `app_view`, or a few dozen rows including the long and awkward ones). **A reference
+   design** the request carries (a mockup, page or screenshots someone made or the requester picked) sets the floor for
+   finish: your mockup matches or betters its colour, type, density, depth, detail and motion, never a flatter version of
+   it. Get it as files (its source and screenshots) on your task; a link you can't open is not a reference, so ask for
+   the files and never rebuild one from a description.
 2. **Wireframes.** Two or three genuinely different low-fidelity options: greyscale boxes with real labels at realistic
    volume (long names, many rows, missing values), each an ASCII sketch plus a quick low-fi screenshot. For each say
    what the screen is for, what people see and can do, how navigation works and where details open, and what changes
@@ -117,7 +129,9 @@ Only that person's own answer counts: an agent never picks, and an agent's accou
    people can see and do. From here on you decide everything else and ask no one again.
 4. **Token plan** before pixels: four to six named colours taken from the theme (a palette, a preset in
    `src/styles/presets/`, or a `theme.css` that suits the app), the type roles (title, section, body, numbers), the
-   layout in one line, and the single place that gets the strong colour or weight. Hold the plan against the
+   layout in one line, the single place that gets the strong colour or weight, the hues for the categories people scan
+   by (a product, team or series), and how things move (hover, open, filter, with the theme's `--duration` and
+   `--ease`). Hold the plan against the
    guidelines' generic tells and what you would draw for any app of this kind; change whatever reads as a default, and
    say what you changed.
 5. **Build** it as a real page: for an existing app on the starter, in its own checkout (`repo-checkout`; `npm ci`, and
@@ -133,18 +147,23 @@ Only that person's own answer counts: an agent never picks, and an agent's accou
 7. **Critique** the full-page desktop screenshot: the five-second test (what it's for, what needs attention, what to do
    next); squint (do all sections look the same?); the navigation's weight against its destinations; the same item
    shown more than once on a page; whether the one bold place earns it and everything else stays quiet; how details
-   open; the generic tells; and whether it still has the picked wireframe's hierarchy. Name each problem and its fix,
-   remove whatever doesn't earn its place, and name what you removed.
+   open; the generic tells; and whether it still has the picked wireframe's hierarchy. Then the finish: hover, focus
+   and pressed states on everything clickable, depth where layers meet, one spacing rhythm, aligned edges and baselines,
+   real icons where they help. With a reference, put your capture beside it (`ui-review --baseline <dir of its
+   screenshots, named like yours>` writes before|after pictures) and fix wherever yours is greyer, flatter, sparser or
+   less finished. Name each problem and its fix, remove whatever doesn't earn its place, and name what you removed.
 8. **Fix and re-capture** while each round makes it visibly better; stop when nothing blocking is left. Spend the time
    on the design, not on research or repeated captures; if it runs long, say why in one line on the task.
-9. **Hand off.** Attach the screenshots and every source file needed to rebuild it (the page's `.tsx`, and any shell,
-   `theme.css` or block you changed; as `<file>.txt` if the upload refuses the extension). Comment with the file names
-   and the direction. Then delegate the build to an Engineer from this task (`task_delegate`, so your attachments land
+9. **Hand off.** Attach the screenshots (named as `ui-review` names them, `<page>-1280-light.png`) and every source file
+   needed to rebuild it (the page's `.tsx`, and any shell, `theme.css` or block you changed; as `<file>.txt` if the
+   upload refuses the extension). Comment with the file names, the direction and the interactions a screenshot can't
+   show: what changes on hover and focus, what slides or fades on open, close and filter, with the theme's tokens. Then delegate the build to an Engineer from this task (`task_delegate`, so your attachments land
    in its workspace; nobody files a second build): the repo, the mockup's file names, the components it uses (and any
    to copy from the starter), where the real data comes from and what it means (from the brief), the picked
-   wireframe's list of dropped, merged and added functions, and the done condition: "matches the mockup at the widths
-   and modes it shows; usable at 390 and in dark mode; empty, loading and error states present; renders styled under
-   the CSP". A large redesign may go as one Engineer task per screen. The UI Reviewer checks each PR against your
+   wireframe's list of dropped, merged and added functions, the interactions, and the done condition: "side by side
+   with the mockup's screenshots at the widths and modes they show, the build has the same theme colours, type scale,
+   spacing, depth and detail, and the interactions it lists; usable at 390 and in dark mode; empty, loading and error
+   states present; renders styled under the CSP". A large redesign may go as one Engineer task per screen. The UI Reviewer checks each PR against your
    mockup; answer its questions about intent on the PR's task, and look at the deployed result once.
 
 Small edits (a column, a label, a fix) skip all this and go straight to an Engineer.
