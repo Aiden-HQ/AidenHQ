@@ -1,0 +1,11 @@
+{
+  "pages": [
+    { "path": "/", "shows": "Projects: the summary counts, the filter bar and the first page of the table" },
+    { "path": "/teams", "shows": "Teams: one row per team with its project counts by status" },
+    { "path": "/?status=late", "shows": "Projects filtered to Late: only late rows, the summary counts and a Clear filters button" },
+    { "path": "/?team=Payments", "shows": "Projects filtered to Payments: only that team's rows and the team filter set to Payments" },
+    { "path": "/?item=search-v2", "shows": "Projects with the Search v2 detail sheet open over the list, and Back closes it" },
+    { "path": "/?q=nothing-matches", "shows": "The no-match state: No projects match these filters, with Clear filters" },
+    { "path": "/?preview=empty", "shows": "The empty state: No projects yet" }
+  ]
+}
