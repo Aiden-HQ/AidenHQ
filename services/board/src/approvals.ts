@@ -270,18 +270,23 @@ export function touchesMigrations(diff: string): boolean {
   return diff.split("\n").some((line) => line.startsWith("diff --git ") && /migrat|\.sql\b|schema/i.test(line));
 }
 
-/** The daily digest: Tier 0 runs, the reviewer's verdicts and escalations in the window; null when there were none. */
-export function digestText(records: Approval[]): string | null {
+/**
+ * The daily digest: only what was the owner's to decide (Tier 2) in the window, with how each stands. Tier 0 runs and the
+ * reviewer's own verdicts are not the owner's (owner, 2026-11-15): they stay on the board. null when there were none.
+ */
+export function digestText(records: Approval[], now = Date.now()): string | null {
   // target (agent-named branches and repos), reason and the reviewer's note (model output over agent text) are untrusted:
   // printable, links removed, markdown escaped, and labelled as reported rather than said by the board.
   const plain = (s: string, max: number) => oneLine(s, max).replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "[link removed]").replace(/[\\`*_[\]()~>#|<!]/g, "\\$&");
-  const line = (a: Approval, what: string, note: string) => `• ${a.identifier} ${a.action} · target (as reported): ${plain(a.target, 80)} · ${what}: ${plain(note, 200)}`;
-  const auto = records.filter((a) => a.state === "auto").map((a) => line(a, `ran by rule ${a.decidedBy?.replace(/^auto:/, "")}, ${a.outcome ?? "?"}; runner's reason`, a.reason));
-  const reviewed = records.filter((a) => a.decidedBy?.startsWith("reviewer:")).map((a) => line(a, `${a.state === "rejected" ? "rejected" : "approved"} by ${a.decidedBy}; reviewer's note`, a.review ?? ""));
-  const escalated = records.filter((a) => a.tier === 2 && a.review).map((a) => line(a, "sent to you; reviewer's note", a.review!));
-  if (!auto.length && !reviewed.length && !escalated.length) return null;
-  const part = (title: string, xs: string[]) => (xs.length ? [`${title} (${xs.length})`, ...xs.slice(0, 20)].join("\n") : "");
-  return ["🧾 **Approvals digest** (last 24h, decided without you)", part("Ran at once (Tier 0)", auto), part("The reviewer decided (Tier 1)", reviewed), part("Escalated to you", escalated)].filter(Boolean).join("\n\n");
+  const status = (a: Approval) => {
+    const st = shown(a, now);
+    if (st === "pending") return "still waiting for you";
+    if (st === "used") return a.outcome === "applied" ? "approved, applied" : a.outcome === "failed" ? "approved, failed" : "approved, running";
+    return st === "unknown" ? "approved, no outcome reported" : st;
+  };
+  const yours = records.filter((a) => a.tier === 2).map((a) => `• ${a.identifier} ${a.action} · target (as reported): ${plain(a.target, 80)} · ${status(a)}${a.review ? ` · reviewer's note: ${plain(a.review, 200)}` : ""}`);
+  if (!yours.length) return null;
+  return [`🧾 **Approvals digest** (last 24h): ${yours.length} ${yours.length === 1 ? "card was" : "cards were"} yours to decide`, ...yours.slice(0, 20)].join("\n");
 }
 
 /** What a person sees: the stored state, plus expired (past its 7 days) and unknown (used, never reported back). */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ARGS, BOARD_ACTIONS, RaiseCapSchema, card, parseReply, raiseCapRequest, shown, type Request, type RunnerAction } from "../src/approvals.js";
+import { ARGS, BOARD_ACTIONS, RaiseCapSchema, card, digestText, parseReply, raiseCapRequest, shown, type Approval, type Request, type RunnerAction } from "../src/approvals.js";
 import { Store } from "../src/store.js";
 
 const req = (over: Partial<Request> = {}): Request => ({ issueId: "i1", identifier: "WOR-184", action: "apply", target: "acme/instance", digest: "a".repeat(40), args: { sha: "a".repeat(40) }, sentence: "Apply", reads: "", changes: "instance.yaml", cost: "none", details: "diff", requestedBy: "runner", ...over });
@@ -164,6 +164,18 @@ describe("approval records", () => {
     const only = [{ repo: "acme/app", branch: "fix/x", sha: "a".repeat(40) }];
     expect(card("push", { only: [{ ...only[0]!, sha: "b".repeat(40) }] }).digest).not.toBe(card("push", { only }).digest);
     expect(card("apply", { repo: "acme/i", branch: "b", sha: "c".repeat(40), files: ["instance.yaml"] }, "+x").digest).not.toBe(card("apply", { repo: "acme/i", branch: "b", sha: "c".repeat(40), files: ["instance.yaml"] }, "+y").digest);
+  });
+});
+
+describe("the daily digest", () => {
+  it("lists only the owner's cards (Tier 2), never Tier 0 runs or what the AI reviewer decided", () => {
+    const rec = (over: Partial<Approval>) => ({ identifier: "WOR-1", action: "pr", target: "acme/app", state: "pending", tier: 2, expiresAt: "2999-01-01T00:00:00Z", ...over }) as Approval;
+    const text = digestText([rec({ identifier: "WOR-1", state: "auto", tier: 0 }), rec({ identifier: "WOR-2", state: "approved", tier: 1, decidedBy: "reviewer:~openai/gpt-luna-latest" }), rec({ identifier: "WOR-3", state: "rejected", tier: 1, decidedBy: "reviewer:~z-ai/glm-flash-latest", review: "x" }), rec({ identifier: "WOR-4", review: "drops a table" }), rec({ identifier: "WOR-5", state: "rejected", decidedBy: "owner:telegram" })]);
+    expect(text).toMatch(/2 cards were yours to decide/);
+    expect(text).toMatch(/WOR-4 .*still waiting for you · reviewer's note: drops a table/);
+    expect(text).toMatch(/WOR-5 .*rejected/);
+    expect(text).not.toMatch(/WOR-[123]\b/);
+    expect(digestText([rec({ tier: 0, state: "auto" }), rec({ tier: 1, state: "approved" })])).toBeNull();
   });
 });
 

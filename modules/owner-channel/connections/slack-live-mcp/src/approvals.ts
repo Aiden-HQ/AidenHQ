@@ -190,8 +190,12 @@ export async function sendResetLinks(board: Pick<Board, "resetLinks">, send: (te
 
 export type FinishedApproval = { id: string; identifier: string; state: string; outcome: "applied" | "failed" | null; outcomeText: string | null; sentence: string };
 
-/** Tells the owner, once, how each request they were sent a card for ended: applied, failed, or stopped without reporting. */
-export async function sendOutcomes(board: Pick<Board, "finished">, store: Pick<Store, "getKv" | "setKv">, send: (text: string) => Promise<boolean>, edit?: (messageId: number, text: string) => Promise<unknown>): Promise<number> {
+/**
+ * Shows, once, how each request the owner was sent a card for ended: applied, failed, or stopped without reporting. The
+ * outcome edits the card's own message (its buttons go); no separate message (owner, 2026-11-15). A card whose message id
+ * wasn't kept, or whose edit Telegram refuses (too old), shows its outcome on the board only.
+ */
+export async function sendOutcomes(board: Pick<Board, "finished">, store: Pick<Store, "getKv" | "setKv">, edit: (messageId: number, text: string) => Promise<boolean>): Promise<number> {
   let n = 0;
   for (const a of await board.finished()) {
     if (!store.getKv(`card:${a.id}`) || store.getKv(`outcome:${a.id}`)) continue;
@@ -202,11 +206,8 @@ export async function sendOutcomes(board: Pick<Board, "finished">, store: Pick<S
           ? `❌ Failed · ${a.identifier}: ${clip(a.outcomeText ?? "no reason given", 600)}`
           : `⚠️ Unknown · ${a.identifier}: the apply stopped without reporting back. Check the task; it is never retried.`;
     const msg = Number(store.getKv(`cardmsg:${a.id}`));
-    if (edit && msg) await edit(msg, text).catch(() => null); // the card shows the outcome and drops its buttons
-    if (await send(text)) {
-      store.setKv(`outcome:${a.id}`, String(Date.now()));
-      n++;
-    }
+    if (msg && (await edit(msg, text).catch(() => false))) n++;
+    store.setKv(`outcome:${a.id}`, String(Date.now()));
   }
   return n;
 }

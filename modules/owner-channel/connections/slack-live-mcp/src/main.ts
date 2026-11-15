@@ -200,7 +200,7 @@ if (board && cfg.telegramToken && cfg.telegramChatId) {
       board.digest().then(async (text) => void (text ? await postTelegram(cfg, text) : undefined)).catch((err) => log.warn({ err: String(err) }, "approvals digest failed")),
       // Graded tasks the grader escalated (graded done): one line each, handed over once by the board.
       board.escalations().then(async (lines) => { for (const l of lines) await postTelegram(cfg, l); }).catch((err) => log.warn({ err: String(err) }, "owner notices failed")),
-      sendOutcomes(board, store, (text) => postTelegram(cfg, text), (id, text) => editTelegram(cfg, id, text)).catch((err) => log.warn({ err: String(err) }, "approval outcomes failed")),
+      sendOutcomes(board, store, (id, text) => editTelegram(cfg, id, text)).catch((err) => log.warn({ err: String(err) }, "approval outcomes failed")),
     ]);
   void cards();
   setInterval(cards, 20_000).unref();

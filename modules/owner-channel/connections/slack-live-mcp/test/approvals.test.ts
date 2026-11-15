@@ -60,28 +60,6 @@ describe("approval cards in Telegram", () => {
   });
 });
 
-describe("the result follows the card", () => {
-  it("once a carded request has an outcome, Telegram hears it once; requests never carded are skipped", async () => {
-    const { sendOutcomes } = await import("../src/approvals.js");
-    const { openStore } = await import("../src/store.js");
-    const store = openStore(":memory:");
-    store.setKv("card:A00000001", "1");
-    store.setKv("card:A00000002", "1");
-    const finished = [
-      { id: "A00000001", identifier: "WOR-840", state: "used", outcome: "applied", outcomeText: "Applied: main is now 4f8aa0d.", sentence: "Apply a change" },
-      { id: "A00000002", identifier: "WOR-9", state: "unknown", outcome: null, outcomeText: null, sentence: "Merge" },
-      { id: "A00000003", identifier: "WOR-1", state: "used", outcome: "failed", outcomeText: "x", sentence: "y" },
-    ];
-    const sent: string[] = [];
-    const board = { finished: async () => finished as never };
-    expect(await sendOutcomes(board, store, async (t) => (sent.push(t), true))).toBe(2);
-    expect(sent[0]).toMatch(/✅ Done · WOR-840/);
-    expect(sent[0]).toContain("4f8aa0d");
-    expect(sent[1]).toMatch(/⚠️.*WOR-9/);
-    expect(await sendOutcomes(board, store, async (t) => (sent.push(t), true))).toBe(0);
-  });
-});
-
 describe("the card itself shows the outcome", () => {
   it("the sent card's message id is kept, and its outcome edits that message", async () => {
     const { sendOutcomes } = await import("../src/approvals.js");
@@ -89,7 +67,13 @@ describe("the card itself shows the outcome", () => {
     await sendCards({ pending: async () => [card("A00000009")] }, store, async () => 77);
     const finished = [{ id: "A00000009", identifier: "WOR-184", state: "used", outcome: "applied", outcomeText: "ok", sentence: "s" }];
     const edits: [number, string][] = [];
-    await sendOutcomes({ finished: async () => finished as never }, store, async () => true, async (id, t) => edits.push([id, t]));
+    const edit = async (id: number, t: string) => (edits.push([id, t]), true);
+    expect(await sendOutcomes({ finished: async () => finished as never }, store, edit)).toBe(1);
     expect(edits).toEqual([[77, expect.stringContaining("Done · WOR-184")]]);
+    // Once only, and never a separate message: a card never sent, or one whose message id wasn't kept, is skipped.
+    store.setKv("card:A00000002", "1");
+    const more = [...finished, { id: "A00000002", identifier: "WOR-9", state: "unknown", outcome: null, outcomeText: null, sentence: "Merge" }, { id: "A00000003", identifier: "WOR-1", state: "used", outcome: "failed", outcomeText: "x", sentence: "y" }];
+    expect(await sendOutcomes({ finished: async () => more as never }, store, edit)).toBe(0);
+    expect(edits).toHaveLength(1);
   });
 });
