@@ -125,7 +125,16 @@ async function board(pcUrl: string) {
 function callBridge(name: string, args: Record<string, unknown>, env: { agent: string; paperclip: string; board: string; grants: string }) {
   return new Promise<{ isError: boolean; text: string }>((resolve, reject) => {
     const child = spawn(process.execPath, [BRIDGE], {
-      env: { ...process.env, PAPERCLIP_API_URL: env.paperclip, PAPERCLIP_API_KEY: env.agent, PAPERCLIP_COMPANY_ID: COMPANY, PAPERCLIP_TASK_ID: "", AIDENHQ_GRANTS_FILE: env.grants, AIDENHQ_BOARD_URL: env.board, AIDENHQ_BOARD_TOKEN: TOKEN },
+      // Only what the bridge reads: never the whole environment, so no other credential reaches the child.
+      env: {
+        PAPERCLIP_API_URL: env.paperclip,
+        PAPERCLIP_API_KEY: env.agent,
+        PAPERCLIP_COMPANY_ID: COMPANY,
+        PAPERCLIP_TASK_ID: "",
+        AIDENHQ_GRANTS_FILE: env.grants,
+        AIDENHQ_BOARD_URL: env.board,
+        AIDENHQ_BOARD_TOKEN: TOKEN,
+      },
     });
     let out = "";
     const timer = setTimeout(() => (child.kill(), reject(new Error(`the bridge did not answer: ${out}`))), 20_000);
