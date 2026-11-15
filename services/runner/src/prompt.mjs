@@ -309,9 +309,39 @@ export function branchesFooter(rows) {
   ].join("\n");
 }
 
+/** The repository in a pull request URL, lower-cased: `acme/app` for `https://github.com/acme/app/pull/9`. */
+const prRepo = (url) => {
+  try {
+    const [org, name] = new URL(String(url)).pathname.split("/").filter(Boolean);
+    return org && name ? `${org}/${name}`.toLowerCase() : "";
+  } catch {
+    return "";
+  }
+};
+
+/**
+ * Whether a pending request already covers one branch head: a `pr` card names the exact repo, branch and commit, and a
+ * `merge` card names the pull request at that commit. Used by the run-end receipt, so a card filed during the run is
+ * named instead of inviting a second one.
+ */
+export function coversHead(card, head) {
+  const args = card?.args ?? {};
+  const repo = String(head?.repo ?? "").toLowerCase();
+  const sha = String(head?.sha ?? "");
+  if (!repo || !sha) return false;
+  if (card.action === "pr") {
+    return (Array.isArray(args.only) ? args.only : []).some((b) => String(b?.repo ?? "").toLowerCase() === repo && String(b?.branch ?? "") === String(head.branch) && String(b?.sha ?? "") === sha);
+  }
+  if (card.action === "merge") {
+    return (Array.isArray(args.prs) ? args.prs : []).some((p) => String(p?.head ?? "") === sha && prRepo(p?.url) === repo);
+  }
+  return false;
+}
+
 /**
  * The summary posted on a parent once all its approved Engineer sub-tasks have finished.
- * rows: { identifier, title, status (issue status), job (last job status), committed }.
+ * rows: { identifier, title, status (issue status), job (last job status), committed,
+ * cards: [{ id, action, sha }] (pending pr/merge cards already filed for its committed head) }.
  */
 export function subtaskSummary(rows) {
   const outcome = (r) =>
@@ -322,6 +352,16 @@ export function subtaskSummary(rows) {
   const ok = rows.filter((r) => r.job === "done" && r.status !== "cancelled");
   const committed = ok.filter((r) => r.committed);
   const look = rows.filter((r) => r.status !== "cancelled" && r.job !== "done");
+  const cards = committed.flatMap((r) => (r.cards ?? []).map((c) => ({ ...c, identifier: r.identifier })));
+  const open = committed.filter((r) => !(r.cards ?? []).length);
+  const requested = cards.length
+    ? `Already requested: ${cards.map((c) => `${c.identifier} \`${c.id}\` (${c.action}${c.sha ? ` at \`${String(c.sha).slice(0, 12)}\`` : ""}, pending)`).join("; ")}.`
+    : "";
+  const ask = !open.length
+    ? requested ? "No further **pr** reply is needed." : ""
+    : cards.length
+      ? `Reply **pr** here to open the PRs of ${[...new Set(open.map((r) => r.identifier))].join(", ")}, or **pr** on a single task for just that one.`
+      : "Reply **pr** here to open all their PRs, or **pr** on a single task for just that one.";
   return [
     `**${rows.length === 1 ? "The Engineer task has" : `All ${rows.length} Engineer tasks have`} finished.** ${committed.length} committed change${committed.length === 1 ? "" : "s"}${look.length ? `, ${look.length} need${look.length === 1 ? "s" : ""} a look` : ""}.`,
     "",
@@ -329,7 +369,7 @@ export function subtaskSummary(rows) {
     "|---|---|",
     ...rows.map((r) => `| ${r.identifier} ${String(r.title).replace(/\|/g, "/")} | ${outcome(r)} |`),
     "",
-    committed.length ? "Each task's report has the details. Reply **pr** here to open all their PRs, or **pr** on a single task for just that one." : "Each task's report has the details.",
+    committed.length ? ["Each task's report has the details.", requested, ask].filter(Boolean).join(" ") : "Each task's report has the details.",
   ].join("\n");
 }
 

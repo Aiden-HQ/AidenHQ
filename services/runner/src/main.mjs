@@ -20,7 +20,7 @@ import { splitAnswered } from "./answered.mjs";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.mjs";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.mjs";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.mjs";
-import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine } from "./prompt.mjs";
+import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, stripCommitLine, coversHead } from "./prompt.mjs";
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.mjs";
 import { startRepoHelper } from "./repohelper.mjs";
 import { createMetrics, writeMetrics } from "./metrics.mjs";
@@ -3069,6 +3069,8 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     // uncommitted stays as it is: the agent commits what it means to keep.
     const tidyNotes = await tidyBranches(issue, workspace);
     const rows = await branchRows(issue, workspace);
+    // The heads this run ended on, for the parent's run-end receipt: the exact commits a pending pr/merge card would cover.
+    state.set(`heads:${issue.id}`, JSON.stringify(rows.filter((r) => !r.merged && !r.readOnly && (r.unpublished.length || !r.prUrl) && r.head).map(({ repo, branch, head }) => ({ repo, branch, sha: head }))));
     const stillDirty = (await dirtyCheckouts(after)).length > 0;
     const primerNote = outcome.finished ? await publishToPrimer(issue, full, workspace) : "";
     const sharedNote = outcome.finished ? await shareWork(issue, full, workspace) : "";
@@ -3174,6 +3176,37 @@ async function publishToPrimer(issue, full, workspace) {
   }
 }
 
+/** The branch heads a task's last run ended on, for the run-end receipt: [{ repo, branch, sha }]. */
+function headsOf(issueId) {
+  try {
+    return JSON.parse(state.get(`heads:${issueId}`) || "[]").filter((h) => h?.repo && h?.branch && h?.sha);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The pending pr/merge cards that cover every one of a task's heads: [{ id, action, sha }]. Only a task whose every
+ * head is covered counts, so the receipt never hides a branch that still needs a request. A failed board read is no
+ * cards: the receipt then offers `pr`, as it did before this existed.
+ */
+async function cardsAt(issue, heads) {
+  // The board returns a card's args (the branch and commit) only to the runner's own key. Without it, no card can be
+  // matched: the receipt keeps its `pr` invitation rather than guessing.
+  if (!heads.length || !boardApi || !runnerKey()["x-reviewer-key"]) return [];
+  let approvals;
+  try {
+    ({ approvals = [] } = await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.identifier)}`));
+  } catch (err) {
+    log("receipt card lookup failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
+    return [];
+  }
+  const pending = (approvals ?? []).filter((a) => a.state === "pending" && a.args && (a.action === "pr" || a.action === "merge"));
+  const each = heads.map((h) => ({ h, card: pending.find((a) => coversHead(a, h)) }));
+  if (each.some((x) => !x.card)) return [];
+  return [...new Map(each.map((x) => [x.card.id, { id: x.card.id, action: x.card.action, sha: x.h.sha }])).values()];
+}
+
 /**
  * "pr" on a parent: open (or update) the PR of every approved Engineer sub-task that has commits,
  * one after another in the background, then post the links on the parent. Each task's own "pr" path
@@ -3197,7 +3230,9 @@ async function handleParentPr(parent, fresh) {
       const task = state.task(kid.id);
       let note = "";
       try {
+        const cards = await cardsAt(kid, headsOf(kid.id));
         if (running.has(kid.id) || queue.some((j) => j.issue.id === kid.id)) note = "Still running: reply **pr** on it when it's done";
+        else if (cards.length) note = `Already requested: ${cards.map((c) => `${c.id} (${c.action})`).join(", ")}`;
         else if (!(await taskHasCommits(task))) note = "Nothing to publish";
         else await runCommand(kid, task, "pr");
       } catch (err) {
@@ -3229,10 +3264,15 @@ async function reportToParent(issue) {
   const newest = Math.max(...siblings.map((c) => state.lastJob(c.id)?.id ?? 0));
   const key = `parent-summary:${full.parentId}`;
   if (Number(state.get(key) ?? 0) >= newest || summarizing.has(full.parentId)) return;
-  const rows = siblings
+  const sorted = siblings
     .map((c) => ({ c, job: state.lastJob(c.id) }))
-    .sort((a, b) => a.c.identifier.localeCompare(b.c.identifier, undefined, { numeric: true }))
-    .map(({ c, job }) => ({ identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed: job?.detail === "committed" }));
+    .sort((a, b) => a.c.identifier.localeCompare(b.c.identifier, undefined, { numeric: true }));
+  const rows = await Promise.all(
+    sorted.map(async ({ c, job }) => {
+      const committed = job?.detail === "committed";
+      return { identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed, cards: committed ? await cardsAt(c, headsOf(c.id)) : [] };
+    }),
+  );
   // The same table again (a resumed run that changed nothing) would only wake the parent's agent for nothing.
   const text = subtaskSummary(rows);
   if (state.get(`parent-summary-text:${full.parentId}`) === text) return void state.set(key, String(newest));
@@ -3665,8 +3705,9 @@ async function branchRows(issue, workspace) {
     const taskBranches = state.branches(issue.id).filter((k) => k.repo === r.slug).map((k) => k.branch);
     for (const b of state.branches(issue.id).filter((k) => k.repo === r.slug)) {
       if (!(await hasBranch(r.path, b.branch))) continue;
+      const head = await git(r.path, "rev-parse", "--verify", "--quiet", `refs/heads/${b.branch}`).catch(() => "");
       const c = await branchChanges(r.path, { branch: b.branch, base: b.base, taskBranches });
-      rows.push({ repo: r.slug, path: r.path, branch: b.branch, base: b.base, baseRef: await baseRef(r.path, { branch: b.branch, base: b.base, taskBranches }), defaultBase: base, purpose: b.purpose, unpublished: c.unpublished, stat: c.stat, onGitHub: c.onGitHub, pushed: b.pushed, prUrl: b.pr_url ?? undefined, merged: b.merged, writable: writable(r.slug), readOnly: !writable(r.slug) });
+      rows.push({ repo: r.slug, path: r.path, branch: b.branch, head, base: b.base, baseRef: await baseRef(r.path, { branch: b.branch, base: b.base, taskBranches }), defaultBase: base, purpose: b.purpose, unpublished: c.unpublished, stat: c.stat, onGitHub: c.onGitHub, pushed: b.pushed, prUrl: b.pr_url ?? undefined, merged: b.merged, writable: writable(r.slug), readOnly: !writable(r.slug) });
     }
   }
   return rows;

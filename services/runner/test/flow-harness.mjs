@@ -83,7 +83,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       let list = [...issues.values()];
       if (q.get("labelId")) list = list.filter((i) => (i.labels ?? []).some((l) => l.id === q.get("labelId")));
       if (q.get("assigneeAgentId")) list = list.filter((i) => i.assigneeAgentId === q.get("assigneeAgentId"));
-      if (q.get("assigneeUserId")) list = list.filter((i) => i.assigneeUserId === q.get("assigneeUserId"));
+      if (q.get("assigneeUserId")) list = list.filter((i) => i.assigneeUserId === (q.get("assigneeUserId") === "me" ? USER : q.get("assigneeUserId")));
       if (q.get("parentId")) list = list.filter((i) => i.parentId === q.get("parentId"));
       if (q.get("q")) list = list.filter((i) => `${i.title}\n${i.description}`.toLowerCase().includes(q.get("q").toLowerCase()));
       return send(list);
@@ -218,7 +218,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
  * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
-export function flow({ parent: parentOver, part: partOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "" } = {}) {
+export function flow({ parent: parentOver, part: partOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep } = {}) {
   let dir, runner, runnerEnv, paperclip, output = "";
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -296,7 +296,8 @@ intake:
   codex_args: []
   timeout_seconds: 30
 replies:
-  enabled: false
+  enabled: ${replies ? "true" : "false"}
+  debounce_seconds: 0
 reviews:
   enabled: false
 recurring:
@@ -310,6 +311,8 @@ ${runnerYaml}`,
     writeFileSync(join(secrets, "paperclip_board_key"), "board-key\n", { mode: 0o600 });
     writeFileSync(join(secrets, "claude_oauth_token"), "claude-token\n", { mode: 0o600 });
     writeFileSync(join(secrets, "board_internal_token"), "board-token\n", { mode: 0o600 });
+    // The runner's own board key: the board returns a card's args only to it, as in production.
+    writeFileSync(join(secrets, "reviewer_key"), `${"k".repeat(64)}\n`, { mode: 0o600 });
 
     // PEN-2713/PEN-2714: the repositories are on the user's task; Ada's part only says go.
     const engineers = [
@@ -333,7 +336,7 @@ ${runnerYaml}`,
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 
-    step("commit");
+    step(initialStep ?? "commit");
     runnerEnv = {
         PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin:${process.env.PATH}`,
         HOME: home,

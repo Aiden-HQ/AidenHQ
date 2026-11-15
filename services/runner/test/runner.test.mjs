@@ -502,7 +502,7 @@ describe("run report footer", async () => {
 });
 
 describe("parent summary", async () => {
-  const { subtaskSummary } = await import("../src/prompt.mjs");
+  const { subtaskSummary, coversHead } = await import("../src/prompt.mjs");
   it("tables every sub-task and counts what needs a look", () => {
     const s = subtaskSummary([
       { identifier: "PEN-390", title: "Deprecation notice: legacy-node", status: "in_review", job: "done", committed: true },
@@ -514,6 +514,31 @@ describe("parent summary", async () => {
     assert.match(s, /\| PEN-391 Deprecation notice: legacy-bench \| Failed \|/);
     assert.match(s, /\| PEN-392 Deprecation notice: legacy-rom \| Cancelled \|/);
     assert.match(s, /Reply \*\*pr\*\* here to open all their PRs/);
+  });
+  it("names the pending card for a committed head instead of inviting another pr", () => {
+    const card = { id: "A2ac10e5c", action: "pr", sha: "516c06b166d4" };
+    const s = subtaskSummary([{ identifier: "PEN-390", title: "Fix the review tasks", status: "in_review", job: "done", committed: true, cards: [card] }]);
+    assert.match(s, /Already requested: PEN-390 `A2ac10e5c` \(pr at `516c06b166d4`, pending\)\./);
+    assert.match(s, /No further \*\*pr\*\* reply is needed\./);
+    assert.doesNotMatch(s, /Reply \*\*pr\*\*/);
+  });
+  it("asks for pr only for the tasks no card covers", () => {
+    const s = subtaskSummary([
+      { identifier: "PEN-390", title: "Fix the review tasks", status: "in_review", job: "done", committed: true, cards: [{ id: "A2ac10e5c", action: "pr", sha: "516c06b166d4" }] },
+      { identifier: "PEN-391", title: "Fix the resume path", status: "in_review", job: "done", committed: true },
+    ]);
+    assert.match(s, /Already requested: PEN-390/);
+    assert.match(s, /Reply \*\*pr\*\* here to open the PRs of PEN-391/);
+    assert.doesNotMatch(s, /No further \*\*pr\*\* reply/);
+  });
+  it("matches a card only at the exact repository, branch and head", () => {
+    const head = { repo: "Acme/app", branch: "fix/a", sha: "516c06b166d4" };
+    assert.equal(coversHead({ action: "pr", args: { only: [{ repo: "acme/app", branch: "fix/a", sha: "516c06b166d4" }] } }, head), true);
+    assert.equal(coversHead({ action: "pr", args: { only: [{ repo: "acme/app", branch: "fix/a", sha: "272d1240" }] } }, head), false);
+    assert.equal(coversHead({ action: "pr", args: { only: [{ repo: "acme/app", branch: "fix/b", sha: "516c06b166d4" }] } }, head), false);
+    assert.equal(coversHead({ action: "merge", args: { prs: [{ url: "https://github.com/acme/app/pull/9", head: "516c06b166d4" }] } }, head), true);
+    assert.equal(coversHead({ action: "merge", args: { prs: [{ url: "https://github.com/acme/api/pull/9", head: "516c06b166d4" }] } }, head), false);
+    assert.equal(coversHead({ action: "push", args: { only: [{ repo: "acme/app", branch: "fix/a", sha: "516c06b166d4" }] } }, head), false);
   });
 });
 
