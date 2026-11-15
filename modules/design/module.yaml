@@ -5,6 +5,7 @@ requires:
 agents:
   ui-designer:
     department: engineering
+    builder: true # gets "How we build" (paperclip-setup HOW_WE_BUILD_SECTION)
     adapter: codex_local
     max_parallel: 2 # mockups are independent; each run gets its own box
     # Graded done: mockups and design work delegated to it are checked against their rubric before they close.
@@ -27,6 +28,7 @@ agents:
     roles: [ repo-checkout ]
   ui-reviewer:
     department: engineering
+    builder: true # gets "How we build" (paperclip-setup HOW_WE_BUILD_SECTION)
     adapter: codex_local
     max_parallel: 2 # design reviews per PR are independent; each run gets its own box
     # Finds visible defects in screenshots: the owner picked GPT Luna at medium (2026-11-13; it matched Opus on screenshot

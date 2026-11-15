@@ -152,6 +152,7 @@ agents:
     roles: [ board-writer, engineer-dispatch ]
   app-maintainer:
     department: platform
+    builder: true # gets "How we build" (paperclip-setup HOW_WE_BUILD_SECTION)
     adapter: codex_local
     max_parallel: 2 # independent app jobs; a backlog also made a 30-minute routine pile up duplicates
     # Graded done: deliverables delegated to it are checked against their rubric before they close (the runner's grader).
@@ -172,6 +173,7 @@ agents:
     roles: [ app-incidents, app-requests ]
   architect:
     department: agents
+    builder: true # gets "How we build" (paperclip-setup HOW_WE_BUILD_SECTION)
     # Designs and onboards new agents. DeepSeek Flash at max effort (the owner's pick after a blind bake-off, 2026-11-13): its
     # handbooks are what the other agents run on. Max can reason 60-90k tokens a turn: nothing in its path sets an output cap
     # (Codex and the gateway send none), and the longer timeout covers slow turns. A 90k-token turn costs about $0.05, so

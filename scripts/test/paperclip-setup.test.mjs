@@ -45,3 +45,13 @@ test("an app change is checked live an hour and a day after it deploys, and data
   const engineer = readFileSync(join(dirname(script), "../modules/engineering/agents/app-engineer/AGENTS.md"), "utf8");
   assert.match(engineer, /A data app's migrations add: new tables/);
 });
+
+test("every agent gets how we work, builders also how we build, and asking the owner defers to it", () => {
+  const work = section("HOW_WE_WORK_SECTION");
+  assert.match(work, /\n\n## How we work\n\n/);
+  assert.ok(work.includes("Bring the owner the calls that are genuinely theirs: spend, a veto, a choice of taste"));
+  assert.match(section("HOW_WE_BUILD_SECTION"), /\n\n## How we build\n\n/);
+  assert.ok(section("ASKING_SECTION").includes("When a call is the owner's (How we work), ask before acting on it"));
+  const builders = ["core", "design"].flatMap((m) => [...readFileSync(join(dirname(script), `../modules/${m}/module.yaml`), "utf8").matchAll(/^  ([a-z-]+):\n(?:    .*\n)*?    builder: true/gm)].map((x) => x[1]));
+  assert.deepEqual(builders.sort(), ["app-maintainer", "architect", "ui-designer", "ui-reviewer"]);
+});

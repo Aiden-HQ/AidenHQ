@@ -43,7 +43,7 @@ const ROLES = {
 };
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
-const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "department", "chat"];
+const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "builder", "department", "chat"];
 // An instance agent's fast chat lane (`chat:`, owner-channel's slack-live-mcp): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
 const CHAT_FIELDS = ["model", "reasoning", "tools", "deadline_s", "telegram"];
@@ -584,6 +584,7 @@ function instanceAgents(instanceDir, settings, paperclip, routineTitles) {
     if (typeof def.budget !== "number" || !(def.budget > 0)) fail(`agent ${key}: budget is USD per month, a number above 0`);
     if (def.max_parallel != null && !(Number.isInteger(def.max_parallel) && def.max_parallel >= 1 && def.max_parallel <= 10)) fail(`agent ${key}: max_parallel must be 1 to 10`);
     if (def.trial != null && def.trial !== true) fail(`agent ${key}: trial is true or absent`);
+    if (def.builder != null && typeof def.builder !== "boolean") fail(`agent ${key}: builder is true, false or absent`);
     const { description, routines, ...rest } = def;
     put(paperclip.agents, key, { adapter: "codex_local", ...rest, title: String(description).trim(), instructions: handbook, module: "instance", isolation: "trusted" }, "agent");
     for (const [rk, r] of Object.entries(routines ?? {})) {

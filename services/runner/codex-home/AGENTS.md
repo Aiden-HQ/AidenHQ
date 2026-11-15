@@ -6,7 +6,8 @@ working habits.
 
 - Read the repository's own `AGENTS.md` / `CLAUDE.md` (and `CONTRIBUTING.md`) before changing anything, and follow it
   over these notes.
-- Simple first: the smallest change that does the job, no speculative options or abstractions, no compatibility shims.
+- Simple first: the smallest change that does the job, reusing what the repository and its libraries already have; an
+  option, abstraction or compatibility shim arrives the second time it is needed.
 - Tests: a few that prove the change works end to end; the build and those cover the rest. While you work, run the tests
   you touched; run the full suite of each package you changed once, before you publish and before you say it works.
 - A large change with independent parts (several screens, files or modules): plan the split, `spawn_agent` one
