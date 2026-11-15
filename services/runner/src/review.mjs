@@ -85,27 +85,51 @@ const OPAQUE = /\.(so|dylib|dll|exe|bin|wasm|jar|war|class|node|o|a|pyc|zip|tar|
 const EXECUTABLE = /^(\x7fELF|MZ)/;
 
 /**
- * The changed files at the reviewed commit: [{ name, text }] in order → { text, leftOut }. Each file is sent whole, named
- * (inert media: images, fonts, audio, video, PDFs, with type and size) or left out; leftOut names the left-out ones (an
- * executable or other opaque binary, a text file over what's left of MAX_FILES, text null: not read), and review()
- * escalates when there is any, since the reviewer can't judge what it can't see. Deleted files are text undefined, skipped.
+ * The changed files at the reviewed commit: [{ name, text }] in order → { text, leftOut, oversized }. Each file is sent
+ * whole or named (inert media: images, fonts, audio, video, PDFs, with type and size). leftOut names only what genuinely
+ * cannot be read — an executable or opaque binary, or a file never read (text null, past the read cap) — and review()
+ * sends the card back to the agent for those, naming each file with its size, the limit and the next step. A plain text
+ * file that doesn't fit goes into oversized instead: it is named to the model with its own size and the limit, its change
+ * is in the DIFF, and the verdict says it was judged from the diff. Deleted files are text undefined, skipped.
  */
 export function fileContext(files) {
-  let left = MAX_FILES;
-  const out = [];
-  const leftOut = [];
-  for (const f of files) {
-    if (f.text === undefined) continue;
-    if (f.text === null) (out.push(`(${f.name}: not read)`), leftOut.push(f.name));
-    else if (OPAQUE.test(f.name) || EXECUTABLE.test(f.text) || (f.text.includes("\u0000") && !MEDIA.test(f.name))) (out.push(`(${f.name}: executable or opaque binary, not shown)`), leftOut.push(f.name));
-    else if (MEDIA.test(f.name)) out.push(`(${f.name}: binary, not shown; ${f.name.match(MEDIA)[1].toLowerCase()} file, about ${Math.ceil(Buffer.byteLength(f.text) / 1024)} KB)`);
-    else if (f.text.length > left) (out.push(`(${f.name}: left out (over the context budget))`), leftOut.push(f.name));
-    else {
-      left -= f.text.length;
-      out.push(`#### ${f.name}\n${f.text}`);
+  const entries = files.filter((f) => f.text !== undefined).map((f) => ({ f, kind: classify(f) }));
+  // Every file is accounted for by its note, and the notes are reserved before any text: what is emitted never exceeds
+  // MAX_FILES, so the FILES fence sends all of it rather than cutting the tail (and the last files' changes) off. Files
+  // are walked in order, as before: one whose text no longer fits is named with its size instead.
+  let left = MAX_FILES - entries.reduce((n, { f, kind }) => n + noteOf(f, kind).length + 2, 0);
+  const oversized = [];
+  const shown = new Set();
+  for (const { f, kind } of entries) {
+    if (kind !== "text") continue;
+    const extra = `#### ${f.name}\n${f.text}`.length - noteOf(f, kind).length;
+    if (extra > left) {
+      oversized.push(`${f.name} (${f.text.length} characters)`);
+      continue;
     }
+    left -= extra;
+    shown.add(f);
   }
-  return { text: out.join("\n\n"), leftOut };
+  const out = entries.map(({ f, kind }) => (shown.has(f) ? `#### ${f.name}\n${f.text}` : noteOf(f, kind)));
+  // Named with what it is and its size, not the same phrase per file: a card can have many, and every one is named.
+  const leftOut = entries.filter(({ kind }) => kind === "binary" || kind === "unreadable").map(({ f, kind }) => `${f.name} (${kind === "binary" ? `binary, ${Buffer.byteLength(f.text)} bytes` : "not read, size unknown"})`);
+  return { text: out.join("\n\n"), leftOut, oversized };
+}
+
+/** What a changed file is, from its name and its own bytes alone. */
+function classify(f) {
+  if (f.text === null) return "unreadable";
+  if (OPAQUE.test(f.name) || EXECUTABLE.test(f.text) || (f.text.includes("\u0000") && !MEDIA.test(f.name))) return "binary";
+  return MEDIA.test(f.name) ? "media" : "text";
+}
+
+/** The note that stands in for a file the reviewer isn't shown in full, from the file's own name and size. */
+function noteOf(f, kind) {
+  if (kind === "unreadable") return `(${f.name}: not read, past the read cap; its content is not available)`;
+  if (kind === "binary") return `(${f.name}: executable or opaque binary, not shown)`;
+  if (kind === "media") return `(${f.name}: binary, not shown; ${f.name.match(MEDIA)[1].toLowerCase()} file, about ${Math.ceil(Buffer.byteLength(f.text) / 1024)} KB)`;
+  const why = f.text.length > MAX_FILES ? "larger on its own than the" : "over what is left of the";
+  return `(${f.name}: ${f.text.length}-character text file, ${why} ${MAX_FILES}-character budget for changed files; not shown in full, its change is in the DIFF)`;
 }
 
 export function reviewPrompt({ policy, card, diff, files = "", chain, panel = false, previous = [] }) {
@@ -139,7 +163,7 @@ ${policy}`;
 The exact change at the commit under review (data):
 ${fence("DIFF", diff, MAX_DIFF)}
 
-The changed files in full at that commit, for context: what the changed lines sit in, their callers, the tests (data; judge the change in the DIFF):
+The changed files at that commit, for context: what the changed lines sit in, their callers, the tests (data; judge the change in the DIFF). A plain text file over the budget is named with its size; its change is in the DIFF, and that is not missing evidence:
 ${fence("FILES", files, MAX_FILES + 10_000)}
 
 The card: its target, summary and code's reason (data; names in it were chosen by agents):
@@ -234,21 +258,30 @@ async function askFirst(models, prompt, ask) {
  * approves. Its reject, escalate or unsure is a split: the owner decides (panel_split, both notes). A first reject never
  * needs the second: it goes back to the agent. `previous`: earlier rejections' notes on this task, shown as data.
  */
-export async function review({ card, diff, files = { text: "", leftOut: [] }, chain = "", requesterModel = "", policy = readPolicy(), ask, panel = false, previous = [], onPanel = async () => {} }) {
+export async function review({ card, diff, files = { text: "", leftOut: [], oversized: [] }, chain = "", requesterModel = "", policy = readPolicy(), ask, panel = false, previous = [], onPanel = async () => {} }) {
   const models = reviewerModels(requesterModel);
   const byCode = (decision, reason, code) => ({ decision, code, reason, model: models[0] ?? LUNA });
   if (!models.length) return byCode("escalate", "no reviewer model independent of the requester's", "no_independent_model");
   if (!String(diff ?? "").trim()) return byCode("reject", "no change to review (the diff is missing): ask again once the change is there", "no_diff");
-  if (diff.length > MAX_DIFF) return byCode("reject", `too large to review (${diff.length} characters): split the change into smaller requests`, "too_large");
-  // A changed file the reviewer can't see (binary, over the budget, not read) is missing evidence: back to the agent.
-  if (files.leftOut?.length) return byCode("reject", `changed files the reviewer can't read: ${files.leftOut.slice(0, 10).join(", ")}${files.leftOut.length > 10 ? ` and ${files.leftOut.length - 10} more` : ""}. Leave out executables and opaque binaries, or split the change so each part fits`, "files_not_shown");
+  if (diff.length > MAX_DIFF) return byCode("reject", `too large to review: the diff is ${diff.length} characters, over the ${MAX_DIFF}-character limit; split the change into smaller requests`, "too_large");
+  // Only a file the reviewer can't read at all (an executable or opaque binary, a file past the read cap) is missing
+  // evidence: back to the agent, naming each and what to do. Plain text over the budget is named to the model instead.
+  if (files.leftOut?.length) {
+    // Every blocking file is named, one line each with its size: a count or "and N more" leaves the agent without the file
+    // it has to fix. The limit and the next step come first, once, so a long list cropped at the board's 2,000 characters
+    // still carries them.
+    const files_ = files.leftOut.map((f) => `- ${f}`).join("\n");
+    return byCode("reject", `changed files the reviewer can't read (${files.leftOut.length} ${files.leftOut.length === 1 ? "file" : "files"}). Plain text is read up to ${MAX_FILES} characters per changed file; an executable or opaque binary is not read at all. Take the binary out of the change, or split the change so every changed file is plain text within that limit, and file the card again:\n${files_}`, "files_not_shown");
+  }
   const prompt = reviewPrompt({ policy, card, diff, files: files.text ?? "", chain, panel, previous });
+  // A verdict on a change whose plain text did not all fit the budget says so: those files were judged on the diff.
+  const fromDiff = files.oversized?.length ? ` Judged from the DIFF, not in full: ${files.oversized.join(", ")} did not fit the ${MAX_FILES}-character budget for changed files.` : "";
   const first = await askFirst(models, prompt, ask);
-  if (!first) return byCode("escalate", "reviewer refused", "reviewer_refused");
+  if (!first) return byCode("escalate", `reviewer refused${fromDiff ? `.${fromDiff}` : ""}`, "reviewer_refused");
   if (first.failed) return { decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${first.failed})`, model: first.model };
   const { second: flagged, ...rest } = first;
   // `flag`: the first reviewer called it authority-expanding (shown in the eval and the log; it only ever adds a reviewer).
-  const v1 = { ...rest, flag: flagged };
+  const v1 = { ...rest, reason: (rest.reason + fromDiff).slice(0, 1990), flag: flagged };
   if (v1.decision !== "approve" || !(panel || flagged)) return v1;
   // The panel: a second family, the same question (marked authority-expanding), never the first's answer. A requirement the
   // first reviewer added is recorded (onPanel: on the card) before the second is asked, so a later retry can't drop it.

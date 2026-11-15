@@ -107,9 +107,13 @@ reason_code, reason, second_review}`.
   only), and the requester can never choose the reviewer. The panel's second reviewer is GLM Flash at high (the owner's
   checker model), or DeepSeek when the requester is GLM-family: never the requester's family nor the first reviewer's.
   GPT Sol (the advisor) shares Luna's family, so it can't be the second opinion on Luna.
-- **Files it can't see.** Images, fonts, audio, video and PDFs are named with type and size. A changed text file left
-  out (over the budget or past the 300-file read cap) or an executable or opaque binary (by extension, or an ELF or PE
-  header) sends the card back to the agent in code (`files_not_shown`) without a model call.
+- **Files it can't see.** Images, fonts, audio, video and PDFs are named with type and size. A file the reviewer cannot
+  read at all — an executable or opaque binary (by extension, or an ELF or PE header), or one past the 300-file read cap —
+  sends the card back to the agent in code (`files_not_shown`) without a model call, naming each blocking file with its
+  size, the 200,000-character limit and what the card should do instead.
+- **Oversized text.** A plain text file past the budget for changed files is not unreadable: it is named to the model with
+  its own size and the limit, the card is reviewed on the diff, and the verdict's reason records that it was judged from
+  the diff rather than in full.
 - **Input.** The policy (`modules/core/security/policy.md`, from the product repo only, so instances cannot loosen it);
   the card; the full diff at the exact head; the full text of changed files at that commit (within a budget); and the
   request chain, and the notes of earlier rejections of the same target on the task. Everything an agent or stranger

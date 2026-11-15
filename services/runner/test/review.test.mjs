@@ -3,7 +3,11 @@
 // two families to approve.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_DIFF, MAX_FILES, MODEL_CODES, fileContext, review } from "../src/review.mjs";
+import { REPO_ROOT } from "../src/config.mjs";
+import { padCase } from "./case-pad.mjs";
 import { REVIEW_CODES } from "../../shared/reason-codes.ts";
 
 const card = { action: "pr", rule: "outside-pr", target: "acme/app feat/x", sentence: "Open a PR", reason: "outside the agents org" };
@@ -88,6 +92,7 @@ test("too large or missing: back to the agent; a failed call: reviewer_failed (t
   const never = async () => assert.fail("not asked");
   const big = await review({ card, diff: "x".repeat(MAX_DIFF + 1), policy: "p", ask: never });
   assert.deepEqual([big.decision, big.code], ["reject", "too_large"]);
+  assert.match(big.reason, new RegExp(`the diff is ${MAX_DIFF + 1} characters, over the ${MAX_DIFF}-character limit`), "the size and the limit, not \"can't read\"");
   assert.equal((await review({ card, diff: "", policy: "p", ask: never })).decision, "reject");
   const failed = await review({ card, diff: "+x", policy: "p", ask: async () => { throw new Error("timeout"); } });
   assert.match(failed.reason, /failed \(timeout\)/);
@@ -106,16 +111,134 @@ test("changed files go to the reviewer whole, as fenced data; inert media is nam
   assert.equal(asked.length, 1);
 });
 
-test("an executable or opaque binary, or a text file left out, goes back to the agent without a model call", async () => {
+// The reported bug: a card whose changed set is large plain text was rejected as unreadable, so the agent could never
+// get the change approved, however small its diff. Plain text over the budget is named with its size and the limit,
+// and the reviewer judges it on the diff.
+test("plain text over the whole-file budget reaches a verdict naming its size and the limit, judged from the diff", async () => {
   const files = fileContext([
-    { name: "acme/app lib/native.so", text: "\u007fELF\u0000" },
-    { name: "acme/app public/cat.png", text: "\u007fELF\u0000" }, // an ELF dressed as an image
+    { name: "acme/app modules/core/templates/app/package-lock.json", text: "{\n" + "  \"x\": 1,\n".repeat(25_000) + "}\n" },
+    { name: "acme/app README.md", text: "# App starter\n" },
+  ]);
+  assert.deepEqual(files.leftOut, [], "large plain text is never unreadable");
+  assert.equal(files.oversized.length, 1);
+  const { asked, ask } = asker([ok]);
+  let prompt;
+  const v = await review({ card, diff: "+x", files, policy: "p", ask: async (m, p) => ((prompt = p), ask(m)) });
+  assert.equal(v.decision, "approve");
+  assert.equal(asked.length, 1);
+  assert.match(prompt.user, /package-lock\.json: \d+-character text file, larger on its own than the 200000-character budget/);
+  assert.match(v.reason, new RegExp(`Judged from the DIFF, not in full: .*package-lock\\.json \\(\\d+ characters\\) did not fit the ${MAX_FILES}-character budget`));
+  assert.doesNotMatch(v.reason, /can't read/);
+});
+
+// The incident itself: the app starter's two byte-identical lockfiles, 121,215 characters each, changed together.
+test("the paired 121,215-character app-starter lockfiles reach a verdict naming their size, not \"can't read\"", async () => {
+  const lock = (name, n = 121_215) => ({ name, text: ("{\n  \"lockfileVersion\": 3,\n" + "  \"node_modules/x\": { \"version\": \"1.0.0\" },\n".repeat(n)).slice(0, n - 2) + "}\n" });
+  const pair = [lock("Aiden-HQ/AidenHQ modules/core/templates/app/package-lock.json"), lock("Aiden-HQ/AidenHQ services/computer/images/agent-base/app-starter/package-lock.json")];
+  assert.equal(pair[0].text.length, 121_215);
+  assert.equal(pair[1].text, pair[0].text, "the app-starter copies are byte-identical");
+  const files = fileContext(pair);
+  assert.deepEqual(files.leftOut, [], "both are plain text: neither sends the card back");
+  assert.equal(files.oversized.length, 1, "the second one no longer fits the budget");
+  const { asked, ask } = asker([ok]);
+  let prompt;
+  const v = await review({ card, diff: "+x", files, policy: "p", ask: async (m, p) => ((prompt = p), ask(m)) });
+  assert.equal(v.decision, "approve");
+  assert.equal(asked.length, 1);
+  assert.match(prompt.user, /services\/computer\/images\/agent-base\/app-starter\/package-lock\.json: 121215-character text file/);
+  assert.match(v.reason, /Judged from the DIFF, not in full: .*121215 characters/);
+  assert.doesNotMatch(v.reason, /can't read/);
+});
+
+test("the real app-starter lockfiles are byte-identical, and the pair still reaches a verdict", async () => {
+  const names = ["modules/core/templates/app/package-lock.json", "services/computer/images/agent-base/app-starter/package-lock.json"];
+  const texts = names.map((n) => readFileSync(join(REPO_ROOT, n), "utf8"));
+  assert.equal(texts[1], texts[0], "the two copies are byte-identical");
+  const files = fileContext(names.map((name, i) => ({ name: `Aiden-HQ/AidenHQ ${name}`, text: texts[i] })));
+  assert.deepEqual(files.leftOut, []);
+  const { asked, ask } = asker([ok]);
+  const v = await review({ card, diff: "+x", files, policy: "p", ask });
+  assert.equal(v.decision, "approve");
+  assert.equal(asked.length, 1);
+  assert.ok(texts[0].length > MAX_FILES / 2, "each is over half the budget, so the second cannot be shown whole");
+  assert.match(v.reason, new RegExp(`Judged from the DIFF, not in full: .*${texts[0].length} characters`));
+});
+
+test("an executable or opaque binary, or a file never read, goes back to the agent naming it and what to do", async () => {
+  const elf = "\u007fELF\u0000";
+  const files = fileContext([
+    { name: "acme/app lib/native.so", text: elf },
+    { name: "acme/app public/cat.png", text: elf }, // an ELF dressed as an image
     { name: "acme/app vendor/blob.dat", text: "\u0000\u0001" },
     { name: "acme/app big.ts", text: "y".repeat(MAX_FILES + 1) },
     { name: "acme/app past-the-cap.ts", text: null },
   ]);
+  assert.deepEqual(files.leftOut, [
+    "acme/app lib/native.so (binary, 5 bytes)",
+    "acme/app public/cat.png (binary, 5 bytes)",
+    "acme/app vendor/blob.dat (binary, 2 bytes)",
+    "acme/app past-the-cap.ts (not read, size unknown)",
+  ], "only what cannot be read is left out; the big text file is reviewed on the diff");
+  assert.equal(files.oversized.length, 1);
   const never = async () => assert.fail("not asked");
   const v = await review({ card, diff: "+x", files, policy: "p", ask: never });
   assert.deepEqual([v.decision, v.code], ["reject", "files_not_shown"]);
-  assert.match(v.reason, /acme\/app lib\/native.so, acme\/app public\/cat.png, acme\/app vendor\/blob.dat, acme\/app big.ts, acme\/app past-the-cap.ts/);
+  assert.match(v.reason, /- acme\/app lib\/native\.so \(binary, 5 bytes\)/);
+  assert.match(v.reason, new RegExp(`Plain text is read up to ${MAX_FILES} characters per changed file`));
+  assert.match(v.reason, /Take the binary out of the change, or split the change so every changed file is plain text within that limit, and file the card again/);
+  assert.doesNotMatch(v.reason, /big\.ts/, "plain text over the budget is not named as unreadable");
+});
+
+// Every blocking file is named, one line each with its size: "and N more" sent the agent back without knowing which
+// file to fix, and a comma-joined list is harder to act on than a list. The count says how many.
+test("a rejection names every blocking file on its own line, with its size and the count", async () => {
+  const binaries = Array.from({ length: 14 }, (_, i) => ({ name: `acme/app native/lib-${String(i).padStart(2, "0")}.so`, text: "\u007fELF\u0000" }));
+  const v = await review({ card, diff: "+x", files: fileContext(binaries), policy: "p", ask: async () => assert.fail("not asked") });
+  assert.deepEqual([v.decision, v.code], ["reject", "files_not_shown"]);
+  assert.match(v.reason, /^changed files the reviewer can't read \(14 files\)\./);
+  const lines = v.reason.split("\n").filter((l) => l.startsWith("- "));
+  assert.equal(lines.length, 14, "one line per blocking file, all of them");
+  for (const { name } of binaries) {
+    const line = lines.find((l) => l.includes(name));
+    assert.ok(line, `names ${name}`);
+    assert.match(line, new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(binary, 5 bytes\\)$`), `has the size: ${line}`);
+  }
+  assert.doesNotMatch(v.reason, /and \d+ more/);
+  // The board keeps 2,000 characters of a note: the limit and the next step come before the list, so a crop at the tail
+  // never takes them.
+  assert.ok(v.reason.indexOf("file the card again") < v.reason.indexOf("\n- "), "the limit and the next step lead the note");
+});
+
+test("a real ELF beside the paired lockfiles is the file named as blocking", async () => {
+  const lock = "{\n  \"lockfileVersion\": 3\n}\n".padEnd(121_215, " ");
+  const files = fileContext([
+    { name: "Aiden-HQ/AidenHQ modules/core/templates/app/package-lock.json", text: lock },
+    { name: "Aiden-HQ/AidenHQ services/computer/images/agent-base/app-starter/package-lock.json", text: lock },
+    { name: "Aiden-HQ/AidenHQ services/computer/images/agent-base/agent-browser", text: "\u007fELF\u0000\u0001" },
+  ]);
+  const v = await review({ card, diff: "+x", files, policy: "p", ask: async () => assert.fail("not asked") });
+  assert.deepEqual([v.decision, v.code], ["reject", "files_not_shown"]);
+  assert.match(v.reason, /agent-browser \(binary, 6 bytes\)/);
+  assert.doesNotMatch(v.reason, /package-lock\.json/);
+});
+
+// A planted case is a changed file in every PR that edits it: one over the diff cap (150,000 characters) would make its
+// own PR unreviewable, which is what happened to the fixture this rule was added for. Keep every case far below that.
+test("no planted reviewer case file is over 32,000 bytes on disk", () => {
+  const dir = join(REPO_ROOT, "services/runner/test/reviewer-cases");
+  for (const f of readdirSync(dir).filter((n) => n.endsWith(".json"))) {
+    const size = statSync(join(dir, f)).size;
+    assert.ok(size <= 32_000, `${f} is ${size} bytes on disk (limit 32000): generated text belongs in padTo, not in the file`);
+  }
+});
+
+// The case that reproduces the incident, small on disk: each file pads to the real lockfile's 121,215 characters, and the
+// pair is byte-identical, as the app starter's two copies are.
+test("case 36 pads to the 121,215-character app-starter lockfile pair from a small file", () => {
+  const path = join(REPO_ROOT, "services/runner/test/reviewer-cases/36-clean-paired-lockfile-bump.json");
+  assert.ok(statSync(path).size <= 32_000);
+  const { files } = padCase(JSON.parse(readFileSync(path, "utf8")));
+  assert.deepEqual(files.map((f) => f.text.length), [121_215, 121_215]);
+  assert.equal(files[1].text, files[0].text);
+  assert.deepEqual(fileContext(files).leftOut, [], "the pair is plain text: nothing is unreadable");
 });
