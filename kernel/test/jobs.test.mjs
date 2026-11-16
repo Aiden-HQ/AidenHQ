@@ -47,7 +47,7 @@ function sandbox() {
   const cfg = {
     bwrap: "bwrap", hidden: [], binDir: join(dir, "bin"), browserDir: join(dir, "browser"), workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"),
     secretsDir: join(dir, "secrets"), enginesFile: join(dir, "engines.json"), jobcapsFile: join(dir, "jobcaps.json"), gatewayUrl: "http://127.0.0.1:8201", boxGatewayUrl: "", boxDir: join(dir, "boxes"),
-    timeout_minutes: 2, stall_minutes: 2, progress_minutes: 2, unconfined: true,
+    timeout_minutes: 2, stall_minutes: 2, progress_minutes: 2, helperPort: 47999, unconfined: true,
   };
   writeFileSync(join(dir, "sandbox.json"), JSON.stringify(cfg));
   return { dir, cfg };
@@ -135,16 +135,16 @@ test("a job's env is the kernel's: nothing else of the kernel's own env, and onl
   process.env.AIDENHQ_PLANTED_SECRET = "planted";
   process.env.GITHUB_TOKEN = "planted";
   try {
-    for (const env of [{ PATH: "/evil" }, { LD_PRELOAD: "/x.so" }, { AIDENHQ_REPO_URL: "http://10.0.0.1:3120" }, { AIDENHQ_REPO_URL: "http://127.0.0.1:22" }]) {
+    for (const env of [{ PATH: "/evil" }, { LD_PRELOAD: "/x.so" }, { AIDENHQ_REPO_URL: "http://10.0.0.1:3120" }, { AIDENHQ_REPO_URL: "http://127.0.0.1:22" }, { AIDENHQ_REPO_URL: "http://127.0.0.1:3120" }, { AIDENHQ_REPO_URL: "http://127.0.0.1:8199" }]) {
       assert.equal((await jobs.start("acme-dispatch", req({ env })).catch((e) => e)).code, "env-refused", JSON.stringify(env));
     }
-    const j = await jobs.start("acme-dispatch", req({ engine: { kind: "env" }, env: { AIDENHQ_REPO_URL: "http://127.0.0.1:4567", GH_TOKEN: "ghs_read", GIT_AUTHOR_NAME: "bot" } }));
+    const j = await jobs.start("acme-dispatch", req({ engine: { kind: "env" }, env: { AIDENHQ_REPO_URL: "http://127.0.0.1:47999", GH_TOKEN: "ghs_read", GIT_AUTHOR_NAME: "bot" } }));
     const env = JSON.parse((await finished(jobs, j.id)).final);
     assert.equal(env.AIDENHQ_PLANTED_SECRET, undefined);
     assert.equal(env.GITHUB_TOKEN, undefined);
     assert.equal(env.GH_TOKEN, "ghs_read");
     assert.equal(env.AIDENHQ_GH_AUTH, "ghs_read");
-    assert.equal(env.AIDENHQ_REPO_URL, "http://127.0.0.1:4567");
+    assert.equal(env.AIDENHQ_REPO_URL, "http://127.0.0.1:47999", "the helper is only ever the configured port");
     assert.equal(env.GIT_SSH_COMMAND, join(cfg.binDir, "git-ssh-no-push"));
     assert.ok(env.PATH.startsWith(`${cfg.binDir}:`));
     const allowed = new Set(["HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "SHELL", "PATH", "GIT_SSH_COMMAND", "GIT_TERMINAL_PROMPT", "GIT_NO_REPLACE_OBJECTS", "GIT_GRAFT_FILE", "AIDENHQ_TASK_WORKTREE", "AIDENHQ_BROWSER_DIR", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "SSH_ASKPASS_REQUIRE", "GIT_ASKPASS", "AIDENHQ_REPO_URL", "GH_TOKEN", "AIDENHQ_GH_AUTH", "GIT_AUTHOR_NAME"]);
@@ -283,4 +283,29 @@ test("a job that died while no kernel followed it is lost (exit null); a reused 
   }
   b.p.kill("SIGTERM");
   await b.exited;
+});
+
+// The backplane's job routes as main.ts wires them (helpers.mjs kernel()): only a module's own token with kernel.jobs reaches the
+// jobs, as that module; a job's error keeps its status and code. And which module dispatches which agent comes from compile.
+test("only a module with kernel.jobs reaches the job routes, as itself; a refusal keeps its status and code", async (t) => {
+  const { kernel } = await import("./helpers.mjs");
+  const { JobError, dispatchesFrom } = await import("../src/jobs.ts");
+  const seen = [];
+  const jobs = {
+    start: async (module, body) => { seen.push({ module, body }); if (body.task === "bad") throw new JobError(403, "task-not-assigned", "task bad isn't assigned"); return { id: "j-0000000000000001", state: "running" }; },
+    get: async (module, id) => ({ id, module, state: "running" }), stop: (module, id) => ({ id, module, state: "running" }), input: () => ({ sent: false }),
+  };
+  const k = await kernel(t, { jobs, modules: { modules: { "acme-dispatch": { roles: ["kernel.jobs"], token: "disp_token" }, plain: { token: "plain_token" } } }, secrets: { disp_token: "disp-key", plain_token: "plain-key" } });
+  const ok = await k.v1("POST", "/v1/jobs", { agent: "a", task: "t", prompt: "p", engine: { kind: "echo" } }, "disp-key");
+  assert.equal(ok.status, 200);
+  assert.deepEqual(seen.map((s) => s.module), ["acme-dispatch"]);
+  assert.equal((await k.v1("POST", "/v1/jobs", { task: "t" }, "plain-key")).status, 403, "no kernel.jobs role");
+  const jobToken = (await import("../src/gateway/token.ts")).mintToken("job-secret", { kind: "agent", agentId: "a", ttlMs: 60_000 });
+  assert.equal((await k.v1("POST", "/v1/jobs", { task: "t" }, jobToken)).status, 401, "a job's own token never starts a job");
+  assert.equal((await k.v1("POST", "/v1/jobs", { task: "t" }, "")).status, 401);
+  const bad = await k.v1("POST", "/v1/jobs", { agent: "a", task: "bad", prompt: "p", engine: { kind: "echo" } }, "disp-key");
+  assert.deepEqual([bad.status, bad.json.error.type], [403, "task-not-assigned"]);
+  assert.equal((await k.v1("GET", "/v1/jobs/j-0000000000000001", undefined, "disp-key")).json.module, "acme-dispatch");
+  const may = dispatchesFrom(() => ({ "acme-dispatch": { dispatches: ["engineer-a", "fleet-engineer"] }, other: {} }), () => ({ "id-a": { key: "engineer-a" }, "id-f": { key: "fleet-engineer" }, "id-x": { key: "assistant" }, "id-n": {} }));
+  assert.deepEqual([may("acme-dispatch", "id-a"), may("acme-dispatch", "id-f"), may("acme-dispatch", "id-x"), may("acme-dispatch", "id-n"), may("other", "id-a"), may("acme-dispatch", "id-missing")], [true, true, false, false, false, false]);
 });

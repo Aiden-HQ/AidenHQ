@@ -65,7 +65,8 @@
     "workflow": "Engineer job: prompt, run, comment mid-run, finish",
     "today": [
       "services/runner/test/flow-running.test.mjs",
-      "services/runner/test/flow-conversation.test.mjs"
+      "services/runner/test/flow-conversation.test.mjs",
+      "kernel/test/jobs.test.mjs"
     ],
     "next": "engineering + engine-codex + K7"
   },
@@ -73,7 +74,8 @@
     "n": 9,
     "workflow": "Runner restart adopts jobs",
     "today": [
-      "services/runner/test/adopt.test.mjs"
+      "services/runner/test/adopt.test.mjs",
+      "kernel/test/jobs.test.mjs"
     ],
     "next": "K7 adopt test"
   },

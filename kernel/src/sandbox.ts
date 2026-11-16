@@ -22,6 +22,8 @@ export interface SandboxConfig {
   hidden: string[]; sandbox?: { read_only_roots?: string[]; extra_writable_roots?: string[]; network?: boolean };
   binDir: string; browserDir: string; workDir: string; stateDir: string; logsDir: string; secretsDir: string;
   enginesFile: string; jobcapsFile: string; gatewayUrl: string; boxGatewayUrl: string; boxDir: string;
+  /** The job helper's loopback port (its dispatcher's `aidenhq` commands): the one host port besides 8201 a job reaches. */
+  helperPort: number;
   timeout_minutes: number; stall_minutes: number; progress_minutes: number;
   /** Unit tests' fake engines: no host layout, unconfined. */
   unconfined?: boolean;

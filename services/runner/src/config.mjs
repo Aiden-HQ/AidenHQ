@@ -86,6 +86,8 @@ export function loadConfig() {
     // The model gateway (kernel/src/gateway) on host loopback: opencode jobs, the AI reviewer and the intake call it with
     // tokens the runner signs with gateway_job_secret; only the gateway holds the OpenRouter key.
     gatewayUrl: cfg.gateway?.url ?? "http://127.0.0.1:8201",
+    // The agents' `aidenhq` commands (repohelper.ts): a fixed loopback port, the only one besides 8201 a job reaches.
+    helperPort: Number(cfg.helper_port ?? 3140),
     // Box jobs (an Engineer with a computer, the App Engineer): the computer launcher's job routes and the key that opens only
     // them; the box reaches the model and its connections through the launcher's gateway.
     launcherUrl: env.AIDENHQ_LAUNCHER_URL ?? "http://10.231.0.1:8199",

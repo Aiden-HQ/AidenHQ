@@ -119,6 +119,13 @@ export function insideNoLinks(root: string, path: string, what: string): string 
   return real;
 }
 
+/**
+ * Whether a module dispatches an agent's jobs: compile lists them by agent key under the dispatcher's `dispatches`
+ * (config/kernel/modules.json), and the grants table maps the agent's id to its key.
+ */
+export const dispatchesFrom = (modules: () => Record<string, { dispatches?: string[] } | undefined>, agents: () => Record<string, { key?: unknown } | undefined>) =>
+  (module: string, agent: string) => { const key = agents()[agent]?.key; return typeof key === "string" && key !== "" && (modules()[module]?.dispatches ?? []).includes(key); };
+
 const DDL = `CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, module TEXT NOT NULL, agent TEXT NOT NULL, task TEXT NOT NULL, engine TEXT NOT NULL, pid INTEGER NOT NULL,
   log TEXT NOT NULL, dir TEXT NOT NULL, at INTEGER NOT NULL, jobcaps TEXT NOT NULL, observing INTEGER NOT NULL, live_input INTEGER NOT NULL,
@@ -305,9 +312,10 @@ export function createJobs({ db, cfg, cp, jobcaps, mayDispatch, log, boxWrap }: 
       if (!ENV_NAMES.has(k) || typeof v !== "string" || v.length > 4096) throw new JobError(400, "env-refused", `a job's env may not set ${k}`);
       extra[k] = v;
     }
-    // The job's helper (its `aidenhq` commands) is one loopback port; nothing else on the host beyond the model and tool proxy.
+    // The job's helper (its `aidenhq` commands) is the configured loopback port (runner.yaml helper_port), never one the request
+    // names: nothing else on the host beyond the model and tool proxy.
     const helper = extra.AIDENHQ_REPO_URL;
-    if (helper !== undefined && !/^http:\/\/127\.0\.0\.1:([1-9]\d{3,4})$/.test(helper)) throw new JobError(400, "env-refused", "the job's helper is http://127.0.0.1:<port>");
+    if (helper !== undefined && helper !== `http://127.0.0.1:${cfg.helperPort}`) throw new JobError(400, "env-refused", `the job's helper is http://127.0.0.1:${cfg.helperPort}`);
     let cloud: JobRequest["cloud"];
     if (b.cloud && observes(engine) && !box) {
       const named = resolve(join(cfg.stateDir, "gcloud", ident));

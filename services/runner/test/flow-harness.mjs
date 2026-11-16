@@ -29,6 +29,9 @@ export function jobsHost(env, db) {
   return { p, port, log: () => log };
 }
 
+/** A free loopback port: each flow's runner gets its own helper port (runner.yaml helper_port), which the kernel holds it to. */
+export const freePort = () => new Promise((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
+
 /** Forward a request to the job host at `port` (the runner's /v1/jobs calls, as the kernel's backplane takes them). */
 export async function forwardJobs(port, req, body, res) {
   const r = await fetch(`http://127.0.0.1:${await port}${req.url}`, { method: req.method, headers: { "content-type": "application/json" }, ...(body ? { body } : {}) }).catch((e) => ({ status: 502, text: async () => JSON.stringify({ error: { message: e.message } }) }));
@@ -387,6 +390,7 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
       join(config, "runner.yaml"),
       `label: engineer
 poll_seconds: 0.2
+helper_port: ${await freePort()}
 allowed_orgs: [acme]
 work_dir: ${join(dir, "work")}
 state_dir: ${join(dir, "state")}

@@ -13,7 +13,7 @@ import { registry } from "./fakes/engines.mjs";
 import { fakePaperclip } from "./flow-harness.mjs";
 import { State } from "../src/state.ts";
 import { ensureRepo, safeWorkspace } from "../src/workspace.ts";
-import { jobsHost } from "./flow-harness.mjs";
+import { freePort, jobsHost } from "./flow-harness.mjs";
 import { useEngines } from "../src/agents.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
@@ -104,7 +104,7 @@ describe("box jobs", () => {
     writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n");
     writeFileSync(join(config, "system.yaml"), `paperclip:\n  company_id: "${COMPANY}"\nuser:\n  names: ["Dana"]\n`);
     writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));
-    writeFileSync(join(config, "runner.yaml"), `label: engineer\npoll_seconds: 0.2\nallowed_orgs: [acme]\nwork_dir: ${join(dir, "work")}\nstate_dir: ${join(dir, "state")}\nmax_concurrent: 1\ntimeout_minutes: 2\nengines:\n  openrouter:\n    model: acme/model-1\nintake:\n  codex_args: []\n  timeout_seconds: 30\nreplies:\n  enabled: false\nreviews:\n  enabled: false\nrecurring:\n  enabled: false\n`);
+    writeFileSync(join(config, "runner.yaml"), `label: engineer\npoll_seconds: 0.2\nhelper_port: ${await freePort()}\nallowed_orgs: [acme]\nwork_dir: ${join(dir, "work")}\nstate_dir: ${join(dir, "state")}\nmax_concurrent: 1\ntimeout_minutes: 2\nengines:\n  openrouter:\n    model: acme/model-1\nintake:\n  codex_args: []\n  timeout_seconds: 30\nreplies:\n  enabled: false\nreviews:\n  enabled: false\nrecurring:\n  enabled: false\n`);
     for (const [f, v] of [["paperclip_board_key", "board-key"], ["board_internal_token", "board-token"], ["computers_runner_key", "runner-key"], ["engineering_token", "engineering-token"]]) writeFileSync(join(secrets, f), `${v}\n`, { mode: 0o600 });
     const engineers = [{ id: "app-eng", name: "App Engineer", status: "idle", adapterType: "opencode_local", adapterConfig: { model: "openrouter/acme/model-1" }, metadata: { setupKey: "aidenhq:app-engineer", runnerEngine: true, engine: "codex-openrouter", box: true, persona: { name: "Ada" } } }];
     const parent = { id: "parent", identifier: "PEN-1", title: "An apps page", status: "todo", assigneeUserId: USER, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Build a page listing the apps." };

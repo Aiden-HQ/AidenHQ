@@ -4455,9 +4455,10 @@ const repoHelper = startRepoHelper(async ({ issue, workspace, box }, raw) => {
   task: agentTask,
   tasks: agentTasks,
   advise: agentAdvise,
-}, Number(state.get("helper_port") ?? 0));
+}, cfg.helperPort);
 // One port across restarts: runs a restart left going keep reaching their tools.
-repoHelper.listening.then((port) => state.set("helper_port", String(port)));
+// The one host port a job's jail opens besides the kernel's 8201 (runner.yaml helper_port): the kernel refuses any other.
+repoHelper.listening.then((port) => port !== cfg.helperPort && log("WARNING: the helper isn't on its port: jobs can't start until it is", { port, want: cfg.helperPort }));
 
 /** Each repository in the workspace for the prompt; with `naming`, its branch naming rules and examples. */
 async function repoInfo(workspace, { naming } = {}) {

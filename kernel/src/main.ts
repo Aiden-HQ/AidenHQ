@@ -25,7 +25,7 @@ import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
-import { createJobs } from "./jobs.ts";
+import { createJobs, dispatchesFrom } from "./jobs.ts";
 import { jailProblem, overlayProblem } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
@@ -93,7 +93,7 @@ const jobs = createJobs({
   db: records.db, cfg: sandbox, log, boxWrap: BOX_EXEC_WRAP,
   // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key;
   // their jobcaps are their own grants.
-  mayDispatch: (module, agent) => { const key = grantsTable().agents?.[agent]?.key; return Boolean(key) && [(modulesFile().modules?.[module] as { dispatches?: string[] } | undefined)?.dispatches ?? []].flat().includes(String(key)); },
+  mayDispatch: dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {}),
   jobcaps: (agent) => [grantsTable().agents?.[agent]?.jobcaps ?? []].flat().map(String),
   cp: {
     agent: async (id) => { const r = await cpApi(`/api/agents/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },

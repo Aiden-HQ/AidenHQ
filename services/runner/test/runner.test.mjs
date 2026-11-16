@@ -25,7 +25,7 @@ function bj({ cfg: c, ...o }) {
   for (const x of ["job", "vault"]) mkdirSync(join(d, x));
   writeFileSync(join(d, "vault", "claude_oauth_token"), "tok\n");
   writeFileSync(join(d, "vault", "gateway_job_secret"), "s".repeat(32));
-  const base = { bwrap: "bwrap", hidden: [], binDir: join(d, "bin"), browserDir: "/opt/aidenhq/browser", workDir: join(d, "work"), gatewayUrl: "http://127.0.0.1:8201", boxGatewayUrl: "http://10.231.2.1:8200", timeout_minutes: 60 };
+  const base = { bwrap: "bwrap", hidden: [], binDir: join(d, "bin"), browserDir: "/opt/aidenhq/browser", workDir: join(d, "work"), gatewayUrl: "http://127.0.0.1:8201", boxGatewayUrl: "http://10.231.2.1:8200", helperPort: 41000, timeout_minutes: 60 };
   return { ...buildJob({ cfg: { ...base, stateDir: join(d, "state"), secretsDir: join(d, "vault"), enginesFile: ENGINES, ...c }, jobDir: join(d, "job"), boxWrap: 'exec "$@"', ...o }), dir: d };
 }
 

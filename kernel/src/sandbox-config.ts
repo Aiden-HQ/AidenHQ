@@ -47,6 +47,7 @@ export function sandboxConfig(env: (k: string) => string | undefined = (k) => pr
     enginesFile: join(configDir, "engines.json"),
     jobcapsFile: join(configDir, "jobcaps.json"),
     gatewayUrl: y.gateway?.url ?? "http://127.0.0.1:8201",
+    helperPort: Number(y.helper_port ?? 3140),
     boxGatewayUrl: "http://10.231.2.1:8200",
     boxDir: join(homedir(), ".local/state/aidenhq-computers/jobs"),
     timeout_minutes: y.timeout_minutes ?? 60,

@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { State } from "../src/state.ts";
 import { readLog } from "./fakes/lib.mjs";
 import { registry } from "./fakes/engines.mjs";
-import { forwardJobs, jobsHost } from "./flow-harness.mjs";
+import { forwardJobs, freePort, jobsHost } from "./flow-harness.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
 const FAKES = join(import.meta.dirname, "fakes");
@@ -76,7 +76,7 @@ test("a runner and a kernel restart leave a running job alone; the next kernel a
   writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));
   writeFileSync(
     join(config, "runner.yaml"),
-    `label: engineer\npoll_seconds: 1\nallowed_orgs: [acme]\nwork_dir: ${join(dir, "work")}\nstate_dir: ${join(dir, "state")}\nmax_concurrent: 1\ntimeout_minutes: 2\n` +
+    `label: engineer\npoll_seconds: 1\nhelper_port: ${await freePort()}\nallowed_orgs: [acme]\nwork_dir: ${join(dir, "work")}\nstate_dir: ${join(dir, "state")}\nmax_concurrent: 1\ntimeout_minutes: 2\n` +
       `engines:\n  claude:\n    token_file: ${join(secrets, "claude_oauth_token")}\n    config_dir: ${join(dir, "state/claude")}\n` +
       `gcp:\n  credentials: ${join(secrets, "gcloud.json")}\nreplies:\n  enabled: false\nreviews:\n  enabled: false\nrecurring:\n  enabled: false\n`,
   );
