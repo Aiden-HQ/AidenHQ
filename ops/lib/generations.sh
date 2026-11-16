@@ -89,7 +89,7 @@ genHeld() { local n; n="$(genJs held "$@")"; [ -n "$n" ] && echo "$n"; }
 # Postgres clusters are never in one. Files are read and written in a container as root, so root-owned module files
 # (a model cache) come along with their owners, as scripts/backup.sh reads them; the archives are the owner's, 0600.
 CKPT_DIR="${AIDENHQ_CHECKPOINT_DIR:-$HOME/checkpoints}"
-GEN_KEEP=5
+GEN_KEEP=2
 GEN_IMG=postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f # scripts/backup.sh's, already pinned
 GEN_MODULE='^[a-z0-9][a-z0-9-]*$'
 

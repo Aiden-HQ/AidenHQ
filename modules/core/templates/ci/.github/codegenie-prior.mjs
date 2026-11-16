@@ -20,10 +20,11 @@ import { pathToFileURL } from "node:url";
 export const STATE = "code-review/state"; // the commit status this workflow sets on a head whose code-review passed
 const MAX_STEPS = 3;
 const MAX_LINES = 2000;
-// package-lock.json is not counted as changed lines: npm-age.mjs validates what it changes. It stays in the patch.
-export const NOLOCK = [":(exclude,glob)**/package-lock.json"];
+// package-lock.json is not counted as changed lines: npm-age.mjs validates what it changes. It stays in the patch. Nor are an
+// agent's screenshots and reports under .aidenhq/out/ (the workflow's types), and a binary file counts 20 (the workflow's rule).
+export const NOLOCK = [":(exclude,glob)**/package-lock.json", ...["png", "jpg", "jpeg", "webp", "gif", "json", "txt"].map((t) => `:(exclude,glob).aidenhq/out/**/*.${t}`)];
 const FULL = { mode: "full", from: "", n: 0, lines: 0 };
-const CI_FILES = [".github/workflows/ci.yml", ".github/codegenie-gate.mjs", ".github/codegenie-prior.mjs"];
+const CI_FILES = [".github/workflows/ci.yml", ".github/codegenie-gate.mjs", ".github/codegenie-prior.mjs", ".github/quick-review.mjs"];
 
 /** The PR's last green head before `head`, with the state its run recorded: { sha, n, lines, mb }, or undefined. */
 async function lastGreen(api, { repo, headRef, baseRef, head }) {
@@ -87,7 +88,7 @@ export async function decide({ api, git, repo, headRef, baseRef, base, head, def
   // A delta needs the same merge-base; a rebase that also adds commits is reviewed whole.
   if (last.mb === mb && mergeBase(last.sha) === mb && ok("merge-base", "--is-ancestor", last.sha, head)) {
     const lines = git("diff", "--numstat", `${last.sha}..${head}`, "--", ".", ...NOLOCK).split("\n").filter(Boolean)
-      .reduce((n, l) => { const [a, d] = l.split("\t"); return n + (a === "-" ? 1000 : Number(a) + Number(d)); }, 0);
+      .reduce((n, l) => { const [a, d] = l.split("\t"); return n + (a === "-" ? 20 : Number(a) + Number(d)); }, 0);
     if (last.n >= MAX_STEPS || last.lines + lines > MAX_LINES) return full;
     return { mode: "delta", from: last.sha, n: last.n + 1, lines: last.lines + lines, mb };
   }

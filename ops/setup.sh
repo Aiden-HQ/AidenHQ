@@ -223,7 +223,7 @@ fi
 # The board's URL for links: its tailnet name over https, or (no Tailscale) loopback, reached through an SSH tunnel.
 if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://127.0.0.1:3121"; fi
 # The kernel's admin listener (sign-in and approvals) on its own origin: a second tailnet port, or the second tunnel.
-if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8444"; else ADMIN_URL="http://127.0.0.1:3120"; fi
+if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8446"; else ADMIN_URL="http://127.0.0.1:3120"; fi
 say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
 # The machine step installs node; everything after it needs it.
 [ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
@@ -386,18 +386,18 @@ else
   # The board reads its Paperclip key and company at start: both exist only now.
   as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --force-recreate board"
 fi
-[ -z "$BOARD_HOST" ] || { run tailscale serve --bg --https=443 http://127.0.0.1:3121; run tailscale serve --bg --https=8444 http://127.0.0.1:3120; }
+[ -z "$BOARD_HOST" ] || { run tailscale serve --bg --https=443 http://127.0.0.1:3121; run tailscale serve --bg --https=8446 http://127.0.0.1:3120; }
 say "Runner, model gateway and run pruning (user units)"
 as_user mkdir -p "$H/.config/systemd/user"
 # Where the units find this checkout (their default is ~/aidenhq).
 printf 'AIDENHQ_DIR=%s\n' "$REPO" | write_user_file "$H/.config/aidenhq-checkout.env" 644
-as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-kernel.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$REPO"/ops/units/aidenhq-apply-recover.service "$H/.config/systemd/user/"
+as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-kernel.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$REPO"/ops/units/prune-docker.service "$REPO"/ops/units/prune-docker.timer "$REPO"/ops/units/aidenhq-apply-recover.service "$H/.config/systemd/user/"
 as_user systemctl --user daemon-reload
 # aidenhq-computers: the agent-computer launcher (services/computer); idle until an agent has an image.
 # aidenhq-kernel: every model and tool call (kernel/src); the only holder of the OpenRouter key and the connections' keys.
 # A new size reaches a runner that was already running: it exits once nothing is half done (jobs keep running).
 runner_up=0; [ "$DRY" = 1 ] || ! as_user systemctl --user is-active --quiet aidenhq-runner || runner_up=1
-as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer
+as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer
 # aidenhq-apply-recover: at boot, finishes an apply that died mid-run (ops/apply-config.sh --recover).
 as_user systemctl --user enable aidenhq-apply-recover
 if [ "$RUNNER_RESIZED" = 1 ] && [ "$runner_up" = 1 ]; then as_user systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner || true; fi

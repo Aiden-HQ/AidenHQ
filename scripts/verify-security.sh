@@ -404,28 +404,28 @@ bad_ch="$(echo "$ch_tools" | grep -Ev '^(get_organizations|get_services_list|get
 # Engineer jobs' Google Cloud: the user's own access, read-only by the prompt's rule; jobs get a
 # one-hour access token only, never the sign-in's refresh token.
 grep -q '\*\*Read only:\*\* describe, list, get, read and get-iam-policy commands' services/runner/src/prompt.ts \
-  && ! grep -q 'refresh_token' services/runner/src/engines.mjs \
+  && ! grep -q 'refresh_token' kernel/src/sandbox.ts kernel/src/jobs.ts \
   && pass "runner: Google Cloud jobs get a one-hour token and the read-only rule (services/runner/src/gcp.ts, prompt.ts)" || fail "runner: Google Cloud jobs lost the read-only rule, or got the refresh token"
-grep -q '^export function layout(cfg' services/runner/src/engines.mjs && ! grep -q '"--dev-bind", "/", "/"' services/runner/src/engines.mjs && grep -q '"--tmpfs", "/tmp", "--tmpfs", home' services/runner/src/engines.mjs \
-  && grep -q '"--unshare-pid", "--unshare-ipc",' services/runner/src/engines.mjs && grep -q '"--proc", "/proc"' services/runner/src/engines.mjs \
-  && pass "runner: jobs see an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "runner: jobs bind the host's whole filesystem again"
-grep -q 'join(homedir(), ".config/gh")' services/runner/src/config.mjs && grep -q 'if (ghToken) Object.assign(agentEnv, { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken });' services/runner/src/engines.mjs && grep -q '...(gh ? \["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"\] : \[\])' services/runner/src/engines.mjs \
+grep -q '^export function layout(cfg' kernel/src/sandbox.ts && ! grep -q '"--dev-bind", "/", "/"' kernel/src/sandbox.ts && grep -q '"--tmpfs", "/tmp", "--tmpfs", home' kernel/src/sandbox.ts \
+  && grep -q '"--unshare-pid", "--unshare-ipc",' kernel/src/sandbox.ts && grep -q '"--proc", "/proc"' kernel/src/sandbox.ts \
+  && pass "kernel: jobs see an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "runner: jobs bind the host's whole filesystem again"
+grep -q 'join(homedir(), ".config/gh")' kernel/src/sandbox-config.ts && grep -q 'const ENV_NAMES = new Set(\["AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "GH_TOKEN", "AIDENHQ_GH_AUTH", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"\]);' kernel/src/jobs.ts && grep -q '...(gh ? \["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"\] : \[\])' kernel/src/sandbox.ts \
   && grep -q 'permissions: READ, fresh: true' services/runner/src/github-app.ts && node --input-type=module -e 'import { READ } from "./services/runner/src/github-app.ts"; process.exit(Object.values(READ).every((v) => v === "read") ? 0 : 1)' \
   && pass "runner: jobs can't read the user's gh sign-in; their gh (host and box) reads with a read-only App token for the task's repos" || fail "runner: the user's gh sign-in isn't hidden from jobs, or their gh token changed (or gained a write permission)"
-# Live, under the jobs' own mask (engines.mjs hiding, from the runner's config): the runner's user is in the docker group
+# Live, under the jobs' own mask (kernel/src/sandbox.ts hiding, from the kernel's sandbox config): the host user is in the docker group
 # (root on the host) and is tailscaled's operator; the data dir holds the board's and Paperclip's sessions.
 if job_probe="$(node --input-type=module -e '
   import { spawnSync } from "node:child_process";
-  import { loadConfig } from "./services/runner/src/config.mjs";
-  import { hiding } from "./services/runner/src/engines.mjs";
-  const cfg = loadConfig();
+  import { hiding } from "./kernel/src/sandbox.ts";
+  import { sandboxConfig } from "./kernel/src/sandbox-config.ts";
+  const cfg = sandboxConfig();
   const run = (cmd) => { const [c, ...a] = hiding(cfg, ["sh", "-c", cmd]); return spawnSync(c, a, { encoding: "utf8", timeout: 20000 }); };
   const leaks = [];
   if (run("docker version --format {{.Server.Version}}").status === 0) leaks.push("docker");
   if (run("DOCKER_HOST=unix:///var/run/docker.sock docker version --format {{.Server.Version}}").status === 0) leaks.push("docker via /var/run");
   if (run("tailscale serve status").status === 0) leaks.push("tailscaled");
   if (run("systemctl --user show-environment").status === 0) leaks.push("systemd --user");
-  const data = cfg.gcp.hidden.find((p) => p.endsWith("/data"));
+  const data = cfg.hidden.find((p) => p.endsWith("/data"));
   if (!data || run(`ls -A "${data}" | grep -q .`).status === 0) leaks.push("data dir");
   // The gh sign-in of the user acts as the owner on GitHub; a job gets only the App read token (GH_TOKEN).
   if (run("test -e \"$HOME/.config/gh/hosts.yml\" || env -u GH_TOKEN -u GITHUB_TOKEN -u AIDENHQ_GH_AUTH gh auth token >/dev/null 2>&1").status === 0) leaks.push("the gh sign-in");
@@ -439,19 +439,20 @@ if job_probe="$(node --input-type=module -e '
   process.stdout.write(leaks.join(", "));
   process.exit(leaks.length ? 1 : 0);
 ' 2>&1)"; then
-  pass "runner: a job can't reach Docker, tailscaled or systemd --user, nor read the services' data dir, the user's gh sign-in, the runner's state db, the product checkout or other tasks (live, under the jobs' allowlist)"
+  pass "kernel: a job can't reach Docker, tailscaled or systemd --user, nor read the services' data dir, the user's gh sign-in, the runner's state db, the product checkout or other tasks (live, under the jobs' allowlist)"
 else
-  fail "runner: jobs reach: ${job_probe:-the probe failed to run}"
+  fail "kernel: jobs reach: ${job_probe:-the probe failed to run}"
 fi
-# Live, in a job's own network (engines.mjs jailed): every host listener outside the jail (loopback, the LAN address,
+# Live, in a job's own network (kernel/src/sandbox.ts jailed): every host listener outside the jail (loopback, the LAN address,
 # Docker bridges, the tailnet) is out of reach from inside it, except the ports a job is given (a helper, the model
 # gateway: its model calls and its jobcaps, the one MCP port); the connections' own read ports (3123-3127) are refused like
 # any other; the Internet and the allowed ports must work, so a broken jail can't pass as "blocked".
 if net_probe="$(node --input-type=module -e '
   import { spawn, spawnSync } from "node:child_process";
-  import { loadConfig } from "./services/runner/src/config.mjs";
-  import { gatewayUrl, hiding, jailProblem, loopbackPorts } from "./services/runner/src/engines.mjs";
-  const cfg = loadConfig();
+  import { hiding, jailProblem, loopbackPorts } from "./kernel/src/sandbox.ts";
+  import { sandboxConfig } from "./kernel/src/sandbox-config.ts";
+  const cfg = sandboxConfig();
+  const gatewayUrl = (c) => c.gatewayUrl;
   const problem = jailProblem(cfg);
   if (problem) { process.stdout.write(`no network jail: ${problem}`); process.exit(1); }
   const helper = spawn(process.execPath, ["-e", "require(\"http\").createServer((q, s) => s.end(\"ok\")).listen(0, \"127.0.0.1\", function () { console.log(this.address().port) })"]);
@@ -489,9 +490,9 @@ if net_probe="$(node --input-type=module -e '
   process.stdout.write(out.length ? out.join(", ") : `${blocked.length} host address:port pairs refused`);
   process.exit(out.length ? 1 : 0);
 ' 2>&1)"; then
-  pass "runner: a job has its own network: the Internet, its helper and MCP ports only; no other host listener ($net_probe)"
+  pass "kernel: a job has its own network: the Internet, its helper and MCP ports only; no other host listener ($net_probe)"
 else
-  fail "runner: job network: ${net_probe:-the probe failed to run}"
+ fail "kernel: job network: ${net_probe:-the probe failed to run}"
 fi
 # Live, the kernel's proxy for jobs (kernel/src/proxy.ts, on 8201): a job token with primer-read is refused a write; the read
 # token and the service key themselves (not a job token) are refused. Only where config/jobcaps.json has primer-read.
@@ -670,7 +671,9 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # head), then retarget it; the replayed head merges only with every named check green on it. A Tier 0 queue only
 # retargets and hands the PR back to be tiered again. allowedWrite refuses all but
 # PUT outside the agents org, except comments, PR edits, job re-runs and statuses (never a branch delete) on the product repo, for closing its
-# Dependabot PRs (Tier 0 only when the runner read the author as dependabot[bot] from the API). The card is the review (bound to the head) in the agents org and the product repo, whose
+# Dependabot PRs (Tier 0 only when the runner read the author as dependabot[bot] from the API), and for closing, once, an
+# agent's own product PR whose task is cancelled (watchProductPrs, #174: the App bot's same-repo PR of a task here, no other
+# task on its branch, marked before the close so it never repeats). The card is the review (bound to the head) in the agents org and the product repo, whose
 # merges go through the App; elsewhere the host gh login merges, behind GitHub's own review. WRITES allows paths, not
 # bodies or orgs, so the call sites and their gates are asserted here too. Pushes and draft PRs stay on the exact word.
 rm_="services/runner/src/merges.mjs"; rmain="services/runner/src/main.mjs"; rtiers="services/runner/src/tiers.mjs"
@@ -719,7 +722,7 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge"' "$rtiers" \
   && [ "$(grep -c 'advanceEach(' "$rm_")" = 2 ] && grep -qF 'if (queue.independent) return advanceEach(' "$rm_" \
   && [ "$(grep -c 'independent: true' "$rm_")" = 1 ] && [ "$(grep -c 'independent: true' "$rmain")" = 0 ] \
-  && [ "$(grep -c 'github\.comment(' "$rm_")" = 1 ] && [ "$(grep -c 'github\.close(' "$rm_")" = 1 ] && [ "$(grep -c 'merges\.closePrs(' "$rmain")" = 1 ] \
+  && [ "$(grep -c 'github\.comment(' "$rm_")" = 1 ] && [ "$(grep -c 'github\.close(' "$rm_")" = 1 ] && [ "$(grep -c 'merges\.closePrs(' "$rmain")" = 2 ] && [ "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -c 'merges\.closePrs(')" = 1 ] && [ "$(awk '/^async function watchProductPrs/,/^}/' "$rmain" | grep -c 'merges\.closePrs(')" = 1 ] && [ "$(awk '/^async function watchProductPrs/,/^}/' "$rmain" | grep -nE '^    if \(issue\.status === "cancelled" && !older\.length && !state\.get\(`abandoned:\$\{url\}`\)\) \{$|^      state\.set\(`abandoned:\$\{url\}`, |^      log\("abandoned PR", \{ pr: pr\.url, issue: issue\.identifier, closed: \(await merges\.closePrs\(\[\{ repo, number: pr\.number, url: pr\.url \}\], ' | cut -d: -f1 | awk 'NR==1{f=$1} {if ($1 != f + NR - 1) bad=1} END{print (NR==3 && !bad) ? "ok" : "bad"}')" = ok ] \
   && [ "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n 'await tierFor(ctx.issue, "close"' | cut -d: -f1)" -lt "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n '^  if (t.tier !== 0) throw ' | cut -d: -f1)" ] \
   && [ "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n '^  if (t.tier !== 0) throw ' | cut -d: -f1)" -lt "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n 'merges.closePrs(' | cut -d: -f1)" ] \
   && grep -qF 'if (!same(orgOf(p.repo), s.agentsOrg)) return REJECT("outside-close"' "$rtiers" \
@@ -728,12 +731,13 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF 'if (p.dependabot !== true) return REJECT("core-repo-close"' "$rtiers" \
   && grep -qF 'if (!s.requester?.platform) return REJECT("product-close-requester"' "$rtiers" \
   && grep -qF '? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p' "$rmain" \
-  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues re-tier; reviewed queues replay the approved commits first, leased push), merged-head branch deletes (after any agents-org merge), one re-run per head of a queued PR's infrastructure-failed jobs or of an agent's product PR's never-started jobs, a pending design-review status (never a verdict), and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
+  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues re-tier; reviewed queues replay the approved commits first, leased push), merged-head branch deletes (after any agents-org merge), one re-run per head of a queued PR's infrastructure-failed jobs or of an agent's product PR's never-started jobs, a pending design-review status (never a verdict), and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo; and, once, the App bot's own same-repo product PR of a cancelled task here that no other task holds); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
 # The AI reviewer's own code merges only on a 100% reviewer-eval receipt for its exact head (owner, 2026-11-16): both merge
 # sites in the queue ask the gate (src/evalgate.ts) right before GitHub's merge; the gate runs the eval with the eval's own
 # key (secrets openrouter_eval_key, never the fleet's openrouter_key), the base's judge (eval script and case-pad), in the
-# job jail (the tree read-only, one writable folder whose result is read as a small regular file), and the runner writes
-# the receipt.
+# job jail (kernel/src/sandbox.ts hiding over the kernel's own sandboxConfig: Engineer jobs' layout and hidden paths, its
+# own network when that works; never unconfined), the tree read-only, one writable folder whose result is read as a small
+# regular file, and the runner writes the receipt.
 rgate="services/runner/src/evalgate.ts"
 gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate\(|await github\.merge\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-24 | tr '\n' '|'; }
 [ "$(grep -c 'await github.evalGate(' "$rm_")" = 2 ] \
@@ -744,7 +748,7 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
   && grep -qF '      writeFileSync(join(tree, f), `${await d.git(path, "show", `${base}:${f}`)}\n`);' "$rgate" \
   && grep -qF 'const argv = d.jail([process.execPath, "scripts/reviewer-eval.mjs"], { rw: [out], ro: [tree, ...nm] });' "$rgate" \
   && grep -qF 'r = JSON.parse(smallFile(file, 4 * 1024 * 1024) ?? "");' "$rgate" \
-  && grep -qF '  jail: (argv, paths) => hiding(cfg, argv, [], paths),' "$rmain" \
+  && grep -qF '  jail: (argv, paths) => hiding(evalSandbox, argv, [], paths),' "$rmain" && grep -qF 'import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";' "$rmain" && [ "$(grep -E 'evalSandbox( =|\.[a-zA-Z]+ =)' "$rmain" | tr '\n' '|')" = 'const evalSandbox = sandboxConfig();|if (jailProblem(evalSandbox)) evalSandbox.pasta = undefined;|' ] && ! grep -q 'unconfined' "$rmain" \
   && pass "runner: a product PR that changes the AI reviewer's code merges only on a 100% eval receipt for its exact head (base judge, eval key, jailed; $rgate)" \
   || fail "runner: the reviewer-eval receipt gate on product merges changed ($rgate, $rm_)"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
@@ -762,7 +766,7 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
 # takes a reviewer's approve only with a second reviewer's), and a CI template copy is Tier 0 only when its .github tree is the deployed product's template tree.
 rreview="modules/ai-reviewer/service/src/review.mjs"; bapprovals="services/board/src/approvals.ts"
 [ "$(grep -oE 'T\(2, "[a-z-]+"' "$rtiers" | sort -u | tr '\n' ' ')" = 'T(2, "autonomy-off" T(2, "owner-approval-record" T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
-  && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review-request","siblings","merges","evalgate","apply","netjail","state","config","github-app","git","main","engines","workspace","files","agents"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["approvals","app","fleet","accounts","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/assert.ts", "kernel/src/cp.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "services/apps-mcp/src/aidenhq-sdk/caller.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/tier.ts", "kernel/sdk/src/executor.ts", "services/apps-mcp/src/executor.ts", "services/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/apps-platform/module.yaml", "modules/primer/module.yaml", "modules/primer/connections/primer-mcp/src/publish.ts", "modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "kernel/src/reviews.ts", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/runner/src/review-request.mjs", "services/runner/src/siblings.ts"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
+  && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review-request","siblings","merges","evalgate","apply","state","config","github-app","git","main","engines","workspace","files","agents"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["approvals","app","fleet","accounts","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts", "kernel/src/sandbox.ts", "kernel/src/netjail.ts", "kernel/src/jobs.ts", "kernel/src/progress.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/assert.ts", "kernel/src/cp.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "services/apps-mcp/src/aidenhq-sdk/caller.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/tier.ts", "kernel/sdk/src/executor.ts", "services/apps-mcp/src/executor.ts", "services/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/apps-platform/module.yaml", "modules/primer/module.yaml", "modules/primer/connections/primer-mcp/src/publish.ts", "modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "kernel/src/reviews.ts", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/runner/src/review-request.mjs", "services/runner/src/siblings.ts"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
   && grep -qF '  /^modules\/ai-reviewer\//,' "$rtiers" \
   && true && grep -qF '/(^|\/)\.github\//,' "$rtiers" \
   && grep -qF 'if (GATE_CORE.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rtiers" \
@@ -816,15 +820,15 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && awk '/^async function kernelWrites/,/^}/' "$rmain" | grep -F 'writes: ["primer.publish"] });' >/dev/null \
   && [ "$(awk '/^writes:/{on=1} on && /^    (floor|tools):/' modules/primer/module.yaml | tr -s ' ')" = "$(printf ' floor: 1\n tools: [ primer_create_document, primer_add_version ]')" ] \
   && grep -qF 'jobcapsFile: join(configDir, "jobcaps.json"),' services/runner/src/config.mjs \
-  && ! grep -qE '_mcp_read_token|_mcp_token' services/runner/src/config.mjs services/runner/src/engines.mjs \
-  && ! grep -qF '"codex", "sandbox"' services/runner/src/engines.mjs \
-  && grep -qF 'url: `${gatewayUrl(cfg)}/c/${c.connection}/mcp`' services/runner/src/engines.mjs \
+  && ! grep -qE '_mcp_read_token|_mcp_token' services/runner/src/config.mjs services/runner/src/engines.mjs kernel/src/sandbox.ts \
+  && ! grep -qF '"codex", "sandbox"' kernel/src/sandbox.ts \
+  && grep -qF 'url: `${cfg.gatewayUrl}/c/${c.connection}/mcp`' kernel/src/sandbox.ts \
   && grep -qF 'if (j.private && a.private_reads !== true) fail(' scripts/modules.mjs \
-  && grep -qF 'filter((id) => all[id] && (!all[id].private || observes(engine)))' services/runner/src/engines.mjs \
-  && grep -qF 'const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live";' services/runner/src/engines.mjs \
+  && grep -qF 'filter((id) => all[id] && (!all[id].private || observes(engine)))' kernel/src/sandbox.ts \
+  && grep -qF 'const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live";' kernel/src/sandbox.ts \
   && grep -qF '(!c.private || p.o === true)' kernel/src/identity.ts \
-  && grep -q 'export const observes = (engine) => engine?.reads === true;' services/runner/src/engines.mjs \
-  && grep -q 'agent.metadata?.privateReads === true ? { reads: true }' services/runner/src/agents.mjs \
+  && grep -q 'export const observes = (engine?: Engine) => engine?.reads === true;' kernel/src/sandbox.ts \
+  && grep -q 'agent.metadata?.privateReads === true ? { reads: true } : {}' kernel/src/jobs.ts \
   && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed, apply only files a card at the turn's end, and every Primer publish is a primer.publish record at floor 1 the AI reviewer decides (no owner-words check); jobs hold no connection URL or token (their jobcaps go through the gateway with the job token), and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
 # engine@1: the runner writes `web: false` into job.json for a job holding private data; every engine module keeps such a job
 # off the web (by behaviour: each module's own builder, as its bin/engine runs it).

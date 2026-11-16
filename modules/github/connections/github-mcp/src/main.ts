@@ -5,7 +5,8 @@
 // it to those requests. Reads of repos the instance's GitHub App covers use its read-only token instead.
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { Projects } from "./projects.js";
+import { Projects, productTarget, upstreamReport } from "./projects.js";
+import { originIds, ownerTerms } from "./scrub.js";
 import { SourceStore } from "./source-store.js";
 import { startSync } from "./sources.js";
 import { createServer, type IncomingMessage } from "node:http";
@@ -22,6 +23,12 @@ const tokenFile = process.env.MCP_TOKEN_FILE;
 const inboundToken = tokenFile && existsSync(tokenFile) ? readFileSync(tokenFile, "utf8").trim() : undefined;
 // The agents org: commit_status_set writes only to its repos.
 const agentsOrg = (process.env.GITHUB_AGENTS_ORG ?? "").trim().toLowerCase();
+// The product repo (owner/repo) the fleet reports product bugs to: github_app_issue writes only there.
+const PRODUCT_REPO = (process.env.GITHUB_PRODUCT_REPO ?? "").trim();
+// The owner-data scrub's literals (scrub.ts).
+// The origin ids' own key (github_origin_key, generated, mounted only here), read at each report.
+const originKey = () => { const f = process.env.GITHUB_ORIGIN_KEY_FILE; return f && existsSync(f) ? readFileSync(f, "utf8").trim() : ""; };
+const OWNER_TERMS = ownerTerms(process.env.GITHUB_OWNER_TERMS ?? "", PRODUCT_REPO);
 const commentOrgs = new Set((process.env.GITHUB_COMMENT_ORGS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
 // Who is calling: the kernel's signed assertion (the kernel enforces grants).
 const jwks = kernelJwks();
@@ -151,6 +158,57 @@ function buildServer(caller?: Caller): McpServer {
         log.warn({ repo: a.repo, project: a.project, err: (err as Error).message.slice(0, 200) }, "GitHub issue not opened");
         throw err;
       }
+    }),
+  );
+  // Product bugs go upstream to the instance's product repo only, as the App (projects.ts productTarget).
+  const productRepo = () => {
+    try {
+      return productTarget(caller?.roles, PRODUCT_REPO);
+    } catch (err) {
+      throw new GitHubRefused((err as Error).message);
+    }
+  };
+  const FINGERPRINT = z.string().regex(/^product-bug:[a-z0-9][a-z0-9-]{2,79}$/).describe("product-bug:<slug>: the component and the symptom, a few lowercase words");
+  server.registerTool(
+    "github_app_issue",
+    {
+      description: `Report a product bug on the product repo (${PRODUCT_REPO || "none configured"}) as the instance's GitHub App (the fleet's own identity, never the user's). Deduped by \`fingerprint\`: the issue carrying it (an open one first, else the latest closed one) gets the report as a comment (deduplicated: true, with its state); only a new fingerprint opens an issue with \`title\`. The report is \`body\` plus \`evidence\` (module, product version, reproduction, log lines), then the instance and agent it came from and the fingerprint. Public to the product repo's readers and can't be edited or deleted from here, so owner data is refused before anything is sent: names, emails, hosts, IPs, account and chat ids, uuids and credentials; redact and file again.`,
+      inputSchema: {
+        fingerprint: FINGERPRINT,
+        title: z.string().min(1).max(256),
+        body: z.string().min(1).max(20_000),
+        evidence: z.object({
+          module: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).describe("the module the defect is in (kernel for the kernel)"),
+          version: z.string().regex(/^(?:[0-9a-f]{7,40}|v?\d+(?:\.\d+){1,3})$/).describe("the product sha (instance.yaml product:) or release it was seen at"),
+          reproduction: z.string().min(1).max(4000).describe("numbered steps, expected and actual"),
+          log: z.string().min(1).max(8000).describe("the failing check, error text or log lines, trimmed to what matters"),
+        }).strict(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    run("github_app_issue", async (a: Parameters<typeof upstreamReport>[0]) => {
+      const [owner, name] = productRepo();
+      let report;
+      try {
+        report = upstreamReport(a, originIds(originKey(), caller?.key ?? ""), OWNER_TERMS);
+      } catch (err) {
+        throw new GitHubRefused((err as Error).message);
+      }
+      const out = await projects.reportIssue(owner, name, report);
+      log.info({ number: out.number, deduplicated: out.deduplicated }, "product issue written as the App");
+      return out;
+    }),
+  );
+  server.registerTool(
+    "github_app_issue_status",
+    {
+      description: `The product repo's (${PRODUCT_REPO || "none configured"}) issues carrying each \`product-bug:<slug>\` fingerprint, read as the App: number, url, state, state_reason, and for a closed one \`fixed_in\`, the commit that closed it (a merged fix). Issue text is not returned.`,
+      inputSchema: { fingerprints: z.array(FINGERPRINT).min(1).max(20) },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    run("github_app_issue_status", async (a: { fingerprints: string[] }) => {
+      const [owner, name] = productRepo();
+      return { issues: await projects.issueStatus(owner, name, a.fingerprints) };
     }),
   );
   const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;

@@ -308,6 +308,16 @@ export interface Update {
 }
 
 /** One module from the compiled catalog, with how it is on (src/modules.ts). */
+/** A marketplace advisory open against an installed module (the kernel's loader/advisories.ts); `summary` is fenced text. */
+export interface Advisory {
+  id: string;
+  module: string;
+  severity: "low" | "medium" | "high" | "critical";
+  fixed: string;
+  summary: string;
+  url: string;
+}
+
 export interface ModuleRow {
   name: string;
   description: string;

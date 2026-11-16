@@ -1,6 +1,6 @@
 // End to end (see flow-harness.mjs), the product repo's PR pipeline (owner, 2026-11-13): acme/app plays the product repo and
 // Ada is the Platform Engineer. One `pr` card pushes, opens and later merges the PR; a Dependabot PR becomes one task once
-// its checks finish; an agent's PR that conflicts with main wakes its task once per main commit.
+// its checks finish; an agent's PR that conflicts with main wakes its task once; a cancelled task's PR is closed.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
@@ -89,7 +89,18 @@ describe("flow-product", () => {
     assert.equal(pings().length, 1, "once per main commit");
   });
 
-  it("a conflicting PR of a done or cancelled task is never reopened or worked on: one note", async () => {
+  it("main moving again within half an hour asks nobody again", async () => {
+    await t.waitFor("no run going", () => !busy());
+    const pings = () => t.partComments().filter((c) => /now conflicts with `main`/.test(c));
+    const state = new State(join(t.dir, "state"));
+    for (const k of state.db.prepare("SELECT key FROM meta WHERE key LIKE 'rebase-ping:%'").all()) state.set(k.key, ""); // as if main moved
+    state.db.close();
+    await restart();
+    await t.idle(2000);
+    assert.equal(pings().length, 1, "the earlier ask is under 30 minutes old");
+  });
+
+  it("a conflicting PR of a cancelled task is closed once, with nothing posted on the task", async () => {
     await t.waitFor("no run going", () => !busy());
     const state = new State(join(t.dir, "state"));
     state.saveBranch("part", { repo: "acme/app", branch: "feat/old", base: "main" });
@@ -97,13 +108,17 @@ describe("flow-product", () => {
     state.db.close();
     t.paperclip.issues.get("part").status = "cancelled";
     const runs = t.claudeRuns().length;
-    const notes = () => t.partComments().filter((c) => /pull\/11 now conflicts[\s\S]*nobody was woken/.test(c));
+    const said = t.partComments().length;
+    const closes = () => t.fakeLog().filter((e) => e.kind === "gh" && e.data.includes("repos/acme/app/pulls/11") && e.data.includes("state=closed"));
+    const notes = () => t.fakeLog().filter((e) => e.kind === "gh" && e.data.includes("repos/acme/app/issues/11/comments"));
     setPrs({ 11: { branch: "feat/old", files: ["a.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } });
     await restart();
-    await t.waitFor("the note", () => notes().length === 1);
+    await t.waitFor("the close", () => closes().length === 1);
+    assert.equal(notes().length, 1, "the reason is on the PR");
     await restart();
     await t.idle(2000);
-    assert.equal(notes().length, 1, "one note per PR");
+    assert.equal(closes().length, 1, "closed once");
+    assert.equal(t.partComments().length, said, "nothing on the task (a comment would reopen it)");
     assert.equal(t.paperclip.issues.get("part").status, "cancelled", "not reopened");
     assert.equal(t.claudeRuns().length, runs, "nothing dispatched");
   });

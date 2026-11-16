@@ -268,7 +268,7 @@ export async function bestVersion(kind, name, { minDays = 7, now = Date.now(), s
   const ok = all.filter((v) => now - Date.parse(v.published) >= minDays * DAY).sort((a, b) => order(b.version, a.version));
   // A listed security exception wins only while it is newer than what the 7-day rule allows.
   const pkg = kind === "docker" ? name.replace(/:[^:/]*$/, "") : name;
-  const listed = exceptions.find((e) => e.package === pkg && (e.ecosystem || "npm") === exceptionKind(kind) && (!ok.length || order(e.version, ok[0].version) > 0));
+  const listed = exceptions.find((e) => !e.owner && e.package === pkg && (e.ecosystem || "npm") === exceptionKind(kind) && (!ok.length || order(e.version, ok[0].version) > 0));
   if (listed) {
     const v = all.find((x) => x.version === listed.version) || { version: listed.version, published: new Date(now).toISOString() };
     return finish(v, `security exception ${listed.advisory} (listed in the exceptions file)`);

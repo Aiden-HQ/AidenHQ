@@ -63,7 +63,7 @@ administration, apps-mcp's in-app requests, `ops/setup.sh`'s setup link and rese
   board's origin too, is never read there. Account administration on the board goes to the kernel as that admin's session
   (`/v1/accounts/*`).
 
-- **The admin listener** is the kernel's, on `127.0.0.1:3120`, behind its own front door (`tailscale serve --https=8444`,
+- **The admin listener** is the kernel's, on `127.0.0.1:3120`, behind its own front door (`tailscale serve --https=8446`,
   or the SSH tunnel). It serves sign-in, TOTP enrolment, link claims, the approval list and card pages, batch decide, the
   owner's confirmation page and the owner message frame, server-rendered with no script. Every page sends
   `frame-ancestors 'none'` except `/owner/message`, which the board's origins may frame. Every form carries this
@@ -80,7 +80,7 @@ administration, apps-mcp's in-app requests, `ops/setup.sh`'s setup link and rese
 - **Lockout.** A named peer is an address the front door names with its secret, or the tailnet: every request
   `tailscale serve` passes on (it adds `Tailscale-User-Login`) is the one peer `tailnet`, whatever login it names, so a
   varied or forged login makes no new bucket. That header is read only on the admin listener `tailscale serve` targets
-  (3120, behind `--https=8444`), only from the host's loopback and never beside the front door's header (Caddy's path,
+  (3120, behind `--https=8446`), only from the host's loopback and never beside the front door's header (Caddy's path,
   which strips it); the gate's listener (3129) never reads it. The tailnet peer is rate-limited only, never locked or banned:
   one check in flight per email, 4 in all, 20 failures a minute (past which it waits out the minute) and Better Auth's
   20-a-minute limit on the sign-in steps. **Accepted risk:**
@@ -261,7 +261,8 @@ run, without the text leaving the app and without giving app users' words a priv
      `task_comments`, `task_list`, `task_comment`, `task_finish`, `task_set_status`, `task_delegate`, the automatic
      `memory_note`): any other tool, a read included, fails, and so does that agent in another app's `api.callers`;
    - apps-mcp refuses it any app but the ones that name it, with any tool (`feedbackOnly`), and an app may give it narrower
-     API paths than its other callers (`api.callers: [{agent, paths}]`);
+     API paths than its other callers (`api.callers: [{agent, paths}]`), down to exact routes: `GET /api/agent/intake` and
+     `POST /api/agent/intake/{reference}/decision` (the method, then `{name}` for one segment; `services/apps-mcp/src/api.ts`);
    - what it delegates or comments for others starts with `(From app feedback, untrusted: …)` (tasks-mcp, from the grants
      table's `feedback_for`); the runner then shows the task to the Engineer as a person's suggestion, as untrusted input,
      never as the agent's or the owner's request, and the AI reviewer sees the mark in the request chain;

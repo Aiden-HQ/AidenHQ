@@ -224,9 +224,9 @@ agents:
       # Reads only: apps, their logs and live pages, and the warehouse (the sources an agent should cover). Not app_api: it is a
       # write path per app (registry api.callers), not a GET-only read.
       apps: [ app_list, app_status, app_logs, app_view, warehouse_query ]
-      # Reads across the fleet, plus filing: task_create with assignee (proposals and product bugs to the Platform Engineer, app
-      # rules and checks to an app's owner, memory evidence to the Librarian; delegate_to below), the weekly digest (no assignee),
-      # task_comment, task_finish on its own run. No task_delegate (no Engineer directly) and no task_set_status on others' tasks.
+      # Reads across the fleet, plus filing: task_create with assignee (proposals to the Platform Engineer, app rules and checks
+      # to an app's owner, memory evidence to the Librarian; delegate_to below), the weekly digest (no assignee), task_comment
+      # (a product bug: one line on Fleet issues, which Fleet Ops files upstream), task_finish on its own run. No task_delegate (no Engineer directly) and no task_set_status on others' tasks.
       # coach_*: the due list, evidence packets and its review log.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team, task_create, task_comment, task_finish, fleet_status, fleet_catalog, coach_due, coach_evidence, coach_record, fanout_map ]
     # It reads untrusted content broadly: the tasks module lets it assign work only to these (app-owners: an app's owning agent).

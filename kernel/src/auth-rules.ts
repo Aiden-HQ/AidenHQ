@@ -89,13 +89,17 @@ export function outboundCookie(c: string, https: boolean, listener: Listener): s
   return parts.join("; ");
 }
 
-/** The accounts file, mode 600, with a busy timeout. */
+/**
+ * The accounts file, mode 600, with a busy timeout. WAL with synchronous=NORMAL: readers and the writer don't block each
+ * other, and a write syncs to disk at checkpoints rather than three times a transaction (a lost last write after a power cut
+ * is a session to sign in again; the file never corrupts). Its -wal and -shm siblings live in the same directory.
+ */
 export function openAuthDb(dbPath: string): DatabaseSync {
   if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(dbPath);
   if (dbPath !== ":memory:") chmodSync(dbPath, 0o600);
   // totp_spent: codes used, on either listener. handoff_session: app host sessions the gate's handoff opened.
-  db.exec(`PRAGMA busy_timeout = 5000; CREATE TABLE IF NOT EXISTS totp_spent (k TEXT PRIMARY KEY, until INTEGER NOT NULL);
+  db.exec(`PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; CREATE TABLE IF NOT EXISTS totp_spent (k TEXT PRIMARY KEY, until INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS handoff_session (token TEXT PRIMARY KEY, parent_id TEXT NOT NULL, host TEXT NOT NULL)`);
   return db;
 }

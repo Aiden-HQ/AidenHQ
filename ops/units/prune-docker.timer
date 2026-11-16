@@ -1,8 +1,8 @@
 [Unit]
-Description=Weekly AidenHQ Docker cleanup
+Description=Daily AidenHQ Docker cleanup
 
 [Timer]
-OnCalendar=Sun 04:30
+OnCalendar=*-*-* 04:30
 Persistent=true
 
 [Install]

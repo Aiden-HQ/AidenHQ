@@ -12,9 +12,9 @@ const moved = (from, to) => files.map((f) => (f === from ? to : f));
 test("every gate file is covered and every entry is used", () => assert.deepEqual(coverageProblems(files), []));
 
 test("a moved gate file fails", () => {
-  const problems = coverageProblems(moved("services/runner/src/netjail.ts", "services/runner/src/jail.ts"));
-  assert.ok(problems.includes("uncovered: services/runner/src/jail.ts"));
-  assert.ok(problems.some((p) => p.startsWith("dead entry: ^services\\/runner\\/src\\/netjail")));
+  const problems = coverageProblems(moved("services/runner/src/state.ts", "services/runner/src/store.ts"));
+  assert.ok(problems.includes("uncovered: services/runner/src/store.ts"));
+  assert.ok(problems.some((p) => p.startsWith("dead entry: ^services\\/runner\\/src\\/state")));
 });
 
 test("a renamed board approvals file fails", () => {
@@ -45,5 +45,5 @@ test("the split keeps every file the old list gated; the only additions are the 
   const after = gated(GATE_CORE);
   assert.deepEqual(before.filter((f) => !after.includes(f)), []);
   const added = after.filter((f) => !before.includes(f));
-  assert.ok(added.length > 0 && added.every((f) => f.startsWith("scripts/lean/") || f === "scripts/test/lean.test.mjs" || f === "services/runner/test/gate-coverage.test.mjs" || f.startsWith("kernel/sdk/") || f.startsWith("kernel/") || /(^|\/)aidenhq-sdk\/(caller|executor)\.ts$/.test(f) || f.startsWith("modules/apps-platform/") || f === "services/apps-mcp/src/executor.ts" || f === "modules/primer/module.yaml" || f === "modules/primer/connections/primer-mcp/src/publish.ts" || /^modules\/engine-[^/]+\//.test(f) || f === "services/runner/src/agents.mjs" || f === "services/runner/src/evalgate.ts" || /^modules\/channel-[^/]+\//.test(f) || f.startsWith("modules/ai-reviewer/") || f === "services/runner/src/review-request.mjs" || f === "services/shared/review-files.mjs" || f === "services/runner/src/siblings.ts" || f === "services/board/src/kernel-auth.ts"), added.join(", "));
+  assert.ok(added.length > 0 && added.every((f) => f.startsWith("scripts/lean/") || f === "scripts/test/lean.test.mjs" || f === "services/runner/test/gate-coverage.test.mjs" || f.startsWith("kernel/sdk/") || f.startsWith("kernel/") || /(^|\/)aidenhq-sdk\/(caller|executor)\.ts$/.test(f) || f.startsWith("modules/apps-platform/") || f === "services/apps-mcp/src/executor.ts" || f === "modules/primer/module.yaml" || f === "modules/primer/connections/primer-mcp/src/publish.ts" || /^modules\/engine-[^/]+\//.test(f) || f === "services/runner/src/agents.mjs" || f === "services/runner/src/evalgate.ts" || /^modules\/channel-[^/]+\//.test(f) || f.startsWith("modules/ai-reviewer/") || f === "services/runner/src/review-request.mjs" || f === "services/shared/review-files.mjs" || f === "services/runner/src/siblings.ts" || f === "services/runner/src/progress.ts" || f === "services/board/src/kernel-auth.ts"), added.join(", "));
 });

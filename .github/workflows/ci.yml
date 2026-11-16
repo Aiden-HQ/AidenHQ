@@ -152,7 +152,8 @@ jobs:
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
         working-directory: services/runner
-        run: npm ci && npm run test:unit
+        # The kernel's packages too: the runner imports the job sandbox's settings (kernel/src/sandbox-config.ts).
+        run: (cd ../../kernel && npm ci) && npm ci && npm run test:unit
 
   runner-flows:
     name: runner-flows (${{ matrix.shard }}/2)
@@ -191,7 +192,8 @@ jobs:
           echo "Shard $SHARD: $files"
           # As many files at once as the job has CPUs (cpus: 4 in modules/ci/compose.yaml; ubuntu-latest has 4 too): node
           # counts the host's CPUs, not the container's, and runs the whole shard at once, starving every flow's turns.
-          npm ci && node --disable-warning=ExperimentalWarning --test --test-concurrency=4 $files
+          # The kernel's packages too: the flows run the kernel's job half (kernel/test/fixtures/jobs-host.mjs).
+          (cd ../../kernel && npm ci) && npm ci && node --disable-warning=ExperimentalWarning --test --test-concurrency=4 $files
 
   board:
     needs: image-changes
@@ -248,7 +250,7 @@ jobs:
           packages=$(cat <<'PACKAGES'
           scripts|npm test|*
           services/runner|(its own job)|services/runner services/computer kernel services/shared modules scripts kernel/sdk fixtures services/board/src/approvals.ts services/board/src/app.ts services/board/src/fleet.ts services/board/src/kernel-auth.ts services/board/src/session.ts
-          services/runner#flows|(its own jobs)|services/runner services/shared modules/engine-codex modules/engine-claude modules/engine-opencode modules/ai-reviewer kernel/sdk fixtures/engine-echo|services/runner/src/prompt.ts modules/engine-codex/codex-home/AGENTS.md
+          services/runner#flows|(its own jobs)|services/runner services/shared modules/engine-codex modules/engine-claude modules/engine-opencode modules/ai-reviewer kernel/sdk kernel/src kernel/test/fixtures kernel/package-lock.json fixtures/engine-echo|services/runner/src/prompt.ts modules/engine-codex/codex-home/AGENTS.md
           kernel/sdk|(cd ../../services/runner && npm ci) && npm test|kernel/sdk fixtures/engine-echo modules/engine-codex modules/engine-claude modules/engine-opencode
           services/computer|node --test test/*.test.mjs|services/computer services/runner/src services/runner/bin modules/core/design-system modules/design
           kernel|npm ci && npm test && npm run typecheck|kernel services/computer modules/tasks fixtures services/gate

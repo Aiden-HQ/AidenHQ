@@ -28,14 +28,15 @@ wait plainly when the lock does not clear in that time, instead of the change as
 
 `ops/compose-recreate.sh` is the compose step. It stops before building, dumping or removing anything when the config
 lists no services; dumps the warehouse first, when this host runs one (a fresh file created exclusively under `umask 077`
-in a `0700` directory, so a taken name is skipped rather than truncated and the dump is `0600`; older dumps keep their
-bytes and only have their mode tightened); builds every image; recreates only the services whose image, compose config or
-mounted secret content moved; removes compose's leftovers for services this config dropped, never a CI job's runner; and
-retries once for the daemon's two races (a removal already in progress, a container name still in use). A recreate that
-was killed leaves its half-made replacement behind (compose creates it as `<12hex>_<project>-<service>-1` and renames it
-only once the old one is gone); each pass removes those, never a running one, before deciding what moved, so a retry never
-trips on "name already in use". A service still left `created` at the end is started. It prints one line per service
-saying what became of it: `recreated`, `kept`, or `leftover cleaned`.
+in a `0700` directory, so a taken name is skipped rather than truncated and the dump is `0600`; an older dump is never
+rewritten, only has its mode tightened, and only the newest two are kept, the rest removed); builds every image;
+recreates only the services whose image, compose config or mounted secret content moved; removes compose's leftovers for
+services this config dropped, never a CI job's runner; and retries once for the daemon's two races (a removal already in
+progress, a container name still in use). A recreate that was killed leaves its half-made replacement behind (compose
+creates it as `<12hex>_<project>-<service>-1` and renames it only once the old one is gone); each pass removes those,
+never a running one, before deciding what moved, so a retry never trips on "name already in use". A service still left
+`created` at the end is started. It prints one line per service saying what became of it: `recreated`, `kept`, or
+`leftover cleaned`.
 
 An apply that dies mid-run (killed, its shell gone) leaves its generation `pending`, or `failed` before the auto-revert
 ran. It is finished like a failed health check (the snapshot put back, the last known good re-applied) by whichever comes
@@ -64,7 +65,7 @@ Module data (spec §6.4.1): before an apply switches, it stops the containers of
 `services.data: true` (its code, its compose services with their settings, or its `data_version` changed) and archives `data/modules/<module>/` to
 `~/checkpoints/gen-<n>/<module>.tar` (as root in a pinned container, so root-owned files come along; the archive is the
 owner's, `0600`). Without room for it (1.2 times the dirs plus 20 GB, as `scripts/backup.sh`) the apply is refused and the
-containers start again. The newest five `gen-*` snapshots are kept. A failed health check puts the whole snapshot back
+containers start again. The newest two `gen-*` snapshots are kept. A failed health check puts the whole snapshot back
 before the last known good starts. `ops/rollback.sh <n>` puts back only modules whose `.data_version` marker is above the
 `data_version` generation `n` declared, each from the earliest snapshot after `n`, and refuses when that snapshot was
 pruned. A restore unpacks into a fresh sibling folder and swaps it in, so a module never has half its old data.
@@ -82,7 +83,8 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   is picked up the same way on the next apply. Force-recreate (`docker compose up -d --force-recreate <svc>`) only after
   changing a file a service reads once at start that is not a compose secret (a bind-mounted config, for example):
   running it after every apply restarts those services a second time for nothing.
-- **After changing runner code:** `ops/apply-config.sh` sends `systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`: the runner takes nothing new, exits as soon as nothing is half done (a reply being posted, a publish, an apply), and systemd starts it again 5s later. Running agent jobs are not touched (`KillMode=process`; each runs in its own process group, writing its log and exit status under the runner's state dir): the new runner adopts them, keeps their `aidenhq` tools working (same helper port and token) and reports each turn once. A plain `systemctl --user restart aidenhq-runner` does the same. A job that died while no runner was up (no exit status) resumes in the same session. apply-config installs the unit (and daemon-reloads) when `ops/units/aidenhq-runner.service` changes.
+- **After changing runner code:** `ops/apply-config.sh` sends `systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`: the runner takes nothing new, exits as soon as nothing is half done (a reply being posted, a publish, an apply), and systemd starts it again 5s later. Running agent jobs are not touched: the kernel runs them (`kernel/src/jobs.ts`), each in its own process group writing its log and exit status under the runner's state dir; the new runner follows them again through `GET /v1/jobs/:id`, keeps their `aidenhq` tools working (same helper port and token) and reports each turn once. A plain `systemctl --user restart aidenhq-runner` does the same.
+- **After changing kernel code:** apply-config restarts `aidenhq-kernel` (SIGTERM; `KillMode=process`): the kernel stops following its jobs (offsets saved in `data/kernel/kernel.db`) and exits; the next kernel adopts every job whose shell is still that run (pid and its `.exit` file name) and reports one that died while no kernel ran as lost, which the runner resumes in the same session. apply-config installs the unit (and daemon-reloads) when `ops/units/aidenhq-runner.service` changes.
 
 - **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `kernel/src/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (runner jobs through their jail, the AI reviewer, the intake, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Spend (spec §5.12): each call reserves its worst case at the model's declared price (`modules/models-openrouter`; an unpriced model is refused) against its run, task and agent-day caps (grants `caps`, default $2 / $10 / $30) before it is sent, with its output limit cut to what the tightest cap has left; it settles at max(what OpenRouter reported, tokens × price). A call that would pass a cap gets HTTP 402 and the owner a `raise_cap` card; there is no off switch. Ledger: `data/kernel/kernel.db` (`calls`); the old `data/gateway/usage.db` is merged in at every start while it exists (idempotent) and otherwise left alone. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
 - **Agent memory** (`agent_memory`): `memory_note` writes to the agent's own inbox task; the Librarian's daily pass curates it into `agents/<key>/memory.md`, landed by an apply card. To clear one agent's memory, apply a change that empties its file. Kill switch: `agent_memory: off`.
@@ -130,7 +132,8 @@ runs, its live database is left out and its hourly dumps carry it; for a complet
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
-Postgres on 2026-11-16). Each successful apply prunes build cache and dangling images older than 48 hours.
+Postgres on 2026-11-16). Each successful apply prunes build cache and unused images older than 48 hours; `prune-docker.timer`
+does the same daily on a host that hasn't applied.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the runner are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be
@@ -339,8 +342,9 @@ once. The repo and PR come from that signed token. The CI token works only on th
 `chat/completions` with the models in `settings.ci_review_models` and no fallbacks, plugins or server tools, under CI's
 own caps (`ci_review_repo_day_usd`, `ci_review_day_usd`; always on; a refusal fails the
 review, no retry). Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job
-sent (advisory): the Costs tab's "App CI code review" line. codegenie has no base-URL option, so the job loads a small
-preload that sends its OpenRouter calls to the gateway. Revoke: `settings.ci_review: off` refuses every CI token at once.
+sent (advisory): the Costs tab's "App CI code review" line. A PR that touches no critical path gets the quick reviewer
+(`.github/quick-review.mjs`: one call, GPT Luna by default); a critical one gets codegenie, which has no base-URL option,
+so the job loads a small preload that sends its OpenRouter calls to the gateway. Revoke: `settings.ci_review: off` refuses every CI token at once.
 A same-repo PR can edit the workflow and spend up to its repo's day cap on the allowed models: the cap and scope are the
 boundary, not the job name. Instances without the gateway (no `AIDENHQ_GATEWAY_URL`) use the repo secret
 `OPENROUTER_API_KEY` instead; where the gateway is on, delete that secret from the app repos (an edited workflow could
@@ -351,7 +355,8 @@ read it).
    the agents org → Settings → Developer settings → GitHub Apps → the App → Permissions), save, then accept the new
    permission on each installation (every org that installed the App is asked). New Apps get it from the manifest.
 2. Agents org → Settings → Actions → Runner groups → Default: allow private repositories (and public if any). No model
-   secret: code review spends through the gateway (above). Optional variable `CODEGENIE_MODEL` (default
+   secret: code review spends through the gateway (above). Optional variables `QUICK_REVIEW_MODEL` (default
+   `openrouter/~openai/gpt-luna-latest`) and `CODEGENIE_MODEL` (default
    `openrouter/~deepseek/deepseek-flash-latest`; `openrouter/deepseek/deepseek-v4-flash-0731` gets codegenie's DeepSeek
    routing workaround if the `~` alias misbehaves: add it to `settings.ci_review_models` first).
 3. Instance repo: add `ci` to `modules:` in `instance.yaml`; deploy (`ops/apply-config.sh`).

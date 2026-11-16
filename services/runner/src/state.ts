@@ -154,6 +154,10 @@ export class State {
     );
   }
 
+  setJobLog(id: number, logPath: string) {
+    this.db.prepare("UPDATE jobs SET log_path = ? WHERE id = ?").run(logPath, id);
+  }
+
   finishJob(id: number, status: string, detail?: string | null) {
     this.db.prepare("UPDATE jobs SET status = ?, finished_at = ?, detail = ? WHERE id = ?").run(status, new Date().toISOString(), detail ?? null, id);
   }

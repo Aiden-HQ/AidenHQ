@@ -4,18 +4,21 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines } from "./agents.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, branchCardArgs, cardText } from "./cards.ts";
 import { authorityLines, diffAll, moduleInputs } from "../../../kernel/src/loader/authority.ts";
-import { adoptRun, cowRoot, engineState, hiding, overlayProblem, readEngines, removeLayers, gatewayApi, jailProblem, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
+import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
+import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
+import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";
+import { runAlive } from "../../../kernel/src/jobs.ts";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
-import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg, jobGhToken, mergePermissions, pushPermissions } from "./github-app.ts";
+import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, identityEnv, inOrg, jobGhToken, mergePermissions, pushPermissions } from "./github-app.ts";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
@@ -23,6 +26,7 @@ import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
+import { staleRef } from "./progress.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.ts";
@@ -55,20 +59,11 @@ const cfg = loadConfig();
 const pc = new Paperclip(cfg);
 const state = new State(cfg.stateDir);
 const log = (msg, extra = {}) => console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
-// Jobs run in a network namespace of their own (engines.mjs jailed). Without one that works they fall back to the host's
-// network, where every loopback service is in reach: loudly, so scripts/verify-security.sh and the journal both say so.
-const jailIssue = jailProblem(cfg);
-if (jailIssue) {
-  cfg.pasta = undefined;
-  log("WARNING: Engineer jobs share the host's network (every loopback service, the LAN)", { reason: jailIssue });
-}
-// The build caches (sandbox.extra_writable_roots) are copy-on-write per task. A bwrap without overlay support (before
-// 0.11, e.g. Ubuntu 24.04's) binds them read-write and shared as before: loudly.
-const overlayIssue = cfg.sandbox?.extra_writable_roots?.length && cfg.gcp ? overlayProblem(cfg) : undefined;
-if (overlayIssue) {
-  cfg.noOverlay = true;
-  log("WARNING: Engineer jobs share their build caches read-write (bwrap can't mount overlays; bubblewrap 0.11+ can)", { reason: overlayIssue });
-}
+// Engineer jobs run in the kernel (kernel/src/jobs.ts): the runner asks for them and follows them.
+const jobsApi = kernelJobs(cfg);
+// The reviewer-eval gate's runs (evalgate.ts) use the same sandbox, launched here: in its own network when that works.
+const evalSandbox = sandboxConfig();
+if (jailProblem(evalSandbox)) evalSandbox.pasta = undefined;
 // The instance's GitHub App: its key stays in this process; tokens go only to the git/gh child that needs one,
 // and a read-only one for its task's repos to each job's gh (jobGhToken).
 const app = cfg.githubApp && appClient({ appId: readFileSync(cfg.githubApp.appIdFile, "utf8").trim(), key: readFileSync(cfg.githubApp.keyFile, "utf8"), log });
@@ -385,7 +380,7 @@ const trialNoTap = (issue, grants) => trialNoTapBy(issue, grants, runnerMade(iss
 /**
  * Once a minute, one read of the product repo's open PRs (product-prs.ts). A Dependabot PR whose checks have finished
  * gets one Platform Engineer task; a runner-made Dependabot task closes once its PR is merged or closed; an agent's PR
- * that conflicts with the default branch (or went red while behind it) wakes its task once per default-branch commit.
+ * that conflicts with the default branch (or went red while behind it) wakes its task, at most once per half hour.
  */
 async function watchProductPrs() {
   const repo = cfg.productRepo;
@@ -415,7 +410,8 @@ async function watchProductPrs() {
   const bot = app ? (await botIdentity()).name.replace(/\[bot\]$/, "") : undefined;
   for (const pr of open) {
     if (isDependabot(pr) || pr.isCrossRepository !== false) continue;
-    const key = `rebase-ping:${pr.url.toLowerCase()}:${main.oid}`;
+    const url = pr.url.toLowerCase();
+    const key = `rebase-ping:${url}:${main.oid}`;
     const conflict = pr.mergeable === "CONFLICTING";
     const red = conflict ? [] : redChecks(pr);
     if (!conflict && (!red.length || pr.mergeable !== "MERGEABLE")) continue;
@@ -423,13 +419,21 @@ async function watchProductPrs() {
     if (!conflict && state.get(`environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`)) continue;
     // Only an agent's own PR: one a task here opened, authored by the App's bot where there is one.
     // The task whose branch is this PR's head: a reused PR number (a recreated repository) belongs to nobody here.
-    const issueId = state.issuesWithPrs([pr.url], "").filter((id) => state.branches(id).some((b) => b.branch === pr.headRefName && !b.merged)).at(-1);
+    const [issueId, ...older] = state.issuesWithPrs([pr.url], "").filter((id) => state.branches(id).some((b) => b.branch === pr.headRefName && !b.merged)).reverse();
     if (!issueId || (bot && pr.author?.login !== bot)) continue;
     // A red check whose job never started (GitHub refused it: billing, no runner) is the environment's: it is re-run at this
     // same head once and then said once, and it never asks for a rebase or a new head.
     const env = conflict ? [] : await merges.environmentFailure(mergeGithub, repo, pr).catch((err) => (log("check classification failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 200) }), []));
     const want = prAttention(pr, main.rollup, env);
     if (!want) continue;
+    // Only a task that can still publish is asked or told. A comment on a finished task reopens it (Paperclip), so a done
+    // task's PR is left alone and a cancelled task's PR (no other task on its branch) is closed once, with the reason on the PR.
+    const issue = await pc.issue(issueId);
+    if (issue.status === "cancelled" && !older.length && !state.get(`abandoned:${url}`)) {
+      state.set(`abandoned:${url}`, new Date().toISOString());
+      log("abandoned PR", { pr: pr.url, issue: issue.identifier, closed: (await merges.closePrs([{ repo, number: pr.number, url: pr.url }], `Closed by the runner: ${issue.identifier}, the task this PR was for, is cancelled.`, mergeGithub))[0] });
+    }
+    if (["done", "cancelled"].includes(issue.status)) continue;
     if (want.do === "environment") {
       const r = await merges.environmentRetry(mergeGithub, repo, pr.number, pr, pr.url, want.checks);
       const seen = `environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`;
@@ -440,16 +444,17 @@ async function watchProductPrs() {
       await pc.comment(issueId, r.stop);
       continue;
     }
-    if (state.get(key)) continue;
-    if (want.why === "red") {
-      const behind = Number((await execFileP(await findRealGh(), ["api", `repos/${repo}/compare/${main.oid}...${pr.headRefOid}`, "--jq", ".behind_by"], await gho(repo, READ))).stdout.trim());
-      if (!(behind > 0)) {
-        state.set(key, new Date().toISOString()); // red on its own: the merge queue reports that
-        continue;
-      }
+    // One ask per PR per half hour, and none while its task runs: main moves every few minutes, and each ask is a run.
+    if (state.get(key) || running.has(issueId) || Date.now() - Date.parse(state.get(`rebase-asked:${url}`) ?? "") < 30 * 60_000) continue;
+    if (want.why === "red" && !(Number((await execFileP(await findRealGh(), ["api", `repos/${repo}/compare/${main.oid}...${pr.headRefOid}`, "--jq", ".behind_by"], await gho(repo, READ))).stdout.trim()) > 0)) {
+      state.set(key, new Date().toISOString()); // red on its own: the merge queue reports that
+      continue;
     }
     state.set(key, new Date().toISOString());
-    await wakeForRebase(issueId, pr, want.why, main);
+    // Parked (the AI reviewer's rejections ran out): its publish is refused, so a rebase is a run for nothing.
+    if (priorDecisions((await commonTierState(issue, "pr")).records, "pr").rejects >= MAX_REJECTS) continue;
+    state.set(`rebase-asked:${url}`, new Date().toISOString());
+    await wakeForRebase(issue, pr, want.why, main);
   }
 }
 
@@ -465,7 +470,8 @@ const OWN_FOLDER = { executionWorkspacePreference: "agent_default", executionWor
 const designReviewer = (live) => Object.entries(readGrants()?.agents ?? {}).find(([id, a]) => (!live || live.has(id)) && (a?.roles ?? []).includes("design-review"))?.[0];
 
 /**
- * The design reviewer's task for one UI PR head (owner, 2026-11-13), from both merge paths: a Tier 0 merge that waits on the
+ * The design reviewer's task for one UI PR head (owner, 2026-11-13), from the moment the runner opens it (publishBranch) and from
+ * both merge paths: a Tier 0 merge that waits on the
  * review (`waits`), and a merge card the owner approved, whose queue doesn't wait (the tap is the owner's own review) but whose
  * PR still gets its review. An event, so the review starts now rather than at the next heartbeat. Once per head (runner state,
  * whichever path asked first); fixed text only (the reviewer reads the PR's changed files itself: file names are the PR author's text). A later head of the same PR (the fix) is a re-review (owner, 2026-11-14: no long
@@ -606,22 +612,13 @@ async function fileDependabotTask(repo, pr, pe) {
  * Wake the task that opened a PR now conflicting with (or red behind) the default branch: rebase and publish once. Only an
  * active task: a done or cancelled one is never reopened from here (someone closed it on purpose); it gets one note per PR.
  */
-async function wakeForRebase(issueId, pr, why, main) {
-  const issue = await pc.issue(issueId);
+async function wakeForRebase(issue, pr, why, main) {
   const what = why === "conflict"
     ? `${pr.url} now conflicts with \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`).`
     : `${pr.url}'s checks failed (\`gh pr checks ${pr.url}\` names them) while it is behind \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`, green): perhaps only because \`${main.name}\` moved.`;
-  if (["done", "cancelled"].includes(issue.status)) {
-    const once = `rebase-note:${pr.url.toLowerCase()}`;
-    if (!state.get(once)) {
-      state.set(once, new Date().toISOString());
-      await pc.comment(issueId, `${what} This task is ${issue.status}, so nobody was woken: reopen it, or close the PR.`);
-    }
-    return;
-  }
-  if (stopped(issueId)) return;
+  if (stopped(issue.id)) return;
   if (await rebaseInCode(issue, pr, why).catch((err) => (log("rebase in code failed", { issue: issue.identifier, pr: pr.url, err: String(err.message ?? err).slice(0, 300) }), false))) return;
-  await pc.comment(issueId, `${what} Asking for one rebase onto \`${main.name}\` and one publish.`);
+  await pc.comment(issue.id, `${what} Asking for one rebase onto \`${main.name}\` and one publish.`);
   log("rebase requested", { issue: issue.identifier, pr: pr.url, why, main: main.oid });
   await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq pr\`, without \`--title\` or \`--body-file\` (the PR keeps its own, and a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.` });
 }
@@ -753,7 +750,7 @@ async function whileBusy(issue, latest, instructions) {
   }
   if (read.decision === "answer" && read.answer) return void (await pc.comment(issue.id, read.answer));
   // A session that takes messages while it works gets the comment now, as the user's own words.
-  if (r?.channel?.send?.(latest)) {
+  if (await r?.channel?.send?.(latest)) {
     log("comment passed to the run", { issue: issue.identifier });
     return void (await pc.comment(issue.id, `Passed on: ${r.who ?? "the agent"} reads it now, while working.`));
   }
@@ -1190,7 +1187,7 @@ const evalGate = createEvalGate({
   state,
   git,
   clone: async (slug) => ensureClone(cfg.workDir, normalizeRepo(slug), cfg.repo_sources?.[slug] ?? ((await appFor(slug)) ? appRemoteUrl(slug) : undefined)),
-  jail: (argv, paths) => hiding(cfg, argv, [], paths),
+  jail: (argv, paths) => hiding(evalSandbox, argv, [], paths),
   log,
   usage: reportUsage,
 });
@@ -3565,6 +3562,7 @@ async function startJob({ issue, instructions }) {
   let tools; // the run's `aidenhq` context: what it asked for after the run (merges, engine, reset, cleanup)
   let launched; // the run, once the agent is going: its turn ends in finishTurn
   let box; // a box job's box (POST /job): released before anything inspects the workspace
+  let handedOver = false; // started just as the runner stops: the next runner follows it
   try {
     // Recorded before any setup can fail: a job that died while preparing its workspace still counts as having run
     // (its delegator's follow-up is only read on a task with history).
@@ -3601,6 +3599,9 @@ async function startJob({ issue, instructions }) {
     const prNotes = await leaveFinishedPrs(issue, workspace);
     if (prNotes.length) instructions = `(Runner note: ${prNotes.join(" ")} Build on what is there now.)\n\n${instructions}`;
     const repos = await repoInfo(workspace, { naming: issue });
+    // A brief naming a commit or branch that isn't there is the delegator's to fix: the job never starts on it.
+    const stale = await staleRef(`${instructions}\n${full.description ?? ""}`, repos.map((r) => r.path));
+    if (stale) throw new UserError(`Not started: ${stale}. Fix the brief and send it again.`);
     state.updateTask(issue.id, { engine });
     // Grafana and Google Cloud reads for an Engineer with private reads: a one-hour gcloud token of the job's own.
     gcp = observes(engine) && !engine.box
@@ -3608,9 +3609,10 @@ async function startJob({ issue, instructions }) {
       : undefined;
     if (gcp && gcp.state !== "ok" && gcp.state !== "missing") log("gcp unavailable for the job", { issue: issue.identifier, state: gcp.state, detail: gcp.detail });
 
-    const logPath = join(logsDir, `${issue.identifier}-${Date.now()}.log`);
-    jobId = state.startJob(issue.id, engineLabel(engine), logPath);
-    Object.assign(running.get(issue.id), { jobId, logPath, info: { engine: engineLabel(engine), mode: "working", repo: repos.map((r) => r.slug).join(", ").slice(0, 200) } });
+    // The job's log is the kernel's (its path comes back when the job starts).
+    let logPath = "";
+    jobId = state.startJob(issue.id, engineLabel(engine), "");
+    Object.assign(running.get(issue.id), { jobId, info: { engine: engineLabel(engine), mode: "working", repo: repos.map((r) => r.slug).join(", ").slice(0, 200) } });
     reportActivity();
     // A saved session can only be continued by the engine that created it (engines' sessions are not
     // interchangeable). After a switch the new engine starts fresh, with the
@@ -3669,18 +3671,33 @@ async function startJob({ issue, instructions }) {
     const helperToken = randomBytes(24).toString("hex");
     if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity, engine });
     if (stopping) return; // the runner is restarting: the job resumes after it (RESUME_KEY)
-    // From here on nothing waits before the run is recorded: a restart either cuts the job before it or adopts the run.
     tools = { issue, workspace, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box, agentId };
     const helper = repoHelper.register(tools, helperToken);
     const sessionId = resumed ? state.task(issue.id).session_id : undefined;
-    const startedAt = Date.now();
-    // The job's gateway credential comes from its agent, task and start time: `aidenhq advise` mints the same one (advise.ts).
-    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, at: startedAt, jobcaps, observing: observes(engine) }, box });
-    // What the next runner needs to adopt the run and finish its turn after a restart.
-    tools.run = { pid: run.pid, jobDir: run.jobDir, eventsOffset: 0, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, observing: observes(engine), repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
+    // The kernel starts the job (its sandbox, limits and adoption are the kernel's). A restart waits for this answer
+    // (`starting`), so the job is either recorded here for the next runner or never started.
+    running.get(issue.id).starting = true;
+    let started;
+    try {
+      started = await jobsApi.start({
+        agent: agentId, task: issue.id, label: issue.identifier, workspace: { module: "engineering", id: basename(workspace) }, prompt,
+        ...(sessionId ? { session: sessionId } : {}), engine: { kind: engine.kind, model: engine.model ?? "", effort: engine.effort ?? "" },
+        env: { ...helper.env, ...identityEnv(identity), ...(ghToken ? { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken } : {}) },
+        ...(gcp ? { cloud: { root: gcp.root, env: gcp.env } } : {}), ...(box ? { box } : {}),
+      });
+    } finally {
+      running.get(issue.id).starting = false;
+    }
+    logPath = started.log;
+    state.setJobLog(jobId, logPath);
+    // What the next runner needs to follow the job and finish its turn after a restart. The job's gateway credential comes from
+    // its agent, task, jobcaps and start time: `aidenhq advise` mints the same one (advise.ts).
+    tools.run = { kernelJob: started.id, pid: started.pid, token: helper.token, startedAt: started.at, sessionId, workspace, engine, tipsBefore, instructions, brief: Boolean(brief), who: persona?.name, agentId, jobcaps: started.jobcaps, observing: started.observing, repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
     state.saveRun(jobId, tools.run);
-    running.get(issue.id).pid = run.pid;
-    const watch = watchAgent(run, { sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
+    Object.assign(running.get(issue.id), { pid: started.pid, logPath });
+    if (started.live_input) channel.send = (text) => jobsApi.input(started.id, text);
+    if (stopping) return void (handedOver = true); // the next runner follows it (state.runningJobs): its box and session stay
+    const watch = followJob(jobsApi, started.id, { signal: controller.signal, detach: detach.signal, onProgress: progressOf(issue.id), log });
     launched = { issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep: box && keepBox(issue, box, helper) };
   } catch (err) {
     if (stopping) return;
@@ -3697,7 +3714,7 @@ async function startJob({ issue, instructions }) {
     }
     await reportError(issue, err);
   } finally {
-    if (!launched) {
+    if (!launched && !handedOver) {
       // A box that never got its run (a failed start, a restart): destroyed, never left holding the task.
       if (box) await stopBox(issue, box).catch((err) => log("box release failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 300) }));
       gcp?.done();
@@ -3771,11 +3788,17 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
   try {
     result = await watch;
     keep?.();
-    // The runner is restarting: the run goes on (its box too, on its lease), and the next runner finishes this turn.
-    // It goes on from the events read so far (and the session already reported).
-    if (result.detached) return void (tools?.run && state.saveRun(jobId, { ...tools.run, eventsOffset: result.offset ?? tools.run.eventsOffset ?? 0, sessionId: result.sessionId ?? tools.run.sessionId }));
+    // The runner is restarting: the job goes on in the kernel (its box too, on its lease), and the next runner finishes this turn.
+    if (result.detached) return;
     Object.assign(running.get(issue.id) ?? {}, { finishing: true });
     helper.done();
+    // The job died while no kernel followed it (a reboot): resumed in the same workspace and session, like a cut-off turn.
+    if (result.lost) {
+      if (box) await stopBox(issue, box);
+      state.finishJob(jobId, "interrupted", "lost");
+      state.set(RESUME_KEY, JSON.stringify([...JSON.parse(state.get(RESUME_KEY) || "[]"), { issueId: issue.id, instructions: tools?.instructions ?? "" }]));
+      return void log("job lost: resuming", { issue: issue.identifier });
+    }
     // A box job's process may outlive its `docker exec` client (a cancel, a timeout): the box goes, confirmed, before
     // anything below reads, signs or cleans the workspace. If it can't be confirmed, nothing below runs.
     if (box) await stopBox(issue, box);
@@ -4307,6 +4330,10 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   }
   state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });
   log("draft PR opened", { issue: issue.identifier, url: prUrl });
+  // An agents-org PR that changes UI files gets its design review now, beside CI, rather than once its merge is queued:
+  // the review was the slowest step on that path, and it started minutes after the PR opened (roadmap-keeper#202: 4
+  // minutes). Once per head: the queue's own ask for this head then files nothing more.
+  if (inAgentsOrg(r.repo) && designReviewer()) await (async () => merges.touchesUi((await git(r.path, "-c", "core.quotePath=false", "diff", "--name-only", `${from}...${r.branch}`)).split("\n")) && fileDesignReviewTask({ repo: r.repo, number: Number(prUrl.split("/").pop()), url: prUrl, head: pin ?? (await git(r.path, "rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`)) }))().catch((err) => log("design review task failed", { pr: prUrl, err: String(err.message ?? err).slice(0, 300) }));
   return `${pushed ? `${pushed}, opened` : "Opened"} draft PR ${prUrl}`;
 }
 
@@ -4428,9 +4455,10 @@ const repoHelper = startRepoHelper(async ({ issue, workspace, box }, raw) => {
   task: agentTask,
   tasks: agentTasks,
   advise: agentAdvise,
-}, Number(state.get("helper_port") ?? 0));
+}, cfg.helperPort);
 // One port across restarts: runs a restart left going keep reaching their tools.
-repoHelper.listening.then((port) => state.set("helper_port", String(port)));
+// The one host port a job's jail opens besides the kernel's 8201 (runner.yaml helper_port): the kernel refuses any other.
+repoHelper.listening.then((port) => port !== cfg.helperPort && log("WARNING: the helper isn't on its port: jobs can't start until it is", { port, want: cfg.helperPort }));
 
 /** Each repository in the workspace for the prompt; with `naming`, its branch naming rules and examples. */
 async function repoInfo(workspace, { naming } = {}) {
@@ -4622,55 +4650,57 @@ let stopping = false;
 const RESUME_KEY = "resume_after_restart";
 
 /**
- * Runs the previous runner process left going (a restart): followed to their end and reported exactly
- * as if this runner had started them, including those that ended while no runner was up. A run gone
- * without an exit status is resumed instead.
+ * Jobs the previous runner process was following (a restart): the kernel still runs them, so they are followed to their end and
+ * reported exactly as if this runner had started them, including those that ended while no runner was up. A run from before
+ * jobs moved into the kernel (no kernel job: the cutover) is stopped if it still runs, and resumed in its workspace and session.
  */
 function adoptRuns() {
   const lost = [];
   for (const job of state.runningJobs()) {
     const run = job.run;
-    const status = existsSync(`${job.log_path}.exit`) ? Number(readFileSync(`${job.log_path}.exit`, "utf8").trim() || NaN) : NaN;
-    // Killed by a signal (above 128) while no runner followed it, e.g. a reboot: resumed like a run gone without a status.
-    const ended = status >= 0 && status <= 128;
-    // A run from before engine@1 (no job dir) is resumed: the drill stops those before a deploy.
-    if (!run?.jobDir || !(ended || (Number.isNaN(status) && runAlive(run.pid, job.log_path)))) {
+    if (!run?.kernelJob) {
+      if (run?.pid && job.log_path && runAlive(run.pid, job.log_path)) {
+        try { process.kill(-run.pid, "SIGTERM"); } catch {}
+        log("stopped a job from before the kernel ran jobs: resuming it", { issue: state.task(job.issue_id)?.identifier, pid: run.pid });
+      }
       state.finishJob(job.id, "interrupted", "restart");
       if (run) lost.push({ issueId: job.issue_id, instructions: run.instructions });
       continue;
     }
     const issue = { id: job.issue_id, identifier: state.task(job.issue_id)?.identifier };
     const controller = new AbortController();
-    const channel = {}; // no input: the session's stdin closed with the old runner
+    const channel = {};
     // Its tools keep working: the same helper port, its own token, what it already asked for.
     const tools = { issue, workspace: run.workspace, instructions: run.instructions, brief: run.brief, kind: run.engine.kind, reads: observes(run.engine), who: run.who, signal: controller.signal, jobId: job.id, run, reset: run.reset, engine: run.switchTo, cleanup: run.cleanup, box: run.box, agentId: run.agentId ?? null };
     const helper = repoHelper.register(tools, run.token);
-    running.set(issue.id, { controller, jobId: job.id, identifier: issue.identifier, startedAt: job.started_at, request: run.instructions, pid: run.pid, channel, who: run.who, info: { engine: engineLabel(run.engine), mode: "working", repo: run.repos } });
-    log("adopted a running job", { issue: issue.identifier, pid: run.pid });
+    channel.send = (text) => jobsApi.input(run.kernelJob, text);
+    running.set(issue.id, { controller, jobId: job.id, identifier: issue.identifier, startedAt: job.started_at, request: run.instructions, pid: run.pid, logPath: job.log_path, channel, who: run.who, info: { engine: engineLabel(run.engine), mode: "working", repo: run.repos } });
+    log("following a running job again", { issue: issue.identifier, job: run.kernelJob });
     void (async () => {
       const gcp = observes(run.engine)
         ? await gcpSession({ credentialsFile: cfg.gcp.credentialsFile, dir: join(cfg.stateDir, "gcloud", issue.identifier), project: cfg.gcp.projects[0], log: (m, f) => log(m, { issue: issue.identifier, ...f }) }).catch(() => undefined)
         : undefined;
       // A box job: its lease renewed and its helper binding re-registered, the launcher's record checked against ours. A box
-      // gone (its lease lapsed while no runner followed it) means a dead run, unless it had already finished: the task resumes
-      // from its session in a new box, once this one is confirmed gone.
+      // gone (its lease lapsed while no runner followed it) means a dead run: the job is stopped and the task resumes from its
+      // session in a new box, once this one is confirmed gone.
       if (run.box) {
         const live = await boxCall("/job/renew", { container: run.box.container, issueId: issue.id, helperPort: helperPort(), helperToken: run.token }).then(
           (r) => r.issueId === issue.id && r.workspace === run.workspace,
           (err) => err.status !== 404, // the launcher not answering yet is not a gone box: the renewals go on trying
         );
-        if (!live && status !== 0) {
-          try { process.kill(-run.pid, "SIGKILL"); } catch {}
+        const now = live ? undefined : await jobsApi.get(run.kernelJob).catch(() => undefined);
+        if (!live && !(now && now.state === "done")) {
+          await jobsApi.stop(run.kernelJob).catch(() => {});
           helper.done();
           await stopBox(issue, run.box).catch((err) => log("box release failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 300) }));
           state.finishJob(job.id, "interrupted", "box gone");
           running.delete(issue.id);
-          log("adopted box job's box is gone: resuming", { issue: issue.identifier, container: run.box.container });
+          log("followed box job's box is gone: resuming", { issue: issue.identifier, container: run.box.container });
           state.set(RESUME_KEY, JSON.stringify([...JSON.parse(state.get(RESUME_KEY) || "[]"), { issueId: issue.id, instructions: run.instructions }]));
           return resumeInterrupted();
         }
       }
-      const watch = watchAgent(adoptRun({ pid: run.pid, logPath: job.log_path, jobDir: run.jobDir, offset: run.eventsOffset ?? 0 }), { sessionId: run.sessionId, deadline: run.startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
+      const watch = followJob(jobsApi, run.kernelJob, { signal: controller.signal, detach: detach.signal, onProgress: progressOf(issue.id), log });
       await finishTurn({ issue, workspace: run.workspace, engine: run.engine, jobId: job.id, logPath: job.log_path, tipsBefore: run.tipsBefore, tools, gcp, helper, watch, box: run.box, keep: run.box && keepBox(issue, run.box, helper) });
     })();
   }
@@ -4729,7 +4759,8 @@ async function shutdown(code, waitMs) {
   if (stopping) return;
   stopping = true;
   detach.abort();
-  const cut = [...running].filter(([, r]) => r.request !== undefined && !r.pid);
+  // A job the kernel is starting (`starting`) is waited for below: it is either recorded for the next runner or never started.
+  const cut = [...running].filter(([, r]) => r.request !== undefined && !r.pid && !r.starting);
   const jobs = cut.map(([issueId, r]) => ({ issueId, instructions: r.request }));
   for (const j of queue) jobs.push({ issueId: j.issue.id, instructions: j.instructions });
   state.set(RESUME_KEY, JSON.stringify(jobs));
@@ -4737,7 +4768,7 @@ async function shutdown(code, waitMs) {
     if (r.jobId) state.finishJob(r.jobId, "interrupted", "restart");
     r.controller.abort();
   }
-  const halfDone = () => repoHelper.busy() > 0 || [...running.values()].some((r) => r.request === undefined || r.finishing);
+  const halfDone = () => repoHelper.busy() > 0 || [...running.values()].some((r) => r.request === undefined || r.finishing || r.starting);
   log("stopping for a restart", { resume: jobs.length, handed_over: [...running.values()].filter((r) => r.pid && !r.finishing).length });
   for (const end = Date.now() + waitMs; halfDone() && Date.now() < end; ) await new Promise((r) => setTimeout(r, 100));
   process.exit(code);

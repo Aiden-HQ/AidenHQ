@@ -33,6 +33,11 @@ describe("registry: api", () => {
     expect(() => app({ secrets: ["AIDENHQ_IDENTITY_KEYS"] })).toThrow(/platform/);
     expect(() => app({ api: { ...api, callers: [] } })).toThrow();
     expect(() => app({ api: { ...api, paths: ["api/x"] } })).toThrow();
+    expect(() => app({ api: { ...api, paths: ["GET /api/agent/roadmap"] } })).toThrow(); // the app's own paths stay prefixes
+    const routed = app({ api: { callers: [{ agent: "k", paths: ["POST /api/agent/intake/{reference}/decision"] }], paths: api.paths } });
+    expect(routed.api!.callers).toEqual([{ agent: "k", paths: ["POST /api/agent/intake/{reference}/decision"] }]);
+    for (const bad of ["GET /api/agent/{a}{b}", "get /api/agent/x", "FETCH /api/agent/x", "GET /api/agent/{a b}", "GET /api/agent/{a/b}", "GET /api/agent//x", "GET /api/agent/x y", "GET/api/agent/x", "GET ", "GET /api/agent/../x"])
+      expect(() => app({ api: { ...api, callers: [{ agent: "k", paths: [bad] }] } }), bad).toThrow();
     expect(() => app({ health: {} })).toThrow(/health.url/);
   });
 });
@@ -51,6 +56,54 @@ describe("authorize", () => {
   it("refuses traversal and tricks", () => {
     for (const p of ["/api/agent/roadmap/../admin", "/api/agent/roadmap/./x", "/api/agent/roadmap//x", "/api/agent/roadmap/%2e%2e/admin", "/api/agent/roadmap\\..\\admin", "/api/agent/roadmap#x", "api/agent/roadmap", "//evil.example/api/agent/roadmap", "/api/agent/roadmap?a?b", "/api/agent/roadmap?a=<x>", "http://evil/api/agent/roadmap"])
       expect(ok(p), p).toThrow(/bad/);
+  });
+});
+
+describe("a caller's exact routes", () => {
+  // The caller's entry names the two routes it uses; the app's own paths stay the prefixes where its API lives.
+  const rk = app({
+    api: {
+      callers: ["roadmap-keeper", { agent: "roadmap-feedback", paths: ["GET /api/agent/intake", "POST /api/agent/intake/{reference}/decision"] }],
+      paths: ["/api/agent/roadmap", "/api/agent/intake"],
+    },
+  });
+  const as = (method: string, path: string, key = "roadmap-feedback") => () => authorize(rk, key, path, method);
+
+  it("allows its two routes, with a query string on the GET and any reference on the POST", () => {
+    expect(as("GET", "/api/agent/intake?status=received")).not.toThrow();
+    expect(as("POST", "/api/agent/intake/AB12CD34/decision")).not.toThrow();
+    expect(as("POST", "/api/agent/intake/9f3e/decision")).not.toThrow();
+  });
+  it("denies another method, a bare or extra segment, a missing reference, and a path outside the grant", () => {
+    for (const [m, p] of [
+      ["DELETE", "/api/agent/intake"],
+      ["POST", "/api/agent/intake"],
+      ["GET", "/api/agent/intake/AB12CD34/decision"],
+      ["HEAD", "/api/agent/intake"],
+      ["POST", "/api/agent/intake/AB12CD34/decision/extra"],
+      ["POST", "/api/agent/intake/decision"],
+      ["GET", "/api/agent/intake/x"],
+      ["GET", "/api/item"],
+    ] as const)
+      expect(as(m, p), `${m} ${p}`).toThrow(/isn't under/);
+    expect(as("GET", "/api/agent/intake/../decision")).toThrow(/bad path/);
+  });
+  it("is never read as a prefix: a read route can't be spent on a write, and a route never widens the app's own paths", () => {
+    const readOnly = app({ api: { callers: [{ agent: "reader", paths: ["GET /api/agent/intake"] }], paths: ["/api/agent/intake"] } });
+    expect(() => authorize(readOnly, "reader", "/api/agent/intake?status=received", "GET")).not.toThrow();
+    expect(() => authorize(readOnly, "reader", "/api/agent/intake", "POST")).toThrow(/isn't under/);
+    expect(() => authorize(readOnly, "reader", "/api/agent/intake/AB12CD34/decision", "GET")).toThrow(/isn't under/);
+    const outside = app({ api: { callers: [{ agent: "reader", paths: ["GET /api/admin/users"] }], paths: ["/api/agent/intake"] } });
+    expect(() => authorize(outside, "reader", "/api/admin/users", "GET")).toThrow(/isn't under/);
+  });
+  it("leaves the app's own agent, and a bare-path {agent, paths} caller, as prefix callers", () => {
+    expect(as("GET", "/api/agent/roadmap/items/3", "roadmap-keeper")).not.toThrow();
+    expect(as("DELETE", "/api/agent/intake/x", "roadmap-keeper")).not.toThrow();
+    expect(as("GET", "/", "roadmap-keeper")).toThrow(/isn't under/);
+    const prefixed = app({ api: { callers: [{ agent: "reader", paths: ["/api/agent/intake"] }], paths: ["/api/agent/intake"] } });
+    for (const [m, p] of [["GET", "/api/agent/intake?status=received"], ["GET", "/api/agent/intake/AB12CD34/decision"], ["DELETE", "/api/agent/intake/x"]] as const)
+      expect(() => authorize(prefixed, "reader", p, m), `${m} ${p}`).not.toThrow();
+    expect(() => authorize(prefixed, "reader", "/api/agent/intake-other", "GET")).toThrow(/isn't under/);
   });
 });
 
@@ -120,6 +173,15 @@ describe("callApi", () => {
     expect(big.sent).toEqual([]);
     const r = await callApi(app(), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, big.d);
     expect((r.body as string).length).toBe(50_000);
+    // A route-granted caller: the method decides before anything is sent.
+    const routed = app({ api: { callers: [{ agent: "roadmap-feedback", paths: ["GET /api/agent/intake", "POST /api/agent/intake/{reference}/decision"] }], paths: ["/api/agent/intake"] } });
+    const sent: ApiRequest[] = [];
+    const d = { ...big.d, send: async (_a: unknown, r: ApiRequest) => (sent.push(r), { status: 200, body: "{}" }) };
+    await expect(callApi(routed, "roadmap-feedback", { method: "DELETE", path: "/api/agent/intake" }, d)).rejects.toThrow(/isn't under/);
+    await expect(callApi(routed, "roadmap-feedback", { method: "GET", path: "/api/agent/intake/AB12CD34/decision" }, d)).rejects.toThrow(/isn't under/);
+    expect(sent).toEqual([]);
+    await callApi(routed, "roadmap-feedback", { method: "POST", path: "/api/agent/intake/AB12CD34/decision", body: {} }, d);
+    expect(sent.map((x) => `${x.method} ${x.url}`)).toEqual(["POST http://127.0.0.1:8080/api/agent/intake/AB12CD34/decision"]);
   });
 });
 

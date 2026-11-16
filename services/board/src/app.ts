@@ -1831,7 +1831,7 @@ export function createApp(opts: AppOptions): Server {
         ledgerTop({ store, agents: () => pc.agents(), issue: (id) => pc.issueSummary(id) }, ledgerRange(url.searchParams), { agentId: url.searchParams.get("agent") ?? undefined, model: url.searchParams.get("model") ?? undefined }),
     },
     // Read-only module catalog (compiled config/modules.json), for Settings > Modules.
-    { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")) }) },
+    { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")), advisories: kernel.enabled ? await kernel.advisories().catch(() => []) : [] }) },
     // Settings (web/src/Settings.tsx): the compiled config, read-only, with what the board can see live. Edits go through git.
     { method: "GET", path: /^\/api\/settings$/, handle: async () => settingsData() },
     { method: "GET", path: /^\/api\/settings\/connections$/, handle: async (_m, _b, url) => connectionsData(url.searchParams.has("fresh")) },
