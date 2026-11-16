@@ -26,6 +26,8 @@ const agentsOrg = (process.env.GITHUB_AGENTS_ORG ?? "").trim().toLowerCase();
 // The product repo (owner/repo) the fleet reports product bugs to: github_app_issue writes only there.
 const PRODUCT_REPO = (process.env.GITHUB_PRODUCT_REPO ?? "").trim();
 // The owner-data scrub's literals (scrub.ts).
+// The origin ids' own key (github_origin_key, generated, mounted only here), read at each report.
+const originKey = () => { const f = process.env.GITHUB_ORIGIN_KEY_FILE; return f && existsSync(f) ? readFileSync(f, "utf8").trim() : ""; };
 const OWNER_TERMS = ownerTerms(process.env.GITHUB_OWNER_TERMS ?? "", PRODUCT_REPO);
 const commentOrgs = new Set((process.env.GITHUB_COMMENT_ORGS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
 // Who is calling: the kernel's signed assertion (the kernel enforces grants).
@@ -188,7 +190,7 @@ function buildServer(caller?: Caller): McpServer {
       const [owner, name] = productRepo();
       let report;
       try {
-        report = upstreamReport(a, originIds(inboundToken ?? "", caller?.key ?? ""), OWNER_TERMS);
+        report = upstreamReport(a, originIds(originKey(), caller?.key ?? ""), OWNER_TERMS);
       } catch (err) {
         throw new GitHubRefused((err as Error).message);
       }

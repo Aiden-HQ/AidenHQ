@@ -44,6 +44,8 @@ services:
         # The owner-data scrub refuses this instance's own names and hosts (compiled from its settings) in anything filed
         # upstream.
         GITHUB_OWNER_TERMS: "${settings.owner_terms}"
+        # The key of a product issue's opaque origin ids (scrub.ts originIds); without it nothing is filed upstream.
+        GITHUB_ORIGIN_KEY_FILE: ${secrets.github_origin_key}
         MCP_TOKEN_FILE: ${secrets.github_service_key}
         # Shared sources (src_github): the orgs it syncs (github_orgs plus the agents org) and its warehouse login.
         GITHUB_SYNC_ORGS: "${settings.github_sync_orgs}"
@@ -53,4 +55,5 @@ services:
 # src_github's warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.
 generated_secrets:
   - github_service_key
+  - github_origin_key
   - warehouse_src_github_password

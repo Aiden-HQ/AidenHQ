@@ -225,7 +225,12 @@ test("upstream: off grants no upstream tool; issues grants both; the scrub's ter
   assert.equal(fleet("off").enabled_tools.github, undefined);
   for (const v of [undefined, "issues", "prs"]) assert.deepEqual(fleet(v).enabled_tools.github, ["github_app_issue", "github_app_issue_status"], String(v));
   assert.throws(() => fleet("maybe"), /upstream/);
-  const env = compile(repo, inst(["github", "fleet-ops", "primer"], settings())).compose.services["github-mcp"].environment;
+  const r = compile(repo, inst(["github", "fleet-ops", "primer"], settings()));
+  const env = r.compose.services["github-mcp"].environment;
+  // The origin ids' own key: generated, and mounted for github-mcp only.
+  assert.ok(r.generatedSecrets.includes("github_origin_key"));
+  assert.match(env.GITHUB_ORIGIN_KEY_FILE, /github_origin_key/);
+  for (const [svc, def] of Object.entries(r.compose.services)) if (svc !== "github-mcp") assert.ok(!JSON.stringify(def).includes("github_origin_key"), svc);
   // Names and each word of them (but common words), the instance and its org, emails with their local part and domain, hosts.
   assert.deepEqual(env.GITHUB_OWNER_TERMS.split(",").sort(), ["Ada Lovelace", "Ada", "Lovelace", "Acme Labs", "Acme", "acme", "aidenhq-acme", "acme-co", "upstream-org", "ada.l@acme.example", "ada.l", "acme.example", "jira.acme.example"].sort());
 });

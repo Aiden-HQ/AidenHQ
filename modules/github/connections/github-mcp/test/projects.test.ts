@@ -82,16 +82,18 @@ it("A18: owner data in an upstream report is refused with the matches; a clean o
   expect(terms).toEqual(["Ada", "ada@acme.example", "acme.example", "jira.acme.example", "acme-co", "acme"]);
   const evidence = { module: "kernel", version: "a".repeat(40), reproduction: "1. apply\n2. watch the log", log: "2026-11-16T10:00:00Z proxy refused 10.231.0.1:3130 (203.0.113.7)" };
   const report = { fingerprint: "product-bug:kernel-proxy-refuses", title: "kernel: proxy refuses a granted tool", body: "The proxy refuses a granted read.", evidence };
-  const origin = originIds("instance-secret", "fleet-ops");
+  const origin = originIds("instance-origin-key-1", "fleet-ops");
   const out = upstreamReport(report, origin, terms);
   expect(out.body).toContain("**Module:** kernel@" + "a".repeat(40));
   expect(out.body).toContain("```text\n2026-11-16T10:00:00Z proxy refused");
   // Where it came from, as opaque ids: stable for this instance and agent, never the instance's or agent's name.
-  expect(origin).toEqual(originIds("instance-secret", "fleet-ops"));
-  expect(origin.agent).not.toBe(originIds("instance-secret", "coach").agent);
-  expect(originIds("other-secret", "fleet-ops").instance).not.toBe(origin.instance);
+  expect(origin).toEqual(originIds("instance-origin-key-1", "fleet-ops"));
+  expect(origin.agent).not.toBe(originIds("instance-origin-key-1", "coach").agent);
+  expect(originIds("instance-origin-key-2", "fleet-ops").instance).not.toBe(origin.instance);
   expect(out.body.endsWith(`Origin: instance=${origin.instance} agent=${origin.agent}`)).toBe(true);
   expect(out.body).not.toMatch(/acme|fleet-ops/);
+  // Fail closed: with no origin key (or a stub) nothing is composed, so nothing can be filed.
+  for (const key of ["", "short"]) expect(() => originIds(key, "fleet-ops")).toThrow(/no origin key/);
   const leaks: [string, Partial<typeof report>, RegExp][] = [
     ["the owner's name", { body: "Ada saw it" }, /name or host: Ada/],
     ["a hostname", { evidence: { ...evidence, log: "GET https://jira.acme.example/rest failed" } }, /jira\.acme\.example/],
@@ -137,12 +139,12 @@ it("A18 exit: a duplicate report becomes a comment on the open issue, never a se
   }) as unknown as typeof fetch;
   const p = new Projects(dir, fetchFn);
   const evidence = { module: "board", version: "abc1234", reproduction: "1. open Settings", log: "TypeError: x is undefined" };
-  const report = (agent: string) => upstreamReport({ fingerprint: "product-bug:board-settings-crash", title: "board: Settings crashes", body: "Settings crashes.", evidence }, originIds("s", agent), []);
+  const report = (agent: string) => upstreamReport({ fingerprint: "product-bug:board-settings-crash", title: "board: Settings crashes", body: "Settings crashes.", evidence }, originIds("s".repeat(32), agent), []);
   expect(await p.reportIssue("upstream-org", "product", report("fleet-ops"))).toMatchObject({ deduplicated: false, number: 5 });
-  expect(filed[0]!.body).toMatch(new RegExp(`Origin: instance=${originIds("s", "fleet-ops").instance} agent=${originIds("s", "fleet-ops").agent}\\n\\nproduct-bug:board-settings-crash$`));
+  expect(filed[0]!.body).toMatch(new RegExp(`Origin: instance=${originIds("s".repeat(32), "fleet-ops").instance} agent=${originIds("s".repeat(32), "fleet-ops").agent}\\n\\nproduct-bug:board-settings-crash$`));
   expect(await p.reportIssue("upstream-org", "product", report("coach"))).toMatchObject({ deduplicated: true, number: 5, state: "open" });
   expect(filed).toHaveLength(1);
-  expect(comments[0]!.endsWith(`agent=${originIds("s", "coach").agent}`)).toBe(true);
+  expect(comments[0]!.endsWith(`agent=${originIds("s".repeat(32), "coach").agent}`)).toBe(true);
 });
 
 it("mints a read-only narrowed token and flattens project items", async () => {

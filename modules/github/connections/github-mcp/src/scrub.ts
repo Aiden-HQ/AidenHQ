@@ -46,9 +46,13 @@ export function rendered(text: string): string {
     .replace(/[*_~`]/g, "");
 }
 
-/** Opaque, stable ids for where a report came from: the instance and the agent, keyed by this instance's own secret. */
+/**
+ * Opaque, stable ids for where a report came from: the instance and the agent, keyed by this instance's own origin key
+ * (github_origin_key, used for nothing else). Without a key nothing is filed: throws.
+ */
 export function originIds(secret: string, agent: string): { instance: string; agent: string } {
-  const id = (s: string) => createHmac("sha256", secret || "unset").update(s).digest("hex").slice(0, 12);
+  if (secret.length < 16) throw new Error("no origin key (github_origin_key) is mounted, so nothing is filed upstream; the next apply generates it");
+  const id = (s: string) => createHmac("sha256", secret).update(s).digest("hex").slice(0, 12);
   return { instance: id("aidenhq-instance"), agent: id(`aidenhq-agent:${agent}`) };
 }
 
