@@ -1,10 +1,10 @@
 /**
- * A job's own network namespace (engines.mjs jailed): `node netjail.ts <pasta> <ports|none> <link> bwrap <args...>`.
+ * A job's own network namespace (sandbox.ts jailed): `node netjail.ts <pasta> <ports|none> <link> bwrap <args...>`.
  * bwrap creates the namespace (--unshare-net) and reports its pid (--info-fd 3); pasta joins it with Internet egress
  * through the host's sockets, on the link <link>.0/24, and forwards only <ports> from the job's 127.0.0.1 to the host's;
  * then the sandbox starts (--block-fd 4) with public resolvers (--ro-bind-data 5): the host's own (systemd-resolved,
  * the LAN's server) are out of the job's reach, and pasta 2024-02's --dns-forward doesn't answer. The job's own first
- * step (engines.mjs jailed) makes private ranges and the host's addresses unreachable and drops its capabilities.
+ * step (sandbox.ts jailed) makes private ranges and the host's addresses unreachable and drops its capabilities.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { constants } from "node:os";

@@ -57,7 +57,7 @@
     "id": "A10",
     "attack": "Kernel killed after claim, during execute, during a job",
     "unit": "3e",
-    "test": null
+    "test": "kernel/test/jobs.test.mjs"
   },
   {
     "id": "A11",
@@ -81,19 +81,19 @@
     "id": "H1",
     "attack": "Hostile job: symlink in the workspace pointing outside it",
     "unit": "1a",
-    "test": null
+    "test": "kernel/test/jobs.test.mjs"
   },
   {
     "id": "H2",
     "attack": "Hostile job: reads the vault, data dir, Docker or tailscaled socket, /run/user/<uid>",
     "unit": "1a",
-    "test": null
+    "test": "services/runner/test/sandbox.test.mjs"
   },
   {
     "id": "H3",
     "attack": "Hostile job: calls a module MCP server or a model provider directly, with no bearer or key",
     "unit": "1a",
-    "test": null
+    "test": "services/runner/test/sandbox.test.mjs"
   },
   {
     "id": "H4",

@@ -6,6 +6,8 @@
 //   model or tool call is made.
 // - The backplane listener (10.231.0.1:3130, backplane.ts): the tool proxy in front of every connection, caller identity
 //   and assertions, the control plane as the calling agent, and the records of every write (writes.ts, kernel.db).
+// - Jobs (jobs.ts, sandbox.ts): engine runs in the sandbox, detached, so a restart (KillMode=process) leaves them running;
+//   this process adopts them at start and stops following them (offsets saved) on SIGTERM, SIGINT or SIGUSR2.
 // - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
 import http from "node:http";
 import { existsSync, renameSync, writeFileSync } from "node:fs";
@@ -25,6 +27,10 @@ import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
+import { createJobs, dispatchesFrom } from "./jobs.ts";
+import { jailProblem, overlayProblem } from "./sandbox.ts";
+import { sandboxConfig } from "./sandbox-config.ts";
+import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
 
@@ -73,7 +79,33 @@ const channels = createChannels({ db: records.db, writes, board: boardApi, owner
 const brake = createBrake({ db: records.db, owner: ownerApi, on: () => grantsTable().loop_brake !== "off" });
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
-const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
+// Jobs: the sandbox as configured here. Without a network jail that works, jobs would share the host's network (every loopback
+// service): loudly, so scripts/verify-security.sh and the journal both say so. Build caches without overlay support are shared.
+const sandbox = sandboxConfig(env);
+const jailIssue = jailProblem(sandbox);
+if (jailIssue) {
+  sandbox.pasta = undefined;
+  log("WARNING: jobs share the host's network (every loopback service, the LAN)", { reason: jailIssue });
+}
+if (sandbox.sandbox?.extra_writable_roots?.length) {
+  const overlayIssue = overlayProblem(sandbox);
+  if (overlayIssue) (sandbox.noOverlay = true), log("WARNING: jobs share their build caches read-write (bwrap can't mount overlays; bubblewrap 0.11+ can)", { reason: overlayIssue });
+}
+const jobs = createJobs({
+  db: records.db, cfg: sandbox, log, boxWrap: BOX_EXEC_WRAP,
+  // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key;
+  // their jobcaps are their own grants.
+  mayDispatch: dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {}),
+  jobcaps: (agent) => [grantsTable().agents?.[agent]?.jobcaps ?? []].flat().map(String),
+  cp: {
+    agent: async (id) => { const r = await cpApi(`/api/agents/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
+    task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
+  },
+});
+jobs.adopt();
+// A restart: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved.
+for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
+const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

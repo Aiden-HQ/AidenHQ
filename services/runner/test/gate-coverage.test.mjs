@@ -12,9 +12,9 @@ const moved = (from, to) => files.map((f) => (f === from ? to : f));
 test("every gate file is covered and every entry is used", () => assert.deepEqual(coverageProblems(files), []));
 
 test("a moved gate file fails", () => {
-  const problems = coverageProblems(moved("services/runner/src/netjail.ts", "services/runner/src/jail.ts"));
-  assert.ok(problems.includes("uncovered: services/runner/src/jail.ts"));
-  assert.ok(problems.some((p) => p.startsWith("dead entry: ^services\\/runner\\/src\\/netjail")));
+  const problems = coverageProblems(moved("services/runner/src/state.ts", "services/runner/src/store.ts"));
+  assert.ok(problems.includes("uncovered: services/runner/src/store.ts"));
+  assert.ok(problems.some((p) => p.startsWith("dead entry: ^services\\/runner\\/src\\/state")));
 });
 
 test("a renamed board approvals file fails", () => {

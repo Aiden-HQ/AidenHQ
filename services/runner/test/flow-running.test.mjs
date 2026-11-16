@@ -79,8 +79,8 @@ describe("flow-running", () => {
   describe("restarting the runner, end to end", () => {
     const { waitFor, partComments, claudeRuns, step, say, reviews, running, settled } = t;
 
-    // A restart leaves the run going for the next runner to adopt (test/adopt.test.mjs); here the run dies too while no
-    // runner follows it, so the next one resumes it.
+    // A restart leaves the run going for the next kernel and runner to adopt (test/adopt.test.mjs); here (a reboot) the
+    // kernel goes down too and the run dies while nothing follows it, so the next kernel reports it lost and the runner resumes it.
     it("picks a run back up after it died during a runner restart, in the same session, without calling it stopped", async () => {
       await settled();
       step("slow");
@@ -95,7 +95,10 @@ describe("flow-running", () => {
       const job = state.lastJob("part");
       state.db.close();
       assert.equal(job.status, "running", "left to the next runner");
-      // Killed while no runner follows it (a reboot): its shell records the signal, and the next runner resumes it.
+      const kernelExited = new Promise((r) => t.jobs.p.once("exit", r));
+      t.jobs.p.kill("SIGKILL");
+      await kernelExited;
+      // Killed while nothing follows it (a reboot): its shell records the signal, and the next runner resumes it.
       process.kill(-JSON.parse(job.run_json).pid, "SIGTERM");
       for (const end = Date.now() + 15_000; !existsSync(`${job.log_path}.exit`) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 50));
       assert.equal(readFileSync(`${job.log_path}.exit`, "utf8").trim(), "143");
@@ -103,6 +106,7 @@ describe("flow-running", () => {
       assert.equal(reviews().length, replies, "no reply for the cut-off run");
 
       step("none");
+      t.startJobs();
       t.startRunner();
       await waitFor("the resumed run's reply", () => reviews().length > replies);
       const again = claudeRuns().at(-1);
