@@ -89,6 +89,17 @@ describe("flow-product", () => {
     assert.equal(pings().length, 1, "once per main commit");
   });
 
+  it("main moving again within half an hour asks nobody again", async () => {
+    await t.waitFor("no run going", () => !busy());
+    const pings = () => t.partComments().filter((c) => /now conflicts with `main`/.test(c));
+    const state = new State(join(t.dir, "state"));
+    for (const k of state.db.prepare("SELECT key FROM meta WHERE key LIKE 'rebase-ping:%'").all()) state.set(k.key, ""); // as if main moved
+    state.db.close();
+    await restart();
+    await t.idle(2000);
+    assert.equal(pings().length, 1, "the earlier ask is under 30 minutes old");
+  });
+
   it("a conflicting PR of a cancelled task is closed once, with nothing posted on the task", async () => {
     await t.waitFor("no run going", () => !busy());
     const state = new State(join(t.dir, "state"));

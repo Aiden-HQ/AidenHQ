@@ -424,7 +424,7 @@ async function watchProductPrs() {
     if (!conflict && state.get(`environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`)) continue;
     // Only an agent's own PR: one a task here opened, authored by the App's bot where there is one.
     // The task whose branch is this PR's head: a reused PR number (a recreated repository) belongs to nobody here.
-    const issueId = state.issuesWithPrs([pr.url], "").filter((id) => state.branches(id).some((b) => b.branch === pr.headRefName && !b.merged)).at(-1);
+    const [issueId, ...older] = state.issuesWithPrs([pr.url], "").filter((id) => state.branches(id).some((b) => b.branch === pr.headRefName && !b.merged)).reverse();
     if (!issueId || (bot && pr.author?.login !== bot)) continue;
     // A red check whose job never started (GitHub refused it: billing, no runner) is the environment's: it is re-run at this
     // same head once and then said once, and it never asks for a rebase or a new head.
@@ -432,9 +432,9 @@ async function watchProductPrs() {
     const want = prAttention(pr, main.rollup, env);
     if (!want) continue;
     // Only a task that can still publish is asked or told. A comment on a finished task reopens it (Paperclip), so a done
-    // task's PR is left alone and a cancelled task's PR is closed once, with the reason on the PR.
+    // task's PR is left alone and a cancelled task's PR (no other task on its branch) is closed once, with the reason on the PR.
     const issue = await pc.issue(issueId);
-    if (issue.status === "cancelled" && !state.get(`abandoned:${url}`)) {
+    if (issue.status === "cancelled" && !older.length && !state.get(`abandoned:${url}`)) {
       state.set(`abandoned:${url}`, new Date().toISOString());
       log("abandoned PR", { pr: pr.url, issue: issue.identifier, closed: (await merges.closePrs([{ repo, number: pr.number, url: pr.url }], `Closed by the runner: ${issue.identifier}, the task this PR was for, is cancelled.`, mergeGithub))[0] });
     }
