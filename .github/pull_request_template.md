@@ -1,12 +1,22 @@
 <!-- Title: a Conventional Commit, e.g. `fix(board): keep the drawer open on refresh`. It becomes the squash commit. -->
 
-## What and why
+## What changed
 
-<!-- Why is this change needed, and why this way? Link an issue if there is one. -->
+## Why
 
-## How it was tested
+<!-- The problem, and why this is the fix. -->
 
-<!-- Packages whose tests and typecheck you ran; anything tried on a live instance. -->
+## Evidence
+
+<!-- Tests and typechecks you ran per package, CI links, anything tried on a live instance. Fenced output beats prose. -->
+
+## Issue
+
+<!-- `Fixes #123`, or "none". -->
+
+## Origin
+
+<!-- `instance=<instance_name> agent=<agent_key>` for a PR from an AidenHQ agent, or `human`. -->
 
 ## Checklist
 
@@ -14,5 +24,5 @@
 - [ ] Touches gate files (`services/runner/src/tiers.mjs`, `services/runner/src/review.mjs`, `kernel/`, `services/gate/`, `ops/`, `scripts/paperclip-setup.mjs`)? Say which.
 - [ ] Touches the AI reviewer, its policy or `reviewer-cases/`? The maintainer must run `reviewer-eval.mjs` before merging.
 - [ ] Ran `node scripts/sync-shared.mjs` if `services/shared/` changed
-- [ ] No secrets or personal data (names, emails, ids, hostnames, IPs, org names)
+- [ ] Owner data scrubbed: no names, emails, Slack/Telegram ids, hostnames, IPs, org names, tokens or secrets in the diff, tests, logs or this description
 - [ ] I have read [CLA.md](../CLA.md) and agree to it for this and my future contributions (and, if my employer has rights in this work, I have its permission)
