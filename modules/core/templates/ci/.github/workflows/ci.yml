@@ -9,9 +9,10 @@
 # naming auth, security, tokens, sessions or permissions) plus the app's own `.github/code-review-critical`: one glob per
 # line (bash pattern: `*` also matches `/`, so `src/server/db/*` covers everything under it), `#` comments allowed. That
 # file is read from the default branch, never the PR, so a PR can't drop its own critical paths (and editing it is itself
-# critical: it is under .github/). Lockfiles (package-lock.json, npm-shrinkwrap.json, pnpm-lock.yaml, yarn.lock,
-# bun.lockb, Cargo.lock, poetry.lock, uv.lock, go.sum, at any depth) are left out of the changed-line count (which counts
-# added lines only: deletions are free) and never raise the depth: the supply-chain checks already gate every dependency, and codegenie skips lock files in its own diff.
+# critical: it is under .github/). package-lock.json (any depth) is left out of the changed-line count and never raises
+# the depth: npm-age.mjs in the supply-chain job validates every entry it changes. Other lockfiles (npm-shrinkwrap.json,
+# pnpm-lock.yaml, yarn.lock, Cargo.lock, ...) have no supply-chain check, so they count and stay critical. Depth is light
+# whatever the size, and the small-change skip counts added plus deleted lines (a deletion can remove a guard).
 name: ci
 
 on:
@@ -183,12 +184,13 @@ jobs:
         with:
           node-version: 24.x
       # Review only what changed since this PR's last green code review (codegenie-prior.mjs, from the base commit; full
-      # when it isn't there yet, or on any doubt): delta, reuse when the patch is the same (a rebase, or the branch reopened as a new PR), or full. Its own step,
+      # when it isn't there yet, or on any doubt): delta, reuse when the patch is the same (a stacked rebase onto a base that only moved forward, or the branch reopened as a new PR), or full. Its own step,
       # so codegenie never gets the token.
       - name: Prior review
         env:
           GITHUB_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
           out=""
@@ -218,14 +220,13 @@ jobs:
           # Depth: light by default, whatever the size (a big diff gets more calls through --budget-boost below). Normal
           # when the diff touches a critical path (see the header) or can't be read. Deep only when asked: the PR's
           # `deep-review` label.
-          # Lockfiles (see the header) are out of both the line count and the critical-path list.
-          nolock=(':(exclude,glob)**/package-lock.json' ':(exclude,glob)**/npm-shrinkwrap.json' ':(exclude,glob)**/pnpm-lock.yaml'
-            ':(exclude,glob)**/yarn.lock' ':(exclude,glob)**/bun.lockb' ':(exclude,glob)**/Cargo.lock' ':(exclude,glob)**/poetry.lock'
-            ':(exclude,glob)**/uv.lock' ':(exclude,glob)**/go.sum')
+          # package-lock.json (see the header) is out of both the line count and the critical-path list.
+          nolock=(':(exclude,glob)**/package-lock.json')
           unreadable=""
           stat=$(git diff --numstat "$from...$HEAD_SHA" -- . "${nolock[@]}") || { stat=""; unreadable=1; }
-          # Added lines only: a deletion needs no review, so a deletion-only diff is light (and skipped when small).
-          lines=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 1000; next} {n += $1} END {print n + 0}')
+          # lines: added plus deleted (the small-change skip below); added: added only (the budget boost).
+          lines=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 1000; next} {n += $1 + $2} END {print n + 0}')
+          added=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 1000; next} {n += $1} END {print n + 0}')
           # The app's own list comes from the default branch (as fetched at checkout), never the PR's head.
           globs=$(git show "origin/$DEFAULT_BRANCH:.github/code-review-critical" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v -e '^#' -e '^$')
           critical=""
@@ -252,7 +253,7 @@ jobs:
           # A large diff spends codegenie's per-packet call budget before it finishes ("LLM provider call budget
           # exhausted"), which fails the check without a single finding: scale the budget with the diff's size.
           boost=1
-          if [ "$lines" -gt 6000 ]; then boost=4; elif [ "$lines" -gt 2000 ]; then boost=2; fi
+          if [ "$added" -gt 6000 ]; then boost=4; elif [ "$added" -gt 2000 ]; then boost=2; fi
           # Tiny PRs in non-sensitive files (still light: no sensitive path, no deep-review label) skip the review. Only a
           # whole PR: a delta is always reviewed, or a big PR could skip its review through small follow-up pushes.
           if [ "${REVIEW_MODE:-full}" = full ] && [ "$depth" = light ] && [ "$lines" -lt 20 ]; then

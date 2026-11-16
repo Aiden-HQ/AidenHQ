@@ -4,13 +4,15 @@
 // earlier head, and the state status that same run set on it), never a PR comment.
 //   full:  review the whole PR (no trusted green review, a merge-base that moved, the deep-review label, or the guard)
 //   delta: the old head is an ancestor and the merge-base is the same: review only old..new
-//   reuse: a head whose patch is the same as the last green head's, on any merge-base (a rebase, a rewrite, or the same
-//          branch reopened as a new PR): pass on the old verdict, no model calls. The patch is the exact changed lines
-//          per path, so a changed line (whitespace too) is never reused; lockfiles are left out.
-// Splitting guard: after MAX_STEPS deltas or MAX_LINES delta lines (added lines, lockfiles excluded) since the last full
-// review, review it whole again.
+//   reuse: the patch is the same as the last green head's (a stacked rebase onto a base that only moved forward, a rewrite,
+//          or the same branch reopened as a new PR): pass on the old verdict, no model calls. Only when that run's PR
+//          targeted the same base ref, from this repo (no forks), and its merge-base is an ancestor of this one's.
+//          The patch is the full diff with 3 lines of context, hunk headings (not line numbers), modes and paths, lockfiles
+//          included, so the same lines in a different place, or any changed line (whitespace too), is never reused.
+// Splitting guard: after MAX_STEPS deltas or MAX_LINES delta lines (added plus deleted; package-lock.json excluded) since
+// the last full review, review it whole again.
 //   node codegenie-prior.mjs  ->  "<mode> <from sha or -> <deltas since full> <delta lines since full> <merge-base>"
-// Env: GITHUB_TOKEN (actions: read), GITHUB_REPOSITORY, HEAD_REF, BASE_SHA, HEAD_SHA, DEFAULT_BRANCH,
+// Env: GITHUB_TOKEN (actions: read), GITHUB_REPOSITORY, HEAD_REF, BASE_REF, BASE_SHA, HEAD_SHA, DEFAULT_BRANCH,
 // PR_LABELS, GITHUB_API_URL. No dependencies; Node 22+.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -18,20 +20,20 @@ import { pathToFileURL } from "node:url";
 export const STATE = "code-review/state"; // the commit status this workflow sets on a head whose code-review passed
 const MAX_STEPS = 3;
 const MAX_LINES = 2000;
-// Lockfiles never count as changed lines or as part of the patch (the supply-chain checks gate dependencies).
-export const NOLOCK = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "Cargo.lock", "poetry.lock", "uv.lock", "go.sum"]
-  .map((f) => `:(exclude,glob)**/${f}`);
+// package-lock.json is not counted as changed lines: npm-age.mjs validates what it changes. It stays in the patch.
+export const NOLOCK = [":(exclude,glob)**/package-lock.json"];
 const FULL = { mode: "full", from: "", n: 0, lines: 0 };
 const CI_FILES = [".github/workflows/ci.yml", ".github/codegenie-gate.mjs", ".github/codegenie-prior.mjs"];
 
 /** The PR's last green head before `head`, with the state its run recorded: { sha, n, lines, mb }, or undefined. */
-async function lastGreen(api, { repo, headRef, head }) {
+async function lastGreen(api, { repo, headRef, baseRef, head }) {
   const { workflow_runs: runs = [] } = await api(`/repos/${repo}/actions/workflows/ci.yml/runs?event=pull_request&branch=${encodeURIComponent(headRef)}&per_page=50`);
   const red = new Set(); // heads whose latest code review failed: an older green run on the same head no longer counts
   for (const run of runs) { // newest first
-    // Any PR of this repo's branch counts, not only this PR number: the patch decides reuse, so a reopened branch isn't
-    // reviewed again from scratch. A fork's run of the same branch name is not this repo's.
-    if (run.head_sha === head || red.has(run.head_sha) || run.head_branch !== headRef || run.head_repository?.full_name !== repo) continue;
+    // Any PR of this repo's branch counts, not only this PR number, so a reopened branch isn't reviewed again from
+    // scratch; but only one that targeted the same base ref, and never a fork's run of the same branch name.
+    if (run.head_sha === head || red.has(run.head_sha) || run.head_branch !== headRef || run.head_repository?.full_name !== repo
+      || !run.pull_requests?.some((p) => p.base?.ref === baseRef)) continue;
     const { jobs = [] } = await api(`/repos/${repo}/actions/runs/${run.id}/jobs`);
     const conclusion = jobs.find((j) => j.name === "code-review")?.conclusion;
     if (conclusion === "failure" || conclusion === "timed_out") red.add(run.head_sha);
@@ -53,12 +55,12 @@ async function lastGreen(api, { repo, headRef, head }) {
  * same one (a retargeted PR's merge-base moves). git(...args, { input }?) returns trimmed stdout and throws on a non-zero
  * exit.
  */
-export async function decide({ api, git, repo, headRef, base, head, defaultRef, labels = "", fetchCommit = () => {} }) {
+export async function decide({ api, git, repo, headRef, baseRef, base, head, defaultRef, labels = "", fetchCommit = () => {} }) {
   const mergeBase = (sha) => git("merge-base", base, sha);
   const mb = mergeBase(head);
   const full = { ...FULL, mb };
   if (`,${labels},`.includes(",deep-review,")) return full;
-  const last = await lastGreen(api, { repo, headRef, head });
+  const last = await lastGreen(api, { repo, headRef, baseRef, head });
   if (!last) return full;
   const ok = (...a) => { try { git(...a); return true; } catch { return false; } };
   if (!ok("cat-file", "-e", `${last.sha}^{commit}`)) {
@@ -71,19 +73,21 @@ export async function decide({ api, git, repo, headRef, base, head, defaultRef, 
   const blob = (ref, f) => { try { return git("rev-parse", `${ref}:${f}`); } catch { return undefined; } };
   if (!CI_FILES.every((f) => blob(last.sha, f) && blob(last.sha, f) === blob(defaultRef, f))) return full;
   if ([last.sha, head].some((sha) => !ok("diff", "--quiet", mergeBase(sha), sha, "--", ".github/"))) return full;
-  // The same patch: the changed lines of each path (+/- lines, file headers and modes) against each head's own merge-base,
-  // so a rebase onto a newer base still matches while any added, removed or reworded line (whitespace included) doesn't.
-  // A binary change can't be compared this way: reviewed again.
+  // The same patch: the full diff against each head's own merge-base with 3 lines of context, so the changed lines and
+  // where they sit (context, hunk headings, paths, modes) all match; line numbers are dropped so a rebase that shifts
+  // them still matches. Lockfiles are included. A binary change can't be compared: reviewed again.
   const patch = (sha) => {
-    const d = git("diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", mergeBase(sha), sha, "--", ".", ...NOLOCK);
-    return /^(Binary files|GIT binary patch)/m.test(d) ? undefined : d.split("\n").filter((l) => /^(diff --git |[+-]|(old|new) mode|new file mode|deleted file mode)/.test(l)).join("\n");
+    const d = git("diff", "-U3", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", mergeBase(sha), sha);
+    return /^(Binary files|GIT binary patch)/m.test(d) ? undefined
+      : d.split("\n").filter((l) => !l.startsWith("index ")).map((l) => l.replace(/^@@ [^@]* @@/, "@@")).join("\n");
   };
-  const was = patch(last.sha);
+  // Reuse only when the base moved forward (the last head's merge-base is an ancestor of this one's, or the same).
+  const was = ok("merge-base", "--is-ancestor", last.mb, mb) ? patch(last.sha) : undefined;
   if (was !== undefined && was === patch(head)) return { mode: "reuse", from: last.sha, n: last.n, lines: last.lines, mb };
   // A delta needs the same merge-base; a rebase that also adds commits is reviewed whole.
   if (last.mb === mb && mergeBase(last.sha) === mb && ok("merge-base", "--is-ancestor", last.sha, head)) {
     const lines = git("diff", "--numstat", `${last.sha}..${head}`, "--", ".", ...NOLOCK).split("\n").filter(Boolean)
-      .reduce((n, l) => { const a = l.split("\t")[0]; return n + (a === "-" ? 1000 : Number(a)); }, 0);
+      .reduce((n, l) => { const [a, d] = l.split("\t"); return n + (a === "-" ? 1000 : Number(a) + Number(d)); }, 0);
     if (last.n >= MAX_STEPS || last.lines + lines > MAX_LINES) return full;
     return { mode: "delta", from: last.sha, n: last.n + 1, lines: last.lines + lines, mb };
   }
@@ -91,7 +95,7 @@ export async function decide({ api, git, repo, headRef, base, head, defaultRef, 
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const { GITHUB_TOKEN: token, GITHUB_REPOSITORY: repo, HEAD_REF, BASE_SHA, HEAD_SHA, PR_LABELS } = process.env;
+  const { GITHUB_TOKEN: token, GITHUB_REPOSITORY: repo, HEAD_REF, BASE_REF, BASE_SHA, HEAD_SHA, PR_LABELS } = process.env;
   const apiUrl = process.env.GITHUB_API_URL || "https://api.github.com";
   const api = async (path) => {
     const r = await fetch(`${apiUrl}${path}`, { headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" } });
@@ -109,7 +113,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   try {
     const { DEFAULT_BRANCH } = process.env;
     git("-c", `http.extraHeader=${auth}`, "fetch", "--no-tags", "origin", `+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}`);
-    r = await decide({ api, git, repo, headRef: HEAD_REF, base: BASE_SHA, head: HEAD_SHA, defaultRef: `origin/${DEFAULT_BRANCH}`, labels: PR_LABELS, fetchCommit });
+    r = await decide({ api, git, repo, headRef: HEAD_REF, baseRef: BASE_REF, base: BASE_SHA, head: HEAD_SHA, defaultRef: `origin/${DEFAULT_BRANCH}`, labels: PR_LABELS, fetchCommit });
   } catch (err) {
     console.error(`::warning::Couldn't read this PR's last green code review (${err.message}): reviewing it whole.`);
   }

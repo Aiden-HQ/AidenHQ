@@ -135,7 +135,7 @@ test("the Review step skips a tiny PR, never a delta, and picks depth from criti
   g("checkout", "-q", base);
   mkdirSync(join(dir, "app"), { recursive: true });
   writeFileSync(join(dir, "package-lock.json"), "x\n".repeat(900));
-  writeFileSync(join(dir, "app", "yarn.lock"), "x\n".repeat(900));
+  writeFileSync(join(dir, "app", "package-lock.json"), "x\n".repeat(900));
   writeFileSync(join(dir, "c.ts"), "x\n".repeat(10));
   g("add", ".");
   g("commit", "-qm", "lockfiles");
@@ -143,6 +143,13 @@ test("the Review step skips a tiny PR, never a delta, and picks depth from criti
   assert.match(lockOut, /10 changed lines/);
   assert.match(genv, /REVIEW_DEPTH=light\nREVIEW_CRITICAL=\n/);
   assert.match(genv, /CODE_REVIEW_SKIPPED=1/);
+  writeFileSync(join(dir, "app", "yarn.lock"), "x\n".repeat(900)); // no supply-chain check covers it: counted, critical
+  g("add", ".");
+  g("commit", "-qm", "yarn");
+  [lockOut, genv] = runReview();
+  assert.match(lockOut, /Changed lines: 910, review depth: normal \(touches app\/yarn.lock\)/);
+  assert.doesNotMatch(genv, /CODE_REVIEW_SKIPPED/);
+  g("checkout", "-q", base);
   writeFileSync(join(dir, "package.json"), "{}\n");
   g("add", ".");
   g("commit", "-qm", "manifest");
@@ -154,9 +161,10 @@ test("the Review step skips a tiny PR, never a delta, and picks depth from criti
   const withBig = g("rev-parse", "HEAD");
   g("rm", "-q", "big.ts");
   g("commit", "-qm", "delete big");
-  [, genv] = runReview({ BASE_SHA: withBig });
+  [lockOut, genv] = runReview({ BASE_SHA: withBig });
   assert.match(genv, /REVIEW_DEPTH=light/);
-  assert.match(genv, /CODE_REVIEW_SKIPPED=1/, "a deletion-only diff is skipped");
+  assert.match(lockOut, /Changed lines: 800/);
+  assert.doesNotMatch(genv, /CODE_REVIEW_SKIPPED/, "800 deleted lines are light but never skipped");
   g("checkout", "-q", base);
   writeFileSync(join(dir, ".github", "code-review-critical"), "src/x/*\n");
   g("add", ".");
@@ -291,11 +299,11 @@ test("prior review: delta, reuse of the same patch on any base or PR number, els
   git("checkout", "-q", "-b", "ci-moved", base2);
   commit(".github/workflows/ci.yml", "a newer ci.yml\n");
 
-  const decideOn = (head, b, state, { fork = false, creator = "github-actions[bot]", defaultRef = "main", redAfter = false, setAt = "2026-01-01T00:30:00Z", mb = base } = {}) => decide({
-    git, repo: "acme/app", pr: 1, headRef: "pr", base: b, head, defaultRef,
+  const decideOn = (head, b, state, { prior = green, runBase = "main", fork = false, creator = "github-actions[bot]", defaultRef = "main", redAfter = false, setAt = "2026-01-01T00:30:00Z", mb = base } = {}) => decide({
+    git, repo: "acme/app", headRef: "pr", baseRef: "main", base: b, head, defaultRef,
     api: async (path) => {
       assert.doesNotMatch(path, /comments/, "PR comments are never read");
-      const run = (id) => ({ id, head_sha: green, head_branch: "pr", head_repository: { full_name: fork ? "evil/app" : "acme/app" }, pull_requests: [], run_started_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T01:00:00Z" });
+      const run = (id) => ({ id, head_sha: prior, head_branch: "pr", head_repository: { full_name: fork ? "evil/app" : "acme/app" }, pull_requests: [{ number: 1, base: { ref: runBase } }], run_started_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T01:00:00Z" });
       if (path.includes("/workflows/ci.yml/runs")) return { workflow_runs: [...(redAfter ? [run(8)] : []), run(7)] };
       if (path.includes("/runs/")) return { jobs: [{ name: "code-review", conclusion: path.includes("/runs/8/") ? "failure" : "success" }] };
       return [{ context: STATE, state: "success", creator: { login: creator }, target_url: "https://github.com/acme/app/actions/runs/7", created_at: setAt, description: `${state} mb=${mb}` }];
@@ -307,6 +315,14 @@ test("prior review: delta, reuse of the same patch on any base or PR number, els
   // The same patch reuses the verdict on any base (a rebase of a stacked PR), and under any PR number (a reopened branch).
   assert.deepEqual(await decideOn(rebased, base2, "delta n=1 lines=40"), { mode: "reuse", from: green, n: 1, lines: 40, mb: base2 }, "a rebase with the same patch is reused");
   assert.equal((await decideOn(rebased, base2, "delta n=1 lines=40", { mb: base2 })).mode, "reuse");
+  // Same lines in another place (the same +/- lines under -U0, different context), another base ref, a base that moved back.
+  git("checkout", "-q", "-b", "top", base);
+  const onTop = commit("README.md", "NEW\nx\n");
+  git("checkout", "-q", "-b", "bottom", base);
+  const onBottom = commit("README.md", "x\nNEW\n");
+  assert.equal((await decideOn(onBottom, base, "full n=0 lines=0", { prior: onTop })).mode, "full", "moved-but-identical lines are not reused");
+  assert.equal((await decideOn(rebased, base2, "full n=0 lines=0", { runBase: "develop" })).mode, "full", "a different base ref");
+  assert.equal((await decideOn(reworded, base, "full n=0 lines=0", { mb: base2 })).mode, "full", "a base that moved back");
   // A rebase that also changes the patch is reviewed whole; a fork's run of the same branch name is no prior review.
   git("checkout", "-q", "rebased");
   const rebasedPlus = commit("a.txt", lines(15));

@@ -294,8 +294,7 @@ launcher; a new image applies from the next acquire) and
 ## CI runners (modules/ci)
 
 App repos' CI (`modules/core/templates/ci`: jobs `tests` and `code-review`; `code-review` skips codegenie and passes on a
-change under 20 lines with no sensitive path; lockfiles are not counted in those lines and never make a path sensitive,
-since the supply-chain jobs gate every dependency and codegenie skips lock files itself) runs on our own GitHub Actions runners,
+change under 20 added plus deleted lines with no sensitive path; `package-lock.json`, which the supply-chain job validates, is not counted and never makes a path sensitive, while other lockfiles are and do; a head whose patch is unchanged since a green review of the same branch and base ref, on a base that only moved forward, reuses that verdict) runs on our own GitHub Actions runners,
 `runs-on: [self-hosted, aidenhq]`, registered to the agents org. The product repo's CI (`.github/workflows/`) runs on
 the same kind of runner, registered to the product repo's org (below). Each `aidenhq-ci-runner@<n>` user unit (agents
 org) or `aidenhq-ci-runner@<org>-<n>` unit (another org the App is installed on) runs
