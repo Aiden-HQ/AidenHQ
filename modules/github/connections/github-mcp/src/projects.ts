@@ -4,6 +4,7 @@
 import { createSign } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { scrubProblems } from "./scrub.js";
 
 const API = "https://api.github.com";
 const PERMISSIONS = { organization_projects: "read", issues: "read", pull_requests: "read" };
@@ -41,6 +42,27 @@ export function productTarget(roles: readonly string[] | undefined, configured: 
   const m = configured.trim().match(/^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/);
   if (!m) throw new Error("no product repo is configured (setting product_repo)");
   return [m[1]!, m[2]!];
+}
+
+/**
+ * A product-bug report ready to file upstream: the body with its evidence and where it came from (spec §6.9a), checked by the
+ * owner-data scrub over everything the agent wrote first. Throws with the matches; nothing is sent.
+ */
+export function upstreamReport(
+  a: { fingerprint: string; title: string; body: string; evidence: { module: string; version: string; reproduction: string; log: string } },
+  origin: { instance: string; agent: string },
+  terms: string[],
+): { fingerprint: string; title: string; body: string } {
+  const e = a.evidence;
+  const hits = scrubProblems([a.fingerprint, a.title, a.body, e.module, e.version, e.reproduction, e.log].join("\n"), terms);
+  if (hits.length) throw new Error(`owner data can't go into a public issue; redact these and file again: ${hits.join("; ")}`);
+  const fence = "`".repeat(Math.max(3, ...[...e.log.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+  const name = (s: string) => s.replace(/[^\w.-]/g, "") || "unknown";
+  return {
+    fingerprint: a.fingerprint,
+    title: a.title,
+    body: `${a.body}\n\n**Module:** ${e.module}@${e.version}\n\n**Reproduction**\n\n${e.reproduction}\n\n**Evidence**\n\n${fence}text\n${e.log}\n${fence}\n\nOrigin: instance=${name(origin.instance)} agent=${name(origin.agent)}`,
+  };
 }
 
 export class Projects {

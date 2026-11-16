@@ -5,7 +5,8 @@
 // it to those requests. Reads of repos the instance's GitHub App covers use its read-only token instead.
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { Projects, productTarget } from "./projects.js";
+import { Projects, productTarget, upstreamReport } from "./projects.js";
+import { ownerTerms } from "./scrub.js";
 import { SourceStore } from "./source-store.js";
 import { startSync } from "./sources.js";
 import { createServer, type IncomingMessage } from "node:http";
@@ -24,6 +25,9 @@ const inboundToken = tokenFile && existsSync(tokenFile) ? readFileSync(tokenFile
 const agentsOrg = (process.env.GITHUB_AGENTS_ORG ?? "").trim().toLowerCase();
 // The product repo (owner/repo) the fleet reports product bugs to: github_app_issue writes only there.
 const PRODUCT_REPO = (process.env.GITHUB_PRODUCT_REPO ?? "").trim();
+// The instance a product issue says it came from, and the owner-data scrub's literals (scrub.ts).
+const INSTANCE = (process.env.GITHUB_INSTANCE ?? "").trim();
+const OWNER_TERMS = ownerTerms(process.env.GITHUB_OWNER_TERMS ?? "", PRODUCT_REPO);
 const commentOrgs = new Set((process.env.GITHUB_COMMENT_ORGS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
 // Who is calling: the kernel's signed assertion (the kernel enforces grants).
 const jwks = kernelJwks();
@@ -167,13 +171,29 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_app_issue",
     {
-      description: `Report a product bug on the product repo (${PRODUCT_REPO || "none configured"}) as the instance's GitHub App (the fleet's own identity, never the user's). Deduped by \`fingerprint\`: the issue carrying it (an open one first, else the latest closed one) gets \`body\` as a comment (deduplicated: true, with its state); only a new fingerprint opens an issue with \`title\`, the fingerprint on its last line. Markdown body, posted exactly as given and public to the product repo's readers; it can't be edited or deleted from here.`,
-      inputSchema: { fingerprint: FINGERPRINT, title: z.string().min(1).max(256), body: z.string().min(1).max(20_000) },
+      description: `Report a product bug on the product repo (${PRODUCT_REPO || "none configured"}) as the instance's GitHub App (the fleet's own identity, never the user's). Deduped by \`fingerprint\`: the issue carrying it (an open one first, else the latest closed one) gets the report as a comment (deduplicated: true, with its state); only a new fingerprint opens an issue with \`title\`. The report is \`body\` plus \`evidence\` (module, product version, reproduction, log lines), then the instance and agent it came from and the fingerprint. Public to the product repo's readers and can't be edited or deleted from here, so owner data is refused before anything is sent: names, emails, hosts, IPs, account and chat ids, uuids and credentials; redact and file again.`,
+      inputSchema: {
+        fingerprint: FINGERPRINT,
+        title: z.string().min(1).max(256),
+        body: z.string().min(1).max(20_000),
+        evidence: z.object({
+          module: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).describe("the module the defect is in (kernel for the kernel)"),
+          version: z.string().regex(/^(?:[0-9a-f]{7,40}|v?\d+(?:\.\d+){1,3})$/).describe("the product sha (instance.yaml product:) or release it was seen at"),
+          reproduction: z.string().min(1).max(4000).describe("numbered steps, expected and actual"),
+          log: z.string().min(1).max(8000).describe("the failing check, error text or log lines, trimmed to what matters"),
+        }).strict(),
+      },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
-    run("github_app_issue", async (a: { fingerprint: string; title: string; body: string }) => {
+    run("github_app_issue", async (a: Parameters<typeof upstreamReport>[0]) => {
       const [owner, name] = productRepo();
-      const out = await projects.reportIssue(owner, name, a);
+      let report;
+      try {
+        report = upstreamReport(a, { instance: INSTANCE, agent: caller?.key ?? "" }, OWNER_TERMS);
+      } catch (err) {
+        throw new GitHubRefused((err as Error).message);
+      }
+      const out = await projects.reportIssue(owner, name, report);
       log.info({ number: out.number, deduplicated: out.deduplicated }, "product issue written as the App");
       return out;
     }),

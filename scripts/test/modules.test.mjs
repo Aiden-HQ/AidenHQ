@@ -219,6 +219,16 @@ test("engineering is the job dispatcher: its token, and every dispatch: runner a
   assert.deepEqual(e.dispatches, runAgents);
   for (const [n, m] of Object.entries(r.kernelModules.modules)) if (n !== "engineering") assert.equal(m.dispatches, undefined, n);
 });
+test("upstream: off grants no upstream tool; issues grants both; the scrub's terms and the instance reach github-mcp", () => {
+  const settings = (upstream) => ({ timezone: "Europe/London", owner_name: "Ada", owner_slack_user_id: "U1", owner_email: "ada@acme.example", instance_name: "acme", github_orgs: ["acme-co", "upstream-org"], product_repo: "upstream-org/product", jira_url: "https://jira.acme.example/x", ...(upstream ? { upstream } : {}) });
+  const fleet = (upstream) => compile(repo, inst(["github", "fleet-ops", "primer"], settings(upstream))).paperclip.agents["fleet-ops"];
+  assert.equal(fleet("off").enabled_tools.github, undefined);
+  for (const v of [undefined, "issues", "prs"]) assert.deepEqual(fleet(v).enabled_tools.github, ["github_app_issue", "github_app_issue_status"], String(v));
+  assert.throws(() => fleet("maybe"), /upstream/);
+  const env = compile(repo, inst(["github", "fleet-ops", "primer"], settings())).compose.services["github-mcp"].environment;
+  assert.equal(env.GITHUB_INSTANCE, "acme");
+  assert.deepEqual(env.GITHUB_OWNER_TERMS.split(",").sort(), ["Ada", "acme-co", "acme.example", "ada@acme.example", "aidenhq-acme", "jira.acme.example", "upstream-org"].sort());
+});
 test("Slack Scout's read grant has no draft tool", () => {
   const dir = inst(["open-loops", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "e@x" });
   const r = compile(repo, dir);

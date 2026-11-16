@@ -5,6 +5,12 @@ settings:
   # bugs. Unset (null) leaves github_app_issue refusing.
   product_repo:
     default: null
+  # Contributing to the product upstream (spec §6.9a; a platform setting, here until the platform module lands): "issues"
+  # grants the connection's upstream tools (github_app_issue and its status read) to the agents that name them; "off" grants
+  # none. "prs" is accepted and acts as "issues" until upstream PRs from a bot account's fork exist.
+  upstream:
+    default: issues
+    values: ["off", "issues", "prs"]
 connections:
   github:
     setup: "Run `gh auth login`, then `scripts/github-auth.sh` on the host. Repo writes go through the runner's GitHub App (`node ops/github-app-setup.mjs`)."
@@ -19,6 +25,8 @@ connections:
       # for the product-issues role (Fleet Ops). Tagged destructive so neither `github: read` nor `github: write` includes
       # them: an agent gets them only by naming them.
       destructive: [ github_app_issue, github_app_issue_status ]
+    # Granted only while the upstream setting allows issues.
+    upstream: [ github_app_issue, github_app_issue_status ]
 services:
   run:
     github-mcp:
@@ -33,6 +41,10 @@ services:
         GITHUB_AGENTS_ORG: "${settings.agents_org}"
         # Product bugs (github_app_issue) go only to this repo.
         GITHUB_PRODUCT_REPO: "${settings.product_repo}"
+        # Each product issue names the instance it came from; the owner-data scrub refuses this instance's own names and
+        # hosts (compiled from its settings) in anything filed there.
+        GITHUB_INSTANCE: "${settings.upstream_instance}"
+        GITHUB_OWNER_TERMS: "${settings.owner_terms}"
         MCP_TOKEN_FILE: ${secrets.github_service_key}
         # Shared sources (src_github): the orgs it syncs (github_orgs plus the agents org) and its warehouse login.
         GITHUB_SYNC_ORGS: "${settings.github_sync_orgs}"
