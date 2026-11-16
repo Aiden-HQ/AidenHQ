@@ -347,22 +347,28 @@ const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|ya?ml|log|html?|tsx|ts|jsx|js|
 /**
  * A text cut to `max` characters for the prompt: the start and the end, with the middle replaced by a marker that names how
  * many characters were cut. A test log's verdict is at its end, so cutting only the head would hide the proof a criterion
- * asks for; the marker makes the cut explicit rather than letting a cut file read as the whole file.
+ * asks for. A cut is always marked: when not even the marker fits, this returns undefined and the caller says the file was
+ * not sent, so the trusted facts never claim a marker that is absent.
  */
-function excerpt(text: string, max: number): { shown: string; cut: number } {
+function excerpt(text: string, max: number): { shown: string; cut: number } | undefined {
   if (text.length <= max) return { shown: text, cut: 0 };
-  const marker = (from: number, to: number) => `\n[... characters ${from + 1}-${to} cut ...]\n`;
+  const marker = (head: number, tail: number) => `\n[... characters ${head + 1}-${text.length - tail} cut ...]\n`;
   let head = Math.floor(max * 0.6);
   let tail = max - head;
-  let cut = text.length - head - tail;
-  if (head + tail + marker(head, text.length - tail).length > max) {
-    const room = Math.max(0, max - marker(head, text.length - tail).length);
-    head = Math.floor(room * 0.6);
-    tail = room - head;
-    cut = text.length - head - tail;
+  for (let i = 0; i < 8; i++) {
+    const m = marker(head, tail);
+    const room = max - m.length;
+    if (room < 0) break;
+    if (head + tail <= room) return { shown: text.slice(0, head) + m + text.slice(text.length - tail), cut: text.length - head - tail };
+    const nextHead = Math.floor(room * 0.6);
+    const nextTail = room - nextHead;
+    if (nextHead === head && nextTail === tail) break;
+    head = nextHead;
+    tail = nextTail;
   }
-  if (head + tail + marker(head, text.length - tail).length > max) return { shown: text.slice(0, max), cut: text.length - max };
-  return { shown: text.slice(0, head) + marker(head, text.length - tail) + text.slice(text.length - tail), cut };
+  // No room for text beside the marker: the marker alone still says the whole file was cut, when it fits.
+  const only = marker(0, 0);
+  return only.length <= max ? { shown: only, cut: text.length } : undefined;
 }
 
 /** A PNG made to fit: downscaled until its longest side is at most IMAGE_SIDE and its bytes IMAGE_BYTES, or null. */
@@ -455,10 +461,14 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       continue;
     }
     const text = buf.toString("utf8");
-    const { shown, cut } = excerpt(text, Math.min(TEXT_FILE, textLeft));
-    textLeft -= shown.length;
-    texts.push(`=== ${f.label}: ${name.slice(0, 200)} ===\n${shown}`);
-    facts.push(`${f.label}: text, ${text.length} characters, in FILES${cut ? ` (too large: ${cut} characters cut from the middle, marked in FILES; ${shown.length} characters shown)` : ""}`);
+    const ex = excerpt(text, Math.min(TEXT_FILE, textLeft));
+    if (!ex) {
+      facts.push(`${f.label}: text, ${text.length} characters, not sent to the grader (the remaining text budget of ${textLeft} characters has no room for a cut marker)`);
+      continue;
+    }
+    textLeft -= ex.shown.length;
+    texts.push(`=== ${f.label}: ${name.slice(0, 200)} ===\n${ex.shown}`);
+    facts.push(`${f.label}: text, ${text.length} characters, in FILES${ex.cut ? ` (too large: ${ex.cut} characters cut from the middle, marked in FILES; ${ex.shown.length} characters shown)` : ""}`);
   }
   return { facts, images, data: texts.length ? { FILES: texts.join("\n\n") } : {} };
 }
@@ -495,10 +505,14 @@ export async function documentEvidence(documents: any[], { rubric = "", comments
       facts.push(`${d.label}: text, ${body.length} characters, not sent to the grader (the document budget of ${DOCUMENTS_TOTAL} characters was spent on documents the rubric names first)`);
       continue;
     }
-    const { shown, cut } = excerpt(body, Math.min(DOCUMENT_FILE, left));
-    left -= shown.length;
-    texts.push(`=== ${d.label}: ${keyOf(d).slice(0, 64)} — ${titleOf(d).slice(0, 200)} ===\n${shown}`);
-    facts.push(`${d.label}: text, ${body.length} characters, in TASK_DOCUMENTS${cut ? ` (too large: ${cut} characters cut from the middle, marked in TASK_DOCUMENTS; ${shown.length} characters shown)` : ""}`);
+    const ex = excerpt(body, Math.min(DOCUMENT_FILE, left));
+    if (!ex) {
+      facts.push(`${d.label}: text, ${body.length} characters, not sent to the grader (the remaining document budget of ${left} characters has no room for a cut marker)`);
+      continue;
+    }
+    left -= ex.shown.length;
+    texts.push(`=== ${d.label}: ${keyOf(d).slice(0, 64)} — ${titleOf(d).slice(0, 200)} ===\n${ex.shown}`);
+    facts.push(`${d.label}: text, ${body.length} characters, in TASK_DOCUMENTS${ex.cut ? ` (too large: ${ex.cut} characters cut from the middle, marked in TASK_DOCUMENTS; ${ex.shown.length} characters shown)` : ""}`);
   }
   if (!documents.length) facts.push("no task documents");
   const ids = labelled.map((d: any) => String(d.latestRevisionId ?? d.id ?? `${keyOf(d)}:${bodyOf(d).length}`));

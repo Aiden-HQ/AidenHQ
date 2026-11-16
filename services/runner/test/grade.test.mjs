@@ -447,6 +447,30 @@ test("an oversized attachment is marked as cut, and the rubric-named one is sent
   assert.ok(text.length <= 16_100, `FILES is ${text.length} characters`);
 });
 
+test("a file with no room for a cut marker is reported as not sent, never as marked", async () => {
+  // Two files spend 12,000 of the 16,000-character budget; a third spends 3,990 and leaves 10.
+  const texts = {
+    a: "a".repeat(6_000),
+    b: "b".repeat(6_000),
+    c: "c".repeat(3_990),
+    d: `start\n${"d".repeat(12_002)}\nend`,
+  };
+  const ev = await gather(
+    { kind: "report", ref: "" },
+    deps({
+      // Newest first, so the three that fit are sent before the fourth: it is the oldest.
+      attachments: async () => Object.keys(texts).map((id, i) => ({ id, originalFilename: `${id}.log`, contentType: "text/plain", createdAt: `2026-11-14T10:00:0${Object.keys(texts).length - i}Z` })),
+      content: async (id) => Buffer.from(texts[id]),
+      documents: async () => [],
+    }),
+    ["the logs are attached"],
+  );
+  const fact = ev.facts.find((f) => f.startsWith("file_4:"));
+  assert.match(fact, /file_4: text, 12012 characters, not sent to the grader \(the remaining text budget of 10 characters has no room for a cut marker\)/);
+  assert.doesNotMatch(ev.data.FILES, /file_4|characters \d+-\d+ cut/);
+  assert.ok(!ev.facts.some((f) => /file_4:.*marked in FILES/.test(f)), "the facts never claim a marker that is not there");
+});
+
 test("the bundle keeps the task's live app pages and adds its task documents", async () => {
   const sha = "d".repeat(40);
   const app = { name: "keeper", sha, state: "healthy", healthy: true };
