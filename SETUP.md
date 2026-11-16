@@ -188,7 +188,7 @@ shell doesn't have it yet (setup restarts your systemd user manager itself, so t
 | Paperclip | `curl -s http://127.0.0.1:3100/api/health` | contains `"status":"ok"` and `"bootstrapStatus":"ready"` |
 | Board | `curl -s http://127.0.0.1:3120/healthz` | `ok` |
 | Containers | `cd ~/aidenhq && docker compose ps --format '{{.Service}} {{.State}}'` | every service `running` |
-| Runner and model gateway | `systemctl --user is-active aidenhq-runner aidenhq-gateway` | `active` twice |
+| Kernel (model gateway), runner and agent computers | `systemctl --user is-active aidenhq-kernel aidenhq-runner aidenhq-computers` | `active` three times |
 
 ## 4. Finish the secrets
 

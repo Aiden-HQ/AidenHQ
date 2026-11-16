@@ -310,7 +310,7 @@ On the old host:
 1. Stop everything:
 
    ```sh
-   systemctl --user stop aidenhq-runner aidenhq-computers aidenhq-gateway prune-runs.timer prune-docker.timer \
+   systemctl --user stop aidenhq-runner aidenhq-computers aidenhq-kernel prune-runs.timer prune-docker.timer \
      aidenhq-security-sbom.timer aidenhq-backup.timer   # the backup timer, if the old host has one
    cd ~/aidenhq && docker compose down
    docker ps --format '{{.Names}}' | grep -E '^(app-|aidenhq-computer-)' | xargs -r docker stop
@@ -319,7 +319,7 @@ On the old host:
 2. Make sure nothing comes back after a reboot of the old host:
 
    ```sh
-   systemctl --user disable aidenhq-runner aidenhq-computers aidenhq-gateway prune-runs.timer prune-docker.timer \
+   systemctl --user disable aidenhq-runner aidenhq-computers aidenhq-kernel prune-runs.timer prune-docker.timer \
      aidenhq-security-sbom.timer aidenhq-backup.timer aidenhq-ci-runner@1 aidenhq-ci-runner@2   # every instance from step 0
    sudo systemctl disable docker.service docker.socket
    ```
