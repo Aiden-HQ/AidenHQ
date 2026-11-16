@@ -41,7 +41,7 @@ import YAML from "yaml";
 import { classify, dependabotCommits, normalizeApp, sensitiveTraits } from "./tiers.mjs";
 import { CODE_REJECTS, MAX_REJECTS, autonomyCap, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, routineCapped } from "../../../kernel/src/tier.ts";
 import { LUNA, openRouterAsk, openRouterKey } from "./models.mjs";
-import { kernelCardDiff, readCardSourceExceptions, requestReview, unreadSourceExceptions } from "./review-request.mjs";
+import { kernelCardDiff, readCardSourceExceptions, requestReview, reviewRequest, unreadSourceExceptions } from "./review-request.mjs";
 import { UNSURE } from "../../../kernel/sdk/src/reviewer.ts";
 import { fileContext } from "../../shared/review-files.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
@@ -2224,7 +2224,7 @@ async function reviewOne(a) {
   // What the reviewer reads, only when it is asked: code's own verdicts (refused, the owner's now) read nothing.
   const asked = !codeVerdict(held, LUNA);
   const chain = asked ? await prRequest(await pc.issue(issue.id)).catch(() => "") : "";
-  const request = asked ? reviewRequest(issue, a, input, chain, await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) : {};
+  const request = asked ? reviewRequest(a, input, chain, { requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
   const { diff: _d, files: _f, previous: _p, relift: _r, bases: _b, full: _full, ...tierInput } = input;
   const out = await kernel("POST", `/v1/writes/${a.id}/review`, { input: { ...tierInput, model: LUNA }, request }, { key: cfg.reviewerKeyFile, ms: 46 * 60_000 });
   if (out.deferred) return void log("review deferred", { approval: a.id, issue: a.identifier, until: new Date(out.deferred).toISOString() });
@@ -2248,27 +2248,6 @@ async function reviewOne(a) {
   }
 }
 
-/**
- * What the AI reviewer reads about a request: the card's review (reviewOne, sent with the record to the kernel) and the
- * Engineer's check before filing one (agentReview, POST /v1/reviews) build it here, so the check sees exactly what the card
- * will. `a`: { action, target, sentence, panel? }; `input`: currentTier()'s result with the diff.
- */
-function reviewRequest(issue, a, input, chain, { component = "AI reviewer", siblings, sources } = {}) {
-  return {
-    card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
-    diff: input.diff,
-    files: input.files,
-    chain,
-    siblings,
-    sources,
-    requesterModel: state.task(issue.id)?.engine?.model ?? "",
-    // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
-    panel: Boolean(input.panel || a.panel),
-    previous: [...(input.previous ?? []), ...checkFindings(issue.id, a.action)],
-    relift: input.relift,
-    component,
-  };
-}
 
 /**
  * What the Engineer's checks before filing (agentReview) found, for every later review of the action on the task, first,
@@ -3127,7 +3106,7 @@ async function agentReview(ctx, args) {
         const chain = await prRequest(await pc.issue(ctx.issue.id)).catch(() => "");
         const context = await cardContext(ctx.issue, { branches: branches.map((x) => ({ repo: x.repo, branch: x.branch })) }, input.bases);
         // The same request a card's review sends (reviewRequest), through the kernel's reviewer slot; a failed call is no verdict.
-        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(ctx.issue, card, input, chain, { component: "AI reviewer check", ...context })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
+        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(card, input, chain, { component: "AI reviewer check", requesterModel: state.task(ctx.issue.id)?.engine?.model ?? "", previous: checkFindings(ctx.issue.id, card.action), ...context })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
         log("review checked", { issue: ctx.issue.identifier, action: command, decision: v.decision, code: v.code, model: v.model, second: v.second, used: n + 1, target: card.target.slice(0, 300) });
         // No verdict (the call failed): the check doesn't count. Otherwise it is kept with its finding.
         const rest = checksOf(ctx.issue.id).filter((c) => c.at !== entry.at || c.target !== entry.target);

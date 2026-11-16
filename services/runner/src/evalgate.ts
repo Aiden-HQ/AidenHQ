@@ -36,9 +36,9 @@ export const REVIEWER_CODE = [
   /^modules\/ai-reviewer\//,
   /^kernel\/sdk\/src\/reviewer\.ts$/,
   /^services\/shared\/review-files\.(mjs|ts)$/,
-  /^services\/runner\/src\/(review-request|siblings)\.(mjs|ts)$/,
+  /^services\/runner\/src\/(review-request|siblings|cards)\.(mjs|ts)$/,
   /^services\/runner\/src\/tiers\.(mjs|ts)$/,
-  /^kernel\/src\/tier\.ts$/,
+  /^kernel\/src\/(tier|writes|records|reviews|kinds)\.ts$/,
   /^kernel\/src\/loader\/authority\.ts$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
