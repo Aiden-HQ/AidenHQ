@@ -465,7 +465,8 @@ const OWN_FOLDER = { executionWorkspacePreference: "agent_default", executionWor
 const designReviewer = (live) => Object.entries(readGrants()?.agents ?? {}).find(([id, a]) => (!live || live.has(id)) && (a?.roles ?? []).includes("design-review"))?.[0];
 
 /**
- * The design reviewer's task for one UI PR head (owner, 2026-11-13), from both merge paths: a Tier 0 merge that waits on the
+ * The design reviewer's task for one UI PR head (owner, 2026-11-13), from the moment the runner opens it (publishBranch) and from
+ * both merge paths: a Tier 0 merge that waits on the
  * review (`waits`), and a merge card the owner approved, whose queue doesn't wait (the tap is the owner's own review) but whose
  * PR still gets its review. An event, so the review starts now rather than at the next heartbeat. Once per head (runner state,
  * whichever path asked first); fixed text only (the reviewer reads the PR's changed files itself: file names are the PR author's text). A later head of the same PR (the fix) is a re-review (owner, 2026-11-14: no long
@@ -4307,6 +4308,10 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   }
   state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });
   log("draft PR opened", { issue: issue.identifier, url: prUrl });
+  // An agents-org PR that changes UI files gets its design review now, beside CI, rather than once its merge is queued:
+  // the review was the slowest step on that path, and it started minutes after the PR opened (roadmap-keeper#202: 4
+  // minutes). Once per head: the queue's own ask for this head then files nothing more.
+  if (inAgentsOrg(r.repo) && designReviewer()) await (async () => merges.touchesUi((await git(r.path, "-c", "core.quotePath=false", "diff", "--name-only", `${from}...${r.branch}`)).split("\n")) && fileDesignReviewTask({ repo: r.repo, number: Number(prUrl.split("/").pop()), url: prUrl, head: pin ?? (await git(r.path, "rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`)) }))().catch((err) => log("design review task failed", { pr: prUrl, err: String(err.message ?? err).slice(0, 300) }));
   return `${pushed ? `${pushed}, opened` : "Opened"} draft PR ${prUrl}`;
 }
 
