@@ -87,6 +87,13 @@ an alert takes the detector's existing path: one incident per alert, the "Fleet 
 incident recovered (and fired once more) when the alert resolves. The board runs the detector at once when an alert
 arrives. So the module requires `fleet-ops`.
 
+The webhook is one-shot news, so the detector does not rely on it alone: each tick its `alert` group also reads
+Alertmanager's `GET /api/v2/alerts` and reconciles. An alert no longer in that list recovers even when its whole label set
+vanished — `aidenhq_apply_failed` is exported under each apply generation's `n`, `reason`, `log` and `health`, so a later
+generation replaces a failed one's series, and the failed apply is itself restarting the board that would have taken the
+resolve. One still in the list stays open, silenced and inhibited included: a silence stops notifications, not the alert.
+When Alertmanager cannot be asked the webhook's record stands, so nothing recovers on a guess.
+
 A newly firing critical alert also queues one owner line (`🚨 Monitoring: <rule> (critical): <fixed sentence>`), which the
 owner channel collects with the detector's other health lines. Label and annotation text never reaches the owner (an app
 can choose names that appear in labels): the line is the rule's name (identifiers only) and a fixed sentence per critical
