@@ -48,7 +48,7 @@ Each read endpoint is read-only in code. Each is published on host loopback only
 | Slack | `:3125/mcp/read` | A route of its own built with `readOnly()`. That removes the draft tool, the only write, and blocks send and post |
 | Glean | `:3126/mcp/read` | A token of its own. The whole allowlist is search and read |
 | ClickHouse | `:3127/mcp` | A read-tool allowlist. `checkQuery` allows one SELECT-family statement and blocks table functions, SETTINGS and OUTFILE |
-| Primer | `:3123/mcp/read` | `readOnly()`: get, list and find only. Publishing is on `/mcp/publish`, which only the runner holds |
+| Primer | `:3123/mcp/read` | `readOnly()`: get, list and find only. Publishing is the `primer.publish` write kind (the kernel calls primer-mcp's executor for an approved record) |
 
 ClickHouse's guard is a query policy, not a database-level read-only user. That risk is unchanged from the `codex`
 engine.

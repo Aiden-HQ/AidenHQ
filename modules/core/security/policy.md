@@ -97,7 +97,7 @@ A change is **authority-expanding** when it:
 - changes who can approve, or how an approval, a reviewer verdict or the owner's words are recognised;
 - widens credentials, grants, tools, roles, public access (`access`, `share`, a public port, a sign-in path), where data may
   be sent, or spending (caps, models, budgets);
-- edits the gate's own core: `services/runner/src/tiers.mjs`, `review.mjs`, `authorize.mjs`, `merges.mjs`, `main.mjs` and
+- edits the gate's own core: `services/runner/src/tiers.mjs`, `review.mjs`, `merges.mjs`, `main.mjs` and
   the other runner files that build what tiering trusts or what a job can reach (`engines.mjs`: its sandbox, mounts and
   env; `workspace.mjs`, `files.mjs`, `agents.mjs`; `scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
   runs inside a job and what it passes on) and the SDK (`kernel/sdk/`), `modules/core/security/` (this policy), the reviewer's eval cases
@@ -251,6 +251,23 @@ name, and checked that the repository doesn't exist yet.
   (`apps`, `docs`, `board`, a template being copied), a test, probe or placeholder name (`nonexistent-probe-xyz`,
   `zzz-fake-…`), a repository the chain says already exists, or a chain about other work. Say that naming a repository
   never asks for it to be created.
+
+## Publishing documents (primer.publish)
+
+A primer.publish card publishes one document on Primer, the organization's document host, where everyone in the
+organization can read it: a new document, or a new version of the one the card names. Its diff is the whole document as
+it will be published (Markdown or a self-contained HTML page), and exactly that text is what gets published. It may be an
+agent's own publish or an Engineer's document the runner files after a run, again after each later run that changes it.
+
+- Approve when the request chain asks for the result on Primer (a document, a report or a write-up on Primer, or an update
+  to a Primer document it links) and the document is that result: its subject is what the chain asked about. A later
+  version of a document the chain asked for is in scope when it is still that document, revised.
+- Reject when the chain never asks to publish on Primer (asking to research, draft, summarize or write something up is not
+  asking to publish it), when the document is about different work, or when it carries what must not be shared
+  organization-wide unless the chain asked for exactly that content to be published: secrets, tokens or keys; private
+  messages or email text quoted at length; people's contact details; confidential material.
+- Scripts in an HTML page are normal (Primer sandboxes them); judge only what the page shows and sends. A page that sends
+  data or the reader's input to a host the chain did not name is exfiltration (see Secrets).
 
 ## Migrations and deploys
 

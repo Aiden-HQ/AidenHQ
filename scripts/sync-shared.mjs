@@ -32,7 +32,7 @@ export const SHARED = {
     "modules/tasks/connections/tasks-mcp/src",
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
-  "kernel/sdk/src/executor.ts": ["services/apps-mcp/src/aidenhq-sdk/executor.ts"],
+  "kernel/sdk/src/executor.ts": ["services/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts"],
   "services/shared/source-store.ts": [
     "modules/owner-channel/connections/slack-live-mcp/src/source-store.ts",
     "modules/github/connections/github-mcp/src/source-store.ts",

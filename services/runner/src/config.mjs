@@ -99,9 +99,8 @@ export function loadConfig() {
     secretsDir: secrets,
     // Jobs' reads of connections (compile writes it from the modules' jobcaps): through the gateway's /c/<connection>/mcp.
     jobcapsFile: join(configDir, "jobcaps.json"),
-    // The runner itself publishes a task's document there; jobs never get this endpoint.
-    primerPublishUrl: env.PRIMER_RUNNER_PUBLISH_URL ?? "http://primer-mcp:8084/mcp/publish", // the container, by its service name
-    primerPublishTokenFile: join(secrets, "primer_mcp_publish_token"),
+    // The kernel's backplane: the runner files a task's document there as a primer.publish record (main.mjs publishToPrimer).
+    kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130",
     gcp: {
       credentialsFile: gcpCredentials,
       projects: (cfg.gcp?.projects ?? []).filter(Boolean),

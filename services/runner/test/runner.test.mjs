@@ -934,55 +934,24 @@ describe("files on a task", () => {
 
 });
 
-describe("publishing a task's document to Primer", async () => {
-  const { PRIMER_FILE, publishDocument, readDocument } = await import("../src/primer.ts");
+describe("a task's document for Primer", async () => {
+  const { PRIMER_FILE, PRIMER_HTML, publishedRef, readDocument } = await import("../src/primer.ts");
   const workspace = () => {
     const dir = mkdtempSync(join(tmpdir(), "primer-"));
     mkdirSync(join(dir, ".aidenhq"));
     return dir;
   };
-  // A fake primer-mcp: records tool calls and answers create_document with a link.
-  const fake = (answer = '{"documentId":"01a1-doc","url":"https://primer.example/d/01a1-doc"}') => {
-    const calls = [];
-    const fetchImpl = async (_url, init) => {
-      const body = JSON.parse(init.body);
-      if (body.method === "tools/call") calls.push(body.params);
-      const result = body.method === "tools/call" ? { content: [{ type: "text", text: body.params.name === "primer_create_document" ? answer : "ok" }] } : {};
-      return new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result })}\n\n`, { status: 200 });
-    };
-    return { calls, endpoint: { url: "http://primer/mcp", token: "t", fetchImpl } };
-  };
 
-  it("creates the document once, then adds versions only when it changed", async () => {
-    const dir = workspace();
-    const { calls, endpoint } = fake();
-    assert.equal((await publishDocument({ endpoint, workspace: dir, fallbackTitle: "T" })).outcome, "missing");
-    writeFileSync(join(dir, PRIMER_FILE), "# Report\n\nv1");
-    const first = await publishDocument({ endpoint, workspace: dir, fallbackTitle: "T" });
-    assert.equal(first.outcome, "created");
-    assert.equal(first.record.documentId, "01a1-doc");
-    assert.deepEqual(calls[0], { name: "primer_create_document", arguments: { title: "Report", content: "# Report\n\nv1", format: "markdown" } });
-    assert.equal((await publishDocument({ endpoint, workspace: dir, record: first.record })).outcome, "unchanged");
-    writeFileSync(join(dir, PRIMER_FILE), "# Report\n\nv2");
-    const second = await publishDocument({ endpoint, workspace: dir, record: first.record });
-    assert.equal(second.outcome, "updated");
-    assert.deepEqual(calls[1], { name: "primer_add_version", arguments: { documentId: "01a1-doc", content: "# Report\n\nv2", format: "markdown" } });
-    assert.equal(calls.length, 2);
-  });
-
-  it("publishes an HTML page as HTML, titled from <title> or <h1>, whichever file was written last", async () => {
-    const { PRIMER_HTML } = await import("../src/primer.ts");
+  it("reads an HTML page as HTML, titled from <title> or <h1>, whichever file was written last", async () => {
     const { utimesSync } = await import("node:fs");
     const dir = workspace();
-    const { calls, endpoint } = fake();
+    assert.equal(readDocument(dir, "T"), undefined);
     writeFileSync(join(dir, PRIMER_FILE), "# Report\n\nv1");
     writeFileSync(join(dir, PRIMER_HTML), "<!doctype html><html><head><title>CI audit &amp; fixes</title></head><body><script>filter()</script></body></html>");
     utimesSync(join(dir, PRIMER_FILE), new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
-    assert.equal(readDocument(dir, "T").title, "CI audit & fixes");
-    const res = await publishDocument({ endpoint, workspace: dir, record: { documentId: "doc-1", hash: "md-hash" } });
-    assert.equal(res.outcome, "updated");
-    assert.equal(calls[0].arguments.format, "html");
-    assert.match(calls[0].arguments.content, /<script>filter\(\)<\/script>/, "scripts go as they are: Primer sandboxes them");
+    const doc = readDocument(dir, "T");
+    assert.deepEqual([doc.title, doc.format], ["CI audit & fixes", "html"]);
+    assert.match(doc.content, /<script>filter\(\)<\/script>/, "scripts go as they are: Primer sandboxes them");
     writeFileSync(join(dir, PRIMER_HTML), "<h1>Only <em>a</em> heading</h1>");
     assert.equal(readDocument(dir, "T").title, "Only a heading");
     // The Markdown written after it is the document again.
@@ -997,25 +966,13 @@ describe("publishing a task's document to Primer", async () => {
     for (const bad of ["--help", "http://primer.example/d/01a1-doc-xyz", "https://primer.example/x/01a1-doc", "https://primer.example/d/short", "PEN-12"]) assert.equal(primerLink(bad), undefined, bad);
   });
 
-  it("adds versions to a document the user linked from the first publish", async () => {
-    const dir = workspace();
-    const { calls, endpoint } = fake();
-    writeFileSync(join(dir, PRIMER_FILE), "# Report\n\nfor Tolga");
-    const res = await publishDocument({ endpoint, workspace: dir, record: { documentId: "alfreds-doc", url: "https://primer.example/d/alfreds-doc", linked: true } });
-    assert.equal(res.outcome, "updated");
-    assert.deepEqual(calls, [{ name: "primer_add_version", arguments: { documentId: "alfreds-doc", content: "# Report\n\nfor Tolga", format: "markdown" } }]);
+  it("reads the link and ID from primer.publish's outcome", () => {
+    assert.deepEqual(publishedRef("Published on Primer: https://primer.example/d/01a1-doc0 (document 01a1-doc0)"), { url: "https://primer.example/d/01a1-doc0", documentId: "01a1-doc0" });
+    assert.deepEqual(publishedRef("Published on Primer: (no link in Primer's answer) (document 01a1-doc0)"), { documentId: "01a1-doc0" });
+    assert.deepEqual(publishedRef(undefined), {});
   });
 
-  it("fails on a tool error without recording anything", async () => {
-    const dir = workspace();
-    writeFileSync(join(dir, PRIMER_FILE), "# Report");
-    const endpoint = { url: "http://primer/mcp", token: "t", fetchImpl: async (_u, init) => {
-      const body = JSON.parse(init.body);
-      const result = body.method === "tools/call" ? { isError: true, content: [{ type: "text", text: "primer_auth_unavailable" }] } : {};
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), { status: 200 });
-    } };
-    await assert.rejects(publishDocument({ endpoint, workspace: dir }), /primer_auth_unavailable/);
-  });
+
 
   it("tells the agent where the document goes only when Primer was asked for", () => {
     const base = { user: "Dana", task: { identifier: "PEN-1", title: "T", description: "" }, workspace: "/w", repos: [], mode: "investigate", instructions: "Do it" };

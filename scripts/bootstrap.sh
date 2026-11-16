@@ -49,7 +49,6 @@ gen_secret paperclip_auth_secret
 gen_secret paperclip_agent_jwt_secret
 gen_secret google_auth_token     # the board's Google sign-in state and reconnect
 gen_secret slack_mcp_read_token    # the runner's Engineer jobs, /mcp/read on 127.0.0.1:3125
-gen_secret primer_mcp_publish_token  # the runner itself publishing, /mcp/publish on 127.0.0.1:3123
 gen_secret primer_mcp_read_token   # the runner's Engineer jobs, /mcp/read on 127.0.0.1:3123
 gen_secret glean_mcp_read_token    # the runner's Engineer jobs, /mcp/read on 127.0.0.1:3126
 gen_secret glean_auth_token      # the board's Glean sign-in state and sign-in

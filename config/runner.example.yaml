@@ -51,7 +51,7 @@ intake:
   # model: ""
   reasoning_effort: low
   timeout_seconds: 180
-  # `codex exec` args for the intake and the write check (authorize); unset = OpenRouter, [] = the host's ChatGPT login.
+  # `codex exec` args for the intake; unset = OpenRouter, [] = the host's ChatGPT login.
   # codex_args: []
 
 sandbox:

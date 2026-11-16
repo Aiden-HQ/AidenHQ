@@ -279,5 +279,5 @@ private reads); to fall back to opencode, set `overrides.agents.<key>.engine: op
 owner-tier change) and `engines.default: opencode` in runner.yaml. Effort is
 `reasoning_effort:` (low, medium, high, xhigh, max; `max` is DeepSeek's top effort on OpenRouter, which Codex passes
 through as is; `openrouter` takes low, medium, high as opencode's model variant).
-Design: [codex-openrouter engine](design/codex-openrouter-engine.md). Other example files in `config/` (`routing`, `authorize-cases`, `busy-cases`,
+Design: [codex-openrouter engine](design/codex-openrouter-engine.md). Other example files in `config/` (`routing`, `busy-cases`,
 `intake-cases`, `system`) configure the runner's evals and ops-mcp.

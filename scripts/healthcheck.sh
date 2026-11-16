@@ -121,11 +121,9 @@ fi
 
 p_health="$(curl -s -m 10 "$(svc primer-mcp 8084)/healthz" 2>&1)"
 if echo "$p_health" | grep -q '"ok":true'; then
-  # The runner's publish endpoint (host-only token): /mcp needs an agent's key.
-  ptoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/primer_mcp_publish_token" 2>/dev/null)"
-  check "primer (whoami)" sh -c "node scripts/dev/mcp-call.mjs '$(svc primer-mcp 8084)/mcp/publish' primer_whoami '{}' '$ptoken' >/dev/null"
-  # The Engineer jobs' read-only endpoint (the kernel forwards their calls there), with its own token.
+  # The Engineer jobs' read-only endpoint (the kernel forwards their calls there), with its own token: /mcp needs an agent's key.
   prtoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/primer_mcp_read_token" 2>/dev/null)"
+  check "primer (whoami)" sh -c "node scripts/dev/mcp-call.mjs '$(svc primer-mcp 8084)/mcp/read' primer_whoami '{}' '$prtoken' >/dev/null"
   check "primer (runner, read-only)" sh -c "curl -fsS -X POST '$(svc primer-mcp 8084)/mcp/read' -H 'Authorization: Bearer $prtoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q primer_get_document"
 else
   printf '  skip  primer (not connected: %s)\n' "$(echo "$p_health" | cut -c1-80)"

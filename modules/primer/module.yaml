@@ -35,9 +35,24 @@ services:
         PRIMER_TOKEN_FILE: /state/token.json
         MCP_TOKEN_FILE: ${secrets.primer_service_key}
         MCP_READ_TOKEN_FILE: ${secrets.primer_mcp_read_token}
-        # The runner's own publishing (/mcp/publish), at the container's address.
-        MCP_PUBLISH_TOKEN_FILE: ${secrets.primer_mcp_publish_token}
-# The runner's publish token: compile creates it (random) when missing, so the apply needs no extra step.
+# The kernel calls primer.publish's plan, execute and status on primer-mcp, with the connection's key (executor@1).
+providers:
+  executor:
+    url: http://primer-mcp:8084/aidenhq/v1/executor
+    auth: primer_service_key
+# Every publish is a kernel record: an agent's primer_create_document or primer_add_version call, and an Engineer's
+# document the runner files after its run (`aidenhq primer`). The AI reviewer reads the whole document and the request
+# chain before anything is published; the args carry the content, so what is published is exactly what was reviewed.
+writes:
+  publish:
+    args: schemas/publish.json
+    floor: 1
+    tools: [ primer_create_document, primer_add_version ]
+    card:
+      sentence: "Publish {{what}} on Primer."
+      changes: "{{changes}}"
+      reads: "Nothing new: the document below ({{format}}, {{size}} characters, sha256 {{short}}){{from}}."
+      cost: "No model cost."
+      details: "{{content}}"
 generated_secrets:
   - primer_service_key
-  - primer_mcp_publish_token

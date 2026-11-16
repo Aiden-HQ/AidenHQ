@@ -4,7 +4,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines } from "./agents.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
@@ -23,7 +23,7 @@ import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
-import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.ts";
+import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.ts";
 import { createMetrics, writeMetrics } from "./metrics.ts";
@@ -34,12 +34,11 @@ import * as merges from "./merges.mjs";
 import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf } from "./siblings.ts";
 import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "./product-prs.ts";
 import { State } from "./state.ts";
-import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, stateSection, threadEntries, threadSection, transcript, wordsAround } from "./thread.ts";
-import { authorize } from "./authorize.mjs";
+import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, stateSection, threadEntries, threadSection, transcript } from "./thread.ts";
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, afterReview, autonomyCap, classify, dependabotCommits, highest, meritOwner, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, reviewFirstOf, routineCap, routineCapped, sensitiveTraits } from "./tiers.mjs";
-import { LUNA, SOURCE_EXCEPTIONS_FILE, UNSURE, fileContext, openRouterAsk, openRouterKey, readSourceExceptions, review } from "./review.mjs";
+import { LUNA, SOURCE_EXCEPTIONS_FILE, UNSURE, fileContext, kernelCardDiff, openRouterAsk, openRouterKey, readSourceExceptions, review } from "./review.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
@@ -47,7 +46,6 @@ import { createEvalGate } from "./evalgate.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { repoAccess } from "./repos.ts";
-import { createResolver } from "../../../kernel/src/net.ts";
 
 const execFileP = promisify(execFile);
 const cfg = loadConfig();
@@ -1707,8 +1705,6 @@ async function conversation(issue, workspace, { instructions, resumed, persona }
   return {
     thread: threadSection(cfg.selfName, entries, { resumed }),
     stand: await liveState(issue, workspace),
-    // What the user said around the agent's last reply: what its GitHub writes are checked against.
-    words: wordsAround(comments, { isCommand: (body) => Boolean(parseCommand(body)) }),
   };
 }
 
@@ -2167,18 +2163,6 @@ async function readFiles(list) {
 }
 
 /**
- * The diff of a kernel record's card (deploy_app, app_run and the other module kinds), from the card: the author's commit message or
- * reason after its marker is cut off, so it never reaches the reviewer inside the DIFF fence (the reviewer is reasoning-blind).
- */
-function boardCardInput(a) {
-  const split = (marker) => {
-    const i = a.details.lastIndexOf(marker);
-    return { diff: i < 0 ? a.details : a.details.slice(0, i) };
-  };
-  return a.action === "deploy_app" ? split("\n\nCommit message (written by the app's author): ") : split("\nReason (written by the requesting agent): ");
-}
-
-/**
  * Never claimed by the runner, reviewed here all the same: a module write kind's record (a `k-` id, lean-core 2d), which the
  * kernel keeps and runs; the board lists it and forwards the verdict. Its tier comes from the kernel, its diff from its card.
  */
@@ -2227,7 +2211,7 @@ async function reviewOne(a, mode) {
       const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain);
       const veto = priorPart(prior);
       // The board's own panel flag (a deploy touching a migration or schema): two reviewers, as the board requires.
-      const reviewed = { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...boardCardInput(a) };
+      const reviewed = { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...kernelCardDiff(a) };
       // Tier 2 on its merits (the owner's veto here, or the kernel's own tier before any autonomy cap): reviewed, then the owner's.
       const merit = veto ?? (a.baseTier === 2 ? { tier: 2, rule: `${a.action}`, reason: a.reason || "the kernel's tier on its merits is 2" } : undefined);
       input = veto?.reject ? veto : autonomyCap(routineCapped(merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed, common.routineAutonomy), mode);
@@ -2973,22 +2957,6 @@ async function runClaimed(claimed) {
   await flushOutcomes();
 }
 
-/**
- * Publishing on Primer, checked against the user's words (src/authorize.mjs) once per run. Refuses with a message telling
- * the agent to ask. (GitHub writes and fleet applies are approval records instead, above.)
- */
-async function allowWrite(ctx, action, targets, extra = {}) {
-  const key = `${action}\n${targets.join("\n")}`;
-  if (ctx.allowed?.has(key)) return;
-  // The user's words as they are now: a comment they added while the agent works counts too.
-  const comments = await pc.comments(ctx.issue.id).catch(() => undefined);
-  const words = comments ? wordsAround(comments, { isCommand: (body) => Boolean(parseCommand(body)) }) : ctx.words;
-  const verdict = await authorize({ cfg, user: cfg.selfName, action, targets, words, task: { identifier: ctx.issue.identifier }, ...extra });
-  log("write checked", { issue: ctx.issue.identifier, action, targets: targets.length, allowed: verdict.allowed, how: verdict.how, reason: verdict.reason.slice(0, 200) });
-  if (!verdict.allowed) throw new UserError(`Not done: this needs ${cfg.selfName}'s go-ahead (${verdict.reason}). Say exactly what you'd ${action === "merge" ? "merge" : "publish"} and ask them; don't try again in this turn.`);
-  (ctx.allowed ??= new Set()).add(key);
-}
-
 /** The runner's cache clone of one repository, from its "org/name". */
 const cacheClone = (slug) => join(cfg.workDir, "repos", ...String(slug).split("/"));
 
@@ -3324,19 +3292,19 @@ async function agentEngine(ctx, args) {
 
 /**
  * `aidenhq primer [<link>]`: publish the task's document on Primer after this run and later ones
- *: a new document, or new versions of the one the user linked, such as another agent's.
+ *: a new document, or new versions of the one the user linked, such as another agent's. Each publish is a primer.publish
+ * record the AI reviewer checks against the request (publishToPrimer).
  */
 async function agentPrimer(ctx, args) {
   const link = String(args.link ?? "").trim();
   const target = link ? primerLink(link) : undefined;
   if (link && !target) throw new UserError("That isn't a link to a Primer document (…/d/<id>). Use the link the document has in Primer.");
-  await allowWrite(ctx, "primer", [target ? `a new version of the existing Primer document ${target.url} (its earlier versions stay in its history), made from the document the agent writes to ${PRIMER_FILES}` : `the document the agent writes to ${PRIMER_FILES} in the workspace`]);
   const record = primerRecord(ctx.issue.id);
   if (target && record?.documentId !== target.documentId) savePrimer(ctx.issue.id, { documentId: target.documentId, url: target.url, linked: true });
   else if (!record) savePrimer(ctx.issue.id, {});
   return target
-    ? `When your run ends, the runner adds ${PRIMER_FILES} as a new version of ${target.url}, and again after every later run that changes it. Write the whole document there.`
-    : `When your run ends, the runner publishes ${PRIMER_FILES} on Primer, and republishes it after every later run that changes it. Write the whole document there.`;
+    ? `When your run ends, the runner files ${PRIMER_FILES} as a new version of ${target.url}, and again after every later run that changes it; the AI reviewer checks each against the request before it is published. Write the whole document there.`
+    : `When your run ends, the runner files ${PRIMER_FILES} for publishing on Primer, and again after every later run that changes it; the AI reviewer checks each against the request before it is published. Write the whole document there.`;
 }
 
 /**
@@ -3664,7 +3632,7 @@ async function startJob({ issue, instructions }) {
     const channel = {};
     Object.assign(running.get(issue.id), { channel, who: persona?.name });
     // The conversation (all of it for a new session, what's new for a resumed one) and where the work stands.
-    const { thread, stand, words } = await conversation(issue, workspace, { instructions, resumed, persona });
+    const { thread, stand } = await conversation(issue, workspace, { instructions, resumed, persona });
     // A box job works in /workspace: the prompt names the paths it sees.
     const seen = engine.box ? { workspace: "/workspace", repos: repos.map((r) => ({ ...r, path: r.path.replace(workspace, "/workspace") })) } : { workspace, repos };
     const prompt = resumed
@@ -3678,14 +3646,14 @@ async function startJob({ issue, instructions }) {
     if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity, engine });
     if (stopping) return; // the runner is restarting: the job resumes after it (RESUME_KEY)
     // From here on nothing waits before the run is recorded: a restart either cuts the job before it or adopts the run.
-    tools = { issue, workspace, words, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box, agentId };
+    tools = { issue, workspace, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box, agentId };
     const helper = repoHelper.register(tools, helperToken);
     const sessionId = resumed ? state.task(issue.id).session_id : undefined;
     const startedAt = Date.now();
     // The job's gateway credential comes from its agent, task and start time: `aidenhq advise` mints the same one (advise.ts).
     const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, at: startedAt, jobcaps, observing: observes(engine) }, box });
     // What the next runner needs to adopt the run and finish its turn after a restart.
-    tools.run = { pid: run.pid, jobDir: run.jobDir, eventsOffset: 0, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, observing: observes(engine), repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
+    tools.run = { pid: run.pid, jobDir: run.jobDir, eventsOffset: 0, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, observing: observes(engine), repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
     state.saveRun(jobId, tools.run);
     running.get(issue.id).pid = run.pid;
     const watch = watchAgent(run, { sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
@@ -3821,7 +3789,7 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     // The heads this run ended on, for the parent's run-end receipt: the exact commits a pending pr/merge card would cover.
     state.set(`heads:${issue.id}`, JSON.stringify(rows.filter((r) => !r.merged && !r.readOnly && (r.unpublished.length || !r.prUrl) && r.head).map(({ repo, branch, head }) => ({ repo, branch, sha: head }))));
     const stillDirty = (await dirtyCheckouts(after)).length > 0;
-    const primerNote = outcome.finished ? await publishToPrimer(issue, full, workspace) : "";
+    const primerNote = outcome.finished ? await publishToPrimer(issue, full, workspace, tools?.agentId ?? null) : "";
     const sharedNote = outcome.finished ? await shareWork(issue, full, workspace) : "";
     const footer = [
       committedNow || tidyNotes.length ? branchesFooter(rows) : "",
@@ -3907,29 +3875,59 @@ async function shareWork(issue, full, workspace) {
 const primerRecord = (issueId) => (state.get(`primer:${issueId}`) ? JSON.parse(state.get(`primer:${issueId}`)) : undefined);
 const savePrimer = (issueId, record) => state.set(`primer:${issueId}`, JSON.stringify(record));
 
+/** The kernel's backplane (POST /v1/writes, GET /v1/writes/:id) as the task's Engineer, with a token naming only primer.publish. */
+async function kernelWrites(method, path, { issue, agentId }, body) {
+  const token = modelToken(cfg, { kind: "agent", agentId, issueId: issue.id, component: "runner-primer", ttlMs: 120_000, writes: ["primer.publish"] });
+  const res = await fetch(`${cfg.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(60_000) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(String(j?.error?.message ?? `the kernel answered ${res.status}`).slice(0, 300)), { status: res.status });
+  return j;
+}
+
+/** The owner's own comment on the task names this exact Primer link and asks for it to be updated or published to. */
+async function ownerAskedToUpdate(issue, url) {
+  if (!url) return false;
+  const comments = await pc.comments(issue.id).catch(() => []);
+  return comments.some((c) => c.authorType === "user" && !hasMarker(c.body, RUNNER_MARKER) && String(c.body ?? "").includes(url) && UPDATE_WORDS.test(String(c.body)));
+}
+const UPDATE_WORDS = /\b(publish|update|revise|new version|add (?:a )?version|overwrite|replace|edit|put (?:it|this|the \w+) (?:on|in|into))\b/i;
+
 /**
- * After a finished run on a task that asked for Primer: publish the agent's document if it changed.
- * Resolves with a line for the task comment ("" when there was nothing to do).
+ * After a finished run on a task that asked for Primer: file the agent's document as a primer.publish record if it changed
+ * (the AI reviewer checks it against the request; the kernel publishes it once approved and posts the outcome on the task).
+ * The last record filed is settled first: done gives the document's link for later versions, a rejection keeps that version
+ * from being filed again unchanged, and one still waiting holds this version back to the next run. Resolves with a line for
+ * the task comment ("" when there was nothing to do).
  */
-const services = createResolver();
-async function publishToPrimer(issue, full, workspace) {
-  const record = primerRecord(issue.id);
+async function publishToPrimer(issue, full, workspace, agentId) {
+  let record = primerRecord(issue.id);
   if (!record) return "";
-  const token = existsSync(cfg.primerPublishTokenFile) ? readFileSync(cfg.primerPublishTokenFile, "utf8").trim() : "";
+  if (!agentId) return "_Couldn't file the Primer document: no Engineer is known for this run. The next run tries again._";
+  const who = { issue, agentId };
   try {
-    if (!token) throw new Error("primer-mcp isn't set up (no primer_mcp_publish_token)");
-    // primer-mcp's container address (no published port): resolved like the kernel resolves module services.
-    const t = await services.resolve(cfg.primerPublishUrl);
-    const res = await publishDocument({ endpoint: { url: `http://${t.host}:${t.port}${t.path}`, token }, workspace, record, fallbackTitle: full.title });
-    if (res.outcome === "missing") return `_No Primer document: the run didn't write ${PRIMER_FILES}._`;
-    if (res.outcome === "unchanged") return record.url ? `**Primer:** ${record.url} (unchanged)` : "";
-    savePrimer(issue.id, res.record);
-    log("published to Primer", { issue: issue.identifier, outcome: res.outcome, document: res.record.documentId });
-    const link = res.record.url ?? "the new document (its link wasn't in Primer's answer)";
-    return res.outcome === "created" ? `**Published to Primer:** ${link}` : `**New version on Primer:** ${link}`;
+    if (record.pending) {
+      // A record the kernel no longer has (or not as this Engineer's) counts as never filed: this version is filed afresh.
+      const r = await kernelWrites("GET", `/v1/writes/${record.pending.id}`, who).catch((e) => { if (e.status === 404) return { state: "gone" }; throw e; });
+      if (["review", "owner", "approved", "claimed"].includes(r.state)) return `_Primer: the last version (approval ${record.pending.id}) is still waiting; this run's changes are filed after it is decided._`;
+      const { pending, ...rest } = record;
+      const ref = r.state === "done" ? publishedRef(r.outcome?.text) : {};
+      record = { ...rest, ...(rest.documentId || !ref.documentId ? {} : { documentId: ref.documentId, url: ref.url }), ...(["done", "rejected"].includes(r.state) ? { hash: pending.hash } : {}) };
+      savePrimer(issue.id, record);
+    }
+    const doc = readDocument(workspace, full.title);
+    if (!doc) return `_No Primer document: the run didn't write ${PRIMER_FILES}._`;
+    if (doc.hash === record.hash) return record.url ? `**Primer:** ${record.url} (unchanged)` : "";
+    // A version of a document the task didn't publish itself goes to the owner unless their own comment asks for that link
+    // to be updated (the executor raises it to Tier 2 without `own`): a link given to read is never one to overwrite.
+    const own = record.documentId && (!record.linked || (await ownerAskedToUpdate(issue, record.url)));
+    const args = { title: doc.title, content: doc.content, format: doc.format, path: relative(workspace, doc.path), ...(record.documentId ? { documentId: record.documentId } : {}), ...(own ? { own: true } : {}) };
+    const r = await kernelWrites("POST", "/v1/writes", who, { kind: "primer.publish", args });
+    savePrimer(issue.id, { ...record, pending: { id: r.id, hash: doc.hash } });
+    log("filed for Primer", { issue: issue.identifier, approval: r.id, tier: r.tier, document: record.documentId });
+    return `**Filed for Primer** (approval ${r.id}): ${record.documentId ? `a new version of ${record.url ?? record.documentId}` : "a new document"}. The AI reviewer checks it against the request; the outcome, with the link, is posted here.`;
   } catch (err) {
     log("Primer publish failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 300) });
-    return `_Couldn't publish to Primer: ${String(err.message ?? err).slice(0, 200)}. The document is in ${join(workspace, ".aidenhq")}; the next run tries again._`;
+    return `_Couldn't file the Primer document: ${String(err.message ?? err).slice(0, 200)}. The document is in ${join(workspace, ".aidenhq")}; the next run tries again._`;
   }
 }
 
@@ -4621,7 +4619,7 @@ function adoptRuns() {
     const controller = new AbortController();
     const channel = {}; // no input: the session's stdin closed with the old runner
     // Its tools keep working: the same helper port, its own token, what it already asked for.
-    const tools = { issue, workspace: run.workspace, words: run.words, instructions: run.instructions, brief: run.brief, kind: run.engine.kind, reads: observes(run.engine), who: run.who, signal: controller.signal, jobId: job.id, run, reset: run.reset, engine: run.switchTo, cleanup: run.cleanup, box: run.box, agentId: run.agentId ?? null };
+    const tools = { issue, workspace: run.workspace, instructions: run.instructions, brief: run.brief, kind: run.engine.kind, reads: observes(run.engine), who: run.who, signal: controller.signal, jobId: job.id, run, reset: run.reset, engine: run.switchTo, cleanup: run.cleanup, box: run.box, agentId: run.agentId ?? null };
     const helper = repoHelper.register(tools, run.token);
     running.set(issue.id, { controller, jobId: job.id, identifier: issue.identifier, startedAt: job.started_at, request: run.instructions, pid: run.pid, channel, who: run.who, info: { engine: engineLabel(run.engine), mode: "working", repo: run.repos } });
     log("adopted a running job", { issue: issue.identifier, pid: run.pid });

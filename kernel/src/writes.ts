@@ -174,7 +174,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     async request(who: Identity, { kind, args, task, evidence }: { kind: string; args: unknown; task?: string; evidence?: unknown }): Promise<Rec> {
       const k = Object.hasOwn(registry(), kind) ? registry()[kind] : undefined;
       if (!k) throw fail(404, "unknown_kind", `no write kind ${kind}`);
-      const granted = (who.kind === "module" && who.module === k.module) || (who.kind !== "job" && k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
+      // A job only by the kinds its token names (the runner mints them for its own request), on the token's task, and only a
+      // reviewed kind (floor 1 or more): a job token never runs a write at once.
+      const granted = (who.kind === "module" && who.module === k.module) || (who.kind === "job" ? Boolean(who.task && who.writes?.includes(kind) && k.floor >= 1) : k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
       if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
       // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
       const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";

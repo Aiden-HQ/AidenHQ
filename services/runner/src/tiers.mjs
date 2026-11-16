@@ -19,7 +19,7 @@ import { classifyModules, diffAll } from "../../../kernel/src/loader/authority.t
  */
 export const GATE_CORE = [
   // One entry per file, so a renamed or moved gate file shows up as a dead entry (gate-coverage.test.mjs).
-  ...["tiers", "review", "authorize", "merges", "evalgate", "apply", "netjail", "state", "config", "github-app", "git", "main", "engines", "workspace", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
+  ...["tiers", "review", "merges", "evalgate", "apply", "netjail", "state", "config", "github-app", "git", "main", "engines", "workspace", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
   // What a job can reach: its sandbox and launch (engines: the bwrap allowlist, writable roots, env), what lands in its
   // workspace and what the runner reads back from it (workspace, files), and the computer box rules (computers).
   /^scripts\/computers\.(mjs|ts)$/,
@@ -38,6 +38,10 @@ export const GATE_CORE = [
   /^modules\/apps-platform\//,
   /^services\/apps-mcp\/src\/executor\.ts$/,
   /(^|\/)aidenhq-sdk\/executor\.ts$/,
+  // Primer publishing (primer.publish): its floor, card and routed tools, and the executor that publishes exactly what the
+  // record carries.
+  /^modules\/primer\/module\.yaml$/,
+  /^modules\/primer\/connections\/primer-mcp\/src\/publish\.ts$/,
   /^scripts\/modules\.(mjs|ts)$/,
   /^scripts\/paperclip-setup\.(mjs|ts)$/,
   /^scripts\/no-shell\.(mjs|ts)$/,
@@ -73,7 +77,7 @@ export const GATE_DIRS = [
   "services/board/src/accounts.ts",
   "services/board/src/session.ts",
 ];
-/** Runner files deliberately outside the core (primer is gate code: GATE_CODE). Adding one here is a gate-core change. */
+/** Runner files deliberately outside the core. Adding one here is a gate-core change. */
 export const OUTSIDE_GATE = [
   "advise.ts", "answered.ts", "branch.ts", "breaker.ts", "busy.ts", "cards.ts", "describe.ts", "evidence.ts", "gcp.ts", "grade.ts",
   "images.ts", "intake.ts", "metrics.ts", "notices.ts", "paperclip.ts", "primer.ts", "product-prs.ts", "prompt.ts",
@@ -88,11 +92,6 @@ export function coverageProblems(files, core = GATE_CORE, outside = OUTSIDE_GATE
     ...core.filter((g) => !files.some((f) => g.test(f))).map((g) => `dead entry: ${g.source}`),
   ];
 }
-/**
- * Gate code that is not the core: the runner's Primer publishing. The AI reviewer decides (Tier 1) and may flag it for the
- * second reviewer when it weakens a control. (agents.mjs is core: repo access, the owner's words, private reads.)
- */
-const GATE_CODE = [/^services\/runner\/src\/primer\.(mjs|ts)$/];
 const GITHUB = /(^|\/)\.github\//;
 /**
  * The owner-approved source exceptions (review.mjs reads them from the base). A record says `approved_by: owner`, and code
@@ -654,8 +653,8 @@ function composeWhy(base, head) {
 }
 
 /**
- * The product files that need more than one reviewer's plain read: the gate's core (panel), other gate code and a role
- * holder's handbook (Tier 1, named), and module.yaml or a compose file judged by content.
+ * The product files that need more than one reviewer's plain read: the gate's core (panel), a role holder's handbook
+ * (Tier 1, named), and module.yaml or a compose file judged by content.
  * `texts` maps those config files to { base, head } (text, or undefined when absent on that side); a config file without
  * an entry couldn't be read: refused, to ask again.
  */
@@ -664,7 +663,6 @@ function productFileParts(files, texts = {}, s) {
   for (const f of files) {
     let m;
     if (GATE_CORE.some((g) => g.test(f))) parts.push(PANEL("gate-core", `it changes the gate's own core (${f})`));
-    else if (GATE_CODE.some((g) => g.test(f))) parts.push(T(1, "product-gate", `it changes gate code (${f})`));
     else if ((m = /^modules\/[^/]+\/agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f)) && (ROLE_AGENTS.has(m[1]) || (s.roles?.[m[1]] ?? []).length)) parts.push(T(1, "role-handbook", `handbook of ${m[1]}, which holds a role`));
     else if (/^modules\/[^/]+\/module\.yaml$/.test(f) || COMPOSE.test(f)) {
       const t = texts?.[f];
