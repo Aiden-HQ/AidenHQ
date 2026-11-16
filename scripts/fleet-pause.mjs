@@ -85,21 +85,30 @@ async function main() {
     const i = process.argv.indexOf("--timeout-minutes");
     const timeoutMs = (i > 0 ? Number(process.argv[i + 1]) : 60) * 60_000;
     const routines = {};
+    // The record is written after every change, so a pause killed mid-drain still leaves what it paused and stopped.
+    const prev = existsSync(recordPath) ? JSON.parse(readFileSync(recordPath, "utf8")) : undefined;
+    const pausedAt = new Date().toISOString();
+    const units = [];
+    const save = () => writeFileSync(recordPath, JSON.stringify(mergePaused(prev, { pausedAt, routines, units }), null, 2) + "\n");
     for (const company of await companies()) {
       const active = (await api("GET", `/api/companies/${company}/routines`)).filter((r) => r.status === "active");
-      for (const r of active) await api("PATCH", `/api/routines/${r.id}`, { status: "paused" });
-      routines[company] = active.map((r) => r.id);
+      routines[company] = [];
+      for (const r of active) {
+        await api("PATCH", `/api/routines/${r.id}`, { status: "paused" });
+        routines[company].push(r.id);
+        save();
+      }
       console.log(`company ${company}: paused ${active.length} routines`);
     }
     // Drain: stop each idle unit at once and let one running a job finish rather than cancel it. A job still running at
     // the timeout is stopped with the rest (the maintenance window comes first).
     const listed = () => listedUnits(sh("systemctl", ["--user", "list-units", "aidenhq-ci-runner@*", "--all", "--plain", "--no-legend"]));
-    const units = [];
     const stop = (names) => {
       const fresh = names.filter((n) => !units.includes(n));
       if (!fresh.length) return;
       execFileSync("systemctl", ["--user", "stop", ...fresh], { stdio: "inherit" });
       units.push(...fresh);
+      save();
       console.log(`stopped ${fresh.join(", ")}`);
     };
     const until = Date.now() + timeoutMs;
@@ -111,8 +120,7 @@ async function main() {
       console.log(`waiting for a CI runner unit to finish its job: ${wait.join(", ")}`);
       await new Promise((r) => setTimeout(r, 5_000));
     }
-    const prev = existsSync(recordPath) ? JSON.parse(readFileSync(recordPath, "utf8")) : undefined;
-    writeFileSync(recordPath, JSON.stringify(mergePaused(prev, { pausedAt: new Date().toISOString(), routines, units }), null, 2) + "\n");
+    save();
     console.log(`recorded in ${recordPath}; waiting for live runs, runner jobs and agent computers to reach zero`);
     let last = "";
     for (;;) {
