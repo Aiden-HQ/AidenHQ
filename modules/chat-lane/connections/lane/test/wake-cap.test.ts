@@ -49,10 +49,16 @@ describe("the wake cap counts only wakes on open tasks", () => {
     const set = await call("wake_at", { when_local: at(due), note: "check the deploy", task: "WOR-5245" });
     expect(set).toMatchObject({ ok: true });
 
-    // It fires at its time, and only then (the older wakes sit an hour out too; the new one is in the past at `due`).
-    const fired = (list: { note: string }[]) => list.map((w) => w.note).filter((n) => n === "check the deploy");
-    expect(fired(laneStore.takeDue(due - 1000))).toEqual([]);
-    expect(fired(laneStore.takeDue(due))).toEqual(["check the deploy"]);
+    // It fires at its time, and only then. takeDue hands out at most 50 per pass, and the 51 older wakes (an hour out too) come
+    // due ahead of it, so each instant is drained pass by pass; one pass could cut the new wake off whenever `due` sat within a
+    // second of the hour.
+    const fired = (now: number) => {
+      const notes: string[] = [];
+      for (let batch = laneStore.takeDue(now); batch.length; batch = laneStore.takeDue(now)) notes.push(...batch.map((w) => w.note));
+      return notes.filter((n) => n === "check the deploy");
+    };
+    expect(fired(due - 1000)).toEqual([]);
+    expect(fired(due)).toEqual(["check the deploy"]);
   });
 
   it("lists the pending wakes with their task and time, saying which count, at the cap", async () => {
