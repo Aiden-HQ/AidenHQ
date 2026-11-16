@@ -108,17 +108,14 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "app CI code review has spent over 80% of its day cap"
-      # Deployed apps (the app-* compose projects) are starved of CPU, not merely a busy host: the whole host is waiting on CPU
-      # (PSI "some" over 40% of the time), or an app container's own cgroup waits over 20% while the host is over 15%
-      # (an app at its own CPU limit alone does not fire). Spikes that leave the apps alone never fire.
+      # Deployed apps (the app-* compose projects) are starved of CPU: an app container's own cgroup waits over 20% while the
+      # host waits over 15% (an app at its own CPU limit alone does not fire). Host CPU pressure alone is not an app alert, and
+      # this rule never matches the host series: its summary names the project, which only the app clause carries.
       - alert: AppsCpuStarved
         expr: |
-          rate(node_pressure_cpu_waiting_seconds_total[5m]) > 0.40
-          or (
-            rate(container_pressure_cpu_waiting_seconds_total[5m])
-              * on (id) group_left (project, service) max by (id, project, service) (aidenhq_container_running{project=~"app-.+"}) > 0.20
-            and on () rate(node_pressure_cpu_waiting_seconds_total[5m]) > 0.15
-          )
+          rate(container_pressure_cpu_waiting_seconds_total[5m])
+            * on (id) group_left (project, service) max by (id, project, service) (aidenhq_container_running{project=~"app-.+"}) > 0.20
+          and on () rate(node_pressure_cpu_waiting_seconds_total[5m]) > 0.15
         for: 5m
         labels: { severity: warning }
         annotations:

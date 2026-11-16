@@ -69,8 +69,13 @@ Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 85%, o
 `DiskNearlyFull` (over 95%, **critical**), `MemoryPressure`, `OomKill`, `HostMetricsStale`, `ContainerRestarting`,
 `CoreServiceDown` (an aidenhq container, the runner or gateway unit, or the board or gateway not answering, for 5 minutes,
 **critical**), `UnitFailed`, `CiRunnersDown`, `RunnerQueueStuck`, `RunnerJobOverlong`, `GatewaySpendNearCap`,
-`CiReviewSpendNearCap`, `AppsCpuStarved` (host CPU pressure over 40% for 5 minutes, or an `app-*` container's own CPU pressure
-over 20% while the host's is over 15%).
+`CiReviewSpendNearCap`, `AppsCpuStarved` (an `app-*` container's own CPU pressure over 20% while the host's is over 15%; the
+alert names the app's project, and host pressure alone never fires it). The rules' test is
+`modules/monitoring/prometheus/rules.test.yml`: a host-only spike fires nothing, an `app-*` match carries its project, and
+an app at its own limit with an idle host does not fire. Run it with the promtool of the module's own image, so the
+checker is the build the module serves:
+`docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06 check rules rules.yml`
+(and `test rules rules.test.yml`).
 
 Alertmanager has one receiver: the board's `POST /internal/alerts` (`services/board/src/monitoring.ts`), with
 `send_resolved`. The board keeps what is firing and the Fleet Ops detector (`fleet-ops.ts`) gets an `alert` check group, so
