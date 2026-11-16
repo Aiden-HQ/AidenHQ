@@ -789,7 +789,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
 
 /**
  * config/kernel/modules.json's `modules`: what the kernel knows of a module beyond its connections (spec §2.4, §3.3.4, §5.6):
- * the kernel.* roles it requests, its privileged entries, its own token when it has no connection (a generated secret named
+ * the kernel.* roles it requests, its privileged entries, a channel's own token when it has no connection (a generated secret named
  * `<module>_token`, dashes as underscores) and, for a channel (`providers.channel`, which needs privileged speaks-as-owner),
  * the stamp its decisions carry, whether it may close stale cards, and its own settings (a host CLI channel reads them here).
  */
@@ -809,7 +809,7 @@ export function kernelModuleTable(defs, settings = {}) {
     }
     const e = {
       ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
-      ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      ...(ch != null && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
@@ -942,7 +942,7 @@ function appFeedbackRoutines(paperclip, appDefs, routineTitles) {
     if (!a?.share?.host || !a.feedback_to) continue;
     const agent = paperclip.agents[a.feedback_to] ?? fail(`app ${a.name}: feedback_to names ${a.feedback_to}, which is not an enabled agent`);
     // Every Codex agent gets advisor_ask and notify_owner by default; the feedback agent holds only FEEDBACK_TOOLS, so drop them.
-    for (const [c, list] of Object.entries(agent.enabled_tools)) agent.enabled_tools[c] = list.filter((t) => FEEDBACK_TOOLS[c]?.includes(t) || !(c === "paperclip_tasks" && t === "advisor_ask") && !(c === "slack_live" && t === "notify_owner"));
+    for (const [c, list] of Object.entries(agent.enabled_tools)) agent.enabled_tools[c] = list.filter((t) => FEEDBACK_TOOLS[c]?.includes(t) || !(c === "paperclip_tasks" && t === "advisor_ask") && !(c === "telegram" && t === "notify_owner"));
     for (const c of Object.keys(agent.enabled_tools)) if (!agent.enabled_tools[c].length) delete agent.enabled_tools[c];
     const extra = Object.entries(agent.enabled_tools).flatMap(([c, list]) => list.filter((t) => !FEEDBACK_TOOLS[c]?.includes(t)).map((t) => `${c}.${t}`));
     if (extra.length) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may hold only ${Object.entries(FEEDBACK_TOOLS).map(([c, l]) => `${c}: ${l.join(", ")}`).join("; ")}, not ${extra.join(", ")}`);

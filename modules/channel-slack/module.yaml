@@ -41,7 +41,8 @@ services:
       build: ./connections/slack
       tmp: 16m
       egress: true
-      links: [ sources ] # src_slack: the warehouse (the shared-sources network) until source modules move (3g)
+      # src_slack: the warehouse (the shared-sources network); paperclip: the HMAC-signed triage webhook (no key). Until 3g.
+      links: [ sources, paperclip ]
       data: ["slack-live:/data"]
       env:
         SLACK_LIVE_DB: /data/slack-live.sqlite
