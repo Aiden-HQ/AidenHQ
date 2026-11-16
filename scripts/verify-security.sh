@@ -378,9 +378,9 @@ grep -q '\*\*Read only:\*\* describe, list, get, read and get-iam-policy command
 grep -q '^export function layout(cfg' services/runner/src/engines.mjs && ! grep -q '"--dev-bind", "/", "/"' services/runner/src/engines.mjs && grep -q '"--tmpfs", "/tmp", "--tmpfs", home' services/runner/src/engines.mjs \
   && grep -q '"--unshare-pid", "--unshare-ipc",' services/runner/src/engines.mjs && grep -q '"--proc", "/proc"' services/runner/src/engines.mjs \
   && pass "runner: jobs see an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "runner: jobs bind the host's whole filesystem again"
-grep -q 'join(homedir(), ".config/gh")' services/runner/src/config.mjs && grep -q 'if (ghToken) Object.assign(agentEnv, { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken });' services/runner/src/engines.mjs \
-  && grep -q 'permissions: READ, fresh: true' services/runner/src/main.mjs \
-  && pass "runner: jobs can't read the user's gh sign-in; their gh reads with a read-only App token for the task's repos" || fail "runner: the user's gh sign-in isn't hidden from jobs, or their gh token changed"
+grep -q 'join(homedir(), ".config/gh")' services/runner/src/config.mjs && grep -q 'if (ghToken) Object.assign(agentEnv, { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken });' services/runner/src/engines.mjs && grep -q '...(gh ? \["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"\] : \[\])' services/runner/src/engines.mjs \
+  && grep -q 'permissions: READ, fresh: true' services/runner/src/github-app.ts && node --input-type=module -e 'import { READ } from "./services/runner/src/github-app.ts"; process.exit(Object.values(READ).every((v) => v === "read") ? 0 : 1)' \
+  && pass "runner: jobs can't read the user's gh sign-in; their gh (host and box) reads with a read-only App token for the task's repos" || fail "runner: the user's gh sign-in isn't hidden from jobs, or their gh token changed (or gained a write permission)"
 # Live, under the jobs' own mask (engines.mjs hiding, from the runner's config): the runner's user is in the docker group
 # (root on the host) and is tailscaled's operator; the data dir holds the board's and Paperclip's sessions.
 if job_probe="$(node --input-type=module -e '

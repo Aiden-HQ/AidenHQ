@@ -223,7 +223,7 @@ const SESSION = /^[\w.:-]{1,200}$/;
  * `loopback`: further host URLs the job may reach (the run's helper), besides the model gateway (its model calls and its
  * jobcaps). A box job runs the same bin in its computer (services/computer), its job dir inside the launcher's out folder.
  */
-export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = "", gcp, loopback = [], job = {}, box }) {
+export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = "", gcp, loopback = [], job = {}, box, gh = false }) {
   const entry = engineEntry(cfg, engine.kind);
   const caps = box ? [] : jobcapsFor(cfg, engine, job.jobcaps);
   job = { ...job, jobcaps: caps, observing: observes(engine) };
@@ -254,7 +254,8 @@ export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = ""
   if (box) {
     // The box's own job dir (/aidenhq-out/job) and the engine module the launcher mounted read-only.
     writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });
-    const argv = ["docker", "exec", "--env-file", box.envFile, "-w", "/workspace", box.container, "sh", "-c", BOX_EXEC_WRAP, "aidenhq-computer", join("/opt/aidenhq/engine", bin), "/aidenhq-out/job"];
+    // `gh`: the job's read-only gh token, passed by name from the docker client's env (never argv or the env file).
+    const argv = ["docker", "exec", "--env-file", box.envFile, ...(gh ? ["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"] : []), "-w", "/workspace", box.container, "sh", "-c", BOX_EXEC_WRAP, "aidenhq-computer", join("/opt/aidenhq/engine", bin), "/aidenhq-out/job"];
     return { argv, env: {}, spec, entry };
   }
   writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });
@@ -342,10 +343,10 @@ export const jobDirOf = (logPath, box) => (box ? join(box.outDir, "job") : `${lo
 export function startAgent({ cfg, engine, worktree, prompt, sessionId, logPath, env: jobEnv = {}, gcp, channel, identity = DEFAULT_IDENTITY, ghToken, job, box }) {
   const jobDir = jobDirOf(logPath, box);
   mkdirSync(jobDir, { mode: 0o700 }); // new for every run: nothing of the job's is in it yet
-  const { argv, env, entry } = buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt, gcp, loopback: [jobEnv.AIDENHQ_REPO_URL], job, box });
-  // A box job's client gets only what Docker needs; everything the job gets is in the launcher's env file.
+  const { argv, env, entry } = buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt, gcp, loopback: [jobEnv.AIDENHQ_REPO_URL], job, box, gh: Boolean(ghToken) });
+  // A box job's client gets only what Docker needs; the job gets the launcher's env file, plus its gh token (docker exec -e).
   const agentEnv = box
-    ? Object.fromEntries(["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"].filter((k) => process.env[k]).map((k) => [k, process.env[k]]))
+    ? { ...Object.fromEntries(["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])), ...(ghToken ? { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken } : {}) }
     : {
         ...process.env,
         ...env,

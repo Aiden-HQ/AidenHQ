@@ -253,6 +253,33 @@ describe("box jobs", () => {
     assert.match(argv(false), /web_search="live"/);
   });
 
+  it("a box job's gh token reaches the box through docker exec's env, by name: never its argv or the env file", async () => {
+    const cfg = { stateDir: join(dir, "state"), enginesFile: join(dir, "config/engines.json") };
+    const d = mkdtempSync(join(tmpdir(), "box-gh-"));
+    const bin = join(d, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "docker"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${d}/argv"\nenv > "${d}/env"\n`, { mode: 0o755 });
+    writeFileSync(join(d, "box.env"), "AIDENHQ_RUN_TOKEN=ahqc_x\n");
+    const box = { container: "aidenhq-computer-gh", envFile: join(d, "box.env"), outDir: join(d, "out") };
+    mkdirSync(box.outDir);
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      const run = startAgent({ cfg, engine: { kind: "codex-openrouter", model: "m", box: true }, worktree: d, prompt: "p", logPath: join(d, "log"), ghToken: "ghs_read", job: { issueId: "x" }, box });
+      for (const end = Date.now() + 30_000; !existsSync(`${run.logPath}.exit`) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      process.env.PATH = path;
+    }
+    const argv = readFileSync(join(d, "argv"), "utf8").split("\n");
+    assert.deepEqual(argv.slice(0, 7), ["exec", "--env-file", box.envFile, "-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"]);
+    assert.ok(!argv.join(" ").includes("ghs_read"), "the value is never on the command line");
+    const env = readFileSync(join(d, "env"), "utf8");
+    assert.match(env, /^GH_TOKEN=ghs_read$/m);
+    assert.match(env, /^AIDENHQ_GH_AUTH=ghs_read$/m);
+    assert.ok(!readFileSync(box.envFile, "utf8").includes("ghs_read") && !readFileSync(join(d, "log"), "utf8").includes("ghs_read"), "nor in the env file or the log");
+    rmSync(d, { recursive: true, force: true });
+  });
+
   it("a box Engineer runs only what is assigned to it: never picked, or borrowed as a persona, by its engine kind", async () => {
     const { personaFor, pickerFor } = await import("../src/agents.mjs");
     useEngines(registry());
