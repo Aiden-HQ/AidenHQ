@@ -3886,6 +3886,18 @@ function headsOf(issueId) {
 }
 
 /**
+ * Whether the board already shows a task's work published, so the run-end receipt leaves it out of its `pr` invitation:
+ * the task is closed, or every branch it opened a PR for has that PR merged (a merge after the run ended counts too). A
+ * branch with no PR, or one whose PR is still open, is not published: its invitation stays. Only the runner's own branch
+ * records are read, so this is what the board already shows, never a guess.
+ */
+function publishedAt(issue) {
+  if (CLOSED.includes(issue.status)) return true;
+  const rows = state.branches(issue.id);
+  return rows.length > 0 && rows.every((b) => b.pr_url && b.merged);
+}
+
+/**
  * The pending pr/merge cards that cover every one of a task's heads: [{ id, action, sha }]. Only a task whose every
  * head is covered counts, so the receipt never hides a branch that still needs a request. A failed board read is no
  * cards: the receipt then offers `pr`, as it did before this existed.
@@ -3933,6 +3945,7 @@ async function handleParentPr(parent, fresh) {
         const cards = await cardsAt(kid, headsOf(kid.id));
         if (running.has(kid.id) || queue.some((j) => j.issue.id === kid.id)) note = "Still running: reply **pr** on it when it's done";
         else if (cards.length) note = `Already requested: ${cards.map((c) => `${c.id} (${c.action})`).join(", ")}`;
+        else if (publishedAt(kid)) note = "Already published";
         else if (!(await taskHasCommits(task))) note = "Nothing to publish";
         else await runCommand(kid, task, "pr");
       } catch (err) {
@@ -3970,7 +3983,7 @@ async function reportToParent(issue) {
   const rows = await Promise.all(
     sorted.map(async ({ c, job }) => {
       const committed = job?.detail === "committed";
-      return { identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed, cards: committed ? await cardsAt(c, headsOf(c.id)) : [], graded: await graded(c.id) };
+      return { identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed, cards: committed ? await cardsAt(c, headsOf(c.id)) : [], published: committed && publishedAt(c), graded: await graded(c.id) };
     }),
   );
   // The same table again (a resumed run that changed nothing) would only wake the parent's agent for nothing.

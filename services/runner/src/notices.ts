@@ -49,12 +49,14 @@ export interface SummaryRow {
   job?: string;
   committed?: boolean;
   cards?: unknown[];
+  published?: boolean;
   graded?: boolean;
 }
 
 export function summaryKind(rows: SummaryRow[]): NoticeKind {
   if (rows.some((r) => r.status !== "cancelled" && r.job !== "done")) return "failed";
-  if (rows.some((r) => r.committed && !(r.cards ?? []).length)) return "decision";
+  // Published work (its PR merged, or the task closed) asks for no "pr": the summary says so without waking the delegator.
+  if (rows.some((r) => r.committed && !(r.cards ?? []).length && !r.published)) return "decision";
   return rows.every((r) => r.status === "cancelled" || r.graded) ? "finished" : "done";
 }
 
