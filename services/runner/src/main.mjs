@@ -38,7 +38,7 @@ import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, state
 import { authorize } from "./authorize.mjs";
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
-import { CODE_REJECTS, MAX_REJECTS, afterReview, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
+import { CODE_REJECTS, MAX_REJECTS, afterReview, autonomyCap, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
 import { LUNA, UNSURE, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
@@ -923,12 +923,10 @@ async function runAutoMerges() {
       const reviewer = designReviewer();
       const bound = ready.map(([p, s]) => ({ ...p, ...(s.patch ? { patch: s.patch } : {}), ui: Boolean(reviewer) && merges.touchesUi(s.files) }));
       // Each PR on its own (owner, 2026-11-12): one red or carded PR doesn't hold the others back.
-      const tiers = off ? ready.map(() => ({ tier: 2, rule: "autonomy-off", reason: "autonomy is off" })) : await Promise.all(ready.map(([, s]) => tierFor(issue, "merge", { prs: [s] })));
-      // The base tier on its merits, also with autonomy off (best effort there: unknown on a failed read).
-      const bases = off ? await Promise.all(ready.map(([, s]) => tierFor(issue, "merge", { prs: [s] }).catch(() => null))) : tiers;
+      const tiers = await Promise.all(ready.map(([, s]) => tierFor(issue, "merge", { prs: [s] })));
       const isZero = (t) => t.tier === 0 && !t.reject;
       const zero = bound.filter((_, i) => isZero(tiers[i]));
-      const rest = bound.map((p, i) => [p, tiers[i], bases[i]]).filter(([, t]) => !isZero(t));
+      const rest = bound.map((p, i) => [p, tiers[i]]).filter(([, t]) => !isZero(t));
       // Taken out before acting, so a failure from here on can't file twice: it's said on the task instead. During the run
       // the rest stays for its end (a newer request for it clears that and tiers it again).
       const taken = [...gone, ...zero, ...(busy ? [] : rest.map(([p]) => p))];
@@ -950,9 +948,9 @@ async function runAutoMerges() {
       for (const [p, t] of said) await wakeForTurnedAway(issueId, { ...p, key: t.rule });
       const carded = rest.filter(([p]) => !said.some(([s]) => s === p));
       if (carded.length) {
-        const tier = carded.some(([, t]) => t.tier !== 1) ? 2 : 1;
+        const tier = carded.some(([, t]) => cardTier(t) !== 1) ? 2 : 1;
         const reason = carded.map(([, t]) => t.reason).join("; ");
-        const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(([p]) => cardPr(p)), ...(want.gap !== undefined ? { gap: want.gap } : {}) }, tier, reason, baseTier: baseOf(...carded.map(([, , b]) => b)), rule: highest(carded.map(([, t]) => t)).rule, panel: carded.some(([, t]) => t.panel) });
+        const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(([p]) => cardPr(p)), ...(want.gap !== undefined ? { gap: want.gap } : {}) }, tier, reason, baseTier: baseOf(...carded.map(([, t]) => t)), rule: highest(carded.map(([, t]) => t)).rule, panel: carded.some(([, t]) => t.panel) });
         await pc.comment(issueId, `The merge waits for ${a.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${a.id}): ${reason}.`);
       }
     } catch (err) {
@@ -1762,15 +1760,18 @@ async function fileApproval(issue, { action, args, diff, tier = 2, reason = "", 
 // ------------------------------------------------------------------ tiered approvals
 
 /**
- * The instance's autonomy (grants table, read fresh: it is the pause switch): off (every write is the owner's card, as
- * before), tier0 (Tier 0 runs at once; the reviewer only notes its verdict), full (the reviewer decides Tier 1).
+ * The instance's autonomy (grants table, read fresh: it is the pause switch): off (every write is the owner's card, the
+ * reviewer reading Tier 1 first: tiers.mjs autonomyCap), tier0 (Tier 0 runs at once; the reviewer only notes its verdict),
+ * full (the reviewer decides Tier 1).
  */
 const autonomyNow = () => (["tier0", "full"].includes(readGrants()?.autonomy) ? readGrants().autonomy : "off");
 /**
  * A card's base tier (wave 3, batch approvals): what classify() says on the request's merits, before the autonomy override;
  * a reject is 2. Unknown (undefined: a read failed) when any part of the card is, so the card is never batched.
  */
-const baseOf = (...ts) => (ts.length && ts.every(Boolean) ? Math.max(...ts.map((t) => (t.reject ? 2 : t.tier))) : undefined);
+const baseOf = (...ts) => (ts.length && ts.every(Boolean) ? Math.max(...ts.map((t) => (t.reject ? 2 : (t.baseTier ?? t.tier)))) : undefined);
+/** The tier a card is filed at: the reviewer's queue (1) for Tier 1 and review-first requests, else the owner's (2). */
+const cardTier = (t) => (!t.reject && (t.tier === 1 || t.reviewFirst) ? 1 : 2);
 /** The duplicate-card guard's kill switch (instance setting `dup_guard`, in the grants table next to `autonomy`). */
 const dupGuardOn = () => readGrants()?.dup_guard !== "off";
 /** The guard found the change already satisfied on the target: no card; the evidence goes back to the agent instead. */
@@ -2064,8 +2065,8 @@ const authorityOf = (st) => {
 async function tierFor(issue, action, own, also = []) {
   const common = await commonTierState(issue, action, also);
   const s = { ...common, ...own };
-  const t = classify(action, s);
-  log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject), panel: Boolean(t.panel) });
+  const t = autonomyCap(classify(action, s), autonomyNow());
+  log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject), panel: Boolean(t.panel), reviewFirst: Boolean(t.reviewFirst) });
   // The reviewer's earlier rejections on this task, attached to a fresh review of the changed request.
   const prior = priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s), common.requestChain);
   return { ...t, full: common.full, previous: [...common.answers, ...prior.findings], relift: prior.relift };
@@ -2169,9 +2170,10 @@ function boardCardInput(a) {
 const BOARD_APPLIED = ["deploy_app", "app_run"];
 const reviewing = new Set();
 /**
- * Every poll while autonomy is on: each pending Tier 1 card gets one reviewer call (src/review.mjs). The tier is recomputed
- * first (a card filed through the board's internal token, or one whose state changed, goes to the owner). In tier0 the
- * verdict is only a note: the card is escalated with it, so the owner decides. A reject's reason is posted on the task.
+ * Every poll: each pending Tier 1 card gets one reviewer call (src/review.mjs). The tier is recomputed first (a card filed
+ * through the board's internal token, or one whose state changed, goes to the owner). In tier0 the verdict is only a note:
+ * the card is escalated with it, so the owner decides. With autonomy off every card is review-first (autonomyCap): an
+ * approve goes on to the owner with the verdict, a reject is final. A reject's reason is posted on the task.
  */
 async function runReviews() {
   const mode = autonomyNow();
@@ -2183,9 +2185,7 @@ async function runReviews() {
     if (reviewing.has(a.id)) continue;
     reviewing.add(a.id);
     try {
-      // Paused (autonomy off): cards filed before the switch go to the owner rather than wait unseen.
-      if (mode === "off") await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: "escalate", reason: "autonomy is off: the owner decides", model: LUNA, code: "autonomy_off" }, runnerKey());
-      else await reviewOne(a, mode);
+      await reviewOne(a, mode);
     } catch (err) {
       log("review failed", { approval: a.id, err: String(err.message ?? err).slice(0, 300) });
     } finally {
@@ -2214,6 +2214,7 @@ async function reviewOne(a, mode) {
       // The board's own panel flag (a deploy touching a migration or schema): two reviewers, as the board requires.
       input = veto ?? { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...boardCardInput(a) };
       if (common.routineAutonomy && common.routineAutonomy !== "full") input = { tier: 2, rule: "routine-autonomy", reason: `a routine's run started this task and that routine's autonomy is ${common.routineAutonomy}` };
+      input = autonomyCap(input, mode);
     } else input = await currentTier(issue, a, { withDiff: true });
   } catch (err) {
     input = { error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300), lasting: err instanceof UserError, stale: err instanceof MovedHead };
@@ -2246,7 +2247,7 @@ async function reviewOne(a, mode) {
     v = { ...v, decision: "reject", reason: `${v.reason}, ${n} times: ask again later.` };
   }
   reviewRetries.delete(a.id);
-  const post = mode === "full" || v.decision === "escalate" ? v : { ...v, decision: "escalate", code: "shadow", reason: `Shadow (autonomy: tier0): the reviewer would ${v.decision} this. ${v.reason}` };
+  const post = mode === "full" || v.decision === "escalate" || (mode === "off" && v.decision === "reject") ? v : { ...v, decision: "escalate", code: "shadow", reason: `Shadow (autonomy: tier0): the reviewer would ${v.decision} this. ${v.reason}` };
   // Kept before the verdict is posted, so a rejection never lands without the chain it judged (missing: the lock stays).
   if (post.decision === "reject" && post.code === UNSURE && chain) state.set(unsureChainKey(a.id), chainHash(chain));
   await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: post.decision, reason: post.reason.slice(0, 2000), model: post.model, ...(post.second ? { second: post.second } : {}), ...(post.code ? { code: post.code } : {}) }, runnerKey());
@@ -3055,30 +3056,24 @@ async function agentPublish(ctx, command, args) {
         await bindBranches(ordered, branches);
         // The card's args, built from the branches as bound: the board's schema decides what a card may carry (cards.ts).
         const cardArgs = branchCardArgs(branches, { text, merge });
-        const off = autonomyNow() === "off";
-        // Computed here, right before anything is published, from the branches as git sees them. With autonomy off only
-        // as the card's base tier (best effort: unknown on a failed read).
-        const tierNow = async () => tierFor(ctx.issue, command, { branches: await Promise.all(ordered.map((r, i) => branchTierState(r, branches[i].sha, branches[i].base))) }, merge ? ["merge"] : []);
-        const computed = off ? await tierNow().catch(() => null) : await tierNow();
-        let t = { tier: 2, reason: "" };
-        if (!off) {
-          t = computed;
-          if (t.reject) throw new UserError(`Not done: ${t.reason}.`);
-          if (t.tier === 0) {
-            // Once more right before it goes out at once: nothing rewrote the clone's history while it was tiered.
-            await refuseRewritten(ordered);
-            ranAtOnce = { t, args: cardArgs };
-            // Exactly the commits classified go out (a branch moved meanwhile can't ride along).
-            return new Map(branches.map((b) => [pinKey(b.repo, b.branch), b.sha]));
-          }
+        // Computed here, right before anything is published, from the branches as git sees them (autonomy off: Tier 0 is a
+        // card and Tier 1 review-first, tiers.mjs autonomyCap).
+        const t = await tierFor(ctx.issue, command, { branches: await Promise.all(ordered.map((r, i) => branchTierState(r, branches[i].sha, branches[i].base))) }, merge ? ["merge"] : []);
+        if (t.reject) throw new UserError(`Not done: ${t.reason}.`);
+        if (t.tier === 0) {
+          // Once more right before it goes out at once: nothing rewrote the clone's history while it was tiered.
+          await refuseRewritten(ordered);
+          ranAtOnce = { t, args: cardArgs };
+          // Exactly the commits classified go out (a branch moved meanwhile can't ride along).
+          return new Map(branches.map((b) => [pinKey(b.repo, b.branch), b.sha]));
         }
         // A clean rebase of approved commits: the runner's own replay of them is published on that approval.
-        const built = await rebuild(ctx.issue, command, cardArgs, ordered, branches, off ? computed : t);
+        const built = await rebuild(ctx.issue, command, cardArgs, ordered, branches, t);
         if (built) {
           carried = { ...built, args: { ...cardArgs, only: branches.map((b, i) => ({ ...b, sha: built.pins.get(pinKey(b.repo, b.branch)), base: built.moves[i].base })) } };
           return built.pins;
         }
-        const a = await fileApproval(ctx.issue, { action: command, args: cardArgs, tier: t.tier, reason: t.reason, baseTier: baseOf(computed), rule: off ? "autonomy-off" : t.rule, panel: Boolean(t.panel) });
+        const a = await fileApproval(ctx.issue, { action: command, args: cardArgs, tier: cardTier(t), reason: t.reason, baseTier: baseOf(t), rule: t.rule, panel: Boolean(t.panel) });
         // A `pr` card's head is never on GitHub before approval: the cache keeps exactly what was reviewed
         // (refs/reviewed/<approval>/<branch>), so a rejection can name it and the next task on the work can resolve it.
         if (command === "pr") await keepReviewed(ordered, branches, a.id);
@@ -3145,8 +3140,9 @@ async function agentReview(ctx, args) {
         log("review check", { issue: ctx.issue.identifier, action: command, tier: input.reject ? "reject" : input.tier, rule: input.rule, mode, used: n });
         if (input.reject) throw new Checked(`Code refuses this ${command} before any review (rule \`${input.rule}\`): ${input.reason}. No reviewer was asked, and this check isn't counted.`);
         if (input.tier === 0) throw new Checked(`Tier 0 (${input.reason}): \`aidenhq ${command}\` runs at once, with no review. This check isn't counted.`);
-        if (input.tier > 1) throw new Checked(`Tier 2 (${input.reason}): ${cfg.selfName} decides the card, not the AI reviewer. File it with \`aidenhq ${command}\`; this check isn't counted.`);
-        if (mode !== "full") throw new Checked(`Autonomy is ${mode}: ${cfg.selfName} decides every card, so there is no AI review to check against. File it with \`aidenhq ${command}\`; this check isn't counted.`);
+        if (input.tier > 1 && !input.reviewFirst) throw new Checked(`Tier 2 (${input.reason}): ${cfg.selfName} decides the card, not the AI reviewer. File it with \`aidenhq ${command}\`; this check isn't counted.`);
+        // Autonomy off: the card is review-first (the reviewer's reject is final), so the check is worth asking.
+        if (mode === "tier0") throw new Checked(`Autonomy is ${mode}: ${cfg.selfName} decides every card, so there is no AI review to check against. File it with \`aidenhq ${command}\`; this check isn't counted.`);
         if (n >= REVIEW_CHECKS) throw new Checked(`No checks left on this task (${REVIEW_CHECKS} used; the next word from whoever asked gives ${REVIEW_CHECKS} more). File it with \`aidenhq ${command}\`: the card's review decides.`);
         const card = { action: command, ...cardText(command, a.args) };
         // Counted before the call, so a call cut off by a restart still counts.
@@ -3250,34 +3246,30 @@ async function showFleetDiff(issue, workspace) {
   const t = await agentTexts(b);
   const untrialed = untrialedNewAgents(b.files, t.base, t.head);
   if (untrialed.length) return `**Can't be applied:** a new agent starts in trial (\`trial: true\` in agents/${untrialed[0]}/agent.yaml, read-only grants, reporting to architect); its write grants come with a second change after the trial.`;
-  // Autonomy on: the tier from the verified instance diff. Tier 0 lands after this run like the trial exception.
-  const mode = autonomyNow();
-  let bump = mode === "off" ? undefined : await productBump(b).catch((e) => ({ error: e.message }));
+  // The tier from the verified instance diff (autonomy off: Tier 0 is a card and the rest review-first, tiers.mjs
+  // autonomyCap). Tier 0 lands after this run like the trial exception.
+  const on = autonomyNow() !== "off";
+  const bump = await productBump(b).catch((e) => ({ error: e.message }));
   if (bump?.error) return `**Can't be applied:** ${bump.error}.`;
-  let st = mode === "off" ? undefined : await applyTierState(b, bump);
-  const tier = st && (await tierFor(issue, "apply", st));
-  if (tier?.reject) return `**Can't be applied:** ${tier.reason}.`;
+  const st = await applyTierState(b, bump);
+  const tier = await tierFor(issue, "apply", st);
+  if (tier.reject) return `**Can't be applied:** ${tier.reason}.`;
   // Only on a task the owner or the Agent Architect started: anyone else's handbook edit (or a chain of agent comments) gets a card.
-  if (tier ? tier.tier === 0 : trialHandbookOnly(b.files, t.base) && trialNoTap(await pc.issue(issue.id), readGrants())) {
+  if (on ? tier.tier === 0 : trialHandbookOnly(b.files, t.base) && trialNoTap(await pc.issue(issue.id), readGrants())) {
     // The trial exception: lands after this run, with no card (runTrialEdits). The diff stays here, in Activity.
-    state.set("trial_edits", JSON.stringify({ ...JSON.parse(state.get("trial_edits") || "{}"), [issue.id]: { sha: b.sha, branch: b.r.branch, ...(tier ? { tier0: true } : {}) } }));
-    return `**${tier ? `Runs at once (Tier 0: ${tier.reason})` : "Handbook edit to an agent in trial"}** (commit \`${b.sha.slice(0, 12)}\`): no tap needed, it lands in a moment.\n\n\`\`\`diff\n${diff.replaceAll("```", "‵‵‵")}\n\`\`\``;
+    state.set("trial_edits", JSON.stringify({ ...JSON.parse(state.get("trial_edits") || "{}"), [issue.id]: { sha: b.sha, branch: b.r.branch, ...(on ? { tier0: true } : {}) } }));
+    return `**${on ? `Runs at once (Tier 0: ${tier.reason})` : "Handbook edit to an agent in trial"}** (commit \`${b.sha.slice(0, 12)}\`): no tap needed, it lands in a moment.\n\n\`\`\`diff\n${diff.replaceAll("```", "‵‵‵")}\n\`\`\``;
   }
-  if (mode === "off") bump = await productBump(b).catch((e) => ({ error: e.message }));
-  if (bump?.error) return `**Can't be applied:** ${bump.error}.`;
-  // The base tier on its merits, also with autonomy off (best effort there: unknown on a failed read).
-  if (mode === "off") st = await applyTierState(b, bump).catch(() => undefined);
-  const base = mode === "off" ? (st ? await tierFor(issue, "apply", st).catch(() => null) : null) : tier;
-  // A review-first card (new module authority) is filed for the reviewer (Tier 1); its approve goes on to the owner.
-  const reviewFirst = Boolean(tier?.reviewFirst && !tier.reject);
-  const card = await fileApproval(issue, { action: "apply", args: applyCardArgs(b, ...authorityOf(st)), diff: await fleetDiffText(b, bump), tier: tier?.tier === 1 || reviewFirst ? 1 : 2, reason: tier?.reason, baseTier: baseOf(base), rule: tier?.rule ?? "autonomy-off", panel: Boolean(tier?.panel) }).catch((err) => ({ error: String(err.message ?? err).slice(0, 300) }));
+  // A review-first card (new module authority, or autonomy off) is filed for the reviewer (Tier 1); its approve goes on to the owner.
+  const reviewFirst = Boolean(tier.reviewFirst);
+  const card = await fileApproval(issue, { action: "apply", args: applyCardArgs(b, ...authorityOf(st)), diff: await fleetDiffText(b, bump), tier: cardTier(tier), reason: tier.reason, baseTier: baseOf(tier), rule: tier.rule, panel: Boolean(tier.panel) }).catch((err) => ({ error: String(err.message ?? err).slice(0, 300) }));
   const upgrade = bump ? `\n\n**${bump.title}:**\n\n\`\`\`\n${bump.log.replaceAll("```", "‵‵‵")}\n\`\`\`` : "";
   const ask = card.error
     ? `**Couldn't file the approval card:** ${card.error}. Nothing will be applied until it is filed; ask the agent to try again.`
     : card.tier === 1 && reviewFirst
-      ? `**With the AI reviewer, then you** (${card.id}: ${tier?.reason ?? ""}): the reviewer reads it first and its reject is final; if it approves, the card comes to you with its verdict. On your approval it lands exactly this commit on the latest \`${b.r.defaultBase}\`.`
+      ? `**With the AI reviewer, then you** (${card.id}: ${tier.reason}): the reviewer reads it first and its reject is final; if it approves, the card comes to you with its verdict. On your approval it lands exactly this commit on the latest \`${b.r.defaultBase}\`.`
     : card.tier === 1
-      ? `**With the AI reviewer** (${card.id}, Tier 1: ${tier?.reason ?? ""}): it approves, rejects with a reason, or sends it to you. On approval it lands exactly this commit on the latest \`${b.r.defaultBase}\`.`
+      ? `**With the AI reviewer** (${card.id}, Tier 1: ${tier.reason}): it approves, rejects with a reason, or sends it to you. On approval it lands exactly this commit on the latest \`${b.r.defaultBase}\`.`
       : `**Waiting for your approval** (${card.id}): tap Approve on the board's Approvals tab or the Telegram card${card.replaced ? "" : `, or reply \`apply ${issue.identifier}\``}. It lands exactly this commit on the latest \`${b.r.defaultBase}\`; Reject and nothing lands.`;
   return `**Fleet change** (commit \`${b.sha.slice(0, 12)}\`, ${b.files.length} file${b.files.length === 1 ? "" : "s"}):\n\n\`\`\`diff\n${diff.replaceAll("```", "‵‵‵")}\n\`\`\`${upgrade}\n\n${ask}`;
 }
@@ -3380,26 +3372,18 @@ async function agentMerge(ctx, args) {
   }
   // Tier 0 (agents org, named checks green or running on the exact head) starts at once, each PR merged on its own
   // once green (owner, 2026-11-12); the rest go on one card, as before.
-  let tiers = bound.map(() => ({ tier: 2, reason: "" }));
-  let bases = tiers.map(() => null);
-  if (autonomyNow() !== "off") {
-    const states = await merges.awaitChecks(() => mergeTierState(bound)); // CI may not have started yet
-    tiers = bases = await Promise.all(states.map((s) => tierFor(ctx.issue, "merge", { prs: [s] })));
-    states.forEach((s, i) => s.patch && (bound[i].patch = s.patch)); // the card carries each PR's content key
-    const bad = tiers.find((t) => t.reject);
-    if (bad) throw new UserError(`Not done: ${bad.reason}.`);
-  } else {
-    // Only the base tier on its merits: one read, no wait for CI (best effort: unknown on a failed read).
-    const states = await mergeTierState(bound).catch(() => null);
-    if (states) bases = await Promise.all(states.map((s) => tierFor(ctx.issue, "merge", { prs: [s] }).catch(() => null)));
-  }
+  const states = await merges.awaitChecks(() => mergeTierState(bound)); // CI may not have started yet
+  const tiers = await Promise.all(states.map((s) => tierFor(ctx.issue, "merge", { prs: [s] })));
+  states.forEach((s, i) => s.patch && (bound[i].patch = s.patch)); // the card carries each PR's content key
+  const bad = tiers.find((t) => t.reject);
+  if (bad) throw new UserError(`Not done: ${bad.reason}.`);
   const now = bound.filter((_, i) => tiers[i].tier === 0);
   const card = bound.filter((_, i) => tiers[i].tier !== 0);
   if (now.length) requestAutoMerge(ctx.issue, now);
   const merging = now.length ? `Merging ${now.map((p) => `#${p.number}`).join(", ")} now, each as soon as its named checks are green on its current head; results are posted on this task.` : "";
   if (!card.length) return `${merging} No card is needed.`;
   const rest = tiers.filter((t) => t.tier !== 0);
-  const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, tier: rest.some((t) => t.tier !== 1) ? 2 : 1, reason: rest.map((t) => t.reason).filter(Boolean).join("; "), baseTier: baseOf(...bases.filter((_, i) => tiers[i].tier !== 0)), rule: highest(rest).rule ?? "autonomy-off", panel: rest.some((t) => t.panel) });
+  const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, tier: rest.some((t) => cardTier(t) !== 1) ? 2 : 1, reason: rest.map((t) => t.reason).filter(Boolean).join("; "), baseTier: baseOf(...rest), rule: highest(rest).rule, panel: rest.some((t) => t.panel) });
   return `${merging ? `${merging} ` : ""}${waitingFor(a, ctx.issue)} Once approved, ${card.map((p) => `#${p.number}`).join(", ")} merge one at a time${gap !== undefined ? `, ${gap} minutes apart` : ""}, each only at the commit the card shows, with green checks and a green base branch (outside ${cfg.agentsOrg ?? "the agents org"} also approved on GitHub), or the queue stops and says why on the task.`;
 }
 
@@ -3416,6 +3400,8 @@ async function agentClose(ctx, args) {
   const isBot = (a) => a.login === DEPENDABOT && a.type === "Bot";
   const read = await Promise.all(prs.map(async (p) => (sameRepo(p.repo, cfg.productRepo) ? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p)));
   const t = await tierFor(ctx.issue, "close", { prs: read });
+  // No card for a close: with autonomy off (the pause switch) it is refused, like any other Tier 0 run.
+  if (t.rule === "autonomy-off") throw new UserError(`Not closed: ${t.reason}. Closing PRs runs only while autonomy is on; ask ${cfg.selfName} to close them.`);
   if (t.tier !== 0) throw new UserError(`Not closed: ${t.reason}. Only PRs in the agents org (${cfg.agentsOrg}) and the product repo's Dependabot PRs can be closed; the instance repo's and the product repo's other PRs are ${cfg.selfName}'s.`);
   const lines = await merges.closePrs(prs, reason, mergeGithub);
   await recordAuto(ctx.issue, "close", { prs: prs.map((p) => p.url), reason }, "", t, { ok: lines.every((l) => l.startsWith("Closed")), text: lines.join("\n") });
@@ -3435,7 +3421,7 @@ async function agentCreateRepo(ctx, args) {
   if (await app.repoExists(repo.slug)) return `${repo.slug} already exists: \`aidenhq repo ${repo.slug}\` clones it into the workspace.`;
   const t = await tierFor(ctx.issue, "create_repo", { repo: repo.slug });
   if (t.reject) throw new UserError(`Not done: ${t.reason}.`);
-  const a = await fileApproval(ctx.issue, { action: "create_repo", args: { repo: repo.slug }, tier: t.tier === 1 ? 1 : 2, reason: t.reason, baseTier: baseOf(t), rule: t.rule, panel: Boolean(t.panel) });
+  const a = await fileApproval(ctx.issue, { action: "create_repo", args: { repo: repo.slug }, tier: cardTier(t), reason: t.reason, baseTier: baseOf(t), rule: t.rule, panel: Boolean(t.panel) });
   return `${waitingFor(a, ctx.issue)} Once approved, ${repo.slug} is created (private, with a README) and is in the workspace on this task's next run.`;
 }
 

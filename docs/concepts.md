@@ -54,7 +54,7 @@ from text an agent wrote ([`services/runner/src/tiers.mjs`](../services/runner/s
 - **Tier 2** is the owner's tap on the board or the owner channel, or an exact typed reply such as `apply WOR-184`.
 
 **Autonomy.** The `autonomy` setting chooses how much of that runs without the owner: `off` (every write is the
-owner's card; also the pause switch), `tier0` (Tier 0 runs, the reviewer only comments), `full` (the reviewer decides
+owner's card, after the AI review of Tier 1, whose reject is final; also the pause switch), `tier0` (Tier 0 runs, the reviewer only comments), `full` (the reviewer decides
 Tier 1). Move to `full` only after `services/runner/scripts/reviewer-eval.mjs` scores 100%. See
 [design/approvals.md](design/approvals.md).
 

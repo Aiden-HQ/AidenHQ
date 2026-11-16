@@ -6,7 +6,7 @@ import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { grantsTable, type Grant } from "./grants.js";
 import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./paperclip.js";
 import type { Store } from "./store.js";
-import { ALREADY_APPLIED, autonomy, runCard, touchesMigrations, type RunRequest } from "./approvals.js";
+import { ALREADY_APPLIED, runCard, touchesMigrations, type RunRequest } from "./approvals.js";
 
 /** The duplicate-card guard's kill switch (instance setting `dup_guard`, in the grants table next to `autonomy`). Read fresh. */
 function dupGuardOn(grantsFile = process.env.AIDENHQ_GRANTS_FILE): boolean {
@@ -292,14 +292,13 @@ async function requestDeploy(pc: Paperclip, caller: Agent, a: z.infer<typeof Con
   // Too large (or missing) to review is friction, not the owner's: back to the agent (owner, 2026-11-14). A migration or
   // schema change can lose data: the panel's (two reviewers, both approving; the policy escalates a destructive one).
   if (c.truncated || !diff) throw new Refused(`refused: the change to ${app} since its running commit is too large (or couldn't be read) to review; deploy it in smaller steps, or try again`);
-  // The tier on its merits (the base tier, for batching), then the autonomy override.
+  // The tier on its merits (the base tier, for batching): the reviewer's first at any autonomy (off: it may only escalate or reject).
   const migration = touchesMigrations(diff);
   const [baseTier, baseReason, baseCode] = migration ? [1 as const, "a stateful deploy that touches a migration or schema file", "deploy-migration"] : [1 as const, "a stateful deploy with no migration or schema change", "deploy-stateful"];
-  const [tier, reason, reasonCode] = autonomy() === "off" ? [2 as const, "autonomy is off", "autonomy-off"] : [baseTier, baseReason, baseCode];
   const rec = store.approvals.request({
-    tier,
-    reason,
-    reasonCode,
+    tier: baseTier,
+    reason: baseReason,
+    reasonCode: baseCode,
     panel: migration,
     requesterId: caller.id,
     baseTier,
@@ -337,8 +336,8 @@ export async function requestRun(pc: Paperclip, r: RunRequest, store: Pick<Store
   if (task.assigneeAgentId !== r.agent_id) throw new Refused("refused: that task is not assigned to you; pass your current task");
   if (["done", "cancelled"].includes(task.status)) throw new Refused("refused: that task is closed");
   const agent = (await pc.agents()).find((a) => a.id === r.agent_id);
-  // An app_run is the reviewer's (Tier 1) while autonomy is on.
-  const rec = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: "app_run", requestedBy: agent ? personaOf(agent) : "an agent", tier: autonomy() === "off" ? 2 : 1, reason: "a one-off script in an app the agent owns", reasonCode: autonomy() === "off" ? "autonomy-off" : "app-run", requesterId: r.agent_id, baseTier: 1, ...runCard(r) });
+  // An app_run is the reviewer's (Tier 1) first at any autonomy.
+  const rec = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: "app_run", requestedBy: agent ? personaOf(agent) : "an agent", tier: 1, reason: "a one-off script in an app the agent owns", reasonCode: "app-run", requesterId: r.agent_id, baseTier: 1, ...runCard(r) });
   return { ok: true, approval: rec.id, done: `asked ${rec.tier === 1 ? "the AI reviewer" : "the owner"} to approve running \`npm run ${r.script}\` in ${r.name} (approval ${rec.id}, on the board's Approvals${rec.tier === 1 ? "" : " and in Telegram"}). It runs once, when approved; the outcome and output land on ${task.identifier}. Don't say it ran until then` };
 }
 

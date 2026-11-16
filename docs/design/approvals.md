@@ -101,7 +101,7 @@ clones and workspaces, where a lock or a moved ref could lose a claim that is ne
 
 Actions the board itself applies after approval are tiered by the board (`services/board/src/fleet.ts`): a stateful
 `deploy_app` is Tier 1, with the panel when it touches a migration or schema file (the policy has the reviewers escalate
-a destructive one), refused when it is too large to review, and an `app_run` is Tier 1. With `autonomy: off` both are Tier 2.
+a destructive one), refused when it is too large to review, and an `app_run` is Tier 1. With `autonomy: off` the reviewer may only escalate or reject them.
 
 ## The reviewer
 
@@ -140,7 +140,9 @@ reason_code, reason, second_review}`.
 The instance setting `autonomy` (`modules/core/module.yaml`) controls how far this goes. The runner reads it fresh each
 time, so it is also the pause switch.
 
-- `off` (default): everything is Tier 2. Pending Tier 1 cards are escalated to the owner.
+- `off` (default): the owner decides every write, but the AI review still runs first (every install and update is
+  reviewed regardless). Tier 0 is a card for the owner; Tier 1 goes to the reviewer first: its reject is final, its
+  approve goes on to the owner's card with its verdict (`tiers.mjs` `autonomyCap`). Tier 2 goes straight to the owner.
 - `tier0`: Tier 0 runs. On Tier 1, the reviewer comments with what it would do and the owner decides (shadow mode).
 - `full`: the reviewer decides Tier 1.
 

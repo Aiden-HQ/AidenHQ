@@ -1,7 +1,7 @@
 // End to end (see flow-harness.mjs): one runner, one conversation on the task, several things the owner does in it.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
 
@@ -16,6 +16,8 @@ describe("flow-approvals", () => {
     it("files the rebase's push and the merges as approval cards: nothing goes out until the tap, then each runs once", async () => {
       await settled();
       await publish();
+      // The merge is tiered with autonomy off too (its card is review-first when Tier 1): GitHub reads PR #1.
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 1: { branch: "fix/remove-legacy", files: ["legacy.txt"], checks: "SUCCESS" } }));
       step("none");
       await turn("Here's the order: 1. https://github.com/acme/app/pull/1");
       const before = githubTip();
@@ -26,6 +28,7 @@ describe("flow-approvals", () => {
       assert.equal(push.code, 0, push.out);
       assert.match(push.out, /Waiting for Dana's approval \(A\d+\)/);
       assert.match(merge.out, /Waiting for Dana's approval[\s\S]*#1 merge one at a time/);
+      rmSync(join(t.dir, "github-prs.json")); // the card is filed: GitHub fails again from here, as the rest of this file expects
       assert.equal(githubTip(), before, "nothing pushed before the tap");
       const card = [...t.paperclip.approvals.values()].find((a) => a.action === "push" && a.state === "pending");
       assert.deepEqual(card.args.only.map((b) => [b.repo, b.branch, b.sha.length]), [["acme/app", "fix/remove-legacy", 40]], "the exact branch and commit");

@@ -131,6 +131,15 @@ if (step === "commit") {
   else writeFileSync(join(repo, `${branch.replace(/\W/g, "-")}.txt`), `${branch}\n`);
   git("add", "-A");
   git("commit", "-qm", `feat: ${branch}`);
+} else if (step.startsWith("write ")) {
+  // `write <branch> <path> <text…>`: one commit on <branch> (made off GitHub's main the first time) writing <text> to <path>.
+  const [, branch, path, ...text] = step.split(" ");
+  git("fetch", "-q", "origin");
+  if (git("switch", "-q", branch).status !== 0) git("switch", "-qc", branch, "origin/main");
+  mkdirSync(dirname(join(repo, path)), { recursive: true });
+  writeFileSync(join(repo, path), `${text.join(" ")}\n`);
+  git("add", "-A");
+  git("commit", "-qm", `feat: ${path}`);
 } else if (step === "stacked") {
   // A branch stacked on GitHub's `feat/base`, with one commit of its own.
   git("fetch", "-q", "origin");
