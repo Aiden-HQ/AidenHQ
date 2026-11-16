@@ -47,6 +47,14 @@ if (args[0] === "pr" && args[1] === "view" && args[4] === "state,isDraft,reviewD
   console.log(JSON.stringify({ state: p.merged ? "MERGED" : "OPEN", isDraft: false, reviewDecision: "", mergeStateStatus: "CLEAN", statusCheckRollup: checks }));
   process.exit(0);
 }
+// A PR's state and head, as the runner reads it before it acts on a stored PR number (gh pr view, not the API).
+if (args[0] === "pr" && args[1] === "view" && args[4] === "state,number,headRefOid,headRefName" && existsSync(fixture)) {
+  const p = JSON.parse(readFileSync(fixture, "utf8"))[/\/pull\/(\d+)$/.exec(args[2])?.[1]];
+  if (!p) process.exit(1);
+  const head = execFileSync("git", ["--git-dir", join(dir, "github/acme/app.git"), "rev-parse", p.branch], { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  console.log(JSON.stringify({ state: p.merged ? "MERGED" : "OPEN", number: Number(/\/pull\/(\d+)$/.exec(args[2])[1]), headRefOid: head, headRefName: p.branch }));
+  process.exit(0);
+}
 if (args[0] !== "api" || !existsSync(fixture)) process.exit(1);
 const prs = JSON.parse(readFileSync(fixture, "utf8"));
 const field = (name) => args.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1);
@@ -57,13 +65,6 @@ const tip = (branch) => {
     return "0".repeat(40); // not on GitHub yet
   }
 };
-// A PR's state and head, as the runner reads it before it acts on a stored PR number.
-if (args[0] === "pr" && args[1] === "view" && args[4] === "state,number,headRefOid,headRefName" && existsSync(fixture)) {
-  const p = JSON.parse(readFileSync(fixture, "utf8"))[/\/pull\/(\d+)$/.exec(args[2])?.[1]];
-  if (!p) process.exit(1);
-  console.log(JSON.stringify({ state: p.merged ? "MERGED" : "OPEN", number: Number(/\/pull\/(\d+)$/.exec(args[2])[1]), headRefOid: tip(p.branch), headRefName: p.branch }));
-  process.exit(0);
-}
 // The commit statuses the runner itself wrote on a head (a design review's pending wait), alongside the fake's checks.
 const written = (p) => (p.statuses ?? []).map((s) => ({ __typename: "StatusContext", context: s.context, state: s.state.toUpperCase(), description: s.description }));
 const rollup = (state, statuses = []) => {
