@@ -10,6 +10,7 @@
 // errors rethrow. A finding no longer matched in a target that scanned cleanly is marked present = false. Targets gone
 // from a fresh, complete SBOM batch are resolved too; a stale batch resolves nothing.
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { capText, tableDdl, type Row, type SourceStore, type Table } from "./source-store.js";
 
 export const FINDING: Table = {
@@ -118,6 +119,14 @@ async function resolveGone(store: SourceStore, target: string, tool: string, kee
 export interface Batch {
   finishedAt: Date | null; // null: no batch yet
   targets: { target: string; file?: string; error?: string; commit?: string }[]; // commit: the checkout's git HEAD
+}
+
+/** targets.tsv as written by ops/security-sbom.sh: (target, file, error, commit), one line per target. */
+export function parseTargets(text: string, dir: string): Batch["targets"] {
+  return text.split("\n").filter(Boolean).map((line) => {
+    const [target = "", f = "", error = "", commit = ""] = line.split("\t");
+    return { target, ...(f && f !== "-" ? { file: join(dir, f) } : {}), ...(error ? { error } : {}), ...(commit ? { commit } : {}) };
+  }).filter((t) => t.target);
 }
 
 export interface PassDeps {

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { scanPass, type Batch } from "../src/scan.js";
+import { parseTargets, scanPass, type Batch } from "../src/scan.js";
 import type { SourceStore } from "../src/source-store.js";
 
 // The writer against an in-memory store that keys rows like Postgres would (the SQL itself follows the other writers).
@@ -57,17 +57,19 @@ it("src_security: one row per finding key across passes and paths, gone findings
   const head = "1".repeat(40);
   const inst = "2".repeat(40);
   const logs: Record<string, unknown>[] = [];
-  const batch = (): Batch => ({ finishedAt: new Date(now - 3_600_000), targets: [
-    { target: "repo:product", file: "repo.json", commit: head },
-    { target: "repo:instance", file: "repo.json", commit: inst },
-    { target: "image:aidenhq/board:local", file: "image.json" },
-    { target: "app:broken", file: "broken.json" }, // grype chokes on it
-    { target: "host", error: "syft exited 1" }, // the host couldn't inventory it
-  ] });
+  // What ops/security-sbom.sh writes: (target, file, error, commit), commit for the repo checkouts.
+  const index = (): string => [
+    `repo:product\trepo.json\t\t${head}`,
+    `repo:instance\trepo.json\t\t${inst}`,
+    "image:aidenhq/board:local\timage.json\t\t",
+    "app:broken\tbroken.json\t\t", // grype chokes on it
+    "host\t-\tsyft exited 1\t", // the host couldn't inventory it
+  ].join("\n");
+  const batch = (): Batch => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(), "/sbom") });
   const deps = {
     dbUpdate: async () => undefined,
     readBatch: async () => batch(),
-    grype: async (f: string) => { if (!(f in sboms)) throw new Error("unable to decode sbom"); return sboms[f]; },
+    grype: async (f: string) => { const name = f.split("/").pop()!; if (!(name in sboms)) throw new Error("unable to decode sbom"); return sboms[name]; },
     now: () => now,
     log: (msg: string, extra: Record<string, unknown>) => logs.push({ msg, ...extra }),
   };
