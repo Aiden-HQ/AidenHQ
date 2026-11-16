@@ -22,7 +22,10 @@ test("product files: gate core to the panel, a compose file by content, an unrea
 });
 
 test("the owner-approval records are the owner's in any repo", () => {
-  for (const repo of ["acme/aidenhq", "acme-agents/app", "other/lib"]) assert.equal(push([".github/supply-chain-source-exceptions.yaml"], repo).tier, 2);
+  for (const repo of ["acme/aidenhq", "acme-agents/app", "other/lib"]) {
+    const v = push([".github/supply-chain-source-exceptions.yaml", "modules/codehost-github/src/plan.mjs"], repo);
+    assert.deepEqual([v.verdict, v.tier, v.rule, v.owner], ["raise", 2, "owner-approval-record", true], repo);
+  }
 });
 
 test("a verified Dependabot pin bump on the product is the reviewer's alone; anything else keeps the file rules", () => {

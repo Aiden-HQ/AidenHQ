@@ -12,7 +12,7 @@ const REJECT = (rule, reason) => ({ tier: 2, rule, reason, reject: true });
 const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 /** A change to the owner-approval records: the owner's tap in every repo, so no PR records its own approval. */
-const OWNER_APPROVAL = (repo) => T(2, "owner-approval-record", `it changes ${repo}'s ${OWNER_APPROVAL_FILE}, which holds the owner's source approvals: only the owner's own tap makes a record one`);
+const OWNER_APPROVAL = (repo) => ({ ...T(2, "owner-approval-record", `it changes ${repo}'s ${OWNER_APPROVAL_FILE}, which holds the owner's source approvals: only the owner's own tap makes a record one`), owner: true });
 
 /**
  * The check: `{ kind, args, facts }` with `args` one branch of a push or PR, or one PR of a merge (repo, files, texts and,
@@ -20,7 +20,9 @@ const OWNER_APPROVAL = (repo) => T(2, "owner-approval-record", `it changes ${rep
  * `texts` maps a config file to { base, head } (its text on each side, absent when it is missing there) and, for a compose
  * file, { baseDoc, headDoc } (each side parsed: an object, null when it doesn't parse, absent when missing); a compose file
  * whose documents aren't given is judged as one that doesn't parse.
- * `{ verdict: "raise", tier, panel?, rule, reason }` or `{ verdict: "deny", rule, reason }`.
+ * `{ verdict: "raise", tier, panel?, rule, reason, owner? }` or `{ verdict: "deny", rule, reason }`. `owner: true` (a change to the
+ * owner-approval records) is the owner's card whatever else the request is: the only path by which the owner approves a
+ * source, so nothing but the instance repo's own refusal stands before it.
  */
 export function check({ kind, args: item, facts = {} }) {
   const parts = productParts(kind, item ?? {}, facts);
@@ -28,7 +30,7 @@ export function check({ kind, args: item, facts = {} }) {
   const refused = parts.find((p) => p.reject);
   if (refused) return { verdict: "deny", rule: refused.rule, reason: refused.reason };
   const top = parts.reduce((a, b) => (b.tier * 2 + (b.panel ? 1 : 0) > a.tier * 2 + (a.panel ? 1 : 0) ? b : a));
-  return { verdict: "raise", tier: top.tier, ...(top.panel ? { panel: true } : {}), rule: top.rule, reason: top.reason };
+  return { verdict: "raise", tier: top.tier, ...(top.panel ? { panel: true } : {}), rule: top.rule, reason: top.reason, ...(top.owner ? { owner: true } : {}) };
 }
 
 function productParts(kind, item, facts) {
