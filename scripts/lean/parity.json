@@ -56,7 +56,7 @@
     "workflow": "Tier 0 runs, Tier 1 reviewer, Tier 2 owner, panel",
     "today": [
       "services/runner/test/flow-autonomy.test.mjs",
-      "services/runner/test/review.test.mjs"
+      "modules/ai-reviewer/test/review.test.mjs"
     ],
     "next": "kernel K5/K6 + ai-reviewer"
   },

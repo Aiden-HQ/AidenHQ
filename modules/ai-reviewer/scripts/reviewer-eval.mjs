@@ -16,7 +16,7 @@
 // tokens, costUsd }): the runner's eval-receipt gate (services/runner/src/evalgate.ts) reads it, and runs this script from the PR's base.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileContext } from "../service/src/aidenhq-sdk/reviewer.ts";
+import { fileContext } from "../service/src/review-files.mjs";
 import { openRouterAsk, policyVersion, readPolicy, review } from "../service/src/review.mjs";
 import { padCase } from "../test/case-pad.mjs";
 

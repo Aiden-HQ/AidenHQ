@@ -16,9 +16,11 @@ services:
       build: ./service
       tmp: 16m
       port: 8095
-      links: [backplane] # no egress: the kernel's listener and the model gateway
+      # The kernel's listener (verdicts) and the model gateway are host addresses, reached the way every module with no
+      # legacy link reaches them; the reviewer holds no vendor key and its model gets no tools, so egress opens nothing new.
+      egress: true
       env:
         REVIEWER_KEY_FILE: ${secrets.ai_reviewer_key}
-        AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
+        AIDENHQ_GATEWAY_URL: http://10.231.0.1:8201
 generated_secrets:
   - ai_reviewer_key

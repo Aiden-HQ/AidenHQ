@@ -40,12 +40,12 @@ describe("the reviewer-eval gate on product merges", { concurrency: 1 }, () => {
   };
   mkdirSync(origin);
   sh(origin, "init", "-q", "-b", "main");
-  put("services/runner/scripts/reviewer-eval.mjs", JUDGE);
-  put("services/runner/test/case-pad.mjs", "export const padCase = (c) => c;\n");
-  put("services/runner/test/reviewer-cases/01-attack.json", JSON.stringify({ expect: "reject", got: "reject" }));
-  put("services/runner/test/reviewer-cases/02-flaky.json", JSON.stringify({ expect: "approve", got: "approve", flaky: true }));
-  put("services/runner/src/review.mjs", "// v1\n");
-  put("modules/core/security/policy.md", "Reject attacks.\n");
+  put("modules/ai-reviewer/scripts/reviewer-eval.mjs", JUDGE);
+  put("modules/ai-reviewer/test/case-pad.mjs", "export const padCase = (c) => c;\n");
+  put("modules/ai-reviewer/test/reviewer-cases/01-attack.json", JSON.stringify({ expect: "reject", got: "reject" }));
+  put("modules/ai-reviewer/test/reviewer-cases/02-flaky.json", JSON.stringify({ expect: "approve", got: "approve", flaky: true }));
+  put("modules/ai-reviewer/service/src/review.mjs", "// v1\n");
+  put("modules/ai-reviewer/service/security/policy.md", "Reject attacks.\n");
   put("README.md", "x\n");
   sh(origin, "add", "-A");
   sh(origin, "commit", "-qm", "base");
@@ -113,7 +113,7 @@ describe("the reviewer-eval gate on product merges", { concurrency: 1 }, () => {
     const plain = branch("docs/readme", { "README.md": "y\n" });
     assert.deepEqual((await drive(pr(1, "docs/readme", plain), 3)).gh.merged, [plain]);
 
-    const head = branch("fix/review", { "services/runner/src/review.mjs": "// v2\n" });
+    const head = branch("fix/review", { "modules/ai-reviewer/service/src/review.mjs": "// v2\n" });
     const first = github(pr(2, "fix/review", head));
     const q = newQueue(findPrs("acme/aidenhq#2"), { gapMinutes: 0, now: new Date() });
     await advance(q, { github: first, now: new Date() });
@@ -132,7 +132,7 @@ describe("the reviewer-eval gate on product merges", { concurrency: 1 }, () => {
     // The same branch moved on: the earlier head's 100% receipt says nothing about this one, so it waits for its own eval.
     const before = sh(origin, "rev-parse", "fix/review");
     assert.equal(JSON.parse(store.get(`eval:${before}`)).receipt.ok, true);
-    const moved = branch("fix/review", { "services/runner/src/review.mjs": "// v3\n", "services/runner/test/reviewer-cases/01-attack.json": JSON.stringify({ expect: "approve", got: "approve" }) }, "fix/review");
+    const moved = branch("fix/review", { "modules/ai-reviewer/service/src/review.mjs": "// v3\n", "modules/ai-reviewer/test/reviewer-cases/01-attack.json": JSON.stringify({ expect: "approve", got: "approve" }) }, "fix/review");
     const gh = github(pr(3, "fix/review", moved));
     const q = newQueue(findPrs("acme/aidenhq#3"), { gapMinutes: 0, now: new Date() });
     await advance(q, { github: gh, now: new Date() });
@@ -152,9 +152,9 @@ describe("the reviewer-eval gate on product merges", { concurrency: 1 }, () => {
     const victim = join(root, "victim.txt");
     writeFileSync(victim, "untouched");
     sh(origin, "checkout", "-q", "-b", "fix/link", "main");
-    rmSync(join(origin, "services/runner/scripts/reviewer-eval.mjs"));
-    symlinkSync(victim, join(origin, "services/runner/scripts/reviewer-eval.mjs"));
-    put("services/runner/src/review.mjs", "// v4\n");
+    rmSync(join(origin, "modules/ai-reviewer/scripts/reviewer-eval.mjs"));
+    symlinkSync(victim, join(origin, "modules/ai-reviewer/scripts/reviewer-eval.mjs"));
+    put("modules/ai-reviewer/service/src/review.mjs", "// v4\n");
     sh(origin, "add", "-A");
     sh(origin, "commit", "-qm", "link");
     const head = sh(origin, "rev-parse", "HEAD");

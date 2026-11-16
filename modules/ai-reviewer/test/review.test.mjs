@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_DIFF, MODEL_CODES, diffSections, review, reviewPrompt, sourcesInDiff } from "../service/src/review.mjs";
-import { MAX_FILES, fileContext } from "../service/src/aidenhq-sdk/reviewer.ts";
+import { MAX_FILES, fileContext } from "../service/src/review-files.mjs";
 import { padCase } from "./case-pad.mjs";
 import { REVIEW_CODES } from "../../../services/shared/reason-codes.ts";
 

@@ -61,7 +61,7 @@ shell-off box variant for agents that read untrusted text and would gain from le
 2. **Gate the sandbox definition.** `services/runner/src/tiers.mjs` `PRODUCT_GATES` gains `^modules/core/module\.yaml$`
    (where `codex_args` lives), `^scripts/computers\.mjs$`, `^services/computer/` and `^compose\.yaml$`. An instance diff
    that adds or removes `image:` already falls to Tier 2 (`instance-key`); keep it that way. `node
-   services/runner/scripts/reviewer-eval.mjs` must stay at 100%.
+   modules/ai-reviewer/scripts/reviewer-eval.mjs` must stay at 100%.
 3. **Probe, then trim the env.** Check that a local Codex child does not carry server secrets. Read a live codex
    process's key names only (`/proc/<pid>/environ`, `cut -d= -f1`). If `BETTER_AUTH_SECRET`,
    `PAPERCLIP_AGENT_JWT_SECRET`, `AIDENHQ_BOARD_TOKEN` or `PAPERCLIP_SECRETS_MASTER_KEY_FILE` are present, blank them in

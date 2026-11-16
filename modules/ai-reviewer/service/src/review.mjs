@@ -12,7 +12,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MAX_FILES } from "./aidenhq-sdk/reviewer.ts";
+import { MAX_FILES } from "./review-files.mjs";
 
 // GPT Luna at medium, then DeepSeek Flash at high (the owner's pick, 2026-11-13; the reviewer eval scores it). The second
 // reviewer: GLM Flash at high (the owner's checker model), else whichever family is left.

@@ -1,9 +1,9 @@
 // The eval-receipt gate (owner, 2026-11-16): a product PR that changes the AI reviewer's own code merges only with a 100%
-// receipt of the reviewer eval (scripts/reviewer-eval.mjs) for its exact head. The merge queue asks before every product
+// receipt of the reviewer eval (modules/ai-reviewer/scripts/reviewer-eval.mjs) for its exact head. The merge queue asks before every product
 // merge; the runner runs the eval itself, once per head, in a scratch tree, in the job jail, with the eval's own key (never
 // the fleet's), and writes the receipt itself.
 //
-// What judges what. The PR may change the reviewer (review.mjs, tiers.mjs, the policy), never its judge:
+// What judges what. The PR may change the reviewer (the ai-reviewer module, tiers.mjs, the policy), never its judge:
 // - the eval script and case-pad.mjs come from the PR's base branch;
 // - every base case runs at its base version, a case the PR deletes included;
 // - a case the PR adds runs as the PR wrote it;
@@ -26,19 +26,22 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync, 
 import { join } from "node:path";
 import { smallFile } from "./git.mjs";
 
-/** The AI reviewer's own code: what it reads (policy), how it is called and tiered, its cases and its judge. */
+/**
+ * The AI reviewer's own code (spec §8.2, from 3c): the ai-reviewer module (its service, policy, cases and judge), the
+ * contract's side it reads files through (the SDK's reviewer.ts), the tier function and the authority-diff classifier.
+ */
 export const REVIEWER_CODE = [
-  /^services\/runner\/src\/(tiers|review)\.(mjs|ts)$/,
-  /^modules\/core\/security\//,
-  /^services\/runner\/test\/reviewer-cases\//,
-  /^services\/runner\/test\/case-pad\.(mjs|ts)$/,
-  /^services\/runner\/scripts\/reviewer-eval\.(mjs|ts)$/,
+  /^modules\/ai-reviewer\//,
+  /^kernel\/sdk\/src\/reviewer\.ts$/,
+  /^services\/runner\/src\/tiers\.(mjs|ts)$/,
   /^kernel\/src\/tier\.ts$/,
+  /^kernel\/src\/loader\/authority\.ts$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
 
-const CASES = "services/runner/test/reviewer-cases";
-const JUDGE = ["services/runner/scripts/reviewer-eval.mjs", "services/runner/test/case-pad.mjs"];
+const MODULE = "modules/ai-reviewer";
+const CASES = `${MODULE}/test/reviewer-cases`;
+const JUDGE = ["modules/ai-reviewer/scripts/reviewer-eval.mjs", "modules/ai-reviewer/test/case-pad.mjs"];
 const EXPECT = ["expect", "expect_code", "expect_second", "expect_flag"] as const;
 /** How long the queue waits on a head's eval (both runs) before it gives up on that PR. */
 export const EVAL_WAIT_MINUTES = 180;
@@ -163,7 +166,7 @@ export function createEvalGate(d: GateDeps) {
     const nm = NODE_MODULES.map((p) => join(d.productRoot, p, "node_modules")).filter(existsSync);
     const argv = d.jail([process.execPath, "scripts/reviewer-eval.mjs"], { rw: [out], ro: [tree, ...nm] });
     const child = spawn("/bin/sh", ["-c", 'trap : TERM INT HUP; "$@" > "$0.log" 2>&1; echo "$?" > "$0.exit"', join(run.dir, `run-${run.runs}`), ...argv], {
-      cwd: join(tree, "services/runner"),
+      cwd: join(tree, MODULE),
       detached: true,
       stdio: "ignore",
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: out, OPENROUTER_API_KEY: apiKey, EVAL_RESULT: join(out, "result.json") },
@@ -195,7 +198,7 @@ export function createEvalGate(d: GateDeps) {
     mkdirSync(join(dir, "cases"));
     for (const [n, text] of cases) writeFileSync(join(dir, "cases", n), text);
     // The policy as git has it at the head (its tree id), never as the extracted folder says.
-    const policy = (await d.git(path, "rev-parse", `${head}:modules/core/security`).catch(() => "none")).slice(0, 12);
+    const policy = (await d.git(path, "rev-parse", `${head}:${MODULE}/service/security`).catch(() => "none")).slice(0, 12);
     return { dir, cases: [...cases.keys()], policy };
   }
 
