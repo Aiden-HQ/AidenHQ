@@ -51,7 +51,7 @@ Accounts use Better Auth inside the kernel (lean-core 3a), stored in its own SQL
 gate-facing sign-in listener (3129), app access and account administration open the same file with the same options
 (a synced copy, `services/board/src/auth-rules.ts`; the board mounts only `data/kernel/auth/`).
 
-- **The admin listener** is the kernel's, on `127.0.0.1:3120`, behind its own front door (`tailscale serve --https=8445`,
+- **The admin listener** is the kernel's, on `127.0.0.1:3120`, behind its own front door (`tailscale serve --https=8446`,
   or the SSH tunnel). It serves sign-in, TOTP enrolment, link claims, the approval list and card pages, batch decide, the
   owner's confirmation page and the owner message frame, server-rendered with no script. Every page sends
   `frame-ancestors 'none'` except `/owner/message`, which the board's origins may frame. Every form carries this
@@ -69,7 +69,7 @@ gate-facing sign-in listener (3129), app access and account administration open 
 - **Lockout.** A named peer is an address the front door names with its secret, or the tailnet: every request
   `tailscale serve` passes on (it adds `Tailscale-User-Login`) is the one peer `tailnet`, whatever login it names, so a
   varied or forged login makes no new bucket. That header is read only on the admin listener `tailscale serve` targets
-  (3120, behind `--https=8445`), only from the host's loopback and never beside the front door's header (Caddy's path,
+  (3120, behind `--https=8446`), only from the host's loopback and never beside the front door's header (Caddy's path,
   which strips it); the gate's listener (3129) never reads it. The tailnet peer is rate-limited only, never locked or banned:
   one check in flight per email, 4 in all, 20 failures a minute (past which it waits out the minute) and Better Auth's
   20-a-minute limit on the sign-in steps. **Accepted risk:**

@@ -393,8 +393,8 @@ Telegram task links and the app links people have.
 4. Recreate the old host's serve routes, all to loopback, for example:
    - `tailscale serve --bg --https=443 http://127.0.0.1:3100` (Paperclip);
    - `tailscale serve --bg --https=8443 http://127.0.0.1:3121` (the board);
-   - `tailscale serve --bg --https=8445 http://127.0.0.1:3120` (the kernel's sign-in and approval pages);
-   - or `ops/setup.sh`'s routes, `--https=443 http://127.0.0.1:3121` and `--https=8445 http://127.0.0.1:3120`.
+   - `tailscale serve --bg --https=8446 http://127.0.0.1:3120` (the kernel's sign-in and approval pages);
+   - or `ops/setup.sh`'s routes, `--https=443 http://127.0.0.1:3121` and `--https=8446 http://127.0.0.1:3120`.
 
    `scripts/host-serve.mjs check` must pass.
 5. The apps node needs nothing: its identity came with `data/apps-edge/state`, and only one copy of it ever runs

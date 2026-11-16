@@ -219,7 +219,7 @@ fi
 # The board's URL for links: its tailnet name over https, or (no Tailscale) loopback, reached through an SSH tunnel.
 if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://127.0.0.1:3121"; fi
 # The kernel's admin listener (sign-in and approvals) on its own origin: a second tailnet port, or the second tunnel.
-if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8445"; else ADMIN_URL="http://127.0.0.1:3120"; fi
+if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8446"; else ADMIN_URL="http://127.0.0.1:3120"; fi
 say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
 # The machine step installs node; everything after it needs it.
 [ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
@@ -382,7 +382,7 @@ else
   # The board reads its Paperclip key and company at start: both exist only now.
   as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --force-recreate board"
 fi
-[ -z "$BOARD_HOST" ] || { run tailscale serve --bg --https=443 http://127.0.0.1:3121; run tailscale serve --bg --https=8445 http://127.0.0.1:3120; }
+[ -z "$BOARD_HOST" ] || { run tailscale serve --bg --https=443 http://127.0.0.1:3121; run tailscale serve --bg --https=8446 http://127.0.0.1:3120; }
 say "Runner, model gateway and run pruning (user units)"
 as_user mkdir -p "$H/.config/systemd/user"
 # Where the units find this checkout (their default is ~/aidenhq).
