@@ -14,7 +14,9 @@ blocks are a starting point, not a required look.
 ```sh
 npm ci
 npm run lint     # ESLint (about a second): nav, header, colour and effect rules; each message says the fix
-npm test          # builds, serves and checks the page, its CSP, the health check and the API
+npm test          # component tests (Vitest), then builds, serves and checks the page, its CSP, the health check and the API
+npm run screens   # Playwright: starts the seeded preview, screenshots every feature-map page at 1440 and 390 in light and dark, runs e2e/ flows, stops it
+npm run preview   # build, then serve dist/ and the API with the sample data on 4173 (what `screens` starts)
 npm run build     # typecheck + production build into dist/
 npm start         # serves dist/ and the API on PORT (8080)
 npm run dev       # Vite with hot reload; run `npm start` alongside it for the API (proxied from /api)
@@ -111,5 +113,7 @@ stay out unless an app needs them (guidelines: the stack).
   <pkg>` from the CI template), installed with `npm install --save-exact --before=<7 days ago>` so transitive versions
   pass too, lockfile committed.
 - **Review states:** `?preview=loading|error|empty` shows that state of the example page with the sample data, so
-  `ui-review` can screenshot it. Remove it with the sample data, and give the real app a seed mode instead.
+  `ui-review` can screenshot it. Remove it with the sample data, and give the real app a seed mode instead: `npm run
+  preview` serves the app with fixture data (an in-memory store, no database) on port 4173, and `playwright.config.ts`
+  starts it for `npm run screens`.
 - A shared app also follows the product's `docs/setup.md`, "What a shared app must do" (the identity check is in place).

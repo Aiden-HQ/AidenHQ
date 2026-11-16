@@ -41,21 +41,25 @@ passing (it builds, serves and checks the CSP), and an existing app's server mus
 
 - `npm ci && npm test && npm run build` pass; `tokens.css` and `shadcn.css` are unchanged (note their `design-system
   version:` lines in the PR).
-- Look at what you changed, in a browser: `aidenhq-browse` serves the build, screenshots each page at 1440 wide and runs
-  a short click-through, reporting console errors, CSP violations and failed loads. One command, from the app's folder:
+- Look at what you changed, in a browser, with the app's Playwright Test setup (the starter's `playwright.config.ts` and
+  `e2e/`; an app without it copies them in, with `preview` and `screens` scripts and a seeded preview mode). One
+  command, from the app's folder:
 
   ```sh
-  aidenhq-browse http://127.0.0.1:4173 --start "PORT=4173 node server.mjs" --paths /,/items \
-    --steps steps.json --out "$AIDENHQ_TASK_WORKTREE/.aidenhq/out"
+  SCREENS=/,/items npm run screens
   ```
 
-  `steps.json` clicks through the flow you changed (`[{"click": "role=button[name=\"New item\"]"}, {"fill": "#name",
-  "value": "Lamp"}, {"press": "Enter"}, {"wait": "text=Saved"}, {"shot": "saved"}]`). Open every screenshot and fix
-  what looks wrong (overlap, clipping, unstyled or empty areas, a misaligned table) and every reported problem, then run it
-  again until it prints `clean`. `--width 390` checks the phone layout. Files in `.aidenhq/out/` (at most 20) are
-  attached to the task after the run; name them in your report. Each screenshot is stamped with the code it shows, and
-  the grader leaves out any that isn't your PR's final code: take them after your last change.
-- With a mockup, screenshot your pages at its width and mode (`--width 1280`, the width its screenshots use) and open
+  Playwright starts the seeded preview (`npm run preview`), waits for it, screenshots each page in `feature-map.json`
+  (or those `SCREENS` names) at 1440 and 390 in light and dark, fails on page errors, console errors (CSP violations
+  included) and horizontal overflow, runs the `e2e/` flows, and stops the app. Add a flow for what you changed to `e2e/`
+  (`e2e/flows.spec.ts` is the pattern: `getByRole`, `click`, `fill`, `expect(...).toHaveURL`). Open every screenshot
+  and fix what looks wrong (overlap, clipping, unstyled or empty areas, a misaligned table), then run it again until it
+  passes. The screenshots land in the task's `.aidenhq/out/` (at most 20 are attached after the run: name the pages
+  you changed in `SCREENS`); take them after your last change and name them in your report.
+- Component logic (what a form sends, what a list shows) gets a Vitest test next to the component, rendered with
+  Testing Library (`src/test/dialog-form.test.tsx` is the pattern); the starter's `vite.config.ts` gives every test a
+  ready DOM.
+- With a mockup, screenshot your pages at its width and mode (a Playwright project at the width its screenshots use) and open
   each one beside the mockup's: fix every difference a person would see at a glance that isn't the real data (greyer,
   flatter, sparser, smaller or bigger type, missing hover or detail), and say in your report what still differs and why.
 - Every page renders at its own URL on a link click, Back/Forward and a reload: routes and links use the starter's
