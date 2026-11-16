@@ -119,7 +119,17 @@ test("the reviewer's codes are exactly the shared REVIEW_CODES (services/shared/
 // The owner-approved source exception: the gate can represent one, and only a record code read from the base is one.
 const sourceFile = (records) => `# Owner-approved exceptions to the new-source rule.\nsource_exceptions:\n${records.map((r) => `  - ${r}`).join("\n")}\n`;
 const ghRecord = `{ ecosystem: apt, package: gh, from: "Debian sid", to: "https://cli.github.com/packages stable main", version: "2.104.0", approved_by: owner, reference: "the owner's comment on the security fix", reason: "CVE-2026-48501; Debian's gh is too old" }`;
-const aptSourceDiff = "diff --git a/services/computer/images/engineer/Dockerfile b/services/computer/images/engineer/Dockerfile\n--- a/services/computer/images/engineer/Dockerfile\n+++ b/services/computer/images/engineer/Dockerfile\n@@ -6,3 +6,6 @@\n-RUN apt-get update && apt-get install -y gh\n+RUN curl -fsSLo /usr/share/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \\\n+    && echo \"deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" >/etc/apt/sources.list.d/github-cli.list \\\n+    && apt-get update && apt-get install -y gh=2.104.0\n";
+const aptSourceDiff = [
+  "diff --git a/services/computer/images/engineer/Dockerfile b/services/computer/images/engineer/Dockerfile",
+  "--- a/services/computer/images/engineer/Dockerfile",
+  "+++ b/services/computer/images/engineer/Dockerfile",
+  "@@ -6,3 +6,8 @@",
+  "-RUN apt-get update && apt-get install -y gh",
+  "+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \\",
+  "+    && gpg --show-keys --with-colons /usr/share/keyrings/githubcli-archive-keyring.gpg | awk -F: '$1 == \"fpr\" { print $10 }' | grep -qx 2C6106201985B60E6C7AC87323F3D4EA75716059 \\",
+  "+    && echo \"deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" >/etc/apt/sources.list.d/github-cli.list \\",
+  "+    && apt-get update && apt-get install -y gh=2.104.0",
+].join("\n");
 
 test("a source exception is a record only when it says the owner approved it, for a package and the source it moves to", () => {
   const records = readSourceExceptions(sourceFile([ghRecord, `{ package: undici, to: "https://example.test/npm", approved_by: agent }`, `{ approved_by: owner, to: "https://example.test/x" }`]));
