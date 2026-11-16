@@ -120,9 +120,9 @@ test("the reviewer's codes are exactly the shared REVIEW_CODES (services/shared/
 const sourceFile = (records) => `# Owner-approved exceptions to the new-source rule.\nsource_exceptions:\n${records.map((r) => `  - ${r}`).join("\n")}\n`;
 const ghRecord = `{ ecosystem: apt, package: gh, from: "Debian sid", to: "https://cli.github.com/packages stable main", version: "2.104.0", approved_by: owner, reference: "the owner's comment on the security fix", reason: "CVE-2026-48501; Debian's gh is too old" }`;
 // The gh keyring step the new-source cases carry, shared so the guard test below reads the same text the cases do. The
-// keyring is trusted only when its one unexpired primary key is the pinned one, compared whole (ops/vm/setup.sh's
-// vendor_key does the same for its four keys): a keyring with an extra unexpired key is refused, and the expired key
-// GitHub still ships alongside the live one is not counted.
+// keyring is trusted only when its one non-expired primary key is the pinned one, compared whole: a keyring with any extra
+// key is refused, whatever gpg's validity field calls it, and the expired key GitHub still ships alongside the live one is
+// not counted.
 const ghKeyringRun = [
   "RUN mkdir -p /tmp/gh-gpg && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /tmp/gh-keyring.gpg \\",
   "+    && keys=\"$(GNUPGHOME=/tmp/gh-gpg gpg --batch --show-keys --with-colons /tmp/gh-keyring.gpg | awk -F: '$1 == \"pub\" { p = ($2 != \"e\" && $2 != \"r\" && $2 != \"d\" && $2 != \"i\"); next } p && $1 == \"fpr\" { print $10; p = 0 }')\" \\",
@@ -486,11 +486,12 @@ test("no planted reviewer case file is over 32,000 bytes on disk", () => {
   }
 });
 
-// The gh keyring in the new-source cases is trusted only when its one unexpired primary key is the pinned one (the check
-// ops/vm/setup.sh's vendor_key does). GitHub's ring holds two primary keys: 2C6106…6059 expired 2026-09-05, and
-// 7F38BBB5…3125 is the one that signs today's InRelease, so the check counts unexpired keys rather than refusing the ring
-// outright. A case that goes back to `grep -qx`, or that drops the expiry filter, is a real defect: the first trusts an
-// added key, the second refuses the real file.
+// The gh keyring in the new-source cases is trusted only when its one non-expired primary key is the pinned one. GitHub's
+// ring holds two primary keys: 2C6106…6059 expired 2026-09-05, and 7F38BBB5…3125 is the one that signs today's InRelease,
+// so the check counts the primary keys that are not expired rather than refusing the ring outright. Only `e` is excluded:
+// a revoked, disabled or invalid key still counts, so an added key is refused however gpg marks it. A case that goes back
+// to `grep -qx`, or that drops the expiry filter, is a real defect: the first trusts an added key, the second refuses the
+// real file.
 test("every new-source case trusts the gh keyring only when its one unexpired key is the pinned one", () => {
   const dir = join(REPO_ROOT, "services/runner/test/reviewer-cases");
   const cases = readdirSync(dir).filter((n) => n.endsWith(".json")).map((n) => [n, JSON.parse(readFileSync(join(dir, n), "utf8"))]);
@@ -501,7 +502,7 @@ test("every new-source case trusts the gh keyring only when its one unexpired ke
       const lines = text.split("\n").map((l) => (l.startsWith("+") ? l.slice(1) : l));
       assert.ok(!lines.some((l) => l.includes("grep -qx")), `${name}: the fingerprint must be compared, not found among other keys`);
       // One fingerprint per *unexpired* primary key: gpg's own validity field says which are expired, so no date maths.
-      assert.ok(lines.some((l) => l.includes('$1 == "pub" { p = ($2 != "e" && $2 != "r" && $2 != "d" && $2 != "i"); next }')), `${name}: the expiry filter is missing`);
+      assert.ok(lines.some((l) => l.includes('$1 == "pub" { p = ($2 != "e"); next }')), `${name}: only expired keys may be filtered out`);
       assert.ok(lines.some((l) => l.includes('$1 == "fpr" { print $10; p = 0 }')), `${name}: one fingerprint per counted primary key`);
       const check = lines.findIndex((l) => l.includes('[ "$keys" = 7F38BBB59D064DBCB3D84D725612B36462313325 ]'));
       const write = lines.findIndex((l) => l.includes("install -m 0644 /tmp/gh-keyring.gpg"));
