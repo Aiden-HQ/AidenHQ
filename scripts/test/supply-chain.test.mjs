@@ -35,6 +35,15 @@ test("a security exception needs an advisory that patches that version; lookup e
   assert.match((await check({ changes: [{ name: "ghost", version: "1.0.0" }], getJson, now }))[0], /lookup failed/);
 });
 
+test("an owner-approved exception clears only its exact version, only before it expires, and only within 14 days", async () => {
+  const ex = (version, expires, owner = "approved") => [{ package: "tiny-dep", version, owner, expires, reason: "r" }];
+  assert.deepEqual(await run({ "tiny-dep": "1.0.1" }, ex("1.0.1", "2026-11-16")), []);
+  assert.match((await run({ "tiny-dep": "1.0.1" }, ex("1.0.1", "2026-11-12")))[0], /expired/);
+  assert.match((await run({ "tiny-dep": "1.0.1" }, ex("1.0.1", "2026-12-20")))[0], /14 days/);
+  assert.match((await run({ "tiny-dep": "1.0.1" }, ex("1.0.0", "2026-11-16")))[0], /under 7/);
+  assert.match((await run({ "tiny-dep": "1.0.1" }, ex("1.0.1", "2026-11-16", "me")))[0], /expired/);
+});
+
 test("fail closed: non-registry, mismatched or integrity-less entries are problems; in-repo workspace links are not", async () => {
   const ent = (resolved, extra = {}) => ({ packages: { "node_modules/old-dep": { version: "2.0.0", resolved, integrity: "sha512-x", ...extra } } });
   const reg = "https://registry.npmjs.org/old-dep/-/old-dep-2.0.0.tgz";
