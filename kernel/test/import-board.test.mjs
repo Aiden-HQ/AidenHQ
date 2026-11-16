@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openRecords } from "../src/records.ts";
 
-test("decided board cards import as closed records: the owner's no still holds, nothing is decidable, pending ones stay out", () => {
+test("decided board cards import as closed records once drained: the owner's no still holds, nothing is decidable", () => {
   const data = mkdtempSync(join(tmpdir(), "import-"));
   mkdirSync(join(data, "board"));
   const b = new DatabaseSync(join(data, "board", "board.sqlite"));
@@ -19,11 +19,17 @@ test("decided board cards import as closed records: the owner's no still holds, 
   row("A00000002", "pending", null, "2");
   row("A00000003", "approved", "account:owner", "3");
   b.close();
-  const run = () => execFileSync(process.execPath, ["--disable-warning=ExperimentalWarning", join(import.meta.dirname, "../../ops/import-board-approvals.mjs"), data], { encoding: "utf8" });
-  assert.match(run(), /imported 2 decided board records/);
+  const run = () => execFileSync(process.execPath, ["--disable-warning=ExperimentalWarning", join(import.meta.dirname, "../../ops/import-board-approvals.mjs"), data], { encoding: "utf8", stdio: "pipe" });
+  // Not drained: the waiting and the approved-but-unrun cards are named, and nothing is imported.
+  assert.throws(run, (e) => /not drained: A00000002 ACME-1 push pending; A00000003 ACME-1 push approved/.test(e.stderr));
+  // The drill stale-closes the waiting one (never a veto) and lets the approved one run.
+  const w = new DatabaseSync(join(data, "board", "board.sqlite"));
+  w.exec("UPDATE approvals SET state = 'stale', decided_by = 'stale:watcher' WHERE id = 'A00000002'; UPDATE approvals SET state = 'used', outcome = 'applied', outcome_text = 'pushed' WHERE id = 'A00000003'");
+  w.close();
+  assert.match(run(), /imported 3 decided board records/);
   assert.match(run(), /imported 0/); // idempotent
   const k = openRecords(join(data, "kernel", "kernel.db"));
   assert.equal(k.vetoed("i-1", "runner.push", { content: "1".repeat(64) }), true);
   assert.deepEqual(k.list(["review", "owner", "approved"]), []);
-  assert.equal(k.list(["rejected", "cancelled"]).length, 2);
+  assert.deepEqual(k.list(["rejected", "stale", "done"]).map((r) => r.state).sort(), ["done", "rejected", "stale"]);
 });

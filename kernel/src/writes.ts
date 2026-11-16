@@ -179,9 +179,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
     if (open) return open;
     const proposed = ([0, 1, 2].includes(plan.tier) ? plan.tier : 2) as Tier;
     // A replay of approved commits onto a new base (the runner's rebuild) is carried by those approvals, which the kernel
-    // checks: approved by the owner or the reviewer, never stale, on this task, a push or PR on exactly this target.
+    // checks: on this task, the same kind, merge flag, target and content (patch keys), never stale, and the reviewer's
+    // yes only while autonomy is full.
     const carries = Array.isArray(plan.carries) ? plan.carries.map((id) => records.get(String(id))) : [];
-    const carried = carries.length > 0 && carries.every((c) => Boolean(c && c.task === task && ["runner.push", "runner.pr"].includes(c.kind) && ["approved", "claimed", "done"].includes(c.state) && c.decided_by && !c.decided_by.startsWith("stale:") && f.target && c.target === f.target));
+    const sameMerge = (c: Rec) => Boolean((c.args as { merge?: unknown })?.merge) === Boolean((args as { merge?: unknown })?.merge);
+    const carried = carries.length > 0 && carries.every((c) => Boolean(c && c.task === task && c.kind === kind && ["runner.push", "runner.pr"].includes(kind) && sameMerge(c) && ["approved", "claimed", "done"].includes(c.state)
+      && c.decided_by && !c.decided_by.startsWith("stale:") && (!c.decided_by.startsWith("reviewer:") || autonomy() === "full") && f.target && c.target === f.target && f.content && f.content !== "?" && c.content === f.content));
     // A replay the approvals don't carry is refused, never turned into a card: the runner files the request on its own then.
     if (carries.length && !carried) throw fail(422, "refused", "those approvals don't carry this replay");
     // The owner's own yes carries a replay whatever the autonomy setting (the runner's approvalStands); the reviewer's doesn't.
@@ -200,7 +203,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     if (tier === 1 && reviewFirst) tier = 2;
     const toReviewer = tier === 1 || reviewFirst !== null;
     return records.file({
-      ...base, card: { ...card, reason: reason.slice(0, 1000) }, tier, merit: (plan.merit ?? tier) as Tier, panel: Boolean(plan.panel) && toReviewer, review_first: toReviewer ? reviewFirst : null,
+      ...base, card: { ...card, reason: reason.slice(0, 1000) }, tier, merit: (plan.merit ?? tier) as Tier, panel: Boolean(plan.panel || k.panel) && toReviewer, review_first: toReviewer ? reviewFirst : null,
       rule, identifier: identifier ?? null, target: f.target ?? null, content: f.content, state: tier === 0 ? "claimed" : toReviewer ? "review" : "owner",
     });
   }

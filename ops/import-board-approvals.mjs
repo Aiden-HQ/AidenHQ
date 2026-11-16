@@ -15,6 +15,9 @@ const boardDb = data && join(data, "board", "board.sqlite");
 if (!boardDb || !existsSync(boardDb)) { console.error("usage: import-board-approvals.mjs <data dir> (data/board/board.sqlite is missing)"); process.exit(2); }
 const board = new DatabaseSync(boardDb, { readOnly: true });
 if (!board.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'approvals'").get()) { console.log("imported 0 (no board approvals table)"); process.exit(0); }
+// Drained first: a card still waiting (or approved and not yet run) would vanish with nobody told. Stale-close them.
+const open = board.prepare("SELECT id, identifier, action, state FROM approvals WHERE state IN ('pending','approved') AND expires_at > ?").all(new Date().toISOString());
+if (open.length) { console.error(`not drained: ${open.map((a) => `${a.id} ${a.identifier} ${a.action} ${a.state}`).join("; ")}`); process.exit(1); }
 const records = openRecords(join(data, "kernel", "kernel.db"));
 const KIND = { push: "runner.push", pr: "runner.pr", merge: "runner.merge", create_repo: "runner.create_repo", apply: "kernel.apply", raise_cap: "kernel.raise_cap" };
 // Board state (with its outcome) → the closed kernel state it stands for.

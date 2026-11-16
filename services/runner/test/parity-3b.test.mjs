@@ -195,3 +195,20 @@ test("the card contract: every field the runner's card args carry is one the ker
   validate(KERNEL_KINDS["kernel.apply"].args, applyCardArgs({ r: { repo: "acme-agents/aidenhq-instance", branch: "fleet/x" }, sha: "1".repeat(40), files: ["instance.yaml"] }, ["engine-claude: secrets x (owner)"], true));
   assert.throws(() => validate(KERNEL_KINDS["runner.push"].args, { only: [{ ...branch, extra: 1 }] }), /has no field extra/);
 });
+
+test("a replay is carried only by an approval of the same change: same kind, target, merge flag and patch", () => {
+  const k = kernel("full", undefined, { product: "acme/aidenhq", instance: "acme-agents/aidenhq-instance", agentsOrg: "acme-agents" });
+  const only = (sha, patch) => ({ only: [{ repo: "acme/aidenhq", branch: "fix/a", sha, patch: patch.repeat(64) }] });
+  const approved = k.writes.fileRunner({ kind: "runner.pr", task: "i-7", args: { ...only("1".repeat(40), "a"), merge: true }, plan: { tier: 2, card: { sentence: "x" } } });
+  k.records.review(approved.id, approved.digest, { decision: "escalate", by: "reviewer:~acme/a", note: "x" });
+  k.writes.decide(approved.id, { digest: approved.digest, decision: "approve", by: "account:owner", via: "web" });
+  const replay = (args, kind = "runner.pr") => () => k.writes.fileRunner({ kind, task: "i-7", args, plan: { tier: 0, card: { sentence: "x" }, carries: [approved.id] } });
+  assert.equal(replay({ ...only("2".repeat(40), "a"), merge: true })().state, "claimed", "the product PR's approved change, rebased: runs on its approval");
+  assert.throws(replay({ ...only("3".repeat(40), "b"), merge: true }), /don't carry/, "another change on the same branch");
+  assert.throws(replay(only("4".repeat(40), "a")), /don't carry/, "the same change without its merge");
+  assert.throws(replay(only("5".repeat(40), "a"), "runner.push"), /don't carry/, "another kind");
+  // A new repository is the panel's, whatever the plan says, and only in the agents org.
+  const repo = k.writes.fileRunner({ kind: "runner.create_repo", task: "i-7", args: { repo: "acme-agents/new-app" }, plan: { tier: 0, card: { sentence: "x" } } });
+  assert.deepEqual([repo.state, repo.panel], ["review", true]);
+  assert.throws(() => k.writes.fileRunner({ kind: "runner.create_repo", task: "i-7", args: { repo: "acme/new-app" }, plan: { tier: 0, card: { sentence: "x" } } }), /only in the agents org/);
+});

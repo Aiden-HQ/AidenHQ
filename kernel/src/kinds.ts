@@ -98,6 +98,7 @@ export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 |
   const product = repoKey(repos.product) ?? "", instance = repoKey(repos.instance) ?? "";
   if (instance && action !== "apply" && touched.includes(instance)) return refused("the instance repo changes only through apply");
   if (product && action === "create_repo" && touched.includes(product)) return refused("the product repo already exists");
+  if (action === "create_repo" && repos.agentsOrg && touched[0]!.split("/")[0] !== String(repos.agentsOrg).toLowerCase()) return refused("repositories are created only in the agents org");
   const unknown = !product || !instance;
   const org = String(repos.agentsOrg ?? "").toLowerCase();
   const ours = Boolean(org) && touched.every((r) => r!.split("/")[0] === org && r !== product && r !== instance);
@@ -112,7 +113,8 @@ export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 |
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {
   // An apply is always read by the reviewer first (floor 1); a push, a PR, a merge and a new repo by what they touch (runnerFacts).
-  ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: 0, tools: [], args, runner: true } as Kind])),
+  // A new repository grows the agents org: the reviewer and a second one always (tiers.mjs createRepoParts).
+  ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: k === "create_repo" ? 1 : 0, ...(k === "create_repo" ? { panel: true } : {}), tools: [], args, runner: true } as Kind])),
   "kernel.apply": { module: "kernel", floor: 1, tools: [], args: APPLY_ARGS, runner: true },
   "kernel.raise_cap": { module: "kernel", floor: 2, tools: [], args: RAISE_ARGS },
 };

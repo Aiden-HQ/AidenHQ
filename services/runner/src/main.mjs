@@ -923,6 +923,9 @@ async function runAutoMerges() {
       const rest = bound.map((p, i) => [p, tiers[i]]).filter(([, t]) => !isZero(t));
       // Taken out before acting, so a failure from here on can't file twice: it's said on the task instead. During the run
       // the rest stays for its end (a newer request for it clears that and tiers it again).
+      // The Tier 0 merges' record first, while they are still requested (a wait mid-run sees them requested throughout):
+      // the kernel runs it at once only if it keeps it at Tier 0.
+      const zeroRec = zero.length ? await fileApproval(issue, { action: "merge", args: { prs: zero.map(cardPr) }, ts: tiers.filter(isZero) }) : undefined;
       const taken = [...gone, ...zero, ...(busy ? [] : rest.map(([p]) => p))];
       save((b) => {
         const e = b[issueId];
@@ -932,9 +935,8 @@ async function runAutoMerges() {
         if (!e.prs.length) delete b[issueId];
       });
       want.taken = true;
-      if (zero.length) {
-        // A record first: the kernel runs it at once only if it keeps it at Tier 0 (a merge's floor is the reviewer's).
-        const rec = await fileApproval(issue, { action: "merge", args: { prs: zero.map(cardPr) }, ts: tiers.filter(isZero) });
+      if (zeroRec) {
+        const rec = zeroRec;
         if (rec.state === "used") {
           const started = await startMerges(issue, { prs: zero, strict: true, each: true });
           await reportOutcome(rec.id, started ? { ok: true, text: `Merging ${zero.map((p) => p.url).join(", ")}, each once green on the head shown.` } : { ok: false, text: "The merge didn't start (said on the task)." });
@@ -2182,6 +2184,7 @@ const reviewing = new Set();
  */
 async function runReviews() {
   if (!keyIn(cfg.runnerWritesKeyFile)) return; // no key: the kernel refuses every review, so don't gather each poll
+  await reviewsLeftOver().catch((err) => log("review follow-up failed", { err: String(err.message ?? err).slice(0, 300) }));
   const { records = [] } = await kernel("GET", "/v1/writes?state=review&limit=200");
   for (const a of records.map(asApproval)) {
     // Cards pin exact commits and digests, so a task's job still running never makes a review unsafe (a card whose branch
@@ -2226,11 +2229,37 @@ async function reviewOne(a) {
   const chain = asked ? await prRequest(await pc.issue(issue.id)).catch(() => "") : "";
   const request = asked ? reviewRequest(a, input, chain, { requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
   const { diff: _d, files: _f, previous: _p, relift: _r, bases: _b, full: _full, ...tierInput } = input;
+  // Kept until the answer is handled: a lost answer (a restart, a timeout) still gets its follow-up (reviewsLeftOver).
+  inFlight((ids) => [...ids, a.id]);
   const out = await kernel("POST", `/v1/writes/${a.id}/review`, { input: { ...tierInput, model: LUNA }, request }, { ms: 46 * 60_000 });
+  inFlight((ids) => ids.filter((x) => x !== a.id));
   if (out.deferred) return void log("review deferred", { approval: a.id, issue: a.identifier, until: new Date(out.deferred).toISOString() });
   if (out.refused) return void log("review refused", { approval: a.id, reason: String(out.refused).slice(0, 200) });
-  const post = out.posted;
-  log("reviewed", { approval: a.id, issue: a.identifier, action: a.action, decision: post.decision, code: post.code, model: post.model, second: post.second });
+  log("reviewed", { approval: a.id, issue: a.identifier, action: a.action, decision: out.posted.decision, code: out.posted.code, model: out.posted.model, second: out.posted.second });
+  await afterVerdict(issue, a, out.posted);
+}
+
+/** Reviews asked for whose answer wasn't handled (runner state `reviews_in_flight`). */
+const inFlight = (fn) => state.set("reviews_in_flight", JSON.stringify(fn(JSON.parse(state.get("reviews_in_flight") || "[]"))));
+/**
+ * A review whose answer never reached the runner (it restarted mid-review, or the call timed out while the kernel went on):
+ * the record says how it ended, and a reviewer's reject gets its follow-up as if the answer had come. One still in review is
+ * reviewed again as usual.
+ */
+async function reviewsLeftOver() {
+  for (const id of JSON.parse(state.get("reviews_in_flight") || "[]")) {
+    if (reviewing.has(id)) continue;
+    const a = asApproval(await kernel("GET", `/v1/writes/${id}`));
+    inFlight((ids) => ids.filter((x) => x !== id));
+    if (!["rejected", "stale"].includes(a.state) || !a.decidedBy?.startsWith("reviewer:")) continue;
+    const [model, second] = a.decidedBy.slice("reviewer:".length).split("+");
+    log("review answer recovered", { approval: id, issue: a.identifier });
+    await afterVerdict(await pc.issue(a.issueId), a, { decision: "reject", code: a.reviewCode ?? undefined, reason: a.review ?? "", model, ...(second ? { second } : {}) });
+  }
+}
+
+/** What the runner does after a verdict the kernel posted: a reject's note on the task, the breaker, and the Engineer sent back. */
+async function afterVerdict(issue, a, post) {
   // The breaker: the same change (its content keys, whatever its commits) rejected twice for the same reason stops the task.
   if (post.decision === "reject" && post.code !== UNSURE && !CODE_REJECTS.includes(post.code)) await rejectedAgain(issue, a, post.code).catch((err) => log("breaker failed", { approval: a.id, err: String(err.message ?? err).slice(0, 200) }));
   if (post.decision === "reject") {
@@ -2625,9 +2654,10 @@ async function rebaseInCode(issue, pr, why) {
     const moved = await withTrusted(repo, [main, b.branch], async (path, [tip, onGithub], out) => {
       if (onGithub !== rec.sha || (await git(path, "merge-base", "--is-ancestor", tip, rec.sha).then(() => true, () => false))) return null;
       const re = await replayOnto(path, rec.base, rec.sha, tip, await botIdentity());
-      if (!re || (await patchKey(path, rec.base, rec.sha)) !== (await patchKey(path, tip, re.tip))) return null;
-      // Its record before anything is pushed, carried by the approval it replays (the kernel checks it); anything else waits.
-      const filed = await fileApproval(issue, { action: "pr", args: { ...args, only: [{ ...b, sha: re.tip, base: tip }] }, ts: [{ tier: 0, rule: "replayed-approval", reason: `the commits of approval ${rec.approval}, replayed by the runner onto a new base with no conflict` }], carries: [rec.approval] }).catch(() => undefined);
+      const patch = re && (await patchKey(path, tip, re.tip));
+      if (!re || (await patchKey(path, rec.base, rec.sha)) !== patch) return null;
+      // Its record before anything is pushed, carried by the approval it replays (the kernel checks it: the same patch).
+      const filed = await fileApproval(issue, { action: "pr", args: { ...args, only: [{ ...b, sha: re.tip, base: tip, ...(patch ? { patch } : {}) }] }, ts: [{ tier: 0, rule: "replayed-approval", reason: `the commits of approval ${rec.approval}, replayed by the runner onto a new base with no conflict` }], carries: [rec.approval] }).catch(() => undefined);
       if (filed?.state !== "used") return null;
       replayRecord = filed;
       await git(path, "update-ref", out, re.tip);
