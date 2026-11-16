@@ -62,13 +62,17 @@ jobs:
           node "$d/npm-age.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
           node "$d/pins.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
           exit $status
-      # .aidenhq/out/ holds an agent's evidence, left out of the code review: screenshots and reports only, so nothing that
-      # runs can hide there. The list is the code-review job's (and code-review.mjs OUT_TYPES); changing it is a .github/
-      # change, so critical. Read from the PR's own ci.yml: a PR that edits it is reviewed at the higher effort anyway.
+      # .aidenhq/out/ holds an agent's evidence: screenshots and reports only, so nothing that runs can hide there. Its images
+      # are left out of the code review (code-review.mjs OUT_TYPES); its reports (json, txt) are reviewed like any file. No
+      # app code may read from it: a tracked file outside .aidenhq/ that names it fails, except docs and the screenshot
+      # tooling that writes there (e2e/, playwright.config.*). Changing this is a .github/ change, so critical. Read from the
+      # PR's own ci.yml: a PR that edits it is reviewed at the higher effort anyway.
       - name: Evidence
         run: |
           bad=$(git diff --name-only --diff-filter=AMR "$BASE_SHA...$HEAD_SHA" -- .aidenhq/out | grep -viE '\.(png|jpe?g|webp|gif|json|txt)$' || true)
           [ -z "$bad" ] || { echo "::error::.aidenhq/out/ takes only screenshots and reports (png, jpg, webp, gif, json, txt): $(printf '%s' "$bad" | head -5 | tr '\n' ' ')"; exit 1; }
+          refs=$(git grep -l -F '.aidenhq/out' "$HEAD_SHA" -- . ':(exclude).aidenhq/**' ':(exclude).github/**' ':(exclude,glob)**/*.md' ':(exclude)e2e/**' ':(exclude,glob)playwright.config.*' ':(exclude).gitignore' ':(exclude).dockerignore' | sed "s/^$HEAD_SHA://" || true)
+          [ -z "$refs" ] || { echo "::error::app code may not read an agent's evidence in .aidenhq/out/ (it is not reviewed as code): $(printf '%s' "$refs" | head -5 | tr '\n' ' ')"; exit 1; }
       - name: Test
         run: npm ci && npm run --if-present lint && npm test
 
@@ -233,10 +237,10 @@ jobs:
           from="$BASE_SHA"
           [ "${REVIEW_MODE:-}" = delta ] && from="$REVIEW_FROM"
           # package-lock.json (see the header) is out of both the line count and the critical-path list, and so are an agent's
-          # screenshots and reports under .aidenhq/out/ (roadmap-keeper#167 counted 40,230 lines of them): only the types the
-          # tests job's Evidence step allows there (code-review.mjs OUT_TYPES), so code under .aidenhq/out/ is reviewed.
+          # screenshots under .aidenhq/out/ (roadmap-keeper#167 counted 40,230 lines of them): image types only (code-review.mjs
+          # OUT_TYPES), so its reports (json, txt) and any code there are reviewed.
           nolock=(':(exclude,glob)**/package-lock.json')
-          for t in png jpg jpeg webp gif json txt; do nolock+=(":(exclude,glob).aidenhq/out/**/*.$t"); done
+          for t in png jpg jpeg webp gif; do nolock+=(":(exclude,glob).aidenhq/out/**/*.$t"); done
           # The reviewer's scripts and rules: the base commit's. A base without them (an old or stacked base) gets the default
           # branch's, never a skip; only when the default branch has none either (the one PR that brings the reviewer in) is
           # the PR not reviewed, like the PR that first adds CI.

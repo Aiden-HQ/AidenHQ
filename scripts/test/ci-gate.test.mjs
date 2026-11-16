@@ -208,6 +208,27 @@ test("lockfile changes: a swapped source, a spoofed name or an unreadable format
   assert.ok(odd.critical && !/\n::/.test(odd.text), "a name can't start a workflow command line");
 });
 
+test("the Evidence step: only screenshots and reports in .aidenhq/out/, and no app code reading from it", () => {
+  const script = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs.tests.steps.find((s) => s.name === "Evidence").run;
+  const dir = mkdtempSync(join(tmpdir(), "ci-evidence-"));
+  const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
+  g("init", "-q", "-b", "main");
+  writeFileSync(join(dir, "README.md"), "Screenshots land in .aidenhq/out/.\n");
+  mkdirSync(join(dir, "e2e"));
+  writeFileSync(join(dir, "e2e", "screens.spec.ts"), 'const out = ".aidenhq/out";\n');
+  g("add", "."); g("commit", "-qm", "base");
+  const base = g("rev-parse", "HEAD");
+  const step = (files) => {
+    g("checkout", "-q", base);
+    for (const [f, text] of Object.entries(files)) { mkdirSync(join(dir, f, ".."), { recursive: true }); writeFileSync(join(dir, f), text); }
+    g("add", "."); g("commit", "-qm", "change");
+    try { execFileSync("bash", ["-e", "-c", script], { cwd: dir, env: { ...process.env, BASE_SHA: base, HEAD_SHA: g("rev-parse", "HEAD") }, stdio: "pipe" }); return 0; } catch (e) { return e.status; }
+  };
+  assert.equal(step({ ".aidenhq/out/home.png": "x", ".aidenhq/out/report.json": "{}" }), 0, "evidence, docs and the screenshot tooling");
+  assert.equal(step({ ".aidenhq/out/run.sh": "x" }), 1, "anything else in .aidenhq/out/");
+  assert.equal(step({ "src/config.ts": 'import cfg from "../.aidenhq/out/report.json";\n' }), 1, "app code reading the evidence");
+});
+
 // The Review step around the base's code-review.mjs (a stub that records its env and plays the next exit code).
 test("the Review step runs the base's reviewer: the higher effort on a critical path, one retry without a verdict, a refusal final, a base without it skipped", () => {
   const script = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps.find((s) => s.name === "Review").run;
@@ -272,6 +293,9 @@ process.exit(code);
   r = run(light, { CODES: "3,0" });
   assert.equal(r.runs.length, 1);
   assert.match(r.env, /CODEGENIE_EXIT=3\nCODEGENIE_ATTEMPTS=1\nCODEGENIE_FAILURE=no-verdict/);
+  // .aidenhq/out/: screenshots are out of the line count; reports (json, txt) are reviewed like any file.
+  assert.match(run(change(".aidenhq/out/report.json")).env, /REVIEW_COUNTED_LINES=40/);
+  assert.match(run(change(".aidenhq/out/home.png")).env, /CODE_REVIEW_SKIPPED=1/);
   // package-lock.json: out of the line count, but adding a package (or an install script, or a new version) is critical,
   // never a tiny skip; moving one to another path at the same version is not.
   g("checkout", "-q", base); writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ packages: { "": {}, "node_modules/a": { version: "1.0.0" } } }, null, 2)); g("add", "."); g("commit", "-qm", "lock base");
@@ -397,6 +421,7 @@ sed "s#ROOT#$(dirname "$(pwd)")/pr#g" "${join(bin, "answer")}" > "$out"; echo '{
   assert.equal(review("export const add = (a, b) => a % b;\n", { FAIL: "unexpected status 503 Service Unavailable" }).code, 1);
   assert.equal(review("export const add = (a, b) => a ** b;\n", { FAIL: "stream disconnected before completion" }).code, 1);
   assert.equal(review("export const add = (a, b) => a & b;\n", { FAIL: "something went wrong" }).code, 3);
+  assert.equal(review("export const add = (a, b) => a | b;\n", { FAIL: "tool error at src/a.ts:512" }).code, 3, "a bare number is no status");
 });
 
 test("the review tools read the PR's tree and history only: nothing outside the checkout, no .git, no options smuggled in", async () => {
