@@ -28,12 +28,12 @@
   },
   {
     "n": 4,
-    "workflow": "Card approve/reject on board",
+    "workflow": "Card approve/reject on the kernel's approval page",
     "today": [
-      "services/board/test/approval-routes.test.ts",
+      "kernel/test/accounts.test.mjs",
       "services/board/test/card-contract.test.ts"
     ],
-    "next": "kernel page tests"
+    "next": "kernel page tests (unit 3a)"
   },
   {
     "n": 5,
@@ -47,7 +47,8 @@
     "n": 6,
     "workflow": "Watcher decide and stale reject",
     "today": [
-      "services/board/test/approval-routes.test.ts"
+      "kernel/test/channels.test.mjs",
+      "modules/channel-operator/test/decide.test.mjs"
     ],
     "next": "channel-operator test"
   },

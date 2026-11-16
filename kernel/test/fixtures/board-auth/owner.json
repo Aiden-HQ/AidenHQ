@@ -1,0 +1,10 @@
+{
+  "email": "owner@example.com",
+  "pw": "correct horse battery staple",
+  "b32": "NB3TENLXJRVUCR2UJU4HOWTTINYVASSVOBMEC3STPFMG4OLFPJSA",
+  "invited": {
+    "email": "admin@example.com",
+    "link": "NffuOg8hUN3Vm6KnFPnla1dBbw6qiaje"
+  },
+  "made_by": "services/board on origin/main 43ea5943 (createAccounts; lean 3a fixture)"
+}

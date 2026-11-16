@@ -1,7 +1,10 @@
 // Every admin is an owner (owner decision 2026-11-12): any signed-in admin writes with the board key, in the owner's chats
-// too, and their typed replies and taps decide approvals. The board records which account wrote what and shows "by <name>"
+// too (their decisions are taken on the kernel's approval page, stamped there). The board records which account wrote what and shows "by <name>"
 // on what an admin other than the owner wrote or decided. Real Paperclip client over a fake fetch, real board accounts.
+import { mkdtempSync } from "node:fs";
 import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -9,6 +12,7 @@ import { createAccounts } from "../src/accounts.js";
 import { createApp } from "../src/app.js";
 import { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
+import { adminListener } from "./admin.js";
 import { totp } from "./totp.js";
 
 const CO = "00000000-0000-4000-8000-000000000001";
@@ -62,24 +66,30 @@ describe("every admin writes as the owner, with their name on it", () => {
   let app: ReturnType<typeof createApp>;
   let port = 0;
   let accounts: Awaited<ReturnType<typeof createAccounts>>;
+  let kernel: Awaited<ReturnType<typeof adminListener>>;
   beforeAll(async () => {
-    accounts = await createAccounts({ dbPath: ":memory:", hosts: ["localhost:3120"], boardUrl: "http://localhost:3120", log });
-    app = createApp({ paperclip: new Paperclip("http://paperclip", CO, KEY, fakeFetch), store, log, staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3120"], mode: "local" });
+    const dbPath = join(mkdtempSync(join(tmpdir(), "admins-")), "auth.db");
+    accounts = await createAccounts({ dbPath, hosts: ["localhost:3121"], adminUrl: "http://localhost:3120", log });
+    kernel = await adminListener(dbPath, ["localhost:3120"]);
+    app = createApp({ paperclip: new Paperclip("http://paperclip", CO, KEY, fakeFetch), store, log, staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan" });
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
     port = (app.address() as AddressInfo).port;
   });
   afterAll(() => {
     app.close();
+    kernel.close();
     accounts.close();
   });
 
-  /** A browser on the local listener: keeps its session cookie. */
+  /** A browser: signs in on the kernel's admin listener (/api/auth/*), uses the board (3121) with the same session cookie. */
   function browser() {
     let cookie = "";
     return (method: string, path: string, body?: unknown) =>
       new Promise<{ status: number; json: any }>((resolve, reject) => {
-        const headers: Record<string, string> = { host: "localhost:3120", ...(cookie ? { cookie } : {}), ...(method !== "GET" ? { "content-type": "application/json", "x-aidenhq-board": "1", origin: "http://localhost:3120" } : {}) };
-        const req = request({ host: "127.0.0.1", port, method, path, headers }, (res) => {
+        const auth = path.startsWith("/api/auth/");
+        const host = auth ? "localhost:3120" : "localhost:3121";
+        const headers: Record<string, string> = { host, ...(cookie ? { cookie } : {}), ...(method !== "GET" ? { "content-type": "application/json", "x-aidenhq-board": "1", origin: `http://${host}` } : {}) };
+        const req = request({ host: "127.0.0.1", port: auth ? Number(new URL(kernel.base).port) : port, method, path, headers }, (res) => {
           let text = "";
           res.on("data", (c) => (text += c));
           res.on("end", () => {
@@ -95,7 +105,7 @@ describe("every admin writes as the owner, with their name on it", () => {
   /** A ready admin: claims the link, signs in, enrols an authenticator. */
   async function admin(url: string, email: string) {
     const b = browser();
-    expect((await b("POST", "/api/auth/reset-password", { token: url.split("#/set-password/").pop(), newPassword: PASSWORD })).status).toBe(200);
+    expect((await b("POST", "/api/auth/reset-password", { token: url.split("token=").pop(), newPassword: PASSWORD })).status).toBe(200);
     expect((await b("POST", "/api/auth/sign-in/email", { email, password: PASSWORD })).status).toBe(200);
     const { totpURI } = (await b("POST", "/api/auth/two-factor/enable", { password: PASSWORD })).json;
     expect((await b("POST", "/api/auth/two-factor/verify-totp", { code: totp(totpURI) })).status).toBe(200);
@@ -124,20 +134,20 @@ describe("every admin writes as the owner, with their name on it", () => {
     expect((await ann("PATCH", "/api/issues/WOR-1", { title: "Pricing page" })).status).toBe(200);
     expect(writes.at(-1)).toMatchObject({ key: KEY, method: "PATCH", body: { title: "Pricing page" } });
 
-    // Her typed reply decides (it isn't posted), and so does her tap; both carry her account and show her name.
+    // A typed "approve WOR-1" is only a message now: cards are decided on the kernel's approval page, which stamps the admin
+    // (account:<id>) through the internal route. The board names who decided; the owner's own decisions carry no label.
     let n = 0;
     const card = () => store.approvals.request({ issueId: issues[0]!.id, identifier: "WOR-1", action: "apply", target: "x", digest: String(++n).padEnd(40, "c"), args: {}, sentence: "s", reads: "", changes: "c", cost: "", details: "", requestedBy: "r" }).id;
     const first = card();
     const typed = await ann("POST", "/api/issues/WOR-1/comments", { body: "approve WOR-1" });
-    expect(typed.json.approval).toMatchObject({ id: first, state: "approved", decidedBy: `account:${annId}`, decidedByName: "Ann" });
+    expect(typed.json.approval).toBeUndefined();
+    expect(store.approvals.get(first)!.state).toBe("pending");
     const second = card();
-    expect((await ann("POST", `/api/approvals/${second}/reject`)).json).toMatchObject({ state: "rejected", decidedBy: `account:${annId}`, decidedByName: "Ann" });
-    // The owner's own decisions carry no label.
+    store.approvals.decide(second, "reject", `account:${annId}`);
     const third = card();
-    const mine = (await me("POST", `/api/approvals/${third}/reject`)).json;
-    expect(mine).toMatchObject({ state: "rejected", decidedBy: `account:${setup.account.id}` });
-    expect(mine.decidedByName).toBeUndefined();
+    store.approvals.decide(third, "reject", `account:${setup.account.id}`);
     const listed = (await me("GET", "/api/approvals")).json.approvals;
-    expect(listed.find((a: { id: string }) => a.id === second).decidedByName).toBe("Ann");
+    expect(listed.find((a: { id: string }) => a.id === second)).toMatchObject({ state: "rejected", decidedByName: "Ann" });
+    expect(listed.find((a: { id: string }) => a.id === third).decidedByName).toBeUndefined();
   });
 });

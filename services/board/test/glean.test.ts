@@ -20,7 +20,7 @@ describe("Glean sign-in routes", () => {
   }) as typeof fetch);
   const store = new Store(":memory:");
   const base = { paperclip: {} as Paperclip, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", glean, session: () => ({ accountId: "owner", role: "admin" as const }) };
-  const local = createApp({ ...base, allowedHosts: ["localhost:3120", "127.0.0.1:3120", "board.example.ts.net"], mode: "local" });
+  const local = createApp({ ...base, allowedHosts: ["localhost:3121", "127.0.0.1:3121", "board.example.ts.net"], mode: "lan" });
   const lan = createApp({ ...base, allowedHosts: ["aidenhq.local"], mode: "lan", lan: { url: "http://aidenhq.local" } });
   let localBase = "";
   let lanBase = "";
@@ -46,10 +46,10 @@ describe("Glean sign-in routes", () => {
   };
 
   it("sends the laptop to Glean with a callback on the address it came from", async () => {
-    const r = await get(`${localBase}/glean/connect`, "localhost:3120");
+    const r = await get(`${localBase}/glean/connect`, "localhost:3121");
     expect(r.status).toBe(302);
     expect(r.location).toMatch(/^https:\/\/acme\.glean\.com\//);
-    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3120/callback" } });
+    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/callback" } });
   });
 
   it("refuses away from the laptop's loopback address", async () => {
@@ -59,12 +59,12 @@ describe("Glean sign-in routes", () => {
   });
 
   it("finishes the sign-in and returns to the board, or explains (escaped) why not", async () => {
-    expect(await get(`${localBase}/callback?state=s&code=good`, "127.0.0.1:3120")).toMatchObject({ status: 302, location: "/" });
-    const bad = await get(`${localBase}/callback?state=s&code=bad`, "127.0.0.1:3120");
+    expect(await get(`${localBase}/callback?state=s&code=good`, "127.0.0.1:3121")).toMatchObject({ status: 302, location: "/" });
+    const bad = await get(`${localBase}/callback?state=s&code=bad`, "127.0.0.1:3121");
     expect(bad.status).toBe(400);
     expect(bad.body).toContain("invalid_grant");
     expect(bad.body).not.toContain("<i>");
-    const denied = await get(`${localBase}/callback?state=s&error=access_denied`, "127.0.0.1:3120");
+    const denied = await get(`${localBase}/callback?state=s&error=access_denied`, "127.0.0.1:3121");
     expect(denied.status).toBe(400);
     expect(denied.body).toContain("access_denied");
   });
@@ -81,7 +81,7 @@ describe("Grafana sign-in routes", () => {
     return json({}, 404);
   }) as typeof fetch);
   // No Glean: its bare /callback must not reach Grafana.
-  const app = createApp({ paperclip: {} as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", grafana, session: () => ({ accountId: "owner", role: "admin" as const }), allowedHosts: ["localhost:3120", "127.0.0.1:3120"], mode: "local" });
+  const app = createApp({ paperclip: {} as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", grafana, session: () => ({ accountId: "owner", role: "admin" as const }), allowedHosts: ["localhost:3121", "127.0.0.1:3121"], mode: "lan" });
   let base = "";
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -91,7 +91,7 @@ describe("Grafana sign-in routes", () => {
   const get = async (path: string) => {
     const { request } = await import("node:http");
     return new Promise<{ status: number; location?: string; body: string }>((resolve, reject) => {
-      const r = request(`${base}${path}`, { method: "GET", headers: { host: "localhost:3120" } }, (res) => {
+      const r = request(`${base}${path}`, { method: "GET", headers: { host: "localhost:3121" } }, (res) => {
         let data = "";
         res.on("data", (c) => (data += c));
         res.on("end", () => resolve({ status: res.statusCode!, location: res.headers.location, body: data }));
@@ -104,7 +104,7 @@ describe("Grafana sign-in routes", () => {
   it("sends the laptop to Grafana with its own callback, and finishes there", async () => {
     const r = await get("/grafana/connect");
     expect(r).toMatchObject({ status: 302, location: expect.stringMatching(/^https:\/\/mcp\.grafana\.com\//) });
-    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3120/grafana/callback" } });
+    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/grafana/callback" } });
     expect(await get("/grafana/callback?state=s&code=good")).toMatchObject({ status: 302, location: "/" });
     expect(seen.at(-1)).toEqual({ path: "/auth/finish", body: { state: "s", code: "good" } });
     const bad = await get("/grafana/callback?state=s&code=bad");

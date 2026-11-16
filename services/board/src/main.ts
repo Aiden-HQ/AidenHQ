@@ -79,8 +79,9 @@ const glean = cfg.glean && new McpAuth("Glean", cfg.glean.url, cfg.glean.token, 
 const grafana = cfg.grafana && new McpAuth("Grafana", cfg.grafana.url, cfg.grafana.token, log);
 const clickhouse = cfg.clickhouse && new McpAuth("ClickHouse", cfg.clickhouse.url, cfg.clickhouse.token, log);
 const jira = cfg.jira && new McpAuth("Jira", cfg.jira.url, cfg.jira.token, log);
-// Board accounts: Better Auth in data/board/auth.db; every board route needs a signed-in admin.
-const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...cfg.allowedHosts, ...cfg.lan.hosts, ...cfg.accounts.signin.hosts], boardUrl: cfg.accounts.boardUrl, gate: () => readGate(cfg.accounts.gateFile), gateAccountsFile: cfg.accounts.gateAccountsFile, gateSecret: cfg.accounts.gateSecret, edgeSecret: cfg.accounts.edgeSecret, linkTtlHours: cfg.accounts.linkTtlHours, ownerEmail: cfg.accounts.ownerEmail,
+// Board accounts: Better Auth in the kernel's accounts file (mounted); every board route needs a signed-in admin, who signs in
+// on the kernel's admin listener (the same session cookie).
+const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...cfg.lan.hosts, ...cfg.accounts.signin.hosts], adminUrl: cfg.accounts.adminUrl, gate: () => readGate(cfg.accounts.gateFile), gateAccountsFile: cfg.accounts.gateAccountsFile, gateSecret: cfg.accounts.gateSecret, linkTtlHours: cfg.accounts.linkTtlHours, ownerEmail: cfg.accounts.ownerEmail,
   // Sign-in alerts and new-sign-in notices: the owner-line queue the owner channel collects (/internal/owner/grades).
   notify: (line) => queueOwnerLine(store, line),
   // Each shared app's manifest at its running commit (apps-mcp), and the app-request routine's webhook (setup writes its files).
@@ -93,10 +94,8 @@ const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...
 const activity: { runner?: RunnerReport } = {};
 // Open boards hear what agents change in their chats (watch.ts): one look at Paperclip every 2s while any board listens.
 startWatch({ pc: paperclip, events: store.events, log, runner: () => activity.runner, session: liveActivity(cfg.sessions) });
-const common = { paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway, kernel: cfg.gateway && { url: (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, ""), token: cfg.gateway.token }, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
-const server = createApp({ ...common, allowedHosts: cfg.allowedHosts, mode: "local", operatorKey: cfg.operatorKey });
-server.listen(cfg.port, "0.0.0.0", () => log.info({ port: cfg.port, hosts: cfg.allowedHosts }, "board listening"));
-// The board's https address (`tailscale serve`) and phones on the home network: a separate port, signed in as on 3120.
+const common = { adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway, kernel: cfg.gateway && { url: (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, ""), token: cfg.gateway.token }, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
+// The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));
 
@@ -114,7 +113,6 @@ if (internal && cfg.internal) internal.listen(cfg.internal.port, "0.0.0.0", () =
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.on(sig, () => {
     store.events.close();
-    server.close();
     lan.close();
     internal?.close();
     signin.close();

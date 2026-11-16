@@ -183,7 +183,7 @@ Generated Caddyfile (compile writes it, from the detected public IP):
 | 443/tcp | `0.0.0.0` | `caddy` → 127.0.0.1:3121 (board) and, with a domain, → 127.0.0.1:3130 (gate) | **open** | closed (firewall) | closed |
 | 80/tcp | none | nothing (D1) | closed | closed | closed |
 | 41641/udp | host netns | `edge-tailscale` and `apps-edge` direct connections | closed | open | closed |
-| 3120 | 127.0.0.1 | board local listener (setup, operator key) | loopback | loopback | loopback |
+| 3120 | 127.0.0.1 | the kernel's admin listener (sign-in, approval pages; lean-core 3a) | loopback | loopback | loopback |
 | 3121 | 127.0.0.1 | board browser listener (`mode: "lan"`) | loopback, behind Caddy | loopback, behind `tailscale serve` | loopback, forwarded by Lima or reached by tunnel |
 | 3122, 3129 | 127.0.0.1 | board internal API, gate sign-in listener | loopback | loopback | loopback |
 | 3130 | 127.0.0.1 | gate | loopback, behind Caddy (domain only) | loopback | loopback (Lima: forwarded) |

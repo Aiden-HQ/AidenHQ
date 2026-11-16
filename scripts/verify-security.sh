@@ -162,10 +162,12 @@ for c in $containers; do
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "apps-edge: no published ports" || fail "apps-edge publishes ports"
       ;;
     *board*)
-      # 3120 is the local board; 3121 (the https address and LAN) may be published. Both serve signed-in admins only.
-      local_port="$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3120/tcp")}}')"
-      echo "$local_port" | grep -q '"HostIp":"127.0.0.1"' && ! echo "$local_port" | grep -qE '"HostIp":"(0\.0\.0\.0)?"' \
-        && pass "board: local port published on 127.0.0.1 only" || fail "board local port is not loopback-only: $local_port"
+      # 3120 is the kernel's admin listener now (sign-in and approvals, lean-core 3a): the board never publishes it.
+      [ "$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3120/tcp")}}')" = "null" ] \
+        && pass "board: 3120 not published (the kernel's admin listener)" || fail "board publishes 3120 (a compose.override.yaml port?): the kernel's admin listener needs it"
+      # Of the kernel's data the board mounts the accounts alone (data/kernel/auth), never kernel.db or the caller key.
+      ksrc="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' | grep -E '/kernel(/|$)' | tr '\n' ' ')"
+      [ -z "$(echo "$ksrc" | tr ' ' '\n' | grep -v '^$' | grep -vE '/kernel/auth$')" ] && pass "board: of the kernel's data, only data/kernel/auth (${ksrc:-none})" || fail "board mounts more of the kernel's data than its accounts: $ksrc"
       # 3121, the browser listener, is loopback: the front door (tailscale serve, Caddy, the tunnel) reaches it there, and
       # it trusts X-Forwarded-Proto from whoever does. The one exception is a LAN VM in local mode with no public firewall
       # (AIDENHQ_PUBLIC_IF=none), whose phones use it over the LAN; it must still refuse a read without a session.
@@ -183,23 +185,15 @@ for c in $containers; do
       else
         pass "board: LAN listener published, but no LAN address to probe (${lan_port})"
       fi
-      code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -H 'Origin: http://evil.example' -H 'x-aidenhq-board: 1' http://127.0.0.1:3120/api/issues -d '{}')"
+      # Every host process shares 3121's loopback (Engineer jobs, Tailscale serve): a write or a read without a signed-in admin's
+      # session is refused before it acts.
+      bh="$(sed -n 's/^BOARD_LAN_HOSTS=//p' .env 2>/dev/null | tail -1 | cut -d, -f1)"; bh="${bh:-aidenhq.local}"
+      code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: $bh" -H 'content-type: application/json' -H 'Origin: http://evil.example' -H 'x-aidenhq-board: 1' http://127.0.0.1:3121/api/issues -d '{}')"
       [ "$code" = "403" ] && pass "board: refuses cross-origin writes" || fail "board accepted a cross-origin write ($code)"
-      # Every host process shares 3120's loopback (Engineer jobs, Tailscale serve): a well-formed write or a read without a
-      # signed-in admin's session is refused before it acts (401).
-      code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Host: localhost:3120' -H 'content-type: application/json' -H 'x-aidenhq-board: 1' http://127.0.0.1:3120/api/issues -d '{}')"
-      [ "$code" = "401" ] && pass "board: local port writes only for a signed-in admin" || fail "board local port took a write from a bare host process ($code)"
-      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'Host: localhost:3120' http://127.0.0.1:3120/api/board)"
+      code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: $bh" -H 'content-type: application/json' -H 'x-aidenhq-board: 1' http://127.0.0.1:3121/api/issues -d '{}')"
+      [ "$code" = "401" ] && pass "board: writes only for a signed-in admin" || fail "board took a write from a bare host process ($code)"
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $bh" http://127.0.0.1:3121/api/board)"
       [ "$code" = "401" ] && pass "board: reads need a session" || fail "board answered a read without a session ($code)"
-      # A client-named address without the front door's secret is ignored (and X-Forwarded-For, CF-Connecting-IP always):
-      # five failures "from five addresses" are one pair, the socket's, so the sixth is refused. A made-up email per run.
-      probe="verify-$RANDOM$RANDOM@example.invalid"
-      for i in 1 2 3 4 5 6; do
-        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Host: localhost:3120' -H 'Origin: http://localhost:3120' -H 'content-type: application/json' -H 'x-aidenhq-board: 1' \
-          -H "x-aidenhq-client-ip: 198.51.100.$i" -H 'x-aidenhq-edge: forged' -H "x-forwarded-for: 198.51.101.$i" -H "cf-connecting-ip: 198.51.102.$i" \
-          http://127.0.0.1:3120/api/auth/sign-in/email -d "{\"email\":\"$probe\",\"password\":\"not-the-password-$i\"}")"
-      done
-      [ "$code" = "403" ] && pass "board: forged client addresses without the front door's secret count as the socket's" || fail "board: a forged client address was believed (sixth failure answered $code, want 403)"
       # 3129: the gate's sign-in listener, loopback only.
       signin_port="$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3129/tcp")}}')"
       if [ "$signin_port" = "null" ] && [ -f config/gate.json ]; then
@@ -210,7 +204,7 @@ for c in $containers; do
         echo "$signin_port" | grep -q '"HostIp":"127.0.0.1"' && ! echo "$signin_port" | grep -qE '"HostIp":"(0\.0\.0\.0)?"' \
           && pass "board: sign-in listener published on 127.0.0.1 only" || fail "board sign-in listener is not loopback-only: $signin_port"
       fi
-      code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example:3120' http://127.0.0.1:3120/api/board)"
+      code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example:3121' http://127.0.0.1:3121/api/board)"
       [ "$code" = "403" ] && pass "board: refuses unknown Host headers" || fail "board answered an unknown Host ($code)"
       # 3122: internal API for the tasks bridge and the runner, loopback only, bearer token.
       internal_port="$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3122/tcp")}}')"
@@ -255,8 +249,9 @@ PROBES
       fi
       ;;
     *gate*)
-      # The gate sees the board's account map and nothing else of data/ (never data/board: sessions, hashes, TOTP).
-      echo "$mounts" | tr ';' '\n' | grep -q '|/accounts/accounts.json|false' && ! echo "$mounts" | grep -q '/board' \
+      # The gate sees the board's account map and nothing else of data/ (never data/board or the accounts in data/kernel/auth:
+      # sessions, hashes, TOTP).
+      echo "$mounts" | tr ';' '\n' | grep -q '|/accounts/accounts.json|false' && ! echo "$mounts" | grep -qE '/board|/kernel' \
         && pass "gate: only accounts.json (read-only) and the tunnel socket from data/" || fail "gate: unexpected data mounts: $mounts"
       # PR previews (settings.edge.previews): apps-mcp's list of running previews, read-only.
       ! echo "$mounts" | grep -q '|/previews|true' && pass "gate: the previews list, if any, is read-only" || fail "gate: /previews is writable: $mounts"
@@ -534,7 +529,26 @@ fi
 # with most modules any more, so an unreachable endpoint fails here rather than passing).
 kpid="$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)"
 kbinds="$(ss -Hltnp 2>/dev/null | awk -v k="pid=${kpid:-none}," 'index($0, k) {print $4}' | grep -v ':8201$' | sort -u | tr '\n' ' ')"
-[ "$(echo $kbinds)" = "10.231.0.1:3130" ] && pass "kernel: the proxy listens on 10.231.0.1:3130 only" || fail "kernel: listens on ${kbinds:-nothing} (want 10.231.0.1:3130 only, plus 8201)"
+[ "$(echo $kbinds)" = "10.231.0.1:3130 127.0.0.1:3120" ] && pass "kernel: the proxy listens on 10.231.0.1:3130 and the admin pages on 127.0.0.1:3120 only" || fail "kernel: listens on ${kbinds:-nothing} (want 10.231.0.1:3130 and 127.0.0.1:3120 only, plus 8201)"
+# The admin listener (lean-core 3a): every page refuses a frame, a form from another origin and a decision without a session;
+# an unknown Host is refused. A client-named address without the front door's secret is ignored (and X-Forwarded-For,
+# CF-Connecting-IP always): attempts "from six addresses" are one unidentified peer's, which gets two free failures and then
+# a stepped hold (429 at once); believed addresses would each be checked.
+ka="http://127.0.0.1:3120"
+curl -s -m 10 -D - -o /dev/null -H 'Host: 127.0.0.1:3120' "$ka/auth/sign-in" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" \
+  && pass "kernel admin: pages refuse frames (frame-ancestors 'none')" || fail "kernel admin: /auth/sign-in can be framed"
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3121' "$ka/approvals/batch" -d 'decision=approve')"
+[ "$code" = "403" ] && pass "kernel admin: refuses a form from another origin (the board's)" || fail "kernel admin: took a form from another origin ($code)"
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3120' "$ka/approvals/batch" -d 'decision=approve')"
+[ "$code" = "401" ] && pass "kernel admin: decides only for a signed-in admin" || fail "kernel admin: a bare host process got past sign-in ($code)"
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: evil.example:3120' "$ka/approvals")"
+[ "$code" = "421" ] && pass "kernel admin: refuses unknown Host headers" || fail "kernel admin: answered an unknown Host ($code)"
+probe="verify-$RANDOM$RANDOM@example.invalid"
+for i in 1 2 3 4 5 6; do
+  code="$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3120' -H "x-aidenhq-client-ip: 198.51.100.$i" -H 'x-aidenhq-edge: forged' \
+    -H "x-forwarded-for: 198.51.101.$i" -H "cf-connecting-ip: 198.51.102.$i" "$ka/auth/sign-in" --data-urlencode "email=$probe" --data-urlencode "password=not-the-password-$i")"
+done
+[ "$code" = 429 ] && pass "kernel admin: forged client addresses count as the shared peer's, which waits its turn (429), never locked" || fail "kernel admin: a forged client address was believed (the sixth attempt answered $code, want 429)"
 first_conn="$(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync("config/kernel/connections.json","utf8")))[0] ?? "")' 2>/dev/null)"
 [ -n "$first_conn" ] && [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "http://10.231.0.1:3130/c/$first_conn/mcp" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')" = 401 ] \
   && pass "kernel: /c/ without a credential is refused (401)" || fail "kernel: /c/$first_conn answers without a credential"

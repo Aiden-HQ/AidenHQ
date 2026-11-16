@@ -79,7 +79,7 @@ test("--unattended: no config file, settings from the environment, the SSH-tunne
     "config/runner.yaml: timeout_minutes: 120",
     "CI runners: aidenhq-ci-runner@1..2",
     "Model key: none yet", // secrets never come from the environment
-    "AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 alice@",
+    "AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 alice@",
   ]) assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const not of ["tailscale serve", "APPS_URL_BASE", "sk-SECRET"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
   assert.throws(() => run({}), /--unattended needs OWNER_EMAIL/);

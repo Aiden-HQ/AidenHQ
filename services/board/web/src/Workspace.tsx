@@ -541,9 +541,8 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
         if (text.trim()) {
           const body = names.length ? `${text.trimEnd()}\n\nAttached: ${names.map((n) => `\`${n.replace(/`/g, "")}\``).join(", ")}` : text;
           const view = await api.comment(refId, body, answer, true);
-          if (view.approval) toast(view.approval.state === "rejected" ? `Rejected: ${view.approval.sentence}` : `Approved: ${view.approval.sentence}`);
           if (view.movedTo) toast(`Sent to ${view.movedTo}`);
-          setOutbox(refId, (p) => (view.approval ? p.filter((x) => x.id !== id) : p.map((x) => (x.id === id ? { ...x, text: body, state: "sent" } : x))));
+          setOutbox(refId, (p) => p.map((x) => (x.id === id ? { ...x, text: body, state: "sent" } : x)));
         } else setOutbox(refId, (p) => p.filter((x) => x.id !== id));
         // Through the cache, not this view: it may have closed by now.
         await Promise.all([loadCached(q.key, q.fetch, false, true), reloadList()]);
@@ -617,7 +616,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
               <NoiseFold lines={it.items.map((x) => (x as Item & { type: "message" }).m)} from={it.at} until={it.until} prefix={prefix} />
             ) : it.type === "approval" ? (
               <ul className="approval-list inline">
-                <ApprovalCard a={it.a} open={openChat} decided={load} inline prefix={prefix} hold={hold} />
+                <ApprovalCard a={it.a} open={openChat} inline prefix={prefix} />
               </ul>
             ) : it.type === "ask" ? (
               <AskView q={it.q} crew={crew} prefix={prefix} go={go} answered={load} toast={toast} />

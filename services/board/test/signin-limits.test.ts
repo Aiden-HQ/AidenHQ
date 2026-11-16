@@ -1,11 +1,12 @@
-import { request, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { mkdtempSync } from "node:fs";
+import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { addressKey, createAccounts, type Accounts } from "../src/accounts.js";
-import { createApp } from "../src/app.js";
-import type { Paperclip } from "../src/paperclip.js";
-import { Store } from "../src/store.js";
+import { createAccounts, type Accounts } from "../src/accounts.js";
+import { addressKey } from "../src/auth-rules.js";
+import { adminListener } from "./admin.js";
 import { totp } from "./totp.js";
 
 const PASSWORD = "correct horse battery staple";
@@ -13,19 +14,19 @@ const EDGE = "e".repeat(64);
 const OWNER = "owner@example.com";
 
 // Its own file: Better Auth's per-minute limit lives in memory per process and would count other files' sign-ins.
-describe("board sign-in behind a front door: per-address bans, owner alerts, new-sign-in notices", () => {
+describe("admin sign-in (the kernel's admin listener, auth-rules) behind a front door: per-address bans, owner alerts, new-sign-in notices", () => {
   const log = pino({ level: "silent" });
   const lines: string[] = [];
-  let accounts: Accounts, board: Server, base = "", totpURI = "";
+  let accounts: Accounts, admin: Awaited<ReturnType<typeof adminListener>>, base = "", totpURI = "";
 
   beforeAll(async () => {
-    accounts = await createAccounts({ dbPath: ":memory:", hosts: ["localhost:3121"], boardUrl: "https://board.example.com", edgeSecret: EDGE, notify: (l) => lines.push(l), log });
-    board = createApp({ paperclip: {} as Paperclip, store: new Store(":memory:"), log, staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan" });
-    await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
-    base = `http://127.0.0.1:${(board.address() as AddressInfo).port}`;
+    const dbPath = join(mkdtempSync(join(tmpdir(), "limits-")), "auth.db");
+    accounts = await createAccounts({ dbPath, hosts: ["127.0.0.1:3129"], adminUrl: "https://admin.example.com", log });
+    admin = await adminListener(dbPath, ["localhost:3120"], { edgeSecret: EDGE, notify: (l) => lines.push(l) });
+    base = admin.base;
     // The owner, enrolled, from the socket's address (no front door).
     const { url } = await accounts.setup(OWNER, "Owner");
-    const claimed = await call("/reset-password", { token: url.split("#/set-password/").pop(), newPassword: PASSWORD });
+    const claimed = await call("/reset-password", { token: url.split("token=").pop(), newPassword: PASSWORD });
     expect(claimed.json).toEqual({ status: true });
     const signedIn = await call("/sign-in/email", { email: OWNER, password: PASSWORD });
     const enable = await call("/two-factor/enable", { password: PASSWORD }, {}, signedIn.cookie);
@@ -34,13 +35,13 @@ describe("board sign-in behind a front door: per-address bans, owner alerts, new
     lines.length = 0; // the first sign-in's notice: not what these cases look at
   });
   afterAll(() => {
-    board.close();
+    admin.close();
     accounts.close();
   });
 
-  /** One POST to Better Auth on the board listener; `from`: the front door names this client (with its secret). */
+  /** One POST to Better Auth on the admin listener; `from`: the front door names this client (with its secret). */
   async function call(path: string, body: unknown, extra: Record<string, string> = {}, cookie = "") {
-    const headers = { host: "localhost:3121", "content-type": "application/json", origin: "http://localhost:3121", "x-aidenhq-board": "1", ...(cookie ? { cookie } : {}), ...extra };
+    const headers = { host: "localhost:3120", "content-type": "application/json", origin: "http://localhost:3120", ...(cookie ? { cookie } : {}), ...extra };
     return new Promise<{ status: number; json: any; cookie: string }>((resolve, reject) => {
       const r = request(`${base}/api/auth${path}`, { method: "POST", headers }, (res) => {
         let data = "";
@@ -79,9 +80,9 @@ describe("board sign-in behind a front door: per-address bans, owner alerts, new
     // The owner, from his own address, signs all the way in; the new device's session tells him, with time and address.
     const step1 = await call("/sign-in/email", { email: OWNER, password: PASSWORD }, from("192.0.2.44"));
     expect(step1.json.twoFactorRedirect).toBe(true);
-    expect(lines.some((l) => l.includes("New board sign-in"))).toBe(false); // the password step opens no session
+    expect(lines.some((l) => l.includes("New admin sign-in"))).toBe(false); // the password step opens no session
     expect((await call("/two-factor/verify-totp", { code: totp(totpURI, 1) }, from("192.0.2.44"), step1.cookie)).status).toBe(200);
-    const notice = lines.find((l) => l.includes("New board sign-in"));
+    const notice = lines.find((l) => l.includes("New admin sign-in"));
     expect(notice).toMatch(new RegExp(`${OWNER} from 192\\.0\\.2\\.44 at \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC`));
   });
 
@@ -102,14 +103,16 @@ describe("board sign-in behind a front door: per-address bans, owner alerts, new
     let status = 0;
     for (const step of [-1, 0, 1]) if ((status = (await call("/two-factor/verify-totp", { code: totp(totpURI, step) }, from("192.0.2.46"), step1.cookie)).status) === 200) break;
     expect(status).toBe(200);
-    expect(lines.at(-1)).toContain(`New board sign-in**: ${OWNER} from 192.0.2.46`);
+    expect(lines.at(-1)).toContain(`New admin sign-in**: ${OWNER} from 192.0.2.46`);
   }, 90_000);
 
   it("ignores a named address, X-Forwarded-For and CF-Connecting-IP without the front door's secret", async () => {
     const forged = (i: number) => ({ "x-aidenhq-client-ip": `10.7.0.${i}`, "x-aidenhq-edge": "not the secret", "x-forwarded-for": `10.8.0.${i}`, "cf-connecting-ip": `10.9.0.${i}` });
-    // Five failures from "five addresses" are one pair, the socket's: it locks, and only there.
-    for (let i = 0; i < 5; i++) expect((await guess(OWNER, forged(i))).status).toBe(401);
-    expect((await call("/sign-in/email", { email: OWNER, password: PASSWORD }, forged(9))).status).toBe(403);
+    // Failures from "five addresses" are one unidentified peer's: two free, then held (429), and an address the front
+    // door names still gets in.
+    for (let i = 0; i < 3; i++) expect((await guess(OWNER, forged(i))).status).toBe(401);
+    for (let i = 3; i < 5; i++) expect((await guess(OWNER, forged(i))).status).toBe(429);
+    expect((await call("/sign-in/email", { email: OWNER, password: PASSWORD }, forged(9))).status).toBe(429);
     expect((await call("/sign-in/email", { email: OWNER, password: PASSWORD }, from("192.0.2.45"))).json.twoFactorRedirect).toBe(true);
   });
 });

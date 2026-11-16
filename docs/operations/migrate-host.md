@@ -34,7 +34,7 @@ Commands run as `<you>` on the host named in the step, unless a step says `sudo`
 |---|---|---|
 | Product checkout, with `.env`, `compose.override.yaml`, `config/` and `data/` | `~/aidenhq` | rsync: pre-seed live, then a cold final pass |
 | Paperclip (embedded Postgres, codex homes, workspaces) | `data/paperclip/` | Same rsync. The `db/` folder counts only from the cold pass. |
-| Board (data, accounts, auth secret) | `data/board/` (`board.sqlite`, `auth.db`, `auth.secret`) | Same rsync, cold |
+| Board (data) and accounts (auth secret) | `data/board/` (`board.sqlite`), `data/kernel/auth/` (`auth.db`, `auth.secret`) | Same rsync, cold |
 | Gateway ledger, apps-mcp, ops-mcp, slack-live, apps-edge node state | `data/gateway/`, `data/apps-mcp/`, `data/ops-mcp/`, `data/slack-live/`, `data/apps-edge/` | Same rsync, cold |
 | App data (the warehouse and other stateful apps) | Docker volumes `app-<name>_<vol>` | Streamed with tar, cold, before the app's first deploy on the new host |
 | Secrets | The vault view `~/.config/aidenhq` | Plaintext over SSH into the new host's mounted view, which encrypts it under the new vault |
@@ -134,7 +134,7 @@ Everything else is Tailscale-only. `ops/vm/setup.sh` (step 3.2) sets up the publ
   authorized key, so it can't lock you out.
 - **fail2ban on sshd.** It bans repeated failures for an hour, and never bans the tailnet or loopback.
 
-Paperclip (3100) and the board (3120, 3121, 3122, 3129) publish on `127.0.0.1` by default. **Never publish on `0.0.0.0`
+Paperclip (3100) and the board (3121, 3122, 3129) publish on `127.0.0.1` by default; the kernel binds 3120 there. **Never publish on `0.0.0.0`
 here:** a LAN-style `compose.override.yaml` or `BOARD_LAN_BIND=0.0.0.0` from the old host must change (step 6). The
 firewall would drop that traffic anyway; the loopback bind is the first line.
 
@@ -369,7 +369,7 @@ On the new host:
      - `BOARD_LAN_HOSTS`, `BOARD_ALLOWED_HOSTS`: drop LAN addresses and keep the tailnet names;
      - `APPS_URL_BASE`, `BOARD_LAN_URL`, `TELEGRAM_TASK_URL`: only if the names change (step 7).
    - **`compose.override.yaml`.** Every `ports:` entry binds `127.0.0.1`: Paperclip `127.0.0.1:3100:3100`, the board
-     `127.0.0.1:3120`, `127.0.0.1:3121` and `127.0.0.1:3122`. Drop LAN addresses from `PAPERCLIP_ALLOWED_HOSTNAMES` and
+     `127.0.0.1:3121`, `127.0.0.1:3122` and `127.0.0.1:3129` (never 3120: the kernel's admin listener binds it). Drop LAN addresses from `PAPERCLIP_ALLOWED_HOSTNAMES` and
      keep `PAPERCLIP_PUBLIC_URL` on the tailnet name. Check with `docker compose config | grep -n published -B2`: no
      `host_ip` may be `0.0.0.0`, and none may be missing (a missing `host_ip` means every address).
    - `config/runner.yaml`, `config/system.yaml` and `config/routing.yaml` came with the rsync and need no change when
@@ -392,8 +392,9 @@ Telegram task links and the app links people have.
    `aidenhq-1`. If the old name is still held, rename or remove the old node in the admin console.
 4. Recreate the old host's serve routes, all to loopback, for example:
    - `tailscale serve --bg --https=443 http://127.0.0.1:3100` (Paperclip);
-   - `tailscale serve --bg --https=8443 http://127.0.0.1:3120` (the board);
-   - or `ops/setup.sh`'s single board route, `--https=443 http://127.0.0.1:3121`.
+   - `tailscale serve --bg --https=8443 http://127.0.0.1:3121` (the board);
+   - `tailscale serve --bg --https=8444 http://127.0.0.1:3120` (the kernel's sign-in and approval pages);
+   - or `ops/setup.sh`'s routes, `--https=443 http://127.0.0.1:3121` and `--https=8444 http://127.0.0.1:3120`.
 
    `scripts/host-serve.mjs check` must pass.
 5. The apps node needs nothing: its identity came with `data/apps-edge/state`, and only one copy of it ever runs

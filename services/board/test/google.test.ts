@@ -22,7 +22,7 @@ describe("reconnect routes", () => {
   // Starting a sign-in takes the owner's session (a stub here: a header says the owner is signed in).
   const session = (req: { headers: Record<string, unknown> }) => (req.headers["x-test-owner"] ? { accountId: "acct-owner", role: "admin" as const } : null);
   const base = { paperclip: {} as Paperclip, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", google, session };
-  const local = createApp({ ...base, allowedHosts: ["localhost:3120", "127.0.0.1:3120", "board.example.ts.net"], mode: "local" });
+  const local = createApp({ ...base, allowedHosts: ["localhost:3121", "127.0.0.1:3121", "board.example.ts.net"], mode: "lan" });
   const lan = createApp({ ...base, allowedHosts: ["aidenhq.local"], mode: "lan", lan: { url: "http://aidenhq.local" } });
   // A person's VM (ops/setup.sh): the board at its https tailnet address, behind tailscale serve.
   const tailnet = createApp({ ...base, allowedHosts: ["alice.tail1234.ts.net"], mode: "lan", lan: { url: "https://alice.tail1234.ts.net", googleConnect: true } });
@@ -52,10 +52,10 @@ describe("reconnect routes", () => {
   };
 
   it("sends the laptop to Google with a callback on the address it came from", async () => {
-    const r = await get(`${localBase}/google/connect?account=me%40work.com`, "127.0.0.1:3120");
+    const r = await get(`${localBase}/google/connect?account=me%40work.com`, "127.0.0.1:3121");
     expect(r.status).toBe(302);
     expect(r.location).toMatch(/^https:\/\/accounts\.google\.com\//);
-    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { account: "me@work.com", redirect_uri: "http://127.0.0.1:3120/google/callback" } });
+    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { account: "me@work.com", redirect_uri: "http://127.0.0.1:3121/google/callback" } });
   });
 
   it("refuses away from the laptop's loopback address", async () => {
@@ -65,13 +65,13 @@ describe("reconnect routes", () => {
   });
 
   it("finishes the sign-in and returns to the board, or explains (escaped) why not", async () => {
-    const ok = await get(`${localBase}/google/callback?state=s&code=good`, "127.0.0.1:3120");
+    const ok = await get(`${localBase}/google/callback?state=s&code=good`, "127.0.0.1:3121");
     expect(ok).toMatchObject({ status: 302, location: "/" });
-    const bad = await get(`${localBase}/google/callback?state=s&code=bad`, "127.0.0.1:3120");
+    const bad = await get(`${localBase}/google/callback?state=s&code=bad`, "127.0.0.1:3121");
     expect(bad.status).toBe(400);
     expect(bad.body).toContain("signed in as &#60;b&#62;x@y.z");
     expect(bad.body).not.toContain("<b>");
-    const denied = await get(`${localBase}/google/callback?state=s&error=access_denied`, "127.0.0.1:3120");
+    const denied = await get(`${localBase}/google/callback?state=s&error=access_denied`, "127.0.0.1:3121");
     expect(denied.status).toBe(400);
     expect(denied.body).toContain("access_denied");
   });

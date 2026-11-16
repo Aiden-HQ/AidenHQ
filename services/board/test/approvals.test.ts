@@ -93,59 +93,6 @@ describe("approval records", () => {
     expect(approvals.get(again.id)).toMatchObject({ state: "pending", replaced: true });
   });
 
-  it("a typed reply approves only the request the owner was shown: never one that replaced it since (tap the new card)", () => {
-    const { approvals } = new Store(":memory:");
-    const seen = approvals.request(req());
-    const swapped = approvals.request(req({ digest: "b".repeat(40) })); // the agent changes the request after the card went out
-    const r = approvals.decideByReply("WOR-184", "approve", "telegram");
-    expect(r.ok).toBe(false);
-    expect(approvals.get(swapped.id)!.state).toBe("pending");
-    expect(approvals.get(seen.id)!.state).toBe("expired");
-    expect(approvals.decideByReply("WOR-184", "reject", "telegram").ok).toBe(true); // rejecting is always safe
-    const fresh = approvals.request(req({ issueId: "i9", identifier: "WOR-9" }));
-    expect(approvals.decideByReply("wor-9", "approve", "telegram")).toMatchObject({ ok: true, approval: { id: fresh.id, state: "approved" } });
-    expect(approvals.decideByReply("WOR-9", "approve", "telegram").ok).toBe(false); // nothing pending any more
-  });
-
-  it("a bare typed reply asks which card when two merge cards for different PRs are open", () => {
-    const { approvals } = new Store(":memory:");
-    const pr10 = approvals.request(mergeCard([10]));
-    const pr9 = approvals.request(mergeCard([9]));
-    const r = approvals.decideByReply("WOR-184", "approve", "telegram");
-    expect(r.ok).toBe(false);
-    const reason = r.ok ? "" : r.reason;
-    expect(reason).toContain(pr10.id);
-    expect(reason).toContain(pr9.id);
-    expect(reason).toContain("https://github.com/acme/app/pull/10");
-    expect(reason).toContain("https://github.com/acme/app/pull/9");
-    expect(approvals.get(pr10.id)!.state).toBe("pending");
-    expect(approvals.get(pr9.id)!.state).toBe("pending");
-  });
-
-  it("a reply naming one PR decides only that card when several are open", () => {
-    const { approvals } = new Store(":memory:");
-    const pr10 = approvals.request(mergeCard([10]));
-    const pr9 = approvals.request(mergeCard([9]));
-    expect(approvals.decideByReply("WOR-184", "approve", "telegram", "PR #10")).toMatchObject({ ok: true, approval: { id: pr10.id, state: "approved" } });
-    expect(approvals.get(pr9.id)!.state).toBe("pending");
-    expect(approvals.decideByReply("WOR-184", "reject", "telegram", "https://github.com/acme/app/pull/9")).toMatchObject({ ok: true, approval: { id: pr9.id, state: "rejected" } });
-  });
-
-  it("a bare reply still decides the only open card", () => {
-    const { approvals } = new Store(":memory:");
-    const pr10 = approvals.request(mergeCard([10]));
-    expect(approvals.decideByReply("WOR-184", "approve", "telegram")).toMatchObject({ ok: true, approval: { id: pr10.id, state: "approved" } });
-  });
-
-  it("a reply naming a card id that doesn't exist changes nothing and says so", () => {
-    const { approvals } = new Store(":memory:");
-    const pr10 = approvals.request(mergeCard([10]));
-    const r = approvals.decideByReply("WOR-184", "approve", "telegram", "Adeadbeef");
-    expect(r.ok).toBe(false);
-    expect(r.ok ? "" : r.reason).toContain("Adeadbeef");
-    expect(approvals.get(pr10.id)!.state).toBe("pending");
-  });
-
   it("expires after 7 days; used with no outcome shows as unknown", () => {
     const { approvals } = new Store(":memory:");
     const t0 = new Date("2026-11-01T00:00:00Z");

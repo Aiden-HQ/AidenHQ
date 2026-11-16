@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Back up this host's AidenHQ state into one directory of parts, each streamed straight to its file (no staging copy):
-#   data      the whole data dir: Paperclip, the board (with its accounts, auth.db, and auth.secret), the gateway ledger,
+#   data      the whole data dir: Paperclip, the board, the accounts (data/kernel/auth: auth.db and auth.secret), the gateway ledger,
 #             apps-mcp, ops-mcp, slack-live, the apps node's state and the rest. While Paperclip runs, its live database
 #             folder is left out; its hourly dumps (paperclip/instances/*/data/backups) carry it.
 #   runner    the runner's state dir (config/runner.yaml `state_dir`).

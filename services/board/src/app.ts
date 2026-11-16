@@ -20,7 +20,7 @@ import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileView
 import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, appsToken, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { detectorState, kickDetector, staleSources, takeOwnerLines } from "./fleet-ops.js";
 import { AlertsSchema, metricsText, receiveAlerts } from "./monitoring.js";
-import { ARGS, BOARD_ACTIONS, BatchItemsSchema, KERNEL_ID, REVIEWER_MODELS, RaiseCapSchema, autonomy, batchesOn, card, digestText, kernelRecords, parseReply, raiseCapRequest, shown, type Approval, type BatchResult, type RaiseCap, type RunnerAction } from "./approvals.js";
+import { ARGS, BOARD_ACTIONS, KERNEL_ID, REVIEWER_MODELS, RaiseCapSchema, autonomy, card, digestText, kernelRecords, raiseCapRequest, shown, type Approval, type RaiseCap, type RunnerAction } from "./approvals.js";
 import { liveUpdatesOn } from "./events.js";
 import { wakeCheck } from "./brake.js";
 import { REVIEW_CODES, TIER_RULE } from "./reason-codes.js";
@@ -50,7 +50,7 @@ export interface AppOptions {
   paperclip: Paperclip;
   /**
    * Who a request comes from, in place of `accounts` (tests only: a stub resolver). The listeners in main.ts never set it;
-   * "local" and "lan" refuse to start with neither.
+   * "lan" refuses to start with neither.
    */
   session?: SessionOf;
   store: Store;
@@ -63,11 +63,12 @@ export interface AppOptions {
   /** Slack host → workspace or organization ID, so the web app opens Slack links in the desktop app. */
   slackTeams?: Record<string, string>;
   /**
-   * "local": the loopback listener (3120). "lan": the board's https address and home network (3121). Both need a
-   * signed-in admin on every API route.
-   * "internal": the tasks bridge and the runner, with a bearer token, /internal/ routes only.
+   * "lan": the board's https address and home network (3121), a signed-in admin on every API route (admins sign in on the
+   * kernel's admin listener, 3120). "internal": the tasks bridge, the runner and the kernel, with a bearer token, /internal/ only.
    */
-  mode?: "local" | "lan" | "internal";
+  mode?: "lan" | "internal";
+  /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in, and the approval page where every card is decided. */
+  adminUrl?: string;
   /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
   lan?: { url: string; googleConnect?: boolean };
   internalToken?: string;
@@ -96,16 +97,16 @@ export interface AppOptions {
   gatewayKey?: string;
   /** The model gateway (every listener: a raise_cap is applied where it is tapped): an approved raise_cap sets the new cap there. */
   gateway?: { url: string; token: string };
-  /** The kernel's record routes (lean-core 2d), with gateway_board_key: module write kinds' cards are shown here (decided by channel token) until 3a. */
+  /** The kernel's record routes (lean-core 2d), with gateway_board_key: module write kinds' cards are listed here (read-only). */
   kernel?: { url: string; token: string };
   /**
-   * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only: on "local", the owner's setup
-   * link and the welcome chat; on "internal", an account reset. Nothing else.
+   * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only, on "internal": the owner's setup
+   * link, the welcome chat and an account reset. Nothing else.
    */
   operatorKey?: string;
   /**
-   * Board accounts (docs/design/access.md): every route on "local" and "lan" needs an admin
-   * session with TOTP. Required there (or the `session` stub); "internal" uses it for resets.
+   * Board accounts (docs/design/access.md): every route on "lan" needs an admin session with TOTP. Required there (or the
+   * `session` stub); "internal" uses it for setup and resets.
    */
   accounts?: Accounts;
 }
@@ -209,7 +210,7 @@ export function checkRequest(req: Pick<IncomingMessage, "method" | "headers" | "
 
 export function createApp(opts: AppOptions): Server {
   const { paperclip: boardPc, store, log } = opts;
-  const mode = opts.mode ?? "local";
+  const mode = opts.mode ?? "lan";
   if (mode !== "internal" && !opts.accounts && !opts.session) throw new Error(`the ${mode} listener needs board accounts`);
 
   /**
@@ -317,23 +318,6 @@ export function createApp(opts: AppOptions): Server {
   const isChat = (i: Issue, ctx: { labels: Label[] }) => Boolean(i.labels?.some((l) => l.name === "chat") || i.labelIds?.some((id) => ctx.labels.find((l) => l.id === id)?.name === "chat"));
 
   /**
-   * Who may tap an approval on the board, and the stamp it carries: any ready admin's session (TOTP
-   * was checked at sign-in), stamped `account:<id>` from the session, never from the request. Never the operator's key.
-   */
-  function requireAdmin(req: IncomingMessage): string {
-    const s = perRequest.getStore()?.session;
-    if (s && s !== OPERATOR && s.role === "admin") return `account:${s.accountId}`;
-    log.warn({ peer: req.socket.remoteAddress, mode, account: s?.accountId }, "approval refused: no admin session");
-    throw new HttpError(403, "approve signed in as an admin, or in Telegram");
-  }
-
-  /** A typed reply ("approve WOR-184") decides from any admin's session, stamped `account:<id>`; never the operator's key. */
-  function replyStamp(): string | null {
-    const s = perRequest.getStore()?.session;
-    return s && s !== OPERATOR && s.role === "admin" ? `account:${s.accountId}` : null;
-  }
-
-  /**
    * The runner's own key (secret reviewer_key: held only by the runner and the board, never by agents, which can reach the
    * internal token): needed to file Tier 1, to record a Tier 0 run, and for the reviewer's verdicts.
    */
@@ -341,6 +325,11 @@ export function createApp(opts: AppOptions): Server {
   /** The internal token alone opens nothing: every route also names its caller (agents can read the token in their shell). */
   function requireRunner(req: IncomingMessage, what: string) {
     if (!runnerKeyed(req)) throw new HttpError(403, `only the runner ${what}`);
+  }
+  /** The operator's key (ops/setup.sh), on the internal listener only; it never decides or opens a session. */
+  function requireOperator(req: IncomingMessage, what: string) {
+    if (!opts.operatorKey || !keyMatches(req.headers["x-operator-key"], opts.operatorKey)) throw new HttpError(403, `only the operator ${what}`);
+    if (!opts.accounts) throw new HttpError(409, "no board accounts here");
   }
   /** The kernel (gateway_board_key): every channel reaches the owner's cards, decisions and notices only through it. */
   const kernelKeyed = (req: IncomingMessage) => Boolean(opts.gatewayKey && keyMatches(req.headers["x-gateway-key"], opts.gatewayKey));
@@ -388,19 +377,6 @@ export function createApp(opts: AppOptions): Server {
   async function followUp(a: Approval) {
     if (a.state === "approved" && BOARD_ACTIONS.includes(a.action)) await applyOnBoard(a);
     if (a.state === "rejected") await toldRejected(a);
-  }
-
-  /** A batch decided (all or nothing): each card is followed up on its own, one after another, as if tapped alone. */
-  async function decidedMany(r: BatchResult, via: string) {
-    if (!r.ok) throw new HttpError(409, r.reason);
-    log.info({ approvals: r.approvals.map((a) => a.id), state: r.approvals[0]?.state, via }, "approvals decided as a batch");
-    perRequest.exit(() => {
-      void (async () => {
-        for (const a of r.approvals) await followUp(a).catch((err) => log.warn({ approval: a.id, err: String(err) }, "batch follow-up failed"));
-      })();
-    });
-    const names = await bylines();
-    return { approvals: r.approvals.map((a) => shownApproval(names, a)) };
   }
 
   /**
@@ -1431,24 +1407,43 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
+      // ops/setup.sh (operator key): the owner's account and its one-time link, only while no owner exists.
+      method: "POST",
+      path: /^\/internal\/accounts\/setup$/,
+      handle: async (_m, body, _u, req) => {
+        requireOperator(req, "sets up the owner");
+        const { email, name } = parse(z.object({ email: z.string().email().max(200), name: z.string().max(100).default("") }).strict(), body);
+        return opts.accounts!.setup(email, name);
+      },
+    },
+    {
+      // ops/setup.sh's welcome chat (operator key): a new chat, written as the owner.
+      method: "POST",
+      path: /^\/internal\/owner\/welcome$/,
+      handle: async (m, body, u, req) => {
+        requireOperator(req, "posts the welcome chat");
+        const chats = routes.find((r) => r.method === "POST" && r.path.test("/api/chats"))!;
+        return perRequest.run({ session: OPERATOR }, () => chats.handle(m, body, u, req));
+      },
+    },
+    {
       // ops/setup.sh --reset <email> (operator key): the link goes to the owner's Telegram, never back to the caller.
       method: "POST",
       path: /^\/internal\/accounts\/reset$/,
       handle: async (_m, body, _u, req) => {
-        if (!opts.operatorKey || !keyMatches(req.headers["x-operator-key"], opts.operatorKey)) throw new HttpError(403, "only the operator resets an account");
-        if (!opts.accounts) throw new HttpError(409, "no board accounts here");
-        await opts.accounts.reset(parse(z.object({ email: z.string().email().max(200) }).strict(), body).email);
+        requireOperator(req, "resets an account");
+        await opts.accounts!.reset(parse(z.object({ email: z.string().email().max(200) }).strict(), body).email);
         return { ok: true, sent: "the link goes to the owner's Telegram" };
       },
     },
     {
-      // A channel's decision on one of the board's cards, spent and stamped by the kernel (lean-core 2f: a decision token bound
-      // to the card's digest). Only the kernel's key; `by` is one of the stamps a channel decision carries, never an account's.
+      // A decision on one of the board's cards, spent and stamped by the kernel: a channel's decision token (lean-core 2f) or an
+      // admin's tap on the kernel's approval page (account:<id>, 3a), each bound to the card's digest. Only the kernel's key.
       method: "POST",
       path: /^\/internal\/owner\/approvals\/decide$/,
       handle: async (_m, body, _u, req) => {
-        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel decides for a channel");
-        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/), digest: z.string().min(1).max(128), decision: z.enum(["approve", "reject"]), by: z.enum(["owner:telegram", "owner:slack", "owner:reply", "watcher", "stale:watcher"]), via: z.string().regex(/^[a-z]{1,16}$/) }).strict(), body);
+        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel decides the owner's cards");
+        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/), digest: z.string().min(1).max(128), decision: z.enum(["approve", "reject"]), by: z.union([z.enum(["owner:telegram", "owner:slack", "owner:reply", "watcher", "stale:watcher"]), z.string().regex(/^account:[\w-]{1,64}$/)]), via: z.string().regex(/^[a-z]{1,16}$/) }).strict(), body);
         const a = store.approvals.get(b.id);
         if (!a || a.digest !== b.digest) throw new HttpError(409, "this card changed since it was shown");
         return decided(store.approvals.decide(b.id, b.decision, b.by), b.by);
@@ -1571,7 +1566,7 @@ export function createApp(opts: AppOptions): Server {
   ];
 
   // Where OAuth sign-ins must start: the loopback board, reached from a laptop through an SSH tunnel (docs/setup.md).
-  const TUNNEL = "http://127.0.0.1:3120 through ssh -N -L 3120:127.0.0.1:3120 <you>@<host> from your laptop";
+  const TUNNEL = "http://127.0.0.1:3121 through ssh -N -L 3121:127.0.0.1:3121 <you>@<host> from your laptop";
   const googleViaBoard = mode === "lan" && !!opts.lan?.googleConnect && !!opts.lan.url.startsWith("https://");
 
   // ------------------------------------------------------------------ Settings (settings.ts)
@@ -1777,30 +1772,9 @@ export function createApp(opts: AppOptions): Server {
         return { count: items.length, items, approvals: store.approvals.pending().length };
       },
     },
-    // Approvals: the cards, open ones first, then the newest decided ones with their outcome.
+    // Approvals: the cards, open ones first, then the newest decided ones with their outcome. Read-only: every card is decided on
+    // the kernel's approval page (or in a channel).
     { method: "GET", path: /^\/api\/approvals$/, handle: async () => { const names = await bylines(); return { approvals: [...store.approvals.list(), ...(await kernelList("recent"))].map((a) => shownApproval(names, a)) }; } },
-    {
-      // One tap: approve = apply. The approver is the listener's owner check, never a field in the request.
-      method: "POST",
-      path: /^\/api\/approvals\/(A[0-9a-f]{8}|k-[0-9a-f]{16})\/(approve|reject)$/,
-      handle: async (m, _b, _u, req) => {
-        const by = requireAdmin(req);
-        // A module write kind's card is decided in a channel (its token) until the kernel's own page lands (3a).
-        if (KERNEL_ID.test(m[1]!)) throw new HttpError(409, "decide this card in Telegram (or your channel): the board decides it again once the kernel's approval page lands");
-        return decided(store.approvals.decide(m[1]!, m[2] === "approve" ? "approve" : "reject", by), by);
-      },
-    },
-    {
-      // Several of the owner's cards at once, as the board showed them (id and digest each, at most 10): all or nothing.
-      method: "POST",
-      path: /^\/api\/approvals\/batch\/(approve|reject)$/,
-      handle: async (m, body, _u, req) => {
-        const by = requireAdmin(req);
-        if (!batchesOn()) throw new HttpError(409, "batch approvals are off; decide each card");
-        const { items } = parse(z.object({ items: BatchItemsSchema }).strict(), body);
-        return decidedMany(store.approvals.decideMany(items, m[1] === "approve" ? "approve" : "reject", by), by);
-      },
-    },
     {
       // A new chat: with the agent named (body.agent or a leading @name), else Aiden.
       method: "POST",
@@ -1898,8 +1872,7 @@ export function createApp(opts: AppOptions): Server {
       // the owner's task for the Platform Engineer, whose commit becomes the tiered apply card (docs/design/settings-changes.md).
       method: "POST",
       path: /^\/api\/settings\/change$/,
-      handle: async (_m, body, _u, req) => {
-        requireAdmin(req);
+      handle: async (_m, body) => {
         const { changes } = parse(ChangesSchema, body);
         const { compiled, catalog } = readSources(settingsFiles());
         try {
@@ -1972,17 +1945,8 @@ export function createApp(opts: AppOptions): Server {
         const issue = await latest(pc, store, asked);
         const moved = issue.id !== asked.id ? { movedTo: issue.identifier } : {};
         // `brief`: the chat's send, which refetches the chat itself, so the reply skips building the whole task view.
-        const { body: text, answer, brief } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional(), brief: z.boolean().optional() }).strict(), body);
+        const { body: text, brief } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional(), brief: z.boolean().optional() }).strict(), body);
         const view = async () => (brief ? { identifier: issue.identifier } : issueView(issue.id));
-        // A tapped answer button (agent-written label) is only ever a message, never a decision.
-        // An exact typed reply decides an open approval on its task (or the one its card id or target names); it isn't posted.
-        const reply = parseReply(text);
-        const replyRef = reply ? reply.ref ?? issue.identifier : "";
-        const replyBy = reply && !answer && (reply.ref || reply.target || store.approvals.pendingOn(replyRef).length) ? replyStamp() : null;
-        if (reply && replyBy) {
-          const a = await decided(store.approvals.decideByReply(replyRef, reply.decision, replyBy, new Date(), reply.target), replyBy);
-          return { ...(await view()), ...moved, approval: a };
-        }
         // @-mentions: the agents named, other than the one this chat is with, get the message on their part.
         const task = await userTaskOf(issue, ctx);
         const own = issue.id === task?.id ? ctx.assignees.find((a) => a.kind === "assistant")?.key : issue.assigneeAgentId;
@@ -2235,31 +2199,19 @@ export function createApp(opts: AppOptions): Server {
   ];
 
   /**
-   * The session gate for every API route on "local" and "lan" (reads and file downloads included). Open: /api/session and
-   * Better Auth's own endpoints (sign-in, link claims, enrolment; accounts.ts lists which). The operator's key on the local
-   * listener only starts setup and posts the welcome chat. Returns true when it answered the request, else the session the
-   * board routes run under.
+   * The session gate for every API route on "lan" (reads and file downloads included). Open: /api/session only; signing in,
+   * claiming a link and enrolling happen on the kernel's admin listener (`adminUrl`). Returns true when it answered the
+   * request, else the session the board routes run under.
    */
   async function accountGate(req: IncomingMessage, res: ServerResponse, url: URL): Promise<true | BoardSession> {
     const accounts = opts.accounts!;
     const path = url.pathname;
-    if (path.startsWith("/api/auth/")) {
-      await accounts.handle(req, res, path.slice("/api/auth".length), "board", url.search);
-      return true;
-    }
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      send(res, 200, JSON.stringify({ mode, account, needsTotp: Boolean(who && who.account.role === "admin" && !who.ready), googleConnect: googleViaBoard }), "application/json");
+      send(res, 200, JSON.stringify({ mode, account, needsTotp: Boolean(who && who.account.role === "admin" && !who.ready), googleConnect: googleViaBoard, adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
-    const operator = mode === "local" && Boolean(opts.operatorKey && keyMatches(req.headers["x-operator-key"], opts.operatorKey));
-    if (operator && req.method === "POST" && path === "/api/accounts/setup") {
-      const { email, name } = parse(z.object({ email: z.string().email().max(200), name: z.string().max(100).default("") }).strict(), await readJson(req));
-      send(res, 200, JSON.stringify(await accounts.setup(email, name)), "application/json");
-      return true;
-    }
-    if (operator && req.method === "POST" && path === "/api/chats") return OPERATOR; // ops/setup.sh's welcome chat, as the owner
     if (!who) throw new HttpError(401, "sign in");
     if (!who.ready) throw new HttpError(403, who.account.role === "admin" ? "totp" : "this account has no board access");
     const a = accountRoutes.find((r) => r.method === req.method && r.path.test(path));
@@ -2278,6 +2230,7 @@ export function createApp(opts: AppOptions): Server {
     if (opts.session) {
       const session = await opts.session(req);
       if (!session) throw new HttpError(401, "sign in");
+      if (session.role !== "admin") throw new HttpError(403, "this account has no board access");
       return routeApi(req, res, url, session);
     }
     const session = await accountGate(req, res, url);
@@ -2320,7 +2273,7 @@ export function createApp(opts: AppOptions): Server {
    */
   async function handleGoogle(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (!opts.google) throw new HttpError(404, "Google sign-in isn't set up on the board (no google_auth_token)");
-    if (!googleViaBoard && (mode !== "local" || !loopbackPort(req.headers.host))) throw new HttpError(403, `connect Google from ${TUNNEL}`);
+    if (!googleViaBoard && !loopbackPort(req.headers.host)) throw new HttpError(403, `connect Google from ${TUNNEL}`);
     const callback = googleViaBoard ? `${opts.lan!.url}/google/callback` : `http://${String(req.headers.host).toLowerCase()}/google/callback`;
     try {
       if (url.pathname === "/google/connect") {
@@ -2367,7 +2320,7 @@ export function createApp(opts: AppOptions): Server {
     const auth = opts[key];
     const port = loopbackPort(req.headers.host);
     if (!auth) throw new HttpError(404, `${name} sign-in isn't set up on the board (no ${secret})`);
-    if (mode !== "local" || !port) throw new HttpError(403, `sign in to ${name} from ${TUNNEL}`);
+    if (!port) throw new HttpError(403, `sign in to ${name} from ${TUNNEL}`);
     const host = String(req.headers.host).toLowerCase();
     try {
       if (url.pathname === connect) {

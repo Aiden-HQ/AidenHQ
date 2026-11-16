@@ -33,12 +33,14 @@ export class SignInRequired extends Error {
 }
 
 export interface Session {
-  mode: "local" | "lan";
+  mode: "lan";
   account?: { id: string; email: string; name: string; role: "admin" | "user"; owner: boolean } | null;
   /** Signed in as an admin who hasn't set up an authenticator yet. */
   needsTotp?: boolean;
   /** Google's Connect works from this address (the board's https address). */
   googleConnect?: boolean;
+  /** The kernel's admin listener: sign-in, your password, and the approval page every card is decided on. */
+  adminUrl?: string | null;
 }
 
 export interface Account {
@@ -62,19 +64,6 @@ export interface AuthSession {
   current: boolean;
 }
 
-/** Better Auth's endpoints on the board (/api/auth/*): its errors come as { message }. */
-async function auth<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`/api/auth${path}`, {
-    method,
-    headers: { accept: "application/json", ...(method === "GET" ? {} : { "content-type": "application/json", "x-aidenhq-board": "1" }) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!res.ok) throw new Error(data?.message ?? data?.error ?? `${res.status}`);
-  return data as T;
-}
-
 export interface AppAdmins {
   app: string;
   host: string;
@@ -83,14 +72,6 @@ export interface AppAdmins {
 }
 
 export const accountsApi = {
-  signIn: (email: string, password: string) => auth<{ twoFactorRedirect?: boolean }>("POST", "/sign-in/email", { email, password }),
-  verifyTotp: (code: string) => auth("POST", "/two-factor/verify-totp", { code }),
-  enableTotp: (password: string) => auth<{ totpURI: string }>("POST", "/two-factor/enable", { password }),
-  setPassword: (token: string, newPassword: string) => auth("POST", "/reset-password", { token, newPassword }),
-  changePassword: (currentPassword: string, newPassword: string) => auth("POST", "/change-password", { currentPassword, newPassword, revokeOtherSessions: true }),
-  signOut: () => auth("POST", "/sign-out", {}),
-  /** Also slides the session cookie's expiry forward (Better Auth refreshes it here). */
-  refresh: () => auth("GET", "/get-session"),
   sessions: () => call<{ sessions: AuthSession[] }>("GET", "/api/accounts/sessions"),
   revokeSession: (id: string) => call("POST", `/api/accounts/sessions/${id}/revoke`, {}),
   list: () => call<{ accounts: Account[]; me: string }>("GET", "/api/accounts"),
@@ -103,8 +84,11 @@ export const accountsApi = {
   newLink: (id: string) => call<{ url: string | null }>("POST", `/api/accounts/${id}/link`, {}),
 };
 
+/** The kernel's admin listener (from /api/session): sign-in, and the approval page where every card is decided. */
+export const admin = { url: "" };
+
 export const api = {
-  session: () => call<Session>("GET", "/api/session"),
+  session: () => call<Session>("GET", "/api/session").then((s) => ((admin.url = s.adminUrl ?? ""), s)),
   board: () => call<Board>("GET", "/api/board"),
   chats: () => call<{ chats: ChatRow[]; agents: ChatAgent[] }>("GET", "/api/chats"),
   /** `peek`: a prefetch, which leaves the chat unread. */
@@ -119,8 +103,6 @@ export const api = {
   activity: (days = 7) => call<{ days: { day: string; items: ActivityItem[] }[] }>("GET", `/api/activity?days=${days}`),
   needsYou: () => call<NeedsYou>("GET", "/api/needs-you"),
   approvals: () => call<{ approvals: Approval[] }>("GET", "/api/approvals"),
-  decide: (id: string, decision: "approve" | "reject") => call<Approval>("POST", `/api/approvals/${encodeURIComponent(id)}/${decision}`, {}),
-  decideBatch: (items: { id: string; digest: string }[], decision: "approve" | "reject") => call<{ approvals: Approval[] }>("POST", `/api/approvals/batch/${decision}`, { items }),
   agents: () => call<Agents>("GET", "/api/agents"),
   /** The fleet without run history: the Agents page's first paint. */
   roster: () => call<{ roster: RosterAgent[] }>("GET", "/api/agents/roster"),
