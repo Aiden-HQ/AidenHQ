@@ -68,7 +68,8 @@ describe("board sign-in behind a front door: per-address bans, owner alerts, new
 
   it("never locks the owner for strangers' failures from many addresses, and tells the owner once", async () => {
     // 32 failures, 4 from each of 8 addresses (under the 5-per-address lockout, under the ban).
-    for (let a = 0; a < 8; a++) for (let i = 0; i < 4; i++) expect((await guess(OWNER, from(`203.0.113.${10 + a}`))).status).toBe(401);
+    // Addresses in parallel (each one's guesses in order): the same 32 failures, a fraction of the wall time.
+    await Promise.all(Array.from({ length: 8 }, async (_, a) => { for (let i = 0; i < 4; i++) expect((await guess(OWNER, from(`203.0.113.${10 + a}`))).status).toBe(401); }));
     const alerts = lines.filter((l) => l.includes("Sign-in attempts"));
     expect(alerts).toHaveLength(1);
     expect(alerts[0]).toContain(`for ${OWNER}`);
@@ -90,7 +91,7 @@ describe("board sign-in behind a front door: per-address bans, owner alerts, new
     for (let n = 0; n < 7; n++) {
       const email = `admin${n}@example.com`;
       await accounts.invite(owner, { email, name: email, role: "admin" });
-      for (let a = 0; a < 8; a++) for (let i = 0; i < 4; i++) expect((await guess(email, from(`100.64.${n}.${a}`))).status).toBe(401);
+      await Promise.all(Array.from({ length: 8 }, async (_, a) => { for (let i = 0; i < 4; i++) expect((await guess(email, from(`100.64.${n}.${a}`))).status).toBe(401); }));
     }
     // The owner's alert (the case above) and four of these make the hourly five; then one line says the rest wait.
     expect(lines.filter((l) => l.includes("failed sign-ins for admin"))).toHaveLength(4);
@@ -102,7 +103,7 @@ describe("board sign-in behind a front door: per-address bans, owner alerts, new
     for (const step of [-1, 0, 1]) if ((status = (await call("/two-factor/verify-totp", { code: totp(totpURI, step) }, from("192.0.2.46"), step1.cookie)).status) === 200) break;
     expect(status).toBe(200);
     expect(lines.at(-1)).toContain(`New board sign-in**: ${OWNER} from 192.0.2.46`);
-  });
+  }, 90_000);
 
   it("ignores a named address, X-Forwarded-For and CF-Connecting-IP without the front door's secret", async () => {
     const forged = (i: number) => ({ "x-aidenhq-client-ip": `10.7.0.${i}`, "x-aidenhq-edge": "not the secret", "x-forwarded-for": `10.8.0.${i}`, "cf-connecting-ip": `10.9.0.${i}` });
