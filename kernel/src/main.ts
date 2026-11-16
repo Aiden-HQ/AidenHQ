@@ -121,7 +121,8 @@ if (accounts) {
   void accounts.syncGate();
   setInterval(() => void accounts.syncGate(), 60_000).unref();
 }
-const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", boardUrl?.origin ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+// The board's origins: its front door (BOARD_LAN_URL) and its loopback addresses (the SSH tunnel, local mode).
+const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://127.0.0.1:3121", "http://localhost:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
 const admin = accounts && createAdmin({ accounts, uiOrigins, cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });

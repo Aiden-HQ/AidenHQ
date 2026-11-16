@@ -340,6 +340,10 @@ validate() {
   if [ -f kernel/src/admin.ts ] && COMPOSE_FILE="$files" docker compose config board 2>/dev/null | grep -qE '^[[:space:]]+published: "?3120"?$'; then
     why="the board still publishes 3120 (compose.override.yaml?): the kernel's admin listener binds it"; return 1
   fi
+  # The kernel's sign-in listener binds 127.0.0.1:3129 (lean-core 3g): the same for a host override that still publishes it.
+  if [ -f kernel/src/signin.ts ] && COMPOSE_FILE="$files" docker compose config board 2>/dev/null | grep -qE '^[[:space:]]+published: "?3129"?$'; then
+    why="the board still publishes 3129 (compose.override.yaml?): the kernel's sign-in listener binds it; drop that port from the override"; return 1
+  fi
   # The authority diff (kernel/src/loader/authority-cli.ts): one `apply authority:` line per module change. A hand apply is
   # the owner's own act, so it is printed, not filed; an unreadable diff refuses.
   if [ -f kernel/src/loader/authority-cli.ts ]; then
