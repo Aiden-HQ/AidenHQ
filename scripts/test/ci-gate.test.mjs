@@ -187,6 +187,20 @@ test("the Review step skips a tiny PR, never a delta, and picks depth from criti
   assert.match(verdict(0, review([]), "", { mode: "full", depth: "normal", critical: "src/db/q.ts" }).body, /Touches a critical path: `src\/db\/q.ts`/);
 });
 
+test("lockfile changes: a swapped source, a spoofed name or an unreadable format is critical; a hoist is not; names are plain", async () => {
+  const { lockChanges, lockSummary } = await import("../../modules/core/templates/ci/.github/code-review.mjs");
+  const a = { version: "1.0.0", resolved: "https://registry.example.com/a-1.0.0.tgz", integrity: "sha512-A" };
+  const lock = (packages, v = 3) => JSON.stringify({ lockfileVersion: v, packages: { "": {}, ...packages } });
+  const base = lock({ "node_modules/a": a });
+  const sum = (after) => lockSummary([{ path: "package-lock.json", changes: lockChanges(base, after) }]);
+  assert.deepEqual(sum(lock({ "node_modules/x/node_modules/a": a })), { text: "", critical: false }, "the same package moved");
+  assert.equal(sum(lock({ "node_modules/x/node_modules/a": { ...a, resolved: "https://evil.example.com/a.tgz", integrity: "sha512-E" } })).critical, true, "same version, another source");
+  assert.match(sum(lock({ "node_modules/a": a, "node_modules/evil": { ...a, name: "a" } })).text, /added \(1\): evil@1\.0\.0/, "an entry's own name field is ignored");
+  assert.match(sum(JSON.stringify({ lockfileVersion: 1, dependencies: { a: { version: "1.0.0" } } })).text, /lockfile format \(2\): no packages map, lockfileVersion 3 -> 1/);
+  const odd = sum(lock({ "node_modules/a": a, "node_modules/\n::error::x": { version: "1" } }));
+  assert.ok(odd.critical && !/\n::/.test(odd.text), "a name can't start a workflow command line");
+});
+
 // The Review step around the base's code-review.mjs (a stub that records its env and plays the next exit code).
 test("the Review step runs the base's reviewer: the higher effort on a critical path, one retry without a verdict, a refusal final, a base without it skipped", () => {
   const script = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps.find((s) => s.name === "Review").run;

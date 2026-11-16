@@ -142,24 +142,35 @@ export function parse(message, events, root) {
 }
 
 /**
- * What a package-lock.json change does, by package (`packages` entries, lockfile v2/v3): added (a name the old lock didn't
- * have), changed (an entry whose version, resolved or integrity changed, or a known name at a new version), removed, and
- * scripts (an entry that now has hasInstallScript). Hoisting a package to another path at the same version is nothing.
+ * What a package-lock.json change does, by `packages` entry (lockfile v2/v3), each named by its path (an entry's own `name`
+ * field is the PR's to set, so it is never trusted): added (a name the old lock didn't have), changed (a new version, or the
+ * same version from another `resolved` or `integrity`), removed, scripts (an entry that now has hasInstallScript) and format
+ * (no `packages` map, or another lockfileVersion: nothing below can be read from it). The same package at the same version
+ * and source moved to another path (hoisting) is nothing. Names and versions are reduced to a plain charset (they reach the
+ * job log and the reviewer).
  */
 export function lockChanges(before, after) {
-  const pkgs = (t) => { const j = t ? JSON.parse(t) : {}; return Object.entries(j.packages ?? {}).filter(([k]) => k); };
-  const name = (k, v) => v.name ?? k.slice(k.lastIndexOf("node_modules/") + (k.includes("node_modules/") ? 13 : 0));
-  const old = new Map(pkgs(before)), now = new Map(pkgs(after));
-  const seen = new Set([...old].map(([k, v]) => `${name(k, v)}@${v.version}`)), names = new Set([...old].map(([k, v]) => name(k, v)));
-  const out = { added: [], changed: [], removed: [], scripts: [] };
+  const b = before ? JSON.parse(before) : {}, a = after ? JSON.parse(after) : {};
+  const safe = (x) => String(x).replace(/[^\w@./+~^:-]/g, "?").slice(0, 120);
+  const name = (k) => safe(k.includes("node_modules/") ? k.slice(k.lastIndexOf("node_modules/") + 13) : k);
+  const id = (k, v) => `${name(k)}@${safe(v?.version)}`;
+  const sig = (k, v) => `${id(k, v)} ${v?.resolved ?? ""} ${v?.integrity ?? ""}`;
+  const entries = (j) => (j.packages && typeof j.packages === "object" ? Object.entries(j.packages).filter(([k]) => k) : []);
+  const old = new Map(entries(b)), now = new Map(entries(a));
+  const oldSigs = new Set([...old].map(([k, v]) => sig(k, v))), nowSigs = new Set([...now].map(([k, v]) => sig(k, v)));
+  const names = new Set([...old].map(([k]) => name(k)));
+  const out = { added: [], changed: [], removed: [], scripts: [], format: [] };
+  if (after && !(a.packages && typeof a.packages === "object")) out.format.push("no packages map");
+  if (before && after && b.lockfileVersion !== a.lockfileVersion) out.format.push(`lockfileVersion ${safe(b.lockfileVersion)} -> ${safe(a.lockfileVersion)}`);
   for (const [k, v] of now) {
-    const id = `${name(k, v)}@${v.version}`, was = old.get(k);
-    if (v.hasInstallScript && !was?.hasInstallScript) out.scripts.push(id);
-    if (was) { if (was.version !== v.version || was.resolved !== v.resolved || was.integrity !== v.integrity) out.changed.push(`${name(k, v)} ${was.version} -> ${v.version}`); }
-    else if (!names.has(name(k, v))) out.added.push(id);
-    else if (!seen.has(id)) out.changed.push(`${name(k, v)} -> ${v.version}`);
+    const was = old.get(k);
+    if (v?.hasInstallScript && !was?.hasInstallScript) out.scripts.push(id(k, v));
+    if (oldSigs.has(sig(k, v))) continue;
+    if (was) out.changed.push(safe(was.version) === safe(v?.version) ? `${id(k, v)} from another source` : `${name(k)} ${safe(was.version)} -> ${safe(v?.version)}`);
+    else if (!names.has(name(k))) out.added.push(id(k, v));
+    else out.changed.push(`${id(k, v)} (new version or source)`);
   }
-  for (const [k, v] of old) if (!now.has(k) && ![...now].some(([k2, v2]) => name(k2, v2) === name(k, v) && v2.version === v.version)) out.removed.push(`${name(k, v)}@${v.version}`);
+  for (const [k, v] of old) if (!now.has(k) && !nowSigs.has(sig(k, v))) out.removed.push(id(k, v));
   for (const l of Object.values(out)) l.splice(0, l.length, ...new Set(l));
   return out;
 }
@@ -170,9 +181,9 @@ export function lockSummary(files) {
   let critical = false;
   for (const { path, changes: c } of files) {
     const part = (label, l) => (l.length ? [`  ${label} (${l.length}): ${l.slice(0, 40).join(", ")}${l.length > 40 ? ", …" : ""}`] : []);
-    const body = [...part("added", c.added), ...part("changed", c.changed), ...part("install scripts", c.scripts), ...part("removed", c.removed)];
-    if (body.length) lines.push(`${path}:`, ...body);
-    critical ||= c.added.length + c.changed.length + c.scripts.length > 0;
+    const body = [...part("lockfile format", c.format), ...part("added", c.added), ...part("changed", c.changed), ...part("install scripts", c.scripts), ...part("removed", c.removed)];
+    if (body.length) lines.push(`${String(path).replace(/[^\w@./+~-]/g, "?")}:`, ...body);
+    critical ||= c.format.length + c.added.length + c.changed.length + c.scripts.length > 0;
   }
   return { text: lines.join("\n"), critical };
 }
