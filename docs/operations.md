@@ -84,14 +84,16 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
 
 ## Backups
 
-`scripts/backup.sh [output-dir] [--plain]` writes `aidenhq-<timestamp>.tar.gz` (`.tar` with `--plain`) with the whole
-data directory (Paperclip, the board with its accounts and `auth.secret`, the gateway ledger, apps-mcp, ops-mcp,
+`scripts/backup.sh [output-dir] [--plain]` writes a directory `aidenhq-<timestamp>/` of `.tar.gz` parts (`.tar` with
+`--plain`), each streamed straight to its file, with the whole data directory (Paperclip, the board with its accounts and `auth.secret`, the gateway ledger, apps-mcp, ops-mcp,
 slack-live, the apps node's state), the runner's state dir, every `app-*` volume with its labels, the YAML config and
 the instance repo as a git bundle. Every SQLite database is also copied online through SQLite's backup API, and
 restore puts that copy over the file copy. Files are read through a container, so no sudo is needed. While Paperclip
 runs, its live database is left out and its hourly dumps carry it; for a complete Paperclip database, stop the stack
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
-vault and the notes vault are not included. The archive holds `auth.secret`, so it is mode 0600.
+vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
+unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
+Postgres on 2026-11-16). Each successful apply prunes build cache and dangling images older than 48 hours.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the runner are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be

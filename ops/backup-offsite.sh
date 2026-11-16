@@ -31,7 +31,7 @@ export RESTIC_REPOSITORY="$url" RESTIC_PASSWORD_FILE="$secrets/restic_password"
 
 staging=backups/offsite
 mkdir -p "$staging"
-rm -f "$staging"/aidenhq-*.tar
+rm -rf "$staging"/aidenhq-*
 scripts/backup.sh "$staging" --plain
 
 "$restic" cat config >/dev/null 2>&1 || "$restic" init

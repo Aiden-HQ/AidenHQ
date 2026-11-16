@@ -5,14 +5,14 @@
 # alone (remove one with `docker volume rm` first to restore it). Files are written through a container, so their
 # owners come back as they were.
 #
-#   scripts/restore.sh backups/aidenhq-YYYYmmdd-HHMMSS.tar.gz   (or .tar)
+#   scripts/restore.sh backups/aidenhq-YYYYmmdd-HHMMSS   (the directory scripts/backup.sh wrote)
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
-archive="${1:?usage: scripts/restore.sh <backup.tar.gz>}"
-[ -f "$archive" ] || { echo "error: $archive not found" >&2; exit 1; }
-archive="$(cd "$(dirname "$archive")" && pwd)/$(basename "$archive")"
+work="${1:?usage: scripts/restore.sh <backup-dir>}"
+[ -d "$work" ] || { echo "error: $work is not a backup directory (an older .tar archive needs the restore.sh that made it)" >&2; exit 1; }
+work="$(cd "$work" && pwd)"
 env_file="${AIDENHQ_ENV_FILE:-.env}"
 [ -f "$env_file" ] && { set -a; . "$env_file"; set +a; }
 IMG=postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f # as scripts/backup.sh
@@ -32,11 +32,8 @@ data="${AIDENHQ_DATA_DIR:-./data}"
 config="${AIDENHQ_CONFIG_DIR:-./config}"
 mkdir -p "$data"
 data="$(cd "$data" && pwd)"
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-tar -C "$work" -xf "$archive"
 [ -f "$work/MANIFEST" ] || { echo "error: not an AidenHQ backup" >&2; exit 1; }
-grep -q '^format=2$' "$work/MANIFEST" || {
+grep -q '^format=3$' "$work/MANIFEST" || {
   echo "error: this backup was made by an older scripts/backup.sh; restore it with that version's restore.sh" >&2; exit 1; }
 cat "$work/MANIFEST"
 stamp="$(date +%Y%m%d-%H%M%S)"
@@ -45,14 +42,15 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 # the file copy's owner) and drop the file copy's -wal/-shm, which belong to the torn copy.
 restore_tree() { # name dir
   local name="$1" dir="$2"
-  [ -f "$work/$name.tar" ] || return 0
+  local part; part="$(ls "$work/$name".tar* 2>/dev/null | head -1)"
+  [ -n "$part" ] || return 0
   mkdir -p "$dir"
-  docker run --rm -v "$dir:/d" -v "$work:/b:ro" -e NAME="$name" -e ASIDE="/d/.pre-restore-$stamp" "$IMG" sh -euc '
-    for top in $(tar -tf "/b/$NAME.tar" | sed -n "s|^\./\([^/][^/]*\).*|\1|p" | sort -u); do
+  docker run --rm -v "$dir:/d" -v "$work:/b:ro" -e PART="/b/$(basename "$part")" -e NAME="$name" -e ASIDE="/d/.pre-restore-$stamp" "$IMG" sh -euc '
+    for top in $(tar -tf "$PART" | sed -n "s|^\./\([^/][^/]*\).*|\1|p" | sort -u); do
       [ -e "/d/$top" ] || continue
       mkdir -p "$ASIDE"; mv "/d/$top" "$ASIDE/"
     done
-    tar -C /d -xpf "/b/$NAME.tar"
+    tar -C /d -xpf "$PART"
     [ -d "/b/$NAME.sqlite" ] || exit 0
     cd "/b/$NAME.sqlite"
     find . -type f | while read -r f; do
@@ -68,16 +66,16 @@ restore_tree data "$data"
 state="$(sed -n 's/^runner_state=//p' "$work/MANIFEST")"
 [ -n "$state" ] && restore_tree runner "$state"
 
-for t in "$work"/volumes/*.tar; do
+for t in "$work"/volumes/*.tar*; do
   [ -f "$t" ] || continue
-  v="$(basename "$t" .tar)"
+  v="$(basename "$t")"; v="${v%.tar.gz}"; v="${v%.tar}"
   if docker volume inspect "$v" >/dev/null 2>&1; then
     echo "Volume $v exists, left alone (docker volume rm $v, then restore again, to replace it)"; continue
   fi
   labels=()
   while IFS= read -r l; do labels+=(--label "$l"); done < <(jq -r 'to_entries[]? | "\(.key)=\(.value)"' "$work/volumes/$v.labels.json")
   docker volume create "${labels[@]}" "$v" >/dev/null
-  docker run --rm -i -v "$v:/v" "$IMG" tar -C /v -xpf - <"$t"
+  docker run --rm -v "$v:/v" -v "$work/volumes:/b:ro" "$IMG" tar -C /v -xpf "/b/$(basename "$t")"
   echo "Volume $v restored"
 done
 

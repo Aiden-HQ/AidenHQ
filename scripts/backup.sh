@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Back up this host's AidenHQ state into one archive:
+# Back up this host's AidenHQ state into one directory of parts, each streamed straight to its file (no staging copy):
 #   data      the whole data dir: Paperclip, the board (with its accounts, auth.db, and auth.secret), the gateway ledger,
 #             apps-mcp, ops-mcp, slack-live, the apps node's state and the rest. While Paperclip runs, its live database
 #             folder is left out; its hourly dumps (paperclip/instances/*/data/backups) carry it.
@@ -11,10 +11,12 @@
 # Every SQLite database in data and runner is also copied online (SQLite's backup API); restore puts that copy over the
 # file copy. Files are read through a container, so root-owned ones (the apps node's state) are included without sudo.
 # Not included: the secret vault and the notes vault (ops/backup-offsite.sh sends the vault's ciphertext off-host).
-# The archive holds auth.secret and the apps node's key, so it is 0600.
+# The backup holds auth.secret and the apps node's key, so it is 0700.
+# It refuses to start unless the output filesystem has 1.2x the sources' size plus 20 GB free: a full disk takes
+# Paperclip's Postgres down with it.
 #
-#   scripts/backup.sh [output-dir] [--plain]   → <output-dir>/aidenhq-YYYYmmdd-HHMMSS.tar.gz (.tar with --plain, for
-#                                                restic, which compresses and deduplicates itself)
+#   scripts/backup.sh [output-dir] [--plain]   → <output-dir>/aidenhq-YYYYmmdd-HHMMSS/ with <name>.tar.gz parts (.tar with
+#                                                --plain, for restic, which compresses and deduplicates itself)
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,16 +32,41 @@ state="${state:-~/.local/state/aidenhq-runner}"; state="${state/#\~/$HOME}"
 out_dir="${args[0]:-$repo/backups}"
 mkdir -p "$out_dir"
 stamp="$(date +%Y%m%d-%H%M%S)"
-archive="$out_dir/aidenhq-$stamp.tar$([ -n "$plain" ] || echo .gz)"
-work="$(mktemp -d)"
+final="$out_dir/aidenhq-$stamp"
+work="$out_dir/.aidenhq-$stamp.part"
+ext=.tar.gz; [ -z "$plain" ] || ext=.tar
 trap 'rm -rf "$work"' EXIT
+trap 'exit 130' INT TERM
 # Any small image with tar, already pinned: the warehouse's Postgres (scripts/restore.sh uses the same).
 IMG=postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
 
 running="$(docker compose --env-file "$env_file" ps --status running --services 2>/dev/null || true)"
 paperclip_running=no; echo "$running" | grep -qx paperclip && paperclip_running=yes
 
-echo "Backing up to $archive"
+# Volumes to copy: a Postgres cluster that a running container uses is skipped.
+vols=()
+for v in $(docker volume ls -q --filter name='^app-'); do
+  if [ -n "$(docker ps -q --filter volume="$v")" ] && docker run --rm -v "$v:/v:ro" "$IMG" test -f /v/PG_VERSION; then
+    echo "  volume $v: a live Postgres cluster, skipped (its app's dumps carry it)"
+  else vols+=("$v"); fi
+done
+
+# Refuse to start without room: the sources' size (read in a container, so root-owned files count) x1.2 plus 20 GB.
+size_kb() { docker run --rm -v "$1:/d:ro" "$IMG" du -sk "${@:2}" /d 2>/dev/null | cut -f1; }
+need_kb=0
+if [ "$paperclip_running" = yes ]; then need_kb=$((need_kb + $(size_kb "$data" '--exclude=/d/paperclip/instances/*/db')))
+else need_kb=$((need_kb + $(size_kb "$data"))); fi
+[ -d "$state" ] && need_kb=$((need_kb + $(size_kb "$state")))
+for v in "${vols[@]}"; do need_kb=$((need_kb + $(size_kb "$v")))
+done
+need_kb=$((need_kb * 12 / 10 + 20 * 1024 * 1024))
+free_kb="$(df -Pk "$out_dir" | awk 'NR==2 {print $4}')"
+echo "Needs $((need_kb / 1048576)) GB free in $out_dir, has $((free_kb / 1048576)) GB"
+[ "$free_kb" -ge "$need_kb" ] || { echo "error: not enough free space in $out_dir; free some or pass another output dir" >&2; exit 1; }
+
+umask 077
+mkdir "$work"
+echo "Backing up to $final"
 
 # tar in a container, to stdout. A live tree changes while it is read: GNU tar exits 1 for "file changed as we read it",
 # which is fine here (SQLite comes from the online copies, Paperclip from its dumps); 2 and up is a real failure.
@@ -48,11 +75,13 @@ ctar() { # docker run args... -- tar args...
   [ "$s" -le 1 ] || { echo "tar failed (exit $s)" >&2; return "$s"; }
 }
 
-# A directory as <name>.tar (read in a container), plus an online copy of each SQLite database in it under <name>.sqlite/.
+pack() { if [ -n "$plain" ]; then cat; else gzip; fi; }
+
+# A directory as <name>.tar[.gz] (read in a container, streamed to its file), plus an online copy of each SQLite database in it under <name>.sqlite/.
 snapshot() { # name dir [tar --exclude patterns...]
   local name="$1" dir="$2"; shift 2
   [ -d "$dir" ] || { echo "  $name: $dir is missing, skipped"; return 0; }
-  ctar -v "$dir:/d:ro" "$IMG" tar -C /d --warning=no-file-changed --exclude='./.pre-restore-*' "${@/#/--exclude=}" -cf - . >"$work/$name.tar"
+  ctar -v "$dir:/d:ro" "$IMG" tar -C /d --warning=no-file-changed --exclude='./.pre-restore-*' "${@/#/--exclude=}" -cf - . | pack >"$work/$name$ext"
   node --disable-warning=ExperimentalWarning -e '
     const { DatabaseSync, backup } = require("node:sqlite");
     const fs = require("node:fs"), path = require("node:path");
@@ -95,12 +124,9 @@ snapshot runner "$state"
 
 # App volumes, each with its labels.
 mkdir -p "$work/volumes"
-for v in $(docker volume ls -q --filter name='^app-'); do
-  if [ -n "$(docker ps -q --filter volume="$v")" ] && docker run --rm -v "$v:/v:ro" "$IMG" test -f /v/PG_VERSION; then
-    echo "  volume $v: a live Postgres cluster, skipped (its app's dumps carry it)"; continue
-  fi
+for v in "${vols[@]}"; do
   docker volume inspect -f '{{json .Labels}}' "$v" >"$work/volumes/$v.labels.json"
-  ctar -v "$v:/v:ro" "$IMG" tar -C /v --warning=no-file-changed -cf - . >"$work/volumes/$v.tar"
+  ctar -v "$v:/v:ro" "$IMG" tar -C /v --warning=no-file-changed -cf - . | pack >"$work/volumes/$v$ext"
   echo "  volume $v"
 done
 
@@ -116,8 +142,6 @@ for f in system.yaml routing.yaml paperclip.yaml runner.yaml; do
   [ -f "$config/$f" ] && cp "$config/$f" "$work/config/"
 done
 
-printf 'format=2\ncreated=%s\nhost=%s\npaperclip_running=%s\nrunner_state=%s\n' "$stamp" "$(hostname)" "$paperclip_running" "$state" >"$work/MANIFEST"
-umask 077
-if [ -n "$plain" ]; then tar -C "$work" -cf "$archive.part" .; else tar -C "$work" -cf - . | gzip >"$archive.part"; fi
-mv "$archive.part" "$archive"
-echo "Done: $archive ($(du -h "$archive" | cut -f1))"
+printf 'format=3\ncreated=%s\nhost=%s\npaperclip_running=%s\nrunner_state=%s\n' "$stamp" "$(hostname)" "$paperclip_running" "$state" >"$work/MANIFEST"
+mv "$work" "$final"
+echo "Done: $final ($(du -sh "$final" | cut -f1))"
