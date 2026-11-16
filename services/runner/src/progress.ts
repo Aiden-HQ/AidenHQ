@@ -3,7 +3,7 @@
 // test run for WINDOW, or one file read READS times with no edit between, stops the job; time spent sleeping or watching
 // CI doesn't count toward the window and extends the deadline (hard maximum HARD_MAX times the base) once something is
 // committed to wait on.
-import { execFile } from "node:child_process";
+import { git as taskGit } from "./git.mjs";
 
 export const WINDOW_MS = 35 * 60_000;
 const READS = 20;
@@ -89,19 +89,26 @@ export function namedRefs(text: string): { shas: string[]; branches: string[] } 
   return { shas: [...new Set(shas)], branches: [...new Set(branches)] };
 }
 
-const git = (cwd: string, ...args: string[]) => new Promise<boolean>((done) => execFile("git", args, { cwd, timeout: 60_000 }, (err) => done(!err)));
+// The repositories are an agent's clones and the refs come from a brief: every call goes through git.mjs's hardened git
+// (no hooks or clone config, ceiling dirs), after refs are checked to be plain names, and operands follow `--`.
+const git = (cwd: string, ...args: string[]) => taskGit(cwd, ...args).then(() => true, () => false);
 
-/** The first commit or branch the brief names that none of these repositories (paths) has, as one line; "" when all exist. */
+/** The first commit or branch the brief names that none of these repositories (paths) has (or that isn't a plain name), as one line; "" when all exist. */
 export async function staleRef(text: string, paths: string[]): Promise<string> {
   const { shas, branches } = namedRefs(text);
+  const where = paths.length > 1 ? "any of the task's repositories" : "the repository";
   const anywhere = async (ok: (p: string) => Promise<boolean>) => {
     for (const p of paths) if (await ok(p)) return true;
     return false;
   };
-  for (const sha of shas) if (!(await anywhere((p) => git(p, "cat-file", "-e", `${sha}^{commit}`).then((ok) => ok || git(p, "fetch", "-q", "origin", sha))))) return `the brief names commit \`${sha}\`, which isn't in ${paths.length > 1 ? "any of the task's repositories" : "the repository"}`;
+  for (const sha of shas) {
+    if (!/^[0-9a-f]{7,40}$/.test(sha)) return `the brief names \`${sha}\`, which isn't a commit id`;
+    if (!(await anywhere((p) => git(p, "cat-file", "-e", `${sha}^{commit}`).then((ok) => ok || git(p, "fetch", "-q", "origin", "--", sha))))) return `the brief names commit \`${sha}\`, which isn't in ${where}`;
+  }
   for (const b of branches) {
-    const has = (p: string) => git(p, "rev-parse", "--verify", "--quiet", `refs/heads/${b}`).then((ok) => ok || git(p, "ls-remote", "--exit-code", "--heads", "origin", b));
-    if (!(await anywhere(has))) return `the brief names branch \`${b}\`, which doesn't exist in ${paths.length > 1 ? "any of the task's repositories" : "the repository"}`;
+    if (b.startsWith("-") || !paths[0] || !(await git(paths[0], "check-ref-format", "--branch", b))) return `the brief names \`${b}\`, which isn't a branch name`;
+    const has = (p: string) => git(p, "rev-parse", "--verify", "--quiet", `refs/heads/${b}`).then((ok) => ok || git(p, "ls-remote", "--exit-code", "--heads", "origin", "--", b));
+    if (!(await anywhere(has))) return `the brief names branch \`${b}\`, which doesn't exist in ${where}`;
   }
   return "";
 }
