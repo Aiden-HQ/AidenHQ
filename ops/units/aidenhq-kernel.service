@@ -1,5 +1,5 @@
 [Unit]
-Description=AidenHQ kernel (kernel/src/main.ts): the model gateway and the tool proxy
+Description=AidenHQ kernel (kernel/src/main.ts): the model gateway, the tool proxy and the jobs
 After=network-online.target
 
 [Service]
@@ -14,6 +14,9 @@ ExecStart=/usr/bin/env node --disable-warning=ExperimentalWarning ${AIDENHQ_DIR}
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5
+# A stop or restart signals the kernel only: the jobs it started keep running (their own process groups) and the next kernel
+# adopts them from kernel.db (kernel/src/jobs.ts).
+KillMode=process
 
 [Install]
 WantedBy=default.target

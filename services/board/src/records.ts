@@ -68,7 +68,10 @@ export type Records = {
   list(state: "owner" | "pending" | "recent" | "finished", opts?: { task?: string; limit?: number }): Promise<Approval[]>;
   /** The ids of the tasks with a record waiting on the owner. */
   awaiting(): Promise<Set<string>>;
+  /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
+  advisories(): Promise<Advisory[]>;
 };
+export type Advisory = { id: string; module: string; severity: string; fixed: string; summary: string; url: string };
 
 export function kernelRecords(k: { url: string; token: string } | undefined, log?: { warn(o: object, m: string): void }): Records {
   let down = false;
@@ -86,5 +89,10 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
       return [];
     }
   };
-  return { list, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)) };
+  const advisories = async (): Promise<Advisory[]> => {
+    if (!k) return [];
+    const res = await fetch(`${k.url}/v1/advisories`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
+    return res?.ok ? (((await res.json()) as { advisories: Advisory[] }).advisories ?? []) : [];
+  };
+  return { list, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories };
 }

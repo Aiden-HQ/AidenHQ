@@ -90,8 +90,8 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
   set-password link from an app admin). The gate's auth listener is 3129 (loopback; `X-AidenHQ-Gate` =
   `gate_board_secret`); app hosts get host-only `__Host-` cookies through a one-time handoff, never a shared cookie.
   Engineer jobs never see the
-  secrets dir, the data dir, the Docker and tailscaled sockets or `/run/user/<uid>` (`gcp.hidden` in
-  `services/runner/src/config.mjs`). Run `scripts/verify-security.sh` on the host after exposure changes. See
+  secrets dir, the data dir, the Docker and tailscaled sockets or `/run/user/<uid>` (`hidden` in
+  `kernel/src/sandbox.ts`). Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
 - **Approval records live in the kernel** (`kernel/src/records.ts`, `kinds.ts`): the runner files its plan and card args, the
@@ -130,9 +130,11 @@ after it is merged and that instance's owner bumps the pin.
    config changed. Force-recreate a service (`docker compose up -d --force-recreate <svc>`) only after changing a file it
    reads once at start outside compose (a secret, e.g. a rotated token). Each apply prints `apply timing: <phase> <s>s`.
 
-Runner restarts never interrupt agents: jobs run detached (`KillMode=process`) and the next runner adopts them.
-`ops/apply-config.sh` sends SIGUSR2 (`systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`); the runner
-exits once nothing is half done and systemd restarts it. See [docs/operations.md](docs/operations.md).
+Restarts never interrupt agents: the kernel runs Engineer jobs detached (`KillMode=process`, `kernel/src/jobs.ts`) and the
+next kernel adopts them from `kernel.db`; the runner dispatches through `/v1/jobs` and the next runner follows them again.
+`ops/apply-config.sh` sends SIGUSR2 to the runner (`systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`) and
+restarts the kernel when its code changed; each exits once nothing is half done and systemd restarts it. See
+[docs/operations.md](docs/operations.md).
 
 Operating an instance: improve the system, don't babysit the agents. When an agent's work goes wrong, fix the source
 (handbook rule, shared section, gate, test, tier) so it never recurs, and let the fleet's own gates (CI, reviewers,

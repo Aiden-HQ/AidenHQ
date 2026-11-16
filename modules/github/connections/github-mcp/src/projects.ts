@@ -4,6 +4,7 @@
 import { createSign } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { scrubProblems } from "./scrub.js";
 
 const API = "https://api.github.com";
 const PERMISSIONS = { organization_projects: "read", issues: "read", pull_requests: "read" };
@@ -41,6 +42,25 @@ export function productTarget(roles: readonly string[] | undefined, configured: 
   const m = configured.trim().match(/^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/);
   if (!m) throw new Error("no product repo is configured (setting product_repo)");
   return [m[1]!, m[2]!];
+}
+
+/**
+ * A product-bug report ready to file upstream: the body with its evidence and where it came from as opaque ids (spec §6.9a,
+ * scrub.ts originIds), the whole final text checked by the owner-data scrub. Throws with the matches; nothing is sent.
+ */
+export function upstreamReport(
+  a: { fingerprint: string; title: string; body: string; evidence: { module: string; version: string; reproduction: string; log: string } },
+  origin: { instance: string; agent: string },
+  terms: string[],
+): { fingerprint: string; title: string; body: string } {
+  const e = a.evidence;
+  const fence = "`".repeat(Math.max(3, ...[...e.log.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+  const hex = (s: string) => (/^[0-9a-f]{12}$/.test(s) ? s : "unknown");
+  const body = `${a.body}\n\n**Module:** ${e.module}@${e.version}\n\n**Reproduction**\n\n${e.reproduction}\n\n**Evidence**\n\n${fence}text\n${e.log}\n${fence}\n\nOrigin: instance=${hex(origin.instance)} agent=${hex(origin.agent)}`;
+  // The final text, exactly as it would be posted (fingerprint and title included), is what the scrub reads.
+  const hits = scrubProblems([a.fingerprint, a.title, body].join("\n"), terms);
+  if (hits.length) throw new Error(`owner data can't go into a public issue; redact these and file again: ${hits.join("; ")}`);
+  return { fingerprint: a.fingerprint, title: a.title, body };
 }
 
 export class Projects {

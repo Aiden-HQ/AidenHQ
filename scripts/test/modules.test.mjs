@@ -206,6 +206,34 @@ test("disabling open-loops removes its agents, routines and labels only", () => 
   assert.ok(!r.paperclip.labels.some((l) => l.name === "waiting-on"));
   assert.ok(r.paperclip.mcp_servers.telegram && r.paperclip.mcp_servers.chat_lane, "the Telegram channel and the chat lane stay: core requires them");
 });
+// Lean-core 3e: the runner starts jobs through the kernel as engineering, with its own generated token, for every engine-run
+// agent (core's Platform Engineer included); engineering needs any engine, which core's engine-codex provides.
+test("engineering is the job dispatcher: its token, and every dispatch: runner agent in dispatches", () => {
+  const dir = inst(["meetings", "engineering", "warehouse", "github", "glean", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", product_repo: "acme/aidenhq", owner_email: "o@x" });
+  const r = compile(repo, dir);
+  const e = r.kernelModules.modules.engineering;
+  assert.deepEqual([e.roles, e.token], [["kernel.jobs"], "engineering_token"]);
+  assert.ok(r.generatedSecrets.includes("engineering_token"));
+  const runAgents = Object.entries(r.paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
+  assert.ok(runAgents.includes("fleet-engineer") && runAgents.includes("engineer-openrouter"), runAgents.join(","));
+  assert.deepEqual(e.dispatches, runAgents);
+  for (const [n, m] of Object.entries(r.kernelModules.modules)) if (n !== "engineering") assert.equal(m.dispatches, undefined, n);
+});
+test("upstream: off grants no upstream tool; issues grants both; the scrub's terms and the instance reach github-mcp", () => {
+  const settings = (upstream) => ({ timezone: "Europe/London", owner_name: "Ada Lovelace", company_name: "Acme Labs", owner_slack_user_id: "U1", owner_email: "ada.l@acme.example", instance_name: "acme", github_orgs: ["acme-co", "upstream-org"], product_repo: "upstream-org/product", jira_url: "https://jira.acme.example/x", ...(upstream ? { upstream } : {}) });
+  const fleet = (upstream) => compile(repo, inst(["github", "fleet-ops", "primer"], settings(upstream))).paperclip.agents["fleet-ops"];
+  assert.equal(fleet("off").enabled_tools.github, undefined);
+  for (const v of [undefined, "issues", "prs"]) assert.deepEqual(fleet(v).enabled_tools.github, ["github_app_issue", "github_app_issue_status"], String(v));
+  assert.throws(() => fleet("maybe"), /upstream/);
+  const r = compile(repo, inst(["github", "fleet-ops", "primer"], settings()));
+  const env = r.compose.services["github-mcp"].environment;
+  // The origin ids' own key: generated, and mounted for github-mcp only.
+  assert.ok(r.generatedSecrets.includes("github_origin_key"));
+  assert.match(env.GITHUB_ORIGIN_KEY_FILE, /github_origin_key/);
+  for (const [svc, def] of Object.entries(r.compose.services)) if (svc !== "github-mcp") assert.ok(!JSON.stringify(def).includes("github_origin_key"), svc);
+  // Names and each word of them (but common words), the instance and its org, emails with their local part and domain, hosts.
+  assert.deepEqual(env.GITHUB_OWNER_TERMS.split(",").sort(), ["Ada Lovelace", "Ada", "Lovelace", "Acme Labs", "Acme", "acme", "aidenhq-acme", "acme-co", "upstream-org", "ada.l@acme.example", "ada.l", "acme.example", "jira.acme.example"].sort());
+});
 test("Slack Scout's read grant has no draft tool", () => {
   const dir = inst(["open-loops", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "e@x" });
   const r = compile(repo, dir);

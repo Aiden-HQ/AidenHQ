@@ -1,4 +1,4 @@
-import type { ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
+import type { Advisory, ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -107,7 +107,7 @@ export const api = {
   /** The fleet without run history: the Agents page's first paint. */
   roster: () => call<{ roster: RosterAgent[] }>("GET", "/api/agents/roster"),
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
-  modules: () => call<{ modules: ModuleRow[] }>("GET", "/api/modules"),
+  modules: () => call<{ modules: ModuleRow[]; advisories: Advisory[] }>("GET", "/api/modules"),
   settings: () => call<SettingsData>("GET", "/api/settings"),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
   /** Files a settings change as the Platform Engineer's task; its commit becomes an apply card. */

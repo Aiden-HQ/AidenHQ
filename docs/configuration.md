@@ -205,6 +205,7 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `atlassian_mcp_url` | jira | no | Atlassian's v2 MCP URL | Atlassian's remote MCP server. |
 | `fleet_ops_interval_minutes` | fleet-ops | no | `10` | Minutes between the board's Fleet Ops detector checks (lower while developing). |
 | `product_repo` | warehouse | yes | | `owner/repo` of your AidenHQ product checkout; the warehouse app is built from it at the pinned commit. Its org must be in `github_orgs` or be the agents org. |
+| `upstream` | github | no | `issues` | `off`, `issues` or `prs`: whether agents may report product bugs upstream as issues on `product_repo` (`off` grants none of the upstream tools). Every report is refused while it holds owner data (names, emails, hosts, IPs, ids, credentials). `prs` acts as `issues` until upstream PRs exist. |
 
 ## App access
 

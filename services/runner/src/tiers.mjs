@@ -20,7 +20,7 @@ import { REJECT, T, highest, meritOwner, priorDecisions, priorPart, requestKey, 
  */
 export const GATE_CORE = [
   // One entry per file, so a renamed or moved gate file shows up as a dead entry (gate-coverage.test.mjs).
-  ...["tiers", "review-request", "siblings", "cards", "merges", "evalgate", "apply", "netjail", "state", "config", "github-app", "git", "progress", "main", "engines", "workspace", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
+  ...["tiers", "review-request", "siblings", "cards", "merges", "evalgate", "apply", "state", "config", "github-app", "git", "progress", "main", "engines", "workspace", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
   // What a job can reach: its sandbox and launch (engines: the bwrap allowlist, writable roots, env), what lands in its
   // workspace and what the runner reads back from it (workspace, files), and the computer box rules (computers).
   /^scripts\/computers\.(mjs|ts)$/,

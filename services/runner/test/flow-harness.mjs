@@ -1,6 +1,7 @@
 // Shared by the flow-*.test.mjs files (one conversation each, so node runs them side by side): the real runner
 // (src/main.mjs) as a child process, talking to a fake Paperclip, with fake engines (test/fakes: bwrap, codex,
-// claude, gh) and local repositories for GitHub.
+// claude, gh) and local repositories for GitHub. Its jobs run in the kernel's job half (kernel/test/fixtures/jobs-host.mjs,
+// the real kernel/src/jobs.ts in its own process), which the fake Paperclip's /v1/jobs routes lead to.
 import { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -23,6 +24,25 @@ import { KERNEL_KINDS } from "../../../kernel/src/kinds.ts";
 import { asApproval } from "../src/cards.ts";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
+const JOBS_HOST = join(import.meta.dirname, "../../../kernel/test/fixtures/jobs-host.mjs");
+
+/** The kernel's job half for a flow: its own process (a restart test kills and starts it again), over `db`. */
+export function jobsHost(env, db) {
+  const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", JOBS_HOST], { env: { ...env, JOBS_DB: db, JOBS_MODULE: "engineering" }, stdio: ["ignore", "pipe", "pipe"] });
+  let log = "";
+  p.stderr.on("data", (d) => (log += d));
+  const port = new Promise((res, rej) => { p.stdout.once("data", (d) => res(Number(String(d).trim()))); p.once("exit", (c) => rej(new Error(`the jobs host exited (${c}): ${log}`))); });
+  return { p, port, log: () => log };
+}
+
+/** A free loopback port: each flow's runner gets its own helper port (runner.yaml helper_port), which the kernel holds it to. */
+export const freePort = () => new Promise((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
+
+/** Forward a request to the job host at `port` (the runner's /v1/jobs calls, as the kernel's backplane takes them). */
+export async function forwardJobs(port, req, body, res) {
+  const r = await fetch(`http://127.0.0.1:${await port}${req.url}`, { method: req.method, headers: { "content-type": "application/json" }, ...(body ? { body } : {}) }).catch((e) => ({ status: 502, text: async () => JSON.stringify({ error: { message: e.message } }) }));
+  res.writeHead(r.status, { "content-type": "application/json" }).end(await r.text());
+}
 const FAKES = join(import.meta.dirname, "fakes");
 const COMPANY = "00000000-0000-4000-8000-000000000001";
 const USER = "user-1";
@@ -44,7 +64,7 @@ const gitEnv = {
 };
 
 /** A Paperclip with one parent task (the user's) and one part of it for Ada. */
-export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0, onIssueCreated, ownerFallback = false, config, secrets, repos = {} }) {
+export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0, onIssueCreated, ownerFallback = false, config, secrets, repos = {}, jobs }) {
   const gradeLog = [];
   const graderCalls = [];
   const graderAnswers = [];
@@ -150,6 +170,9 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       res.end(JSON.stringify(json));
     };
     const path = url.pathname;
+    if (path.startsWith("/v1/jobs")) return forwardJobs(jobs(), req, body, res);
+    const agentRead = req.method === "GET" && /^\/api\/agents\/([^/]+)$/.exec(path)?.[1];
+    if (agentRead) { const a = engineers.find((x) => x.id === decodeURIComponent(agentRead)); return a ? send(a) : send({ error: "not found" }, 404); }
     // The runner's own kinds, claims, outcomes and reviews: the kernel's real routes (its keys only).
     const bearer = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
     if (/^\/v1\/(writes|reviews)/.test(path) && bearer && [key("runner_writes_key"), key("reviewer_key")].includes(bearer)) {
@@ -295,7 +318,9 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
 export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, ownerFallback = false, setup } = {}) {
-  let dir, runner, runnerEnv, paperclip, output = "";
+  let dir, runner, runnerEnv, paperclip, jobs, output = "";
+  /** The kernel's job half (a test may stop it and start it again: a kernel restart). */
+  const startJobs = () => (jobs = jobsHost(runnerEnv, join(dir, "kernel.db")));
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
     runner.stdout.on("data", (d) => (output += d));
@@ -347,8 +372,12 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
       mkdirSync(dirname(join(dir, "github", slug)), { recursive: true });
       git(dir, "clone", "-q", "--bare", src, join(dir, "github", `${slug}.git`));
     }
+    // The fakes log and take their steps through FAKE_* settings, baked in here: a job's env is the kernel's allowlist, so
+    // nothing of the runner's environment reaches the engine or the bwrap it runs under.
+    const fakeEnv = { FAKE_LOG: join(dir, "fake.log"), FAKE_STEP: join(dir, "claude-step"), ...Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("FAKE_"))) };
+    const exports = Object.entries(fakeEnv).map(([k, v]) => `export ${k}='${v}'\n`).join("");
     for (const name of ["bwrap", "codex", "claude", "gh"]) {
-      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\nexec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\nexec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
+      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
       chmodSync(join(bin, name), 0o755);
     }
 
@@ -358,6 +387,7 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
       join(config, "runner.yaml"),
       `label: engineer
 poll_seconds: 0.2
+helper_port: ${await freePort()}
 allowed_orgs: [acme]
 work_dir: ${join(dir, "work")}
 state_dir: ${join(dir, "state")}
@@ -393,12 +423,14 @@ ${runnerYaml}`,
     writeFileSync(join(secrets, "reviewer_key"), `${"k".repeat(64)}\n`, { mode: 0o600 });
     // The runner's key to the kernel for its own kinds (runner_writes_key).
     writeFileSync(join(secrets, "runner_writes_key"), `${"w".repeat(64)}\n`, { mode: 0o600 });
+    writeFileSync(join(secrets, "engineering_token"), "engineering-token\n", { mode: 0o600 });
 
     // PEN-2713/PEN-2714: the repositories are on the user's task; Ada's part only says go.
     const engineers = [
-      { id: "engineer-claude", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", persona: { name: "Ada" }, privateReads: true } },
-      { id: "engineer-codex", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-codex", persona: { name: "Grace" }, privateReads: true } },
-      ...moreEngineers,
+      { id: "engineer-claude", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", runnerEngine: true, persona: { name: "Ada" }, privateReads: true } },
+      { id: "engineer-codex", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-codex", runnerEngine: true, persona: { name: "Grace" }, privateReads: true } },
+      // Setup marks every engine-run agent (dispatch: runner) runnerEngine: the kernel starts jobs only for those.
+      ...moreEngineers.map((a) => ({ ...a, metadata: { runnerEngine: true, ...a.metadata } })),
     ];
     const parent = { id: "parent", identifier: "PEN-1", title: "Drop Legacy support", status: "todo", assigneeUserId: USER, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Remove Legacy from these repos:\n\n- acme/app\n- acme/infra\n" };
     const part = { id: "part", identifier: "PEN-2", title: "Drop Legacy support", status: "todo", parentId: "parent", assigneeAgentId: "engineer-claude", assigneeUserId: null, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Ada, go ahead and start this on dev please" };
@@ -415,7 +447,7 @@ ${runnerYaml}`,
     Object.assign(part, partOver);
     // Agents in a computer (`image:` in the module): Paperclip runs them, and a task they get must have a folder of its own.
     const inComputers = computers.map((id) => ({ id, name: id, status: "idle", adapterType: "codex_local", adapterConfig: {}, defaultEnvironmentId: "env-computer", metadata: { setupKey: `aidenhq:${id}` } }));
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated, ownerFallback, config, secrets, repos: { agentsOrg: env.AIDENHQ_GITHUB_AGENTS_ORG ?? "acme", ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated, ownerFallback, config, secrets, jobs: () => jobs.port, repos: { agentsOrg: env.AIDENHQ_GITHUB_AGENTS_ORG ?? "acme", ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 
@@ -437,10 +469,12 @@ ${runnerYaml}`,
     };
     // Fixtures a scenario needs before the first poll: GitHub's PRs (github-prs.json) or the runner's own state rows.
     setup?.({ dir });
+    startJobs();
     startRunner();
   });
   after(() => {
     runner?.kill("SIGKILL");
+    jobs?.p.kill("SIGKILL");
     paperclip?.server.close();
     // A job the runner left going (jobs are detached) may still be writing here: retried, so a failed flow ends instead of
     // throwing here and skipping the file's later after hooks (a server left listening keeps the process alive).
@@ -481,9 +515,12 @@ ${runnerYaml}`,
     get paperclip() {
       return paperclip;
     },
+    get jobs() {
+      return jobs;
+    },
     get output() {
       return output;
     },
-    startRunner, fakeLog, partComments, claudeRuns, toolRuns, step, say, context, waitFor, reviews, starts, turn, githubTip, running, settled, publish, release, idle, noErrors,
+    startRunner, startJobs, fakeLog, partComments, claudeRuns, toolRuns, step, say, context, waitFor, reviews, starts, turn, githubTip, running, settled, publish, release, idle, noErrors,
   };
 }
