@@ -1,6 +1,6 @@
 // 3b parity: the board's approval store is gone; the same requests through the runner's plan (cards.ts planOf, cardOf) and
 // the kernel (writes.ts fileRunner and review, records.ts) give what today's code gave, frozen in fixtures-parity-3b/before.json
-// at da6d03cf (gen-before.mjs). The kernel derives floors, new module authority and the owner's veto itself, so a few rows
+// at da6d03cf (generated once from the board store and the runner of that commit; the generator went with the store). The kernel derives floors, new module authority and the owner's veto itself, so a few rows
 // are stricter on purpose (DIRECTED below); nothing is looser.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -178,4 +178,15 @@ test("the kernel decides what the plan only proposes: new module authority, the 
   assert.deepEqual([blind.state, blind.review_first, blind.rule], ["review", "owner", "unknown-repos"]);
   // Autonomy off: the plan's Tier 0 waits for the owner.
   assert.equal(kernel("off").writes.fileRunner({ kind: "runner.push", task: "i-3", args: { only: [{ repo: "acme-agents/app", branch: "feat/c", sha: "9".repeat(40) }] }, plan: { tier: 0, card: { sentence: "x" } } }).state, "owner");
+});
+
+test("the card contract: every field the runner's card args carry is one the kernel's schema takes", async () => {
+  const { validate } = await import("../../../kernel/src/writes.ts");
+  const { BRANCH_CARD_FIELDS, applyCardArgs, branchCardArgs } = await import("../src/cards.ts");
+  const branch = Object.fromEntries(BRANCH_CARD_FIELDS.map((k) => [k, k === "repo" ? "acme/app" : k === "branch" ? "feat/x" : k === "patch" ? "c".repeat(64) : "a".repeat(40)]));
+  validate(KERNEL_KINDS["runner.pr"].args, branchCardArgs([branch], { text: { title: "t", body: "b" }, merge: true }));
+  validate(KERNEL_KINDS["runner.push"].args, branchCardArgs([branch]));
+  validate(KERNEL_KINDS["runner.merge"].args, { prs: [{ repo: "acme/app", number: 4, url: "https://github.com/acme/app/pull/4", head: "f".repeat(40), noReview: true, patch: "c".repeat(64) }], gap: 5 });
+  validate(KERNEL_KINDS["kernel.apply"].args, applyCardArgs({ r: { repo: "acme-agents/aidenhq-instance", branch: "fleet/x" }, sha: "1".repeat(40), files: ["instance.yaml"] }, ["engine-claude: secrets x (owner)"], true));
+  assert.throws(() => validate(KERNEL_KINDS["runner.push"].args, { only: [{ ...branch, extra: 1 }] }), /has no field extra/);
 });

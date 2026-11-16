@@ -1787,15 +1787,12 @@ const kindOf = (action) => (action === "apply" ? "kernel.apply" : `runner.${acti
  * reportOutcome. `carries`: approved records whose commits a rebuild replays (no new card for them).
  */
 async function fileApproval(issue, { action, args, diff, ts, carries }) {
-  const card = action === "apply" ? applyCard(args, diff ?? "") : { ...cardOf(action, args), ...(action === "pr" ? { rejected: reviewedRefsNote(args) } : {}) };
+  const card = action === "apply" ? applyCard(args, diff ?? "") : cardOf(action, args);
   const plan = { ...planOf(...ts), card, ...(action === "apply" ? { targets: { diff: createHash("sha256").update(diff ?? "").digest("hex") } } : {}), ...(carries?.length ? { carries } : {}) };
   const a = asApproval(await kernel("POST", "/v1/writes", { kind: kindOf(action), task: issue.id, identifier: issue.identifier, args, plan }));
   log("approval filed", { issue: issue.identifier, approval: a.id, action, state: a.state, tier: a.tier, panel: a.panel });
   return a;
 }
-/** Where a rejected `pr` card's reviewed heads stay (keepReviewed): fixed text from its args, on the owner's rejection notice. */
-const reviewedRefsNote = (args) => `The reviewed head stays in the runner's cache as ${args.only.map((b) => `\`refs/reviewed/{{id}}/${b.branch}\``).join(", ")} (a task clone of ${[...new Set(args.only.map((b) => b.repo))].join(", ")} fetches it): it was never pushed, so GitHub has no branch and no PR for it. Start from that ref rather than from this note.`;
-
 // ------------------------------------------------------------------ tiered approvals
 
 /**

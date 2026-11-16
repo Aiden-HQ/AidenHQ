@@ -14,8 +14,8 @@ import { FINAL_CODES, type ReviewFirst } from "./tier.ts";
 
 export type State = "review" | "owner" | "approved" | "claimed" | "done" | "failed" | "rejected" | "stale" | "cancelled" | "unknown";
 export type Requester = { agent: string; key: string; name: string; roles: string[]; kind: string; task?: string; run?: string; module?: string };
-/** `target`: what it acts on, in a line; `rejected`: the requester's fixed text appended to the owner's rejection notice. */
-export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string; rejected?: string };
+/** `target`: what it acts on, in a line. */
+export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string };
 export type Rec = {
   id: string; kind: string; module: string; args: unknown; targets: Record<string, unknown>; executor: { module: string; url?: string }; policy: string;
   digest: string; tier: 0 | 1 | 2; panel: boolean; card: Card;
