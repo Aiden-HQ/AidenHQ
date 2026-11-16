@@ -4,6 +4,7 @@ import { createAccounts, readGate } from "./accounts.js";
 import { createApp } from "./app.js";
 import { routineWake, webhookWake, type Manifest } from "./app-access.js";
 import { appsApi } from "./fleet.js";
+import { appWatchTick, type AppStatus } from "./app-watch.js";
 import { createSigninServer } from "./signin.js";
 import { queueOwnerLine, startDetector } from "./fleet-ops.js";
 import { backfillEscalatedDelegators, settleClosedGrades } from "./grades.js";
@@ -61,6 +62,9 @@ setInterval(() => void settleGrades(), 5 * 60_000).unref();
 void settleGrades();
 // Fleet Ops' detector: only when the fleet-ops module is enabled (it sets FLEET_OPS_INTERVAL_MINUTES).
 startDetector(paperclip, store, log);
+// The owner's app alerts (app-watch.ts): owner lines a channel collects through the kernel. apps-mcp unreachable: skipped.
+const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: (line) => queueOwnerLine(store, line) }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
+setInterval(appWatch, 2 * 60_000).unref();
 // Event wake-ups for heartbeat agents (wake.ts): on unless the instance setting wake_ups is off.
 startWake(paperclip, store, log);
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
