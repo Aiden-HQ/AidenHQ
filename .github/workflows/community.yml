@@ -16,6 +16,8 @@ concurrency:
 
 jobs:
   cla:
+    # Only community PRs (from forks, by people, not bots): our own PRs skip both jobs, so they never wait on a hosted runner.
+    if: github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -31,6 +33,8 @@ jobs:
       - run: node scripts/community.mjs cla
 
   triage:
+    # Only community PRs (from forks, by people, not bots): our own PRs skip both jobs, so they never wait on a hosted runner.
+    if: github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
