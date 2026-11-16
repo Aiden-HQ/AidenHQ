@@ -4,7 +4,7 @@
 # expires at most 14 days out; an expired entry fails the scan until it is renewed (with a fresh look for a release) or dropped.
 #
 # One entry per line, in this flow style (other lines are refused):
-#   - { id: <GHSA-…, CVE-… or GO-…>, image: <name:tag and/or @sha256:…>, expires: <YYYY-MM-DD>, reason: "…" }
+#   - { id: <GHSA-…, CVE-… or GO-…>, image: <name[:tag]@sha256:…, always pinned by digest>, expires: <YYYY-MM-DD>, reason: "…" }
 # Owner approval 2026-11-16 (lean-core unit 2b moved these images, all already running, into Dockerfiles, where the scan sees them).
 accepted:
   # grafana/grafana:13.3.0: Grafana 13.3.0 (the newest release, 2026-10-27; no release ships the fixed modules): loopback 127.0.0.1:3131 only, the tailnet through tailscale serve (:8444), sign-in required, no anonymous access, update checks and plugin installs off.

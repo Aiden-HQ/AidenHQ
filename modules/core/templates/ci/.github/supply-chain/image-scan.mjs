@@ -10,7 +10,7 @@
 // in one base image, for files a Dockerfile replaces or never copies out, only while every Dockerfile using that image
 // still meets the exception's condition; or one accepted advisory with no fixed release in one image, until it expires.
 // Accepted risks (.github/image-scan-accepted.yaml, read from the base commit, the owner's approval): one finding in one
-// exact image that no newer upstream release of that image fixes yet, for at most 14 days; an expired entry fails the scan.
+// image pinned by digest that no newer upstream release of that image fixes yet, for at most 14 days; an expired entry fails the scan.
 // No dependencies, Node 22+; a byte-identical copy is in the app CI template.
 //   node image-scan.mjs [--exceptions <file>] [--accepted <file>] [--local <name>=<Dockerfile>]... -- <Dockerfile>...
 //     (options only before --; everything after it is a path, even one that starts with -)
@@ -187,8 +187,8 @@ export function readExceptions(text, now = Date.now()) {
 }
 
 const ADVISORY = /^(?:GHSA(?:-[a-z0-9]{4}){3}|CVE-\d{4}-\d{4,}|GO-\d{4}-\d{4,})$/;
-// An accepted entry's image: a tag, a digest or both, never a bare name (that would cover every version).
-const PINNED = new RegExp(`^${REPO}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}(?:@sha256:[0-9a-f]{64})?|@sha256:[0-9a-f]{64})$`);
+// An accepted entry's image: always pinned by digest (a tag alone would cover whatever is pushed under it later).
+const PINNED = new RegExp(`^${REPO}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$`);
 
 /**
  * Accepted risks, one flow-style line each, every other line a comment, blank or `accepted:`:
@@ -201,17 +201,17 @@ export function readAccepted(text, now = Date.now()) {
     if (/^\s*(#.*)?$/.test(l) || /^accepted:\s*$/.test(l)) continue;
     const m = /^\s*-\s*\{\s*id:\s*([^,\s]+),\s*image:\s*([^,\s]+),\s*expires:\s*(\d{4}-\d{2}-\d{2}),\s*reason:\s*"[^"]{12,}"\s*\}\s*$/.exec(l);
     if (!m || !ADVISORY.test(m[1]) || !PINNED.test(m[2]) || Number.isNaN(Date.parse(m[3])))
-      throw new Error(`accepted risk ${show(l.trim())} is not { id: <GHSA-…, CVE-… or GO-…>, image: <name:tag and/or @sha256:…>, expires: <YYYY-MM-DD>, reason: "…" }`);
+      throw new Error(`accepted risk ${show(l.trim())} is not { id: <GHSA-…, CVE-… or GO-…>, image: <name[:tag]@sha256:…>, expires: <YYYY-MM-DD>, reason: "…" }`);
     if (Date.parse(m[3]) - now > 14 * 86_400_000) throw new Error(`accepted risk ${show(l.trim())}: expires at most 14 days ahead`);
     (now < Date.parse(m[3]) + 86_400_000 ? entries : expired).push({ id: m[1], image: m[2], expires: m[3] });
   }
   return { entries, expired };
 }
 
-/** The accepted ids for one scanned reference (name:tag@sha256:…): an entry naming it exactly, its name:tag, or its digest. */
+/** The accepted ids for one scanned reference: entries for the same image name and the same digest (the tag is ignored). */
 export function acceptedFor(ref, entries) {
-  const digest = /@(sha256:[0-9a-f]{64})$/.exec(ref)?.[1];
-  const same = (img) => img === ref || ref.startsWith(`${img}@`) || (img.startsWith(`${nameOf(ref)}@`) && img.endsWith(`@${digest}`));
+  const digest = (r) => /@(sha256:[0-9a-f]{64})$/.exec(r)?.[1];
+  const same = (img) => nameOf(img) === nameOf(ref) && digest(img) !== undefined && digest(img) === digest(ref);
   return [...new Set(entries.filter((e) => same(e.image)).map((e) => e.id))];
 }
 
