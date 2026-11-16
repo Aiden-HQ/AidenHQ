@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { Projects, productTarget, upstreamReport } from "../src/projects.js";
-import { ownerTerms } from "../src/scrub.js";
+import { originIds, ownerTerms } from "../src/scrub.js";
 
 it("design-review status: only on the PR's current head, with a token narrowed to statuses and PR reads", async () => {
   const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
@@ -78,15 +78,20 @@ it("a product issue as the App: Issues: write required, a narrowed token, dedupe
 });
 
 it("A18: owner data in an upstream report is refused with the matches; a clean one names its module, evidence, instance and agent", () => {
-  const terms = ownerTerms("Ada,ada@acme.example,acme.example,jira.acme.example,acme-co,upstream-org,github.com,ab", "upstream-org/product");
-  expect(terms).toEqual(["Ada", "ada@acme.example", "acme.example", "jira.acme.example", "acme-co"]);
+  const terms = ownerTerms("Ada,ada@acme.example,acme.example,jira.acme.example,acme-co,acme,upstream-org,github.com,ab", "upstream-org/product");
+  expect(terms).toEqual(["Ada", "ada@acme.example", "acme.example", "jira.acme.example", "acme-co", "acme"]);
   const evidence = { module: "kernel", version: "a".repeat(40), reproduction: "1. apply\n2. watch the log", log: "2026-11-16T10:00:00Z proxy refused 10.231.0.1:3130 (203.0.113.7)" };
   const report = { fingerprint: "product-bug:kernel-proxy-refuses", title: "kernel: proxy refuses a granted tool", body: "The proxy refuses a granted read.", evidence };
-  const origin = { instance: "acme", agent: "fleet-ops" };
+  const origin = originIds("instance-secret", "fleet-ops");
   const out = upstreamReport(report, origin, terms);
   expect(out.body).toContain("**Module:** kernel@" + "a".repeat(40));
   expect(out.body).toContain("```text\n2026-11-16T10:00:00Z proxy refused");
-  expect(out.body.endsWith("Origin: instance=acme agent=fleet-ops")).toBe(true);
+  // Where it came from, as opaque ids: stable for this instance and agent, never the instance's or agent's name.
+  expect(origin).toEqual(originIds("instance-secret", "fleet-ops"));
+  expect(origin.agent).not.toBe(originIds("instance-secret", "coach").agent);
+  expect(originIds("other-secret", "fleet-ops").instance).not.toBe(origin.instance);
+  expect(out.body.endsWith(`Origin: instance=${origin.instance} agent=${origin.agent}`)).toBe(true);
+  expect(out.body).not.toMatch(/acme|fleet-ops/);
   const leaks: [string, Partial<typeof report>, RegExp][] = [
     ["the owner's name", { body: "Ada saw it" }, /name or host: Ada/],
     ["a hostname", { evidence: { ...evidence, log: "GET https://jira.acme.example/rest failed" } }, /jira\.acme\.example/],
@@ -99,6 +104,17 @@ it("A18: owner data in an upstream report is refused with the matches; a clean o
     ["a chat id", { body: "chat -1001234567890" }, /chat id/],
     ["a token", { body: `key ${"gh" + "p_" + "x".repeat(36)}` }, /a GitHub token: ghp_…/],
     ["the fingerprint", { fingerprint: "product-bug:ada-sees-it" }, /Ada/],
+    ["the instance name", { body: "seen on acme" }, /name or host: acme/],
+    // As GitHub renders it: entities, comments, tags, zero-width and format characters, look-alikes, Markdown escapes.
+    ["an entity", { body: "A&#100;a saw it" }, /Ada/],
+    ["a nested entity", { body: "&amp;#65;da saw it" }, /Ada/],
+    ["an HTML comment", { body: "Ad<!-- x -->a saw it" }, /Ada/],
+    ["a tag", { body: "Ad<b></b>a saw it" }, /Ada/],
+    ["a zero-width space", { body: "Ad\u200ba saw it" }, /Ada/],
+    ["a soft hyphen", { body: "Ad\u00ada saw it" }, /Ada/],
+    ["full-width letters", { body: "\uff21\uff44\uff41 saw it" }, /Ada/],
+    ["a Markdown escape and emphasis", { body: "A\\*d\\*a and A**d**a" }, /Ada/],
+    ["an entity in the log", { evidence: { ...evidence, log: "host jira&#46;acme.example" } }, /jira\.acme\.example/],
   ];
   for (const [what, edit, want] of leaks) expect(() => upstreamReport({ ...report, ...edit } as typeof report, origin, terms), what).toThrow(want);
 });
@@ -121,12 +137,12 @@ it("A18 exit: a duplicate report becomes a comment on the open issue, never a se
   }) as unknown as typeof fetch;
   const p = new Projects(dir, fetchFn);
   const evidence = { module: "board", version: "abc1234", reproduction: "1. open Settings", log: "TypeError: x is undefined" };
-  const report = (agent: string) => upstreamReport({ fingerprint: "product-bug:board-settings-crash", title: "board: Settings crashes", body: "Settings crashes.", evidence }, { instance: "acme", agent }, []);
+  const report = (agent: string) => upstreamReport({ fingerprint: "product-bug:board-settings-crash", title: "board: Settings crashes", body: "Settings crashes.", evidence }, originIds("s", agent), []);
   expect(await p.reportIssue("upstream-org", "product", report("fleet-ops"))).toMatchObject({ deduplicated: false, number: 5 });
-  expect(filed[0]!.body).toMatch(/Origin: instance=acme agent=fleet-ops\n\nproduct-bug:board-settings-crash$/);
+  expect(filed[0]!.body).toMatch(new RegExp(`Origin: instance=${originIds("s", "fleet-ops").instance} agent=${originIds("s", "fleet-ops").agent}\\n\\nproduct-bug:board-settings-crash$`));
   expect(await p.reportIssue("upstream-org", "product", report("coach"))).toMatchObject({ deduplicated: true, number: 5, state: "open" });
   expect(filed).toHaveLength(1);
-  expect(comments[0]).toMatch(/Origin: instance=acme agent=coach$/);
+  expect(comments[0]!.endsWith(`agent=${originIds("s", "coach").agent}`)).toBe(true);
 });
 
 it("mints a read-only narrowed token and flattens project items", async () => {

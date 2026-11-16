@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto";
+
 // The owner-data scrub (spec §6.9a): an upstream issue is public, so nothing naming the instance's owner, its hosts or its
 // accounts leaves. Two layers: the instance's own literals (compile's owner_terms: the owner's names, email and orgs, and
 // every host and email an instance setting holds), and classes of data no product issue needs (any email, any IP outside
@@ -25,10 +27,35 @@ const CLASSES: [string, RegExp][] = [
 // Product-public values that look like the classes above: documentation addresses, loopback, the product's own backplane.
 const ALLOWED = [/@example\.(com|org|net)$/i, /^127\./, /^0\.0\.0\.0$/, /^10\.231\./, /^192\.0\.2\./, /^198\.51\.100\./, /^203\.0\.113\./];
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 
-/** What in `text` is owner data, as `kind: match` lines (credentials masked); empty when it may go out. */
-export function scrubProblems(text: string, terms: string[]): string[] {
+/**
+ * The text as GitHub renders it, for matching: HTML entities decoded, comments and tags dropped, format characters
+ * (zero-width and the like) removed, NFKC look-alikes folded, Markdown escapes and emphasis marks dropped.
+ */
+export function rendered(text: string): string {
+  let t = text;
+  for (let i = 0; i < 3; i++) // nested entities (&amp;#65;) decode in a few rounds
+    t = t.replace(/&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|([a-z]{2,8}));?/gi, (m, d, h, n) => (d ? String.fromCodePoint(Math.min(+d, 0x10ffff)) : h ? String.fromCodePoint(Math.min(parseInt(h, 16), 0x10ffff)) : (ENTITIES[n.toLowerCase()] ?? m)));
+  return t
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, "")
+    .replace(/<\/?[a-z][^>]*>/gi, "")
+    .replace(/\p{Cf}/gu, "")
+    .normalize("NFKC")
+    .replace(/\\(?=[!-\/:-@[-`{-~])/g, "")
+    .replace(/[*_~`]/g, "");
+}
+
+/** Opaque, stable ids for where a report came from: the instance and the agent, keyed by this instance's own secret. */
+export function originIds(secret: string, agent: string): { instance: string; agent: string } {
+  const id = (s: string) => createHmac("sha256", secret || "unset").update(s).digest("hex").slice(0, 12);
+  return { instance: id("aidenhq-instance"), agent: id(`aidenhq-agent:${agent}`) };
+}
+
+/** What in `text` (as written, and as GitHub renders it) is owner data, as `kind: match` lines (credentials masked); empty when it may go out. */
+export function scrubProblems(raw: string, terms: string[]): string[] {
   const out = new Set<string>();
+  const text = `${raw}\n${rendered(raw)}`;
   for (const [kind, re] of SECRETS) for (const m of text.matchAll(re)) out.add(`${kind}: ${m[0].slice(0, 4)}…`);
   for (const [kind, re] of CLASSES)
     for (const m of text.matchAll(re)) {

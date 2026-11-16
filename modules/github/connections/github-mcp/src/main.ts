@@ -6,7 +6,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { Projects, productTarget, upstreamReport } from "./projects.js";
-import { ownerTerms } from "./scrub.js";
+import { originIds, ownerTerms } from "./scrub.js";
 import { SourceStore } from "./source-store.js";
 import { startSync } from "./sources.js";
 import { createServer, type IncomingMessage } from "node:http";
@@ -25,8 +25,7 @@ const inboundToken = tokenFile && existsSync(tokenFile) ? readFileSync(tokenFile
 const agentsOrg = (process.env.GITHUB_AGENTS_ORG ?? "").trim().toLowerCase();
 // The product repo (owner/repo) the fleet reports product bugs to: github_app_issue writes only there.
 const PRODUCT_REPO = (process.env.GITHUB_PRODUCT_REPO ?? "").trim();
-// The instance a product issue says it came from, and the owner-data scrub's literals (scrub.ts).
-const INSTANCE = (process.env.GITHUB_INSTANCE ?? "").trim();
+// The owner-data scrub's literals (scrub.ts).
 const OWNER_TERMS = ownerTerms(process.env.GITHUB_OWNER_TERMS ?? "", PRODUCT_REPO);
 const commentOrgs = new Set((process.env.GITHUB_COMMENT_ORGS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
 // Who is calling: the kernel's signed assertion (the kernel enforces grants).
@@ -189,7 +188,7 @@ function buildServer(caller?: Caller): McpServer {
       const [owner, name] = productRepo();
       let report;
       try {
-        report = upstreamReport(a, { instance: INSTANCE, agent: caller?.key ?? "" }, OWNER_TERMS);
+        report = upstreamReport(a, originIds(inboundToken ?? "", caller?.key ?? ""), OWNER_TERMS);
       } catch (err) {
         throw new GitHubRefused((err as Error).message);
       }

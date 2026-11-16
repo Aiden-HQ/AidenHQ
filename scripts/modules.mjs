@@ -361,24 +361,30 @@ function ciReview(settings) {
 }
 
 /**
- * The owner-data scrub's literals (spec §6.9a), comma-separated: the owner's name and email, the company name unless it is
- * a module default (a default names nobody), the agents org and github_orgs, and every host and email an instance setting
- * holds (a URL's host, a value that is a hostname). The tool that files upstream drops the upstream's own org and host.
+ * The owner-data scrub's literals (spec §6.9a), comma-separated: the owner's and company's names and each word of them (a
+ * module default names nobody), the instance name and every org the instance names, and every host and email an instance
+ * setting holds (a URL's host, a value that is a hostname; an email's address, local part and domain). The tool that files
+ * upstream drops the upstream's own org and host.
  */
+const COMMON_WORDS = new Set(["the", "and", "for", "inc", "ltd", "llc", "labs", "lab", "company", "corp", "group", "team", "work", "home", "personal", "admin", "user", "mail", "info"]);
 function ownerTerms(own, settings, declared) {
   const terms = new Set();
-  const add = (t) => { const v = String(t ?? "").replace(/[,$]/g, "").trim(); if (v.length >= 3) terms.add(v); };
+  const add = (t) => { const v = String(t ?? "").replace(/[,$]/g, "").trim(); if (v.length >= 3 && !COMMON_WORDS.has(v.toLowerCase())) terms.add(v); };
   const isDefault = (k) => declared.some((d) => d[k] && "default" in d[k] && d[k].default === settings[k]);
-  for (const k of ["owner_name", "owner_email", "company_name", "agents_org"]) if (!isDefault(k)) add(settings[k]);
+  for (const k of ["owner_name", "company_name", "instance_name", "agents_org"]) {
+    if (isDefault(k) || settings[k] == null) continue;
+    add(settings[k]);
+    if (k === "owner_name" || k === "company_name") for (const w of String(settings[k]).split(/[^\p{L}\p{N}]+/u)) add(w);
+  }
   for (const o of [settings.github_orgs ?? []].flat()) add(o);
   const walk = (v) => {
     if (Array.isArray(v) || (v && typeof v === "object")) return Object.values(v).forEach(walk);
     if (typeof v !== "string") return;
-    for (const m of v.matchAll(/[\w.+-]+@([\w-]+(?:\.[\w-]+)+)/g)) { add(m[0]); add(m[1]); }
+    for (const m of v.matchAll(/([\w.+-]+)@([\w-]+(?:\.[\w-]+)+)/g)) { add(m[0]); add(m[1]); add(m[2]); }
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) { try { add(new URL(v).hostname); } catch {} }
     else if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(v)) add(v);
   };
-  walk(own);
+  walk({ own, email: settings.owner_email });
   return [...terms].join(",");
 }
 
@@ -481,9 +487,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const shownSettings = Object.fromEntries([...new Set([...enabled.flatMap((n) => Object.keys(all.get(n).def.settings ?? {})), ...Object.keys(instance.settings ?? {})])]
     .filter((k) => !/token|secret|password/i.test(k) && settings[k] !== undefined)
     .map((k) => [k, { value: settings[k], set: Object.hasOwn(instance.settings ?? {}, k) }]));
-  // Derived for upstream contributions (spec §6.9): the instance an upstream issue says it came from, and the owner-data
-  // scrub's literals (ownerTerms).
-  settings.upstream_instance = String(settings.instance_name ?? "");
+  // Derived for upstream contributions (spec §6.9): the owner-data scrub's literals (ownerTerms).
   settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, enabled.map((n) => all.get(n).def.settings ?? {}));
 
   const core = substitute(all.get("core").def, settings);

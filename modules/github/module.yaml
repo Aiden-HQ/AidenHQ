@@ -41,9 +41,8 @@ services:
         GITHUB_AGENTS_ORG: "${settings.agents_org}"
         # Product bugs (github_app_issue) go only to this repo.
         GITHUB_PRODUCT_REPO: "${settings.product_repo}"
-        # Each product issue names the instance it came from; the owner-data scrub refuses this instance's own names and
-        # hosts (compiled from its settings) in anything filed there.
-        GITHUB_INSTANCE: "${settings.upstream_instance}"
+        # The owner-data scrub refuses this instance's own names and hosts (compiled from its settings) in anything filed
+        # upstream.
         GITHUB_OWNER_TERMS: "${settings.owner_terms}"
         MCP_TOKEN_FILE: ${secrets.github_service_key}
         # Shared sources (src_github): the orgs it syncs (github_orgs plus the agents org) and its warehouse login.

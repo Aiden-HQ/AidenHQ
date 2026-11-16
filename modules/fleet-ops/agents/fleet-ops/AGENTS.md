@@ -80,8 +80,8 @@ failing for 15 minutes, an agents-org pull request open over an hour without mer
   1. Its fingerprint is `product-bug:<slug>` (the component and the symptom, a few lowercase words; reuse the slug your
      log already has for it). `github_app_issue` with the fingerprint, title `<component>: <the symptom in one line>`, a
      body (what happened, what you expected) and `evidence`: the `module`, the `version` (the product sha in
-     `instance.yaml` `product:`), the `reproduction` steps and the `log` lines that show it. The tool adds this instance
-     and your key. An open issue with that fingerprint gets the report as a comment instead (`deduplicated: true`), so new
+     `instance.yaml` `product:`), the `reproduction` steps and the `log` lines that show it. The tool adds opaque ids for this instance
+     and you. An open issue with that fingerprint gets the report as a comment instead (`deduplicated: true`), so new
      evidence on a known defect goes the same way.
   2. The issue is public to the product repo's readers, so it carries product evidence only: task identifiers
      (`WOR-…`), the one log or error line that matters, versions and commits, in the product's own words. The tool

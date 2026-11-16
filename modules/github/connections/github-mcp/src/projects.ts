@@ -45,8 +45,8 @@ export function productTarget(roles: readonly string[] | undefined, configured: 
 }
 
 /**
- * A product-bug report ready to file upstream: the body with its evidence and where it came from (spec §6.9a), checked by the
- * owner-data scrub over everything the agent wrote first. Throws with the matches; nothing is sent.
+ * A product-bug report ready to file upstream: the body with its evidence and where it came from as opaque ids (spec §6.9a,
+ * scrub.ts originIds), the whole final text checked by the owner-data scrub. Throws with the matches; nothing is sent.
  */
 export function upstreamReport(
   a: { fingerprint: string; title: string; body: string; evidence: { module: string; version: string; reproduction: string; log: string } },
@@ -54,15 +54,13 @@ export function upstreamReport(
   terms: string[],
 ): { fingerprint: string; title: string; body: string } {
   const e = a.evidence;
-  const hits = scrubProblems([a.fingerprint, a.title, a.body, e.module, e.version, e.reproduction, e.log].join("\n"), terms);
-  if (hits.length) throw new Error(`owner data can't go into a public issue; redact these and file again: ${hits.join("; ")}`);
   const fence = "`".repeat(Math.max(3, ...[...e.log.matchAll(/`+/g)].map((m) => m[0].length + 1)));
-  const name = (s: string) => s.replace(/[^\w.-]/g, "") || "unknown";
-  return {
-    fingerprint: a.fingerprint,
-    title: a.title,
-    body: `${a.body}\n\n**Module:** ${e.module}@${e.version}\n\n**Reproduction**\n\n${e.reproduction}\n\n**Evidence**\n\n${fence}text\n${e.log}\n${fence}\n\nOrigin: instance=${name(origin.instance)} agent=${name(origin.agent)}`,
-  };
+  const hex = (s: string) => (/^[0-9a-f]{12}$/.test(s) ? s : "unknown");
+  const body = `${a.body}\n\n**Module:** ${e.module}@${e.version}\n\n**Reproduction**\n\n${e.reproduction}\n\n**Evidence**\n\n${fence}text\n${e.log}\n${fence}\n\nOrigin: instance=${hex(origin.instance)} agent=${hex(origin.agent)}`;
+  // The final text, exactly as it would be posted (fingerprint and title included), is what the scrub reads.
+  const hits = scrubProblems([a.fingerprint, a.title, body].join("\n"), terms);
+  if (hits.length) throw new Error(`owner data can't go into a public issue; redact these and file again: ${hits.join("; ")}`);
+  return { fingerprint: a.fingerprint, title: a.title, body };
 }
 
 export class Projects {
