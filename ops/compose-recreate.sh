@@ -6,7 +6,8 @@
 #   3. every image this config builds (cached unless its context changed);
 #   4. only the services whose image, compose config or mounted secret content moved are recreated; every other container
 #      keeps running;
-#   5. compose's leftovers for services this config dropped are removed, and never a CI job's runner.
+#   5. compose's leftovers for services this config dropped are removed, and never a CI job's runner;
+#   6. a service still left `created` (never started) is started.
 #
 # Not `docker compose up --remove-orphans`: a CI job's runner is a one-off of this same compose project under the
 # inactive `ci` profile (`docker compose run --rm` in ops/ci-runner.sh), so compose counted a finished job's
@@ -14,6 +15,11 @@
 # progress" failed the whole apply. Cleanup here is leftovers only -- a stopped container whose name is compose's old
 # <12hex>_<project>-<service>-1, for a service this config no longer defines -- so a running container, a one-off
 # such as a CI runner, or anything of a service still in the config is never stopped or removed.
+#
+# A recreate that was killed (an apply that died) leaves its replacement behind: compose creates the new container as
+# <12hex>_<project>-<service>-1, stops and removes the old one, then renames and starts the new one. That half-made
+# container, never running, would make the next `up` recreate it under the old one's name and trip on "name already in
+# use", so each pass removes those of the services this config runs first. A running container is never one of them.
 #
 # The step is retried once, and only for the two ways the daemon races this script: a container it is still removing,
 # and a container name another removal has not released yet. Every service gets one summary line saying what became of
@@ -52,14 +58,16 @@ requireDumpPassword() {
 # "<id> <service>" for each leftover: compose's old <12hex>_<project>-<service>-1 name, for a service this config no
 # longer defines, and not running. A one-off container is never one: it is named (a CI runner is aidenhq-ci-runner-<n>)
 # and removes itself when its command ends, and a running container of a dropped service is left for its owner to stop.
+# With `kept` (the services this config runs), the remains of a killed recreate instead: the same names, not running, of a
+# service still in the config.
 leftovers() {
-  local desired id name running service
+  local desired id name running service kept="${2:-}"
   desired="$1"
   for id in $(docker ps -aq --filter "label=com.docker.compose.project=$project"); do
     name="$(docker inspect -f '{{.Name}}' "$id" 2>/dev/null)" || continue
     [[ "$name" =~ ^/[0-9a-f]{12}_${project}-(.+)-1$ ]] || continue
     service="${BASH_REMATCH[1]}"
-    grep -qxF -- "$service" <<< "$desired" && continue
+    if grep -qxF -- "$service" <<< "$desired"; then [ -n "$kept" ] || continue; else [ -z "$kept" ] || continue; fi
     running="$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)"
     [ "$running" = "false" ] || continue
     printf '%s %s\n' "$id" "$service"
@@ -68,10 +76,10 @@ leftovers() {
 
 # One leftover. Failing because it is already going away is the same outcome: it is gone either way.
 remove() {
-  local id="$1" service="$2" err status=0
+  local id="$1" service="$2" what="${3:-leftover}" err status=0
   err="$(docker rm "$id" 2>&1)" || status=$?
   if [ "$status" -eq 0 ] || grep -qE "$race" <<< "$err"; then
-    echo "compose: $service leftover cleaned"
+    echo "compose: $service $what cleaned"
     return 0
   fi
   printf '%s\n' "$err" >&2
@@ -187,6 +195,10 @@ moved() {
 step() {
   local out="$1" desired="$2" status=0 recorded=0 id service after
   local -a recreate=()
+  while read -r id service; do
+    [ -n "$id" ] || continue
+    remove "$id" "$service" "half-made container"
+  done <<< "$(leftovers "$desired" kept)"
   for service in $desired; do moved "$service" && recreate+=("$service"); done
   if [ "${#recreate[@]}" -gt 0 ]; then
     docker compose up -d --no-deps --force-recreate "${recreate[@]}" 2>&1 | tee "$out" || status=$?
@@ -251,4 +263,9 @@ if [ "$status" -ne 0 ]; then
   RECREATED=()
   step "$out" "$desired"
 fi
+# A container compose created but never started (its up was cut short) is started, so the stack ends up running.
+for service in $desired; do
+  [ "$(docker compose ps -a --format '{{.State}}' "$service" 2>/dev/null | head -1)" = created ] || continue
+  docker compose start "$service" && echo "compose: $service was left created: started"
+done
 summary "$desired"

@@ -31,8 +31,21 @@ lists no services; dumps the warehouse first, when this host runs one (a fresh f
 in a `0700` directory, so a taken name is skipped rather than truncated and the dump is `0600`; older dumps keep their
 bytes and only have their mode tightened); builds every image; recreates only the services whose image, compose config or
 mounted secret content moved; removes compose's leftovers for services this config dropped, never a CI job's runner; and
-retries once for the daemon's two races (a removal already in progress, a container name still in use). It prints one
-line per service saying what became of it: `recreated`, `kept`, or `leftover cleaned`.
+retries once for the daemon's two races (a removal already in progress, a container name still in use). A recreate that
+was killed leaves its half-made replacement behind (compose creates it as `<12hex>_<project>-<service>-1` and renames it
+only once the old one is gone); each pass removes those, never a running one, before deciding what moved, so a retry never
+trips on "name already in use". A service still left `created` at the end is started. It prints one line per service
+saying what became of it: `recreated`, `kept`, or `leftover cleaned`.
+
+An apply that dies mid-run (killed, its shell gone) leaves its generation `pending`, or `failed` before the auto-revert
+ran. It is finished like a failed health check (the snapshot put back, the last known good re-applied) by whichever comes
+first: the dying shell's own exit trap, the next apply (before it does anything else; it holds the lock, so nothing else is
+applying), or at boot the oneshot user unit `aidenhq-apply-recover` (`ops/apply-config.sh --recover`, installed by apply
+and setup). The dead pair is then held like any failed one: `--retry` from the owner's shell applies it again. A dead
+rollback is only marked failed. From the generation's first line, the apply writes to its log file
+(`~/.local/state/aidenhq/apply-<n>.log`) and a follower (`gnutail` where the host has it, else `tail -f --pid`) copies the
+lines to the caller; the apply never writes into a pipe, so a follower that dies (uutils `tee`/`tail` 0.10 have panicked)
+costs only the copy.
 
 A service reads a mounted secret (a compose `secrets:` entry) once at start in most cases, and rotating the secret's file
 changes neither its image nor its compose config hash. The compose step therefore records a digest of each service's

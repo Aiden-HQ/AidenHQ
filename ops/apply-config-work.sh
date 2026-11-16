@@ -11,11 +11,14 @@
 #     dirs of the modules it touches, their containers stopped (spec §6.4.1); switch (compile, recreate the compose
 #     services that moved, rerun the Paperclip setup); check health; on a failed check, put the snapshot back, re-apply the
 #     last known good generation once (--generation) and alert. A failed pair is held off until main moves (or --retry).
+#     An apply that died before its generation settled (killed, or its shell gone) is finished the same way: when its shell
+#     exits, at the start of the next apply, or at boot (--recover, aidenhq-apply-recover.service).
 # Run it through the entry point (which also checks out the product first, so a product that changed this file takes
 # effect in the same apply):
 #   ops/apply-config.sh [<instance commit sha>] [--retry]      a normal apply; --retry only from the owner's shell
 #   ops/apply-config.sh --generation <n>                       re-apply generation n with the module data it needs (the
 #                                                              auto-revert and ops/rollback.sh run this)
+#   ops/apply-config.sh --recover                              only finish an apply that died (the boot unit runs this)
 set -euo pipefail
 
 main() {
@@ -24,10 +27,11 @@ main() {
   requireApplyLock
   # Sourced before any checkout: these functions stay whatever a checkout below does to the file.
   . ops/lib/generations.sh
-  local want="" retry=0 gen=""
+  local want="" retry=0 gen="" recover=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --retry) retry=1 ;;
+      --recover) recover=1 ;;
       --generation)
         [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]] || { echo "refusing: --generation takes a generation number" >&2; exit 1; }
         gen="$2"; shift ;;
@@ -37,7 +41,8 @@ main() {
     esac
     shift
   done
-  [ -z "$gen" ] || { [ -z "$want" ] && [ "$retry" = 0 ]; } || { echo "refusing: --generation takes no other argument" >&2; exit 1; }
+  [ -z "$gen" ] || { [ -z "$want" ] && [ "$retry" = 0 ] && [ "$recover" = 0 ]; } || { echo "refusing: --generation takes no other argument" >&2; exit 1; }
+  [ "$recover" = 0 ] || { [ -z "$want" ] && [ "$retry" = 0 ]; } || { echo "refusing: --recover takes no other argument" >&2; exit 1; }
   set -a; [ -f .env ] && . ./.env; set +a
   local inst="${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env (your instance checkout)}"
 
@@ -49,6 +54,12 @@ main() {
   git -C "$inst" fetch --quiet origin main
   git fetch --quiet origin main
   if [ -n "$gen" ]; then applyGeneration; return; fi
+  # An apply that died is finished before anything else (the lock says no other apply is running). It moves both
+  # checkouts, so a hand-over's record of what ran before no longer holds: it is read again below.
+  local recovered=0
+  recoverLogged || true
+  [ "$recover" = 0 ] || return 0
+  [ "$recovered" = 0 ] || unset AIDENHQ_APPLY_BEFORE AIDENHQ_APPLY_INST_BEFORE
 
   # The instance commit running before this apply (a hand-over carries it, since HEAD has moved by then).
   local inst_before; inst_before="${AIDENHQ_APPLY_INST_BEFORE:-$(git -C "$inst" rev-parse HEAD)}"
@@ -112,9 +123,11 @@ main() {
   fi
   local n; n="$(genAppend "$product" "$want" pending)"
   local log="$GEN_DIR/apply-$n.log"
-  # From here every line also goes to this generation's own log (named on a failure's alert).
-  # GNU tee where the host also ships the Rust coreutils (Ubuntu 26.04): uutils tee 0.10 can panic mid-apply on a pipe and kill it.
-  exec > >("$(command -v gnutee || echo tee)" -a "$log") 2>&1
+  # From here every line goes to this generation's own log (named on a failure's alert), and a follower copies it out.
+  logTo "$log"
+  # Whatever ends this shell from here, a generation left unsettled is reverted on the way out (SIGKILL aside: the next
+  # apply or the boot unit does that).
+  trap 'recoverDead || true' EXIT
   echo "generation $n: product ${product:0:12}, instance ${want:0:12} (log $log)"
 
   # The compiled config before this apply: the live agent check fails only on connections granted since.
@@ -160,30 +173,73 @@ main() {
     return 0
   else why="$HEALTH_WHY"; fi
   rm -f "$prev_config"
-  # 5. Auto-revert, once: this apply's whole snapshot put back, then the last known good re-applied by a child in
-  # --generation mode (it never reverts). Data first, so the older code never starts on data it doesn't know.
+  # 5. Auto-revert, once.
   genMark "$n" failed "$why" "$log"
   echo "generation $n failed: $why"
-  local lkg; lkg="$(genLkg)"
+  revertTo "$n" "$why" "$log"
+}
+
+# Generation n failed (marked so already): its whole snapshot put back, then the last known good re-applied by a child in
+# --generation mode (it never reverts). Data first, so the older code never starts on data it doesn't know. Returns 1.
+revertTo() {
+  local n="$1" why="$2" log="$3" lkg snap t base rrc=0
+  lkg="$(genLkg)"
   if [ -z "$lkg" ]; then
     echo "apply alert: generation $n failed ($why) and there is no last known good to revert to; log $log"
     return 1
   fi
-  local snap t; snap="$(genGet "$n" snapshot)"
+  snap="$(genGet "$n" snapshot)"
   for t in ${snap:+"$snap"/*.tar}; do
     [ -f "$t" ] || continue
     if genRestore "$(basename "$t" .tar)" "$t"; then echo "auto-revert: $(basename "$t" .tar)'s data is back to $(genGet "$n" snapshot_at)"
     else echo "apply alert: putting $(basename "$t" .tar)'s data back from $t failed; log $log"; fi
   done
   echo "auto-revert: re-applying generation $lkg (product $(genGet "$lkg" product | cut -c1-12), instance $(genGet "$lkg" instance | cut -c1-12))"
-  local rrc=0
-  AIDENHQ_APPLY_BEFORE="$product" AIDENHQ_REVERT_OF="$n" AIDENHQ_HEALTH_BASELINE="$baseline" bash ops/apply-config-work.sh --generation "$lkg" || rrc=$?
+  base="$GEN_DIR/apply-$n.baseline"; [ -f "$base" ] || base=""
+  AIDENHQ_APPLY_BEFORE="$(genGet "$n" product)" AIDENHQ_REVERT_OF="$n" AIDENHQ_HEALTH_BASELINE="$base" bash ops/apply-config-work.sh --generation "$lkg" || rrc=$?
   if [ "$rrc" -eq 0 ]; then
-    echo "apply alert: generation $n failed its health check ($why) and was reverted to generation $lkg; this host stays there until the instance's main moves; log $log"
+    echo "apply alert: generation $n failed ($why) and was reverted to generation $lkg; this host stays there until the instance's main moves; log $log"
   else
-    echo "apply alert: generation $n failed its health check ($why) and the revert to generation $lkg failed too: restore from the drill checkpoint; log $log"
+    echo "apply alert: generation $n failed ($why) and the revert to generation $lkg failed too: restore from the drill checkpoint; log $log"
   fi
   return 1
+}
+
+# An apply that died (killed, or its shell gone mid-step) leaves its generation pending, or marked failed before its
+# auto-revert ran. Under the lock no other apply is running, so it is finished here: marked failed, then reverted as a
+# failed health check is. A dead auto-revert is reverted again; a dead rollback is only marked (it was the owner's own
+# act, and the last known good may be what they were leaving).
+recoverDead() {
+  local d n target why
+  d="$(genJs unsettled)"; [ -n "$d" ] || return 0
+  read -r n target <<< "$d"
+  why="$(genGet "$n" reason)"
+  if [ "$(genGet "$n" health)" = pending ]; then why="the apply died mid-run"; genMark "$n" failed "$why"; fi
+  genJs recovered "$n"
+  if [ "$target" = - ]; then
+    echo "apply alert: generation $n (a rollback) died mid-run; run ops/rollback.sh again"
+    return 1
+  fi
+  echo "generation $n: $why, and no apply is finishing it: reverting"
+  revertTo "$target" "$why" "$GEN_DIR/apply-$target.log"
+}
+
+# recoverDead with its lines in the dead generation's log too (sets recovered=1 when there was one to finish).
+recoverLogged() {
+  local d t; d="$(genJs unsettled)"; [ -n "$d" ] || return 0
+  recovered=1
+  t="${d#* }"; [ "$t" != - ] || t="${d%% *}"
+  ( logTo "$GEN_DIR/apply-$t.log"; recoverDead )
+}
+
+# Every line from here into the log file (appended), so no pipe can end the apply; a follower copies the new lines to
+# whoever started it, and when it dies (GNU tail preferred: uutils tail and tee 0.10 have panicked on a pipe) only that
+# copy stops. It holds no apply lock and ends with this shell.
+logTo() {
+  local at me="$BASHPID" # this shell's, read here: inside the `&` below it would be the follower's own
+  : >> "$1"; at="$(wc -c < "$1")"
+  "$(command -v gnutail || echo tail)" -c "+$((at + 1))" -f --pid="$me" "$1" 9>&- 2>/dev/null &
+  exec >> "$1" 2>&1
 }
 
 # --generation <n>: re-apply a recorded generation (the auto-revert, ops/rollback.sh). Product and instance are checked out
@@ -337,6 +393,12 @@ switchOver() {
   local unit="$HOME/.config/systemd/user/aidenhq-runner.service"
   if ! cmp -s ops/units/aidenhq-runner.service "$unit"; then
     cp ops/units/aidenhq-runner.service "$unit" && systemctl --user daemon-reload && echo "runner unit updated"
+  fi
+  # Boot finishes an apply that died (ops/apply-config.sh --recover): installed and enabled, never started here.
+  local rec="$HOME/.config/systemd/user/aidenhq-apply-recover.service"
+  if ! cmp -s ops/units/aidenhq-apply-recover.service "$rec"; then
+    cp ops/units/aidenhq-apply-recover.service "$rec" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-apply-recover \
+      && echo "apply recovery unit installed/updated"
   fi
   # The runner is running this script: restart it only after the apply in flight has reported back. SIGUSR2 to its main
   # process only: it takes no new jobs, leaves the agents' runs going (the new runner adopts them and reports their

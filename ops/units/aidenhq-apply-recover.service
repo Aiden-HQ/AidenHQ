@@ -1,0 +1,20 @@
+[Unit]
+Description=AidenHQ: finish an apply that died before its generation settled (ops/apply-config.sh --recover)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
+Environment=AIDENHQ_DIR=%h/aidenhq
+EnvironmentFile=-%h/.config/aidenhq-checkout.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The revert recreates services: the vault and Docker must be up first. Restart= tries again until they are, and while
+# another apply holds the lock (that apply finishes the dead one itself).
+ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
+ExecStartPre=/usr/bin/env docker info --format '{{.ServerVersion}}'
+ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/apply-config.sh --recover
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
