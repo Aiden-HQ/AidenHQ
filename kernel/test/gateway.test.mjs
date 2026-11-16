@@ -1,4 +1,4 @@
-// End to end against a fake OpenRouter, a fake Paperclip and a fake board: attribution, billed cost in the ledger, the
+// End to end against a fake OpenRouter and a fake Paperclip: attribution, billed cost in the ledger, the
 // cap → 402 with one raise_cap filed, the owner's raise, the daily reset of a chat task, system kinds uncapped, and no way
 // to switch the caps off (G10).
 import { test } from "node:test";
@@ -54,18 +54,12 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
     if (m) return json(res, 200, issues[m[1]]);
     json(res, 404, {});
   });
+  // kernel.raise_cap, as main.ts files it (writes.ts fileNative): each filing kept.
   const filed = [];
-  const board = await serve((req, res) => {
-    let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
-      assert.equal(req.headers["x-gateway-key"], "gw-board");
-      filed.push(JSON.parse(b));
-      json(res, 200, { id: "A0000001" });
-    });
-  });
   let now = Date.parse("2026-11-13T10:00:00Z");
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, paperclipUrl: paperclip.url, boardUrl: board.url, now: () => now });
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, paperclipUrl: paperclip.url, fileRaiseCap: async (b) => void filed.push(b), now: () => now });
   const front = await serve((req, res) => gw.handle(req, res));
-  t.after(() => { for (const x of [upstream, paperclip, board, front]) x.s.close(); gw.close(); });
+  t.after(() => { for (const x of [upstream, paperclip, front]) x.s.close(); gw.close(); });
 
   const call = async (cred, { path = "/api/v1/chat/completions", model = "~deepseek/deepseek-flash-latest", models } = {}) => {
     const res = await fetch(front.url + path, { method: "POST", headers: { authorization: `Bearer ${cred}`, "content-type": "application/json" }, body: JSON.stringify({ model, models, stream: true, messages: [] }) });
@@ -118,7 +112,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   assert.equal((await call(jwt("ag1", "run2"))).status, 200);
   for (let i = 0; i < 3; i++) assert.equal((await call(jwt("ag1", "run2"))).status, 402);
   assert.equal(filed.length, 1);
-  assert.deepEqual(filed[0], { issue: "iss1", scope: "task", agentId: "ag1", subject: "iss1", cap: 0.08, spent: 0.09 });
+  assert.deepEqual(filed[0], { task: "iss1", scope: "task", agentId: "ag1", subject: "iss1", cap: 0.08, spent: 0.09 });
 
   // The owner raised it (the board's write): calls go through again.
   const raise = await fetch(`${front.url}/internal/caps`, { method: "POST", headers: { authorization: "Bearer gw-board" }, body: JSON.stringify({ scope: "task", agentId: "ag1", subject: "iss1", cap: 0.16 }) });

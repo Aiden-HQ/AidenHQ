@@ -1,5 +1,5 @@
 // Records for every write (spec §5.2-§5.4), end to end through the proxy: a fixture module with a write kind and an executor
-// served by the SDK (the twin), a conn.tool write and a destructive tool, and the board-only decide and review routes.
+// served by the SDK (the twin), a conn.tool write and a destructive tool, and the review the runner asks for (its key).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { serveExecutor } from "../sdk/src/executor.ts";
@@ -24,8 +24,9 @@ async function twin(t, { satisfied } = {}) {
   t.after(() => ex.s.close());
   const mod = await moduleServer(t, { key: "twin-key", tools: TOOLS, answer: (msg) => ({ content: [{ type: "text", text: `${msg.params.name} done` }] }) });
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
+  const verdicts = [];
   const k = await kernel(t, {
-    agents, grants, secrets,
+    agents, grants, secrets, reviewer: () => verdicts.shift(),
     connections: {
       twin: { url: `${mod.url}/mcp`, auth_secret: "twin_service_key", module: "twin", returns: "untrusted", tools: { read: ["note_read"], write: ["post_note", "ping", "note_write"], destructive: ["note_drop"] } },
       other: { url: `${mod.url}/mcp`, auth_secret: "other_service_key", module: "other", returns: "untrusted", tools: { read: [], write: [], destructive: [] } },
@@ -47,11 +48,13 @@ async function twin(t, { satisfied } = {}) {
   }, { key: "twin-key", kernelUrl: k.url });
   const tool = (name, args = {}, token = ADA) => k.call("twin", token, { method: "tools/call", params: { name, arguments: args } });
   const pending = async (r) => JSON.parse((await text(r)).split("\n")[0]);
-  return { k, fx, mod, tool, pending, moduleCalls: () => mod.seen.filter((s) => s.method === "tools/call").map((s) => s.name) };
+  /** The runner asks for a record's review (its key): its tier input, and the reviewer module answers `v`. */
+  const review = (id, v, input = { tier: 1 }, token = "the-runners-key") => (v && verdicts.push(v), k.v1("POST", `/v1/writes/${id}/review`, { input: { model: "~acme/model-a", ...input }, request: { card: {} } }, token));
+  return { k, fx, mod, tool, pending, review, moduleCalls: () => mod.seen.filter((s) => s.method === "tools/call").map((s) => s.name) };
 }
 
 test("the executor sees nothing before approval; approved, it runs once and the task hears the outcome", async (t) => {
-  const { k, fx, tool, pending, moduleCalls } = await twin(t);
+  const { k, fx, tool, pending, review, moduleCalls } = await twin(t);
   const p = await pending(await tool("post_note", { note: "hi" }));
   assert.deepEqual({ tier: p.tier, state: p.state }, { tier: 1, state: "review" });
   assert.match(p.approval, /^k-[0-9a-f]{16}$/);
@@ -63,13 +66,15 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   assert.deepEqual(moduleCalls(), []);
   const rec = k.records.get(p.approval);
   assert.equal(rec.card.sentence, "Post hi.");
-  // Only the board's key lists and decides; the reviewer's verdict is bound to the digest.
+  // Only the board's and the runner's keys list; only the runner asks for a review, and the bound reviewer reads it.
   assert.equal((await k.v1("GET", "/v1/writes?state=review", undefined, ADA)).status, 401);
   assert.deepEqual((await k.v1("GET", "/v1/writes?state=review")).json.records.map((r) => r.id), [p.approval]);
-  const verdict = { digest: rec.digest, decision: "approve", reason: "fine", model: "~acme/model-a" };
-  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/review`, verdict, ADA)).status, 401);
-  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/review`, { ...verdict, digest: "0".repeat(64) })).status, 409);
-  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/review`, verdict)).json.state, "approved");
+  assert.deepEqual((await k.v1("GET", "/v1/writes?state=review", undefined, "the-runners-key")).json.records.map((r) => r.id), [p.approval]);
+  const verdict = { decision: "approve", reason: "fine", model: "~acme/model-a" };
+  assert.equal((await review(p.approval, undefined, { tier: 1 }, ADA)).status, 401);
+  assert.equal((await review(p.approval, undefined, { tier: 1 }, "the-boards-key")).status, 401);
+  assert.equal((await review(p.approval, verdict)).json.record.state, "approved");
+  assert.deepEqual(k.reviewed.at(-1), { card: {}, panel: false });
   await until(() => k.records.get(p.approval).state === "done");
   // Revalidated (plan again) before the one execute, keyed by the record id.
   assert.equal(fx.plans.at(-1).revalidate, true);
@@ -77,8 +82,8 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   await until(() => k.notices.length === 1);
   assert.equal(k.notices[0].task, "TASK-1");
   assert.match(k.notices[0].text, /^\*\*Done\*\* \(approval k-[0-9a-f]{16}, twin\.post\)[\s\S]*```\nposted hi\n```/);
-  // Decided once: a replayed verdict or outcome changes nothing.
-  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/review`, verdict)).status, 409);
+  // Decided once: a replayed review or outcome changes nothing.
+  assert.equal((await review(p.approval, verdict)).status, 409);
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/outcome`, { ok: false, text: "again" }, "twin-key")).status, 409);
   assert.equal(fx.executes.length, 1);
   // Its requester reads its own record; another agent can't, nor can another module report its outcome.
@@ -101,13 +106,13 @@ test("the executor sees nothing before approval; approved, it runs once and the 
 });
 
 test("a changed target on revalidate gives stale and a refile; the owner's decision is a channel's token, stamped as one", async (t) => {
-  const { k, fx, tool, pending } = await twin(t);
+  const { k, fx, tool, pending, review } = await twin(t);
   const p = await pending(await tool("post_note", { note: "a" }));
   // The same request again while it is open is that record, never a second card.
   assert.equal((await pending(await tool("post_note", { note: "a" }))).approval, p.approval);
   const rec = k.records.get(p.approval);
   // The reviewer escalates: the owner decides (Tier 2), never with a reviewer's or the code's stamp.
-  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/review`, { digest: rec.digest, decision: "escalate", reason: "owner's", model: "~acme/model-a" })).json.state, "owner");
+  assert.equal((await review(p.approval, { decision: "escalate", reason: "owner's", model: "~acme/model-a" })).json.record.state, "owner");
   const decide = { digest: rec.digest, decision: "approve", by: "owner:chat", via: "chat" };
   // No route decides a record any more (channels spend tokens, channels.test.mjs); the stamps writes.decide takes are closed.
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/decide`, decide)).status, 404);
@@ -125,7 +130,7 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   const open1 = await pending(await tool("post_note", { note: "v" }));
   const veto = await pending(await tool("post_note", { note: "w" }));
   const vr = k.records.get(veto.approval);
-  await k.v1("POST", `/v1/writes/${veto.approval}/review`, { digest: vr.digest, decision: "escalate", reason: "r", model: "~acme/model-a" });
+  await review(veto.approval, { decision: "escalate", reason: "r", model: "~acme/model-a" });
   k.writes.decide(veto.approval, { ...decide, digest: vr.digest, decision: "reject" });
   const again = await pending(await tool("post_note", { note: "v" }));
   assert.notEqual(again.approval, open1.approval);
@@ -134,19 +139,20 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   assert.equal((await pending(await tool("post_note", { note: "v" }))).approval, again.approval);
   // The owner's no on a kind makes the next request on the task theirs (Tier 2), the reviewer still first.
   const next = k.records.get(refiled[0].id);
-  await k.v1("POST", `/v1/writes/${next.id}/review`, { digest: next.digest, decision: "escalate", reason: "r", model: "~acme/model-a" });
+  await review(next.id, { decision: "escalate", reason: "r", model: "~acme/model-a" });
   k.writes.decide(next.id, { ...decide, digest: next.digest, decision: "reject" });
   assert.equal((await pending(await tool("post_note", { note: "b" }))).tier, 2);
   // Tier 2 on its merits (the veto): the reviewer's reject reaches the owner with its note, not a final no. A record only
   // capped to Tier 2 (autonomy, merit 1) keeps Tier 1's final reject.
   const merit = k.records.get(again.approval);
   assert.equal(merit.merit, 2);
-  const rj = await k.v1("POST", `/v1/writes/${merit.id}/review`, { digest: merit.digest, decision: "reject", reason: "it widens access", model: "~acme/model-a" });
-  assert.deepEqual([rj.json.state, rj.json.review], ["owner", "it widens access"]);
+  const rj = await review(merit.id, { decision: "reject", reason: "it widens access", model: "~acme/model-a" });
+  assert.equal(rj.json.record.state, "owner");
+  assert.match(rj.json.record.review, /^The AI reviewer rejected \(~acme\/model-a\): it widens access It is Tier 2 on its merits/);
   // The board reads the merit tier from the kernel's list (recordApproval: baseTier, review_first).
   assert.equal((await k.v1("GET", "/v1/writes?state=owner")).json.records.find((r) => r.id === merit.id)?.merit, 2);
-  const capped = k.records.file({ ...merit, args: { note: "capped" }, tier: 2, merit: 1, state: "review" });
-  assert.equal((await k.v1("POST", `/v1/writes/${capped.id}/review`, { digest: capped.digest, decision: "reject", reason: "no", model: "~acme/model-a" })).json.state, "rejected");
+  const capped = k.records.file({ ...merit, args: { note: "capped" }, tier: 2, merit: 1, review_first: "final", state: "review" });
+  assert.equal((await review(capped.id, { decision: "reject", reason: "no", model: "~acme/model-a" })).json.record.state, "rejected");
 });
 
 test("a Tier 0 conn.tool call leaves a completed record whose outcome is the MCP result; a Tier 0 kind answers with its outcome", async (t) => {
@@ -180,12 +186,12 @@ test("satisfied posts its evidence and files no card", async (t) => {
 });
 
 test("a destructive tool with no kind is conn.tool at Tier 1: replayed once, as its requester, only after approval", async (t) => {
-  const { k, mod, tool, pending, moduleCalls } = await twin(t);
+  const { k, mod, tool, pending, review, moduleCalls } = await twin(t);
   const p = await pending(await tool("note_drop", { id: 7 }));
   assert.equal(p.tier, 1);
   assert.deepEqual(moduleCalls(), []);
   const rec = k.records.get(p.approval);
-  await k.v1("POST", `/v1/writes/${p.approval}/review`, { digest: rec.digest, decision: "approve", reason: "ok", model: "~acme/model-a" });
+  await review(p.approval, { decision: "approve", reason: "ok", model: "~acme/model-a" });
   await until(() => k.records.get(p.approval).state === "done");
   assert.deepEqual(moduleCalls(), ["note_drop"]);
   const s = mod.seen.at(-1);
@@ -196,7 +202,7 @@ test("a destructive tool with no kind is conn.tool at Tier 1: replayed once, as 
   // The owner's no on that tool makes it theirs on the task; the task's other writes stay Tier 0.
   const q = await pending(await tool("note_drop", { id: 8 }));
   const qr = k.records.get(q.approval);
-  await k.v1("POST", `/v1/writes/${q.approval}/review`, { digest: qr.digest, decision: "escalate", reason: "r", model: "~acme/model-a" });
+  await review(q.approval, { decision: "escalate", reason: "r", model: "~acme/model-a" });
   k.writes.decide(q.approval, { digest: qr.digest, decision: "reject", by: "owner:chat", via: "chat" });
   assert.equal((await pending(await tool("note_drop", { id: 9 }))).tier, 2);
   assert.match(await text(await tool("note_write", { text: "y" })), /note_write done/);

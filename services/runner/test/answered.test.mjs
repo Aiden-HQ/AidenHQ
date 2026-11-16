@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { splitAnswered } from "../src/answered.ts";
-import { priorDecisions, priorPart } from "../src/tiers.mjs";
+import { priorDecisions, priorPart } from "../../../kernel/src/tier.ts";
 
 const head = "a".repeat(40);
 const card = (decidedBy, decidedAt, review = "") => ({ id: decidedBy + decidedAt, action: "merge", state: "rejected", decidedBy, decidedAt, review, args: { prs: [{ repo: "acme/app", number: 1, url: "u", head }] } });

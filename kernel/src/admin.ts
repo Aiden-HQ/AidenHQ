@@ -53,7 +53,7 @@ export const ROUTES = [
   { method: "GET", path: "/owner/confirm", auth: "admin" },
   { method: "POST", path: "/owner/confirm", auth: "admin+csrf" },
 ] as const;
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(":id", "(A[0-9a-f]{8}|k-[0-9a-f]{16})")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(":id", "(k-[0-9a-f]{16})")}$`) }));
 const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
 const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);

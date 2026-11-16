@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import YAML from "yaml";
-import { afterReview, classify, dependabotCommits, newGrants, priorDecisions, rejectedSince, routineCap } from "../src/tiers.mjs";
+import { classify, dependabotCommits, newGrants } from "../src/tiers.mjs";
+import { afterReview, priorDecisions, rejectedSince, routineCap } from "../../../kernel/src/tier.ts";
 import { moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { origins } from "../src/paperclip.ts";
 
