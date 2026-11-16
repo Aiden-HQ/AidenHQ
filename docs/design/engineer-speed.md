@@ -235,7 +235,7 @@ An app without this copies it from the starter, with a seeded mode for its own s
 | 7 | Edits through `python3`/`perl` scripts | 35 | ~24 (~69) | Mostly the `apply_patch` gap that #127 fixed. |
 | 8 | jsdom harness probes | 3 | ~8 tool min (20 wall min in WOR-5423) | **Yes:** Vitest with happy-dom, plus the lint rule. |
 | 9 | git dances: `git fetch` with no credential in the Roadmap Keeper clone (7 failures in 4 jobs), stash, rebase | 36 | ~12 (~50) | No. The box GitHub token is another agent's change. |
-| 10 | Failing commands, mostly `rg` no-match; also `file: command not found` (4), `node -e import(.../supply-chain/...)` (14 in 8 jobs) and `SHELLOPTS`/`pipefail` probes (9 in 8 jobs) | 39 | ~5 (~49) | Deferred: `file` in the box image (Dockerfile under edit in #126). The supply-chain import and shell-option probes need their own look. |
+| 10 | Failing commands, mostly `rg` no-match. Across 400 logs, `command not found` was `tsc` 73 times (bare `tsc` outside `npm run`), `file` 42, `strings` 11 and `sqlite3` 4. Also `node -e import(.../supply-chain/...)` (14 in 8 jobs) and `SHELLOPTS`/`pipefail` probes (9 in 8 jobs) | 39 | ~5 (~49) | **Fixed:** `file`, `binutils` and `sqlite3` are now in the agent image and the host setup (`unzip` added on the host). A repo's `tsc` runs through its scripts or `npx tsc`, at the repo's own pinned version. The supply-chain import and shell-option probes need their own look. |
 | 11 | Fixture or seed scripts | 3 | negligible | Covered by the seeded preview. |
 
 **Deferred:**
@@ -243,5 +243,5 @@ An app without this copies it from the starter, with a seeded mode for its own s
 - **Retiring `aidenhq-browse`:** Playwright now does its job for apps that carry the starter's setup. The grader's
   commit stamp is the one thing it adds; unstamped screenshots are still sent. Retire it once the apps have moved.
 - **`ui-review`'s own launcher:** it still expects a running server.
-- **`file` in the box image.**
+- **Preinstalled:** Playwright Test comes with each app's own dependencies (`npm ci`), and the browser is the pinned Chrome already in the image and on the host, so `npm run screens` never downloads a browser. The agent image's build launches it once to prove that.
 - **The stacked-PR review waits** (item 1).

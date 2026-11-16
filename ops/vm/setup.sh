@@ -29,7 +29,7 @@ case "$codename" in
 esac
 
 apt-get update
-apt-get -y install ca-certificates curl gnupg git openssl jq unattended-upgrades bubblewrap nftables python3-systemd iproute2
+apt-get -y install ca-certificates curl gnupg git openssl jq unattended-upgrades bubblewrap nftables python3-systemd iproute2 file binutils sqlite3 unzip
 # passt (pasta) gives each Engineer job its own network; Ubuntu 22.04 doesn't package it, and without it jobs share the
 # host's network (the runner says so in a WARNING).
 if apt-cache show passt >/dev/null 2>&1; then apt-get -y install passt
