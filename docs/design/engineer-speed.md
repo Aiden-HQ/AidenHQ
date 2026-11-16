@@ -157,3 +157,89 @@ Searches were 52 of 377 calls (7% of wall time) and plain-text; reads were 56 ca
 Total: about 42 → 20 minutes of job time, with fewer turns and so roughly half the tokens. The review legs (code review
 6.5 min, design review 12 min, in parallel) are unchanged for a shared-header change; design review gets faster on
 changes confined to one page of a many-page app.
+
+## Follow-up: the test harness, the preview, and a sweep of 40 jobs
+
+### Why the dialog wouldn't open in jsdom
+
+The 20 minutes went to an import-order bug, not a missing browser API.
+
+- **The mechanism:**
+  - Radix's `Portal` renders only after a layout effect sets `mounted`.
+  - `@radix-ui/react-use-layout-effect` decides once, when the module first loads, whether that effect exists:
+    `globalThis?.document ? React.useLayoutEffect : () => {}`.
+- **What happened in the test file:**
+  - The file's first test booted the app's server, and its server-side render loaded `radix-ui` in plain Node, with no
+    `document`.
+  - The dialog test then installed jsdom globals, but Node's module cache already held the no-op effect.
+  - Every portalled piece (Dialog, Sheet, Select, Popover) rendered nothing, with no error.
+- **What the probes showed:**
+  - Every probe that installed jsdom before importing anything passed.
+  - Every probe that booted `createApp` first failed.
+  - The job ended by moving the dialog test into its own file, so it got its own process. That fixed it without anyone
+    naming the cause.
+- **Two smaller issues on the way:**
+  - `fetch` rejects a relative `referrer` outside a browser (a real fix in the component).
+  - The hand-copied jsdom globals left Node's `Response` beside jsdom's.
+
+**The fix is standard tooling, not a better hand-made harness.**
+
+- **Component tests use Vitest with happy-dom and Testing Library** (`vite.config.ts` `test`):
+  - The environment exists before any module loads, so this class of bug can't happen.
+  - happy-dom needs no polyfills. In the starter, the same Dialog-form and Select test passes on happy-dom with no setup.
+  - jsdom 31 fails the Select with `target.hasPointerCapture is not a function` and needs shims.
+- **The setup file** (`src/test/setup.ts`) only unmounts between tests.
+- **Interactions people see** are checked in a real browser with Playwright Test (below).
+- **Guards:**
+  - An ESLint rule fails a test that imports `jsdom`, `happy-dom` or `react-dom/client`, with the fix in the message.
+  - A starter test asserts the Vitest environment and setup file.
+
+### No hand-rolled preview servers
+
+The app starter now carries Playwright Test's standard setup:
+
+- **`npm run preview`:** builds, then serves the app on 4173 with its sample data from `server.mjs`.
+- **`playwright.config.ts`:**
+  - `webServer` starts that preview, waits on `/api/health` and stops it.
+  - Four projects: 1440 and 390 wide, each in light and dark (`colorScheme`).
+  - It uses AidenHQ's pinned Chrome in jobs (`AGENT_BROWSER_EXECUTABLE_PATH` in boxes, `AIDENHQ_BROWSER_DIR` on the host).
+- **`npm run screens`:**
+  - screenshots every `feature-map.json` page, or those named in `SCREENS=/,/x`;
+  - fails on page errors, console errors (CSP violations included) and horizontal overflow;
+  - runs the `e2e/` flows;
+  - writes the PNGs into the task's `.aidenhq/out/`, which is attached after the run (boxes now get
+    `AIDENHQ_TASK_WORKTREE=/workspace`, as host jobs already did).
+
+An app without this copies it from the starter, with a seeded mode for its own store. Roadmap Keeper's is
+`SEED=examples`: an in-memory store with the trial examples, no database.
+
+### Sweep: 40 Engineer jobs (2026-11-16, 04:35–09:15Z, 34 host and 6 box, 946 job-minutes)
+
+**Method:**
+
+- Each job log was matched to its Codex session by thread id.
+- "Tool min" is the commands' own wall time; with the model's turns it is higher, so those figures are an upper bound.
+- Categories overlap and the matching is by pattern: read figures as ±30%.
+- Every job in the sample predates #127, so the `apply_patch` and `PATH` items were already fixed.
+
+| # | What | Jobs | Minutes lost | Fixed at the source? |
+|---|---|---|---|---|
+| 1 | `sleep N` waits, on stacked-PR reviews, `origin/main`, a clock window or a backgrounded test | 4 | ~120 tool min | Habit added to the engine's `AGENTS.md`: `aidenhq wait` for the job's own PRs; long commands in the foreground with a timeout. The prompt already says this (`prompt.ts`, not touched here), and the stacked-PR waits deserve their own change. |
+| 2 | The runner's full suite re-run after each small edit (~6 runs per job) | 7 | ~80 | Habit: run the one file you are working on, and the full suite once before publishing. |
+| 3 | Hand-written preview servers and ports, started and killed by hand (`preview-admin.mjs`, `serve.mjs`, `preview-final.mjs` and others) | 14 | ~32 (~46 with turns) | **Yes:** `npm run preview` plus Playwright `webServer`, in the starter and Roadmap Keeper. |
+| 4 | Repeated `npm run build` before each test run (Roadmap Keeper's `npm test` builds everything; one job built 60 times) | 6 | ~24 | **Yes, for UI tests:** Vitest runs a component test in seconds without a build. Server tests still build. |
+| 5 | `export PATH` and tool discovery | 31 (3 heavy) | ~25 (~46) | Already fixed by #127. |
+| 6 | Screenshots by hand (`agent-browser` calls, one `aidenhq-browse` run per width and mode, moving files) | 7 | ~14 (~30) | **Yes:** `npm run screens`, one command for both widths and themes. |
+| 7 | Edits through `python3`/`perl` scripts | 35 | ~24 (~69) | Mostly the `apply_patch` gap that #127 fixed. |
+| 8 | jsdom harness probes | 3 | ~8 tool min (20 wall min in WOR-5423) | **Yes:** Vitest with happy-dom, plus the lint rule. |
+| 9 | git dances: `git fetch` with no credential in the Roadmap Keeper clone (7 failures in 4 jobs), stash, rebase | 36 | ~12 (~50) | No. The box GitHub token is another agent's change. |
+| 10 | Failing commands, mostly `rg` no-match; also `file: command not found` (4), `node -e import(.../supply-chain/...)` (14 in 8 jobs) and `SHELLOPTS`/`pipefail` probes (9 in 8 jobs) | 39 | ~5 (~49) | Deferred: `file` in the box image (Dockerfile under edit in #126). The supply-chain import and shell-option probes need their own look. |
+| 11 | Fixture or seed scripts | 3 | negligible | Covered by the seeded preview. |
+
+**Deferred:**
+
+- **Retiring `aidenhq-browse`:** Playwright now does its job for apps that carry the starter's setup. The grader's
+  commit stamp is the one thing it adds; unstamped screenshots are still sent. Retire it once the apps have moved.
+- **`ui-review`'s own launcher:** it still expects a running server.
+- **`file` in the box image.**
+- **The stacked-PR review waits** (item 1).

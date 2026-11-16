@@ -259,7 +259,7 @@ const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/loca
 
 /** Every name a job box's env file may hold: the run's revocable capabilities and plain settings. Nothing of the runner's own env (the runner adds only the job's read-only gh token, by docker exec -e). */
 export const JOB_ENV_NAMES = [
-  "AIDENHQ_RUN_TOKEN", "AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "AIDENHQ_MCP_B64", "HOME", "CODEX_HOME", "PATH",
+  "AIDENHQ_RUN_TOKEN", "AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH",
   "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_TERMINAL_PROMPT",
   "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2",
 ];
@@ -277,7 +277,7 @@ export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }) {
     AIDENHQ_REPO_URL: `${gatewayUrl}/helper`,
     AIDENHQ_REPO_TOKEN: token,
     AIDENHQ_MCP_B64: Buffer.from(mcp ?? "").toString("base64"),
-    HOME: JOB_HOME,
+    HOME: JOB_HOME, AIDENHQ_TASK_WORKTREE: "/workspace", // the task folder, as on the host (its .aidenhq/out/ is attached)
     CODEX_HOME: "/codex-home",
     PATH: JOB_PATH,
     GIT_AUTHOR_NAME: clean(identity.name), GIT_AUTHOR_EMAIL: clean(identity.email),
