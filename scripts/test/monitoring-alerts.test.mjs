@@ -292,6 +292,19 @@ test("a single missing unit is named, and only that unit", () => {
   assert.equal(fired[0].unit, missing);
 });
 
+test("one failed unit on fresh data is named by unit, and CiRunnersDown waits for the rest", () => {
+  const failedUnit = UNITS[7];
+  const points = [
+    ...snapshot(UNITS.filter((u) => u !== failedUnit)),
+    point("aidenhq_unit_active", { scope: "user", unit: failedUnit }, 0),
+    point("aidenhq_unit_failed", { scope: "user", unit: failedUnit }, 1),
+  ];
+  const fired = firing(points);
+  // The gate is open (units.prom is fresh), so the failure is visible; 15 units still run, so the fleet is not down.
+  assert.deepEqual(fired.map((a) => a.alert), ["UnitFailed"]);
+  assert.equal(fired[0].unit, failedUnit);
+});
+
 test("a planned drain with every unit still listed raises nothing", () => {
   assert.deepEqual(firing(snapshot(UNITS, { active: 0, draining: 1 })), []);
 });
