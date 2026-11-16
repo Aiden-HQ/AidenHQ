@@ -103,7 +103,7 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   for (const by of ["reviewer:~acme/model-a", "kernel", "auto:x", ""]) assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/decide`, { ...decide, by })).status, 409);
   fx.target = "c2"; // what it acts on moves after the card was filed
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/decide`, decide)).json.decided_by, "owner:chat");
-  await until(() => k.records.get(p.approval).state === "stale");
+  await until(() => k.records.get(p.approval).state === "stale" && k.records.list(["review"]).length === 1); // the refile follows the stale close
   assert.equal(fx.executes.length, 0);
   const refiled = k.records.list(["review"]);
   assert.equal(refiled.length, 1);
