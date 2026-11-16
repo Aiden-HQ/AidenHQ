@@ -96,6 +96,9 @@ services:
     <<: *hardening
     build: ./services/apps-mcp
     image: aidenhq/apps-mcp:local
+    # A recreate (apply) sends SIGTERM and waits this long: apps-mcp finishes the app deploys in flight first
+    # (services/apps-mcp/src/main.ts DRAIN_MS, a little shorter).
+    stop_grace_period: 11m
     user: "${PUID:-1000}:${DOCKER_GID:?set DOCKER_GID in .env (getent group docker | cut -d: -f3)}"
     read_only: true
     tmpfs:

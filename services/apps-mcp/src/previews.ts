@@ -79,7 +79,7 @@ export function githubApi(token: RepoToken, fetchImpl: typeof fetch = fetch): Gi
 export interface PreviewDeps {
   apps: () => App[];
   store: Store;
-  engine: Pick<Engine, "preview" | "remove">;
+  engine: Pick<Engine, "preview" | "remove" | "draining">;
   github: GitHub;
   /** Is this repo in the instance's agents org? */
   agentsRepo: (repo: string) => boolean;
@@ -182,6 +182,7 @@ async function teardown(d: PreviewDeps, r: PreviewRow): Promise<void> {
  * A PR list GitHub didn't give is unknown, never "all closed": that app's previews are kept.
  */
 export async function previewTick(d: PreviewDeps): Promise<void> {
+  if (d.engine.draining()) return; // shutting down: a refused preview would be recorded as failed
   const keep = new Set<string>();
   const want: [App, OpenPr][] = [];
   for (const app of d.apps().filter((a) => eligible(d, a))) {
