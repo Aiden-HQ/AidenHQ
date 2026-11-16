@@ -11,7 +11,7 @@ import { buildServer } from "./mcp.js";
 import { poster } from "./post.js";
 import { startSocket } from "./socket.js";
 import { openStore } from "./store.js";
-import { type NotifyConfig } from "./urgent.js";
+import { relayOutbox, type NotifyConfig } from "./urgent.js";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
 import { SourceStore } from "./source-store.js";
@@ -138,6 +138,14 @@ const tee = sources ? slackTee(sources, log) : undefined;
 const userToken = env("SLACK_USER_TOKEN");
 if (sources && userToken) startGapSync(sources, userToken, log);
 else log.warn(sources ? "SLACK_USER_TOKEN not set; src_slack gets live events only (no gap sync)" : "warehouse not configured; src_slack is off");
+
+// Normal owner messages from channel-telegram's notify_owner, as Slack DMs; a failed one goes back to Telegram.
+const drain = async () => {
+  const res = await fetch(`${kernelUrl}/v1/channel/outbox`, { headers: { authorization: `Bearer ${inboundToken}` }, signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`GET /v1/channel/outbox -> ${res.status}`);
+  return (((await res.json()) as { messages?: { text: string }[] }).messages ?? []);
+};
+setInterval(() => void relayOutbox(cfg, drain, (text) => kernel("/v1/channel/outbox", { to: "channel-telegram", text })).catch((err) => log.warn({ err: String(err) }, "owner DM relay failed")), 5_000).unref();
 
 if (appToken) void startSocket({ appToken, store, ignored, onKept: poke, ...(chat ? { chat } : {}), ...(tee ? { tee } : {}), log });
 else log.warn("SLACK_APP_TOKEN not set; not listening to Slack");

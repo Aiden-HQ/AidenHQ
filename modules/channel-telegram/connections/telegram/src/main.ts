@@ -45,6 +45,7 @@ const cfg: NotifyConfig & { telegramToken: string; telegramChatId: string } = {
   // The agent's reply on its chat, posted through the kernel as that agent.
   postReply: makePostReply({ kernelUrl, serviceKey: inboundToken, warn: (msg, status) => log.warn({ status }, msg) }),
   brake: (task, agent, decision) => kernel.brake({ task, agent, ...(decision ? { decision: true as const } : {}) }),
+  toSlack: (text) => kernel.file("channel-slack", text),
 };
 // notify_owner(task): the task's agent heads the message (looked up through the kernel, never taken from the text).
 const chat = makeChat({ telegramToken: cfg.telegramToken, telegramChatId: cfg.telegramChatId }, store, kernel, log);
@@ -134,6 +135,8 @@ else {
       log.warn({ err: String(err) }, "approval cards failed");
     }
     await sendNotices(kernel, (text) => postTelegram(cfg, text)).catch((err) => log.warn({ err: String(err) }, "owner notices failed"));
+    // Slack DMs that failed, handed back by channel-slack: sent here instead.
+    for (const m of await kernel.drain().catch(() => [])) await postTelegram(cfg, m.text);
   };
   void cards();
   setInterval(cards, 20_000).unref();

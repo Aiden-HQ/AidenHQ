@@ -67,6 +67,10 @@ export function kernelClient(url: string, token: string, f: Fetch = fetch) {
     },
     /** A read of the control plane (GET only), e.g. read("/api/issues/WOR-1"). */
     read: async (path: string): Promise<any> => ok("GET", `/v1/cp/read${path}`),
+    /** Hands a message for the owner to another channel (the kernel's outbox); false when that channel isn't installed. */
+    file: async (to: string, text: string): Promise<boolean> => (await call("POST", "/v1/channel/outbox", { to, text })).status === 200,
+    /** This channel's own outbox: messages another channel handed back (a Slack DM that failed). */
+    drain: async (): Promise<{ from: string; text: string }[]> => (await ok("GET", "/v1/channel/outbox")).messages ?? [],
     /** The notify_owner loop brake: whether this message about `task` may go (counted when it may). */
     brake: async (body: { task: string; agent: string; decision?: true }): Promise<{ allow: boolean; note?: string }> => ok("POST", "/v1/brake/notify", body),
   };

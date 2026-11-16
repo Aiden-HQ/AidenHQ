@@ -102,6 +102,19 @@ async function postSlack(cfg: NotifyConfig, payload: Record<string, unknown>): P
   return cfg.botToken && cfg.ownerId ? postMessage(cfg, payload) : false;
 }
 
+/**
+ * The owner's normal messages channel-telegram's notify_owner hands over (the kernel's outbox): each as the Slack DM, the
+ * owner's default. One that fails goes back to Telegram the same way.
+ */
+export async function relayOutbox(cfg: NotifyConfig, drain: () => Promise<{ text: string }[]>, back: (text: string) => Promise<unknown>): Promise<number> {
+  let sent = 0;
+  for (const m of await drain()) {
+    if (await postSlack(cfg, { text: toSlackMrkdwn(m.text) }).catch(() => false)) sent++;
+    else await back(m.text).catch(() => undefined);
+  }
+  return sent;
+}
+
 /** The message's own Slack permalink: the one passed, else looked up from its channel and ts. */
 async function sourceLink(cfg: NotifyConfig, a: NotifyArgs): Promise<string | undefined> {
   const given = safeLink(a.permalink);

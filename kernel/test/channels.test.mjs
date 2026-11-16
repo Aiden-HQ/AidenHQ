@@ -166,3 +166,13 @@ test("the kernel holds a channel to its own decide setting: none mints nothing; 
   assert.equal((await decide("op-key", { token: op.approve })).status, 403);
   assert.equal(k.records.get(rec.id).state, "owner");
 });
+
+test("the outbox: a channel hands the owner's message to another installed channel, which alone drains it", async (t) => {
+  const { k } = await setup(t);
+  assert.equal((await k.v1("POST", "/v1/channel/outbox", { to: "channel-operator", text: "hi" }, TG)).status, 200);
+  assert.equal((await k.v1("POST", "/v1/channel/outbox", { to: "channel-slack", text: "hi" }, TG)).status, 404); // not installed: send it yourself
+  assert.equal((await k.v1("POST", "/v1/channel/outbox", { to: "channel-operator", text: "x" }, LANE)).status, 403);
+  assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, TG)).json.messages, []);
+  assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, [{ from: "channel-telegram", text: "hi" }]);
+  assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, []);
+});

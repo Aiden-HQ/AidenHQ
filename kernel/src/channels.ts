@@ -51,7 +51,8 @@ export function createChannels({ db, writes, board, owner, modules, log = () => 
 }) {
   db.exec(`CREATE TABLE IF NOT EXISTS channel_tokens (hash TEXT PRIMARY KEY, card TEXT NOT NULL, digest TEXT NOT NULL, channel TEXT NOT NULL, decision TEXT NOT NULL, created_at TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '', panel INTEGER NOT NULL DEFAULT 0);
     CREATE INDEX IF NOT EXISTS channel_tokens_card ON channel_tokens (card, channel);
-    CREATE TABLE IF NOT EXISTS channel_kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS channel_kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS channel_outbox (id INTEGER PRIMARY KEY, channel TEXT NOT NULL, from_channel TEXT NOT NULL, text TEXT NOT NULL, at TEXT NOT NULL);`);
   const kv = { get: (k: string) => (db.prepare("SELECT v FROM channel_kv WHERE k = ?").get(k) as { v: string } | undefined)?.v, set: (k: string, v: string) => db.prepare("INSERT INTO channel_kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(k, v) };
   const ok = async (p: Promise<{ status: number; json: any }>, what: string) => {
     const r = await p;
@@ -203,6 +204,25 @@ export function createChannels({ db, writes, board, owner, modules, log = () => 
       const runs = ((await ok(owner("GET", `/api/companies/${issue.companyId}/live-runs`), "live runs")) as { id: string; issueId: string | null }[]).filter((r) => r.issueId === issue.id);
       for (const r of runs) await ok(owner("POST", `/api/heartbeat-runs/${encodeURIComponent(r.id)}/cancel`, {}), "cancelling a run");
       return { stopped: runs.length };
+    },
+
+    /**
+     * A message for the owner one channel hands another (POST /v1/channel/outbox): Telegram's notify_owner files a normal
+     * message for channel-slack, which sends it as the Slack DM; a DM that fails comes back the same way. Only a channel files,
+     * only to an installed channel (404 otherwise: the caller sends it itself), and each channel drains only its own (GET).
+     */
+    file(module: string, b: { to?: unknown; text?: unknown }) {
+      channelOf(module);
+      const to = str(b.to, 64), text = str(b.text, 4000).trim();
+      if (!text) throw fail(400, "bad_request", "send {to, text}");
+      if (to === module || !isChannel(modules().modules?.[to])) throw fail(404, "not_found", `${to || "that"} isn't another installed channel`);
+      db.prepare("INSERT INTO channel_outbox (channel, from_channel, text, at) VALUES (?, ?, ?, ?)").run(to, module, text, new Date(now()).toISOString());
+      return { filed: true };
+    },
+    drain(module: string) {
+      channelOf(module);
+      const rows = db.prepare("DELETE FROM channel_outbox WHERE id IN (SELECT id FROM channel_outbox WHERE channel = ? ORDER BY id LIMIT 50) RETURNING id, from_channel, text").all(module) as { id: number; from_channel: string; text: string }[];
+      return { messages: rows.sort((x, y) => x.id - y.id).map((r) => ({ from: r.from_channel, text: r.text })) };
     },
 
     /** The owner's one-line notices, account reset links and the daily digest, each handed over once (by the board). */

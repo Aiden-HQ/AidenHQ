@@ -12,6 +12,7 @@
 //                              reviewer's verdicts the board forwards (the owner decides by channel token, channels.ts)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop}, GET /v1/channel/notices  (a speaks-as-owner
 //                              channel's token) cards with decision tokens, a token spent, the owner's words, notices (channels.ts)
+//   POST /v1/channel/outbox, GET /v1/channel/outbox  (a channel) a message for the owner handed to another channel; drained by it
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
 //   POST /v1/brake/notify      (a channel) may an agent message the owner about a task again (brake.ts)
 //   POST /v1/wake              (a module with role kernel.wake) a labelled wake notice on a task, which wakes its agent
@@ -50,6 +51,8 @@ export const ROUTES = [
   { method: "POST", path: "/v1/channel/owner-message", auth: "module" },
   { method: "POST", path: "/v1/channel/stop", auth: "module" },
   { method: "GET", path: "/v1/channel/notices", auth: "module" },
+  { method: "POST", path: "/v1/channel/outbox", auth: "module" },
+  { method: "GET", path: "/v1/channel/outbox", auth: "module" },
   { method: "GET", path: "/v1/cp/read/*", auth: "module" },
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
   { method: "POST", path: "/v1/wake", auth: "module" },
@@ -119,6 +122,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           case "POST /v1/channel/owner-message": return send(res, 200, await channels.ownerMessage(mod, await json(req), cos));
           case "POST /v1/channel/stop": return send(res, 200, await channels.stop(mod, await json(req)));
           case "GET /v1/channel/notices": return send(res, 200, await channels.notices(mod));
+          case "POST /v1/channel/outbox": return send(res, 200, channels.file(mod, await json(req)));
+          case "GET /v1/channel/outbox": return send(res, 200, channels.drain(mod));
           case "GET /v1/cp/read/*": {
             if (!isChannel(modules().modules?.[mod]) && !w.roles.includes("kernel.cp-read")) throw fail(403, "forbidden", `${mod} has no read access to the control plane (role kernel.cp-read)`);
             if (!CP_READ_PATHS.some((re) => re.test(m[0]!))) throw fail(403, "forbidden", `GET ${m[0]} isn't a read route`);

@@ -33,6 +33,11 @@ export interface NotifyConfig {
   brake?: (task: string, agent: string, decision: boolean) => Promise<{ allow: boolean; note?: string }>;
   /** The channel-telegram setting `telegram_fyi: mute`: `fyi` messages skip Telegram (they still land on the chat). */
   muteFyi?: boolean;
+  /**
+   * A normal message's Slack DM: filed in the kernel's outbox for channel-slack, which sends it (and hands a failed one back
+   * here). False when channel-slack isn't installed: Telegram sends it instead.
+   */
+  toSlack?: (text: string) => Promise<boolean>;
 }
 export type NotifyResult = { sent: boolean; reason?: "cooldown" | "error" | "duplicate" | "limit" | "muted"; onChat?: boolean; note?: string };
 
@@ -164,13 +169,16 @@ export async function notifyOwner(store: Store, cfg: NotifyConfig, a: NotifyArgs
       const onChatP = mirror ? cfg.postReply!(found.issueId, replyBody(a.text, a.actions, a.questions), caller.assertion).catch(() => false) : Promise.resolve(false);
       // Muted fyi: no Telegram ping (buttons are an open choice, never muted).
       const muted = kind === "fyi" && cfg.muteFyi === true && !a.actions?.length;
-      const tg = where === "board" || muted ? false : await postTelegram(cfg, a.text + spelled + (link ? `\n${link}` : ""), markup, store, now, chat, undefined, Boolean(a.questions?.length));
+      // One channel: the Slack DM (the owner's default for normal messages), or Telegram when Slack isn't installed, the
+      // message asks for Telegram, or the DM fails (channel-slack hands it back through the outbox).
+      const slack = (where === "both" || where === "slack") && cfg.toSlack ? await cfg.toSlack(`${chat ? `*${chat.agentName}* · ${chat.identifier}\n` : ""}${a.text}${spelled}${link ? `\n${link}` : ""}`).catch(() => false) : false;
+      const tg = where === "board" || muted || slack ? false : await postTelegram(cfg, a.text + spelled + (link ? `\n${link}` : ""), markup, store, now, chat, undefined, Boolean(a.questions?.length));
       const onChat = await onChatP;
       // A web-only owner has no Telegram: the reply on the chat counts as sent.
-      if (tg || onChat) store.setKv(dupKey, String(now));
+      if (slack || tg || onChat) store.setKv(dupKey, String(now));
       const on = onChat ? { onChat } : {};
-      if (!tg && !onChat && muted) return { sent: false, reason: "muted", note: "The owner muted fyi messages on Telegram, so nothing was sent. That is expected: don't resend it; put it in your next result instead." };
-      return tg || onChat ? { sent: true, ...on } : { sent: false, reason: "error", ...on };
+      if (!slack && !tg && !onChat && muted) return { sent: false, reason: "muted", note: "The owner muted fyi messages on Telegram, so nothing was sent. That is expected: don't resend it; put it in your next result instead." };
+      return slack || tg || onChat ? { sent: true, ...on } : { sent: false, reason: "error", ...on };
     }
     const threadKey = a.thread_ts ?? a.ts;
     const track = a.channel_id && threadKey ? { channel: a.channel_id, key: threadKey } : null;

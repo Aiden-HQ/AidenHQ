@@ -150,6 +150,10 @@
       "state": "experimental",
       "fp": "auth=module"
     },
+    "route GET /v1/channel/outbox": {
+      "state": "experimental",
+      "fp": "auth=module"
+    },
     "route GET /v1/cp/read/*": {
       "state": "experimental",
       "fp": "auth=module"
@@ -179,6 +183,10 @@
       "fp": "auth=module"
     },
     "route POST /v1/channel/decide": {
+      "state": "experimental",
+      "fp": "auth=module"
+    },
+    "route POST /v1/channel/outbox": {
       "state": "experimental",
       "fp": "auth=module"
     },
