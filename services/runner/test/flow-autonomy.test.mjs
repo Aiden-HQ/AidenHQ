@@ -260,7 +260,7 @@ describe("flow-autonomy", { concurrency: true }, () => {
         }
       };
       await waitFor("the push to land", () => tipOnGithub());
-      await waitFor("the first card's outcome", () => first.outcome);
+      await waitFor("the first card's outcome", () => t.paperclip.approvals.get(first.id).outcome);
       // Its PR is open now (in the fake GitHub with every named check green): another push requests its merge again.
       const state = new State(join(t.dir, "state"));
       state.updateBranch("part", "acme/app", "feat/ui-card", { pr_url: "https://github.com/acme/app/pull/11" });

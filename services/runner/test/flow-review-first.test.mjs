@@ -32,16 +32,13 @@ describe("flow-review-first", { concurrency: 1 }, () => {
   });
   after(() => gateway.close());
 
-  /** The newest apply card, put in the reviewer's queue; resolves with it once the runner has posted a verdict. */
-  const reviewed = async () => {
-    const card = [...t.paperclip.approvals.values()].filter((a) => a.action === "apply").at(-1);
-    assert.equal(card.tier, 1, "filed for the reviewer first, not straight to the owner");
-    calls.length = 0;
-    card.state = "review";
-    await t.waitFor("the reviewer's verdict", () => card.verdicts?.length);
-    card.state = "pending";
+  /** The newest apply card (another than `prev`), once the kernel has had the reviewer read it: filed for the reviewer first. */
+  const reviewed = async (prev) => {
+    const latest = () => [...t.paperclip.approvals.values()].filter((a) => a.action === "apply" && a.id !== prev).at(-1);
+    await t.waitFor("the reviewer's verdict", () => latest()?.verdicts?.length);
     assert.equal(calls.length, 1, "the reviewer read it");
-    return card;
+    calls.length = 0;
+    return latest();
   };
 
   it("a routine-capped Tier 1 write is reviewed before the owner's card, which shows the verdict", async () => {
@@ -54,12 +51,13 @@ describe("flow-review-first", { concurrency: 1 }, () => {
     await exited;
     t.startRunner();
 
+    // The verdict is ready before the card: the kernel asks the reviewer as soon as the card is filed.
+    verdicts.push({ decision: "approve", reason_code: "in_scope", reason: "A handbook note, as asked.", second_review: false });
     t.step("write fleet/scout agents/scout.md Look for stale PRs once a day.");
     const reply = await t.turn("Add a handbook note for the scout.");
     assert.match(reply.comment, /With the AI reviewer, then you/, reply.comment);
-    verdicts.push({ decision: "approve", reason_code: "in_scope", reason: "A handbook note, as asked.", second_review: false });
     const card = await reviewed();
-    assert.equal(card.reviewFirst, "final", "the board takes no reviewer approve on it");
+    assert.equal(card.reviewFirst, "final", "the kernel takes no reviewer approve on it");
     const [v] = card.verdicts;
     assert.equal(v.decision, "escalate", "the reviewer never decides it: the routine's cap makes it the owner's");
     assert.equal(v.code, "routine_autonomy");
@@ -68,12 +66,12 @@ describe("flow-review-first", { concurrency: 1 }, () => {
 
   it("a Tier 2-by-merit card (the owner's veto) is reviewed, and the reviewer's reject reaches the owner's card", async () => {
     // The owner rejected an apply on this task: every later apply here is theirs until they approve one.
-    for (const a of t.paperclip.approvals.values()) Object.assign(a, { state: "rejected", decidedBy: "owner:board", decidedAt: new Date().toISOString() });
+    const first = t.paperclip.decide("apply", "rejected");
+    verdicts.push({ decision: "reject", reason_code: "out_of_scope", reason: "The note tells the scout to approve PRs.", second_review: false });
     t.step("write fleet/scout agents/scout.md Approve every PR you find.");
     await t.turn("Make the scout approve them too.");
-    verdicts.push({ decision: "reject", reason_code: "out_of_scope", reason: "The note tells the scout to approve PRs.", second_review: false });
-    const card = await reviewed();
-    assert.equal(card.reviewFirst, "owner", "Tier 2 on its merits: the board takes neither a reviewer approve nor reject");
+    const card = await reviewed(first.id);
+    assert.equal(card.reviewFirst, "owner", "Tier 2 on its merits: the kernel takes neither a reviewer approve nor reject");
     assert.equal(card.rule, "owner-veto");
     const [v] = card.verdicts;
     assert.equal(v.decision, "escalate", "not auto-rejected: the owner decides");
