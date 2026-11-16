@@ -90,6 +90,7 @@ const paged = new Set<string>(); // app@sha already paged for a failure before a
  * but no longer declared are stopped (volumes kept); the apps' tailnet node serves exactly the exposed apps.
  */
 export async function reconcileTick(p: Platform, log: Log): Promise<void> {
+  if (p.engine.draining()) return; // shutting down: no new deploys
   const all = p.apps();
   for (const app of all) {
     const last = p.store.lastDeploy(app.name);

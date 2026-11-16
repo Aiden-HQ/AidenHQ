@@ -35,6 +35,34 @@ function setup(good: string[], check?: Deps["check"]) {
 }
 
 describe("deploy engine", () => {
+  it("drain waits for a deploy in flight and refuses new ones", async () => {
+    const { engine, release } = (() => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const src = mkdtempSync(`${tmpdir()}/src-`);
+      writeFileSync(`${src}/compose.yaml`, "services:\n  web:\n    image: x\n");
+      const engine = createEngine({
+        store: openStore(":memory:"), appsData: mkdtempSync(`${tmpdir()}/apps-`), secretsDir: "/none", hostSecretsDir: "/none", identityKeysHostFile: "/none/keys.json",
+        exec: async (args) => (args.includes("config") ? '{"services":{"web":{"image":"x"}}}' : args.includes("up") ? (await gate, "") : ""),
+        checkout: async () => ({ sha: "v1", dir: src }),
+        probe: async () => true,
+        sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))),
+      });
+      return { engine, release };
+    })();
+    const deploying = engine.deploy(app(), { sha: "v1", by: "t" });
+    await new Promise((r) => setTimeout(r, 20)); // inside `compose up`
+    let drained = false;
+    const draining = engine.drain(60_000).then(() => (drained = true));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(drained).toBe(false); // still waiting on the build
+    await expect(engine.deploy(app({ name: "other" }), { sha: "v2", by: "t" })).rejects.toThrow(/shutting down/);
+    release();
+    expect((await deploying).status).toBe("healthy"); // the deploy finished, not killed
+    await draining;
+    expect(drained).toBe(true);
+  });
+
   it("rolls back a bad deploy to the previous sha", async () => {
     const { engine, st } = setup(["v1"]);
     await engine.deploy(app(), { sha: "v1", by: "t" });

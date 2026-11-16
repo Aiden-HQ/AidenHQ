@@ -35,6 +35,7 @@ export function createEngine(d: Deps) {
   const now = d.now ?? Date.now;
   const sleep = d.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)));
   const locks = new Set<string>();
+  let draining = false;
   const project = (app: App) => `app-${app.name}`;
   const dir = (app: App) => `${d.appsData}/.platform/${app.name}`; // platform-only (see policy.ts)
   const sandboxed = (app: App) => `${dir(app)}/compose.sandboxed.json`;
@@ -43,6 +44,7 @@ export function createEngine(d: Deps) {
   const compose = (app: App, args: string[], o?: Opts) => docker(app, ["compose", "-p", project(app), "-f", sandboxed(app), ...args], o);
 
   async function exclusive<T>(app: App, fn: () => Promise<T>): Promise<T> {
+    if (draining) throw new Error("apps-mcp is shutting down: not starting new work");
     if (locks.has(app.name)) throw new Error(`deploy in progress for ${app.name}`);
     locks.add(app.name);
     try {
@@ -261,6 +263,14 @@ export function createEngine(d: Deps) {
     return verify(app, await d.probe(app).catch(() => false), declared);
   }
 
-  return { preview, remove, check, run, services, deployed, compose: composeOf, deploy, rollback, reap, restart, logs, stats, containersHealthy, exitedContainer, locked: (app: App) => locks.has(app.name) };
+  /** Shutdown: takes no new deploys, rollbacks, previews or runs, and resolves once the ones in flight are done (or after maxMs). */
+  async function drain(maxMs: number): Promise<number> {
+    draining = true;
+    const deadline = now() + maxMs;
+    while (locks.size && now() < deadline) await sleep(1000);
+    return locks.size;
+  }
+
+  return { drain, draining: () => draining, preview, remove, check, run, services, deployed, compose: composeOf, deploy, rollback, reap, restart, logs, stats, containersHealthy, exitedContainer, locked: (app: App) => locks.has(app.name) };
 }
 export type Engine = ReturnType<typeof createEngine>;

@@ -235,7 +235,17 @@ const http = createServer(async (req, res) => {
 });
 
 http.listen(Number(process.env.PORT ?? 8090), "0.0.0.0", () => log.info("apps-mcp listening"));
-for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.close(() => process.exit(0)));
+// A restart (an apply recreating this container) waits for the deploys, rollbacks, previews and runs in flight, so it never
+// kills an app's build half way. stop_grace_period in compose.yaml is a minute longer.
+const DRAIN_MS = 600_000;
+for (const sig of ["SIGTERM", "SIGINT"] as const)
+  process.on(sig, () => {
+    log.info("stopping: waiting for in-flight app deploys");
+    void p.engine.drain(DRAIN_MS).then((left) => {
+      if (left) log.warn({ left }, "drain timed out");
+      process.exit(0);
+    });
+  });
 reconcile = startLoops(p, log);
 // Preview deploys of open PRs on agents-org app repos (previews.ts): their own loop, with the GitHub App only.
 if (appToken && agentsOrg)
