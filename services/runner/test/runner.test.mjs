@@ -172,6 +172,19 @@ describe("prompts", () => {
     assert.match(p, /Instructions from Dana \(authoritative\)\n\n[^\n]*\n\nFind the cause\./);
   });
 
+  it("labels an agent-delegated task's request as the agent's and never repeats the task text", () => {
+    const description = "Drop Legacy support in acme/late";
+    const p = firstPrompt({
+      user: "Dana",
+      task: { identifier: "PEN-2", title: "Drop Legacy", description },
+      workspace: "/w", repos: [],
+      instructions: "(From an agent, not Dana's own words.)\n\nThe request is the task above.",
+    });
+    assert.doesNotMatch(p, /Instructions from Dana \(authoritative\)/);
+    assert.match(p, /## Request from the agent that delegated this task \(not Dana's words\)[\s\S]*still needs Dana's word or the gates\.\n\nThe request is the task above\./);
+    assert.equal(p.split(description).length - 1, 1);
+  });
+
   it("builds the PR body from the newest finished report, never from an error quoting one", () => {
     const m = "<!-- aidenhq-runner -->";
     const report = `**Done.** The changes are committed on the task branch.\n\n## Summary\n\nImplemented it.\n\n## Verification\n\nTests pass.\n---\nCodex · implement\n\n${m}`;
