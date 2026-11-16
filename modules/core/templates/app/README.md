@@ -40,7 +40,7 @@ npm run catalog   # the starter's dev-only component catalog (catalog.html): eve
 | `src/styles/presets/` | Theme presets (palette light and dark, accent, radius, fonts, density), vendored unchanged: `crisp`, `polished`, `editorial`, `dense`, `ops`, `indigo`, `soft`, `slate`, `minimal`, `graphite`. Pick one by importing it after `shadcn.css` in `src/index.css` and setting `<html data-palette="<name>">` in `index.html`, or adapt it in a `theme.css`. A starting point, not a rule. |
 | `THIRD_PARTY.md` | Where vendored component code comes from, and its licence. |
 | `src/lib/navigation.tsx` | The app's navigation: `useLocation()` (path and query; re-renders on every change), `Link` (an `<a href>` that moves without a page load), `navigate(href)`, and `useUrlState()` for state in the query (`set` replaces, `push` adds a history entry for details). A link click, Back/Forward and a reload all render the page the URL names. |
-| `src/lib/notify-owner.ts` | `notifyOwner()`: call it after the server stored people's feedback or a request, and the agent that owns the app wakes within a minute to read it through the app's agent API (shared apps; no text travels). |
+| `src/lib/notify-owner.ts` | `notifyOwner()`: call it after the server stored people's feedback or a request, and the app's feedback agent (registry `feedback_to`) wakes within a minute to read it through the app's agent API (shared apps; no text travels). |
 | `src/lib/csp.ts`, `public/theme.js` | The CSP nonce for Radix's run-time styles, and light/dark/palette before first paint. |
 
 ## The feature map

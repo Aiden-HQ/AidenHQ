@@ -54,7 +54,7 @@ export class AccessError extends Error {
 }
 
 const RATE = { perHour: 20, openCap: 50 };
-/** At most one feedback wake per app in this long; what arrives meanwhile goes in the next (the minute retry fires it). */
+/** At most one feedback wake per app in this long (so 6 an hour); what arrives meanwhile goes in the next (the minute retry fires it). */
 export const FEEDBACK_GAP_MS = 10 * 60_000;
 
 export function createAppAccess(d: AppAccessDeps) {
@@ -316,6 +316,7 @@ export function createAppAccess(d: AppAccessDeps) {
     /** The app's page says people sent something into its own intake (the gate names the app and the visitor; no text). */
     notify(app: string, email: string): { ok: true } {
       if (effectiveRole(app, asEmail(email)) === "blocked") throw new AccessError(403, "this app isn't shared with you");
+      log.info({ app, email: asEmail(email) }, "app feedback notice"); // who sent it, for abuse
       const f = feedback.get(app) ?? feedback.set(app, { pending: 0, last: 0 }).get(app)!;
       f.pending = Math.min(f.pending + 1, 1000);
       void wakeFeedback(app);

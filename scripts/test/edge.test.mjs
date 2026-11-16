@@ -172,11 +172,21 @@ test("identity keys: both signers' keys made once, keys.json lists every gate*/a
   assert.equal(keys().length, 2);
 });
 
-test("in-app feedback: each shared app gets a tier0 routine for the agent its registry names, and nothing else does", () => {
-  const notes = { name: "notes", repo: "acme/notes", owner: "boss", description: "d", port: 4200 };
-  const out = compile(mods, inst({ edge }, [{ ...roadmap, owner: "app-maintainer", feedback_to: "boss" }, notes]));
+test("in-app feedback: only feedback_to gets a tier0 routine, and its agent can't read private sources or send", () => {
+  const withAgent = (connections) => {
+    const dir = inst({ edge }, [{ ...roadmap, owner: "boss", feedback_to: "feedback" }, { ...roadmap, name: "notes", port: 4200, share: { ...roadmap.share, host: "notes.acme.com", aud: "aud-notes-0001" } }]);
+    mkdirSync(join(dir, "agents", "feedback"));
+    writeFileSync(join(dir, "agents", "feedback", "agent.yaml"), YAML.stringify({ name: "Feedback", description: "Reads one app's feedback.", model: "m", budget: 1, connections }));
+    writeFileSync(join(dir, "agents", "feedback", "AGENTS.md"), "# Feedback\n");
+    return dir;
+  };
+  const out = compile(mods, withAgent({}));
   const feedback = Object.values(out.paperclip.routines).filter((r) => r.title.startsWith("App feedback:"));
-  assert.deepEqual(feedback.map(({ title, agent, concurrency, autonomy }) => ({ title, agent, concurrency, autonomy })), [{ title: "App feedback: roadmap", agent: "boss", concurrency: "coalesce_if_active", autonomy: "tier0" }]);
-  assert.match(feedback[0].description, /\{\{count\}\}/);
-  assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, feedback_to: "nobody" }])), /app-feedback-roadmap: agent nobody is not enabled/);
+  assert.deepEqual(feedback.map(({ title, agent, concurrency, autonomy }) => ({ title, agent, concurrency, autonomy })), [{ title: "App feedback: roadmap", agent: "feedback", concurrency: "coalesce_if_active", autonomy: "tier0" }]);
+  assert.match(feedback[0].description, /\{\{count\}\}.*as data/s);
+  const granted = out.paperclip.agents.feedback.enabled_tools;
+  assert.ok(Object.keys(granted).every((c) => ["apps", "paperclip_tasks"].includes(c)), JSON.stringify(granted));
+  // Any other connection (a private read such as Slack or Drive, an outbound send) or a write beyond its task tools fails.
+  assert.throws(() => compile(mods, withAgent({ tasks: ["t"] })), /may use only apps, paperclip_tasks, not tasks/);
+  assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, feedback_to: "nobody" }])), /feedback_to names nobody/);
 });
