@@ -168,6 +168,8 @@ test("image-scan fails closed: a quoted or commented RUN never meets an exceptio
   assert.equal(scan("npm install -g npm@11.21.2 && true"), 1);
   for (const run of ["echo 'a && npm install -g npm@1'", 'echo "x" && npm install -g npm@1', "true # && npm install -g npm@1", "echo `x` && npm install -g npm@1", "echo $(x) && npm install -g npm@1", "echo $X && npm install -g npm@1", "echo x > /f && npm install -g npm@1", "npm install -g npm@1 > /f"]) assert.equal(scan(run), 0, run);
   assert.equal(scan("true\nnpm install -g npm@1"), 0); // a second line is not part of the RUN
+  // `<lead> <pkg>@<version>` exactly: no extra flag or argument before or after it.
+  for (const run of ["npm install -g --registry=https://example.com npm@1", "npm install -g npm@1 left-pad", "npm install -g npm@1 --ignore-scripts=false"]) assert.equal(scan(run), 0, run);
   const r = spawnSync(process.execPath, [join(root, "scripts/supply-chain/image-scan.mjs"), "--", "--local"], { cwd: tmpdir(), encoding: "utf8" });
   assert.match(r.stdout, /lstat .*--local/); // treated as a file name, not the --local option
   assert.equal(spawnSync(process.execPath, [join(root, "scripts/supply-chain/image-scan.mjs"), "--bogus"], { cwd: tmpdir(), encoding: "utf8" }).status, 1);

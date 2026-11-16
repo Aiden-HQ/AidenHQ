@@ -13,8 +13,9 @@
 # files, AGENTS.md, and paths naming auth, security, tokens, sessions or permissions) plus the app's own `.github/code-review-critical`: one glob per
 # line (bash pattern: `*` also matches `/`, so `src/server/db/*` covers everything under it), `#` comments allowed. That
 # file is read from the default branch, never the PR, so a PR can't drop its own critical paths (and editing it is itself
-# critical: it is under .github/). package-lock.json (any depth) is left out of the changed-line count and never makes a
-# PR critical: npm-age.mjs in the supply-chain job validates every entry it changes. Other lockfiles (npm-shrinkwrap.json,
+# critical: it is under .github/). package-lock.json (any depth) is left out of the changed-line count (npm-age.mjs in
+# the supply-chain job validates every entry it changes), but a change that adds a package, changes one's version or source,
+# or adds an install script makes the PR critical, and the reviewer gets a summary of it. Other lockfiles (npm-shrinkwrap.json,
 # pnpm-lock.yaml, yarn.lock, Cargo.lock, ...) have no supply-chain check, so they count and stay critical. The small-change
 # skip counts added plus deleted lines (a deletion can remove a guard).
 name: ci
@@ -61,13 +62,17 @@ jobs:
           node "$d/npm-age.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
           node "$d/pins.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
           exit $status
-      # .aidenhq/out/ holds an agent's evidence, left out of the code review: screenshots and reports only, so nothing that
-      # runs can hide there. The list is the code-review job's (and code-review.mjs OUT_TYPES); changing it is a .github/
-      # change, so critical. Read from the PR's own ci.yml: a PR that edits it is reviewed at the higher effort anyway.
+      # .aidenhq/out/ holds an agent's evidence: screenshots and reports only, so nothing that runs can hide there. Its images
+      # are left out of the code review (code-review.mjs OUT_TYPES); its reports (json, txt) are reviewed like any file. No
+      # app code may read from it: a tracked file outside .aidenhq/ that names it fails, except docs and the screenshot
+      # tooling that writes there (e2e/, playwright.config.*). Changing this is a .github/ change, so critical. Read from the
+      # PR's own ci.yml: a PR that edits it is reviewed at the higher effort anyway.
       - name: Evidence
         run: |
           bad=$(git diff --name-only --diff-filter=AMR "$BASE_SHA...$HEAD_SHA" -- .aidenhq/out | grep -viE '\.(png|jpe?g|webp|gif|json|txt)$' || true)
           [ -z "$bad" ] || { echo "::error::.aidenhq/out/ takes only screenshots and reports (png, jpg, webp, gif, json, txt): $(printf '%s' "$bad" | head -5 | tr '\n' ' ')"; exit 1; }
+          refs=$(git grep -l -F '.aidenhq/out' "$HEAD_SHA" -- . ':(exclude).aidenhq/**' ':(exclude).github/**' ':(exclude,glob)**/*.md' ':(exclude)e2e/**' ':(exclude,glob)playwright.config.*' ':(exclude).gitignore' ':(exclude).dockerignore' | sed "s/^$HEAD_SHA://" || true)
+          [ -z "$refs" ] || { echo "::error::app code may not read an agent's evidence in .aidenhq/out/ (it is not reviewed as code): $(printf '%s' "$refs" | head -5 | tr '\n' ' ')"; exit 1; }
       - name: Test
         run: npm ci && npm run --if-present lint && npm test
 
@@ -232,10 +237,27 @@ jobs:
           from="$BASE_SHA"
           [ "${REVIEW_MODE:-}" = delta ] && from="$REVIEW_FROM"
           # package-lock.json (see the header) is out of both the line count and the critical-path list, and so are an agent's
-          # screenshots and reports under .aidenhq/out/ (roadmap-keeper#167 counted 40,230 lines of them): only the types the
-          # tests job's Evidence step allows there (code-review.mjs OUT_TYPES), so code under .aidenhq/out/ is reviewed.
+          # screenshots under .aidenhq/out/ (roadmap-keeper#167 counted 40,230 lines of them): image types only (code-review.mjs
+          # OUT_TYPES), so its reports (json, txt) and any code there are reviewed.
           nolock=(':(exclude,glob)**/package-lock.json')
-          for t in png jpg jpeg webp gif json txt; do nolock+=(":(exclude,glob).aidenhq/out/**/*.$t"); done
+          for t in png jpg jpeg webp gif; do nolock+=(":(exclude,glob).aidenhq/out/**/*.$t"); done
+          # The reviewer's scripts and rules: the base commit's. A base without them (an old or stacked base) gets the default
+          # branch's, never a skip; only when the default branch has none either (the one PR that brings the reviewer in) is
+          # the PR not reviewed, like the PR that first adds CI.
+          # Chosen first: its code-review.mjs also summarises the PR's package-lock.json changes (below).
+          rv=.github
+          if [ ! -f .github/code-review.mjs ]; then
+            if ! git cat-file -e "origin/$DEFAULT_BRANCH:.github/code-review.mjs" 2>/dev/null; then
+              echo "::notice::The default branch has no .github/code-review.mjs yet: this PR brings the reviewer in, so it is not reviewed."
+              echo "CODE_REVIEW_SKIPPED=1" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            rv="$RUNNER_TEMP/reviewer"; mkdir -p "$rv"
+            for f in code-review.mjs review-tools.mjs code-review-rules.md; do
+              git show "origin/$DEFAULT_BRANCH:.github/$f" > "$rv/$f" 2>/dev/null || rm -f "$rv/$f"
+            done
+            echo "::notice::The base commit has no reviewer: the default branch's reviews it."
+          fi
           unreadable=""
           stat=$(git diff --numstat "$from...$HEAD_SHA" -- . "${nolock[@]}") || { stat=""; unreadable=1; }
           # Added plus deleted lines (the small-change skip below). A binary file has no lines a reviewer reads: 20 (so never
@@ -267,6 +289,14 @@ jobs:
             critical="(a diff that can't be listed)"
           fi
           [ -z "$critical" ] && [ -n "$binary" ] && critical="$binary (binary)"
+          # package-lock.json is out of the line count, but a change that adds a package, changes one's version or source, or
+          # adds an install script is critical (never a tiny skip); the reviewer gets the same summary (code-review.mjs).
+          if [ -z "$critical" ] && git diff --quiet "$from...$HEAD_SHA" -- ':(glob)**/package-lock.json'; then :
+          elif [ -z "$critical" ]; then
+            node "$rv/code-review.mjs" --lockfiles "$from" "$HEAD_SHA" > "$RUNNER_TEMP/lockfiles.txt"; lc=$?
+            [ -s "$RUNNER_TEMP/lockfiles.txt" ] && { echo "package-lock.json changes:"; cat "$RUNNER_TEMP/lockfiles.txt"; }
+            case "$lc" in 0) ;; 3) critical="package-lock.json (packages added or changed)" ;; *) critical="(a package-lock.json that can't be read)" ;; esac
+          fi
           [ -n "$unreadable" ] && critical="(a diff that can't be read)"
           depth=light
           [ -n "$critical" ] && depth=normal
@@ -280,22 +310,6 @@ jobs:
             exit 0
           fi
           echo "Changed lines: $lines, review depth: $depth${critical:+ (touches $critical)}"
-          # The reviewer's scripts and rules: the base commit's. A base without them (an old or stacked base) gets the default
-          # branch's, never a skip; only when the default branch has none either (the one PR that brings the reviewer in) is
-          # the PR not reviewed, like the PR that first adds CI.
-          rv=.github
-          if [ ! -f .github/code-review.mjs ]; then
-            if ! git cat-file -e "origin/$DEFAULT_BRANCH:.github/code-review.mjs" 2>/dev/null; then
-              echo "::notice::The default branch has no .github/code-review.mjs yet: this PR brings the reviewer in, so it is not reviewed."
-              echo "CODE_REVIEW_SKIPPED=1" >> "$GITHUB_ENV"
-              exit 0
-            fi
-            rv="$RUNNER_TEMP/reviewer"; mkdir -p "$rv"
-            for f in code-review.mjs review-tools.mjs code-review-rules.md; do
-              git show "origin/$DEFAULT_BRANCH:.github/$f" > "$rv/$f" 2>/dev/null || rm -f "$rv/$f"
-            done
-            echo "::notice::The base commit has no reviewer: the default branch's reviews it."
-          fi
           gave_up() { # $1: cause. No review, permanent: the gate fails the check.
             echo "::error::$1"
             printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=%s\n' "$1" >> "$GITHUB_ENV"
@@ -329,22 +343,25 @@ jobs:
           # The reviewer and its TypeScript navigation, pinned (it reads the PR through review-tools.mjs only: no shell, nothing
           # of the PR runs or is installed). Its scripts and the house rules (.github/code-review-rules.md) are the base
           # commit's, like everything here.
-          npm i -g --no-audit --no-fund --loglevel=error @openai/codex@0.167.0 typescript-language-server@6.0.3 typescript@6.0.3 || gave_up "Couldn't install the reviewer (npm)."
+          # The job's OIDC request credentials are spent (traded above): nothing after this point gets them. The packages run no
+          # install scripts (none of these three has one; --ignore-scripts keeps it so).
+          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL oidc
+          npm i -g --ignore-scripts --no-audit --no-fund --loglevel=error @openai/codex@0.167.0 typescript-language-server@6.0.3 typescript@6.0.3 || gave_up "Couldn't install the reviewer (npm)."
           review() { # $1: minutes. Sets $code.
             CI_REVIEW_KEY="$key" CI_REVIEW_URL="$url" MODEL="$model" EFFORT="$effort" DEEP="$( [ "$depth" = deep ] && echo 1)" \
               TRUSTED_BASE="$BASE_SHA" RULES="$rv/code-review-rules.md" CRITICAL_GLOBS="$globs" REVIEW_LSP="$(npm prefix -g)/bin/typescript-language-server" \
               REVIEW_MINUTES="$1" node "$rv/code-review.mjs" "$from" "$HEAD_SHA" > "$RUNNER_TEMP/review.json"
             code=$?
           }
-          # No verdict is never a pass: the gate fails it. One retry after a provider error or timeout, when time is left.
+          # No verdict is never a pass: the gate fails it (fail closed, whatever the size). One retry only after a confirmed
+          # provider error (exit 1: HTTP 429 or 5xx, a dropped connection), when time is left; never after a timeout or an
+          # answer that isn't a review (exit 3: the PR's content can cause it).
           review 40
           attempts=1
-          # Past the review target (2,000 counted lines) one attempt only: no verdict there is the gate's "stopped short"
-          # decision, and a second 40-minute attempt rarely changes it (rk#167, 5,230 lines: none after 25 minutes).
-          if [ "$code" = 1 ] && [ "$lines" -le 2000 ]; then
+          if [ "$code" = 1 ]; then
             left=$(( (85 * 60 - SECONDS) / 60 - 1 ))
             if [ "$left" -ge 10 ]; then
-              echo "::warning::The review ended without a verdict: retrying in 60 seconds."
+              echo "::warning::The model provider failed: retrying in 60 seconds."
               sleep 60
               review $(( left < 40 ? left : 40 ))
               attempts=2
@@ -355,7 +372,8 @@ jobs:
             0) echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV" ;;
             2) printf 'CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=the model gateway refused the review\n' >> "$GITHUB_ENV" ;;
             # The cause goes into a PR comment: a fixed class only; the detail is in this log (code-review.mjs's stderr).
-            *) printf 'CODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=no review output\n' >> "$GITHUB_ENV" ;;
+            1) printf 'CODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=a provider error\n' >> "$GITHUB_ENV" ;;
+            *) printf "CODEGENIE_FAILURE=no-verdict\nCODEGENIE_CAUSE=no verdict (a timeout or an answer that isn't a review)\n" >> "$GITHUB_ENV" ;;
           esac
       - name: Verdict
         if: ${{ !cancelled() }}

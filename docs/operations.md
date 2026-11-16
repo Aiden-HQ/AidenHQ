@@ -318,7 +318,7 @@ launcher; a new image applies from the next acquire) and
 ## CI runners (modules/ci)
 
 App repos' CI (`modules/core/templates/ci`: jobs `tests` and `code-review`; `code-review` skips the review and passes on a
-change under 20 added plus deleted lines with no sensitive path; `package-lock.json`, which the supply-chain job validates, is not counted and never makes a path sensitive, while other lockfiles are and do; a head whose patch is unchanged since a green review of the same branch and base ref, on a base that only moved forward, reuses that verdict) runs on our own GitHub Actions runners,
+change under 20 added plus deleted lines with no sensitive path; `package-lock.json`, which the supply-chain job validates, is not counted, but a change that adds a package, changes a version or source, or adds an install script is sensitive, while other lockfiles are counted and always sensitive; an agent's screenshots under `.aidenhq/out/` are not counted, its json and txt reports are; a head whose patch is unchanged since a green review of the same branch and base ref, on a base that only moved forward, reuses that verdict) runs on our own GitHub Actions runners,
 `runs-on: [self-hosted, aidenhq]`, registered to the agents org. The product repo's CI (`.github/workflows/`) runs on
 the same kind of runner, registered to the product repo's org (below). Each `aidenhq-ci-runner@<n>` user unit (agents
 org) or `aidenhq-ci-runner@<org>-<n>` unit (another org the App is installed on) runs
@@ -353,7 +353,13 @@ nothing else: nothing of the PR runs, writes or connects, and its
 environment holds only the CI token (never the job's GitHub tokens). It runs from an empty directory with a config the
 job writes (hooks, plugins and apps off), so nothing in the PR is loaded as codex config or instructions; a PR that adds
 `.codex/`, `codex.toml` or `AGENTS.override.md` fails the check, and AGENTS.md is a critical path. Its answer must match
-an output schema: anything else is no verdict, which fails the check. Its scripts and the house rules (`.github/code-review-rules.md`) come
+an output schema: anything else is no verdict, which fails the check. The gate is fail-closed (operator ruling 2026-11-17,
+replacing #144's pass for PRs over 2,000 counted lines that got no verdict): no verdict fails the check whatever its size,
+and past 2,000 counted lines the comment gives the size as the reason ("too large to review in one pass; split into PRs
+under ~2,000 counted lines"). Only a confirmed provider error (HTTP 429 or 5xx, a dropped connection, seen in codex's events)
+is transient and gets one retry. If the retry also fails, the check fails. A timeout or an answer that isn't a review is
+never retried. A package-lock.json change that adds a package, changes a version or source, or adds an install script is a
+critical path, and the reviewer gets a summary of it. Its scripts and the house rules (`.github/code-review-rules.md`) come
 from the base commit. Its brief: the house rules, the app's critical paths and its AGENTS.md (base commit), and the PR's
 title and description fenced as data, so it judges scope. P0 and P1 findings block (critical, high); P2 and P3 are listed.
 A same-repo PR can edit the workflow and spend up to its repo's day cap on the allowed models: the cap and scope are the

@@ -19,11 +19,15 @@ const mask = (s) => s.replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{6,}/g, "$1-***").repla
   .replace(/\b(key|token|secret|password|api_key|apikey|access_token|auth)=[^\s&"']+/gi, "$1=***").replace(/\bgh[pousr]_[A-Za-z0-9]{10,}/g, "gh*_***");
 const clip = (s, n) => { const t = mask(String(s ?? "").trim()); return t.length > n ? `${t.slice(0, n)}…` : t; };
 
-// What to do when no review came out, by the workflow's CODEGENIE_FAILURE (it retries a transient failure once, time
-// permitting: a retry shows as "2 attempts").
-const NEXT = { transient: "The model provider failed or timed out. Re-run the check; if it fails the same way again, read the job log." };
-// The review target in counted changed lines (package-lock.json doesn't count). Past it a review that never came out is a
-// decision, not a failed check (owner, #144): nothing was read, so nothing could block; the comment says to split. On the
+// What to do when no review came out, by the workflow's CODEGENIE_FAILURE. transient: a confirmed provider error (HTTP 429
+// or 5xx, a dropped connection), retried once by the workflow; a retry shows as "2 attempts". no-verdict: anything else
+// (a timeout, an answer that isn't a review); the PR's content can cause it, so it is never retried.
+const NEXT = {
+  transient: "The model provider failed twice (rate limit, server error or a dropped connection). Re-run the check; if it fails the same way again, read the job log.",
+  "no-verdict": "The reviewer gave no verdict (it timed out, or its answer wasn't a review). Something in the change may have caused it: read the job log.",
+};
+// Fail closed (operator ruling, 2026-11-17, replacing #144's pass for big PRs): no verdict always fails the check. Past the
+// review target in counted changed lines (package-lock.json doesn't count), the reason given is the size. On the
 // 2026-11-16 eval a 1,936-line PR took 17 minutes and a 5,230-line one ended without a verdict after 25.
 const TARGET_LINES = 2000;
 const FALLBACK = "See the job log, fix the cause and re-run the check.";
@@ -60,9 +64,13 @@ function judge(exitCode, stdout, sha, { failure, cause, attempts, lines }) {
   // Its own headline: the runner re-runs a check whose comment says the review failed or was incomplete
   // (services/runner/src/merges.mjs codeReviewInfra).
   const counted = Number(lines) > 0 ? Number(lines) : 0;
-  if ((exitCode !== 0 || !readable) && failure === "transient" && counted > TARGET_LINES) {
-    // Its own headline (never "failed"/"incomplete": the runner would re-run it) and no baseline for a delta.
-    return { block: false, short: true, body: `${MARKER}\n**Code review stopped short${at}** (${counted.toLocaleString("en-US")} counted changed lines: no review came out, review exit ${exitCode}${tries}). Nothing of it was read, so no finding could block and the check passes. Split it into stacked PRs of at most ${TARGET_LINES.toLocaleString("en-US")} counted changed lines each (package-lock.json doesn't count) and push those.` };
+  // No verdict that isn't a provider failure gets its own headline (never "failed"/"incomplete": the runner re-runs those, and
+  // a re-run would end the same way). Past the target, the size is the reason.
+  if ((exitCode !== 0 || !readable) && counted > TARGET_LINES && failure !== "permanent") {
+    return { block: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}**: too large to review in one pass (${counted.toLocaleString("en-US")} counted changed lines; review exit ${exitCode}${tries}). Split it into stacked PRs under ~${TARGET_LINES.toLocaleString("en-US")} counted changed lines each (package-lock.json doesn't count) and push those.` };
+  }
+  if ((exitCode !== 0 || !readable) && failure === "no-verdict") {
+    return { block: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}** (review exit ${exitCode}${tries}${cause ? `: ${clip(cause, 300)}` : ""}). ${NEXT["no-verdict"]}` };
   }
   if (exitCode !== 0 || !readable) {
     const why = cause || review?.health?.diagnostics?.map((d) => d.reason).filter(Boolean).slice(0, 3).join("; ");
