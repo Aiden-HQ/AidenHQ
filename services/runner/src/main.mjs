@@ -15,7 +15,7 @@ import { adoptRun, cowRoot, engineState, hiding, overlayProblem, readEngines, re
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "../../../modules/codehost-github/src/git.mjs";
-import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg, jobGhToken, mergePermissions, ownRepo as appOwnRepo, pushPermissions } from "../../../modules/codehost-github/src/github-app.ts";
+import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg, jobGhToken, mergeOptions, mergePermissions, ownRepo as appOwnRepo, pushPermissions } from "../../../modules/codehost-github/src/github-app.ts";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
@@ -87,7 +87,7 @@ const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, pe
 // are fine there too.
 const sameRepo = (a, b) => Boolean(a && b) && String(a).toLowerCase() === String(b).toLowerCase();
 const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, cfg.productRepo);
-const ghoMerge = async (slug, extra, perms = WRITE) => (ownRepo(slug) ? gho(slug, perms, extra) : extra);
+const ghoMerge = async (slug, extra, perms = WRITE) => mergeOptions(await appFor(slug), slug, { agentsOrg: cfg.agentsOrg, productRepo: cfg.productRepo }, perms, extra);
 /** A re-run's token: only this (the App needs Actions: write; without it the re-run is refused and the check's failure stands). */
 const RERUN = { actions: "write" };
 /** The design review's pending status needs Commit statuses: write (the App's merge token has them read-only). */

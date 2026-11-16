@@ -181,7 +181,7 @@ describe("the reviewer's own code", () => {
   it("covers the module, the contract, the request side and the files it reads, in the gate core and the receipt gate", async () => {
     const { GATE_CORE } = await import("../../../modules/platform/src/check.mjs");
     const { touchesReviewer } = await import("../src/evalgate.ts");
-    for (const f of ["modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "modules/ai-reviewer/service/src/review-files.mjs", "modules/ai-reviewer/test/reviewer-cases/01-x.json", "modules/ai-reviewer/scripts/reviewer-eval.mjs", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/shared/review-files.ts", "services/runner/src/review-request.mjs", "services/runner/src/review-request.ts", "services/runner/src/siblings.ts", "services/runner/src/tiers.mjs", "kernel/src/tier.ts", "kernel/src/loader/authority.ts"]) {
+    for (const f of ["modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "modules/ai-reviewer/service/src/review-files.mjs", "modules/ai-reviewer/test/reviewer-cases/01-x.json", "modules/ai-reviewer/scripts/reviewer-eval.mjs", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/shared/review-files.ts", "services/runner/src/review-request.mjs", "services/runner/src/review-request.ts", "services/runner/src/siblings.ts", "services/runner/src/tiers.mjs", "modules/codehost-github/src/plan.mjs", "modules/platform/src/check.mjs", "kernel/src/tier.ts", "kernel/src/loader/authority.ts"]) {
       assert.ok(touchesReviewer([f]), `receipt gate: ${f}`);
       assert.ok(GATE_CORE.some((g) => g.test(f)), `gate core: ${f}`);
     }

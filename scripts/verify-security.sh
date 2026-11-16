@@ -724,6 +724,7 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
   && grep -qF 'const argv = d.jail([process.execPath, "scripts/reviewer-eval.mjs"], { rw: [out], ro: [tree, ...nm] });' "$rgate" \
   && grep -qF 'r = JSON.parse(smallFile(file, 4 * 1024 * 1024) ?? "");' "$rgate" \
   && grep -qF '  jail: (argv, paths) => hiding(cfg, argv, [], paths),' "$rmain" \
+  && grep -qF '  /^modules\/codehost-github\/src\/plan\.mjs$/,' "$rgate" && grep -qF '  /^modules\/platform\/src\/check\.mjs$/,' "$rgate" \
   && pass "runner: a product PR that changes the AI reviewer's code merges only on a 100% eval receipt for its exact head (base judge, eval key, jailed; $rgate)" \
   || fail "runner: the reviewer-eval receipt gate on product merges changed ($rgate, $rm_)"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's

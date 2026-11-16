@@ -192,6 +192,14 @@ export async function jobGhToken(app: AppClient | null | undefined, slugs: strin
   return app.token(org, { repositories: names.filter(([o]) => o!.toLowerCase() === org.toLowerCase()).map(([, n]) => n!), permissions: READ, fresh: true });
 }
 
+/**
+ * A merge-queue write's gh options: the App's token (one repo, `perms`) only in our own repos (ownRepo); anywhere else
+ * nothing is minted and the write runs as the host's gh login, behind that repo's own review.
+ */
+export async function mergeOptions(app: AppClient | null | undefined, slug: string, own: { agentsOrg?: string; productRepo?: string }, perms: Record<string, string> = WRITE, extra: { env?: NodeJS.ProcessEnv; [k: string]: unknown } = {}) {
+  return ownRepo(slug, own.agentsOrg, own.productRepo) ? ghOptions(app, slug, perms, extra) : extra;
+}
+
 /** gh child options: GH_TOKEN for that one process when `app` (the App covering the repo) is set, else the host's gh login. */
 export async function ghOptions(app: AppClient | null | undefined, slug: string | undefined, perms: Record<string, string>, extra: { env?: NodeJS.ProcessEnv; [k: string]: unknown } = {}) {
   if (!app || !slug) return extra; // no App for this repo: the host's gh login, as before

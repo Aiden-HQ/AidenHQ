@@ -190,8 +190,9 @@ test("product repo: branch push, PR and merge are Tier 1 for the Platform Engine
 
 test("the owner-approval records are the owner's tap, so no PR records its own source approval", () => {
   const f = ".github/supply-chain-source-exceptions.yaml";
-  // The file itself: a PR or merge of it is the owner's in the product repo, the agents org and anywhere else, whatever the
-  // requester's line and however green the checks are.
+  // The file itself: a PR or merge of it is the owner's in the product repo, the agents org and anywhere else, never lower,
+  // whatever else it carries. What the code host refuses (the instance repo, another line's product write, red checks or a
+  // moved head) stays refused.
   assert.equal(tierOf(prod("pr", { files: [f] })), 2);
   assert.equal(prod("pr", { files: [f] }).rule, "owner-approval-record");
   assert.equal(tierOf(pub("pr", { files: [f] })), 2, "an agents-org branch (Tier 0 otherwise)");

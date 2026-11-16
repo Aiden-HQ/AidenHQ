@@ -8,7 +8,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SAFE_GIT_ARGS, git, setUntrusted } from "../src/git.mjs";
-import { WRITE, ghOptions, mergePermissions, ownRepo, pushPermissions } from "../src/github-app.ts";
+import { WRITE, ghOptions, mergeOptions, mergePermissions, ownRepo, pushPermissions } from "../src/github-app.ts";
 import { allowedWrite } from "../src/merge-gate.mjs";
 import { plan } from "../src/plan.mjs";
 
@@ -34,6 +34,17 @@ test("outside the agents org and the product repo: PR-only (no App merge, no wor
     assert.equal(allowedWrite(method, path, ORG, PRODUCT), false, `${method} ${path}`);
   assert.throws(() => plan({ kind: "codehost-github.create_repo", args: {} }, { agentsOrg: ORG, productRepo: PRODUCT, instanceRepo: `${ORG}/aidenhq-instance`, repo: "other/new" }), /outside the agents org/);
   assert.throws(() => plan({ kind: "codehost-github.push", args: {} }, { agentsOrg: ORG, productRepo: PRODUCT, instanceRepo: `${ORG}/aidenhq-instance`, branches: [{ repo: "other/lib", branch: "main", defaultBranch: "main", sha: "a".repeat(40), files: ["a"] }] }), /outside the agents org/);
+});
+
+test("a merge-queue write mints no App token outside our repos, and one single-repo token inside them", async () => {
+  const asked = [];
+  const app = { token: async (org, o) => (asked.push({ org, ...o }), "t") };
+  const own = { agentsOrg: ORG, productRepo: PRODUCT };
+  assert.deepEqual(await mergeOptions(app, "other/lib", own, mergePermissions("other/lib", PRODUCT), { cwd: "/w" }), { cwd: "/w" }, "the host's login, no GH_TOKEN");
+  assert.equal(asked.length, 0);
+  assert.equal((await mergeOptions(app, `${ORG}/app`, own)).env.GH_TOKEN, "t");
+  assert.equal((await mergeOptions(app, PRODUCT, own, mergePermissions(PRODUCT, PRODUCT))).env.GH_TOKEN, "t");
+  assert.deepEqual(asked, [{ org: ORG, repositories: ["app"], permissions: WRITE }, { org: "acme", repositories: ["aidenhq"], permissions: { ...WRITE, workflows: "write" } }]);
 });
 
 test("host git in a task clone: the safe arguments, no global or system config, the task folder a ceiling, no diff programs", async (t) => {
