@@ -92,6 +92,8 @@ function stampPng(file, stamp) {
 }
 
 const AB = process.env.AGENT_BROWSER || "agent-browser";
+// The image's pinned Chrome, when the shell lost the image's environment (else agent-browser downloads a Chrome of its own).
+if (!process.env.AGENT_BROWSER_EXECUTABLE_PATH && existsSync("/opt/chrome/chrome")) process.env.AGENT_BROWSER_EXECUTABLE_PATH = "/opt/chrome/chrome";
 const ab = (...a) => execFileSync(AB, a, { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe"] });
 const abJson = (...a) => { const r = JSON.parse(ab(...a, "--json")); if (!r.success) throw new Error(r.error || `${a[0]} failed`); return r.data; };
 const run = (expr) => abJson("eval", expr).result;
