@@ -142,6 +142,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       }
       if (req.method === "GET" && path.endsWith("/comments")) return send(comments.get(i.id));
       if (req.method === "GET" && path.endsWith("/attachments")) return send([]);
+      if (req.method === "GET" && path.endsWith("/documents")) return send([]);
       if (req.method === "POST" && path.endsWith("/comments")) {
         addComment(i.id, JSON.parse(body).body);
         return send({ ok: true }, 201);

@@ -120,6 +120,12 @@ export class Paperclip {
     return this.api("GET", `/api/issues/${encodeURIComponent(issueId)}/attachments`);
   }
 
+  /** The task's revisioned documents (their current bodies): Paperclip's own, not attachments. */
+  async documents(issueId: string) {
+    const list = await this.api("GET", `/api/issues/${encodeURIComponent(issueId)}/documents`);
+    return Array.isArray(list) ? list : [];
+  }
+
   async attachmentContent(id: string) {
     const res = await fetch(new URL(`/api/attachments/${encodeURIComponent(id)}/content`, this.base), {
       headers: { authorization: `Bearer ${this.key}` },

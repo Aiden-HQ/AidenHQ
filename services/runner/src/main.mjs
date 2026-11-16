@@ -1426,6 +1426,7 @@ function gradeDeps(issue) {
     comments,
     attachments: () => pc.attachments(issue.id),
     content: (id) => pc.attachmentContent(id),
+    documents: () => pc.documents(issue.id),
     identifier: issue.identifier,
     // Another task the rubric names: its file list only (never contents), and only in this company; null when there is none.
     otherTask: async (ident) => {

@@ -340,7 +340,30 @@ const IMAGE_BYTES = 3 * 1024 * 1024; // one image as sent; a bigger one is downs
 const IMAGES_BYTES = 12 * 1024 * 1024; // all images as sent (base64 adds a third; the gateway takes 32 MB)
 const TEXT_FILE = 6_000; // one text file's characters
 export const TEXT_TOTAL = 16_000; // all text files' characters (the prompt fences a block at 20,000)
+const DOCUMENT_FILE = 6_000; // one task document's characters
+export const DOCUMENTS_TOTAL = 16_000; // all task documents' characters (its own fenced block, under 20,000)
 const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|ya?ml|log|html?|tsx|ts|jsx|js|css)$/i;
+
+/**
+ * A text cut to `max` characters for the prompt: the start and the end, with the middle replaced by a marker that names how
+ * many characters were cut. A test log's verdict is at its end, so cutting only the head would hide the proof a criterion
+ * asks for; the marker makes the cut explicit rather than letting a cut file read as the whole file.
+ */
+function excerpt(text: string, max: number): { shown: string; cut: number } {
+  if (text.length <= max) return { shown: text, cut: 0 };
+  const marker = (from: number, to: number) => `\n[... characters ${from + 1}-${to} cut ...]\n`;
+  let head = Math.floor(max * 0.6);
+  let tail = max - head;
+  let cut = text.length - head - tail;
+  if (head + tail + marker(head, text.length - tail).length > max) {
+    const room = Math.max(0, max - marker(head, text.length - tail).length);
+    head = Math.floor(room * 0.6);
+    tail = room - head;
+    cut = text.length - head - tail;
+  }
+  if (head + tail + marker(head, text.length - tail).length > max) return { shown: text.slice(0, max), cut: text.length - max };
+  return { shown: text.slice(0, head) + marker(head, text.length - tail) + text.slice(text.length - tail), cut };
+}
 
 /** A PNG made to fit: downscaled until its longest side is at most IMAGE_SIDE and its bytes IMAGE_BYTES, or null. */
 function fitPng(buf: Buffer, info: ImageInfo): Buffer | null {
@@ -370,11 +393,19 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
   let imageBytes = 0;
   let textLeft = TEXT_TOTAL;
   const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
-  const names = (f: any, text: string) => {
-    const base = nameOf(f).split("/").pop()!.toLowerCase();
+  const baseOf = (f: any) => nameOf(f).split("/").pop()!.toLowerCase();
+  const exact = (f: any, text: string) => {
+    const base = baseOf(f);
     return base.length >= 3 && text.toLowerCase().includes(base);
   };
-  const rank = (f: any) => (names(f, rubric) ? 2 : names(f, comments) ? 1 : 0);
+  // A rubric often names the file by what it is ("the write matrix", "the test log") rather than its exact name.
+  const words = (f: any) => baseOf(f).replace(/\.[^.]+$/, "").split(/[^a-z0-9]+/).filter((w: string) => w.length >= 4);
+  const named = (f: any, text: string) => {
+    const w = words(f);
+    // One shared word ("shot" in shot-1.png and shot-2.png) names nothing: a described file has two or more of its own words.
+    return w.length >= 2 && w.filter((x: string) => text.toLowerCase().includes(x)).length >= 2;
+  };
+  const rank = (f: any) => (exact(f, rubric) ? 3 : named(f, rubric) ? 2 : exact(f, comments) || named(f, comments) ? 1 : 0);
   const order = [...files].sort((a: any, b: any) => rank(b) - rank(a) || String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
   for (const f of order) {
     const name = nameOf(f);
@@ -389,7 +420,7 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       continue;
     }
     if (isText && textLeft <= 0) {
-      facts.push(`${f.label}: not sent to the grader (the text budget of ${TEXT_TOTAL} characters was spent on other files)`);
+      facts.push(`${f.label}: text, ${Number(f.byteSize) || 0} bytes, not sent to the grader (the text budget of ${TEXT_TOTAL} characters was spent on files the rubric names first)`);
       continue;
     }
     let buf: Buffer;
@@ -424,16 +455,59 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       continue;
     }
     const text = buf.toString("utf8");
-    const shown = text.slice(0, Math.min(TEXT_FILE, textLeft));
+    const { shown, cut } = excerpt(text, Math.min(TEXT_FILE, textLeft));
     textLeft -= shown.length;
     texts.push(`=== ${f.label}: ${name.slice(0, 200)} ===\n${shown}`);
-    facts.push(`${f.label}: text, ${text.length} characters, in FILES${shown.length < text.length ? ` (cut to its first ${shown.length})` : ""}`);
+    facts.push(`${f.label}: text, ${text.length} characters, in FILES${cut ? ` (too large: ${cut} characters cut from the middle, marked in FILES; ${shown.length} characters shown)` : ""}`);
   }
   return { facts, images, data: texts.length ? { FILES: texts.join("\n\n") } : {} };
 }
 
-/** Whether a rubric is about attached files (a screenshot, an image, an attachment): their contents are evidence then. */
-export const rubricNamesFiles = (rubric: unknown[]) => rubric.some((c) => /\b(attach\w*|screenshots?|images?|png|jpe?g|mockups?|files?)\b/i.test(String(c)));
+/**
+ * The task's revisioned documents (Paperclip's documents, not attachments) as evidence: each document's current body as one
+ * fenced TASK_DOCUMENTS block, with its key, title, format, size and revision in DOCUMENT_NAMES. Order: documents the rubric
+ * names (by key or title, then by distinctive words), then the newest. A document past the budget is marked as cut or not
+ * sent, never silently dropped. { facts, data, version }: version is the revisions' ids, so a new revision is a new version.
+ */
+export async function documentEvidence(documents: any[], { rubric = "", comments = "" }: { rubric?: string; comments?: string } = {}): Promise<any> {
+  const facts: string[] = [];
+  const texts: string[] = [];
+  let left = DOCUMENTS_TOTAL;
+  const keyOf = (d: any) => String(d.key ?? "");
+  const titleOf = (d: any) => String(d.title ?? "");
+  const bodyOf = (d: any) => String(d.body ?? "");
+  const exact = (d: any, text: string) => {
+    const t = text.toLowerCase();
+    return [keyOf(d), titleOf(d)].some((v: string) => v.length >= 3 && t.includes(v.toLowerCase()));
+  };
+  const words = (d: any) => `${keyOf(d)} ${titleOf(d)}`.toLowerCase().split(/[^a-z0-9]+/).filter((w: string) => w.length >= 4);
+  const named = (d: any, text: string) => {
+    const w = words(d);
+    return w.length >= 2 && w.filter((x: string) => text.toLowerCase().includes(x)).length >= 2;
+  };
+  const rank = (d: any) => (exact(d, rubric) ? 3 : named(d, rubric) ? 2 : exact(d, comments) || named(d, comments) ? 1 : 0);
+  const labelled = documents.map((d: any, i: number) => ({ ...d, label: `document_${i + 1}` }));
+  const order = [...labelled].sort((a: any, b: any) => rank(b) - rank(a) || String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
+  const names = labelled.map((d: any) => `${d.label}: key=${keyOf(d).slice(0, 64)}; title=${titleOf(d).slice(0, 200)}; ${String(d.format ?? "text").slice(0, 40)}; ${bodyOf(d).length} characters; revision ${Number(d.latestRevisionNumber) || 0}`);
+  for (const d of order) {
+    const body = bodyOf(d);
+    if (left <= 0) {
+      facts.push(`${d.label}: text, ${body.length} characters, not sent to the grader (the document budget of ${DOCUMENTS_TOTAL} characters was spent on documents the rubric names first)`);
+      continue;
+    }
+    const { shown, cut } = excerpt(body, Math.min(DOCUMENT_FILE, left));
+    left -= shown.length;
+    texts.push(`=== ${d.label}: ${keyOf(d).slice(0, 64)} — ${titleOf(d).slice(0, 200)} ===\n${shown}`);
+    facts.push(`${d.label}: text, ${body.length} characters, in TASK_DOCUMENTS${cut ? ` (too large: ${cut} characters cut from the middle, marked in TASK_DOCUMENTS; ${shown.length} characters shown)` : ""}`);
+  }
+  if (!documents.length) facts.push("no task documents");
+  const ids = labelled.map((d: any) => String(d.latestRevisionId ?? d.id ?? `${keyOf(d)}:${bodyOf(d).length}`));
+  return {
+    facts,
+    data: documents.length ? { DOCUMENT_NAMES: names.join("\n"), TASK_DOCUMENTS: texts.join("\n\n") } : {},
+    version: ids.length ? hash(ids.join(" ")) : "",
+  };
+}
 
 /**
  * Whether one branch commit is already satisfied on the target's current default branch (the duplicate-card guard): its
