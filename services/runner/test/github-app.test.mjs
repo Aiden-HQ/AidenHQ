@@ -5,7 +5,7 @@ import { createVerify, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_IDENTITY, WRITE, identityEnv, appClient, appSlugOf, appJwt, appRemoteUrl, ghOptions, withGitToken } from "../src/github-app.ts";
+import { DEFAULT_IDENTITY, WRITE, identityEnv, appClient, appSlugOf, appJwt, appRemoteUrl, ghOptions, mergePermissions, pushPermissions, withGitToken } from "../src/github-app.ts";
 import { git, setGitAuth } from "../src/git.mjs";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -52,6 +52,24 @@ describe("GitHub App", () => {
     assert.equal(mints.length, 2);
     assert.deepEqual(mints[0].body, { repositories: ["x"], permissions: WRITE });
     assert.equal(calls.filter((c) => c.path.startsWith("/app/installations?")).length, 1);
+  });
+
+  it("a push asks for Workflows: write on the agents org and the product repo, Contents only elsewhere", () => {
+    // The App declares Workflows: write, but a token that narrows it away is refused by GitHub when the push touches
+    // .github/workflows/: the product repo's own CI could not land.
+    const perms = (slug, write = true) => pushPermissions(write, slug, "acme-agents", "acme/aidenhq");
+    assert.deepEqual(perms("acme/aidenhq"), { contents: "write", workflows: "write" }, "the product repo");
+    assert.deepEqual(perms("ACME/AidenHQ"), { contents: "write", workflows: "write" }, "the same repo, any case");
+    assert.deepEqual(perms("acme-agents/app"), { contents: "write", workflows: "write" }, "the agents org, as before");
+    assert.deepEqual(perms("acme/other"), { contents: "write" }, "another repo in the product's org");
+    assert.deepEqual(perms("someone/app"), { contents: "write" }, "another org: its own CI standard gates workflow files");
+    assert.deepEqual(perms("acme/aidenhq", false), { contents: "read" }, "a read token never gains Workflows");
+    assert.deepEqual(perms(undefined, false), { contents: "read" }, "nor without a repo");
+    // A merge and a branch update create a commit on the base branch, so the product repo needs it on those paths too.
+    assert.deepEqual(mergePermissions("acme/aidenhq", "acme/aidenhq"), { ...WRITE, workflows: "write" });
+    assert.deepEqual(mergePermissions("acme-agents/app", "acme/aidenhq"), WRITE);
+    assert.deepEqual(mergePermissions("someone/app", "acme/aidenhq"), WRITE);
+    assert.deepEqual(mergePermissions("acme/aidenhq", undefined), WRITE);
   });
 
   it("covers a repo only where an installation includes it", async () => {

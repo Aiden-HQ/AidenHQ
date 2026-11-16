@@ -63,7 +63,10 @@ See SETUP.md step 8. The runner updates repositories in the agents organization 
 `aidenhq-<instance_name>`) as a GitHub App, not as a person. `ops/github-app-setup.mjs` needs `AIDENHQ_SETUP_HOST`
 (the address your browser opens; it serves a one-time page on port 8765). Other organizations install the same App
 on selected repositories; list them in `allowed_orgs` of `config/runner.yaml` and, for app deploys, `github_orgs` in
-`instance.yaml`.
+`instance.yaml`. The App asks for **Workflows: write** as well as Contents and Pull requests: the runner mints each token
+narrowed to the permissions that one push or merge needs, and GitHub refuses a push that touches `.github/workflows/`
+unless the token itself carries Workflows: write. That applies to the agents org and the product repo (whose CI the
+runner owns); a repository in another org gets Contents only.
 
 ## Board accounts
 
