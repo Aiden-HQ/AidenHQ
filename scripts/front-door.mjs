@@ -49,6 +49,8 @@ export function frontDoor(ip) {
 	persist_config off
 	# No listener on 80 (decision D1): no redirect server, and the certificate is validated over TLS-ALPN-01 on 443.
 	auto_https disable_redirects
+	# Browsers send no SNI for an IP; behind 1:1 NAT the connection's own address isn't the certificate's, so name it.
+	default_sni ${ip}
 	servers {
 		protocols h1 h2
 		timeouts {

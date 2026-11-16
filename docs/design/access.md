@@ -49,7 +49,8 @@ is the owner's and wins.
   issues IP certificates). The site names its ACME issuer itself, so Caddy never falls back to its own CA: without a
   certificate the handshake fails, and nothing self-signed is ever served. Validation is TLS-ALPN-01 on 443 only:
   `disable_http_challenge` plus `auto_https disable_redirects` leave nothing on port 80. No ACME account email (Let's
-  Encrypt no longer sends expiry mail).
+  Encrypt no longer sends expiry mail). `default_sni` is the IP: browsers send no SNI for an IP, and behind 1:1 NAT the
+  connection's own address isn't the certificate's.
 - **Container.** The `caddy` image (`services/caddy/Dockerfile`, pinned by digest, so the image scan covers it) on the host
   network, as the owner's uid, read-only root, every capability dropped except `NET_BIND_SERVICE`, `no-new-privileges`.
   Its only writable place is `data/caddy` (0700, certificates and the ACME account key). The admin API is off and config
@@ -70,14 +71,16 @@ is the owner's and wins.
   `BOARD_LINK_TTL_HOURS=24` (decision D9). Every hour the board opens a verified TLS connection to `https://<ip>` and tells
   the owner on the channel when the certificate has under 48 hours left or can't be verified, at most every 12 hours
   (`services/board/src/front-door.ts`).
-- **Readiness and the fallback.** Setup waits up to 3 minutes for `https://<ip>` to answer with a publicly trusted
+- **Readiness and the fallback.** If the machine step ran before Caddy was compiled (443 still closed), setup runs it
+  again first. Setup then waits up to 3 minutes for `https://<ip>` to answer with a publicly trusted
   certificate (`node scripts/front-door.mjs wait`). If it doesn't, setup says loudly that public mode is not working,
   stops Caddy, prints the likely causes (NAT, a cloud firewall on 443, a wrong address) and the SSH tunnel, and exits
-  non-zero. It leaves `instance.yaml` as it is.
+  non-zero. It leaves `instance.yaml` as it is, so the firewall keeps 443 open and the next apply starts Caddy again;
+  the tunnel works once the owner sets `exposure: local` and reruns setup.
 - **The check.** In public mode `scripts/verify-security.sh` asserts Caddy's container shape, that 443 is Caddy's alone and
   UDP 443 is closed, that nothing but 22 and 443 listens publicly, that `https://<ip>` presents a trusted certificate with
   more than 24 hours left, and that six failed sign-ins through 443 naming six forged addresses (and a forged edge secret)
-  count as one address.
+  count as one address, while a seventh straight to 127.0.0.1:3121 is not refused (the board counted Caddy's address).
 
 The full design, including the switch from public to Tailscale or Cloudflare, is
 [minimal-core-install.md](minimal-core-install.md).

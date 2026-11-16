@@ -280,7 +280,7 @@ test("exposure public: a hardened caddy on 443 for the host's public IP, ACME on
   assert.ok(!JSON.stringify(caddy).includes("EDGE_BOARD_SECRET"), "the edge secret is a file, never compose environment");
   assert.deepEqual(board.environment, { BOARD_OWNER_EMAIL: "o@x", BOARD_LAN_HOSTS: "203.0.113.7", BOARD_LAN_URL: "https://203.0.113.7", BOARD_LINK_TTL_HOURS: "24", BOARD_FRONT_DOOR: "203.0.113.7" });
   const cf = out.caddyfile;
-  for (const want of ["admin off", "auto_https disable_redirects", "protocols h1 h2", "https://203.0.113.7 {", "issuer acme {", "profile shortlived", "disable_http_challenge", "reverse_proxy 127.0.0.1:3121 {",
+  for (const want of ["admin off", "auto_https disable_redirects", "default_sni 203.0.113.7", "protocols h1 h2", "https://203.0.113.7 {", "issuer acme {", "profile shortlived", "disable_http_challenge", "reverse_proxy 127.0.0.1:3121 {",
     "header_up X-AidenHQ-Client-IP {remote_host}", "header_up X-AidenHQ-Edge {file./run/secrets/edge_board_secret}", "header_up X-Forwarded-Proto https"]) assert.ok(cf.includes(want), want);
   // Never Caddy's internal CA; never a delete of a header it sets (a header_up delete runs after the set and removes it).
   assert.doesNotMatch(cf, /internal|cert_issuer|h3|:80\b/);

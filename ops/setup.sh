@@ -440,15 +440,24 @@ fi
 tunnel="ssh -N -L 3121:127.0.0.1:3121 $U@$(hostname -f 2>/dev/null || hostname)"
 # Exposure public: a certificate Let's Encrypt issued over 443 is the proof the door works. Without one in 3 minutes, say so
 # loudly, stop Caddy (with no certificate it serves nothing) and point at the tunnel; never claim public mode works.
+front=""
 if [ "$(cat "$REPO/config/exposure" 2>/dev/null)" = public ] && [ "$DRY" = 0 ]; then
   ip="$(sed -n 's/^AIDENHQ_PUBLIC_IP=//p' "$ENVF" | tail -1)"
-  say "Waiting up to 3 minutes for https://$ip to get its certificate (Let's Encrypt, over port 443)"
-  if node "$REPO/scripts/front-door.mjs" wait "$ip" 180; then
-    echo "Done. The board is at https://$ip. Send $OWNER_NAME this link (one use, 24 hours; a new one: --reset $OWNER_EMAIL):"
-    owner_link
-    exit 0
+  # The machine step ran before this apply compiled Caddy, so its firewall kept 443 closed: run it again (idempotent).
+  if [ -e /etc/default/aidenhq-public-fw ] && ! grep -qx 'EXPOSURE=public' /etc/default/aidenhq-public-fw; then
+    run env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" bash "$REPO/ops/vm/setup.sh" >/dev/null
   fi
-  as_user bash -c "cd '$REPO' && docker compose stop caddy" >/dev/null 2>&1 || true
+  say "Waiting up to 3 minutes for https://$ip to get its certificate (Let's Encrypt, over port 443)"
+  if node "$REPO/scripts/front-door.mjs" wait "$ip" 180; then front=ok; BOARD_URL="https://$ip"
+  else
+    front=failed
+    as_user bash -c "cd '$REPO' && docker compose stop caddy" >/dev/null 2>&1 || true
+  fi
+fi
+if [ "$front" = ok ]; then
+  echo "Done. The board is at https://$ip. Send $OWNER_NAME this link (one use, 24 hours; a new one: --reset $OWNER_EMAIL):"
+  owner_link
+elif [ "$front" = failed ]; then
   bar="$(printf '!%.0s' $(seq 100))"
   echo "$bar"
   echo "PUBLIC MODE IS NOT WORKING: https://$ip got no publicly trusted certificate within 3 minutes, so Caddy is stopped"
@@ -459,19 +468,19 @@ if [ "$(cat "$REPO/config/exposure" 2>/dev/null)" = public ] && [ "$DRY" = 0 ]; 
   echo "  $tunnel"
   echo "$bar"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
-  exit 1
-fi
-if [ -n "$BOARD_HOST" ]; then
+elif [ -n "$BOARD_HOST" ]; then
   echo "Done. Send $OWNER_NAME this link (their laptop must be on the tailnet; one use; a new one: --reset $OWNER_EMAIL):"
+  owner_link
 else
   echo "Done. The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first:"
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
   echo "then open this link there (one use; a new one: --reset $OWNER_EMAIL):"
+  owner_link
 fi
-owner_link
 echo
 echo "Once, in the company's Google OAuth app (Web application), add the redirect URI:"
 echo "  $BOARD_URL/google/callback"
 if [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
 [ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."
+[ "$front" != failed ] || exit 1

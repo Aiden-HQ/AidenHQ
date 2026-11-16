@@ -357,7 +357,7 @@ else
   if [ -z "$caddy" ]; then fail "exposure public: the caddy service isn't running"
   else
     shape="$(docker inspect "$caddy" --format '{{.HostConfig.NetworkMode}} {{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.HostConfig.CapAdd}} {{.HostConfig.SecurityOpt}}')"
-    echo "$shape" | grep -qE '^host [1-9][0-9]*:[0-9]+ true \[ALL\] \[NET_BIND_SERVICE\] \[no-new-privileges:true\]$' \
+    echo "$shape" | grep -qE '^host [1-9][0-9]*:[0-9]+ true \[ALL\] \[(CAP_)?NET_BIND_SERVICE\] \[no-new-privileges:true\]$' \
       && pass "caddy: host network, non-root, read-only, only NET_BIND_SERVICE" || fail "caddy's container is not the hardened shape: $shape"
   fi
   if sudo -n true 2>/dev/null || [ "$(id -u)" = 0 ]; then
@@ -376,14 +376,18 @@ else
     echo | openssl s_client -connect "$ip:443" 2>/dev/null | openssl x509 -noout -checkend 86400 >/dev/null 2>&1 \
       && pass "https://$ip: certificate valid for more than 24 hours" || fail "https://$ip: certificate expires within 24 hours, or none is served"
     # A client-named address is replaced by Caddy: five failures "from five addresses" through 443 are one address (this
-    # host's own), so the sixth is refused. A made-up email per run.
+    # host's own), so the sixth is refused. A seventh straight to the board (no edge secret: the socket's address) is not:
+    # the board believed Caddy's secret and counted the host's address, not the socket's. A made-up email per run.
     probe="verify-$RANDOM$RANDOM@example.invalid"
     for i in 1 2 3 4 5 6; do
       code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H "Origin: https://$ip" -H 'content-type: application/json' -H 'x-aidenhq-board: 1' \
         -H "x-aidenhq-client-ip: 198.51.100.$i" -H "x-aidenhq-edge: forged-$i" -H "x-forwarded-for: 198.51.101.$i" \
         "https://$ip/api/auth/sign-in/email" -d "{\"email\":\"$probe\",\"password\":\"not-the-password-$i\"}")"
     done
-    [ "$code" = "403" ] && pass "caddy: client-named addresses and a forged edge secret never reach the board" || fail "caddy: a client-named address got through (sixth failure answered $code, want 403)"
+    direct="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H "Host: $ip" -H "Origin: https://$ip" -H 'x-forwarded-proto: https' \
+      -H 'content-type: application/json' -H 'x-aidenhq-board: 1' http://127.0.0.1:3121/api/auth/sign-in/email -d "{\"email\":\"$probe\",\"password\":\"not-the-password-7\"}")"
+    [ "$code" = 403 ] && [ "$direct" = 401 ] && pass "caddy: names the real client with the edge secret; client-named addresses never reach the board" \
+      || fail "caddy: sixth failure through 443 answered $code (want 403), a seventh straight to the board $direct (want 401)"
   fi
 fi
 
