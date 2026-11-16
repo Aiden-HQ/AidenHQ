@@ -115,20 +115,32 @@ function commands(text, at, state, pins, problems) {
   if (/;;\s*$/.test(cmd)) state.arm = undefined;
 }
 
-/** ops/vm/pins.json: one apt pin per package and release, with the file's repositories as that release reads them. */
+/**
+ * ops/vm/pins.json: one apt pin per package and release, with the file's repositories as that release reads them. A file
+ * with no releases dates its top-level `apt` for DEFAULT_RELEASE (as scanFile does for a host script naming none); an `apt`
+ * block no release can read (not an object of pins, or under a release that isn't an object) is a problem, never skipped.
+ */
 function hostPins(path, text) {
   const j = JSON.parse(text);
+  const at = `${path}:${text.split("\n").findIndex((l) => /"apt"\s*:/.test(l)) + 1}`;
   const lineOf = (name, version) => text.split("\n").findIndex((l) => l.includes(`"${name}": "${version}"`)) + 1;
-  return Object.entries(j.releases ?? {}).flatMap(([release, r]) => {
+  const obj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+  const problems = [];
+  if (j.apt !== undefined && !obj(j.apt)) problems.push(`${at}: \`apt\` is not an object of package pins`);
+  if (j.releases !== undefined && !obj(j.releases)) problems.push(`${path}: \`releases\` is not an object of releases: its apt pins can't be dated`);
+  const releases = obj(j.releases) && Object.keys(j.releases).length ? j.releases : { [DEFAULT_RELEASE]: { distro: "ubuntu" } };
+  const pins = Object.entries(releases).flatMap(([release, r]) => {
+    if (!obj(r) || (r.apt !== undefined && !obj(r.apt))) { problems.push(`${path}: release ${release} is not an object with an \`apt\` object: its pins can't be dated`); return []; }
     const sources = Object.values(j.repos ?? {}).map((s) => onRelease(s, release, r.distro));
-    return Object.entries({ ...j.apt, ...r.apt }).map(([name, version]) =>
+    return Object.entries({ ...(obj(j.apt) ? j.apt : {}), ...(r.apt ?? {}) }).map(([name, version]) =>
       ({ kind: "apt", name, package: name, version, sources, release, distro: r.distro, at: `${path}:${lineOf(name, version)}` }));
   });
+  return { pins, problems };
 }
 
 /** One file's pins and its unpinned problems. */
 export function scanFile(path, text) {
-  if (HOST_PINS.test(path)) return { pins: hostPins(path, text), problems: [] };
+  if (HOST_PINS.test(path)) return hostPins(path, text);
   const pins = [], problems = [];
   const state = { repoAdded: false, sources: [], releases: new Set() };
   const at = (n) => `${path}:${n}`;
@@ -184,7 +196,8 @@ export function scanFile(path, text) {
   return { pins: pins.flatMap(({ releases, ...p }) => (p.kind === "apt" ? (releases ?? all).map((release) => ({ ...p, release })) : [p])), problems };
 }
 
-const key = (p) => JSON.stringify([p.kind, p.name, p.version, p.digest, p.sha, p.release]);
+// An apt pin's distro and sources are part of it: the same version from another repository or distro is dated again.
+const key = (p) => JSON.stringify([p.kind, p.name, p.version, p.digest, p.sha, p.release, p.distro, p.sources]);
 const exceptionFor = (p, exceptions) => exceptions.find((e) => e.ecosystem === p.kind && e.package === p.package && e.version === p.version && e.advisory);
 
 /** Date each new or changed pin; the problems, one line each. `date(pin)` returns {published, via} or throws. */
