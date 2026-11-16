@@ -202,6 +202,34 @@ People ask the app's maintaining agent for changes without any access to the boa
 4. The owner can ask through the chief of staff, which files a request on the owner's behalf with
    `app_request_from_owner`; the board checks the comment is the owner's own and names the app.
 
+## In-app feedback
+
+Apps that keep their own intake (Roadmap Keeper's feedback) need an agent awake within a minute, not at its next scheduled
+run, without the text leaving the app and without giving app users' words a privileged agent.
+
+1. After the app's server stores a submission, its page calls `notifyOwner()` (app starter `src/lib/notify-owner.ts`):
+   `POST /.aidenhq/notify` on its own host, same origin. The gate serves the path, never reads the body, and tells the board
+   only the host's app and the verified visitor; a visitor blocked on the app is refused. The board logs who sent it; the app
+   records its submitter on its own row.
+2. The board counts the notice and runs the app's `App feedback: <app>` routine through Paperclip with that count alone: the
+   first at once, then at most one run per app per 10 minutes (6 an hour; the minute sync fires what waited). Paperclip
+   coalesces a run into a live one.
+3. `scripts/modules.mjs` compiles that routine for a shared app whose registry entry sets `feedback_to`: `coalesce_if_active`,
+   autonomy `tier0` (any Tier 1 write goes to the owner), fixed product text that fences the items as people's suggestions.
+4. Grants are per agent, not per routine, so the run gets a narrow agent, enforced in code at every layer:
+   - compile allows the `feedback_to` agent exactly `apps: app_api, app_view` and its task tools (`task_current`, `task_get`,
+     `task_comments`, `task_list`, `task_comment`, `task_finish`, `task_set_status`, `task_delegate`, the automatic
+     `memory_note`): any other tool, a read included, fails, and so does that agent in another app's `api.callers`;
+   - apps-mcp refuses it any app but the ones that name it, with any tool (`feedbackOnly`), and an app may give it narrower
+     API paths than its other callers (`api.callers: [{agent, paths}]`);
+   - what it delegates or comments for others starts with `(From app feedback, untrusted: …)` (tasks-mcp, from the grants
+     table's `feedback_for`); the runner then shows the task to the Engineer as a person's suggestion, as untrusted input,
+     never as the agent's or the owner's request, and the AI reviewer sees the mark in the request chain;
+   - the app may scope that identity on its own API (Roadmap Keeper: intake reads and one decision endpoint only).
+
+An app can wake only the agent its own registry entry names (the app comes from the host, the agent from the instance repo);
+any signed-in member's page can send a notice without submitting, which costs at most one empty run per app per 10 minutes.
+
 ## Security notes
 
 - Header spoofing: the gate strips every inbound identity header (a forged `X-AidenHQ-Identity` included), and apps

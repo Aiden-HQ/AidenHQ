@@ -26,6 +26,12 @@ const canRead = (a: App, c: Caller) => canView(a, c.roles);
 // Its owner (the agent key from the kernel's assertion), or an agent with the app-incidents role during an incident.
 export const canMutate = (p: Platform, a: App, c: Caller) => c.key === a.owner || (c.roles.includes("app-incidents") && !!p.store.openIncident(a.name));
 
+/** A feedback agent (an app's registry `feedback_to`) reaches only the apps that name it, with any tool it was granted. */
+export function feedbackOnly(apps: App[], key: string, name: unknown): void {
+  const only = apps.filter((a) => a.feedback_to === key).map((a) => a.name);
+  if (only.length && !only.includes(String(name))) throw new Error(`${key} handles feedback for ${only.join(", ")} only`);
+}
+
 let busy = false; // registry edits are serialised across requests (a server is built per request)
 
 /** The app's own handbook at its deployed commit, read from git (never the work tree); app-authored, so untrusted. */
@@ -43,6 +49,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
     server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: !mutating, openWorldHint: openWorld } }, async (args: any) => {
       try {
         if (!caller.id || !caller.key) throw new Error("agent identity required");
+        feedbackOnly(p.apps(), caller.key, args?.name);
         const r = await fn(args);
         return r && typeof r === "object" && Array.isArray((r as { content?: unknown }).content) ? (r as ReturnType<typeof ok>) : ok(r); // image results pass through
       } catch (e) {

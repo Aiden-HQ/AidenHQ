@@ -5,6 +5,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { Logger } from "pino";
+import type { Routine } from "./paperclip.js";
 
 export const CORE_ROLES = ["blocked", "member", "admin"] as const;
 /** A custom role's name (the manifest's charset); core names are reserved. */
@@ -41,6 +42,8 @@ export interface AppAccessDeps {
   exported: () => Promise<void>;
   /** Wakes the app's maintaining agent (the app-request routine's webhook); true once it went through. */
   wake?: (app: string, count: number) => Promise<boolean>;
+  /** Runs the app's "App feedback: <app>" routine (its registry's agent) with the count; true once it went through. */
+  feedbackWake?: (app: string, count: number) => Promise<boolean>;
   log: Logger;
 }
 
@@ -51,6 +54,8 @@ export class AccessError extends Error {
 }
 
 const RATE = { perHour: 20, openCap: 50 };
+/** At most one feedback wake per app in this long (so 6 an hour); what arrives meanwhile goes in the next (the minute retry fires it). */
+export const FEEDBACK_GAP_MS = 10 * 60_000;
 
 export function createAppAccess(d: AppAccessDeps) {
   const { db, log } = d;
@@ -175,6 +180,18 @@ export function createAppAccess(d: AppAccessDeps) {
     }
   }
 
+  /** Feedback notices per app since its last wake (memory: a restart drops them; the agent's scheduled run is the backstop). */
+  const feedback = new Map<string, { pending: number; last: number }>();
+  /** Runs the app's feedback routine for its pending notices, at most once per FEEDBACK_GAP_MS; a failed run is retried. */
+  async function wakeFeedback(app: string) {
+    const f = feedback.get(app);
+    if (!d.feedbackWake || !f?.pending || Date.now() - f.last < FEEDBACK_GAP_MS) return;
+    const count = f.pending;
+    Object.assign(f, { pending: 0, last: Date.now() }); // before the await: notices meanwhile wait for the next one
+    const ok = await d.feedbackWake(app, count).catch((err) => (log.warn({ app, err: String(err) }, "app feedback wake failed; retried within a minute"), false));
+    if (!ok) Object.assign(f, { pending: f.pending + count, last: 0 });
+  }
+
   /** An app's roles with meanings, its default, its assignments and the last 50 changes (the Access page, app_roles). */
   function view(app: string) {
     const m = manifests.get(app);
@@ -296,6 +313,16 @@ export function createAppAccess(d: AppAccessDeps) {
       return insertRequest(app, who, role, text, context ?? null);
     },
 
+    /** The app's page says people sent something into its own intake (the gate names the app and the visitor; no text). */
+    notify(app: string, email: string): { ok: true } {
+      if (effectiveRole(app, asEmail(email)) === "blocked") throw new AccessError(403, "this app isn't shared with you");
+      log.info({ app, email: asEmail(email) }, "app feedback notice"); // who sent it, for abuse
+      const f = feedback.get(app) ?? feedback.set(app, { pending: 0, last: 0 }).get(app)!;
+      f.pending = Math.min(f.pending + 1, 1000);
+      void wakeFeedback(app);
+      return { ok: true };
+    },
+
     /** The owner's own words (checked by the caller) as a request on an app, for its agent. */
     ownerRequest(app: string, ownerEmail: string, text: string): { id: string; status: "open" } {
       appOf(app);
@@ -321,9 +348,10 @@ export function createAppAccess(d: AppAccessDeps) {
       return { ok: true };
     },
 
-    /** Each minute: wakes not yet delivered. */
+    /** Each minute: wakes not yet delivered, and feedback held back by the gap. */
     async wakePending() {
       for (const r of db.prepare("SELECT DISTINCT app FROM app_requests WHERE status = 'open' AND notified = 0").all() as { app: string }[]) await wakeApp(r.app);
+      for (const app of feedback.keys()) await wakeFeedback(app);
     },
   };
 }
@@ -350,5 +378,19 @@ export function webhookWake(urlFile: string, secretFile: string, log: Logger) {
     const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-paperclip-timestamp": ts, "x-paperclip-signature": `sha256=${sig}` }, body, signal: AbortSignal.timeout(15_000) });
     if (![202, 409].includes(res.status)) log.warn({ status: res.status, app }, "app-request webhook refused");
     return [202, 409].includes(res.status);
+  };
+}
+
+/**
+ * Runs the app's "App feedback: <app>" routine (scripts/modules.mjs makes one per shared app, for the agent its registry
+ * names) with only the count: the run is tier0 by its routine, whatever started it. No active routine (not applied yet, or
+ * paused): nothing to retry. A run coalesced into a live one (409) went through.
+ */
+export function routineWake(pc: { routines(): Promise<Routine[]>; request(method: string, path: string, body: unknown): Promise<unknown> }, log: Logger) {
+  return async (app: string, count: number): Promise<boolean> => {
+    const r = (await pc.routines()).find((x) => x.title === `App feedback: ${app}` && x.status === "active");
+    if (r) await pc.request("POST", `/api/routines/${r.id}/run`, { source: "api", variables: { count: String(count) } }).catch((err) => { if (err.status !== 409) throw err; });
+    log.info({ app, count, routine: r?.id ?? null }, "app feedback wake");
+    return true;
   };
 }

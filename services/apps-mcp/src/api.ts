@@ -19,16 +19,18 @@ export function plainPath(path: string): string {
 }
 
 /** plainPath, under one of the app's prefixes (on a segment boundary). Refuses rather than normalizes. */
-export function checkPath(app: App, path: string): void {
+export function checkPath(app: App, path: string, paths = app.api!.paths): void {
   const p = plainPath(path);
   const under = (pre: string) => p === pre || p.startsWith(pre.endsWith("/") ? pre : `${pre}/`);
-  if (!app.api!.paths.some(under)) throw new Error(`${path} isn't under ${app.name}'s agent API paths (${app.api!.paths.join(", ")})`);
+  if (!paths.some(under)) throw new Error(`${path} isn't under ${app.name}'s agent API paths for this caller (${paths.join(", ")})`);
 }
 
 export function authorize(app: App, callerKey: string, path: string): void {
   if (!app.api) throw new Error(`${app.name} has no agent API (no api: block in the registry)`);
-  if (!callerKey || !app.api.callers.includes(callerKey)) throw new Error(`${callerKey || "this agent"} may not call ${app.name}'s API (callers: ${app.api.callers.join(", ")})`);
-  checkPath(app, path);
+  const keyOf = (c: string | { agent: string }) => (typeof c === "string" ? c : c.agent);
+  const c = callerKey ? app.api.callers.find((x) => keyOf(x) === callerKey) : undefined;
+  if (!c) throw new Error(`${callerKey || "this agent"} may not call ${app.name}'s API (callers: ${app.api.callers.map(keyOf).join(", ")})`);
+  checkPath(app, path, typeof c === "string" ? app.api.paths : c.paths);
 }
 
 export interface ApiRequest { url: string; method: Method; headers: Record<string, string>; body?: string; timeout?: number }

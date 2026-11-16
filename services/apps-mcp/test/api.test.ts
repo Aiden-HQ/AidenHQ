@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { apiTarget, authorize, callApi, targetContainer, type ApiRequest, type Resolve } from "../src/api.js";
 import { agentSigner } from "../src/identity.js";
+import { feedbackOnly } from "../src/mcp.js";
 import { isSensitive, parseApp } from "../src/registry.js";
 
 const api = { callers: ["roadmap-keeper"], paths: ["/api/agent/roadmap"] };
@@ -122,3 +123,20 @@ describe("callApi", () => {
   });
 });
 
+
+describe("an app's feedback agent", () => {
+  const rk = app({ feedback_to: "roadmap-feedback", api: { callers: ["roadmap-keeper", { agent: "roadmap-feedback", paths: ["/api/agent/intake"] }], paths: ["/api/agent/roadmap", "/api/agent/intake"] } });
+  it("calls only its own paths of that app's API", () => {
+    expect(() => authorize(rk, "roadmap-feedback", "/api/agent/intake?status=received")).not.toThrow();
+    expect(() => authorize(rk, "roadmap-feedback", "/api/agent/intake/AB12CD34/decision")).not.toThrow();
+    expect(() => authorize(rk, "roadmap-feedback", "/api/agent/roadmap")).toThrow(/for this caller/);
+    expect(() => authorize(rk, "roadmap-keeper", "/api/agent/roadmap")).not.toThrow();
+  });
+  it("reaches no other app with any tool", () => {
+    const other = app({ name: "wiki" });
+    expect(() => feedbackOnly([rk, other], "roadmap-feedback", "roadmap-keeper")).not.toThrow();
+    expect(() => feedbackOnly([rk, other], "roadmap-feedback", "wiki")).toThrow(/handles feedback for roadmap-keeper only/);
+    expect(() => feedbackOnly([rk, other], "roadmap-feedback", undefined)).toThrow(); // app_list, warehouse_query: no app named
+    expect(() => feedbackOnly([rk, other], "roadmap-keeper", "wiki")).not.toThrow();
+  });
+});

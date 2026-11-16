@@ -215,6 +215,8 @@ export interface AccountsOptions {
   manifest?: (app: string) => Promise<Manifest>;
   /** Wakes an app's maintaining agent when in-app requests wait (the app-request routine's webhook). */
   wake?: (app: string, count: number) => Promise<boolean>;
+  /** Runs an app's "App feedback: <app>" routine (app-access.ts notify). */
+  feedbackWake?: (app: string, count: number) => Promise<boolean>;
   log: Logger;
 }
 
@@ -520,6 +522,7 @@ export async function createAccounts(o: AccountsOptions) {
     manifest: o.manifest,
     exported: changed,
     wake: o.wake,
+    feedbackWake: o.feedbackWake,
     log,
   });
   const auth = betterAuth(options);

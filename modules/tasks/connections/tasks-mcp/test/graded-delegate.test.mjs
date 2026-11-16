@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.mjs";
 
-async function call(name, args, { gate = { pass: true }, boardDown = false, assignee = "cos", grading = "on" } = {}) {
+async function call(name, args, { gate = { pass: true }, boardDown = false, assignee = "cos", grading = "on", feedback } = {}) {
   const seen = { created: [], filed: [], patches: [], comments: [], gates: [] };
   const handler = (req, res) => {
     let body = "";
@@ -27,7 +27,7 @@ async function call(name, args, { gate = { pass: true }, boardDown = false, assi
       send([]);
     });
   };
-  const agents = { cos: { key: "chief-of-staff", roles: [] }, eng: { key: "engineer-openrouter", roles: [], graded: true } };
+  const agents = { cos: { key: "chief-of-staff", roles: [], ...(feedback ? { feedback_for: feedback } : {}) }, eng: { key: "engineer-openrouter", roles: [], graded: true } };
   const board = boardDown ? (req) => req.socket.destroy() : handler;
   const r = await bridge({ handler, board, agents, settings: { grading }, agent: "cos", task: "cur" }).call(name, args);
   return { r, text: r.result?.content?.[0]?.text ?? "", ...seen };
@@ -131,4 +131,13 @@ test("task_create handing work to a graded agent is graded as a delegation is; g
   assert.equal(off.r.result?.isError, undefined, off.text);
   assert.equal(off.created.length, 1);
   assert.equal(off.filed.length, 0);
+});
+
+test("a feedback agent's delegations and comments carry the untrusted app-feedback mark; others' don't", async () => {
+  const fb = await call("task_delegate", { ...ask, deliverable: { kind: "none" } }, { feedback: ["roadmap-keeper"] });
+  assert.match(fb.created[0].description, /^\(From app feedback, untrusted: a person's in-app feedback on roadmap-keeper/);
+  const said = await call("task_comment", { issue: "WOR-9", body: "Also the header." }, { feedback: ["roadmap-keeper"] });
+  assert.match(said.comments.at(-1), /^\(From app feedback, untrusted:.*\n\nAlso the header\.$/s);
+  const plain = await call("task_delegate", { ...ask, deliverable: { kind: "none" } });
+  assert.doesNotMatch(plain.created[0].description, /From app feedback/);
 });

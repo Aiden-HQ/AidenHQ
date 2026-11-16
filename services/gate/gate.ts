@@ -103,6 +103,7 @@ type Decision =
   | (Visitor & { mine: true; roleOf: (app: string) => string; access: boolean })
   | (Visitor & { requests: true; site: Site; role: string })
   | (Visitor & { request: true; site: Site; role: string })
+  | (Visitor & { notify: true; site: Site; role: string })
   | (Visitor & { site: Site; role: string; app: string; token: IdentityToken });
 type KeysOf<T> = T extends unknown ? keyof T : never;
 type Exclusive<U, All extends PropertyKey = KeysOf<U>> = U extends unknown ? U & { [K in Exclude<All, keyof U>]?: undefined } : never;
@@ -590,6 +591,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       if (site!.parent) return { status: 404, msg: "not found" }; // requests are the live app's, never a preview's
       if (read && path === `${RESERVED}/requests`) return { requests: true, site: site!, ...who, role };
       if (req.method === "POST" && path === `${RESERVED}/request`) return exactOrigin(req, host) ? { request: true, site: site!, ...who, role } : { status: 403, msg: "forbidden: cross-origin" };
+      if (req.method === "POST" && path === `${RESERVED}/notify`) return exactOrigin(req, host) ? { notify: true, site: site!, ...who, role } : { status: 403, msg: "forbidden: cross-origin" };
       return { status: 404, msg: "not found" };
     }
     if ((upgrade || !read) && !sameOrigin(req, host)) return { status: 403, msg: "forbidden: cross-origin" };
@@ -716,6 +718,22 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     }
   }
 
+  /**
+   * App host, POST /.aidenhq/notify: the page says people sent something into the app's own intake, so the board wakes the
+   * agent the registry names for it. The app is this host's and the body is never read: no text reaches the board.
+   */
+  async function notifyOwner(req: IncomingMessage, res: ServerResponse, a: { email: VerifiedEmail; site: Site }) {
+    req.resume(); // drained unread
+    try {
+      const r = await board(config(), "/.auth/api/app-feedback/new", { email: a.email, app: a.site.app });
+      if (r.status >= 500) throw new Error(`app-feedback ${r.status}`);
+      res.writeHead(r.status === 200 ? 204 : r.status, { "cache-control": "no-store" }).end();
+    } catch (e) {
+      log({ msg: "app notify failed", err: String(e) });
+      res.writeHead(503, { "cache-control": "no-store" }).end();
+    }
+  }
+
   /** App host, GET /.aidenhq/requests: the visitor's own requests on this app, with status and reply. */
   async function myRequests(req: IncomingMessage, res: ServerResponse, a: { email: VerifiedEmail; site: Site }) {
     try {
@@ -805,6 +823,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     if (a.mine) return void res.writeHead(200, PAGE).end(req.method === "HEAD" ? undefined : myAppsPage(a.email, appsFor(config(), a.roleOf)));
     if (a.request) return inAppRequest(req, res, a);
     if (a.requests) return myRequests(req, res, a);
+    if (a.notify) return notifyOwner(req, res, a);
     let target: { host: string; port: number; headers: OutgoingHttpHeaders };
     if (a.auth) {
       const u = new URL(config().auth_url);

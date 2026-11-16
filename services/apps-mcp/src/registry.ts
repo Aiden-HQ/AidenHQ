@@ -23,6 +23,8 @@ const AppSchema = z
     compose: z.string().default("compose.yaml").refine(plainRel, "compose must be relative, without .."),
     host: z.string().default("local"),
     owner: z.string(),
+    // The agent people's feedback in a shared app wakes (its "App feedback: <app>" routine; default: owner). scripts/modules.mjs.
+    feedback_to: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).optional(),
     description: z.string(),
     port: z.number().int().min(1024).max(65535).refine((p) => p < PREVIEW_PORTS.min || p > PREVIEW_PORTS.max, `ports ${PREVIEW_PORTS.min}-${PREVIEW_PORTS.max} are the previews'`).optional(),
     expose: z.boolean().default(true), // tailscale serve --https=<port>; false for non-HTTP apps (databases)
@@ -41,7 +43,8 @@ const AppSchema = z
     // prefixes; apps-mcp signs each call's X-AidenHQ-Identity (identity.ts; docs/design/app-identity.md).
     api: z.object({
       token: z.never({ error: "api.token is gone: app_api signs each call's identity (docs/design/app-identity.md); remove it and its secret" }).optional(),
-      callers: z.array(z.string().min(1)).min(1),
+      // A caller is an agent key (the app's paths) or {agent, paths}: that agent only under its own narrower prefixes.
+      callers: z.array(z.union([z.string().min(1), z.object({ agent: z.string().min(1), paths: z.array(z.string().regex(/^\/[A-Za-z0-9._~\/-]*$/, "paths are plain absolute path prefixes")).min(1) }).strict()])).min(1),
       paths: z.array(z.string().regex(/^\/[A-Za-z0-9._~\/-]*$/, "paths are plain absolute path prefixes")).min(1),
     }).strict().optional(),
     // Shared access (docs/design/access.md): people (not agents) who reach the app through

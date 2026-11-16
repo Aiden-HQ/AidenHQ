@@ -20,7 +20,7 @@ import { CONN_TOOL, type Writes } from "./writes.ts";
 
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
 /** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
-const DIRECTORY = ["key", "roles", "trial", "delegate_to", "memory_inbox", "review_log", "graded"];
+const DIRECTORY = ["key", "roles", "trial", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
 const SETTINGS = ["grading", "loop_brake"];
 
 /** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it, so the lock can't miss a route. */
