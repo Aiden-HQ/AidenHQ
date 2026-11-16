@@ -15,9 +15,10 @@
 // the PR's own branch), MODEL, EFFORT (default high), DEEP (non-empty: the `deep-review` label, the higher effort), RULES (the house rules file), CRITICAL_GLOBS (the
 // app's critical paths), PR_TITLE and PR_BODY (fenced as data), REVIEW_LSP (typescript-language-server, for the repo tools'
 // definition, references and diagnostics), REVIEW_MINUTES (default 40).
-// Exit: 0 a review; 1 none came out (provider error, timeout: the workflow retries once); 2 the model gateway refused (bad
-// token, spend cap, model not allowed: permanent); 3 codex finished but its answer isn't a review (not the JSON asked for,
-// or no diff read): the PR's content can cause that, so it is never retried or excused by size (the gate fails it).
+// Exit: 0 a review; 1 a confirmed provider error (HTTP 429 or 5xx, a dropped connection, in codex's events or stderr): the
+// workflow retries once; 2 the model gateway refused (bad token, spend cap, model not allowed: permanent); 3 any other run
+// without a verdict (a timeout, an answer that isn't the JSON asked for, no diff read, an unexplained exit): the PR's
+// content can cause that, so it is never retried (the gate fails it).
 //   node code-review.mjs --lockfiles <base> <head>   the PR's package-lock.json changes, summarised (lockSummary); exit 3
 //   when it adds a package, changes one's version or source, or adds an install script (the workflow: a critical path).
 import { randomBytes } from "node:crypto";
@@ -198,11 +199,18 @@ function lockfiles(git, base, head) {
     .map((path) => ({ path, changes: lockChanges(show(mb, path), show(head, path)) }));
 }
 
-/** Why the run produced no review, from codex's error events and stderr: [permanent?, a short cause]. */
+/**
+ * Why the run produced no review, from codex's error events and stderr: [kind, a short cause]. kind: permanent (the gateway
+ * refused: 401-403, a cap, a model not allowed), transient (a confirmed provider error: HTTP 429 or 5xx, a dropped or refused
+ * connection), else none (no verdict: never retried).
+ */
 export function why(events, stderr) {
   const said = [...events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? ""), String(stderr).slice(-2000)].join("\n");
-  if (/\b40[123]\b|cap_reached|not_allowed|unauthorized|not_priced/i.test(said)) return [true, said.match(/[^\n]*\b40[123]\b[^\n]*/)?.[0]?.slice(0, 200) ?? "the model gateway refused"];
-  return [false, said.match(/[^\n]*(error|timed out|failed)[^\n]*/i)?.[0]?.slice(0, 200) ?? "no review came out"];
+  const line = (re) => said.match(new RegExp(`[^\\n]*(?:${re.source})[^\\n]*`, "i"))?.[0]?.slice(0, 200);
+  const refused = /\b40[123]\b|cap_reached|not_allowed|unauthorized|not_priced/i, provider = /\b(429|5\d\d)\b|too many requests|stream disconnected|connection (reset|refused|closed|error)|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up/i;
+  if (refused.test(said)) return ["permanent", line(refused) ?? "the model gateway refused"];
+  if (provider.test(said)) return ["transient", line(provider) ?? "a provider error"];
+  return ["none", line(/error|timed out|failed/) ?? "no review came out"];
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href && process.argv[2] === "--lockfiles") {
@@ -247,7 +255,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href && process.arg
   let stdout = "", stderr = "";
   child.stdout.on("data", (d) => (stdout += d));
   child.stderr.on("data", (d) => { stderr += d; if (stderr.length > 1e6) stderr = stderr.slice(-5e5); });
-  const timer = setTimeout(() => child.kill("SIGKILL"), Number(process.env.REVIEW_MINUTES || 40) * 60_000);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, Number(process.env.REVIEW_MINUTES || 40) * 60_000);
   const code = await new Promise((ok) => child.on("close", ok));
   clearTimeout(timer);
   const events = stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
@@ -258,12 +267,12 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href && process.arg
   for (const e of events) if (e.type === "item.completed" && e.item?.type === "mcp_tool_call") used[e.item.tool] = (used[e.item.tool] ?? 0) + 1;
   const calls = Object.entries(used).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
   if (!review) {
-    // codex finished its turn but the answer is no review: the PR's content may have caused that, so it fails closed.
+    // Only a confirmed provider error is transient (retried); a timeout or an answer that isn't a review is no verdict.
     const answered = code === 0 && events.some((e) => e?.type === "turn.completed");
-    const [permanent, cause] = answered ? [false, "an answer that isn't a review"] : why(events, stderr);
+    const [kind, cause] = answered ? ["none", "an answer that isn't a review"] : timedOut ? ["none", "timed out"] : why(events, stderr);
     console.error(`code-review: no review (codex exit ${code}, ${((Date.now() - t) / 1000).toFixed(0)}s): ${cause}`);
     console.log(JSON.stringify({ findings: null, health: { status: "failed" }, cause }));
-    process.exit(answered ? 3 : permanent ? 2 : 1);
+    process.exit(kind === "permanent" ? 2 : kind === "transient" ? 1 : 3);
   }
   console.error(`code-review: ${review.findings.length} findings in ${((Date.now() - t) / 1000).toFixed(0)}s; tool calls: ${calls}`);
   console.log(JSON.stringify({ ...review, reviewer: { kind: "codex", model, effort, addressed } }));

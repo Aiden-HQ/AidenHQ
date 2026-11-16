@@ -49,18 +49,21 @@ test("a partial review with nothing high or critical passes with a note; no cove
   assert.match(none.body, /incomplete.*re-run/);
 });
 
-test("past the review target, a review that never came out passes naming the size (#144); under it, it fails", () => {
-  const big = verdict(1, JSON.stringify({ findings: null, health: { status: "failed" } }), "abcdef123", { failure: "transient", attempts: "2", lines: "5230", mode: "full" });
-  assert.equal(big.block, false);
-  assert.match(big.body, /\*\*Code review stopped short on `abcdef1`\*\* \(5,230 counted changed lines: no review came out, review exit 1, 2 attempts\)\. .*at most 2,000 counted changed lines/);
-  assert.doesNotMatch(big.body, /Code review (failed|incomplete)|Reviewed the whole PR/);
-  assert.equal(verdict(1, "", "", { failure: "transient", lines: "1999" }).block, true);
+test("no verdict always fails (fail closed); past the review target the reason is the size, and the runner doesn't re-run it", () => {
+  const failed = JSON.stringify({ findings: null, health: { status: "failed" } });
+  const big = verdict(1, failed, "abcdef123", { failure: "transient", attempts: "2", lines: "5230", mode: "full" });
+  assert.equal(big.block, true);
+  assert.match(big.body, /\*\*Code review: no verdict on `abcdef1`\*\*: too large to review in one pass \(5,230 counted changed lines; review exit 1, 2 attempts\)\. Split it into stacked PRs under ~2,000 counted changed lines/);
+  assert.doesNotMatch(big.body, /Code review (failed|incomplete)|Reviewed the whole PR/, "a headline the runner doesn't re-run");
+  assert.equal(verdict(3, failed, "", { failure: "no-verdict", lines: "5230", critical: "src/auth/a.ts" }).block, true);
+  const small = verdict(3, failed, "abcdef123", { failure: "no-verdict", cause: "timed out", lines: "300" });
+  assert.equal(small.block, true);
+  assert.match(small.body, /\*\*Code review: no verdict on `abcdef1`\*\* \(review exit 3: timed out\)/);
+  assert.match(verdict(1, failed, "abcdef123", { failure: "transient", attempts: "2", lines: "300" }).body, /\*\*Code review failed on `abcdef1`\*\*/, "a provider failure the runner may re-run");
   assert.equal(verdict(1, "", "", { failure: "permanent", lines: "5230" }).block, true, "a refusal is never a pass");
-  // Only without a critical path, and only for a provider failure: an answer that isn't a review fails closed at any size.
-  assert.equal(verdict(1, "", "", { failure: "transient", lines: "5230", depth: "normal", critical: "src/auth/a.ts" }).block, true, "a critical path never stops short");
-  assert.equal(verdict(3, "", "", { failure: "unparsable", lines: "5230" }).block, true, "an unparsable answer is never a pass");
   // Findings that did come out on a big PR still decide.
   assert.equal(verdict(0, review([finding("high", "Bug")]), "", { failure: "", lines: "5230" }).block, true);
+  assert.equal(verdict(0, review([]), "", { failure: "", lines: "5230" }).block, false);
 });
 
 test("a failed review, a non-zero exit or unreadable output blocks", () => {
@@ -257,19 +260,18 @@ process.exit(code);
   assert.equal(r.runs.length, 2);
   assert.match(r.env, /CODEGENIE_EXIT=0\nCODEGENIE_ATTEMPTS=2\nCODE_REVIEW_DONE=1/);
   r = run(light, { CODES: "1,1" });
-  assert.match(r.env, /CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=2\nCODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=no review output/);
-  // Past 2,000 counted lines: one attempt only (no verdict there is the gate's "stopped short" decision).
+  assert.match(r.env, /CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=2\nCODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=a provider error/);
+  // A confirmed provider error is retried whatever the size.
   g("checkout", "-q", base); writeFileSync(join(dir, "big.ts"), "x\n".repeat(2100)); g("add", "."); g("commit", "-qm", "big");
   r = run(g("rev-parse", "HEAD"), { CODES: "1,0" });
-  assert.equal(r.runs.length, 1);
-  assert.match(r.env, /REVIEW_COUNTED_LINES=2100[\s\S]*CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=1\nCODEGENIE_FAILURE=transient/);
+  assert.equal(r.runs.length, 2);
   r = run(light, { CODES: "2" });
   assert.equal(r.runs.length, 1);
   assert.match(r.env, /CODEGENIE_FAILURE=permanent/);
-  // An answer that isn't a review (exit 3) is never retried.
+  // No verdict for any other reason (exit 3: a timeout, an answer that isn't a review) is never retried.
   r = run(light, { CODES: "3,0" });
   assert.equal(r.runs.length, 1);
-  assert.match(r.env, /CODEGENIE_EXIT=3\nCODEGENIE_ATTEMPTS=1\nCODEGENIE_FAILURE=unparsable/);
+  assert.match(r.env, /CODEGENIE_EXIT=3\nCODEGENIE_ATTEMPTS=1\nCODEGENIE_FAILURE=no-verdict/);
   // package-lock.json: out of the line count, but adding a package (or an install script, or a new version) is critical,
   // never a tiny skip; moving one to another path at the same version is not.
   g("checkout", "-q", base); writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ packages: { "": {}, "node_modules/a": { version: "1.0.0" } } }, null, 2)); g("add", "."); g("commit", "-qm", "lock base");
@@ -317,7 +319,7 @@ test("the reviewer runs codex with its shell off, the repo tools only and no Git
   writeFileSync(join(bin, "codex"), `#!/bin/sh
 out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
 { echo "$*"; pwd; env | sort; cat "$CODEX_HOME/config.toml"; } > "${join(bin, "seen")}"
-[ -f "${join(bin, "fail")}" ] && { echo '{"type":"error","message":"unexpected status 402 Payment Required: spend cap reached"}'; exit 1; }
+[ -f "${join(bin, "fail")}" ] && { cat "${join(bin, "fail")}"; exit 1; }
 [ -f "${join(bin, "nodiff")}" ] || echo '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"repo","tool":"diff","status":"completed","error":null}}'
 sed "s#ROOT#$(dirname "$(pwd)")/pr#g" "${join(bin, "answer")}" > "$out"; echo '{"type":"turn.completed"}'
 `);
@@ -330,7 +332,7 @@ sed "s#ROOT#$(dirname "$(pwd)")/pr#g" "${join(bin, "answer")}" > "$out"; echo '{
     g("commit", "-qam", "change");
     const { ANSWER = "", FAIL, NODIFF, from, ...more } = extra;
     writeFileSync(join(bin, "answer"), ANSWER);
-    for (const [f, on] of [["fail", FAIL], ["nodiff", NODIFF]]) on ? writeFileSync(join(bin, f), "") : rmSync(join(bin, f), { force: true });
+    for (const [f, on] of [["fail", FAIL], ["nodiff", NODIFF]]) on ? writeFileSync(join(bin, f), f === "fail" ? `${JSON.stringify({ type: "error", message: on === "1" ? "unexpected status 402 Payment Required: spend cap reached" : on })}\n` : "") : rmSync(join(bin, f), { force: true });
     const env = { PATH: `${bin}:${process.env.PATH}`, CI_REVIEW_KEY: "ahqci_testtoken", CI_REVIEW_URL: "http://10.0.0.1:8201/api/v1", MODEL: "~deepseek/deepseek-flash-latest", EFFORT: "high", RULES: rules, GITHUB_TOKEN: "ghs_secret", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc_secret", TRUSTED_BASE: base, PR_TITLE: "Fix add", PR_BODY: "Task: make add exact.", CRITICAL_GLOBS: "src/money/*", ...more };
     let code = 0, stdout;
     try { stdout = execFileSync("node", [reviewer, from ?? base, g("rev-parse", "HEAD")], { cwd: dir, env, stdio: ["ignore", "pipe", "pipe"] }).toString(); } catch (e) { code = e.status; stdout = e.stdout.toString(); }
@@ -391,6 +393,10 @@ sed "s#ROOT#$(dirname "$(pwd)")/pr#g" "${join(bin, "answer")}" > "$out"; echo '{
   assert.match(added.seen, /package-lock\.json:\\n  added \(1\): left-pad@1\.3\.0\\n  install scripts \(1\): left-pad@1\.3\.0/);
   const refused = review("export const add = (a, b) => a / b;\n", { FAIL: "1" });
   assert.deepEqual([refused.code, verdict(refused.code, JSON.stringify(refused.json)).block], [2, true]);
+  // Only a confirmed provider error is transient (exit 1, retried); any other failed run is no verdict (exit 3).
+  assert.equal(review("export const add = (a, b) => a % b;\n", { FAIL: "unexpected status 503 Service Unavailable" }).code, 1);
+  assert.equal(review("export const add = (a, b) => a ** b;\n", { FAIL: "stream disconnected before completion" }).code, 1);
+  assert.equal(review("export const add = (a, b) => a & b;\n", { FAIL: "something went wrong" }).code, 3);
 });
 
 test("the review tools read the PR's tree and history only: nothing outside the checkout, no .git, no options smuggled in", async () => {

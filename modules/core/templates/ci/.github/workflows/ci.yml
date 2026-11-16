@@ -346,16 +346,15 @@ jobs:
               REVIEW_MINUTES="$1" node "$rv/code-review.mjs" "$from" "$HEAD_SHA" > "$RUNNER_TEMP/review.json"
             code=$?
           }
-          # No verdict is never a pass: the gate fails it. One retry after a provider error or timeout (exit 1), when time is
-          # left; never after an answer that isn't a review (exit 3: the PR's content can cause it).
+          # No verdict is never a pass: the gate fails it (fail closed, whatever the size). One retry only after a confirmed
+          # provider error (exit 1: HTTP 429 or 5xx, a dropped connection), when time is left; never after a timeout or an
+          # answer that isn't a review (exit 3: the PR's content can cause it).
           review 40
           attempts=1
-          # Past the review target (2,000 counted lines) one attempt only: no verdict there is the gate's "stopped short"
-          # decision, and a second 40-minute attempt rarely changes it (rk#167, 5,230 lines: none after 25 minutes).
-          if [ "$code" = 1 ] && [ "$lines" -le 2000 ]; then
+          if [ "$code" = 1 ]; then
             left=$(( (85 * 60 - SECONDS) / 60 - 1 ))
             if [ "$left" -ge 10 ]; then
-              echo "::warning::The review ended without a verdict: retrying in 60 seconds."
+              echo "::warning::The model provider failed: retrying in 60 seconds."
               sleep 60
               review $(( left < 40 ? left : 40 ))
               attempts=2
@@ -365,9 +364,9 @@ jobs:
           case "$code" in
             0) echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV" ;;
             2) printf 'CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=the model gateway refused the review\n' >> "$GITHUB_ENV" ;;
-            3) printf "CODEGENIE_FAILURE=unparsable\nCODEGENIE_CAUSE=the reviewer's answer isn't a review\n" >> "$GITHUB_ENV" ;;
             # The cause goes into a PR comment: a fixed class only; the detail is in this log (code-review.mjs's stderr).
-            *) printf 'CODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=no review output\n' >> "$GITHUB_ENV" ;;
+            1) printf 'CODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=a provider error\n' >> "$GITHUB_ENV" ;;
+            *) printf "CODEGENIE_FAILURE=no-verdict\nCODEGENIE_CAUSE=no verdict (a timeout or an answer that isn't a review)\n" >> "$GITHUB_ENV" ;;
           esac
       - name: Verdict
         if: ${{ !cancelled() }}
