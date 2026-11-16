@@ -81,7 +81,8 @@ gate-facing sign-in listener (3129), app access and account administration open 
   unidentified sign-in for that email until the hour is up (the owner hears once); across every email, at most 4 checks in
   flight and 30 failures a minute. Unidentified failures never hold a named peer. **Codes, per account, whatever the
   peer:** past 5 wrong codes in 15 minutes the next code check waits (1 s, doubling, at most a minute; 429 at once), about
-  one guess a minute even for someone with the password on the owner's tailnet, and never more than a minute's wait. **Why the tailnet header is safe to read:** only host processes reach that loopback listener. Engineer jobs are
+  one guess a minute even for someone with the password on the owner's tailnet, and never more than a minute's wait;
+  one code check per account runs at a time (another gets 429, Retry-After: 1). **Why the tailnet header is safe to read:** only host processes reach that loopback listener. Engineer jobs are
   network-jailed (verify-security's job-network probe finds every host address and port refused), and host processes are
   already trusted; a forged header only changes which limits apply, never who is signed in. A 20-failure account-wide
   ceiling applies only on the gate-facing listener.

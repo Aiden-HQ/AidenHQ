@@ -300,4 +300,14 @@ test("wrong codes back off per account, whatever the peer: 100 from the tailnet 
   clock += 60_000;
   await challenge();
   assert.equal((await b("POST", "/auth/totp", { code: totp(OWNER.b32) })).status, 303);
+
+  // 20 codes at once for one account, from an address the front door names (no peer slot of its own): they are checked one
+  // at a time (any that arrives while one is checked gets 429, Retry-After: 1), and the back-off stops them after five.
+  const n = browser(url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.3", "x-aidenhq-edge": "edge-secret" });
+  assert.equal((await n("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw })).status, 303);
+  const codes = await Promise.all(Array.from({ length: 20 }, (_, i) => n("POST", "/auth/totp", { code: wrong(200 + i) })));
+  const checked = codes.filter((r) => r.status === 401).length;
+  assert.ok(checked >= 1 && checked <= 5, `${checked} codes checked`);
+  assert.ok(codes.some((r) => r.status === 429 && r.headers["retry-after"] === "1"), "a code that arrived during a check was refused");
+  assert.equal(codes.filter((r) => r.status === 429).length, 20 - checked);
 });

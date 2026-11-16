@@ -222,6 +222,7 @@ export function authCore(o: AuthCoreOptions) {
    * minute). About one guess a minute, even with the password on the owner's tailnet; never more than a minute's wait.
    */
   const totpBackoff = new Map<string, { fails: number[]; next: number }>();
+  const totpBusy = new Map<string, number>();
   /** Unnamed failures across every email, the last minute. */
   let unnamedFails: number[] = [];
   const forget = (email: string) => {
@@ -262,7 +263,7 @@ export function authCore(o: AuthCoreOptions) {
       const until = Math.max((tailnetBusy.get(email) ?? 0) > now || busy >= UNNAMED.inFlight ? now + 2000 : 0, tailnetFails.length >= TAILNET_PER_MINUTE ? tailnetFails[0]! + 60_000 : 0);
       if (until > now) throw held(until, now);
       tailnetBusy.set(email, now + UNNAMED.busyMs);
-      return () => void tailnetBusy.delete(email);
+      return slot(email, code, now, () => void tailnetBusy.delete(email));
     }
     if (!isNamed(ctx)) {
       const u = unnamedOf(email, ctx);
@@ -272,9 +273,19 @@ export function authCore(o: AuthCoreOptions) {
         busy >= UNNAMED.inFlight ? now + 2000 : 0, unnamedFails.length >= UNNAMED.perMinute ? unnamedFails[0]! + 60_000 : 0);
       if (until > now) throw held(until, now);
       u.busy = now + UNNAMED.busyMs; // taken before the hash: concurrent attempts are refused, not all checked at once
-      return () => void (u.busy = 0);
+      return slot(email, code, now, () => void (u.busy = 0));
     }
-    return undefined;
+    return slot(email, code, now, () => {});
+  };
+  /**
+   * A code check takes the account's one code slot, whatever the peer: the back-off is set only once a code has been
+   * checked, so parallel checks would otherwise all pass it. A second one at the same time gets 429 at once.
+   */
+  const slot = (email: string, code: boolean, now: number, release: () => void): (() => void) => {
+    if (!code) return release;
+    if ((totpBusy.get(email) ?? 0) > now) { release(); throw held(now + 1000, now); }
+    totpBusy.set(email, now + UNNAMED.busyMs);
+    return () => { totpBusy.delete(email); release(); };
   };
 
   /** The per-address ban (memory only): `${listener}|${key}`; only an address a proxy named with its secret counts. */
@@ -291,6 +302,7 @@ export function authCore(o: AuthCoreOptions) {
       if (m.size > 1000) for (const [k, ts] of m) if (ts.every((t) => old(t, win))) m.delete(k);
     for (const m of [locks, bans]) if (m.size > 1000) for (const [k, t] of m) if (t <= now) m.delete(k);
     if (accountFailures.size > 1000) for (const [k, ts] of accountFailures) if (ts.every((f) => old(f.at, ALERT.windowMs))) accountFailures.delete(k);
+    if (totpBusy.size > 1000) for (const [k, t] of totpBusy) if (t <= now) totpBusy.delete(k);
     if (totpBackoff.size > 1000) for (const [k, t] of totpBackoff) if (t.next <= now && t.fails.every((x) => old(x, LOCKOUT.windowMs))) totpBackoff.delete(k);
     if (tailnetBusy.size > 1000) for (const [k, t] of tailnetBusy) if (t <= now) tailnetBusy.delete(k);
     if (unnamed.size > 1000) for (const [k, u] of unnamed) if (u.busy <= now && u.next <= now && u.fails.every((t) => old(t, UNNAMED.hourMs))) unnamed.delete(k);
@@ -454,6 +466,7 @@ export function authCore(o: AuthCoreOptions) {
           if (!failed) u.next = 0; // the right password: the code step follows at once
         } else if (ipOf(ctx) === "tailnet") tailnetBusy.delete(email);
         if (ctx.path === "/two-factor/verify-totp") {
+          totpBusy.delete(email);
           if (!failed) totpBackoff.delete(email);
           else {
             const t = totpBackoff.get(email) ?? { fails: [], next: 0 };
