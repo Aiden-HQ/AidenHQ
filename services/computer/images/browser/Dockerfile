@@ -18,8 +18,12 @@ COPY --from=node /usr/local /usr/local
 RUN npm i -g agent-browser@0.41.2 && npm cache clean --force
 # Chrome for Testing 157.0.8103.78 (2026-11-11, critical CVE fixes; supply-chain exception), checksummed, readable by every uid. ops/vm/setup.sh installs the same build
 # on the host for Engineer jobs: move both together.
-RUN curl -fsSLo /tmp/chrome.zip https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.78/linux64/chrome-linux64.zip \
-    && echo "9223832977a13db3646201b1341c1f9cf08afa3ceae92540116d7b0c062364fb  /tmp/chrome.zip" | sha256sum -c - \
-    && unzip -q /tmp/chrome.zip -d /tmp && mv /tmp/chrome-linux64 /opt/chrome && rm /tmp/chrome.zip \
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) cft=linux64 sum=9223832977a13db3646201b1341c1f9cf08afa3ceae92540116d7b0c062364fb ;; \
+      arm64) cft=linux-arm64 sum=f354d666822a11d8fe99e923c44be77dd226fab2750c5b5947e6318818bf10f1 ;; \
+    esac \
+    && curl -fsSLo /tmp/chrome.zip "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.78/$cft/chrome-$cft.zip" \
+    && echo "$sum  /tmp/chrome.zip" | sha256sum -c - \
+    && unzip -q /tmp/chrome.zip -d /tmp && mv "/tmp/chrome-$cft" /opt/chrome && rm /tmp/chrome.zip \
     && chmod -R a+rX /opt/chrome && /opt/chrome/chrome --version
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/chrome/chrome
