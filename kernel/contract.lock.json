@@ -316,7 +316,7 @@
     },
     "route POST /v1/writes/:id/review": {
       "state": "experimental",
-      "fp": "auth=reviewer-key"
+      "fp": "auth=runner"
     },
     "schema services.json": {
       "state": "experimental",
