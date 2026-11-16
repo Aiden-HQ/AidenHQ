@@ -80,4 +80,15 @@ describe("flow-autonomy-off", { concurrency: 1 }, () => {
     assert.match(again.comment, /Can't be applied/, again.comment);
     assert.equal(t.paperclip.approvals.size, cards, "no new card");
   });
+
+  it("a close never runs while autonomy is off: the pause switch holds, with no card", async () => {
+    const cards = t.paperclip.approvals.size;
+    t.step("none\naidenhq close https://github.com/acme/infra/pull/1 --reason superseded");
+    await t.turn("Close the old PR.");
+    const call = t.toolRuns().at(-1);
+    assert.match(call.out, /Not closed: autonomy is off/, call.out);
+    assert.doesNotMatch(call.out, /Closed |Couldn't close/, "no close was tried on GitHub");
+    assert.ok(!t.paperclip.autos.some((r) => r.action === "close"), "no Tier 0 audit row: nothing ran");
+    assert.equal(t.paperclip.approvals.size, cards, "no card");
+  });
 });

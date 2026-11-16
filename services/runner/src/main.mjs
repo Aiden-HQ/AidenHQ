@@ -2065,8 +2065,7 @@ const authorityOf = (st) => {
 async function tierFor(issue, action, own, also = []) {
   const common = await commonTierState(issue, action, also);
   const s = { ...common, ...own };
-  // `close` has no card: Tier 0 or refused, at any autonomy.
-  const t = action === "close" ? classify(action, s) : autonomyCap(classify(action, s), autonomyNow());
+  const t = autonomyCap(classify(action, s), autonomyNow());
   log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject), panel: Boolean(t.panel), reviewFirst: Boolean(t.reviewFirst) });
   // The reviewer's earlier rejections on this task, attached to a fresh review of the changed request.
   const prior = priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s), common.requestChain);
@@ -3359,6 +3358,8 @@ async function agentClose(ctx, args) {
   const isBot = (a) => a.login === DEPENDABOT && a.type === "Bot";
   const read = await Promise.all(prs.map(async (p) => (sameRepo(p.repo, cfg.productRepo) ? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p)));
   const t = await tierFor(ctx.issue, "close", { prs: read });
+  // No card for a close: with autonomy off (the pause switch) it is refused, like any other Tier 0 run.
+  if (t.rule === "autonomy-off") throw new UserError(`Not closed: ${t.reason}. Closing PRs runs only while autonomy is on; ask ${cfg.selfName} to close them.`);
   if (t.tier !== 0) throw new UserError(`Not closed: ${t.reason}. Only PRs in the agents org (${cfg.agentsOrg}) and the product repo's Dependabot PRs can be closed; the instance repo's and the product repo's other PRs are ${cfg.selfName}'s.`);
   const lines = await merges.closePrs(prs, reason, mergeGithub);
   await recordAuto(ctx.issue, "close", { prs: prs.map((p) => p.url), reason }, "", t, { ok: lines.every((l) => l.startsWith("Closed")), text: lines.join("\n") });

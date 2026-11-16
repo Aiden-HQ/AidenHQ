@@ -1,7 +1,7 @@
 // End to end (see flow-harness.mjs): one runner, one conversation on the task, several things the owner does in it.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
 
@@ -28,6 +28,7 @@ describe("flow-approvals", () => {
       assert.equal(push.code, 0, push.out);
       assert.match(push.out, /Waiting for Dana's approval \(A\d+\)/);
       assert.match(merge.out, /Waiting for Dana's approval[\s\S]*#1 merge one at a time/);
+      rmSync(join(t.dir, "github-prs.json")); // the card is filed: GitHub fails again from here, as the rest of this file expects
       assert.equal(githubTip(), before, "nothing pushed before the tap");
       const card = [...t.paperclip.approvals.values()].find((a) => a.action === "push" && a.state === "pending");
       assert.deepEqual(card.args.only.map((b) => [b.repo, b.branch, b.sha.length]), [["acme/app", "fix/remove-legacy", 40]], "the exact branch and commit");
