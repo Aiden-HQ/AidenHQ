@@ -184,6 +184,13 @@ fi
 
 check "board (127.0.0.1:3120)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3120/healthz | grep -q ok && curl -fsS --max-time 10 http://127.0.0.1:3120/api/session | grep -q "\"mode\":\"local\""' # reads need a sign-in
 
+# The gate (shared apps; config/gate.json exists only with settings.edge) signs people in and notifies agents through the
+# board's loopback listener on 3129. Any HTTP answer counts; a refused connection means the board's port is not published
+# (a host-only compose.override.yaml that replaces the board's ports: without 127.0.0.1:3129:3129).
+if [ -f config/gate.json ]; then
+  check "board sign-in listener for the gate (127.0.0.1:3129)" sh -c 'curl -s -o /dev/null --max-time 5 http://127.0.0.1:3129/ || { echo "nothing answers on 127.0.0.1:3129: the gate cannot sign anyone in or reach the board; check that compose.override.yaml keeps 127.0.0.1:3129:3129 in the board ports"; exit 1; }'
+fi
+
 # The runner, and what its jobs need, seen with the runner's own PATH:
 # bwrap only on an interactive shell's PATH stopped every job (PEN-2714).
 if systemctl --user list-unit-files aidenhq-runner.service >/dev/null 2>&1; then
