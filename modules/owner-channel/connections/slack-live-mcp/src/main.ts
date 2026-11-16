@@ -11,12 +11,12 @@ import { quickCommand } from "./commands.js";
 import { isOwnerComment, taskForNotify, ownerViaOf } from "./threads.js";
 import { buttonsMarkup } from "./telegram.js";
 import { transcribe } from "./voice.js";
-import { buildServer, trialGuard, trialOf } from "./mcp.js";
+import { buildServer } from "./mcp.js";
 import { startSocket } from "./socket.js";
 import { openStore } from "./store.js";
 import { makePostReply, notifyOwner, postTelegram, editTelegram, type NotifyConfig } from "./urgent.js";
 import { startWatch } from "./watch.js";
-import { makeAuthorize } from "./agent-auth.js";
+import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { SourceStore } from "./source-store.js";
 import { slackTee, startGapSync } from "./sources.js";
 import { laneConfig } from "./lane/config.js";
@@ -26,8 +26,8 @@ import { openLaneStore } from "./lane/store.js";
 import { makeTools } from "./lane/tools.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "slack-live-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
-// Who is calling, and may it use this tool: the run key against the grants table.
-const authorize = makeAuthorize({ log });
+const jwks = kernelJwks();
+const kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 // Secrets come from NAME_FILE (a compose secret) or NAME.
 const env = (name: string): string => {
   const file = process.env[`${name}_FILE`];
@@ -112,16 +112,21 @@ const http = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
-    const auth = await authorize(req, body);
-    if (!auth.ok) return void res.writeHead(auth.status, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
-    // The caller (agent-auth's whoami) and its key: notify_owner(task) posts the reply on the chat as that agent.
-    const key = String(req.headers["x-agent-key"] ?? "");
-    // An agent in trial ("draft, don't do") reaches the owner and its own chats only (the grants table's mark, exactly true).
-    // The mark is read per call and an unreadable table refuses the guarded tools, never the non-trial behaviour.
-    const callerId = auth.caller?.id;
-    const guard = trialGuard(callerId ? () => trialOf(process.env.AIDENHQ_GRANTS_FILE, callerId) : undefined);
-    if (guard.refusal) log.warn({ reason: guard.refusal }, "trial mark unreadable; guarded tools refuse");
-    const server = buildServer(store, cfg, auth.caller && key ? { id: auth.caller.id, name: auth.caller.name, key } : undefined, postCfg, laneTools, guard);
+    // Every tools/call needs the kernel's assertion of who is calling; a refusal is a tool result the agent can read.
+    const msgs = (Array.isArray(body) ? body : [body]) as { id?: unknown; method?: unknown }[];
+    let caller: Awaited<ReturnType<typeof verifyCaller>> | undefined;
+    if (msgs.some((m) => m?.method === "tools/call")) {
+      try {
+        caller = await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "owner-channel");
+      } catch (err) {
+        const reason = (err as Error).message;
+        log.warn({ reason }, "tool call refused");
+        const refusal = (m: { id?: unknown }) => ({ jsonrpc: "2.0", id: m?.id ?? null, result: { isError: true, content: [{ type: "text", text: `Refused: ${reason}` }] } });
+        return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!)));
+      }
+    }
+    // An agent in trial ("draft, don't do") reaches the owner and its own chats only (the kernel's role mark).
+    const server = buildServer(store, cfg, caller && { id: caller.agent, name: caller.name, key: caller.key, assertion: String(req.headers["x-aidenhq-caller"]) }, postCfg, laneTools, Boolean(caller?.roles.includes("kernel.trial")));
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();
@@ -172,17 +177,21 @@ if (deliver) {
     return at.length ? Math.max(...at) : undefined;
   };
 }
-cfg.brakeOn = () => {
+// The instance setting loop_brake, from the kernel's agent directory (cached 30 s; unreachable: on).
+let brake: { at: number; on: boolean } | undefined;
+cfg.brakeOn = async () => {
+  if (brake && Date.now() - brake.at < 30_000) return brake.on;
   try {
-    return JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8"))?.loop_brake !== "off";
+    const res = await fetch(new URL("/v1/agents", kernelUrl), { headers: { authorization: `Bearer ${inboundToken}` }, signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) throw new Error(String(res.status));
+    brake = { at: Date.now(), on: ((await res.json()) as { settings?: { loop_brake?: string } }).settings?.loop_brake !== "off" };
+    return brake.on;
   } catch {
     return true;
   }
 };
-// The agent's reply on its chat, posted with its own key (never the board key, which writes as the owner).
-// From a computer (a launcher run token), the launcher posts it with that run's own Paperclip credential.
-if (chatCfg.paperclipUrl)
-  cfg.postReply = makePostReply({ paperclipUrl: chatCfg.paperclipUrl, launcherUrl: process.env.AIDENHQ_LAUNCHER_URL ?? "", warn: (msg, status) => log.warn({ status }, msg) });
+// The agent's reply on its chat, posted through the kernel as that agent (never the board key, which writes as the owner).
+cfg.postReply = makePostReply({ kernelUrl, serviceKey: inboundToken, warn: (msg, status) => log.warn({ status }, msg) });
 // Approval cards: pending records become Telegram cards; taps and exact typed replies decide them with the decide key.
 const board = boardUrl && boardToken && decideKey.length >= 32 ? boardClient(boardUrl, boardToken, decideKey) : undefined;
 if (!board) log.warn("BOARD_INTERNAL_URL/BOARD_INTERNAL_TOKEN/OWNER_DECIDE_KEY not set; approvals from Telegram are off (tap them on the board)");

@@ -32,10 +32,10 @@ secrets="${AIDENHQ_SECRETS_DIR:-/nonexistent}"
 # Tool calls on a connection's /mcp are checked against the calling agent's grants: the probes call as the agent setup
 # keyed for that connection (paperclip_health_key_<connection>, picked from the grants: scripts/modules.mjs HEALTH_PROBES).
 probe_key() { [ -s "$secrets/paperclip_health_key_$1" ]; }
-mcp_as() { # connection, url, tool, json args, bearer token: prints the result; a refusal says "refused", not a token problem
+mcp_as() { # connection, tool, json args: through the kernel's proxy as the probe agent; a refusal says "refused", not a token problem
   local out
-  out="$(dc exec -T -e AGENT_KEY="$(cat "$secrets/paperclip_health_key_$1")" paperclip node /tmp/mcp-call.mjs "$2" "$3" "$4" "$5" 2>&1)" && { printf '%s\n' "$out"; return 0; }
-  if printf '%s' "$out" | grep -q 'Refused:'; then echo "refused by $1's grants: $(printf '%s' "$out" | grep -o 'Refused:.*' | head -1 | cut -c10-)"; else printf '%s\n' "$out"; fi
+  out="$(dc exec -T paperclip node /tmp/mcp-call.mjs "http://10.231.0.1:3130/c/$1/mcp" "$2" "$3" "$(cat "$secrets/paperclip_health_key_$1")" 2>&1)" && { printf '%s\n' "$out"; return 0; }
+  if printf '%s' "$out" | grep -qE 'no-grant|tool-unlisted'; then echo "refused by $1's grants: $(printf '%s' "$out" | grep -oE 'no-grant|tool-unlisted' | head -1)"; else printf '%s\n' "$out"; fi
   return 1
 }
 engine_default="$(sed -n 's/^  default: *\([a-z]*\).*/\1/p' config/runner.yaml 2>/dev/null | head -1)"
@@ -70,14 +70,16 @@ else
   check "request reader (OpenRouter gateway, 127.0.0.1:8201)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:8201/health | grep -q "\"ok\":true"'
 fi
 
+# The kernel: every agent tool call crosses its proxy (aidenhq-kernel, backplane address).
+check "kernel (10.231.0.1:3130)" sh -c 'curl -fsS --max-time 5 http://10.231.0.1:3130/healthz | grep -qx ok'
+
 g_health="$(dc exec -T paperclip node -e "fetch('http://google-workspace-mcp:8081/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
 if echo "$g_health" | grep -q '"ok":true'; then
   # Harmless reads: one message, today's events.
-  token="$(cat "$secrets/google_mcp_token" 2>/dev/null)"
   dc cp scripts/dev/mcp-call.mjs paperclip:/tmp/mcp-call.mjs >/dev/null 2>&1
   if probe_key google_workspace; then
-    check "gmail read (1 message)" mcp_as google_workspace http://google-workspace-mcp:8081/mcp gmail_search '{"query":"in:inbox","max_results":1}' "$token"
-    check "google calendar read" mcp_as google_workspace http://google-workspace-mcp:8081/mcp calendar_list_events "{\"start\":\"$(date -u +%Y-%m-%dT00:00:00Z)\",\"end\":\"$(date -u +%Y-%m-%dT23:59:59Z)\",\"max_results\":5}" "$token"
+    check "gmail read (1 message)" mcp_as google_workspace gmail_search '{"query":"in:inbox","max_results":1}'
+    check "google calendar read" mcp_as google_workspace calendar_list_events "{\"start\":\"$(date -u +%Y-%m-%dT00:00:00Z)\",\"end\":\"$(date -u +%Y-%m-%dT23:59:59Z)\",\"max_results\":5}"
   else
     skip "gmail and calendar reads (no agent is granted gmail_search and calendar_list_events, or setup hasn't keyed one yet: ops/apply-config.sh)"
   fi
@@ -119,8 +121,9 @@ fi
 gl_health="$(dc exec -T paperclip node -e "fetch('http://glean-mcp:8085/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
 if echo "$gl_health" | grep -q '"ok":true'; then
   # Listing tools signs in to Glean without running a search.
-  gltoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/glean_mcp_token" 2>/dev/null)"
-  check "glean (read tools)" sh -c "docker compose --env-file '$env_file' exec -T paperclip node /tmp/mcp-call.mjs http://glean-mcp:8085/mcp --list '$gltoken' | grep -q '^search\b'"
+  # The jobs' read endpoint on loopback, with its own token (agents reach /mcp only through the kernel).
+  gltoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/glean_mcp_read_token" 2>/dev/null)"
+  check "glean (read tools)" sh -c "curl -fsS -m 30 -X POST http://127.0.0.1:3126/mcp/read -H 'Authorization: Bearer $gltoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q '\"search\"'"
 elif echo "$gl_health" | grep -q '"ok":false' && ! echo "$gl_health" | grep -q "not set"; then
   # Set up but not signed in, or Glean stopped accepting the sign-in.
   check "glean sign-in" sh -c "echo '$(echo "$gl_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'glean-mcp unreachable'; exit 1"
@@ -154,10 +157,9 @@ fi
 
 gh_health="$(dc exec -T paperclip node -e "fetch('http://github-mcp:8086/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
 if echo "$gh_health" | grep -q '"ok":true'; then
-  ghtoken="$(cat "$secrets/github_mcp_token" 2>/dev/null)"
   gh_whoami() {
     local out
-    if ! out="$(mcp_as github http://github-mcp:8086/mcp github_whoami '{}' "$ghtoken")"; then
+    if ! out="$(mcp_as github github_whoami '{}')"; then
       case "$out" in refused*) echo "$out" ;; *) echo "$(printf '%s' "$out" | tail -1) (if GitHub rejected the token: run scripts/github-auth.sh)" ;; esac
       return 1
     fi

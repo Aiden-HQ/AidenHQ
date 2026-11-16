@@ -29,7 +29,8 @@ const signIn = UPSTREAM && !LOCAL ? new SignIn(UPSTREAM.toString(), grafanaUrl, 
 // Local mode: only the connection's own reads (LOCAL_TOOLS); no environment widens it.
 const allowlist = new Set((LOCAL ? LOCAL_TOOLS.join(",") : (process.env.GRAFANA_TOOL_ALLOWLIST ?? READ_TOOLS.join(","))).split(",").map((s) => s.trim()).filter(Boolean));
 const readToken = (env: string | undefined) => (env && existsSync(env) ? readFileSync(env, "utf8").trim() : undefined);
-const inboundToken = readToken(process.env.MCP_TOKEN_FILE);
+const inboundToken = readToken(process.env.MCP_TOKEN_FILE); // the runner jobs' read secret (loopback)
+const serviceToken = readToken(process.env.MCP_SERVICE_TOKEN_FILE); // the kernel's (agents)
 const authToken = readToken(process.env.GRAFANA_AUTH_TOKEN_FILE);
 
 const startedAt = new Date().toISOString();
@@ -175,7 +176,7 @@ const http = createServer(async (req, res) => {
     }
     if (url.pathname.startsWith("/auth/")) return await handleAuth(req, res, url.pathname);
     if (url.pathname !== "/mcp") return void res.writeHead(404).end();
-    if (!bearer(req, inboundToken, true)) return void res.writeHead(401).end();
+    if (!bearer(req, inboundToken, true) && !bearer(req, serviceToken, true)) return void res.writeHead(401).end();
     if (req.method !== "POST") return void res.writeHead(405).end();
     const body = await readJson(req, 8 * 1024 * 1024);
     const server = buildServer();

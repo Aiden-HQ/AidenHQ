@@ -31,7 +31,7 @@ test("monitoring: services, fleet-ops, secrets, data dirs and loopback-only port
   assert.equal(s.board.environment.MONITORING_TOKEN_FILE, "/run/secrets/monitoring_token");
   assert.deepEqual(r.generatedSecrets.filter((x) => /monitoring|grafana/.test(x)), ["monitoring_token", "grafana_admin_password"]);
   assert.ok(r.optionalSecrets.includes("grafana_service_account_token"));
-  assert.deepEqual(r.dataDirs, ["monitoring/textfile", "monitoring/prometheus", "monitoring/alertmanager", "monitoring/grafana"]);
+  assert.deepEqual(r.dataDirs.filter((d) => d.startsWith("monitoring/")), ["monitoring/textfile", "monitoring/prometheus", "monitoring/alertmanager", "monitoring/grafana"]);
   const published = Object.entries(s).filter(([k]) => ["prometheus", "node-exporter", "cadvisor", "alertmanager", "grafana", "mcp-grafana"].includes(k)).flatMap(([k, v]) => (v.ports ?? []).map((p) => `${k} ${p}`));
   assert.deepEqual(published, ["grafana 127.0.0.1:3131:3000"]);
   assert.equal(s.grafana.environment.GF_AUTH_ANONYMOUS_ENABLED, "false");
@@ -48,7 +48,7 @@ test("monitoring: services, fleet-ops, secrets, data dirs and loopback-only port
 test("monitoring off: none of it", () => {
   const r = compile(product, instance([]));
   assert.equal(r.compose.services.prometheus, undefined);
-  assert.deepEqual(r.dataDirs, []);
+  assert.deepEqual(r.dataDirs.filter((d) => d.startsWith("monitoring/")), []);
 });
 
 test("grafana_source: local points grafana-mcp at the monitoring module's Grafana, and agents can be granted it", () => {

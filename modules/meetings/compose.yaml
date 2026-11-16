@@ -11,7 +11,7 @@ services:
       - /tmp:size=16m
     environment:
       OPS_MCP_CONFIG: /config/system.yaml
-      OPS_MCP_TOKEN_FILE: /run/secrets/ops_mcp_token
+      OPS_MCP_TOKEN_FILE: /run/secrets/ops_service_key
       # Shared sources (src_meetings): its warehouse login.
       WAREHOUSE_PASSWORD_FILE: /run/secrets/warehouse_src_meetings_password
     volumes:
@@ -22,7 +22,7 @@ services:
       # Vault folders and reference docs are appended by scripts/compile.mjs from VAULT_DIR, VAULT_FOLDERS and
       # KNOWLEDGE_BASES in the host's .env (validated; only the listed folders).
     secrets:
-      - ops_mcp_token
+      - ops_service_key
       - paperclip_ops_key
       - warehouse_src_meetings_password
     # No egress: ops-mcp only talks to Paperclip and the warehouse on internal networks.
@@ -33,8 +33,8 @@ services:
       paperclip:
         condition: service_started
 secrets:
-  ops_mcp_token:
-    file: ${AIDENHQ_SECRETS_DIR}/ops_mcp_token
+  ops_service_key:
+    file: ${AIDENHQ_SECRETS_DIR}/ops_service_key
   paperclip_ops_key:
     file: ${AIDENHQ_SECRETS_DIR}/paperclip_ops_key
   warehouse_src_meetings_password:

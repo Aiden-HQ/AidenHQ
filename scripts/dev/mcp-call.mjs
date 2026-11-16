@@ -2,7 +2,7 @@
 // Call one MCP tool on a streamable-HTTP MCP server (stateless). Dev/diagnostics only.
 //   node scripts/dev/mcp-call.mjs <url> <tool> '<json args>' [token]
 //   node scripts/dev/mcp-call.mjs <url> --list [token]
-// AGENT_KEY=<an agent's Paperclip key> sends it as X-Agent-Key: tool calls on /mcp are checked against that agent's grants.
+// Through the kernel's proxy (http://10.231.0.1:3130/c/<connection>/mcp) the token is an agent's key: its grants apply.
 const argv = process.argv.slice(2);
 const [url, tool] = argv;
 const argsJson = tool === "--list" ? "{}" : (argv[2] ?? "{}");
@@ -15,7 +15,7 @@ let id = 0;
 async function rpc(method, params) {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(token ? { authorization: `Bearer ${token}` } : {}), ...(process.env.AGENT_KEY ? { "x-agent-key": process.env.AGENT_KEY } : {}) },
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
   });
   const text = await res.text();

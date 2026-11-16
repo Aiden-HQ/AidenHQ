@@ -6,6 +6,7 @@ import { join } from "node:path";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { asAgent } from "./caller.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
@@ -20,13 +21,11 @@ describe("internal listener", () => {
   const issue = { id: "11111111-1111-1111-1111-111111111111", identifier: "PEN-1", title: "T", description: "", status: "todo", priority: "medium", assigneeUserId: "me-1", assigneeAgentId: null, assigneeAdapterOverrides: null, createdAt: "", updatedAt: "" };
   const pc = {
     me: async () => "me-1",
-    agents: async () => [],
+    agents: async () => ["ra", "scout"].map((id) => ({ id, name: id })),
     labels: async () => [],
     company: async () => ({ issuePrefix: "PEN" }),
     issue: async () => issue,
     companyId: "co",
-    // An agent's own credential: here, its id.
-    agentMe: async (key: string) => (["ra", "scout"].includes(key) ? { id: key, name: key, companyId: "co" } : Promise.reject(new Error("401"))),
   } as unknown as Paperclip;
   const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, decideKey: "d".repeat(40) });
   let port = 0;
@@ -47,9 +46,9 @@ describe("internal listener", () => {
     });
   afterAll(() => app.close());
 
-  // The tasks bridge: the internal token plus the calling agent's own credential.
+  // The tasks bridge: the internal token plus the kernel's caller assertion.
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
-    call("POST", path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-agent-key": "ra", ...headers });
+    call("POST", path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...asAgent("ra"), ...headers });
 
 
   it("needs the token and an allowed host", async () => {
@@ -60,10 +59,12 @@ describe("internal listener", () => {
 
   it("the token alone changes nothing: the caller must be an agent granted the tool and the board-writer role, or the runner", async () => {
     const refused = async (path: string, body: unknown, headers: Record<string, string>) => (await (await post(path, body, headers)).json()) as { error: string };
-    expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, { "x-agent-key": "" })).error).toBe("missing agent credential");
-    expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, { "x-agent-key": "forged" })).error).toMatch(/^only an agent granted task_schedule/);
-    expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, { "x-agent-key": "scout" })).error).toMatch(/with the board-writer role/);
+    expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, { "x-aidenhq-caller": "" })).error).toBe("missing caller assertion");
+    expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("forged"))).error).toMatch(/^only an agent granted task_schedule/);
+    expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("scout"))).error).toMatch(/with the board-writer role/);
     expect((await refused("/internal/issues/PEN-1/recurring", { action: "stop" }, {})).error).toMatch(/^only an agent granted task_recurring/); // not granted
+    expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("ra", { aud: "ops" }))).error).toMatch(/^refused: the caller assertion is for ops/);
+    expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("ra", { exp: 1 }))).error).toMatch(/expired/);
     expect((await refused("/internal/recurring/claim", {}, {})).error).toBe("only the runner claims recurring runs");
     expect((await refused("/internal/runner/activity", {}, {})).error).toBe("only the runner reports its jobs");
   });

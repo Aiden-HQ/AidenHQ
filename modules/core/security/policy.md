@@ -102,8 +102,9 @@ A change is **authority-expanding** when it:
   env; `workspace.mjs`, `files.mjs`, `agents.mjs`; `scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
   runs inside a job and what it passes on) and the SDK (`kernel/sdk/`), `modules/core/security/` (this policy), the reviewer's eval cases
   (`services/runner/test/reviewer-cases/`) and `scripts/reviewer-eval.mjs`, the board's `approvals.ts`, `app.ts`,
-  `fleet.ts`, `accounts.ts` and `session.ts`, `agent-auth.ts`, `scripts/modules.mjs` and `scripts/paperclip-setup.mjs`,
-  `services/computer/`, `services/gateway/`, `ops/`, `scripts/verify-security.sh`, `scripts/supply-chain/`,
+  `fleet.ts`, `accounts.ts` and `session.ts`, the kernel (`kernel/`: the tool proxy, caller identity and the model gateway) and
+  each module server's caller check (`aidenhq-sdk/caller.ts`), `scripts/modules.mjs` and `scripts/paperclip-setup.mjs`,
+  `services/computer/`, `ops/`, `scripts/verify-security.sh`, `scripts/supply-chain/`,
   `.gitleaks.toml`, and the product's `.github/` (each of these files is the same file as `.ts`, once converted from `.mjs`);
   or anything that can bypass them.
 
@@ -234,7 +235,7 @@ For an escalate, say what the owner should look at. For an approve, say what was
 
 Earlier rejections of the same action on the task may be attached: judge whether the change now fixes what they found.
 
-Good: "Rejects: the diff loosens canWrite in services/shared/agent-auth.ts inside a change the chain described as a UI fix."
+Good: "Rejects: the diff loosens the grant check in kernel/src/proxy.ts inside a change the chain described as a UI fix."
 
 Not good: "Looks suspicious." or "Approved, seems fine."
 

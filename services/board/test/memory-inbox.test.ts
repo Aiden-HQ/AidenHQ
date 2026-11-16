@@ -6,6 +6,7 @@ import { join } from "node:path";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { asAgent } from "./caller.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
@@ -21,12 +22,11 @@ describe("memory inboxes on the internal listener", () => {
   const issues = [task("11111111-1111-1111-1111-111111111111", "PEN-1"), task(INBOX, "PEN-2")];
   const pc = {
     me: async () => "me-1",
-    agents: async () => [],
+    agents: async () => [{ id: "ra", name: "ra" }],
     labels: async () => [],
     company: async () => ({ issuePrefix: "PEN" }),
     issue: async (ref: string) => issues.find((i) => i.id === ref || i.identifier === ref),
     companyId: "co",
-    agentMe: async (key: string) => (key === "ra" ? { id: key, name: key, companyId: "co" } : Promise.reject(new Error("401"))),
   } as unknown as Paperclip;
   const app = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN });
   let port = 0;
@@ -37,7 +37,7 @@ describe("memory inboxes on the internal listener", () => {
   afterAll(() => app.close());
   const post = (path: string, body: unknown) =>
     new Promise<{ status: number; error?: string }>((resolve, reject) => {
-      const req = request({ host: "127.0.0.1", port, method: "POST", path, headers: { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-agent-key": "ra" } }, (res) => {
+      const req = request({ host: "127.0.0.1", port, method: "POST", path, headers: { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...asAgent("ra") } }, (res) => {
         let text = "";
         res.on("data", (c) => (text += c));
         res.on("end", () => resolve({ status: res.statusCode!, error: JSON.parse(text || "{}").error }));

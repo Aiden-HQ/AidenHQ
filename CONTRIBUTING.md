@@ -58,7 +58,7 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 
 - **The board's build check.** `npx tsc -p tsconfig.build.json --noEmit` is stricter than vitest and matches the
   Docker build. Run it for every board change.
-- **Shared code.** After editing `services/shared/agent-auth.ts` or `services/shared/source-store.ts`, run
+- **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts` or `services/shared/source-store.ts`, run
   `node scripts/sync-shared.mjs`; the `scripts` tests fail if the copies drift.
 - **The reviewer eval.** `node services/runner/scripts/reviewer-eval.mjs` runs the AI reviewer against every planted
   case in `services/runner/test/reviewer-cases/` and must stay at 100%. It needs a paid `OPENROUTER_API_KEY`, so CI
@@ -72,7 +72,7 @@ Read [CLAUDE.md](CLAUDE.md) first; it is also the guide coding agents follow. In
 
 - **Generic core.** New behaviour is an agent definition, handbook text or a tool, not a special-case branch.
 - **Gates in code.** Writes, approvals and access checks are enforced below the model. Don't move a gate into a
-  prompt. Changes to gate files (`services/runner/src/tiers.mjs`, `services/shared/agent-auth.ts`, `services/gate/`,
+  prompt. Changes to gate files (`services/runner/src/tiers.mjs`, `kernel/`, `services/gate/`,
   `ops/`, `scripts/paperclip-setup.mjs`) get extra review.
 - **Minimal tests.** A few tests that prove the change works end to end. No tests for obvious code.
 - **Simple.** Less code, no speculative options or compatibility shims.

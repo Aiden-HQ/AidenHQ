@@ -14,7 +14,9 @@ services:
       GRAFANA_MCP_URL: "${settings.grafana_mcp_url}"
       GRAFANA_SOURCE: "${settings.grafana_source}" # local: the monitoring module's mcp-grafana on the backplane
       GRAFANA_STATE_DIR: /state
+      # Jobs on loopback present grafana_mcp_token; the kernel presents the service key.
       MCP_TOKEN_FILE: /run/secrets/grafana_mcp_token
+      MCP_SERVICE_TOKEN_FILE: /run/secrets/grafana_service_key
       # The board's sign-in endpoints: state, and starting or finishing a sign-in.
       GRAFANA_AUTH_TOKEN_FILE: /run/secrets/grafana_auth_token
     volumes:
@@ -22,6 +24,7 @@ services:
       - ${AIDENHQ_SECRETS_DIR}/grafana:/state
     secrets:
       - grafana_mcp_token
+      - grafana_service_key
       - grafana_auth_token
     dns: [ 1.1.1.1, 8.8.8.8 ] # see paperclip
     ports:
@@ -39,5 +42,7 @@ networks:
       config:
         - subnet: ${AIDENHQ_GRAFANA_LOCAL_SUBNET:-10.231.8.0/24}
 secrets:
+  grafana_service_key:
+    file: ${AIDENHQ_SECRETS_DIR}/grafana_service_key
   grafana_mcp_token:
     file: ${AIDENHQ_SECRETS_DIR}/grafana_mcp_token

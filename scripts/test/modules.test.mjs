@@ -75,15 +75,17 @@ test("roles: unknown ones, and ones a module may not grant, fail compile", () =>
 test("an agent from an untrusted module gets no roles and no write grants", () =>
   assert.throws(() => compile(mods, inst(["wild"])), /w: an untrusted module's agent may not have tasks write tools \(t2\)/));
 test("every connection tags its tools read or write", () => assert.throws(() => compile(mods, inst(["untagged"])), /connection u: tools\.read and tools\.write/));
-test("HTTP connections send the run key; their service gets the grants table", () => {
+test("connections go through the kernel: no compiled service mounts grants; the kernel's table names each endpoint and key", () => {
   const r = compile(mods, inst(["a"]));
-  assert.deepEqual(r.paperclip.mcp_servers.aconn.env_http_headers, { "X-Agent-Key": "PAPERCLIP_API_KEY" });
-  assert.equal(r.paperclip.mcp_servers.tasks.env_http_headers, undefined);
   const s = r.compose.services["a-mcp"];
-  assert.equal(s.environment.AIDENHQ_CONNECTION, "aconn");
-  assert.equal(s.environment.AIDENHQ_GRANTS_FILE, "/grants/grants.json");
-  assert.equal(s.environment.PAPERCLIP_URL, "http://paperclip:3100");
-  assert.ok(s.volumes.includes("${AIDENHQ_CONFIG_DIR:-./config}/grants:/grants:ro"));
+  assert.equal(s.environment.AIDENHQ_MODULE, "a");
+  assert.equal(s.environment.AIDENHQ_KERNEL_URL, "${AIDENHQ_KERNEL_URL:-http://10.231.0.1:3130}");
+  for (const svc of Object.values(r.compose.services)) {
+    assert.ok(!(svc.volumes ?? []).some((v) => String(v).includes("grants")), "no compiled service mounts grants");
+    assert.equal(svc.environment?.AIDENHQ_GRANTS_FILE, undefined);
+  }
+  assert.equal(r.compose.services.paperclip, undefined, "no connection token reaches paperclip");
+  assert.deepEqual(r.connections.aconn, { url: "http://a-mcp:1/mcp", auth_secret: "a_service_key", module: "a", returns: "untrusted", tools: { read: ["a_get"], write: ["a_set"], destructive: [] } });
 });
 test("unset required setting", () => assert.throws(() => compile(mods, inst(["a"], { timezone: "UTC" })), /setting owner_email is required by a/));
 test("unknown ${settings.x}", () => assert.throws(() => compile(mods, inst(["typo"])), /unknown setting: tz/));
@@ -122,9 +124,6 @@ test("untrusted app compiles to untrusted: true", () => {
   assert.equal(app.path, "modules/appmod/apps/web");
 });
 test("untrusted module may not ship connections", () => assert.throws(() => compile(mods, inst(["shady"])), /untrusted module shady may not declare connections/));
-test("bearer connections add their token secret to paperclip", () => {
-  assert.deepEqual(compile(mods, inst(["a"])).compose.services.paperclip, { secrets: ["a_mcp_token"] });
-});
 test("vault and knowledge mounts come from the host env, validated", () => {
   assert.deepEqual(hostMounts({ VAULT_DIR: "/v", VAULT_FOLDERS: "Meetings,/Notes/", KNOWLEDGE_BASES: "kb=/k" }),
     ["/v/Meetings:/vault/Meetings", "/v/Notes:/vault/Notes", "/k:/knowledge/kb:ro"]);

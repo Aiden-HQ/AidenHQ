@@ -5,9 +5,10 @@
 //   compose.modules.yaml       → docker compose (COMPOSE_FILE in .env)
 //   config/modules.json        → the module catalog (setup adds it to the capabilities catalog)
 //   config/computers.json      → the computer launcher (images by content hash, connections it may proxy; services/computer)
-//   config/gateway.json        → the model gateway (services/gateway): enforce_caps, from settings.spend_caps (the kill switch)
+//   config/gateway.json        → the model gateway (kernel/src/gateway): enforce_caps, from settings.spend_caps (the kill switch)
 //   config/engines.json        → the runner: each engine kind's module, bin and data (modules' providers.engine)
-//   config/jobcaps.json        → the model gateway's /c/<connection>/mcp and the runner: what jobs may read (modules' jobcaps:)
+//   config/jobcaps.json        → the kernel (job tokens on /c/<connection>/mcp) and the runner: what jobs may read (modules' jobcaps:)
+//   config/kernel/connections.json → the kernel's tool proxy: each connection's endpoint, service key secret, module and tool tags
 //   config/gate.json, config/cloudflared.yml → the gate and the tunnel (shared access; only with settings.edge, scripts/edge.mjs)
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -49,8 +50,8 @@ if (ops) {
 
 // Secrets of channels the owner may not use start as empty files, so compose can start (empty = not configured).
 const secretsDir = env("AIDENHQ_SECRETS_DIR");
-if (secretsDir) ensureOptionalSecrets(secretsDir, out.optionalSecrets, "slack_live_mcp_token");
-if (secretsDir) for (const n of ensureOptionalSecrets(secretsDir, out.generatedSecrets, "slack_live_mcp_token", true)) console.log(`  created secret ${n}`);
+if (secretsDir) ensureOptionalSecrets(secretsDir, out.optionalSecrets, "paperclip_auth_secret");
+if (secretsDir) for (const n of ensureOptionalSecrets(secretsDir, out.generatedSecrets, "paperclip_auth_secret", true)) console.log(`  created secret ${n}`);
 // App identity keys (docs/design/app-identity.md): the gate's and apps-mcp's signing keys and the public keys.json every app
 // mounts. Before compose: a missing bind source would become a directory.
 if (secretsDir) for (const n of ensureIdentityKeys(secretsDir)) console.log(`  created key ${n}`);
@@ -71,6 +72,8 @@ writeFileSync(join(repo, "config/modules.json"), JSON.stringify(out.catalog, nul
 writeFileSync(join(repo, "config/computers.json"), JSON.stringify(computers, null, 2) + "\n");
 writeFileSync(join(repo, "config/gateway.json"), JSON.stringify(out.gateway, null, 2) + "\n");
 writeFileSync(join(repo, "config/jobcaps.json"), JSON.stringify(out.jobcaps, null, 2) + "\n");
+mkdirSync(join(repo, "config/kernel"), { recursive: true });
+writeFileSync(join(repo, "config/kernel/connections.json"), JSON.stringify(out.connections, null, 2) + "\n");
 writeFileSync(join(repo, "config/engines.json"), JSON.stringify(out.engines, null, 2) + "\n");
 if (out.edge) {
   if (out.edge.cloudflared) try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die(e.message); }

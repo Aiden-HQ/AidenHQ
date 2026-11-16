@@ -2,4 +2,4 @@ name: shady
 description: shady
 isolation: untrusted
 connections:
-  s: { url: "http://s:1/mcp" }
+  s: { url: "http://s:1/mcp", auth: s_service_key }

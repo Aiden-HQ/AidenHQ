@@ -11,7 +11,7 @@ connections:
     setup: "Set its URL on the board (Settings, Connections) and approve the change, then run `scripts/primer-auth.sh` on the host."
     guide: "Primer documents (design docs and write-ups) with their versions and comments."
     url: http://primer-mcp:8084/mcp
-    bearer_token_env_var: AIDENHQ_PRIMER_MCP_TOKEN
+    auth: primer_service_key
     tools:
       read: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document ]
       write: [ primer_create_document, primer_add_version ]
@@ -22,4 +22,5 @@ jobcaps:
 compose: compose.yaml
 # The runner's publish token: compile creates it (random) when missing, so the apply needs no extra step.
 generated_secrets:
+  - primer_service_key
   - primer_mcp_publish_token

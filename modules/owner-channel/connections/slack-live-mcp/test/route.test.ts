@@ -32,7 +32,7 @@ describe("notify_owner reaches the owner once", () => {
     fake(true);
     const posted: string[] = [];
     const cfg = { ...base, resolveTask: async () => ({ issueId: "i9", agentId: "a1", agentName: "Architect", ownerVia: "board" as const }), postReply: async (_i: string, b: string) => (posted.push(b), true) };
-    const r = await notifyOwner(openStore(":memory:"), cfg, { text: "designing", priority: "normal", task: "WOR-9" }, Date.now(), { id: "a1", key: "k" });
+    const r = await notifyOwner(openStore(":memory:"), cfg, { text: "designing", priority: "normal", task: "WOR-9" }, Date.now(), { id: "a1", key: "k", assertion: "jwt" });
     expect(hits).toEqual([]);
     expect(posted.length).toBe(1);
     expect(r).toMatchObject({ sent: true, onChat: true });

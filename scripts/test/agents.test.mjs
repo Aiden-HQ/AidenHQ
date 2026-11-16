@@ -1,9 +1,8 @@
 // Instance-defined agents and the Architect: the role template compiles in trial (tap 1) and graduated
 // (tap 2); trial is enforced by compile; the Architect can't change the fleet itself.
 import { test } from "node:test";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync, copyFileSync, statSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -118,31 +117,6 @@ test("trial_writes: a write it grants but doesn't name is absent from what the a
   assert.deepEqual(a.enabled_tools.slack_live, ["wake_at"]);
   assert.ok(a.enabled_tools.paperclip_tasks.includes("task_create"));
   assert.ok(a.enabled_tools.paperclip_tasks.includes("task_comment") && !a.enabled_tools.paperclip_tasks.includes("task_update"));
-});
-
-test("trial_writes: the tasks bridge refuses a write the definition doesn't name, with the agent's name", async () => {
-  // The compiled grant for an agent that left task_update out of its trial_writes, as the bridge reads it.
-  const r = compile(product, withAgents({ x: { yaml: ariaYaml } }, ["slack"]));
-  const a = r.paperclip.agents.x;
-  const grants = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-  writeFileSync(grants, JSON.stringify({ agents: { me: { key: "x", roles: [], tools: a.enabled_tools, trial: true } } }));
-  const server = createServer((req, res) => {
-    req.resume();
-    req.on("end", () => {
-      const send = (x) => (res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
-      if (req.url === "/api/agents/me") return send({ id: "me", name: "Aria" });
-      send({});
-    });
-  });
-  await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
-  const child = spawn(process.execPath, [join(product, "services/paperclip-tasks-mcp/paperclip-tasks-mcp.mjs")], { env: { ...process.env, PAPERCLIP_API_URL: `http://127.0.0.1:${server.address().port}`, PAPERCLIP_API_KEY: "k", PAPERCLIP_TASK_ID: "cur", AIDENHQ_GRANTS_FILE: grants } });
-  let out = "";
-  const reply = new Promise((resolve) => child.stdout.on("data", (d) => { out += d; const line = out.split("\n").find((l) => l.includes('"id":1')); if (line) resolve(JSON.parse(line)); }));
-  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "task_update", arguments: { issue: "cur", title: "x" } } }) + "\n");
-  const got = await reply;
-  child.kill();
-  server.close();
-  assert.match(got.result.content[0].text, /Refused: x isn't granted task_update on paperclip_tasks/);
 });
 
 test("instance agents are validated like module agents, and can't take roles or a module agent's key", () => {

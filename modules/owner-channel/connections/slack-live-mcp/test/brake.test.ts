@@ -19,15 +19,15 @@ it("notify_owner(task): at most NOTIFY_LIMIT messages since the owner last wrote
     brakeOn: () => on,
   };
   const t0 = Date.parse("2026-11-12T10:00:00Z");
-  const send = (n: number) => notifyOwner(store, cfg, { text: `update ${n}`, priority: "normal", task: "WOR-9", channel: "board" }, t0 + n * 60_000, { id: "a1", key: "k" });
+  const send = (n: number) => notifyOwner(store, cfg, { text: `update ${n}`, priority: "normal", task: "WOR-9", channel: "board" }, t0 + n * 60_000, { id: "a1", key: "k", assertion: "jwt" });
 
   for (let n = 0; n < NOTIFY_LIMIT; n++) expect(await send(n)).toMatchObject({ sent: true });
   expect(await send(10)).toMatchObject({ sent: false, reason: "limit", note: expect.stringContaining("batch it") });
   // A decision (or any message with questions) the owner must answer is never held back.
-  expect(await notifyOwner(store, cfg, { text: "merge or wait?", priority: "normal", task: "WOR-9", channel: "board", kind: "decision" }, t0 + 10.5 * 60_000, { id: "a1", key: "k" })).toMatchObject({ sent: true });
-  expect(await notifyOwner(store, cfg, { text: "pick one", priority: "normal", task: "WOR-9", channel: "board", questions: [{ question: "Which?", options: ["A", "B"] }] }, t0 + 10.6 * 60_000, { id: "a1", key: "k" })).toMatchObject({ sent: true });
+  expect(await notifyOwner(store, cfg, { text: "merge or wait?", priority: "normal", task: "WOR-9", channel: "board", kind: "decision" }, t0 + 10.5 * 60_000, { id: "a1", key: "k", assertion: "jwt" })).toMatchObject({ sent: true });
+  expect(await notifyOwner(store, cfg, { text: "pick one", priority: "normal", task: "WOR-9", channel: "board", questions: [{ question: "Which?", options: ["A", "B"] }] }, t0 + 10.6 * 60_000, { id: "a1", key: "k", assertion: "jwt" })).toMatchObject({ sent: true });
   // Another agent, or another task, has its own count.
-  expect(await notifyOwner(store, cfg, { text: "x", priority: "normal", task: "WOR-10", channel: "board" }, t0 + 11 * 60_000, { id: "a1", key: "k" })).toMatchObject({ sent: true });
+  expect(await notifyOwner(store, cfg, { text: "x", priority: "normal", task: "WOR-10", channel: "board" }, t0 + 11 * 60_000, { id: "a1", key: "k", assertion: "jwt" })).toMatchObject({ sent: true });
 
   ownerAt = t0 + 12 * 60_000; // the owner wrote on the task
   expect(await send(13)).toMatchObject({ sent: true });

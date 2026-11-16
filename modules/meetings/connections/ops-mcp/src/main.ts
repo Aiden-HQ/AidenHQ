@@ -6,17 +6,29 @@ import { createApp, healthChecks } from "./app.js";
 import { loadConfig } from "./config.js";
 import { buildServer } from "./mcp/tools.js";
 import { createLogger } from "./util/log.js";
-import { makeAuthorize } from "./agent-auth.js";
+import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { SourceStore } from "./source-store.js";
 import { startMeetingsSync } from "./warehouse.js";
 
 const cfg = loadConfig(process.env.OPS_MCP_CONFIG ?? "/config/system.yaml");
 const log = createLogger(cfg.logging.level);
 const app = createApp(cfg, log);
-// Who is calling, and may it use this tool: the run key against the grants table.
-const authorize = makeAuthorize({ log });
+// Who is calling: the kernel's signed assertion (the kernel enforces grants).
+const jwks = kernelJwks();
+async function authorize(req: IncomingMessage, body: unknown): Promise<{ ok: true; caller?: Caller } | { ok: false; body: unknown }> {
+  const msgs = (Array.isArray(body) ? body : [body]) as { id?: unknown; method?: unknown }[];
+  if (!msgs.some((m) => m?.method === "tools/call")) return { ok: true };
+  try {
+    return { ok: true, caller: await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "meetings") };
+  } catch (err) {
+    const reason = (err as Error).message;
+    log.warn({ reason }, "tool call refused");
+    const refusal = (m: { id?: unknown }) => ({ jsonrpc: "2.0", id: m?.id ?? null, result: { isError: true, content: [{ type: "text", text: `Refused: ${reason}.` }] } });
+    return { ok: false, body: Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!) };
+  }
+}
 
-// Optional shared secret required on /mcp (sent by Paperclip as a connection header).
+// The kernel's bearer (ops_service_key) required on /mcp.
 const tokenFile = process.env.OPS_MCP_TOKEN_FILE;
 const token = tokenFile && existsSync(tokenFile) ? readFileSync(tokenFile, "utf8").trim() : undefined;
 
@@ -56,7 +68,7 @@ const http = createServer(async (req, res) => {
       if (req.method !== "POST") return send(res, 405, { jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed" }, id: null });
       const body = await readBody(req);
       const auth = await authorize(req, body);
-      if (!auth.ok) return send(res, auth.status, auth.body);
+      if (!auth.ok) return send(res, 200, auth.body);
       // Stateless mode: a fresh server and transport per request.
       const server = buildServer({ meetings: app.meetings, vault: app.vault, knowledge: app.knowledge, voice: app.voice, log });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });

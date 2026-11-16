@@ -47,23 +47,16 @@ placeholder() { # name content
 }
 gen_secret paperclip_auth_secret
 gen_secret paperclip_agent_jwt_secret
-gen_secret ops_mcp_token
-gen_secret google_mcp_token
 gen_secret google_auth_token     # the board's Google sign-in state and reconnect
-gen_secret slack_mcp_token
 gen_secret slack_mcp_read_token    # the runner's Engineer jobs, /mcp/read on 127.0.0.1:3125
-gen_secret primer_mcp_token
 gen_secret primer_mcp_publish_token  # the runner itself publishing, /mcp/publish on 127.0.0.1:3123
 gen_secret primer_mcp_read_token   # the runner's Engineer jobs, /mcp/read on 127.0.0.1:3123
-gen_secret glean_mcp_token
 gen_secret glean_mcp_read_token    # the runner's Engineer jobs, /mcp/read on 127.0.0.1:3126
 gen_secret glean_auth_token      # the board's Glean sign-in state and sign-in
 gen_secret grafana_mcp_token     # the runner's Engineer jobs, on 127.0.0.1:3124
 gen_secret grafana_auth_token    # the board's Grafana sign-in state and sign-in
 gen_secret clickhouse_mcp_token  # the runner's Engineer jobs, on 127.0.0.1:3127
 gen_secret clickhouse_auth_token # the board's ClickHouse sign-in state and sign-in
-gen_secret github_mcp_token
-gen_secret slack_live_mcp_token  # slack-live-mcp, Paperclip agents only
 gen_secret board_internal_token   # the board's internal API
 gen_secret apps_internal_token   # apps-mcp POST /internal/deploy: the board and apps-mcp only
 gen_secret paperclip_master_key  # Paperclip's secret-store key (PAPERCLIP_SECRETS_MASTER_KEY_FILE)

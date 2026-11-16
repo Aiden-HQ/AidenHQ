@@ -39,7 +39,7 @@ an MCP server that holds one sign-in. Agents never see the credentials; they cal
 
 **Grants and roles.** Every tool is tagged read or write. An agent is granted `connection: read | write | [tool list]`
 and optional roles. Every tool call is checked in code against the grants table that setup writes
-(`services/shared/agent-auth.ts`), using the caller's Paperclip identity. Roles gate a few extra powers, such as fleet
+(`kernel/src/proxy.ts`), using the caller's Paperclip identity. Roles gate a few extra powers, such as fleet
 tools or deploying apps.
 
 **Runner.** A host service (`services/runner`) that runs coding jobs for the Engineer agents in sandboxed per-task

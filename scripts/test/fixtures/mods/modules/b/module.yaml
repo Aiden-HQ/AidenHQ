@@ -1,4 +1,4 @@
 name: b
 description: Module B
 connections:
-  bconn: { url: "http://b:1/mcp", tools: { read: [b_get], write: [b_set] } }
+  bconn: { url: "http://b:1/mcp", auth: b_service_key, tools: { read: [b_get], write: [b_set] } }

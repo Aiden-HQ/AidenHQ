@@ -9,13 +9,25 @@ import { MultiWorkspace } from "./accounts.js";
 import { FixtureWorkspace } from "./fixtures.js";
 import { GoogleAuthError } from "./google.js";
 import { Reconnect, ReconnectError } from "./reconnect.js";
-import { makeAuthorize } from "./agent-auth.js";
+import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { SourceStore } from "./source-store.js";
 import { startSync } from "./sources.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "google-workspace-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
-// Who is calling, and may it use this tool: the run key against the grants table.
-const authorize = makeAuthorize({ log });
+// Who is calling: the kernel's signed assertion (the kernel enforces grants).
+const jwks = kernelJwks();
+async function authorize(req: IncomingMessage, body: unknown): Promise<{ ok: true; caller?: Caller } | { ok: false; body: unknown }> {
+  const msgs = (Array.isArray(body) ? body : [body]) as { id?: unknown; method?: unknown }[];
+  if (!msgs.some((m) => m?.method === "tools/call")) return { ok: true };
+  try {
+    return { ok: true, caller: await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "google") };
+  } catch (err) {
+    const reason = (err as Error).message;
+    log.warn({ reason }, "tool call refused");
+    const refusal = (m: { id?: unknown }) => ({ jsonrpc: "2.0", id: m?.id ?? null, result: { isError: true, content: [{ type: "text", text: `Refused: ${reason}.` }] } });
+    return { ok: false, body: Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!) };
+  }
+}
 const credsPath = process.env.GOOGLE_CREDENTIALS_FILE ?? "/run/secrets/google_oauth";
 const port = Number(process.env.PORT ?? 8081);
 const host = process.env.HOST ?? "0.0.0.0";
@@ -261,7 +273,7 @@ const http = createServer(async (req, res) => {
   try {
     const body = await readJson(req);
     const auth = await authorize(req, body);
-    if (!auth.ok) return void res.writeHead(auth.status, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
+    if (!auth.ok) return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
     const server = buildServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {

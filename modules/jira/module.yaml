@@ -22,15 +22,15 @@ connections:
     setup: "Set your Atlassian site's URL on the board (Settings, Connections) and approve the change, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120)."
     guide: "Jira and Confluence directly: exact issue fields, change history (when a status or date changed), comments, versions and JQL queries. Use it for precise dates and history; use Glean to find the issue or page first."
     url: http://jira-mcp:8091/mcp
-    bearer_token_env_var: AIDENHQ_JIRA_MCP_TOKEN
+    auth: jira_service_key
     tools:
       read: [ searchJiraIssuesUsingJql, getJiraIssue, listJiraIssueChangelogs, listJiraIssueComments, listJiraProjects, getJiraProjectVersions, getJiraProjectVersionRelatedWork, listJiraBoards, getJiraBoardConfig, listJiraBoardSprints, lookupJiraAccountId, searchConfluence, getConfluenceContent ]
       # Defined for later; nobody is granted them by default.
       write: [ addOrEditJiraIssueComment, createJiraIssue ]
 compose: compose.yaml
-# Paperclip's bearer for jira-mcp, and the board's for its sign-in endpoints: compile creates them (random) when missing.
+# The kernel's bearer for jira-mcp, and the board's for its sign-in endpoints: compile creates them (random) when missing.
 generated_secrets:
-  - jira_mcp_token
+  - jira_service_key
   - jira_auth_token
   # src_jira's warehouse login (ops/warehouse-sources.sh gives the role this password).
   - warehouse_src_jira_password

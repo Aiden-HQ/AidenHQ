@@ -12,17 +12,17 @@ fails=0
 pass() { printf '  ok    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 # A service's /mcp/read for the runner's jobs: its read token opens only /mcp/read, which lists
-# no write tools, and the service's main token doesn't open it. Only the model gateway holds the read token: jobs reach
-# /mcp/read through its jobcap route (POST /c/<connection>/mcp) with their own job token (checked below).
+# no write tools, and the service's key (the kernel's, for agents' calls) doesn't open it. Only the kernel holds either: jobs
+# reach /mcp/read through its proxy (POST /c/<connection>/mcp on 8201) with their own job token (checked below).
 read_split() { # service port
   local rt mt list
   rt="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/$1_mcp_read_token" 2>/dev/null)"
-  mt="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/$1_mcp_token" 2>/dev/null)"
+  mt="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/$1_service_key" 2>/dev/null)"
   call() { curl -s -m 30 -o "${3:-/dev/null}" -w '%{http_code}' -X POST "http://127.0.0.1:$2/$1" -H "Authorization: Bearer $4" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'; }
   list="$(mktemp)"
   if [ -n "$rt" ] && [ "$(call mcp "$2" "" "$rt")" = 401 ] && [ "$(call mcp/read "$2" "" "$mt")" = 401 ] && [ "$(call mcp/read "$2" "$list" "$rt")" = 200 ] \
     && ! grep -qiE '"name":"[a-z_]*(send|draft|post|create|add_version|update|delete|publish|write)' "$list"; then
-    pass "$1-mcp: jobs' read token opens /mcp/read only, which lists no writes; the main token doesn't open it"
+    pass "$1-mcp: jobs' read token opens /mcp/read only, which lists no writes; the service key doesn't open it"
   else
     fail "$1-mcp: the read endpoint's token split or tool list is wrong"
   fi
@@ -84,15 +84,15 @@ for c in $containers; do
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3123/mcp/read)" = "401" ] \
         && pass "primer-mcp: loopback endpoint requires the token" || fail "primer-mcp: loopback endpoint answers without the token"
       read_split primer 3123
-      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -v '|/grants|' | grep -q . \
-        && pass "primer-mcp: only its own token directory, the grants table and secrets mounted" || fail "primer-mcp has unexpected mounts: $mounts"
+      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
+        && pass "primer-mcp: only its own token directory and secrets mounted" || fail "primer-mcp has unexpected mounts: $mounts"
       ;;
     *glean-mcp*)
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = '{"8085/tcp":[{"HostIp":"127.0.0.1","HostPort":"3126"}]}' ] \
         && pass "glean-mcp: published on 127.0.0.1:3126 only" || fail "glean-mcp ports are not loopback 3126 only"
       read_split glean 3126
-      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -v '|/grants|' | grep -q . \
-        && pass "glean-mcp: only its own token directory, the grants table and secrets mounted" || fail "glean-mcp has unexpected mounts: $mounts"
+      [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
+        && pass "glean-mcp: only its own token directory and secrets mounted" || fail "glean-mcp has unexpected mounts: $mounts"
       ;;
     *grafana-mcp*)
       # Loopback only, for the runner's Engineer jobs; bearer token required.
@@ -100,10 +100,10 @@ for c in $containers; do
         && pass "grafana-mcp: published on 127.0.0.1:3124 only" || fail "grafana-mcp ports are not loopback 3124 only"
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3124/mcp)" = "401" ] \
         && pass "grafana-mcp: loopback endpoint requires the token" || fail "grafana-mcp: loopback endpoint answers without the token"
-      # Exactly: the grants table (scripts/modules.mjs adds it to every connection) and its two secrets, read-only, and its
-      # own token directory, the only writable mount.
-      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/grants|false /run/secrets/grafana_auth_token|false /run/secrets/grafana_mcp_token|false /state|true ' ] \
-        && pass "grafana-mcp: only the grants table and its secrets (read-only) and its own token directory mounted" || fail "grafana-mcp has unexpected mounts: $mounts"
+      # Exactly: its secrets, read-only (the board's sign-in token, the jobs' read token, the kernel's service key), and its own
+      # token directory, the only writable mount. No grants table: the kernel checks agents' grants.
+      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/grafana_auth_token|false /run/secrets/grafana_mcp_token|false /run/secrets/grafana_service_key|false /state|true ' ] \
+        && pass "grafana-mcp: only its secrets (read-only) and its own token directory mounted" || fail "grafana-mcp has unexpected mounts: $mounts"
       ;;
     *clickhouse-mcp*)
       # Loopback only, for the runner's Engineer jobs; bearer token required.
@@ -112,7 +112,7 @@ for c in $containers; do
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3127/mcp)" = "401" ] \
         && pass "clickhouse-mcp: loopback endpoint requires the token" || fail "clickhouse-mcp: loopback endpoint answers without the token"
       # Exactly: its two secrets, read-only, and its own token directory, the only writable mount. No grants table: it serves
-      # only the runner's jobs, not a Paperclip connection, so scripts/modules.mjs mounts none.
+      # only the runner's jobs, not a Paperclip connection.
       [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/clickhouse_auth_token|false /run/secrets/clickhouse_mcp_token|false /state|true ' ] \
         && pass "clickhouse-mcp: only its secrets (read-only) and its own token directory mounted" || fail "clickhouse-mcp has unexpected mounts: $mounts"
       ;;
@@ -140,8 +140,8 @@ for c in $containers; do
       ;;
     *github-mcp*)
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github-mcp: no published ports" || fail "github-mcp publishes ports"
-      ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/secrets/github-app|' | grep -v '|/grants|' | grep -q . \
-        && pass "github-mcp: only its secrets, the GitHub App key and the grants table mounted" || fail "github-mcp has unexpected mounts: $mounts"
+      ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/secrets/github-app|' | grep -q . \
+        && pass "github-mcp: only its secrets and the GitHub App key mounted" || fail "github-mcp has unexpected mounts: $mounts"
       ;;
     *apps-edge*)
       # The apps' tailnet node: its own way out plus the exposed apps' own networks (apps-mcp joins it), nothing else.
@@ -229,7 +229,10 @@ PROBES
       ! echo "$mounts" | grep -q '|/previews|true' && pass "gate: the previews list, if any, is read-only" || fail "gate: /previews is writable: $mounts"
       # Host networking: its port is whatever it binds. Only cloudflared (on the host) may reach it, so CF-Connecting-IP,
       # which the gate passes to the sign-in listener as the visitor's address, can't come from anyone else.
-      binds="$(ss -Hltn 'sport = :3130' 2>/dev/null | awk '{print $4}' | sort -u | tr '\n' ' ')"
+      # The kernel's backplane listener shares the port number on its own address (checked below): exactly that bind, by the
+      # kernel's own process, is not the gate's; every other bind on 3130 is, and must be loopback.
+      kpid="$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)"
+      binds="$(ss -Hltnp 'sport = :3130' 2>/dev/null | awk -v k="pid=${kpid:-none}," '!($4 == "10.231.0.1:3130" && index($0, k)) {print $4}' | sort -u | tr '\n' ' ')"
       [ -n "$binds" ] && ! echo "$binds" | tr ' ' '\n' | grep -v '^$' | grep -qv '^127\.0\.0\.1:3130$' \
         && pass "gate: listens on 127.0.0.1:3130 only" || fail "gate: port 3130 is not loopback-only: ${binds:-not listening}"
       # app_login header-jwt: the front listener (settings.edge.front) binds only its tailnet address, never 0.0.0.0.
@@ -417,28 +420,65 @@ if net_probe="$(node --input-type=module -e '
 else
   fail "runner: job network: ${net_probe:-the probe failed to run}"
 fi
-# Live, the model gateway's jobcap route (services/gateway/jobcaps.ts): a job token with primer-read lists no write and gets
-# tool-unlisted for a write; the read token itself (not a job token) is refused. Only where config/jobcaps.json has primer-read.
+# Live, the kernel's proxy for jobs (kernel/src/proxy.ts, on 8201): a job token with primer-read is refused a write; the read
+# token and the service key themselves (not a job token) are refused. Only where config/jobcaps.json has primer-read.
 if grep -q '"primer-read"' config/jobcaps.json 2>/dev/null; then
   if jc_probe="$(node --input-type=module -e '
     import { readFileSync } from "node:fs";
-    import { mintToken } from "./services/gateway/token.ts";
+    import { mintToken } from "./kernel/src/gateway/token.ts";
     const dir = process.env.AIDENHQ_SECRETS_DIR;
     const read = (n) => readFileSync(`${dir}/${n}`, "utf8").trim();
     const job = mintToken(read("gateway_job_secret"), { kind: "agent", component: "verify-security", ttlMs: 120_000, jobcaps: ["primer-read"] });
     const call = (token, body) => fetch("http://127.0.0.1:8201/c/primer/mcp", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, ...body }), signal: AbortSignal.timeout(30_000) });
     const bad = [];
     if ((await call(read("primer_mcp_read_token"), { method: "tools/list" })).status !== 401) bad.push("the read token opens it");
+    if ((await call(read("primer_service_key"), { method: "tools/list" })).status !== 401) bad.push("the service key opens it");
     const w = await (await call(job, { method: "tools/call", params: { name: "primer_create_document", arguments: {} } })).text();
-    if (!w.includes("tool-unlisted")) bad.push(`a write was not refused: ${w.slice(0, 120)}`);
+    if (!/no-grant|tool-unlisted/.test(w)) bad.push(`a write was not refused: ${w.slice(0, 120)}`);
     const r = await (await call(job, { method: "resources/list" })).text();
     if (!r.includes("method-refused")) bad.push(`resources/list was not refused: ${r.slice(0, 120)}`);
     process.stdout.write(bad.join(", "));
     process.exit(bad.length ? 1 : 0);
   ' 2>&1)"; then
-    pass "gateway: the jobcap route takes only a job token, and refuses a tool or method outside the jobcap"
+    pass "kernel: jobs' tool route takes only a job token, and refuses a write or a method outside the jobcap"
   else
-    fail "gateway: jobcap route: ${jc_probe:-the probe failed to run}"
+    fail "kernel: jobs' tool route: ${jc_probe:-the probe failed to run}"
+  fi
+fi
+# Live, the kernel's tool proxy (aidenhq-kernel): its backplane listener is 10.231.0.1:3130 alone; /c/ without a credential is
+# 401; the paperclip container holds no connection token, internal token or grants table, and calling any module's MCP
+# endpoint directly from it without the service key gets 401.
+kpid="$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)"
+kbinds="$(ss -Hltnp 2>/dev/null | awk -v k="pid=${kpid:-none}," 'index($0, k) {print $4}' | grep -v ':8201$' | sort -u | tr '\n' ' ')"
+[ "$(echo $kbinds)" = "10.231.0.1:3130" ] && pass "kernel: the proxy listens on 10.231.0.1:3130 only" || fail "kernel: listens on ${kbinds:-nothing} (want 10.231.0.1:3130 only, plus 8201)"
+first_conn="$(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync("config/kernel/connections.json","utf8")))[0] ?? "")' 2>/dev/null)"
+[ -n "$first_conn" ] && [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "http://10.231.0.1:3130/c/$first_conn/mcp" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')" = 401 ] \
+  && pass "kernel: /c/ without a credential is refused (401)" || fail "kernel: /c/$first_conn answers without a credential"
+pc="$(docker ps --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=paperclip" --format '{{.Names}}' | head -1)"
+if [ -n "$pc" ]; then
+  # The server's own environment (what its entrypoint exported, which `docker exec env` doesn't show) and its secrets.
+  if docker exec "$pc" sh -c 'tr "\0" "\n" < /proc/1/environ' | grep -qE '^AIDENHQ_BOARD_TOKEN=|_MCP_TOKEN=|_SERVICE_KEY=' \
+    || docker exec "$pc" ls /run/secrets 2>/dev/null | grep -qE '^board_internal_token$|_mcp_token$|_service_key$'; then
+    fail "paperclip: an internal, connection or service token is in its environment or secrets"
+  else
+    pass "paperclip: no internal, connection or service token in its environment or secrets"
+  fi
+  docker inspect "$pc" --format '{{range .Mounts}}{{.Destination}} {{end}}' | grep -q 'grants' && fail "paperclip: the grants table is mounted" || pass "paperclip: no grants table mounted"
+  if direct="$(docker exec -i "$pc" node -e '
+    const conns = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    (async () => {
+      const open = [];
+      for (const [name, c] of Object.entries(conns)) {
+        const r = await fetch(c.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }), signal: AbortSignal.timeout(10000) }).catch(() => undefined);
+        if (r && r.status !== 401) open.push(`${name} ${r.status}`);
+      }
+      process.stdout.write(open.join(", "));
+      process.exit(open.length ? 1 : 0);
+    })();
+  ' < config/kernel/connections.json 2>&1)"; then
+    pass "kernel: every module's MCP endpoint refuses a direct call without its service key (401)"
+  else
+    fail "kernel: a module's MCP endpoint answers without its service key: $direct"
   fi
 fi
 # Live, from a container on the CI runners' network (modules/ci): the model gateway's CI listener (10.231.4.1:8201) is the
@@ -575,9 +615,8 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
 # reviewer's yes, and a CI template copy is Tier 0 only when its .github tree is the deployed product's template tree.
 rreview="services/runner/src/review.mjs"; bapprovals="services/board/src/approvals.ts"
 [ "$(grep -oE 'T\(2, "[a-z-]+"' "$rtiers" | sort -u | tr '\n' ' ')" = 'T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
-  && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review","authorize","merges","apply","netjail","state","config","github-app","git","main","engines","workspace","files","agents"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["approvals","app","fleet","accounts","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
+  && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review","authorize","merges","apply","netjail","state","config","github-app","git","main","engines","workspace","files","agents"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["approvals","app","fleet","accounts","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/assert.ts", "kernel/src/cp.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "services/apps-mcp/src/aidenhq-sdk/caller.ts"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
   && grep -qF '/^services\/runner\/test\/reviewer-cases\//,' "$rtiers" && grep -qF '/^modules\/core\/security\//,' "$rtiers" \
-  && true && grep -qF '/(^|\/)agent-auth\.ts$/,' "$rtiers" \
   && true && grep -qF '/(^|\/)\.github\//,' "$rtiers" \
   && grep -qF 'if (GATE_CORE.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rtiers" \
   && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rtiers" \
@@ -628,7 +667,7 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && grep -qF 'if (j.private && a.private_reads !== true) fail(' scripts/modules.mjs \
   && grep -qF 'filter((id) => all[id] && (!all[id].private || observes(engine)))' services/runner/src/engines.mjs \
   && grep -qF 'const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live";' services/runner/src/engines.mjs \
-  && grep -qF '(!c.private || who.o === true)' services/gateway/jobcaps.ts \
+  && grep -qF '(!c.private || p.o === true)' kernel/src/identity.ts \
   && grep -q 'export const observes = (engine) => engine?.reads === true;' services/runner/src/engines.mjs \
   && grep -q 'agent.metadata?.privateReads === true ? { reads: true }' services/runner/src/agents.mjs \
   && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed, apply only files a card at the turn's end, and Primer publishing is checked against the user's words (services/runner/src/authorize.mjs); jobs hold no connection URL or token (their jobcaps go through the gateway with the job token), and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"

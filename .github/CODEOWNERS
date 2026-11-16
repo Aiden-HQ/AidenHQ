@@ -2,7 +2,7 @@
 *                                  @Aiden-HQ/maintainers
 /services/runner/src/tiers.*       @Aiden-HQ/maintainers
 /services/runner/src/review.*      @Aiden-HQ/maintainers
-/services/shared/agent-auth.ts     @Aiden-HQ/maintainers
+/kernel/                           @Aiden-HQ/maintainers
 /services/gate/                    @Aiden-HQ/maintainers
 /ops/                              @Aiden-HQ/maintainers
 /scripts/paperclip-setup.mjs       @Aiden-HQ/maintainers

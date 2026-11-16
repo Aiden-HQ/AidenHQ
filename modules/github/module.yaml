@@ -5,7 +5,7 @@ connections:
     setup: "Run `gh auth login`, then `scripts/github-auth.sh` on the host. Repo writes go through the runner's GitHub App (`node ops/github-app-setup.mjs`)."
     guide: "GitHub issues and pull requests directly: live state, reviews, checks. Organization Projects (v2) boards (roadmaps, status, iterations): `github_project_read`. Use Glean's `code_search` for code."
     url: http://github-mcp:8086/mcp
-    bearer_token_env_var: AIDENHQ_GITHUB_MCP_TOKEN
+    auth: github_service_key
     tools:
       read: [ github_whoami, github_project_read, github_issue_read, github_search_issues ]
       # commit_status_set: the design-review check on agents-org PRs, as the GitHub App; it also needs the design-review role.
@@ -13,4 +13,5 @@ connections:
 compose: compose.yaml
 # src_github's warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.
 generated_secrets:
+  - github_service_key
   - warehouse_src_github_password

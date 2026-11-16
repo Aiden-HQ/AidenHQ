@@ -15,7 +15,7 @@ afterEach(() => servers.splice(0).forEach((s) => s.close()));
 const serve = (h: http.RequestListener) => new Promise<string>((r) => { const s = http.createServer(h).listen(0, "127.0.0.1", () => r(`http://127.0.0.1:${(s.address() as { port: number }).port}`)); servers.push(s); });
 const sse = (res: http.ServerResponse, chunks: unknown[]) => { res.writeHead(200, { "content-type": "text/event-stream" }); for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`); res.end("data: [DONE]\n\n"); };
 const quiet = { info() {}, warn() {} };
-const agent: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", apiKey: "pcp_agent", model: "z-ai/glm-flash", reasoning: "low", deadlineS: 8, prompt: "You are Aria, the owner's EA.", tools: [{ connection: "google", name: "calendar_list_events", url: "http://google/mcp", token: "t" }] };
+const agent: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", apiKey: "pcp_agent", model: "z-ai/glm-flash", reasoning: "low", deadlineS: 8, prompt: "You are Aria, the owner's EA.", tools: [{ connection: "google", name: "calendar_list_events" }] };
 
 describe("fast chat lane", () => {
   it("answers a board message with a tool call through the gateway, as a capped lane token, and times it", async () => {

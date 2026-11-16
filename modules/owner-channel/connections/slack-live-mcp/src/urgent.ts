@@ -29,12 +29,12 @@ export interface NotifyConfig {
   taskUrl?: string; // e.g. https://host/WOR/issues/{id}: task IDs in Telegram messages link here
   /** The task's id and its agent's name, from Paperclip (never from the message text). */
   resolveTask?: (identifier: string) => Promise<{ issueId: string; agentId?: string; agentName: string; ownerVia?: "board" | "telegram" | "slack" | undefined } | undefined>;
-  /** Posts the reply on the chat as the calling agent (its own key), so the board shows what it said. */
-  postReply?: (issueId: string, body: string, agentKey: string) => Promise<boolean>;
+  /** Posts the reply on the chat as the calling agent (through the kernel, on this call's assertion), so the board shows what it said. */
+  postReply?: (issueId: string, body: string, assertion: string) => Promise<boolean>;
   /** When the owner last wrote on the task (ms), for the loop brake; undefined if never or unknown. */
   ownerLastAt?: (identifier: string) => Promise<number | undefined>;
   /** The instance setting `loop_brake` (on unless "off"). */
-  brakeOn?: () => boolean;
+  brakeOn?: () => boolean | Promise<boolean>;
   /** The owner-channel setting `telegram_fyi: mute`: `fyi` messages skip Telegram (they still land on the chat and Slack). */
   muteFyi?: boolean;
 }
@@ -45,29 +45,22 @@ export type NotifyResult = { sent: boolean; reason?: "cooldown" | "error" | "dup
  * midnight). A `decision` (or any message with questions) is never held back: it is what the owner must answer.
  */
 export const NOTIFY_LIMIT = 5;
-/** Who called notify_owner: the agent behind the run key (agent-auth), and that key. */
+/** Who called notify_owner: the agent, its key, and the kernel's assertion of this call (the reply is posted on it). */
 export interface NotifyCaller {
   id: string;
   name?: string;
   key: string;
+  assertion: string;
 }
 
-/**
- * Posts an agent's reply on its chat with the agent's own key. A key from a computer is a launcher run token (`ahqc_`), which
- * Paperclip doesn't know: the launcher posts it inside the box with that run's own Paperclip credential, on the run's task only.
- */
-export function makePostReply(o: { paperclipUrl: string; launcherUrl: string; fetch?: typeof fetch; warn?: (msg: string, status?: number) => void }) {
+/** Posts an agent's reply on its chat through the kernel, as the agent whose call (assertion) this is. */
+export function makePostReply(o: { kernelUrl: string; serviceKey: string; fetch?: typeof fetch; warn?: (msg: string, status?: number) => void }) {
   const f = o.fetch ?? fetch;
-  return async (issueId: string, body: string, agentKey: string): Promise<boolean> => {
-    const computer = agentKey.startsWith("ahqc_");
-    if (computer && !o.launcherUrl) return o.warn?.("a computer's reply, but AIDENHQ_LAUNCHER_URL isn't set"), false;
-    const [url, payload] = computer
-      ? [new URL("/reply", o.launcherUrl), { issueId, body }]
-      : [new URL(`/api/issues/${encodeURIComponent(issueId)}/comments`, o.paperclipUrl), { body }];
-    const res = await f(url, {
+  return async (issueId: string, body: string, assertion: string): Promise<boolean> => {
+    const res = await f(new URL(`/v1/cp/agent/api/issues/${encodeURIComponent(issueId)}/comments`, o.kernelUrl), {
       method: "POST",
-      headers: { authorization: `Bearer ${agentKey}`, "content-type": "application/json" },
-      body: JSON.stringify(payload),
+      headers: { authorization: `Bearer ${o.serviceKey}`, "x-aidenhq-caller": assertion, "content-type": "application/json" },
+      body: JSON.stringify({ body }),
       signal: AbortSignal.timeout(40_000),
     }).catch(() => null);
     if (!res?.ok) o.warn?.("couldn't post the reply on its chat", res?.status);
@@ -227,7 +220,7 @@ export async function notifyOwner(store: Store, cfg: NotifyConfig, a: NotifyArgs
       // Decisions pass (they still count): dropping a question the owner must answer is worse than one message too many.
       const agent = caller?.id ?? "";
       // Fails open: without the owner's last message (no Paperclip, or it didn't answer) nothing is limited.
-      const owner = a.task && kind !== "decision" && cfg.ownerLastAt && (cfg.brakeOn?.() ?? true) ? await cfg.ownerLastAt(a.task).then((at) => ({ at }), () => undefined) : undefined;
+      const owner = a.task && kind !== "decision" && cfg.ownerLastAt && ((await cfg.brakeOn?.()) ?? true) ? await cfg.ownerLastAt(a.task).then((at) => ({ at }), () => undefined) : undefined;
       if (a.task && owner) {
         const since = Math.max(Date.parse(new Date(now).toISOString().slice(0, 10)), owner.at ?? 0);
         if (store.notifiesSince(a.task, agent, since) >= NOTIFY_LIMIT)
@@ -244,7 +237,7 @@ export async function notifyOwner(store: Store, cfg: NotifyConfig, a: NotifyArgs
       // The reply also lands on its chat, as the agent's own comment: only the chat's agent, running on it now, may.
       const mirror = found && caller && found.agentId === caller.id && cfg.postReply;
       // One channel: Slack, or Telegram when Slack isn't set up or fails ("both" means "reach them", not "ping twice").
-      const onChatP = mirror ? cfg.postReply!(found.issueId, replyBody(a.text, a.actions, a.questions), caller.key).catch(() => false) : Promise.resolve(false);
+      const onChatP = mirror ? cfg.postReply!(found.issueId, replyBody(a.text, a.actions, a.questions), caller.assertion).catch(() => false) : Promise.resolve(false);
       const slack = where === "telegram" || where === "board" ? false : await postSlack(cfg, { text });
       // Muted fyi: no Telegram ping (buttons are an open choice, never muted).
       const muted = kind === "fyi" && cfg.muteFyi === true && !a.actions?.length;

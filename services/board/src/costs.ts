@@ -1,5 +1,5 @@
 // The Costs tab: what each agent and system component spent on models in a window, as close to OpenRouter's bill as we can see.
-//  - Billed: every call through the model gateway (services/gateway; agent computers' calls reach it through the launcher)
+//  - Billed: every call through the model gateway (kernel/src/gateway; agent computers' calls reach it through the launcher)
 //    is kept with what OpenRouter billed for it; the board pulls those (pullUsage). The runner's Engineer jobs (opencode) and AI reviewer report OpenRouter's cost likewise.
 //  - Estimated: agents in Paperclip's own container call OpenRouter directly, so only Paperclip's token counts exist. Their
 //    dollars are tokens × list price × that model's billed/list ratio over the last 7 days of billed calls, Engineer jobs left
@@ -20,7 +20,7 @@ const DAY = 864e5;
 export const WINDOWS = ["today", "yesterday", "7d", "30d"] as const;
 export type CostWindow = (typeof WINDOWS)[number];
 
-/** A call's run attribution (RunIdentity in agent-auth.ts, plus how the call went); every field optional. See UsageRecord. */
+/** A call's run attribution (RunIdentity in kernel/src/gateway/lib.ts, plus how the call went); every field optional. See UsageRecord. */
 const Attribution = {
   runKey: z.string().regex(/^[\w:.-]{1,128}$/).nullable().optional(),
   /** Paperclip's run id, when the credential names it (a run JWT): the run page's exact join. */
@@ -358,7 +358,7 @@ const PulledRecord = z.object({
   output: z.number().int().min(0),
   costUsd: z.number().min(0).nullable(),
   ...Attribution,
-  /** App CI code review: `<owner>/<repo>#<pr>`, from the job's GitHub OIDC token (services/gateway/ci.ts). */
+  /** App CI code review: `<owner>/<repo>#<pr>`, from the job's GitHub OIDC token (kernel/src/gateway/ci.ts). */
   subject: z.string().regex(/^[\w.-]{1,100}\/[\w.-]{1,100}#\d{1,9}$/).nullable().optional(),
 });
 

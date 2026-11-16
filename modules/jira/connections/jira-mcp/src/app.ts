@@ -1,6 +1,6 @@
 // Proxy in front of Atlassian's remote MCP server (Rovo MCP, ATLASSIAN_MCP_URL), signed in as the owner with OAuth from
 // the board, like glean-mcp. Exposes only the Jira (and Confluence read) tools in src/policy.ts, pins every call to the
-// configured site (JIRA_URL → cloudId), and checks each tool call against the caller's grants (agent-auth). Not signed
+// configured site (JIRA_URL → cloudId), and requires the kernel's caller assertion on each tool call. Not signed
 // in: the service still starts and every call says how to connect (never a crash loop).
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
@@ -11,7 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Logger } from "pino";
 import { z } from "zod";
-import type { Verdict } from "./agent-auth.js";
+import { verifyCaller, type JWKS } from "./aidenhq-sdk/caller.js";
 import { EXPOSED, exposedTools, placeholderTools, READ_TOOLS, siteCloudId, withSite } from "./policy.js";
 import { SignIn, SignInError } from "./signin.js";
 import { JiraAuthError, TokenStore } from "./tokens.js";
@@ -20,9 +20,10 @@ export interface AppOptions {
   upstreamUrl: string; // e.g. https://mcp.atlassian.com/v2/mcp?tools=all
   siteUrl: string; // the jira_url setting, e.g. https://acme.atlassian.net
   stateDir: string; // token.json and client.json
-  inboundToken?: string; // Paperclip's bearer for /mcp
+  inboundToken?: string; // the kernel's bearer for /mcp (jira_service_key)
   authToken?: string; // the board's bearer for /auth/*
-  authorize: (req: IncomingMessage, body: unknown) => Promise<Verdict>;
+  jwks: JWKS | (() => Promise<JWKS>); // the kernel's keys, for caller assertions
+  module?: string;
   log: Logger;
 }
 
@@ -202,8 +203,17 @@ export function createApp(o: AppOptions): JiraApp {
       if (!bearer(req, o.inboundToken)) return void res.writeHead(401).end();
       if (req.method !== "POST") return void res.writeHead(405).end();
       const body = await readJson(req, 8 * 1024 * 1024);
-      const auth = await o.authorize(req, body);
-      if (!auth.ok) return void res.writeHead(auth.status, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
+      const msgs = (Array.isArray(body) ? body : [body]) as { id?: unknown; method?: unknown }[];
+      if (msgs.some((m) => m?.method === "tools/call")) {
+        try {
+          await verifyCaller(req, o.jwks, o.module ?? process.env.AIDENHQ_MODULE ?? "jira");
+        } catch (err) {
+          const reason = (err as Error).message;
+          log.warn({ reason }, "tool call refused");
+          const refusal = (m: { id?: unknown }) => ({ jsonrpc: "2.0", id: m?.id ?? null, result: { isError: true, content: [{ type: "text", text: `Refused: ${reason}.` }] } });
+          return sendJson(res, 200, Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!));
+        }
+      }
       const server = buildServer();
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.on("close", () => {

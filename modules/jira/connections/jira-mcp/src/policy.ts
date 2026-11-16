@@ -21,7 +21,7 @@ export const READ_TOOLS = [
   "searchConfluence",
   "getConfluenceContent",
 ];
-/** Defined for later; no agent is granted them by default (grants in module.yaml decide, enforced by agent-auth). */
+/** Defined for later; no agent is granted them by default (grants in module.yaml decide, enforced by the kernel). */
 export const WRITE_TOOLS = ["addOrEditJiraIssueComment", "createJiraIssue"];
 export const EXPOSED = [...READ_TOOLS, ...WRITE_TOOLS];
 

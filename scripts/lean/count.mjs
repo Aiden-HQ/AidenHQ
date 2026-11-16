@@ -13,7 +13,7 @@ const CODE = /\.(ts|tsx|mjs|js|sh)$/;
 const SKIP = /(^|\/)(test|node_modules|dist|fixtures)\/|\.test\./;
 const VENDORS = ["GitHub", "OpenRouter", "Codex", "Claude", "Anthropic", "Slack", "Telegram", "Google", "Glean", "Grafana", "ClickHouse", "Jira", "Primer", "Cloudflare", "Tailscale", "Dependabot", "Paperclip"];
 const CONTROLPLANE = "kernel/src/controlplane/";
-const CORE = ["services/runner/src/", "services/board/src/", "services/gateway/", "services/computer/", "services/shared/", "services/paperclip-tasks-mcp/", "scripts/modules.mjs", "scripts/compile.mjs", "scripts/paperclip-setup.mjs"];
+const CORE = ["services/runner/src/", "services/board/src/", "services/computer/", "services/shared/", "services/paperclip-tasks-mcp/", "scripts/modules.mjs", "scripts/compile.mjs", "scripts/paperclip-setup.mjs"];
 const CORE_EXCEPT = ["services/computer/images/"];
 const LEGACY_TRUSTED = ["services/apps-mcp/src/", "services/gate/", "modules/owner-channel/connections/slack-live-mcp/src/"];
 

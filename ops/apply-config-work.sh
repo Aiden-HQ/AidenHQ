@@ -71,18 +71,22 @@ main() {
   lap compile
   ops/computer-images.sh # the browser image (always: apps-mcp renders in it) and the computer images an agent names
   lap computer-images
-  # The model gateway (every model call passes it): installed and started if missing, restarted only when its own code or
+  # The kernel (every model and tool call passes it): installed and started if missing, restarted only when its own code or
   # unit changed (a restart cuts the streams in flight; Codex and opencode retry). Before compose and setup point callers at
-  # it. Not keyed on a product change, so it also heals a missing unit.
-  local gw="$HOME/.config/systemd/user/aidenhq-gateway.service"
-  mkdir -p "$(dirname "$gw")"   # a fresh host's first apply runs before ops/setup.sh installs the other units
-  if ! cmp -s ops/units/aidenhq-gateway.service "$gw"; then
-    cp ops/units/aidenhq-gateway.service "$gw" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-gateway \
-      && systemctl --user restart aidenhq-gateway && echo "gateway unit installed/updated"
-  elif ! systemctl --user is-active --quiet aidenhq-gateway; then
-    systemctl --user restart aidenhq-gateway && echo "gateway started"
-  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/gateway services/paperclip-tasks-mcp/models.mjs; then
-    systemctl --user restart aidenhq-gateway && echo "gateway code changed: restarted"
+  # it. Not keyed on a product change, so it also heals a missing unit. The model gateway's old unit goes (lean-core 2a).
+  local old="$HOME/.config/systemd/user/aidenhq-gateway.service" kn="$HOME/.config/systemd/user/aidenhq-kernel.service"
+  mkdir -p "$(dirname "$kn")"   # a fresh host's first apply runs before ops/setup.sh installs the other units
+  if [ -e "$old" ]; then
+    systemctl --user disable --now aidenhq-gateway 2>/dev/null || true
+    rm -f "$old" && systemctl --user daemon-reload && echo "gateway unit removed (the kernel replaces it)"
+  fi
+  if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
+    cp ops/units/aidenhq-kernel.service "$kn" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-kernel \
+      && systemctl --user restart aidenhq-kernel && echo "kernel unit installed/updated"
+  elif ! systemctl --user is-active --quiet aidenhq-kernel; then
+    systemctl --user restart aidenhq-kernel && echo "kernel started"
+  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- kernel ops/units/aidenhq-kernel.service; then
+    systemctl --user restart aidenhq-kernel && echo "kernel code changed: restarted"
   fi
   ops/compose-recreate.sh # build what moved, recreate only those services, and clean up what this config dropped
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).

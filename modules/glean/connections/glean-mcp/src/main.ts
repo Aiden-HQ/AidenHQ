@@ -11,14 +11,26 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import pino from "pino";
 import { z } from "zod";
-import { allowedTools, fenced, isAllowed, READ_TOOLS } from "./policy.js";
+import { allowedTools, isAllowed, READ_TOOLS } from "./policy.js";
 import { SignIn, SignInError } from "./signin.js";
 import { GleanAuthError, TokenStore } from "./tokens.js";
-import { makeAuthorize } from "./agent-auth.js";
+import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "glean-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });
-// Who is calling, and may it use this tool: the run key against the grants table.
-const authorize = makeAuthorize({ log });
+// Who is calling: the kernel's signed assertion (the kernel enforces grants).
+const jwks = kernelJwks();
+async function authorize(req: IncomingMessage, body: unknown): Promise<{ ok: true; caller?: Caller } | { ok: false; body: unknown }> {
+  const msgs = (Array.isArray(body) ? body : [body]) as { id?: unknown; method?: unknown }[];
+  if (!msgs.some((m) => m?.method === "tools/call")) return { ok: true };
+  try {
+    return { ok: true, caller: await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "glean") };
+  } catch (err) {
+    const reason = (err as Error).message;
+    log.warn({ reason }, "tool call refused");
+    const refusal = (m: { id?: unknown }) => ({ jsonrpc: "2.0", id: m?.id ?? null, result: { isError: true, content: [{ type: "text", text: `Refused: ${reason}.` }] } });
+    return { ok: false, body: Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!) };
+  }
+}
 const UPSTREAM = process.env.GLEAN_MCP_URL ? new URL(process.env.GLEAN_MCP_URL) : undefined;
 const port = Number(process.env.PORT ?? 8085);
 const stateDir = process.env.GLEAN_STATE_DIR ?? "/state";
@@ -96,7 +108,7 @@ function buildServer(): Server {
       return { isError: true, content: [{ type: "text", text: `Tool ${name} is not available through AidenHQ.` }] };
     }
     try {
-      return fenced(await withUpstream((u) => u.client.callTool({ name, arguments: req.params.arguments ?? {} }))) as never;
+      return (await withUpstream((u) => u.client.callTool({ name, arguments: req.params.arguments ?? {} }))) as never;
     } catch (err) {
       const auth = err instanceof GleanAuthError || tokens.status().state === "expired";
       log.warn({ tool: name, err: String(err).slice(0, 300) }, "Glean tool failed");
@@ -167,7 +179,7 @@ const http = createServer(async (req, res) => {
     if (req.method !== "POST") return void res.writeHead(405).end();
     const body = await readJson(req, 8 * 1024 * 1024);
     const auth = read ? ({ ok: true } as const) : await authorize(req, body);
-    if (!auth.ok) return void res.writeHead(auth.status, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
+    if (!auth.ok) return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
     const server = buildServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {

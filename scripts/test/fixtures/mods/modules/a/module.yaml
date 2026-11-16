@@ -4,7 +4,7 @@ requires: [b]
 settings:
   owner_email: { required: true }
 connections:
-  aconn: { url: "http://a-mcp:1/mcp", bearer_token_env_var: AIDENHQ_A_MCP_TOKEN, tools: { read: [a_get], write: [a_set] } }
+  aconn: { url: "http://a-mcp:1/mcp", auth: a_service_key, tools: { read: [a_get], write: [a_set] } }
 agents:
   x: { adapter: codex_local, model: m1, connections: { tasks: [t], "glean?": [search], bconn: read, aconn: write } }
 routines:

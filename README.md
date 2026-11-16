@@ -76,7 +76,7 @@ $0); use the OpenRouter key limit instead.
 ## Modules and the instance
 
 AidenHQ is a small core (Aiden, Researcher, DevOps Engineer, Agent Architect, Agent Coach, Platform Engineer, board, runner,
-`apps-mcp`, `paperclip-tasks-mcp`, the owner channel) plus optional modules in `modules/<name>/`: `open-loops`,
+`apps-mcp`, `tasks`, the owner channel) plus optional modules in `modules/<name>/`: `open-loops`,
 `meetings`, `engineering`, `design`, `security`, `fleet-ops`, `librarian`, `ci`, `warehouse`, and the connections
 `slack`, `google`, `github`, `glean`, `jira`, `primer`, `grafana`, `clickhouse`. Your configuration lives in a
 separate private **instance repo**: `instance.yaml` (pinned `product:` commit, `modules`, `settings`, limited

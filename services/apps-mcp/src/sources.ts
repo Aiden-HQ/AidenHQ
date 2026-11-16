@@ -2,7 +2,7 @@
 //   warehouse_query  one read-only SELECT as the `readonly` login (grants are the real control);
 //   source_new       rows of a source view newer than the caller's cursor, with a code filter;
 //   source_ack       advances that cursor once the caller has handled the rows.
-// The cursor is keyed by the caller's Paperclip agent id (agent-auth, never a tool argument), the view and the filter.
+// The cursor is keyed by the caller's Paperclip agent id (the kernel's assertion, never a tool argument), the view and the filter.
 // Cursor writes go through the superuser psql path apps-mcp already uses, with values passed as psql variables;
 // `readonly` has no write grant.
 import { createHash } from "node:crypto";

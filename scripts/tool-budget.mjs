@@ -56,7 +56,7 @@ export async function fetchDefs(servers, map = {}) {
       if (s.url) {
         let url = s.url;
         for (const [h, ip] of Object.entries(map)) url = url.replace(`//${h}:`, `//${ip}:`);
-        tools = await httpList(url, s.bearer_token_env_var ? process.env[s.bearer_token_env_var] : "");
+        tools = await httpList(url, s.auth ? (process.env[s.auth.toUpperCase()] ?? "") : ""); // its service key, e.g. GLEAN_SERVICE_KEY
       } else {
         // The bridge runs at /opt/aidenhq in the Paperclip container; here it is in the checkout.
         const args = (s.args ?? []).map((a) => a.replace("/opt/aidenhq/", join(root, "services/paperclip-tasks-mcp/")));

@@ -300,11 +300,11 @@ fi
 run tailscale serve --bg --https=443 http://127.0.0.1:3121
 say "Runner, model gateway and run pruning (user units)"
 as_user mkdir -p "$H/.config/systemd/user"
-as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-gateway.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$H/.config/systemd/user/"
+as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-kernel.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$H/.config/systemd/user/"
 as_user systemctl --user daemon-reload
 # aidenhq-computers: the agent-computer launcher (services/computer); idle until an agent has an image.
-# aidenhq-gateway: every model call (services/gateway); the only holder of the OpenRouter key.
-as_user systemctl --user enable --now aidenhq-gateway aidenhq-runner aidenhq-computers prune-runs.timer
+# aidenhq-kernel: every model and tool call (kernel/src); the only holder of the OpenRouter key and the connections' keys.
+as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer
 
 # ---------------------------------------------------------------- 8. the first ten minutes
 marker="$REPO/data/board/welcome-sent"

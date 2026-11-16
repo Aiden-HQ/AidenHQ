@@ -14,11 +14,23 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@model
 import pino from "pino";
 import { allowedTools, DEFAULT_ALLOWLIST, isAllowed, readOnly } from "./policy.js";
 import { PrimerAuthError, TokenStore } from "./tokens.js";
-import { makeAuthorize } from "./agent-auth.js";
+import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "primer-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
-// Who is calling, and may it use this tool: the run key against the grants table.
-const authorize = makeAuthorize({ log });
+// Who is calling: the kernel's signed assertion (the kernel enforces grants).
+const jwks = kernelJwks();
+async function authorize(req: IncomingMessage, body: unknown): Promise<{ ok: true; caller?: Caller } | { ok: false; body: unknown }> {
+  const msgs = (Array.isArray(body) ? body : [body]) as { id?: unknown; method?: unknown }[];
+  if (!msgs.some((m) => m?.method === "tools/call")) return { ok: true };
+  try {
+    return { ok: true, caller: await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "primer") };
+  } catch (err) {
+    const reason = (err as Error).message;
+    log.warn({ reason }, "tool call refused");
+    const refusal = (m: { id?: unknown }) => ({ jsonrpc: "2.0", id: m?.id ?? null, result: { isError: true, content: [{ type: "text", text: `Refused: ${reason}.` }] } });
+    return { ok: false, body: Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!) };
+  }
+}
 const UPSTREAM = process.env.PRIMER_MCP_URL ? new URL(process.env.PRIMER_MCP_URL) : undefined;
 const port = Number(process.env.PORT ?? 8084);
 const tokens = new TokenStore(process.env.PRIMER_TOKEN_FILE ?? "/state/token.json");
@@ -29,7 +41,7 @@ const inboundToken = readToken(process.env.MCP_TOKEN_FILE);
 // publishing tools on /mcp. Without it, /mcp/read is off.
 const mcpReadToken = readToken(process.env.MCP_READ_TOKEN_FILE);
 // /mcp/publish: the runner itself publishing a task's document, with a token only the host holds (agents and jobs
-// never see it). Agents use /mcp, where every call is checked against their grants. Empty or missing token: off.
+// never see it). Agents use /mcp, where the kernel checks their grants and signs the caller. Empty or missing token: off.
 const publishToken = readToken(process.env.MCP_PUBLISH_TOKEN_FILE);
 
 let upstream: { client: Client; tools: Tool[]; at: number } | undefined;
@@ -125,7 +137,7 @@ const http = createServer(async (req, res) => {
     for await (const c of req) chunks.push(c as Buffer);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
     const auth = read || publish ? ({ ok: true } as const) : await authorize(req, body);
-    if (!auth.ok) return void res.writeHead(auth.status, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
+    if (!auth.ok) return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
     const server = buildServer(read ? readOnly(allowlist) : allowlist);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {

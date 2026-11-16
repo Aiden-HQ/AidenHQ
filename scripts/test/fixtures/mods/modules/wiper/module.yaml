@@ -1,7 +1,7 @@
 name: wiper
 description: A connection with a destructive tool
 connections:
-  wconn: { url: "http://w-mcp:1/mcp", tools: { read: [w_get], write: [w_set], destructive: [w_delete] } }
+  wconn: { url: "http://w-mcp:1/mcp", auth: wconn_service_key, tools: { read: [w_get], write: [w_set], destructive: [w_delete] } }
 agents:
   w: { adapter: codex_local, model: m1, connections: { wconn: write } }
   wd: { adapter: codex_local, model: m1, connections: { wconn: [w_get, w_delete] } }

@@ -62,9 +62,22 @@ export const TRIAL_WRITE_ALLOWED = ["paperclip_tasks.task_create", "slack_live.w
 export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
 /** A connection's write tools, destructive included (trial, untrusted and handbook checks treat both as writes). */
 export const writeTools = (c) => [...(c?.tools?.write ?? []), ...(c?.tools?.destructive ?? [])];
-// The grants table (scripts/paperclip-setup.mjs writes it into config/grants/), mounted read-only into every connection.
-const GRANTS_FILE = "/grants/grants.json";
-const GRANTS_MOUNT = "${AIDENHQ_CONFIG_DIR:-./config}/grants:/grants:ro";
+// Every connection is reached through the kernel's tool proxy, which holds the grants and the service keys.
+export const KERNEL_URL = "http://10.231.0.1:3130";
+
+/** The shared Codex config's MCP block: every connection at the kernel's proxy with the run's own credential, never stdio. */
+export function codexMcpBlock(mcpServers = {}) {
+  const toml = (v) => JSON.stringify(String(v));
+  const lines = ["# >>> aidenhq (managed by scripts/paperclip-setup.mjs)"];
+  for (const [name, m] of Object.entries(mcpServers)) {
+    if (!/^[a-z0-9_]+$/.test(name)) fail(`invalid MCP server name ${name}`);
+    lines.push(`[mcp_servers.${name}]`, `url = ${toml(`${KERNEL_URL}/c/${name}/mcp`)}`, 'bearer_token_env_var = "PAPERCLIP_API_KEY"');
+    // Tools are pre-approved: the agents' only capabilities are these vetted servers.
+    lines.push("startup_timeout_sec = 20", `tool_timeout_sec = ${m.tool_timeout_sec ?? 300}`, 'default_tools_approval_mode = "approve"', "");
+  }
+  lines.push("# <<< aidenhq");
+  return lines.join("\n");
+}
 
 const readYaml = (path) => YAML.parse(readFileSync(path, "utf8")) ?? {};
 const fail = (msg) => { throw new Error(msg); };
@@ -152,8 +165,8 @@ export function engineEntries(name, def, root, productDir) {
 
 const JOBCAP_FIELDS = ["id", "connection", "tools", "prompt", "tool_timeout_s", "read_url", "read_secret", "private"];
 /**
- * A module's `jobcaps:` (spec §3.1): what a runner job may read of a connection, through the model gateway's
- * /c/<connection>/mcp with its own token (services/gateway/jobcaps.ts). `tools`: a list, or `read` for the module's connection
+ * A module's `jobcaps:` (spec §3.1): what a runner job may read of a connection, through the kernel's
+ * /c/<connection>/mcp with its own token (kernel/src/proxy.ts). `tools`: a list, or `read` for the module's connection
  * of that name's read tools. `read_url` (a host-loopback MCP endpoint) and `read_secret` (the vault file the gateway forwards
  * as the bearer) bridge to today's read endpoints. `private: true`: private data, so only an Engineer with private_reads (no
  * web search) may hold it. Returns config/jobcaps.json's entries, by id.
@@ -167,6 +180,8 @@ export function jobcapEntries(name, def) {
     if (!/^[a-z0-9_]{1,40}$/.test(j.connection ?? "")) fail(`${where}: connection must be a name (a-z, 0-9, _)`);
     const tools = j.tools === "read" ? def.connections?.[j.connection]?.tools?.read ?? fail(`${where}: tools: read, but ${name} has no connection ${j.connection}`) : j.tools;
     if (!Array.isArray(tools) || !tools.length || tools.some((t) => typeof t !== "string" || !t)) fail(`${where}: tools must list its tools (or be read)`);
+    const writes = writeTools(def.connections?.[j.connection]).filter((t) => tools.includes(t));
+    if (writes.length) fail(`${where}: a jobcap reads only; ${writes.join(", ")} ${writes.length === 1 ? "is a write" : "are writes"}`);
     if (!/^http:\/\/127\.0\.0\.1:\d{2,5}\/[\w/.-]*$/.test(j.read_url ?? "")) fail(`${where}: read_url must be an http://127.0.0.1:<port>/ endpoint`);
     if (!/^[a-z0-9_]+_mcp(_read)?_token$/.test(j.read_secret ?? "")) fail(`${where}: read_secret must name a <service>_mcp_token or <service>_mcp_read_token`);
     if (j.tool_timeout_s != null && !(Number.isInteger(j.tool_timeout_s) && j.tool_timeout_s > 0 && j.tool_timeout_s <= 600)) fail(`${where}: tool_timeout_s is 1-600`);
@@ -255,7 +270,7 @@ function resolveEnabled(all, wanted) {
 const agentsOrg = (settings) => settings.github_agents_org || (settings.instance_name ? `aidenhq-${settings.instance_name}` : "");
 
 /**
- * The gateway's CI code review switches (config/gateway.json `ci`, services/gateway/ci.ts): only the agents org's app repos;
+ * The gateway's CI code review switches (config/gateway.json `ci`, kernel/src/gateway/ci.ts): only the agents org's app repos;
  * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped).
  */
 function ciReview(settings) {
@@ -402,8 +417,12 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       if (c.tools.destructive != null && !Array.isArray(c.tools.destructive)) fail(`connection ${k}: tools.destructive must be a list`);
       const looks = [...c.tools.read, ...c.tools.write].filter((t) => DESTRUCTIVE_NAME.test(t));
       if (looks.length) fail(`connection ${k}: ${looks.join(", ")} look${looks.length === 1 ? "s" : ""} destructive (delete, trash, remove, purge): tag ${looks.length === 1 ? "it" : "them"} destructive, granted only by name`);
-      // Every HTTP call carries the agent's run key; the service checks it against the grants table (whoami).
-      put(paperclip.mcp_servers, k, c.url ? { ...c, env_http_headers: { "X-Agent-Key": "PAPERCLIP_API_KEY", ...c.env_http_headers } } : c, "connection");
+      // Agents reach it only through the kernel's proxy, which forwards with the service key `auth` names (compile creates it).
+      if (!/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c.url ?? "")) fail(`connection ${k}: url must be its service's MCP endpoint (http://<service>:<port>/mcp)`);
+      if (!/^[a-z0-9_]+_service_key$/.test(c.auth ?? "")) fail(`connection ${k}: auth must name its service key secret (<name>_service_key)`);
+      if (c.returns != null && !["trusted", "untrusted"].includes(c.returns)) fail(`connection ${k}: returns is trusted or untrusted`);
+      if (c.model_as_caller != null && typeof c.model_as_caller !== "boolean") fail(`connection ${k}: model_as_caller is true or false`);
+      put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
     for (const [key, a] of Object.entries(def.agents ?? {})) {
       const file = join(root, "agents", key, "AGENTS.md");
@@ -614,8 +633,8 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   // the handbook, so the handbook is a cached prefix across runs (Paperclip's own cwd is new per task).
   for (const a of Object.values(paperclip.agents)) if (a.adapter === "codex_local" && a.dispatch !== "runner" && !a.image) a.command = CODEX_MODEL_COMMAND;
 
-  // Each HTTP connection's service learns its name, where Paperclip is (whoami) and gets the grants table setup writes
-  // (read-only). A connection served from the root compose (apps-mcp) is wired the same way there, by hand.
+  // Each connection's service learns its module (the caller assertion's audience) and where the kernel is (its keys). It
+  // never gets the grants table. A connection served from the root compose (apps-mcp) is wired the same way there, by hand.
   const owners = {};
   for (const [name, c] of Object.entries(paperclip.mcp_servers)) {
     const host = c.url && new URL(c.url).hostname;
@@ -624,15 +643,14 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     if (owners[host]) fail(`connections ${owners[host]} and ${name} share the service ${host}`);
     owners[host] = name;
     if (Array.isArray(svc.environment)) fail(`compose service ${host}: environment must be a map`);
-    // AIDENHQ_LAUNCHER_URL: run tokens from agent computers are resolved there (services/computer).
-    svc.environment = { PAPERCLIP_URL: "http://paperclip:3100", ...svc.environment, AIDENHQ_CONNECTION: name, AIDENHQ_GRANTS_FILE: GRANTS_FILE, AIDENHQ_LAUNCHER_URL: "${AIDENHQ_LAUNCHER_URL:-http://10.231.0.1:8199}" };
-    svc.volumes = [...(svc.volumes ?? []), GRANTS_MOUNT];
+    svc.environment = { PAPERCLIP_URL: "http://paperclip:3100", ...svc.environment, AIDENHQ_MODULE: c.module, AIDENHQ_KERNEL_URL: `\${AIDENHQ_KERNEL_URL:-${KERNEL_URL}}` };
   }
-
-  // Each enabled bearer connection's token reaches the paperclip container (exported generically by its entrypoint).
-  const tokens = Object.values(paperclip.mcp_servers).map((c) => c.bearer_token_env_var).filter(Boolean)
-    .map((v) => v.replace(/^AIDENHQ_/, "").toLowerCase()).filter((s) => s in compose.secrets);
-  if (tokens.length) compose.services.paperclip = { secrets: tokens };
+  // The kernel's connection table (config/kernel/connections.json): where each connection is and with which key.
+  const connections = Object.fromEntries(Object.entries(paperclip.mcp_servers).map(([k, c]) => [k, {
+    url: c.url, auth_secret: c.auth, module: c.module, returns: c.returns ?? "untrusted",
+    tools: { read: [...c.tools.read], write: [...c.tools.write], destructive: [...(c.tools.destructive ?? [])] }, ...(c.tool_timeout_sec ? { tool_timeout_s: c.tool_timeout_sec } : {}),
+    ...(c.model_as_caller === true ? { model_as_caller: true } : {}),
+  }]));
 
   const catalog = [...all.values()].map(({ name, root, def }) => ({
     name, description: def.description ?? "", enabled: enabled.includes(name), chosen: (instance.modules ?? []).includes(name), requires: def.requires ?? [],
@@ -656,7 +674,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   for (const [key, a] of Object.entries(paperclip.agents)) if (a.dispatch === "runner" && a.engine && !engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);
   // The model gateway's switches (config/gateway.json, re-read per call): spend_caps off stops refusals, tracking stays.
   const gateway = { enforce_caps: String(settings.spend_caps ?? "on") !== "off", ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}) };
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, gateway, jobcaps, engines, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, gateway, jobcaps, engines, connections, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**

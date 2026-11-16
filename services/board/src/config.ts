@@ -25,7 +25,7 @@ export interface Config {
   watcherKey?: string;
   /** The operator's key (board_operator_key): ops/setup.sh's owner setup link, welcome chat and account resets, nothing else. */
   operatorKey?: string;
-  /** The model gateway (services/gateway): its billed ledger is pulled from `url`; `token` (gateway_board_key) both ways (it files raise_cap). */
+  /** The model gateway (kernel/src/gateway): its billed ledger is pulled from `url`; `token` (gateway_board_key) both ways (it files raise_cap). */
   gateway?: { url: string; token: string };
   timezone: string;
   workdays: Weekday[];

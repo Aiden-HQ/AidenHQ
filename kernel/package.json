@@ -1,0 +1,20 @@
+{
+  "name": "aidenhq-kernel",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "description": "The kernel host service: the model gateway, the tool proxy in front of every connection, caller identity and assertions.",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "5.9.3"
+  }
+}
