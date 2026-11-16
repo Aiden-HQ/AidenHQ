@@ -88,7 +88,6 @@ export function detectorState(store: Pick<Store, "meta">): State {
 type Check = () => Promise<Incident[] | undefined>;
 
 /** The detector's last fire, and the gap before a fire with nothing critical in it (60 check runs a day, most one line, cost $3/day). */
-const LAST_FIRE_KEY = "fleet_ops_last_fire";
 export const QUIET_MS = 30 * MIN;
 
 /**
@@ -120,11 +119,11 @@ export async function tick(store: Pick<Store, "meta" | "setMeta">, checks: Recor
   }
   const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, reason: o.reason, since: o.at, ...(o.critical ? { critical: true } : {}) }));
   const recovered = s.recovered.filter((r) => !r.fired).map(({ key, reason, at }) => ({ key, reason, recovered_at: at }));
-  const due = incidents.some((i) => i.critical) || !(Date.parse(at) - Date.parse(store.meta(LAST_FIRE_KEY) ?? "") < quietMs);
+  const due = incidents.some((i) => i.critical) || !(Date.parse(at) - Date.parse(store.meta("fleet_ops_last_fire") ?? "") < quietMs);
   if ((incidents.length || recovered.length) && due && (await fire({ incidents, recovered }).catch(() => false))) {
     for (const i of incidents) s.open[i.key]!.fired = true;
     for (const r of s.recovered) r.fired = true;
-    store.setMeta(LAST_FIRE_KEY, at);
+    store.setMeta("fleet_ops_last_fire", at);
   }
   s.recovered = s.recovered.slice(-20);
   store.setMeta(STATE_KEY, JSON.stringify(s));

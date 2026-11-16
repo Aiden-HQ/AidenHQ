@@ -434,14 +434,11 @@ async function watchProductPrs() {
     // Only a task that can still publish is asked or told. A comment on a finished task reopens it (Paperclip), so a done
     // task's PR is left alone and a cancelled task's PR is closed once, with the reason on the PR.
     const issue = await pc.issue(issueId);
-    if (issue.status === "done") continue;
-    if (issue.status === "cancelled") {
-      if (state.get(`abandoned:${url}`)) continue;
+    if (issue.status === "cancelled" && !state.get(`abandoned:${url}`)) {
       state.set(`abandoned:${url}`, new Date().toISOString());
-      const [line] = await merges.closePrs([{ repo, number: pr.number, url: pr.url }], `Closed by the runner: ${issue.identifier}, the task this PR was for, is cancelled.`, mergeGithub);
-      log("abandoned PR", { pr: pr.url, issue: issue.identifier, line });
-      continue;
+      log("abandoned PR", { pr: pr.url, issue: issue.identifier, closed: (await merges.closePrs([{ repo, number: pr.number, url: pr.url }], `Closed by the runner: ${issue.identifier}, the task this PR was for, is cancelled.`, mergeGithub))[0] });
     }
+    if (["done", "cancelled"].includes(issue.status)) continue;
     if (want.do === "environment") {
       const r = await merges.environmentRetry(mergeGithub, repo, pr.number, pr, pr.url, want.checks);
       const seen = `environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`;
@@ -453,13 +450,10 @@ async function watchProductPrs() {
       continue;
     }
     // One ask per PR per half hour, and none while its task runs: main moves every few minutes, and each ask is a run.
-    if (state.get(key) || running.has(issueId) || Date.now() - Date.parse(state.get(`rebase-asked:${url}`) ?? "") < ASK_GAP_MS) continue;
-    if (want.why === "red") {
-      const behind = Number((await execFileP(await findRealGh(), ["api", `repos/${repo}/compare/${main.oid}...${pr.headRefOid}`, "--jq", ".behind_by"], await gho(repo, READ))).stdout.trim());
-      if (!(behind > 0)) {
-        state.set(key, new Date().toISOString()); // red on its own: the merge queue reports that
-        continue;
-      }
+    if (state.get(key) || running.has(issueId) || Date.now() - Date.parse(state.get(`rebase-asked:${url}`) ?? "") < 30 * 60_000) continue;
+    if (want.why === "red" && !(Number((await execFileP(await findRealGh(), ["api", `repos/${repo}/compare/${main.oid}...${pr.headRefOid}`, "--jq", ".behind_by"], await gho(repo, READ))).stdout.trim()) > 0)) {
+      state.set(key, new Date().toISOString()); // red on its own: the merge queue reports that
+      continue;
     }
     state.set(key, new Date().toISOString());
     // Parked (the AI reviewer's rejections ran out): its publish is refused, so a rebase is a run for nothing.
@@ -468,7 +462,6 @@ async function watchProductPrs() {
     await wakeForRebase(issue, pr, want.why, main);
   }
 }
-const ASK_GAP_MS = 30 * 60_000;
 
 /**
  * A task the runner files runs in its assignee's own folder, never a folder it shares with the task that asked for it: in
