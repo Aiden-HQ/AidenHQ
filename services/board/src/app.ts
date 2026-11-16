@@ -136,6 +136,8 @@ const ApprovalRequestSchema = z
     rule: z.string().regex(TIER_RULE).optional(),
     /** classify()'s panel: authority-expanding, so a reviewer approval needs a second reviewer's. */
     panel: z.literal(true).optional(),
+    /** tiers.mjs reviewFirstOf: the owner decides after the reviewer ("owner": Tier 2 on its merits, so not even its reject is final). */
+    reviewFirst: z.enum(["final", "owner"]).optional(),
   })
   .strict();
 /** A Tier 0 run the runner already made: an audit row only. */
@@ -1086,13 +1088,13 @@ export function createApp(opts: AppOptions): Server {
         // The runner's tier as filed: with autonomy off a Tier 1 card is review-first (the reviewer may only escalate or reject it).
         const tier = b.tier;
         // The requester is the task's agent, looked up here; the base tier is the runner's classify() (its key filed this).
-        const a = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: from, tier, reason: b.reason, requesterId: task.assigneeAgentId ?? null, baseTier: b.baseTier ?? null, reasonCode: b.rule ?? null, panel: b.panel === true, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
+        const a = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: from, tier, reason: b.reason, requesterId: task.assigneeAgentId ?? null, baseTier: b.baseTier ?? null, reasonCode: b.rule ?? null, panel: b.panel === true, reviewFirst: b.reviewFirst ?? null, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
         log.info({ approval: a.id, task: a.identifier, action: a.action, replaced: a.replaced, tier: a.tier, baseTier: a.baseTier, code: a.reasonCode }, "approval requested");
         return { ...approvalView(a), args: a.args };
       },
     },
     {
-      // The model gateway refused a call at a spend cap: one raise_cap card (Tier 2), filed with the gateway's own key. The numbers
+      // The model gateway refused a call at a spend cap: one raise_cap card (the owner's, after the AI reviewer), filed with the gateway's own key. The numbers
       // are the gateway's ledger; the task and the agent's name are looked up here. The card and its apply are the board's (W2).
       method: "POST",
       path: /^\/internal\/approvals\/raise-cap$/,

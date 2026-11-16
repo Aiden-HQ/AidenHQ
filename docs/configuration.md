@@ -73,7 +73,7 @@ overrides:
   task traced back to it, through parents and through Paperclip's `originRunId` (the run that created an issue, which no
   agent sets), so an unparented `task_create` from a routine's run keeps the cap. The strictest of the routines found and
   the instance's `autonomy` applies, in code (`services/runner/src/tiers.mjs` `routineCap`, `paperclip.ts` `origins`):
-  `tier0` makes Tier 1 the owner's (Tier 0 still runs),
+  `tier0` makes Tier 1 the owner's after the AI reviewer has read it (its reject is final; Tier 0 still runs),
   `off` makes Tier 0 the owner's too, `full` adds no cap. The default is `full` for scheduled and owner-started
   routines (today's behaviour: the AI reviewer decides Tier 1 when the instance runs `full`) and `tier0` for a
   `webhook: true` routine, which something outside fires, often with untrusted text (`app-incident` and `app-request`

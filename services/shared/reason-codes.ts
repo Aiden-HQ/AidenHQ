@@ -36,6 +36,10 @@ export const REVIEW_CODES = [
   // the reviewer approved a module change that adds authority: the owner decides next, with that verdict on the card
   "new_authority",
   "autonomy_off",
+  // a routine's own autonomy cap (tier0 or off) made a Tier 1 write review-first: the reviewer approved, the owner decides
+  "routine_autonomy",
+  // Tier 2 on its merits (the owner's veto, a spend-cap raise, ...): the reviewer read it first; the owner decides either way
+  "owner_tier",
   "shadow",
   // the panel's two reviewers disagreed (or the second couldn't decide): the owner decides
   "panel_split",

@@ -30,6 +30,10 @@ function fakeGithub(prs, commits = {}, bases = {}) {
     async commit(repo, oid) {
       return { statusCheckRollup: commits[oid] ?? null };
     },
+    // The reviewer-eval gate (evalgate.ts): no reviewer code in these PRs, so it never holds a merge.
+    async evalGate() {
+      return undefined;
+    },
     async merge(repo, number, opts) {
       writes.push({ merge: number, ...opts });
       prs[number] = { ...prs[number], state: "MERGED" };

@@ -51,7 +51,8 @@ on the board: the exact request, decided once, outcome on the card. Code assigns
 from text an agent wrote ([`services/runner/src/tiers.mjs`](../services/runner/src/tiers.mjs)):
 - **Tier 0** runs at once (for example a green merge in the agents org on a branch the runner pushed).
 - **Tier 1** is decided by an AI reviewer model with a written policy.
-- **Tier 2** is the owner's tap on the board or the owner channel, or an exact typed reply such as `apply WOR-184`.
+- **Tier 2** is the owner's tap on the board or the owner channel, or an exact typed reply such as `apply WOR-184`, after the
+  AI reviewer has read it (its verdict is on the card).
 
 **Autonomy.** The `autonomy` setting chooses how much of that runs without the owner: `off` (every write is the
 owner's card, after the AI review of Tier 1, whose reject is final; also the pause switch), `tier0` (Tier 0 runs, the reviewer only comments), `full` (the reviewer decides

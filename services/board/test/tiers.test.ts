@@ -104,11 +104,16 @@ describe("tiered approvals", () => {
     expect((await verdict(one.id, { digest: one.digest, decision: "escalate", reason: "shadow: would approve" })).json).toMatchObject({ tier: 2, review: "shadow: would approve" });
     expect(await pendingIds()).toContain(one.id);
     expect((await decide({ id: one.id, decision: "reject" }, OWNER)).json).toMatchObject({ state: "rejected", decidedBy: "owner:telegram" });
-    expect((await file(1)).tier).toBe(2); // the owner's veto on (task, push)
+    // The owner's veto on (task, push): the reviewer still reads the next one first, then the owner decides it, even its reject.
     setAutonomy("full");
+    const vetoed = await file(1);
+    expect(vetoed).toMatchObject({ tier: 1, reviewFirst: "owner", reasonCode: "owner-veto" });
+    expect((await verdict(vetoed.id, { digest: vetoed.digest, decision: "approve" })).status).toBe(409);
+    expect((await verdict(vetoed.id, { digest: vetoed.digest, decision: "reject", code: "out_of_scope" })).status).toBe(409);
+    expect((await verdict(vetoed.id, { digest: vetoed.digest, decision: "escalate", code: "owner_tier", reason: "The AI reviewer rejected: x" })).json).toMatchObject({ tier: 2, review: "The AI reviewer rejected: x" });
     const lifted = await file(2);
     expect((await decide({ id: lifted.id, decision: "approve" }, OWNER)).json).toMatchObject({ state: "approved" });
-    expect((await file(1)).tier).toBe(1); // their later yes lifts it
+    expect((await file(1)).reviewFirst).toBe(null); // their later yes lifts it
   });
 
   it("an authority-expanding (panel) card takes the reviewer's approval only with a second reviewer of another model", async () => {
@@ -146,8 +151,8 @@ describe("tiered approvals", () => {
     expect((await decide({ id: x.id, decision: "reject" }, WATCHER)).json).toMatchObject({ state: "rejected" });
     const y = await fileArgs("2", 2);
     expect((await decide({ id: y.id, decision: "approve" }, WATCHER)).json).toMatchObject({ state: "approved" });
-    expect((await fileArgs("3")).tier).toBe(1); // other content: the reviewer's again
-    expect((await fileArgs("1")).tier).toBe(2); // X resubmitted: still the owner's
+    expect((await fileArgs("3")).reviewFirst).toBe(null); // other content: the reviewer's again
+    expect((await fileArgs("1")).reviewFirst).toBe("owner"); // X resubmitted: still the owner's (after the reviewer)
   });
 
   it("a watcher's stale or duplicate no (stale: true) never vetoes the action on the task; a plain watcher no does", async () => {
@@ -157,10 +162,10 @@ describe("tiered approvals", () => {
     expect((await decide({ id: dup.id, decision: "reject", stale: true }, OWNER)).status).toBe(400); // the watcher's only
     expect((await decide({ id: dup.id, decision: "approve", stale: true }, WATCHER)).status).toBe(400);
     expect((await decide({ id: dup.id, decision: "reject", stale: true }, WATCHER)).json).toMatchObject({ state: "rejected", decidedBy: "stale:watcher" });
-    expect((await fileM("1")).tier).toBe(1); // even the same content: the reviewer's
+    expect((await fileM("1")).reviewFirst).toBe(null); // even the same content: the reviewer's
     const no = await fileM("2", 2, "WOR-10");
     expect((await decide({ id: no.id, decision: "reject" }, WATCHER)).json).toMatchObject({ state: "rejected", decidedBy: "watcher" });
-    expect((await fileM("3", 1, "WOR-10")).tier).toBe(2);
+    expect((await fileM("3", 1, "WOR-10")).reviewFirst).toBe("owner");
   });
 
   it("the owner's veto binds to the patch: a rebased X (new commits) is still theirs; no patch key fails closed", async () => {
@@ -172,9 +177,9 @@ describe("tiered approvals", () => {
     expect((await decide({ id: x.id, decision: "reject" }, OWNER)).json).toMatchObject({ state: "rejected" });
     const y = await fileP(pushArgs("2", P("b")), 2);
     expect((await decide({ id: y.id, decision: "approve" }, OWNER)).json).toMatchObject({ state: "approved" });
-    expect((await fileP(pushArgs("3", P("a")))).tier).toBe(2); // X rebased: new commit, same patch
-    expect((await fileP(pushArgs("4", P("c")))).tier).toBe(1); // other content
-    expect((await fileP(pushArgs("5"))).tier).toBe(2); // no patch key: fails closed
+    expect((await fileP(pushArgs("3", P("a")))).reviewFirst).toBe("owner"); // X rebased: new commit, same patch
+    expect((await fileP(pushArgs("4", P("c")))).reviewFirst).toBe(null); // other content
+    expect((await fileP(pushArgs("5"))).reviewFirst).toBe("owner"); // no patch key: fails closed
   });
 
   // A content key is lossy: it may only restrict (an owner veto), never grant. A rebased card asks again (owner, 2026-11-14).

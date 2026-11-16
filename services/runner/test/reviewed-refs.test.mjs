@@ -124,6 +124,7 @@ describe("reviewed heads", () => {
       pr: async () => ({ repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: { id: "PR_1", number: 1, url: "https://github.com/acme/api/pull/1", state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN", headRefOid: mergedHead, headRefName: "feat/merged", baseRefName: "main", isCrossRepository: false, commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] } } } }] }, baseRef: { target: { oid: branchRef, statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [] } } } } } } }),
       commit: async () => ({ statusCheckRollup: null }),
       merge: async () => "merged",
+      evalGate: async () => undefined,
       updateBranch: async () => {},
       baseStatus: async () => ({ tip: mergedHead, open: false, merged: [], overflow: false, stacked: false }),
       deleteBranch: async (_repo, branch) => deleted.push(branch),

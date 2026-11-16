@@ -19,7 +19,7 @@ import { classifyModules, diffAll } from "../../../kernel/src/loader/authority.t
  */
 export const GATE_CORE = [
   // One entry per file, so a renamed or moved gate file shows up as a dead entry (gate-coverage.test.mjs).
-  ...["tiers", "review", "authorize", "merges", "apply", "netjail", "state", "config", "github-app", "git", "main", "engines", "workspace", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
+  ...["tiers", "review", "authorize", "merges", "evalgate", "apply", "netjail", "state", "config", "github-app", "git", "main", "engines", "workspace", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
   // What a job can reach: its sandbox and launch (engines: the bwrap allowlist, writable roots, env), what lands in its
   // workspace and what the runner reads back from it (workspace, files), and the computer box rules (computers).
   /^scripts\/computers\.(mjs|ts)$/,
@@ -119,19 +119,51 @@ const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);
 export function highest(parts) {
   if (!parts.length) return T(2, "unrecognised", "nothing recognised in the request");
   const top = parts.find((p) => p.reject) ?? parts.reduce((a, b) => (rank(b) > rank(a) ? b : a));
-  // A module change is always reviewed first, whatever else the request carries; the review is a panel if any part is.
-  if (!top.reject && top.tier === 2 && parts.some((p) => p.reviewFirst)) return { ...top, reviewFirst: true, ...(parts.some((p) => p.panel) ? { panel: true } : {}) };
+  // A module change is always reviewed first, whatever else the request carries; the review is a panel if any part is. A
+  // part that is the owner's on its merits keeps the reviewer's reject from being final.
+  if (!top.reject && top.tier === 2 && parts.some((p) => p.reviewFirst)) return { ...top, reviewFirst: true, ...(parts.some((p) => p.panel) ? { panel: true } : {}), ...(parts.some((p) => p.tier === 2 && (p.byMerit || !p.reviewFirst)) ? { byMerit: true } : {}) };
   return top;
 }
 
 /**
- * What a review-first card (new module authority) posts after the reviewer: an approve goes to the owner with the verdict
- * on the card, a reject is final, an escalate stays one. Any other card posts the verdict as it is.
+ * Tier 2 on its merits (the owner's veto, a spend-cap raise, an owner-approval record, unknown repos, nothing recognised):
+ * the owner's tap decides, but the AI reviewer reads it first (owner, 2026-11-16: every write is reviewed before it reaches
+ * the owner). Its approve and its reject both go on to the owner with the verdict on the card (`byMerit`).
+ */
+export const meritOwner = (t) => (!t.reject && t.tier === 2 && !t.reviewFirst ? { ...t, reviewFirst: true, byMerit: true } : t);
+
+/** Code's own refusals that stay final on any card: the change moved, or code refused it (a closed task, a rejected copy). */
+const FINAL_CODES = ["stale_head", "refused_by_code"];
+
+/**
+ * What a review-first card posts after the reviewer: an approve goes to the owner with the verdict on the card; a reject is
+ * final (new module authority, autonomy off, a routine's cap: Tier 1 semantics), except on a card that is the owner's on its
+ * merits (`byMerit`), where every verdict but code's own refusals goes on to the owner with the reject shown. An escalate
+ * stays one. Any other card posts the verdict as it is.
  */
 export function afterReview(input, v) {
-  if (!input?.reviewFirst || v.decision !== "approve") return v;
-  const [code, why] = input.autonomyOff ? ["autonomy_off", "Autonomy is off"] : ["new_authority", "New module authority"];
-  return { ...v, decision: "escalate", code, reason: `The AI reviewer approved (${v.model}${v.second ? ` and ${v.second}` : ""}): ${v.reason} ${why}, so the owner decides: ${input.reason}` };
+  if (!input?.reviewFirst) return v;
+  const by = `${v.model}${v.second ? ` and ${v.second}` : ""}`;
+  if (input.byMerit && v.decision === "reject" && !FINAL_CODES.includes(v.code)) return { ...v, decision: "escalate", code: "owner_tier", reason: `The AI reviewer rejected (${by}${v.code ? `, ${v.code}` : ""}): ${v.reason} It is Tier 2 on its merits, so the owner decides: ${input.reason}` };
+  if (v.decision !== "approve") return v;
+  const [code, why] = input.byMerit ? ["owner_tier", "It is Tier 2 on its merits"] : input.routineCap ? ["routine_autonomy", `A routine's autonomy is ${input.routineCap}`] : input.autonomyOff ? ["autonomy_off", "Autonomy is off"] : ["new_authority", "New module authority"];
+  return { ...v, decision: "escalate", code, reason: `The AI reviewer approved (${by}): ${v.reason} ${why}, so the owner decides: ${input.reason}` };
+}
+
+/** How the board holds a review-first card: "owner" (byMerit: the reviewer may only escalate), "final" (it may escalate or reject). */
+export const reviewFirstOf = (...ts) => (ts.some((t) => t && !t.reject && t.byMerit) ? "owner" : ts.some((t) => t && !t.reject && t.reviewFirst) ? "final" : undefined);
+
+/**
+ * A routine's cap (its `autonomy`): the stricter of it and the instance's wins. tier0 or off: a Tier 1 write is review-first
+ * (the reviewer's reject is final, its approve goes on to the owner), as autonomy off does it (autonomyCap); off: a Tier 0
+ * write waits for the owner's tap.
+ */
+export function routineCapped(t, cap) {
+  if (t.reject || !cap || cap === "full") return t;
+  if (t.tier === 0 && cap === "off") return { ...T(2, "routine-autonomy", `a routine's run started this task and that routine's autonomy is ${cap} (was: ${t.reason})`), baseTier: 0 };
+  if (t.tier === 1) return { ...t, tier: 2, reason: `${t.reason} (a routine's run started this task: its autonomy is ${cap})`, reviewFirst: true, routineCap: cap, baseTier: 1 };
+  if (t.reviewFirst) return { ...t, reason: `${t.reason} (a routine's run started this task: its autonomy is ${cap})` };
+  return t;
 }
 
 /**
@@ -164,6 +196,10 @@ export function autonomyCap(t, autonomy) {
  * - create_repo: { repo } (the runner checked it doesn't exist yet)
  */
 export function classify(action, s) {
+  return routineCapped(meritOwner(onMerits(action, s)), s.routineAutonomy);
+}
+
+function onMerits(action, s) {
   // Raising a spend cap (the board's raise_cap card, filed by the model gateway) is always the owner's tap.
   if (action === "raise_cap") return T(2, "raise-cap", "raising a spend cap is the owner's");
   if (["cancelled", "done"].includes(s.taskStatus)) return REJECT("closed-task", `the task is ${s.taskStatus}: a leftover request runs nothing`);
@@ -173,11 +209,7 @@ export function classify(action, s) {
   // Earlier decisions on this task (owner, 2026-11-14; replaced "sticky"): the owner's own no holds until they say yes; the
   // reviewer's no holds for the same content and bounds the retries.
   const prior = t.reject ? undefined : priorPart(priorDecisions(s.records, action, s.also, requestKey(action, s), requestPatches(action, s), s.requestChain));
-  if (prior) return prior.reject ? prior : { ...prior, reason: `${prior.reason} (was: ${t.reason})` };
-  // A routine's cap (its `autonomy`): the stricter of it and the instance's wins. tier0: Tier 1 is the owner's; off: Tier 0 too.
-  if (!t.reject && ((s.routineAutonomy === "off" && t.tier < 2) || (s.routineAutonomy === "tier0" && t.tier === 1)))
-    return T(2, "routine-autonomy", `a routine's run started this task and that routine's autonomy is ${s.routineAutonomy} (was: ${t.reason})`);
-  if (!t.reject && t.reviewFirst && s.routineAutonomy && s.routineAutonomy !== "full") return { ...t, reason: `${t.reason} (a routine's run started this task: its autonomy is ${s.routineAutonomy})` };
+  if (prior) return prior.reject ? prior : { ...prior, reason: `${prior.reason} (was: ${t.reason})`, ...(t.panel ? { panel: true } : {}) };
   return t;
 }
 
