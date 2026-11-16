@@ -30,6 +30,9 @@ working habits.
   coupled edits in one agent. `wait_agent` with `timeout_ms` of at most 600000 and repeat (a silent run is stopped as
   stalled); close agents when done. Publish in slices as parts land (`aidenhq pr`, stacked branches) so the time limit
   never loses finished work.
+- The AI reviewer reads up to 150,000 characters of diff per card. Plan a change bigger than that as stacked PRs from the
+  start: each branch made from the one before, each diff under that size, each published on its own
+  (`aidenhq pr <org/repo> <branch>`).
 - Dependencies: none new unless needed; every one pinned exactly and at least 7 days old (skill `supply-chain`).
 - UI for AidenHQ apps and the board, and every new app: skill `design-system` (the app starter, its building blocks and the rules).
 - Work in the AidenHQ product repository itself: skill `aidenhq-product`.

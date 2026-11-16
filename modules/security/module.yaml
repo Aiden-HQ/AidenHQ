@@ -28,6 +28,8 @@ agents:
     model: ~z-ai/glm-flash-latest
     reasoning_effort: high
     timeout_sec: 2400
+    # It attacks our own apps through apps-mcp and reads their untrusted output: no web search.
+    web_search: disabled
     # No computer in v1: it attacks through apps-mcp's existing paths (app_view, app_api), so it adds no new network
     # exposure. A computer would need an explicit nft allowlist from the box to the apps (operator step). No source reads:
     # github-mcp has no file tools and app repos are private; white-box review is App Auditor's.

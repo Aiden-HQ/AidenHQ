@@ -10,6 +10,8 @@ agents:
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1800
+    # Private notes and identities only: no web search.
+    web_search: disabled
     connections:
       # Reads only, plus the vault's one existing correction tool. No knowledge-page edit tool exists (see the handbook).
       # person_identity_decide: confirm or reject a proposed identity link (role librarian). No web_view/app_view: it reads untrusted
