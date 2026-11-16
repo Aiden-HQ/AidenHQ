@@ -1,10 +1,10 @@
 {
   "kernel": 2190,
   "sdk": 344,
-  "core": 22174,
-  "trusted": 33609,
+  "core": 22176,
+  "trusted": 33611,
   "coupling": 353,
-  "core_coupling": 3168,
+  "core_coupling": 3172,
   "settings": 23,
   "killswitches": 14
 }
