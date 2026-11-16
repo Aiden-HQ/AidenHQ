@@ -8,7 +8,7 @@ import { getMigrations } from "better-auth/db/migration";
 import { authCore, authSecret, forwardedProto, inboundCookies, openAuthDb, outboundCookie, secretIs, EDGE_HEADER, type Log } from "./auth-rules.ts";
 import { accountsFile } from "./auth-move.ts";
 
-export type Step = { ok: boolean; json: Record<string, any>; cookies: string[]; error: string };
+export type Step = { ok: boolean; status: number; retryAfter?: string; json: Record<string, any>; cookies: string[]; error: string };
 export type AdminSession = { account: { id: string; email: string; name: string; role: string; owner: boolean; twoFactorEnabled: boolean }; session: { id: string }; ready: boolean };
 
 /** `origins`: the front door's origin, which a proxy may not pass on as the Host (Better Auth checks each POST's Origin). */
@@ -50,7 +50,7 @@ export async function openAccounts(o: { dataDir: string; hosts: string[]; origin
       const r = await rules.call(auth, req, sub, "admin", { body: Buffer.from(JSON.stringify(body)), host: String(req.headers.host ?? ""), trusted: secretIs(req.headers[EDGE_HEADER], o.edgeSecret()), cookie: cookieOf(req) });
       const json = (await r.json().catch(() => ({}))) as Record<string, any>;
       const cookies = r.headers.getSetCookie().map((c) => outboundCookie(c, https(req), "admin"));
-      return { ok: r.ok, json, cookies, error: r.ok ? "" : String(json.message ?? json.error ?? json.code ?? `refused (${r.status})`) };
+      return { ok: r.ok, status: r.status, ...(r.headers.get("retry-after") ? { retryAfter: r.headers.get("retry-after")! } : {}), json, cookies, error: r.ok ? "" : String(json.message ?? json.error ?? json.code ?? `refused (${r.status})`) };
     },
     close: () => db.close(),
   };

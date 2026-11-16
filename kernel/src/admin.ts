@@ -143,13 +143,13 @@ export function createAdmin(d: Deps) {
         case "POST /auth/sign-in": {
           const f = await body(req);
           const r = await step(req, "/sign-in/email", { email: f.get("email") ?? "", password: f.get("password") ?? "" });
-          if (!r.ok) return send(res, 401, pages.signIn(err(r.error), next));
+          if (!r.ok) return send(res, r.status === 429 ? 429 : 401, pages.signIn(err(r.error), next), undefined, r.retryAfter ? { "retry-after": r.retryAfter } : {});
           return redirect(res, r.json.twoFactorRedirect ? `/auth/totp?next=${encodeURIComponent(safeNext(next))}` : "/auth/enrol", r.cookies);
         }
         case "GET /auth/totp": return send(res, 200, pages.totp("", next));
         case "POST /auth/totp": {
           const r = await step(req, "/two-factor/verify-totp", { code: (await body(req)).get("code") ?? "" });
-          if (!r.ok) return send(res, 401, pages.totp(err(r.error), next));
+          if (!r.ok) return send(res, r.status === 429 ? 429 : 401, pages.totp(err(r.error), next), undefined, r.retryAfter ? { "retry-after": r.retryAfter } : {});
           return redirect(res, safeNext(next), r.cookies);
         }
         case "GET /auth/set-password": return send(res, 200, pages.setPassword(url.searchParams.get("token") ?? ""));

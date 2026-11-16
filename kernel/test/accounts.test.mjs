@@ -158,49 +158,6 @@ test("a card is decided on the kernel page, stamped with the admin's account; th
   assert.equal(decided.length, 2);
 });
 
-test("every kernel page refuses a frame except the owner message frame (A7); a stranger's failures never lock the owner out", async (t) => {
-  const dir = boardData();
-  moveAccounts(dir);
-  const { url } = await adminOn(t, dir);
-  const b = browser(url);
-  for (const path of ["/auth/sign-in", "/auth/set-password?token=x", "/nope"]) {
-    const r = await b("GET", path);
-    assert.match(csp(r), /frame-ancestors 'none'/, path);
-    assert.equal(r.headers["x-frame-options"], "DENY", path);
-  }
-  // Behind the front door every client shares one peer: a stranger's failures (forged addresses without the front door's
-  // secret count as that peer) slow the next attempt, and the owner still signs in with the right password and code.
-  const stranger = browser(url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.9", "x-aidenhq-edge": "forged" });
-  for (let i = 0; i < 5; i++) assert.equal((await stranger("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401);
-  const started = Date.now();
-  await signIn(b);
-  assert.ok(Date.now() - started >= 900, "a failing peer slows the next attempt");
-  assert.equal((await b("GET", "/approvals")).status, 200);
-  // An address the front door names (with its secret) is locked after five failures; the owner, from another, isn't.
-  const named = (ip) => browser(url, HOST, false, { "x-aidenhq-client-ip": ip, "x-aidenhq-edge": "edge-secret" });
-  const attacker = named("198.51.100.7");
-  for (let i = 0; i < 5; i++) assert.equal((await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401);
-  const locked = await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
-  assert.equal(locked.status, 401);
-  assert.match(locked.html, /too many failed sign-ins/);
-  await signIn(named("198.51.100.8"), 1);
-
-  // Signed in (on a fresh copy: TOTP steps above are spent), the pages a session reaches refuse frames too.
-  const fresh = boardData();
-  moveAccounts(fresh);
-  const other = await adminOn(t, fresh);
-  const o = browser(other.url);
-  await signIn(o, 1);
-  for (const path of ["/approvals", "/approvals/A0000aaaa", "/auth/password"]) {
-    const r = await o("GET", path);
-    assert.equal(r.status, 200, path);
-    assert.match(csp(r), /frame-ancestors 'none'/, path);
-  }
-  const frame = await o("GET", "/owner/message");
-  assert.match(csp(frame), /frame-ancestors https:\/\/board\.example\.com/);
-  assert.equal(frame.headers["x-frame-options"], undefined);
-});
-
 test("an invited admin's first sign-in through the front door: claim the link, sign in, enrol an authenticator, decide", async (t) => {
   const dir = boardData();
   moveAccounts(dir);
@@ -221,4 +178,56 @@ test("an invited admin's first sign-in through the front door: claim the link, s
   const done = await b("POST", "/auth/enrol", { code: totp(key), csrf: ask.csrf });
   assert.equal(done.status, 303, done.html);
   assert.equal((await b("GET", "/approvals")).status, 200);
+});
+
+// Last: its burst spends Better Auth's per-address limit for the shared loopback peer (module-wide memory) for a minute.
+test("every kernel page refuses a frame except the owner message frame (A7); a stranger's failures never lock the owner out", async (t) => {
+  const dir = boardData();
+  moveAccounts(dir);
+  const { url } = await adminOn(t, dir);
+  const b = browser(url);
+  for (const path of ["/auth/sign-in", "/auth/set-password?token=x", "/nope"]) {
+    const r = await b("GET", path);
+    assert.match(csp(r), /frame-ancestors 'none'/, path);
+    assert.equal(r.headers["x-frame-options"], "DENY", path);
+  }
+  // Behind the front door every client shares one peer (forged addresses without the front door's secret count as it). 50
+  // bad attempts at once get a handful of password checks; the rest are refused at once (429, Retry-After), and the owner,
+  // from an address the front door names, signs in meanwhile.
+  const stranger = browser(url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.9", "x-aidenhq-edge": "forged" });
+  const named = (ip) => browser(url, HOST, false, { "x-aidenhq-client-ip": ip, "x-aidenhq-edge": "edge-secret" });
+  const [burst] = await Promise.all([
+    Promise.all(Array.from({ length: 50 }, (_, i) => stranger("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` }))),
+    signIn(named("198.51.100.8")),
+  ]);
+  const checked = burst.filter((r) => r.status === 401).length;
+  assert.ok(checked >= 1 && checked <= 3, `${checked} password checks`);
+  assert.equal(burst.filter((r) => r.status === 429).length, 50 - checked);
+  assert.ok(Number(burst.find((r) => r.status === 429 && r.headers["retry-after"]).headers["retry-after"]) >= 1);
+  // Nothing said about the account (Better Auth's own per-address limit answers the same way past 20 a minute).
+  for (const r of burst.filter((x) => x.status === 429)) assert.match(r.html, /Invalid email or password|Too many requests/);
+  // The shared peer stays held for that email, even with the right password.
+  assert.equal((await b("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw })).status, 429);
+  // An address the front door names (with its secret) is locked after five failures; the owner, from another, isn't.
+  const attacker = named("198.51.100.7");
+  for (let i = 0; i < 5; i++) assert.equal((await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401);
+  const locked = await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
+  assert.equal(locked.status, 401);
+  assert.match(locked.html, /too many failed sign-ins/);
+  await signIn(named("198.51.100.6"), 1);
+
+  // Signed in (on a fresh copy: TOTP steps above are spent), the pages a session reaches refuse frames too.
+  const fresh = boardData();
+  moveAccounts(fresh);
+  const other = await adminOn(t, fresh);
+  const o = browser(other.url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.5", "x-aidenhq-edge": "edge-secret" });
+  await signIn(o, 1);
+  for (const path of ["/approvals", "/approvals/A0000aaaa", "/auth/password"]) {
+    const r = await o("GET", path);
+    assert.equal(r.status, 200, path);
+    assert.match(csp(r), /frame-ancestors 'none'/, path);
+  }
+  const frame = await o("GET", "/owner/message");
+  assert.match(csp(frame), /frame-ancestors https:\/\/board\.example\.com/);
+  assert.equal(frame.headers["x-frame-options"], undefined);
 });

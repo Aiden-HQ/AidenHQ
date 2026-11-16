@@ -531,8 +531,8 @@ kbinds="$(ss -Hltnp 2>/dev/null | awk -v k="pid=${kpid:-none}," 'index($0, k) {p
 [ "$(echo $kbinds)" = "10.231.0.1:3130 127.0.0.1:3120" ] && pass "kernel: the proxy listens on 10.231.0.1:3130 and the admin pages on 127.0.0.1:3120 only" || fail "kernel: listens on ${kbinds:-nothing} (want 10.231.0.1:3130 and 127.0.0.1:3120 only, plus 8201)"
 # The admin listener (lean-core 3a): every page refuses a frame, a form from another origin and a decision without a session;
 # an unknown Host is refused. A client-named address without the front door's secret is ignored (and X-Forwarded-For,
-# CF-Connecting-IP always): failures "from five addresses" are the shared peer's, which slow the next attempt and never
-# lock (so a stranger can't lock the owner out); a believed address would have been locked instead.
+# CF-Connecting-IP always): attempts "from six addresses" are the shared peer's, which gets one password check and then waits
+# its turn (429 at once, never a lock, so a stranger can't lock the owner out); believed addresses would each be checked.
 ka="http://127.0.0.1:3120"
 curl -s -m 10 -D - -o /dev/null -H 'Host: 127.0.0.1:3120' "$ka/auth/sign-in" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" \
   && pass "kernel admin: pages refuse frames (frame-ancestors 'none')" || fail "kernel admin: /auth/sign-in can be framed"
@@ -544,12 +544,10 @@ code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: evil.example:3120
 [ "$code" = "421" ] && pass "kernel admin: refuses unknown Host headers" || fail "kernel admin: answered an unknown Host ($code)"
 probe="verify-$RANDOM$RANDOM@example.invalid"
 for i in 1 2 3 4 5 6; do
-  [ "$i" = 6 ] && t0="$(date +%s%N)"
-  out="$(curl -s -m 20 -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3120' -H "x-aidenhq-client-ip: 198.51.100.$i" -H 'x-aidenhq-edge: forged' \
+  code="$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3120' -H "x-aidenhq-client-ip: 198.51.100.$i" -H 'x-aidenhq-edge: forged' \
     -H "x-forwarded-for: 198.51.101.$i" -H "cf-connecting-ip: 198.51.102.$i" "$ka/auth/sign-in" --data-urlencode "email=$probe" --data-urlencode "password=not-the-password-$i")"
 done
-slow=$(( ($(date +%s%N) - t0) / 1000000 ))
-! echo "$out" | grep -q "too many failed sign-ins" && [ "$slow" -ge 900 ] && pass "kernel admin: forged client addresses count as the shared peer's, which is slowed, never locked (${slow}ms)" || fail "kernel admin: a forged client address was believed, or the shared peer was locked (${slow}ms)"
+[ "$code" = 429 ] && pass "kernel admin: forged client addresses count as the shared peer's, which waits its turn (429), never locked" || fail "kernel admin: a forged client address was believed (the sixth attempt answered $code, want 429)"
 first_conn="$(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync("config/kernel/connections.json","utf8")))[0] ?? "")' 2>/dev/null)"
 [ -n "$first_conn" ] && [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "http://10.231.0.1:3130/c/$first_conn/mcp" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')" = 401 ] \
   && pass "kernel: /c/ without a credential is refused (401)" || fail "kernel: /c/$first_conn answers without a credential"
