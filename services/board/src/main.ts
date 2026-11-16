@@ -5,6 +5,7 @@ import { webhookWake, type Manifest } from "./app-access.js";
 import { appsApi } from "./fleet.js";
 import { createSigninServer } from "./signin.js";
 import { queueOwnerLine, startDetector } from "./fleet-ops.js";
+import { startCertWatch } from "./front-door.js";
 import { backfillEscalatedDelegators, settleClosedGrades } from "./grades.js";
 import { loadConfig } from "./config.js";
 import { pullUsage } from "./costs.js";
@@ -82,6 +83,8 @@ const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...
   manifest: (app) => appsApi<Manifest>(`/internal/apps/${encodeURIComponent(app)}/manifest`, undefined, { auth: true }),
   wake: webhookWake(process.env.APP_REQUEST_WEBHOOK_URL_FILE ?? "/run/secrets/app_request_webhook_url", process.env.APP_REQUEST_WEBHOOK_SECRET_FILE ?? "/run/secrets/app_request_webhook_secret", log),
   log });
+// Exposure public: the owner hears when the front door's certificate nears expiry (Caddy renews it; front-door.ts).
+if (process.env.BOARD_FRONT_DOOR) startCertWatch(process.env.BOARD_FRONT_DOOR, (line) => queueOwnerLine(store, line));
 // The runner's Engineer jobs, as it last reported them (shared by the listeners: it reports to the internal one).
 const activity: { runner?: RunnerReport } = {};
 // Open boards hear what agents change in their chats (watch.ts): one look at Paperclip every 2s while any board listens.

@@ -7,6 +7,7 @@ import { join, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.mjs";
+import { frontDoor } from "./front-door.mjs";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets } from "../kernel/src/loader/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "../kernel/src/loader/bindings.ts";
@@ -379,11 +380,12 @@ function put(target, key, value, kind) {
 }
 
 /**
- * compile(productDir, instanceDir, { revision }) → { paperclip, apps, compose, catalog, warnings, edge }.
+ * compile(productDir, instanceDir, { revision, publicIp }) → { paperclip, apps, compose, catalog, warnings, edge, caddyfile }.
+ * publicIp: the host's AIDENHQ_PUBLIC_IP (.env, never instance.yaml), the front door's address in exposure public.
  * productDir holds modules/<name>/module.yaml; instanceDir holds instance.yaml, agents/<key>.md additions to a module
  * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
  */
-export function compile(productDir, instanceDir, { revision } = {}) {
+export function compile(productDir, instanceDir, { revision, publicIp } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -552,6 +554,9 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     for (const [k, svc] of Object.entries(edge.compose.services)) mergeService(compose.services, k, svc);
     Object.assign(compose.secrets, edge.compose.secrets);
   }
+  // The public HTTPS front door: Caddy on 443 for the server's IP, only in exposure public (scripts/front-door.mjs).
+  const door = settings.exposure === "public" ? frontDoor(publicIp) : null;
+  if (door) for (const [k, svc] of Object.entries(door.compose.services)) mergeService(compose.services, k, svc);
   // A module service's names (its key, and the name it declared, which the kernel resolves by label) are its alone: never
   // another module's or a root service's, or a URL could reach the wrong module with this one's key.
   const claimed = {};
@@ -563,7 +568,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   }
   for (const k of Object.keys(compose.services)) if (!serviceModule[k] && claimed[k]) fail(`module ${claimed[k]}: the service name ${k} is a root service's`);
   // One host port, one owner: the product's compose, the modules', the gate, the board's auth listener and the apps.
-  checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "board"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
+  checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "board"], ...(door ? [[443, "caddy"]] : []), ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
 
   instanceAgents(instanceDir, settings, paperclip, routineTitles);
   // Paperclip's crew adapter args come from the engine module that contributes them.
@@ -777,7 +782,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, exposure: settings.exposure, caddyfile: door?.caddyfile, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 const CARD_FIELDS = ["sentence", "changes", "reads", "cost", "details"];

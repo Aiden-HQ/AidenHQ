@@ -345,6 +345,46 @@ fi
 if [ "$fw" != public ]; then
   wild="$(ss -Hltn 'sport = :443' 2>/dev/null | awk '{print $4}' | grep -E '^(0\.0\.0\.0|\*|\[::\]):443$' | tr '\n' ' ')"
   [ -z "$wild" ] && pass "nothing listens on a wildcard 443 (exposure $label)" || fail "a wildcard listener on 443 outside public mode: $wild"
+else
+  # The public front door (scripts/front-door.mjs): Caddy alone on 443, hardened, with a publicly trusted certificate for
+  # AIDENHQ_PUBLIC_IP, and it replaces whatever client address a request names. Nothing else listens publicly.
+  ip="${AIDENHQ_PUBLIC_IP:-}"
+  cf=config/Caddyfile
+  [ "$(grep -c '^https://' "$cf" 2>/dev/null)" = 1 ] && grep -qx "https://$ip {" "$cf" && grep -qx '	admin off' "$cf" && grep -qx '		protocols h1 h2' "$cf" \
+    && grep -qx '			disable_http_challenge' "$cf" && grep -qx '	reverse_proxy 127.0.0.1:3121 {' "$cf" && ! grep -qE 'internal|cert_issuer|on_demand|header_up -X-(AidenHQ|Forwarded-(Proto|For|Host))' "$cf" \
+    && pass "Caddyfile: one site, the board only, ACME on 443 only, admin off, no HTTP/3" || fail "config/Caddyfile is not the compiled front door (node scripts/compile.mjs)"
+  caddy="$(docker ps -q --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=caddy | head -1)"
+  if [ -z "$caddy" ]; then fail "exposure public: the caddy service isn't running"
+  else
+    shape="$(docker inspect "$caddy" --format '{{.HostConfig.NetworkMode}} {{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.HostConfig.CapAdd}} {{.HostConfig.SecurityOpt}}')"
+    echo "$shape" | grep -qE '^host [1-9][0-9]*:[0-9]+ true \[ALL\] \[NET_BIND_SERVICE\] \[no-new-privileges:true\]$' \
+      && pass "caddy: host network, non-root, read-only, only NET_BIND_SERVICE" || fail "caddy's container is not the hardened shape: $shape"
+  fi
+  if sudo -n true 2>/dev/null || [ "$(id -u)" = 0 ]; then
+    sst() { if [ "$(id -u)" = 0 ]; then ss "$@"; else sudo -n ss "$@"; fi; }
+    who="$(sst -Hltnp 'sport = :443' | grep -oE 'users:\(\("[^"]+"' | sort -u | tr '\n' ' ')"
+    [ "$who" = 'users:(("caddy" ' ] && pass "443 is served by caddy only" || fail "443 listeners: ${who:-none} (want caddy only)"
+  else echo "  skip  443's process: reading it needs root (run as root, or with passwordless sudo)"; fi
+  [ -z "$(ss -Hlun 'sport = :443' 2>/dev/null)" ] && pass "no UDP listener on 443 (HTTP/3 off)" || fail "something listens on UDP 443"
+  others="$(ss -Hltn 2>/dev/null | awk '{print $4}' | grep -E "^(0\.0\.0\.0|\*|\[::\]|${ip:-none}|\[${ip:-none}\]):[0-9]+$" | grep -vE ':(22|443)$' | sort -u | tr '\n' ' ')"
+  [ -z "$others" ] && pass "nothing but SSH and Caddy listens publicly" || fail "public listeners besides 22 and 443: $others"
+  if [ -z "$ip" ]; then fail "exposure public: AIDENHQ_PUBLIC_IP is not set in $env_file"
+  else
+    # Verified against the system's trust store (never -k): a self-signed or expired certificate fails here.
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://$ip/api/board" 2>&1)"
+    [ "$code" = 401 ] && pass "https://$ip: publicly trusted certificate; reads need a session" || fail "https://$ip: $code (want a trusted certificate and 401)"
+    echo | openssl s_client -connect "$ip:443" 2>/dev/null | openssl x509 -noout -checkend 86400 >/dev/null 2>&1 \
+      && pass "https://$ip: certificate valid for more than 24 hours" || fail "https://$ip: certificate expires within 24 hours, or none is served"
+    # A client-named address is replaced by Caddy: five failures "from five addresses" through 443 are one address (this
+    # host's own), so the sixth is refused. A made-up email per run.
+    probe="verify-$RANDOM$RANDOM@example.invalid"
+    for i in 1 2 3 4 5 6; do
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H "Origin: https://$ip" -H 'content-type: application/json' -H 'x-aidenhq-board: 1' \
+        -H "x-aidenhq-client-ip: 198.51.100.$i" -H "x-aidenhq-edge: forged-$i" -H "x-forwarded-for: 198.51.101.$i" \
+        "https://$ip/api/auth/sign-in/email" -d "{\"email\":\"$probe\",\"password\":\"not-the-password-$i\"}")"
+    done
+    [ "$code" = "403" ] && pass "caddy: client-named addresses and a forged edge secret never reach the board" || fail "caddy: a client-named address got through (sixth failure answered $code, want 403)"
+  fi
 fi
 
 echo "Tailnet"

@@ -266,9 +266,30 @@ test("destructive tools: `write` never grants them, a list must name them; compi
 });
 test("exposure: unset is tailscale (installs before the setting), one mode reaches the compiled output, a list or a bad value fails", () => {
   assert.equal(compile(product, inst(["core"], owner)).exposure, "tailscale");
-  assert.equal(compile(product, inst(["core"], { ...owner, exposure: "public" })).exposure, "public");
+  assert.equal(compile(product, inst(["core"], { ...owner, exposure: "public" }), { publicIp: "203.0.113.7" }).exposure, "public");
   assert.throws(() => compile(product, inst(["core"], { ...owner, exposure: "open" })), /exposure/);
   assert.throws(() => compile(product, inst(["core"], { ...owner, exposure: ["public", "local"] })), /exposure/);
+});
+
+test("exposure public: a hardened caddy on 443 for the host's public IP, ACME only with no port 80, and the board behind it", () => {
+  const pub = (publicIp) => compile(product, inst(["core"], { ...owner, exposure: "public" }), { publicIp });
+  const out = pub("203.0.113.7");
+  const { caddy, board } = out.compose.services;
+  assert.match(caddy.build, /services\/caddy$/);
+  assert.deepEqual([caddy.network_mode, caddy.read_only, caddy.cap_drop, caddy.cap_add, caddy.secrets], ["host", true, ["ALL"], ["NET_BIND_SERVICE"], ["edge_board_secret"]]);
+  assert.ok(!JSON.stringify(caddy).includes("EDGE_BOARD_SECRET"), "the edge secret is a file, never compose environment");
+  assert.deepEqual(board.environment, { BOARD_OWNER_EMAIL: "o@x", BOARD_LAN_HOSTS: "203.0.113.7", BOARD_LAN_URL: "https://203.0.113.7", BOARD_LINK_TTL_HOURS: "24", BOARD_FRONT_DOOR: "203.0.113.7" });
+  const cf = out.caddyfile;
+  for (const want of ["admin off", "auto_https disable_redirects", "protocols h1 h2", "https://203.0.113.7 {", "issuer acme {", "profile shortlived", "disable_http_challenge", "reverse_proxy 127.0.0.1:3121 {",
+    "header_up X-AidenHQ-Client-IP {remote_host}", "header_up X-AidenHQ-Edge {file./run/secrets/edge_board_secret}", "header_up X-Forwarded-Proto https"]) assert.ok(cf.includes(want), want);
+  // Never Caddy's internal CA; never a delete of a header it sets (a header_up delete runs after the set and removes it).
+  assert.doesNotMatch(cf, /internal|cert_issuer|h3|:80\b/);
+  assert.doesNotMatch(cf, /header_up -(X-AidenHQ|X-Forwarded-(Proto|For|Host)\b|X-Forwarded-\*)/);
+  assert.equal(caddy.labels["aidenhq.caddyfile-sha256"].length, 64);
+  // No front door in other modes; public needs a public IPv4 from the host's .env.
+  assert.equal(compile(product, inst(["core"], owner)).compose.services.caddy, undefined);
+  assert.throws(() => pub(undefined), /AIDENHQ_PUBLIC_IP/);
+  for (const bad of ["192.168.1.5", "10.0.0.2", "100.64.1.1", "127.0.0.1", "203.0.113.7\n}", "1.2.3"]) assert.throws(() => pub(bad), /AIDENHQ_PUBLIC_IP/, bad);
 });
 
 test("routine autonomy: full by default, tier0 for a webhook routine unless it says otherwise; an override must be a known value", () => {

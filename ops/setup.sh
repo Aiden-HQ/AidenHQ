@@ -177,7 +177,8 @@ if [ -n "$RESET" ]; then
   printf 'x-operator-key: %s\nauthorization: Bearer %s\n' "$(read_secret board_operator_key)" "$(read_secret board_internal_token)" \
     | curl -fsS -X POST http://127.0.0.1:3122/internal/accounts/reset -H 'host: 127.0.0.1:3122' -H 'content-type: application/json' \
       -H @- --data "{\"email\":$(json "$RESET")}" >/dev/null || die "the board refused the reset (is $RESET an account?)"
-  echo "Reset $RESET: its sessions ended. A new one-time link (72 hours) goes to the owner's Telegram within a minute."
+  ttl=72; [ "$(cat "$REPO/config/exposure" 2>/dev/null)" != public ] || ttl=24
+  echo "Reset $RESET: its sessions ended. A new one-time link ($ttl hours) goes to the owner's Telegram within a minute."
   exit 0
 fi
 
@@ -254,6 +255,14 @@ set_env VAULT_FOLDERS ""
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
 set_env BOARD_LAN_HOSTS "${BOARD_HOST:-127.0.0.1:3121,localhost:3121}"
 set_env BOARD_LAN_URL "$BOARD_URL"
+# Exposure public: the front door's address (Caddy's certificate, the board's URL; scripts/front-door.mjs), detected once
+# from the default route. An AIDENHQ_PUBLIC_IP already in .env is the owner's and wins.
+if { [ "$EXPOSURE" = public ] || grep -Eq '^[[:space:]]+exposure:[[:space:]]*public[[:space:]]*$' "$INST/instance.yaml" 2>/dev/null; } \
+  && ! grep -q '^AIDENHQ_PUBLIC_IP=.' "$ENVF" 2>/dev/null; then
+  if [ "$DRY" = 1 ]; then echo "  + .env: AIDENHQ_PUBLIC_IP=<the default route's public IPv4>"
+  else ip="$(node "$REPO/scripts/front-door.mjs" detect)" || die "exposure public needs the server's public IPv4 (above): set AIDENHQ_PUBLIC_IP in $ENVF"
+    set_env AIDENHQ_PUBLIC_IP "$ip"; fi
+fi
 # Apps get their own tailnet node and name (compose.yaml apps-edge), never the board's: browsers send a name's cookies
 # to every port of it. Without Tailscale there is no apps node yet.
 if [ -n "$BOARD_HOST" ]; then
@@ -428,10 +437,33 @@ echo
 if [ "$HAS_KEY" = 0 ]; then
   echo "No model key yet: put OPENROUTER_KEY=<key> in a root-only file and run: sudo OWNER_EMAIL=$OWNER_EMAIL ops/setup.sh --unattended --config <that file>$( [ "$NO_TS" = 1 ] && echo ' --no-tailscale')"
 fi
+tunnel="ssh -N -L 3121:127.0.0.1:3121 $U@$(hostname -f 2>/dev/null || hostname)"
+# Exposure public: a certificate Let's Encrypt issued over 443 is the proof the door works. Without one in 3 minutes, say so
+# loudly, stop Caddy (with no certificate it serves nothing) and point at the tunnel; never claim public mode works.
+if [ "$(cat "$REPO/config/exposure" 2>/dev/null)" = public ] && [ "$DRY" = 0 ]; then
+  ip="$(sed -n 's/^AIDENHQ_PUBLIC_IP=//p' "$ENVF" | tail -1)"
+  say "Waiting up to 3 minutes for https://$ip to get its certificate (Let's Encrypt, over port 443)"
+  if node "$REPO/scripts/front-door.mjs" wait "$ip" 180; then
+    echo "Done. The board is at https://$ip. Send $OWNER_NAME this link (one use, 24 hours; a new one: --reset $OWNER_EMAIL):"
+    owner_link
+    exit 0
+  fi
+  as_user bash -c "cd '$REPO' && docker compose stop caddy" >/dev/null 2>&1 || true
+  bar="$(printf '!%.0s' $(seq 100))"
+  echo "$bar"
+  echo "PUBLIC MODE IS NOT WORKING: https://$ip got no publicly trusted certificate within 3 minutes, so Caddy is stopped"
+  echo "and nothing is served on 443. Usually the server is behind NAT, a cloud firewall or security group blocks inbound"
+  echo "TCP 443, or $ip isn't this server's public address (set AIDENHQ_PUBLIC_IP in $ENVF). Details: docker compose logs caddy."
+  echo "Fix 443 and run setup again; or set 'exposure: local' under settings in $INST/instance.yaml, run setup again, and"
+  echo "reach the board through an SSH tunnel from $OWNER_NAME's laptop:"
+  echo "  $tunnel"
+  echo "$bar"
+  [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
+  exit 1
+fi
 if [ -n "$BOARD_HOST" ]; then
   echo "Done. Send $OWNER_NAME this link (their laptop must be on the tailnet; one use; a new one: --reset $OWNER_EMAIL):"
 else
-  tunnel="ssh -N -L 3121:127.0.0.1:3121 $U@$(hostname -f 2>/dev/null || hostname)"
   echo "Done. The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first:"
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"

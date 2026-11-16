@@ -11,6 +11,7 @@
 //   config/kernel/connections.json → the kernel's tool proxy: each connection's endpoint, service key secret, module and tool tags
 //   config/kernel/writes.json  → the kernel's write kinds (modules' `writes:`): floor, card, args schema, executor, routed tools
 //   config/exposure           → ops/vm/setup.sh (root) and verify-security: settings.exposure, one word
+//   config/Caddyfile          → the public front door (exposure public only, scripts/front-door.mjs)
 //   config/module-data.json    → the apply (ops/lib/generations.sh): each data module's data_version and services digest
 //   config/gate.json, config/cloudflared.yml → the gate and the tunnel (shared access; only with settings.edge, scripts/edge.mjs)
 // Staging (`--stage`, or AIDENHQ_COMPILE_STAGE=1; ops/apply-config-work.sh validates a generation with it before anything
@@ -49,7 +50,7 @@ let revision;
 try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
 
 let out, computers;
-try { out = compile(repo, instanceDir, { revision }); computers = computersConfig(out.paperclip, repo); } catch (e) { die(e.message); }
+try { out = compile(repo, instanceDir, { revision, publicIp: env("AIDENHQ_PUBLIC_IP") }); computers = computersConfig(out.paperclip, repo); } catch (e) { die(e.message); }
 // The pre-launch agent check (scripts/agent-check.mjs): before anything is written, so a failing agent never launches.
 if (checkOn(instanceDir) && report("agent-check", staticCheck(out.paperclip))) die("the agent check failed (above); fix the agent, or set settings.agent_check: off");
 
@@ -96,6 +97,10 @@ writeFileSync(join(cfgOut, "kernel/connections.json"), JSON.stringify(out.connec
 writeFileSync(join(cfgOut, "kernel/writes.json"), JSON.stringify(out.writes, null, 2) + "\n");
 writeFileSync(join(cfgOut, "engines.json"), JSON.stringify(out.engines, null, 2) + "\n");
 writeFileSync(join(cfgOut, "exposure"), `${out.exposure}\n`);
+// The front door's Caddyfile (exposure public) and its certificate store, the owner's and 0700 (Docker would make a root one).
+if (out.caddyfile) writeFileSync(join(cfgOut, "Caddyfile"), out.caddyfile);
+else rmSync(join(cfgOut, "Caddyfile"), { force: true });
+if (out.caddyfile && !stage) mkdirSync(join(dataDir, "caddy"), { recursive: true, mode: 0o700 });
 writeFileSync(join(cfgOut, "module-data.json"), JSON.stringify(out.dataModules, null, 2) + "\n");
 if (out.edge) {
   if (out.edge.cloudflared) try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die(e.message); }

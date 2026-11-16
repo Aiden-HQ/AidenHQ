@@ -137,7 +137,7 @@ export function EnrolScreen({ session, onDone }: { session: Session; onDone: () 
   );
 }
 
-/** A setup, invite or reset link (#/set-password/<token>): one use, 72 hours. */
+/** A setup, invite or reset link (#/set-password/<token>): one use, for the board's link lifetime (BOARD_LINK_TTL_HOURS). */
 export function SetPasswordScreen({ token, onDone }: { token: string; onDone: () => void }) {
   const [password, setPassword] = useState("");
   const [again, setAgain] = useState("");
@@ -191,12 +191,14 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
   const [name, setName] = useState("");
   const [role, setRole] = useState<"admin" | "user">("user");
   const [appAdmins, setAppAdmins] = useState<AppAdmins[]>([]);
+  const [ttl, setTtl] = useState(72);
   const [adminEmail, setAdminEmail] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     try {
       const [a, s, apps] = await Promise.all([accountsApi.list(), accountsApi.sessions(), accountsApi.appAdmins()]);
       setAccounts(a.accounts);
+      setTtl(a.linkTtlHours);
       setAppAdmins(apps.apps);
       setSessions(s.sessions);
       setError("");
@@ -236,7 +238,7 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
 
       <section className="accounts-section">
         <h2>Add someone</h2>
-        <p className="muted small">Admins sign in to this board (with an authenticator). Users only open the shared apps they aren't blocked from (each app's admins set roles on its Access page, linked from My apps). You get a one-time link (72 hours) to pass on yourself; nothing is emailed.</p>
+        <p className="muted small">Admins sign in to this board (with an authenticator). Users only open the shared apps they aren't blocked from (each app's admins set roles on its Access page, linked from My apps). You get a one-time link ({ttl} hours) to pass on yourself; nothing is emailed.</p>
         <form className="invite-form" onSubmit={(e) => void invite.submit(e)}>
           <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required aria-label="Email" />
           <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} aria-label="Name" />
@@ -257,7 +259,7 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
             {link.url ? (
               <>
                 <span>
-                  Link for <b>{link.email}</b> (works once, for 72 hours; any older link stops working):
+                  Link for <b>{link.email}</b> (works once, for {ttl} hours; any older link stops working):
                 </span>
                 <code>{link.url}</code>
                 <button className="btn" onClick={() => copy(link.url!)}>

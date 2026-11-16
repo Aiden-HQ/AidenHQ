@@ -261,7 +261,8 @@ services:
       - "127.0.0.1:3122:3122"
       # The gate's sign-in listener: loopback only, the gate is on the host.
       - "127.0.0.1:3129:3129"
-    # backplane reaches Paperclip; egress only carries the published port (the board makes no outbound calls).
+    # backplane reaches Paperclip; egress carries the published ports and, in exposure public, the board's hourly check of
+    # its own certificate at https://<public ip> (front-door.ts).
     networks:
       - backplane
       - egress

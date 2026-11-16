@@ -93,7 +93,7 @@ export const accountsApi = {
   refresh: () => auth("GET", "/get-session"),
   sessions: () => call<{ sessions: AuthSession[] }>("GET", "/api/accounts/sessions"),
   revokeSession: (id: string) => call("POST", `/api/accounts/sessions/${id}/revoke`, {}),
-  list: () => call<{ accounts: Account[]; me: string }>("GET", "/api/accounts"),
+  list: () => call<{ accounts: Account[]; me: string; linkTtlHours: number }>("GET", "/api/accounts"),
   /** Each shared app, its admins (AidenHQ admins are admins of every app) and default; name or remove an app admin. */
   appAdmins: () => call<{ apps: AppAdmins[] }>("GET", "/api/app-admins"),
   setAppAdmin: (app: string, email: string, admin: boolean) => call("POST", `/api/app-admins/${encodeURIComponent(app)}`, { email, admin }),

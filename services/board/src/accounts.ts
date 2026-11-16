@@ -597,6 +597,8 @@ export async function createAccounts(o: AccountsOptions) {
   const outbox: { email: string; url: string; at: number }[] = [];
 
   const accounts = {
+    /** Setup, invite and reset links' lifetime (BOARD_LINK_TTL_HOURS; 72 by default, 24 in exposure public). */
+    linkTtlHours: LINK_TTL_MS / 3_600_000,
     auth,
 
     /** The signed-in account behind a request's cookie, or null (no, expired or revoked session; disabled account). */

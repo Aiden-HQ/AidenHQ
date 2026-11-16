@@ -23,7 +23,7 @@ interface, input and forward) lets in. Everything else on that interface is drop
 
 | Mode | Front door | Open on the public interface |
 |---|---|---|
-| `public` | Caddy on 443 with a Let's Encrypt certificate (unit U2) | tcp 22, 443 |
+| `public` | Caddy on 443 with a Let's Encrypt certificate for the server's IP | tcp 22, 443 |
 | `tailscale` | `tailscale serve` to 127.0.0.1:3121 | tcp 22, udp 41641 |
 | `cloudflare` | cloudflared (outbound only) behind Cloudflare Access | tcp 22 |
 | `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |
@@ -39,6 +39,46 @@ interface, input and forward) lets in. Everything else on that interface is drop
 - **The check.** `scripts/verify-security.sh` compares the live table with the mode (as root, or with passwordless sudo)
   and fails on a wildcard 443 listener outside public mode.
 
+### The public front door (Caddy)
+
+In `public` mode compile adds a `caddy` service and `config/Caddyfile` (`scripts/front-door.mjs`) for the host's
+`AIDENHQ_PUBLIC_IP` (`.env`, never `instance.yaml`: agents can edit that file through an apply). Setup detects the address
+from the default route and refuses a private (RFC 1918), CGNAT, loopback or link-local one; an address already in `.env`
+is the owner's and wins.
+- **Certificate.** Let's Encrypt, for the IP itself, under the `shortlived` profile (about 160 hours; the only profile that
+  issues IP certificates). The site names its ACME issuer itself, so Caddy never falls back to its own CA: without a
+  certificate the handshake fails, and nothing self-signed is ever served. Validation is TLS-ALPN-01 on 443 only:
+  `disable_http_challenge` plus `auto_https disable_redirects` leave nothing on port 80. No ACME account email (Let's
+  Encrypt no longer sends expiry mail).
+- **Container.** The `caddy` image (`services/caddy/Dockerfile`, pinned by digest, so the image scan covers it) on the host
+  network, as the owner's uid, read-only root, every capability dropped except `NET_BIND_SERVICE`, `no-new-privileges`.
+  Its only writable place is `data/caddy` (0700, certificates and the ACME account key). The admin API is off and config
+  autosave is off; the config is read once, and a label carrying the Caddyfile's hash recreates the container when it
+  changes.
+- **Proxy.** Only the board: `https://<ip>` to its browser listener on 127.0.0.1:3121. Paperclip, Grafana and apps are
+  never published here (apps need a domain). Caddy sets `X-AidenHQ-Client-IP` to the socket's address and
+  `X-AidenHQ-Edge` to `edge_board_secret` (read from the compose secret file on each request, never compose environment),
+  and `X-Forwarded-Proto`/`-For`/`-Host` to its own values; a set replaces every client copy. It deletes
+  `Forwarded`, `X-Real-IP` and `X-Forwarded-Port`/`-Server`/`-Prefix`. It never deletes a header it also sets: in a
+  `header_up` block the delete runs after the set and would remove it.
+- **Protocols and timeouts.** HTTP/1.1 and HTTP/2; HTTP/3 is off, so UDP 443 stays closed. Request headers within 10 s,
+  bodies within 60 s, idle connections closed after 2 minutes, headers capped at 64 KB. No write timeout: the board's
+  event stream stays open.
+- **Response headers.** HSTS (`max-age=86400`; browsers ignore HSTS for IP hosts, so it matters once a domain is used),
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`; `Server` and `Via` removed.
+- **The board.** Compile sets `BOARD_LAN_HOSTS` to the IP, `BOARD_LAN_URL` to `https://<ip>` and
+  `BOARD_LINK_TTL_HOURS=24` (decision D9). Every hour the board opens a verified TLS connection to `https://<ip>` and tells
+  the owner on the channel when the certificate has under 48 hours left or can't be verified, at most every 12 hours
+  (`services/board/src/front-door.ts`).
+- **Readiness and the fallback.** Setup waits up to 3 minutes for `https://<ip>` to answer with a publicly trusted
+  certificate (`node scripts/front-door.mjs wait`). If it doesn't, setup says loudly that public mode is not working,
+  stops Caddy, prints the likely causes (NAT, a cloud firewall on 443, a wrong address) and the SSH tunnel, and exits
+  non-zero. It leaves `instance.yaml` as it is.
+- **The check.** In public mode `scripts/verify-security.sh` asserts Caddy's container shape, that 443 is Caddy's alone and
+  UDP 443 is closed, that nothing but 22 and 443 listens publicly, that `https://<ip>` presents a trusted certificate with
+  more than 24 hours left, and that six failed sign-ins through 443 naming six forged addresses (and a forged edge secret)
+  count as one address.
+
 The full design, including the switch from public to Tailscale or Cloudflare, is
 [minimal-core-install.md](minimal-core-install.md).
 
@@ -51,7 +91,7 @@ Accounts use Better Auth inside the board process, stored in its own SQLite file
   never gets the board; the account only opens shared apps.
 - **Credentials.** Passwords are argon2id with a 12-character minimum. An admin session is refused unless TOTP is
   enrolled (except on the enrolment routes). Sessions last 30 days, sliding.
-- **Invites and resets.** An admin invites an account by email and passes on a one-time link (72 hours, `BOARD_LINK_TTL_HOURS`; a new link for
+- **Invites and resets.** An admin invites an account by email and passes on a one-time link (72 hours, 24 in `public` exposure; `BOARD_LINK_TTL_HOURS`; the Accounts page shows the configured value; a new link for
   the same email kills older ones). No email is sent. Recovery is `ops/setup.sh --reset <email>`, which sends the link
   only to the owner's chat on the owner channel and ends that account's sessions. The operator key can start setup and
   trigger resets; it never creates sessions or decides approvals.

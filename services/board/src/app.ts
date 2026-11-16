@@ -2261,7 +2261,7 @@ export function createApp(opts: AppOptions): Server {
   /** Account administration on the board: any admin, and never the owner's account (accounts.ts refuses). */
   const RoleSchema = z.enum(["admin", "user"]);
   const accountRoutes: { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession) => Promise<unknown> }[] = [
-    { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => ({ accounts: await opts.accounts!.list(), me: who.account.id }) },
+    { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => ({ accounts: await opts.accounts!.list(), me: who.account.id, linkTtlHours: opts.accounts!.linkTtlHours }) },
     // Your own signed-in browsers.
     { method: "GET", path: /^\/api\/accounts\/sessions$/, handle: async (_m, _b, who) => ({ sessions: await opts.accounts!.sessionsOf(who.account.id, who.session.id) }) },
     { method: "POST", path: /^\/api\/accounts\/sessions\/([\w-]{1,64})\/revoke$/, handle: async (m, _b, who) => opts.accounts!.revokeSession(who.account.id, m[1]!) },
