@@ -6,6 +6,7 @@
 // (POST /v1/writes with the runner's key), claims them once approved and reports their outcome. kernel.raise_cap is filed
 // and run by the kernel itself (the model gateway).
 import type { Card } from "./records.ts";
+import { requestPatches } from "./tier.ts";
 import type { Kind, Schema } from "./writes.ts";
 
 const SHA: Schema = { type: "string", pattern: "^[0-9a-f]{40}$" };
@@ -59,9 +60,33 @@ export function raiseCapCard(a: { scope: string; agentId: string; subject: strin
   };
 }
 
+/** The repositories a runner kind may never treat as ordinary (main.ts reads them from the checkouts' remotes). */
+export type Repos = { product?: string; instance?: string };
+const lower = (v: unknown) => String(v ?? "").toLowerCase();
+/**
+ * What the kernel derives from a runner kind's args itself, never from the runner's plan: the floor of what it touches (the
+ * product repo, a main branch: at least the reviewer), a refusal (a push or PR to the instance repo: it changes only
+ * through kernel.apply), new module authority (the owner decides after the reviewer), the replacement target and the veto's
+ * content key ("?" when a branch or PR has no patch key: fails closed against any owner no).
+ */
+export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 | 1; refuse?: string; ownerRequired: boolean; target?: string; content: string | null } {
+  const action = kind.replace(/^(runner|kernel)\./, "");
+  const branches: { repo: string; branch: string }[] = args?.only ?? [];
+  const prRepos: string[] = (args?.prs ?? []).map((p: any) => p.repo);
+  const touched = [...branches.map((b) => b.repo), ...prRepos].map(lower);
+  if (repos.instance && (action === "push" || action === "pr") && touched.includes(lower(repos.instance))) return { floor: 1, refuse: "the instance repo changes only through apply", ownerRequired: false, content: null };
+  const floor = (repos.product && touched.includes(lower(repos.product))) || branches.some((b) => /^(main|master)$/.test(b.branch)) || args?.merge === true ? 1 : 0;
+  const target = action === "merge" && prRepos.length ? (args.prs as any[]).map((p) => lower(p.url)).sort().join(" ")
+    : (action === "push" || action === "pr") && branches.length ? branches.map((b) => `${lower(b.repo)} ${b.branch}`).sort().join(" ")
+    : action === "apply" ? `${lower(args.repo)} ${args.branch}` : action === "create_repo" ? lower(args.repo) : undefined;
+  const p = requestPatches(action, { branches, prs: args?.prs ?? [] });
+  return { floor, ownerRequired: action === "apply" && args?.ownerRequired === true, ...(target ? { target } : {}), content: p === undefined ? null : p === null ? "?" : p };
+}
+
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {
-  ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: 0, tools: [], args, runner: true } as Kind])),
-  "kernel.apply": { module: "kernel", floor: 0, tools: [], args: APPLY_ARGS, runner: true },
+  // A merge and an apply are always read by the reviewer first (floor 1); a push, a PR and a new repo by what they touch.
+  ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: k === "merge" ? 1 : 0, tools: [], args, runner: true } as Kind])),
+  "kernel.apply": { module: "kernel", floor: 1, tools: [], args: APPLY_ARGS, runner: true },
   "kernel.raise_cap": { module: "kernel", floor: 2, tools: [], args: RAISE_ARGS },
 };

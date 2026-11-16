@@ -12,14 +12,14 @@
 //   POST /v1/writes/:id/outcome (the kind's executor module, or the runner for its kinds) the outcome of an execute
 //   GET  /v1/writes            (the board's or the runner's key) records by state or task
 //   POST /v1/writes/:id/claim  (the runner's key) an approved record of its kinds, claimed once
-//   POST /v1/writes/:id/review (the runner's key) a record's review: its tier input and what the reviewer reads (writes.ts)
+//   POST /v1/writes/:id/review (the runner's reviewer key) a record's review: its tier input and what the reviewer reads (writes.ts)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop}, GET /v1/channel/notices  (a speaks-as-owner
 //                              channel's token) cards with decision tokens, a token spent, the owner's words, notices (channels.ts)
 //   POST /v1/channel/outbox, GET /v1/channel/outbox  (a channel) a message for the owner handed to another channel; drained by it
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
 //   POST /v1/brake/notify      (a channel) may an agent message the owner about a task again (brake.ts)
 //   POST /v1/wake              (a module with role kernel.wake) a labelled wake notice on a task, which wakes its agent
-//   POST /v1/reviews           (the runner's key) a check before filing: one review by the bound reviewer module → its verdict
+//   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
@@ -51,7 +51,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
   { method: "POST", path: "/v1/writes/:id/outcome", auth: "module|runner" },
   { method: "POST", path: "/v1/writes/:id/claim", auth: "runner" },
-  { method: "POST", path: "/v1/writes/:id/review", auth: "runner" },
+  { method: "POST", path: "/v1/writes/:id/review", auth: "reviewer-key" },
   { method: "GET", path: "/v1/channel/cards", auth: "module" },
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
   { method: "POST", path: "/v1/channel/owner-message", auth: "module" },
@@ -62,7 +62,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/cp/read/*", auth: "module" },
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
   { method: "POST", path: "/v1/wake", auth: "module" },
-  { method: "POST", path: "/v1/reviews", auth: "runner" },
+  { method: "POST", path: "/v1/reviews", auth: "reviewer-key" },
   { method: "POST", path: "/v1/reviews/:review", auth: "review-token" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
@@ -78,11 +78,12 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
-  /** The reviewer slot, and the runner's key (its kinds, their reviews and its checks; the secret reviewer_key). */
-  reviews?: Reviews; runnerKey?: () => string;
+  /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads: runner_writes_key) and the one it asks
+   * reviews with (reviewer_key), each its own secret. */
+  reviews?: Reviews; runnerKey?: () => string; reviewerKey?: () => string;
   /** 2f: channel tokens and owner messages, the notify brake, and the control plane as the owner (reads, wake notices). */
   channels?: Channels; brake?: Brake; owner?: Api; modules?: () => ModulesFile;
 }) {
@@ -98,6 +99,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   const isBoard = (req: IncomingMessage) => keyIs(req, boardKey());
   const isRunner = (req: IncomingMessage) => keyIs(req, runnerKey());
   const runner = (req: IncomingMessage) => { if (!isRunner(req)) throw fail(401, "unauthorized", "the runner's key is required"); };
+  const reviewer = (req: IncomingMessage) => { if (!keyIs(req, reviewerKey())) throw fail(401, "unauthorized", "the runner's reviewer key is required"); };
   const record = (id: string) => records?.get(id) ?? (() => { throw fail(404, "not_found", `no record ${id}`); })();
   const send = (res: ServerResponse, status: number, body: unknown): void => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   const bearer = (req: IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
@@ -165,7 +167,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         if (!reviews) throw fail(503, "unavailable", "reviews are off");
         // A review request carries the whole diff: one past the reviewer's limit is still sent, so its verdict can say how large.
         if (hit.path === "/v1/reviews") {
-          runner(req);
+          reviewer(req);
           const b = await json(req, 64_000_000);
           if (!b.request || typeof b.request !== "object") throw fail(400, "bad_request", "send {request}");
           return send(res, 200, await reviews.request(b.request));
@@ -224,7 +226,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             return send(res, 200, r);
           }
           case "POST /v1/writes/:id/review": {
-            runner(req);
+            reviewer(req);
             const b = await json(req, 64_000_000);
             if (!b.input || typeof b.input !== "object" || typeof b.input.tier !== "number") throw fail(400, "bad_request", "send {input: {tier, …}, request}");
             return send(res, 200, await writes.review(id, { input: b.input, request: b.request && typeof b.request === "object" ? b.request : {} }));

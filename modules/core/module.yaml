@@ -353,9 +353,12 @@ generated_secrets:
   - edge_board_secret
   # The board's key to the launcher's /progress only (the live view); never the plugin's full control key.
   - computer_progress_token
-  # Tiered approvals: the runner's AI reviewer posts Tier 1 verdicts with this (board + runner only). The owner's Claude
+  # The runner asks the kernel for reviews with this (a record's review, and its check before filing). The owner's Claude
   # watcher decides through the channel-operator module (a decision token per card, stamped `watcher`).
   - reviewer_key
+  # The runner's key to the kernel for its own kinds (lean-core 3b): filing its git and apply records, claiming them and
+  # reporting their outcome. Held by the runner and read by the kernel only; never mounted into a container.
+  - runner_writes_key
   # ops/setup.sh's key to the board: the owner's setup link, welcome chat and account resets (3122), nothing
   # else; every other board route needs a signed-in admin (Engineer jobs share the host's loopback).
   - board_operator_key

@@ -14,6 +14,7 @@ import type { Connection, Identity } from "./identity.ts";
 import type { Resolver } from "./net.ts";
 import { canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
+import { runnerFacts, type Repos } from "./kinds.ts";
 import { REVIEW_TRIES, afterReview, codeVerdict, computeTier, failedVerdict, heldInput, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
@@ -25,11 +26,12 @@ export type Kind = { module: string; floor: Tier; panel?: boolean; tools: string
 type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; card?: { [k: string]: string }; satisfied?: { evidence: string } };
 /**
  * The runner's plan for its own kind (it is that kind's planner until 3d): the tier its classifier gave (caps applied),
- * whether and how the record is review-first, the card text, the replacement target and the veto content key.
+ * whether and how the record is review-first, and the card text. A proposal only: the kernel raises it by what it derives
+ * itself (kinds.ts runnerFacts, the autonomy setting, the owner's veto in its records) and never lowers anything.
  */
 export type RunnerPlan = {
   tier: Tier; merit?: Tier; reviewFirst?: ReviewFirst | null; panel?: boolean; reason?: string; rule?: string;
-  card: Partial<Card>; target?: string; content?: string | null; targets?: { [k: string]: unknown };
+  card: Partial<Card>; targets?: { [k: string]: unknown };
 };
 export const CONN_TOOL = "conn.tool";
 const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
@@ -75,11 +77,13 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
-export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", onTask, replay, native = {}, log = () => {} }: {
+export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), onTask, replay, native = {}, log = () => {} }: {
   records: Records; registry: () => { [kind: string]: Kind }; connections: () => { [c: string]: Connection }; secret: (n: string) => string; resolver: Resolver;
   /** The bound reviewer module (reviews.ts): every record's review goes there. */
   reviews?: Reviews;
   autonomy?: () => Autonomy;
+  /** The product and instance repositories (runner kinds' floors and refusals). */
+  repos?: () => Repos;
   /** The task a record is on: still open (and its parent), and a notice on it (fixed text; the module's words only fenced). */
   onTask: { open(task: string): Promise<boolean>; notify(task: string, text: string): Promise<void>; parent?(task: string): Promise<string | undefined> };
   /** Executes an approved conn.tool record: the stored call, through the proxy, as its requester. */
@@ -154,32 +158,39 @@ export function createWrites({ records, registry, connections, secret, resolver,
   }
 
   /**
-   * A runner kind (or kernel.apply), filed with the runner's plan: its tier and review-first as its classifier gave them,
-   * raised by the kind's floor and by the owner's veto on the task (only for a record headed for the reviewer: one already
-   * the owner's needs no veto to be), and never lowered. The same request still open is that record; a changed one on the
-   * same target replaces it. Tier 0 comes back claimed: the runner runs it and reports the outcome.
+   * A runner kind (or kernel.apply), filed with the runner's plan, which only proposes: the tier is the highest of the plan's,
+   * the kind's floor and what the kernel reads from the args (runnerFacts); autonomy off lifts Tier 0 to the owner and Tier 1
+   * to review-first; new module authority and the owner's veto (its own records, on every filing) make it Tier 2 after the
+   * reviewer. The same request still open is that record; a changed one on the same target replaces it. Tier 0 comes back
+   * claimed: the runner runs it and reports the outcome.
    */
   function fileRunner(kind: string, k: Kind, { task, identifier, args, plan }: { task: string; identifier?: string; args: unknown; plan: RunnerPlan }): Rec {
     if (!task) throw fail(400, "no_task", "a runner request names its task");
     if (k.args) validate(k.args, args);
+    const f = runnerFacts(kind, args, repos());
+    if (f.refuse) throw fail(422, "refused", f.refuse);
     // The runner's card is its own text (the apply's diff whole: its hash is in the targets, so what was shown is bound).
     const card = render(literal(plan.card ?? {}), plan.card ?? {}, 4_000_000);
     const base = { kind, module: k.module, args, targets: plan.targets ?? {}, executor: { module: k.module }, policy: policy(k), card, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" }, task };
     const digest = digestOf(base);
     const open = records.open(task, kind, digest)[0];
     if (open) return open;
-    let tier = Math.max(plan.tier, k.floor) as Tier;
-    let reviewFirst = plan.reviewFirst ?? null;
-    if (tier === 2 && plan.tier < 2) reviewFirst ??= "final"; // raised by the floor: reviewed first, then the owner's
-    const toReviewer = tier === 1 || reviewFirst !== null;
-    const veto = toReviewer && records.vetoed(task, kind, { digest, content: plan.content ?? null });
-    if (veto) reviewFirst = "owner";
+    const proposed = ([0, 1, 2].includes(plan.tier) ? plan.tier : 2) as Tier;
+    let tier = Math.max(proposed, k.floor, f.floor) as Tier;
+    let reviewFirst: ReviewFirst | null = plan.reviewFirst === "owner" || plan.reviewFirst === "final" ? plan.reviewFirst : null;
+    let rule = plan.rule && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(plan.rule) ? plan.rule : null;
+    let reason = plan.reason ?? "";
+    if (tier === 2 && proposed < 2) reviewFirst ??= "final"; // raised by a floor: reviewed first, then the owner's
+    if (autonomy() === "off" && tier === 0) [tier, reviewFirst, rule, reason] = [2, null, "autonomy-off", `autonomy is off (was: ${reason})`];
+    if (tier === 1 && autonomy() === "off") reviewFirst ??= "final";
+    if (f.ownerRequired) { tier = 2; reviewFirst = reviewFirst === "owner" ? "owner" : "final"; }
+    const veto = records.vetoed(task, kind, { digest, content: f.content });
+    if (veto) [tier, reviewFirst, rule, reason] = [2, "owner", "owner-veto", `the owner rejected this action on this task, so they decide (was: ${reason})`];
     if (tier === 1 && reviewFirst) tier = 2;
-    const reason = veto ? `the owner rejected this action on this task, so they decide (was: ${plan.reason ?? ""})` : (plan.reason ?? "");
+    const toReviewer = tier === 1 || reviewFirst !== null;
     return records.file({
       ...base, card: { ...card, reason: reason.slice(0, 1000) }, tier, merit: (plan.merit ?? tier) as Tier, panel: Boolean(plan.panel) && toReviewer, review_first: toReviewer ? reviewFirst : null,
-      rule: veto ? "owner-veto" : plan.rule && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(plan.rule) ? plan.rule : null, identifier: identifier ?? null, target: plan.target ?? null, content: plan.content ?? null,
-      state: tier === 0 ? "claimed" : toReviewer ? "review" : "owner",
+      rule, identifier: identifier ?? null, target: f.target ?? null, content: f.content, state: tier === 0 ? "claimed" : toReviewer ? "review" : "owner",
     });
   }
 

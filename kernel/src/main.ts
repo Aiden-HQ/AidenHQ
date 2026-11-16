@@ -10,7 +10,8 @@
 import http from "node:http";
 import { existsSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { configDir, dataDir, env, secret } from "./env.ts";
+import { execFileSync } from "node:child_process";
+import { configDir, dataDir, env, repo, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin } from "./admin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
@@ -63,11 +64,22 @@ const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
 const moduleKinds = watched(path.join(configDir, "kernel", "writes.json"), (j) => j as Record<string, Kind>, {});
 const registry = () => ({ ...moduleKinds(), ...KERNEL_KINDS });
 let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => ({ ok: false, text: "the proxy isn't up" });
+// The product and instance repositories (owner/name on GitHub, from each checkout's origin): runner kinds touching them get
+// the kernel's own floors and refusals (kinds.ts runnerFacts), whatever the runner's plan says. Read once at start.
+const slugOf = (dir: string | undefined) => {
+  if (!dir) return undefined;
+  try {
+    const url = execFileSync("git", ["-C", dir.replace(/^~(?=\/)/, process.env.HOME ?? ""), "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return /github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?\/*$/.exec(url)?.[1];
+  } catch { return undefined; }
+};
+const repos = { product: env("AIDENHQ_PRODUCT_REPO") || slugOf(repo), instance: slugOf(env("AIDENHQ_INSTANCE_DIR")) };
+if (!repos.product || !repos.instance) log("runner kinds: a repository is unknown, so its floor isn't applied here", repos);
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
 const writes = createWrites({
-  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never),
+  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos: () => repos,
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
   // An approved raise_cap: the gateway's cap for that scope and subject becomes the card's doubled cap.
   native: { "kernel.raise_cap": async (r) => ({ ok: true, text: await raiseCap(r.args as never) }) },
@@ -84,7 +96,7 @@ const ownerApi = asApi(cpApi);
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
 const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, modules: modulesFile, log });
 const brake = createBrake({ db: records.db, owner: ownerApi, on: () => grantsTable().loop_brake !== "off" });
-const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("reviewer_key"), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
+const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

@@ -166,7 +166,7 @@ export function openRecords(file: string, now = () => new Date()) {
       if (shownState(r) !== "review") return `this record is ${shownState(r)}`;
       if (r.digest !== digest) return "the digest doesn't match this record";
       if (r.panel && v.decision === "approve" && !v.by.includes("+")) return "an authority-expanding record needs a second reviewer's approval too";
-      if (v.decision === "approve" && (r.review_first || r.tier === 2)) return "after the reviewer, the owner decides this record (escalate it)";
+      if (v.decision === "approve" && (r.review_first || r.tier === 2 || (r.args as { ownerRequired?: unknown } | null)?.ownerRequired === true)) return "after the reviewer, the owner decides this record (escalate it)";
       if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return "this record is the owner's on its merits: escalate the reject to them";
       const note = v.note.slice(0, 2000);
       const to: State = v.decision === "approve" ? "approved" : v.decision === "escalate" ? "owner" : v.code === "stale_head" ? "stale" : "rejected";

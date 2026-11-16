@@ -49,7 +49,7 @@ async function twin(t, { satisfied } = {}) {
   const tool = (name, args = {}, token = ADA) => k.call("twin", token, { method: "tools/call", params: { name, arguments: args } });
   const pending = async (r) => JSON.parse((await text(r)).split("\n")[0]);
   /** The runner asks for a record's review (its key): its tier input, and the reviewer module answers `v`. */
-  const review = (id, v, input = { tier: 1 }, token = "the-runners-key") => (v && verdicts.push(v), k.v1("POST", `/v1/writes/${id}/review`, { input: { model: "~acme/model-a", ...input }, request: { card: {} } }, token));
+  const review = (id, v, input = { tier: 1 }, token = "the-reviewer-key") => (v && verdicts.push(v), k.v1("POST", `/v1/writes/${id}/review`, { input: { model: "~acme/model-a", ...input }, request: { card: {} } }, token));
   return { k, fx, mod, tool, pending, review, moduleCalls: () => mod.seen.filter((s) => s.method === "tools/call").map((s) => s.name) };
 }
 
@@ -70,6 +70,11 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   assert.equal((await k.v1("GET", "/v1/writes?state=review", undefined, ADA)).status, 401);
   assert.deepEqual((await k.v1("GET", "/v1/writes?state=review")).json.records.map((r) => r.id), [p.approval]);
   assert.deepEqual((await k.v1("GET", "/v1/writes?state=review", undefined, "the-runners-key")).json.records.map((r) => r.id), [p.approval]);
+  assert.equal((await k.v1("GET", "/v1/writes?state=review", undefined, "the-reviewer-key")).status, 401);
+  assert.equal((await review(p.approval, undefined, { tier: 1 }, "the-runners-key")).status, 401);
+  // Only the runner files its own kinds: the board's key, the reviewer key and an agent are refused.
+  for (const tok of ["the-boards-key", "the-reviewer-key", ADA]) assert.notEqual((await k.v1("POST", "/v1/writes", { kind: "runner.push", task: "TASK-1", args: { only: [{ repo: "acme/app", branch: "x", sha: "a".repeat(40) }] }, plan: { tier: 0, card: {} } }, tok)).status, 200);
+  assert.equal((await k.v1("POST", "/v1/writes", { kind: "runner.push", task: "TASK-1", args: { only: [{ repo: "acme/app", branch: "x", sha: "a".repeat(40) }] }, plan: { tier: 0, card: { sentence: "Push x." } } }, "the-runners-key")).json.state, "claimed");
   const verdict = { decision: "approve", reason: "fine", model: "~acme/model-a" };
   assert.equal((await review(p.approval, undefined, { tier: 1 }, ADA)).status, 401);
   assert.equal((await review(p.approval, undefined, { tier: 1 }, "the-boards-key")).status, 401);
