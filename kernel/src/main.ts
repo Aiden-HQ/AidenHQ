@@ -77,7 +77,8 @@ const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, l
 setTimeout(() => void writes.reconcile().then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })), 60_000).unref();
 
 const gw = createGateway({
-  dbFile: path.join(dataDir, "gateway", "usage.db"),
+  dbFile: path.join(dataDir, "kernel", "kernel.db"),
+  legacyDbFile: path.join(dataDir, "gateway", "usage.db"), // the old ledger: merged in at every start while it is there
   grantsFile,
   settingsFile: path.join(configDir, "gateway.json"),
   tools: proxy, // runner jobs' reads of connections (POST /c/<connection>/mcp, job tokens only)

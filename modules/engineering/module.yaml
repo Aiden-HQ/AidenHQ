@@ -16,7 +16,7 @@ agents:
     graded: true
     model: openrouter/~deepseek/deepseek-flash-latest
     # Offered in the board's model picker and known to the runner ("use DeepSeek"). Any other
-    # OpenRouter model id still works when typed in full.
+    # OpenRouter model id works when typed in full once it has a price (modules/models-openrouter).
     models:
       - openrouter/~deepseek/deepseek-flash-latest
       - openrouter/moonshotai/kimi-k3.1-pro

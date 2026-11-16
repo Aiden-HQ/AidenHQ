@@ -1,5 +1,6 @@
 // End to end against a fake OpenRouter, a fake Paperclip and a fake board: attribution, billed cost in the ledger, the
-// cap → 402 with one raise_cap filed, the owner's raise, the daily reset of a chat task, system kinds uncapped, the kill switch.
+// cap → 402 with one raise_cap filed, the owner's raise, the daily reset of a chat task, system kinds uncapped, and no way
+// to switch the caps off (G10).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -13,13 +14,17 @@ const serve = (handler) => new Promise((r) => { const s = http.createServer(hand
 const json = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
 const jwt = (sub, runId, exp) => `eyJhbGciOiJIUzI1NiJ9.${b64({ sub, run_id: runId, exp })}.sig`;
+// Declared prices (USD per million tokens): a call reserves about $0.004, well under what the fake upstream bills ($0.03).
+const price = { in: 1, cached_in: 0.1, out: 1, peak: 1, max_output: 4096 };
+const MODELS = { models: { "~deepseek/deepseek-flash-latest": price, breaks: price, m: price } };
 
-test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill switch", async (t) => {
+test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no off switch", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
   const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret", gateway_lane_secret: "lane-secret", gateway_board_key: "gw-board", gateway_source_key: "src-key", paperclip_board_key: "pc-board", board_internal_token: "internal" };
   const grantsFile = join(dir, "grants.json");
   writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden", rev: "abc123", caps: { run_usd: 0.05, task_usd: 0.08, day_usd: 30 } }, ag2: { key: "eng" } } }));
   const settingsFile = join(dir, "gateway.json");
+  writeFileSync(settingsFile, JSON.stringify(MODELS));
   let cost = 0.03;
   const seen = [];
   const asked = [];
@@ -136,11 +141,12 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
   now += 120_000;
   assert.equal((await call(jwt("ag1", "run3", exp))).status, 401);
 
-  // OpenRouter's stream breaks mid-body: the call still lands in the ledger (upstream_aborted, priced at the run's average).
+  // OpenRouter's stream breaks mid-body: the call still lands in the ledger (upstream_aborted), charged its whole reservation.
   await call(jwt("ag1", "run4"));
   await call(jwt("ag1", "run4"), { model: "breaks" }).catch(() => {});
   const aborted = (await usage()).filter((r) => r.status === "upstream_aborted");
-  assert.deepEqual(aborted.map((r) => [r.runId, r.costUsd]), [["run4", 0.03]]);
+  assert.deepEqual(aborted.map((r) => r.runId), ["run4"]);
+  assert.ok(aborted[0].costUsd > 0.004 && aborted[0].costUsd < 0.0045, String(aborted[0].costUsd)); // 4096 output tokens + the input
 
   // A chat task's cap counts the UTC day: refused at $0.09 today, open again tomorrow.
   for (const r of ["c1", "c2", "c3"]) await call(jwt("ag1", r));
@@ -158,14 +164,14 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
   assert.match(JSON.parse(dayRefused.text).error.message, /^spend cap reached: agent-day \$0\.06 of \$0\.05;/);
   for (const r of [refused, chatRefused, dayRefused]) assert.doesNotMatch(JSON.parse(r.text).error.message, /usage limit|rate[- ]?limit|try again|quota|capacity|429|service unavailable|temporary|spawn|ENOENT|\d{4}-\d{2}-\d{2}|\d+:\d\d/i);
 
-  // System kinds are never capped; the kill switch stops refusals but keeps the ledger.
+  // System kinds are never capped. The old kill switch is gone: a stale enforce_caps: false still refuses (G10).
   const reviewer = mintToken("job-secret", { kind: "reviewer", issueId: "iss1" }, now);
   cost = 5;
   assert.equal((await call(reviewer)).status, 200);
   assert.equal((await call(reviewer)).status, 200);
   assert.equal((await call("src-key")).status, 200);
-  writeFileSync(settingsFile, JSON.stringify({ enforce_caps: false }));
-  assert.equal((await call(jwt("ag1", "run1"))).status, 200);
+  writeFileSync(settingsFile, JSON.stringify({ ...MODELS, enforce_caps: false }));
+  assert.equal((await call(jwt("ag1", "run1"))).status, 402);
   rows = await usage();
   assert.deepEqual(rows.filter((r) => r.kind === "reviewer").map((r) => r.component), ["AI reviewer", "AI reviewer"]);
   assert.equal(rows.filter((r) => r.kind === "source").length, 1);
@@ -177,8 +183,8 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, kill
 });
 
 // An agent computer: box → the launcher's model route (forwardModel) → this gateway, named by the launcher's /whoami. Its
-// calls land in the ledger as the box agent's run and task, are refused at its run cap like any agent's, and the kill switch
-// covers them; a run that ended (token revoked) is refused even once its run key is settled.
+// calls land in the ledger as the box agent's run and task, are refused at its run cap like any agent's; a run that ended
+// (token revoked) is refused even once its run key is settled.
 test("gateway: an agent computer's calls are attributed and capped through the launcher", async (t) => {
   const { Tokens, forwardModel } = await import("../../services/computer/lib.mjs");
   const dir = mkdtempSync(join(tmpdir(), "gw-box-"));
@@ -186,6 +192,7 @@ test("gateway: an agent computer's calls are attributed and capped through the l
   const grantsFile = join(dir, "grants.json");
   writeFileSync(grantsFile, JSON.stringify({ agents: { box1: { key: "devops", rev: "def456", caps: { run_usd: 0.05, task_usd: 10, day_usd: 30 } } } }));
   const settingsFile = join(dir, "gateway.json");
+  writeFileSync(settingsFile, JSON.stringify(MODELS));
   const seen = [];
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
@@ -238,9 +245,7 @@ test("gateway: an agent computer's calls are attributed and capped through the l
   const refused = await call();
   assert.equal(refused.status, 402);
   assert.equal(JSON.parse(refused.text).error.type, "cap_reached");
-  // The kill switch (spend_caps: off) lets it through; a run that ended is refused.
-  writeFileSync(settingsFile, JSON.stringify({ enforce_caps: false }));
-  assert.equal((await call()).status, 200);
+  // A run that ended is refused.
   tokens.revoke("aidenhq-computer-x");
   const ended = await fetch(`${front.url}/api/v1/responses`, { method: "POST", headers: { authorization: `Bearer ${runToken}` }, body: JSON.stringify({ model: "m" }) });
   assert.equal(ended.status, 401);
