@@ -5,12 +5,34 @@ import { slackPost, type PostConfig } from "./post.js";
 import { notifyOwner, type NotifyCaller, type NotifyConfig } from "./urgent.js";
 import type { LaneAgent } from "./lane/config.js";
 import type { Lane } from "./lane/lane.js";
-import type { LaneStore } from "./lane/store.js";
+import type { LaneStore, Wake } from "./lane/store.js";
 import { localShort, parseWhen } from "./lane/time.js";
 
-/** The fast chat lane's side of the tools (wake_at, chat_send). */
-export interface LaneTools { store: LaneStore; lane: Lane; agents: () => Record<string, LaneAgent>; timezone: string }
+/**
+ * The fast chat lane's side of the tools (wake_at, chat_send). `taskIsClosed` says whether a task is done or cancelled,
+ * which the wake cap asks: a wake left on finished work is not a wake the agent still needs to keep.
+ */
+export interface LaneTools {
+  store: LaneStore;
+  lane: Lane;
+  agents: () => Record<string, LaneAgent>;
+  timezone: string;
+  taskIsClosed: (task: string) => Promise<boolean>;
+}
 export const MAX_WAKES = 50;
+
+/** Its pending wakes that count toward the cap: the ones without a task, and those on a task still open. */
+async function liveWakes(lane: LaneTools, wakes: Wake[]): Promise<Wake[]> {
+  const queue = [...new Set(wakes.flatMap((w) => (w.task ? [w.task] : [])))];
+  const closed = new Map<string, boolean>();
+  // The board is asked about each task a few at a time (an agent at the cap can hold fifty), and one it can't answer for
+  // stays counted: a full cap is the safer failure.
+  const worker = async () => {
+    for (let task = queue.shift(); task !== undefined; task = queue.shift()) closed.set(task, await lane.taskIsClosed(task).catch(() => false));
+  };
+  await Promise.all(Array.from({ length: Math.min(8, queue.length) }, worker));
+  return wakes.filter((w) => !w.task || !closed.get(w.task));
+}
 
 /**
  * Whether this conversation is one of the caller's own chats with the owner, by the lane store's own record: every message
@@ -95,7 +117,7 @@ export function buildServer(store: Store, cfg: NotifyConfig, caller?: NotifyCall
     "wake_at",
     {
       description:
-        "Wake yourself later, with a note to your future self: a reminder for the owner, or a follow-up check (\"see whether X replied\"). when_local is the owner's local time, \"YYYY-MM-DD HH:MM\", or \"in 20 minutes\" / \"in 2 hours\" / \"in 1 day\". It echoes the time it stored: check it. With `conversation` (your fast-lane chat's id) the wake is a turn in that chat; with `task` it is a notice on that task, which wakes you there. At most 50 pending per agent.",
+        "Wake yourself later, with a note to your future self: a reminder for the owner, or a follow-up check (\"see whether X replied\"). when_local is the owner's local time, \"YYYY-MM-DD HH:MM\", or \"in 20 minutes\" / \"in 2 hours\" / \"in 1 day\". It echoes the time it stored: check it. With `conversation` (your fast-lane chat's id) the wake is a turn in that chat; with `task` it is a notice on that task, which wakes you there. At most 50 pending per agent, counting only wakes on tasks that are still open: a wake on a done or cancelled task doesn't count, and is dropped instead of posted when it comes due. `wake_list` shows yours.",
       inputSchema: z.strictObject({
         when_local: z.string().min(1).max(40),
         note: z.string().min(1).max(1000),
@@ -118,9 +140,47 @@ export function buildServer(store: Store, cfg: NotifyConfig, caller?: NotifyCall
       const due = parseWhen(a.when_local, lane.timezone);
       if (due === undefined) return json({ ok: false, reason: 'when_local must be "YYYY-MM-DD HH:MM" (owner-local) or "in N minutes|hours|days"' });
       if (due < Date.now() - 60_000) return json({ ok: false, reason: `that is in the past (${localShort(lane.timezone, due)})` });
-      if (lane.store.pendingWakes(owner).length >= MAX_WAKES) return json({ ok: false, reason: `you already have ${MAX_WAKES} pending wakes` });
-      const id = lane.store.addWake(owner, due, a.note, a.conversation ?? null, a.task ?? null);
-      return json({ ok: true, id, due_local: `${localShort(lane.timezone, due)} (${lane.timezone})` });
+      // The check awaits the board, so it and the insert run under the agent's wake lock: two calls can't both pass it.
+      return lane.store.withWakeLock(owner, async () => {
+        const pending = await liveWakes(lane, lane.store.pendingWakes(owner));
+        if (pending.length >= MAX_WAKES)
+          return json({
+            ok: false,
+            reason: `you already have ${MAX_WAKES} pending wakes on open tasks`,
+            pending: pending.length,
+            wakes: pending.map((w) => ({ task: w.task, conversation: w.conversation, due_local: `${localShort(lane.timezone, w.due_at)} (${lane.timezone})` })),
+          });
+        const id = lane.store.addWake(owner, due, a.note, a.conversation ?? null, a.task ?? null);
+        return json({ ok: true, id, due_local: `${localShort(lane.timezone, due)} (${lane.timezone})` });
+      });
+    },
+  );
+  server.registerTool(
+    "wake_list",
+    {
+      description:
+        "Your pending wakes, oldest first, with the task or conversation each is for and its owner-local time: what counts toward the 50-wake cap, so a refusal can be diagnosed. Wakes on tasks that are done or cancelled don't count, and are dropped when due instead of posted.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => {
+      if (!lane || !caller) return json({ ok: false, reason: "wakes aren't available here" });
+      const who = Object.values(lane.agents()).find((x) => x.id === caller.id)?.key;
+      const owner = who ?? caller.id;
+      const all = lane.store.pendingWakes(owner);
+      const live = new Set((await liveWakes(lane, all)).map((w) => w.id));
+      return json({
+        pending: live.size,
+        cap: MAX_WAKES,
+        wakes: all.map((w) => ({
+          id: w.id,
+          task: w.task,
+          conversation: w.conversation,
+          due_local: `${localShort(lane.timezone, w.due_at)} (${lane.timezone})`,
+          note: w.note,
+          counts: live.has(w.id),
+        })),
+      });
     },
   );
   server.registerTool(

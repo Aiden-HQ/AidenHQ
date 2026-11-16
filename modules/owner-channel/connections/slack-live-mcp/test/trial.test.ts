@@ -24,7 +24,7 @@ async function server(trial: boolean, cfg: { botToken?: string; ownerId?: string
   laneStore.add("bob", "telegram:22", "owner", "hi", 1);
   const followUp = vi.fn(async () => {});
   const lane = { followUp } as unknown as Lane;
-  const s = buildServer(openStore(":memory:"), { botToken: "", ownerId: "", cooldownMs: 0, ...cfg }, { id: "ag-aria", name: "Aria", key: "aria", assertion: "jwt" }, undefined, { store: laneStore, lane, agents: () => ({ aria, bob }), timezone: "UTC" }, trial);
+  const s = buildServer(openStore(":memory:"), { botToken: "", ownerId: "", cooldownMs: 0, ...cfg }, { id: "ag-aria", name: "Aria", key: "aria", assertion: "jwt" }, undefined, { store: laneStore, lane, agents: () => ({ aria, bob }), timezone: "UTC", taskIsClosed: async () => false }, trial);
   const [a, b] = InMemoryTransport.createLinkedPair();
   await s.connect(a);
   const client = new Client({ name: "t", version: "0" });

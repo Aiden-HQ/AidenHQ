@@ -6,7 +6,8 @@ connections:
     url: http://slack-live-mcp:8089/mcp
     auth: slack_live_service_key
     tools:
-      read: [ slack_pending_events ]
+      # wake_list: your pending wakes, what counts toward wake_at's cap (only wakes on tasks still open).
+      read: [ slack_pending_events, wake_list ]
       # slack_post: to channels in the slack_post_channels setting only, as the labelled bot; granted per agent.
       # wake_at: wake yourself later (a reminder or follow-up). chat_send: answer in your own fast-lane chat from a background run.
       write: [ notify_owner, slack_post, wake_at, chat_send ]
