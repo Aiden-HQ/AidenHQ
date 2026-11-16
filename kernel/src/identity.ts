@@ -18,6 +18,8 @@ export type Identity = {
   task?: string; run?: string; module?: string;
   /** Granted tools by connection: an agent's grants, a job's jobcaps, a module's services.grants. */
   tools: Record<string, string[]>;
+  /** The write kinds a job's token names (w): what it may request at POST /v1/writes, for its agent on its task. */
+  writes?: string[];
   /** A job's jobcaps by connection: where its reads go. */
   caps?: Record<string, Jobcap[]>;
   /** The credential the kernel acts with at /v1/cp/agent/* (the caller's own); never forwarded to a module. */
@@ -58,7 +60,7 @@ export function createIdentity({ grants, connections, jobcaps, secret, controlUr
       // A private jobcap only for a job minted as observing (private_reads, web search off): private data never meets the web.
       for (const id of p.j ?? []) { const c = all[id]; if (c && (!c.private || p.o === true)) { (tools[c.connection] ??= []).push(...c.tools); (caps[c.connection] ??= []).push(c); } }
       const g = p.a ? grants()[p.a] : undefined;
-      return { kind: "job", ...(p.a ? { agent: p.a } : {}), key: String(g?.key ?? ""), name: String(g?.key ?? "job"), roles: [], tools, caps, credential: "", ...(p.i ? { task: p.i } : {}) };
+      return { kind: "job", ...(p.a ? { agent: p.a } : {}), key: String(g?.key ?? ""), name: String(g?.key ?? "job"), roles: [], tools, caps, writes: p.w ?? [], credential: "", ...(p.i ? { task: p.i } : {}) };
     }
     if (token.startsWith("ahqc_")) {
       if (!launcherUrl) throw new Unknown("the computer launcher isn't configured");

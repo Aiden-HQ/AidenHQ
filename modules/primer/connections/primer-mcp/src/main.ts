@@ -2,7 +2,9 @@
 // Holds the user's OAuth token; exposes only an allowlist: reading documents, versions and
 // comments, and publishing a new document or version. Deleting, sharing, changing
 // visibility and sending page events are never listed and are refused if called. /mcp/read is the
-// same server with reads only, for the runner's Engineer jobs on the host.
+// same server with reads only, for the runner's Engineer jobs on the host. Publishing is the kernel's
+// write kind primer.publish: the kernel routes the publish tools there and calls the executor
+// (/aidenhq/v1/executor, publish.ts) only for an approved record.
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
@@ -15,6 +17,8 @@ import pino from "pino";
 import { allowedTools, DEFAULT_ALLOWLIST, isAllowed, readOnly } from "./policy.js";
 import { PrimerAuthError, TokenStore } from "./tokens.js";
 import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
+import { serveExecutor } from "./aidenhq-sdk/executor.js";
+import { publisher } from "./publish.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "primer-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 // Who is calling: the kernel's signed assertion (the kernel enforces grants).
@@ -40,9 +44,6 @@ const inboundToken = readToken(process.env.MCP_TOKEN_FILE);
 // /mcp/read has its own token: the runner's jobs hold only that one, so they can't reach the
 // publishing tools on /mcp. Without it, /mcp/read is off.
 const mcpReadToken = readToken(process.env.MCP_READ_TOKEN_FILE);
-// /mcp/publish: the runner itself publishing a task's document, with a token only the host holds (agents and jobs
-// never see it). Agents use /mcp, where the kernel checks their grants and signs the caller. Empty or missing token: off.
-const publishToken = readToken(process.env.MCP_PUBLISH_TOKEN_FILE);
 
 let upstream: { client: Client; tools: Tool[]; at: number } | undefined;
 
@@ -120,6 +121,18 @@ function authorized(req: IncomingMessage, token: string | undefined): boolean {
   return presented.length === expected.length && timingSafeEqual(presented, expected);
 }
 
+// primer.publish's executor (executor@1): the kernel calls it with the service key; execute only for an approved record.
+const executor = inboundToken
+  ? serveExecutor(
+      publisher(async (name, args) => {
+        const res = await withUpstream((u) => u.client.callTool({ name, arguments: args }));
+        log.info({ tool: name, error: Boolean(res.isError) }, "Primer publish");
+        return { text: ((res.content ?? []) as { text?: string }[]).map((c) => c.text ?? "").join("\n"), isError: Boolean(res.isError) };
+      }),
+      { key: inboundToken, log: (msg, f) => log.warn(f ?? {}, msg) },
+    )
+  : undefined;
+
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (url.pathname === "/healthz") {
@@ -127,16 +140,16 @@ const http = createServer(async (req, res) => {
     res.writeHead(ok ? 200 : 503, { "content-type": "application/json" }).end(JSON.stringify({ ok, detail: ok ? undefined : UPSTREAM ? "Primer not connected (run scripts/primer-auth.sh)" : "PRIMER_MCP_URL not set" }));
     return;
   }
+  if (executor && (await executor(req, res))) return;
   const read = url.pathname === "/mcp/read";
-  const publish = url.pathname === "/mcp/publish";
-  if (url.pathname !== "/mcp" && !(read && mcpReadToken) && !(publish && publishToken)) return void res.writeHead(404).end();
-  if (!authorized(req, read ? mcpReadToken : publish ? publishToken : inboundToken)) return void res.writeHead(401).end();
+  if (url.pathname !== "/mcp" && !(read && mcpReadToken)) return void res.writeHead(404).end();
+  if (!authorized(req, read ? mcpReadToken : inboundToken)) return void res.writeHead(401).end();
   if (req.method !== "POST") return void res.writeHead(405).end();
   try {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
-    const auth = read || publish ? ({ ok: true } as const) : await authorize(req, body);
+    const auth = read ? ({ ok: true } as const) : await authorize(req, body);
     if (!auth.ok) return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
     const server = buildServer(read ? readOnly(allowlist) : allowlist);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });

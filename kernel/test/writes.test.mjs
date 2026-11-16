@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { serveExecutor } from "../sdk/src/executor.ts";
+import { mintToken } from "../src/gateway/token.ts";
 import { verifyCaller } from "../sdk/src/caller.ts";
 import { kernel, moduleServer, readBody, serve } from "./helpers.mjs";
 
@@ -88,6 +89,14 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   const filed = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "x" }, task: "OTHER-9" }, ADA);
   assert.equal(k.records.get(filed.json.id).task, "TASK-1");
   assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "x" } }, BO)).status, 403);
+  // A job's token files only the kinds it names, as its agent on its own task (whatever task it names); a job's ordinary
+  // token (no kinds) files nothing.
+  const job = (writes) => mintToken("job-secret", { agentId: "ag-bo", issueId: "TASK-7", component: "test", writes });
+  const byJob = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" }, task: "OTHER-9" }, job(["twin.post"]));
+  assert.deepEqual({ tier: byJob.json.tier, state: byJob.json.state }, { tier: 1, state: "review" });
+  assert.deepEqual([k.records.get(byJob.json.id).task, k.records.get(byJob.json.id).requester.agent], ["TASK-7", "ag-bo"]);
+  assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" } }, job([]))).status, 403);
+  assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" } }, job(["twin.ping"]))).status, 403);
 });
 
 test("a changed target on revalidate gives stale and a refile; the owner's decision comes only from the board, stamped as one", async (t) => {

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
+import { verifyToken } from "../../../kernel/src/gateway/token.ts";
 
 describe("flow-approvals", () => {
   const t = flow();
@@ -162,6 +163,33 @@ describe("flow-approvals", () => {
     });
 
     it("never errors or asks for a repository along the way", () => t.noErrors());
+  });
+
+  // End to end (lean-core 2e): a Primer document is a primer.publish record the AI reviewer decides, never a check of words.
+  describe("publishing on Primer, end to end", () => {
+    const { step, turn } = t;
+
+    it("files the document as primer.publish for the task's Engineer; a later change goes as a version once the first is done", async () => {
+      step("report\naidenhq primer");
+      const first = await turn("Write up where each copy string goes and put it on Primer.");
+      const [rec] = [...t.paperclip.records.values()];
+      assert.equal(rec.kind, "primer.publish");
+      assert.deepEqual(rec.args, { title: "Wallet copy, mapped to the app", content: "# Wallet copy, mapped to the app\n\nWhere each string goes.", format: "markdown", path: ".aidenhq/primer.md" });
+      // As the task's Engineer, on this task, naming only this kind: never the owner's words, never a publish token.
+      const claims = verifyToken("job-secret", rec.bearer);
+      assert.deepEqual([claims.k, claims.a, claims.i, claims.w, claims.j], ["agent", "engineer-claude", "part", ["primer.publish"], undefined]);
+      assert.match(first.comment, new RegExp(`\\*\\*Filed for Primer\\*\\* \\(approval ${rec.id}\\): a new document`));
+      // The reviewer approved it and the module published it; the next run's change is a version of that document.
+      Object.assign(rec, { state: "done", outcome: { ok: true, text: "Published on Primer: https://primer.example/d/01a1-doc0 (document 01a1-doc0)" } });
+      step("none");
+      await turn("Thanks.");
+      assert.equal(t.paperclip.records.size, 1, "unchanged: nothing filed");
+      step("report-v2");
+      const again = await turn("Add the settings screen too.");
+      const next = [...t.paperclip.records.values()].at(-1);
+      assert.equal(next.args.documentId, "01a1-doc0");
+      assert.match(again.comment, /a new version of https:\/\/primer\.example\/d\/01a1-doc0/);
+    });
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());

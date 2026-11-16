@@ -9,8 +9,7 @@
 //
 // The call doesn't answer the same way every time, so each case runs several times and passes only
 // if every run does. Requests to Engineers are no longer read by the runner (they go to the Engineer,
-// docs/design/conversational-engineers.md): other cases in the file are skipped. Their GitHub writes
-// have their own set, eval:authorize.
+// docs/design/conversational-engineers.md): other cases in the file are skipped.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";

@@ -1,6 +1,5 @@
 // Short no-tools Codex calls with a JSON schema for their answer (askCodex), used by the runner's
-// small readings: the go-ahead on sub-tasks, the check on an Engineer's GitHub writes
-// (authorize.mjs) and comments that arrive while a task is busy (busy.ts). Also the model names a
+// small readings: the go-ahead on sub-tasks and comments that arrive while a task is busy (busy.ts). Also the model names a
 // request can use. The runner no longer reads requests for the agent: every comment goes to the
 // Engineer (docs/design/conversational-engineers.md).
 import { spawn } from "node:child_process";

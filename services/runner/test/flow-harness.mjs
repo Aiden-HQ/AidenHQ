@@ -52,6 +52,8 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const attached = [];
   const unknown = [];
   const approvals = new Map();
+  // The kernel's records (POST /v1/writes, GET /v1/writes/:id), with the bearer each request came with.
+  const records = new Map();
   const autos = [];
   const created = []; // tasks the runner filed (POST …/issues), as the board key
   const runs = []; // the runs Paperclip started, one per task it could dispatch
@@ -98,6 +100,13 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       res.end(JSON.stringify(json));
     };
     const path = url.pathname;
+    if (path === "/v1/writes" && req.method === "POST") {
+      const id = `k-${String(records.size + 1).padStart(16, "0")}`;
+      records.set(id, { id, ...JSON.parse(body), bearer: String(req.headers.authorization ?? "").replace(/^Bearer /, ""), tier: 1, state: "review", outcome: null });
+      return send({ id, tier: 1, state: "review" });
+    }
+    const record = req.method === "GET" && /^\/v1\/writes\/(k-[0-9a-f]{16})$/.exec(path)?.[1];
+    if (record) return records.has(record) ? send(records.get(record)) : send({ error: { message: "no record" } }, 404);
     if (hang.has("issues") && req.method === "GET" && path === `/api/companies/${COMPANY}/issues`) {
       held.push(res);
       return;
@@ -256,7 +265,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     a.state = state;
     return a;
   };
-  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created, runs, wakes, hang, failRead };
+  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created, runs, wakes, hang, failRead };
 }
 
 /**
@@ -357,6 +366,7 @@ ${runnerYaml}`,
     writeFileSync(join(secrets, "paperclip_board_key"), "board-key\n", { mode: 0o600 });
     writeFileSync(join(secrets, "claude_oauth_token"), "claude-token\n", { mode: 0o600 });
     writeFileSync(join(secrets, "board_internal_token"), "board-token\n", { mode: 0o600 });
+    writeFileSync(join(secrets, "gateway_job_secret"), "job-secret\n", { mode: 0o600 });
     // The runner's own board key: the board returns a card's args only to it, as in production.
     writeFileSync(join(secrets, "reviewer_key"), `${"k".repeat(64)}\n`, { mode: 0o600 });
 
@@ -395,6 +405,7 @@ ${runnerYaml}`,
         AIDENHQ_ENV_FILE: join(dir, "none.env"),
         PAPERCLIP_URL: url,
         BOARD_INTERNAL_URL: url,
+        AIDENHQ_KERNEL_URL: url,
         FAKE_LOG: join(dir, "fake.log"),
         FAKE_STEP: join(dir, "claude-step"),
         AIDENHQ_GRADER_URL: `${url}/grader`,

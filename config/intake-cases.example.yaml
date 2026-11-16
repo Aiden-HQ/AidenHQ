@@ -5,8 +5,7 @@
 #   npm run eval:intake --prefix services/runner [-- <id filter>]
 
 # Fields: id, why (optional), kind: go-ahead, title, comment, context {waiting: ["PEN-1: title", …]},
-# expect {decision: start | hold | other}. Requests to Engineers are no longer read by the runner:
-# their GitHub writes have their own set, config/authorize-cases.example.yaml.
+# expect {decision: start | hold | other}. Requests to Engineers are no longer read by the runner.
 
 
 # Go-ahead on a parent task with Engineer sub-tasks waiting.

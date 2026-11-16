@@ -238,12 +238,12 @@ test("optional secrets are created only where the secrets dir is really there (n
   writeFileSync(join(dir, "slack_live_mcp_token"), "x");
   assert.deepEqual(ensureOptionalSecrets(dir, ["telegram_notify_bot_token"], "slack_live_mcp_token"), ["telegram_notify_bot_token"]);
   assert.equal(readFileSync(join(dir, "telegram_notify_bot_token"), "utf8"), "");
-  assert.deepEqual(ensureOptionalSecrets(dir, ["primer_mcp_publish_token"], "slack_live_mcp_token", true), ["primer_mcp_publish_token"]);
-  assert.match(readFileSync(join(dir, "primer_mcp_publish_token"), "utf8"), /^[0-9a-f]{64}$/);
+  assert.deepEqual(ensureOptionalSecrets(dir, ["primer_service_key"], "slack_live_mcp_token", true), ["primer_service_key"]);
+  assert.match(readFileSync(join(dir, "primer_service_key"), "utf8"), /^[0-9a-f]{64}$/);
 });
 test("secrets the setup must not leave to a manual step are generated", () => {
   const g = compile(product, inst(["core", "primer"], owner)).generatedSecrets;
-  for (const k of ["primer_mcp_publish_token", "owner_decide_key", "computer_launcher_token"]) assert.ok(g.includes(k), k);
+  for (const k of ["primer_service_key", "owner_decide_key", "computer_launcher_token"]) assert.ok(g.includes(k), k);
 });
 test("autonomy: off by default, reaches the compiled config, a bad value fails; the reviewer and watcher keys are generated", () => {
   assert.equal(compile(product, inst(["core"], owner)).paperclip.autonomy, "off");
@@ -316,7 +316,8 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "primer.publish": 1 });
+  assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish"]);
   // A kind naming a tool that isn't one of its module's writes, or one another kind took, fails compile.
   assert.throws(() => writeKinds("m", { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: ["r"], write: ["w"] } } }, writes: { k: { floor: 0, tools: ["r"] } } }, product), /r is no write or destructive tool/);
   assert.throws(() => writeKinds("m", { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: [], write: ["w"] } } }, writes: { k: { floor: 0, tools: ["w"] }, j: { floor: 1, tools: ["w"] } } }, product), /c\.w is already routed/);

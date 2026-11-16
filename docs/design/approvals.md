@@ -33,7 +33,7 @@ agent, never to the owner.
 - **Authority-expanding goes to the panel.** A change is authority-expanding when it weakens an approval,
   authentication, sandbox or secret control, changes who can approve, widens credentials, grants, public access, data
   destinations or spending, or edits the gate's own core. Code decides most of it (`GATE_CORE` and content rules in
-  `tiers.mjs`, `panel: true`): the runner's `tiers`, `review`, `authorize`, `merges`, `apply`, `netjail`, `state`,
+  `tiers.mjs`, `panel: true`): the runner's `tiers`, `review`, `merges`, `apply`, `netjail`, `state`,
   `config`, `github-app`, `git`, `main`, and what a job can reach: `engines` (its sandbox, mounts and env), `workspace`,
   `files`, `commands` (repo access, the owner's words, private reads) and `scripts/computers.mjs`; the reviewer policy and its eval cases (`test/reviewer-cases/`,
   `scripts/reviewer-eval.mjs`); `agent-auth.ts`, `scripts/modules.mjs`, `scripts/paperclip-setup.mjs` and
@@ -98,7 +98,7 @@ Typical assignments in `tiers.mjs` (read the file for the full rules):
 | Merge outside the agents org (no red or missing checks, head unmoved) | 1 + panel |
 | Push to an agents-org repo's default or deploy branch | 1 + panel |
 | Merge with no named checks, red checks or a moved head; the instance repo | refused (back to the agent) |
-| Product repo, Platform Engineer's line: push of a non-default branch, PR, or merge (any head, no red named check) | 1 (a role holder's handbook and other gate code included); + panel for the gate's core, grants, tools, models, roles, images, settings, credentials or `codex_args` in a `module.yaml`, compose beyond image versions |
+| Product repo, Platform Engineer's line: push of a non-default branch, PR, or merge (any head, no red named check) | 1 (a role holder's handbook included); + panel for the gate's core, grants, tools, models, roles, images, settings, credentials or `codex_args` in a `module.yaml`, compose beyond image versions |
 | Product repo: push to the default branch; any push or merge from outside the line | refused |
 | `apply`: new trial agent on a task the owner started | 0 |
 | `apply`: any handbook or memory (a role holder's too), graduation that adds no tools, model or schedule change, non-sensitive app registry change, removing an agent or app, forward product pin | 1 |

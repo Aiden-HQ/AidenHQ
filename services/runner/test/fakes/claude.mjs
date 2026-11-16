@@ -211,6 +211,9 @@ if (step === "commit") {
   mkdirSync(join(process.cwd(), ".aidenhq/out"), { recursive: true });
   writeFileSync(join(process.cwd(), ".aidenhq/primer.md"), "# Wallet copy, mapped to the app\n\nWhere each string goes.\n");
   writeFileSync(join(process.cwd(), ".aidenhq/out/move-page.png"), Buffer.from("89504e470d0a1a0a", "hex"));
+} else if (step === "report-v2") {
+  // The same report, revised.
+  writeFileSync(join(process.cwd(), ".aidenhq/primer.md"), "# Wallet copy, mapped to the app\n\nv2\n");
 } else if (step === "slow") {
   // Works until the test says so (a "release" file next to the step file), so no test waits on a timer.
   const release = join(dirname(process.env.FAKE_STEP), "release");

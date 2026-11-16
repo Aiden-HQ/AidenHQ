@@ -44,23 +44,6 @@ export function threadEntries(comments: TaskComment[], { user, you, agents = [],
   return out;
 }
 
-const isReply = (c: TaskComment) => c.authorType !== "agent" && hasMarker(c.body, RUNNER_MARKER) && hasMarker(c.body, REPLY_MARKER);
-
-/**
- * The user's words around the agent's previous reply, for checking a GitHub write against them
- * (src/authorize.mjs): their comments before it and after it, and the reply. Comments the runner
- * carried out as commands (exact "push", "pr") are left out: done once, they allow nothing more.
- */
-export function wordsAround(comments: TaskComment[], { isCommand = () => false }: { isCommand?: (body: string | null | undefined) => boolean } = {}) {
-  const last = comments.findLastIndex(isReply);
-  const own = (c: TaskComment) => c.authorType === "user" && !hasMarker(c.body, RUNNER_MARKER) && stripHidden(c.body).trim() && !isCommand(c.body);
-  return {
-    earlier: comments.slice(0, Math.max(last, 0)).filter(own),
-    recent: comments.slice(last + 1).filter(own),
-    lastReply: last >= 0 ? comments[last]!.body : "",
-  };
-}
-
 /** The newest blocks that fit in `budget` characters, oldest first, and how many older ones were left out. */
 function newestWithin(blocks: string[], budget: number) {
   const kept: string[] = [];

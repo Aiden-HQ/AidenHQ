@@ -90,11 +90,14 @@ for c in $containers; do
       read_split slack "$(cip "$c"):8082"
       ;;
     *primer-mcp*)
-      # Nothing published: the kernel (jobs) and the runner (publishing) reach it at its container address; bearer required.
+      # Nothing published: the kernel (jobs' reads, primer.publish's executor) reaches it at its container address; bearer required.
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "primer-mcp: no published ports" || fail "primer-mcp publishes ports"
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8084/mcp/read")" = "401" ] \
         && pass "primer-mcp: the read endpoint requires the token" || fail "primer-mcp: the read endpoint answers without the token"
       read_split primer "$(cip "$c"):8084"
+      [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8084/mcp/publish")" = "404" ] \
+        && [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8084/aidenhq/v1/executor/execute")" = "401" ] \
+        && pass "primer-mcp: no runner publish endpoint; the executor requires the kernel's key" || fail "primer-mcp: a publish path answers without the kernel's key"
       [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
         && pass "primer-mcp: only its own token directory and secrets mounted" || fail "primer-mcp has unexpected mounts: $mounts"
       ;;
@@ -708,7 +711,7 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
 # review-first (routineCapped: its reject is final), and the board takes no reviewer approve on a review-first card and no
 # reviewer reject on one that is the owner's on its merits; the owner's veto files the card for the reviewer first, then
 # the owner. The kernel's records keep their merit tier, and a merit-2 record's reject goes to the owner. The gate's own core is
-# authority-expanding: tiers, review, authorize, the reviewer policy and its eval cases, the board's approval routes and
+# authority-expanding: tiers, review, the reviewer policy and its eval cases, the board's approval routes and
 # sign-in, setup, the sandboxes and the product's CI all go to the panel (two reviewers of different model families, both
 # approving), enforced by the runner and again by the board. Code's panel flag reaches the reviewer and the board, the
 # reviewer's own flag can only add the second reviewer, a reviewer-approved card that is panel now is never run on one
@@ -716,7 +719,7 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
 # takes a reviewer's approve only with a second reviewer's), and a CI template copy is Tier 0 only when its .github tree is the deployed product's template tree.
 rreview="services/runner/src/review.mjs"; bapprovals="services/board/src/approvals.ts"
 [ "$(grep -oE 'T\(2, "[a-z-]+"' "$rtiers" | sort -u | tr '\n' ' ')" = 'T(2, "autonomy-off" T(2, "owner-approval-record" T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
-  && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review","authorize","merges","evalgate","apply","netjail","state","config","github-app","git","main","engines","workspace","files","agents"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["approvals","app","fleet","accounts","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/assert.ts", "kernel/src/cp.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "services/apps-mcp/src/aidenhq-sdk/caller.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/tier.ts", "kernel/sdk/src/executor.ts", "services/apps-mcp/src/executor.ts", "services/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/apps-platform/module.yaml"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
+  && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review","merges","evalgate","apply","netjail","state","config","github-app","git","main","engines","workspace","files","agents"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["approvals","app","fleet","accounts","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/assert.ts", "kernel/src/cp.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "services/apps-mcp/src/aidenhq-sdk/caller.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/tier.ts", "kernel/sdk/src/executor.ts", "services/apps-mcp/src/executor.ts", "services/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/apps-platform/module.yaml", "modules/primer/module.yaml", "modules/primer/connections/primer-mcp/src/publish.ts"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
   && grep -qF '/^services\/runner\/test\/reviewer-cases\//,' "$rtiers" && grep -qF '/^modules\/core\/security\//,' "$rtiers" \
   && true && grep -qF '/(^|\/)\.github\//,' "$rtiers" \
   && grep -qF 'if (GATE_CORE.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rtiers" \
@@ -747,7 +750,8 @@ grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-set
   && grep -qF '  if (!a.image) assertNoShell(key, extraArgs, adapterConfig.dangerouslyBypassApprovalsAndSandbox);' scripts/paperclip-setup.mjs \
   && pass "setup: every tool-only Codex agent passes the no-shell check (scripts/no-shell.mjs)" || fail "setup: the no-shell check's call site changed (scripts/paperclip-setup.mjs)"
 # The Engineer's own tools (docs/design/conversational-engineers.md): a fixed command list on the per-run loopback
-# endpoint, every write tiered (tiers.mjs) or checked against the user's words, and the check given nothing else.
+# endpoint, every write tiered (tiers.mjs) or a kernel record (a Primer document: primer.publish, floor 1, which the runner
+# files with a token naming only that kind; no owner-words check, no publish URL or token in the runner).
 # `close` is tiered only: Tier 0 for agents-org PRs outside the instance repo and for the product repo's Dependabot PRs
 # (the Platform Engineer's line), refused anywhere else. A repository is created only by an approved create_repo card
 # (`create-repo` files it, the panel's): one call, in createRepoApproved, never from naming or cloning one. `review` asks the
@@ -764,11 +768,12 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && awk '/^async function agentMerge/,/^}/' "$rmain" | grep -F 'const now = bound.filter((_, i) => tiers[i].tier === 0);' >/dev/null \
   && awk '/^async function agentMerge/,/^}/' "$rmain" | grep -F 'if (bad) throw new UserError(' >/dev/null \
   && ! awk '/^async function agentApply/,/^}/' services/runner/src/main.mjs | grep '"push"' >/dev/null \
-  && [ "$(awk '/^async function agentPrimer/,/^}/' services/runner/src/main.mjs | grep -n 'await allowWrite(ctx, "primer"' | cut -d: -f1)" -lt "$(awk '/^async function agentPrimer/,/^}/' services/runner/src/main.mjs | grep -n 'savePrimer(' | head -1 | cut -d: -f1)" ] \
-  && grep -q '^export function authorizePrompt({ user, action, task, earlier = \[\], recent = \[\], lastReply = "" })' services/runner/src/authorize.mjs \
+  && [ ! -e services/runner/src/authorize.mjs ] && ! grep -qE 'allowWrite|primerPublish|primer_mcp_publish_token|mcp/publish' services/runner/src/*.mjs services/runner/src/*.ts \
+  && awk '/^async function publishToPrimer/,/^}/' "$rmain" | grep -F 'await kernelWrites("POST", "/v1/writes", who, { kind: "primer.publish", args });' >/dev/null \
+  && awk '/^async function kernelWrites/,/^}/' "$rmain" | grep -F 'writes: ["primer.publish"] });' >/dev/null \
+  && [ "$(awk '/^writes:/{on=1} on && /^    (floor|tools):/' modules/primer/module.yaml | tr -s ' ')" = "$(printf ' floor: 1\n tools: [ primer_create_document, primer_add_version ]')" ] \
   && grep -qF 'jobcapsFile: join(configDir, "jobcaps.json"),' services/runner/src/config.mjs \
   && ! grep -qE '_mcp_read_token|_mcp_token' services/runner/src/config.mjs services/runner/src/engines.mjs \
-  && ! grep -q primerPublishTokenFile services/runner/src/engines.mjs \
   && ! grep -qF '"codex", "sandbox"' services/runner/src/engines.mjs \
   && grep -qF 'url: `${gatewayUrl(cfg)}/c/${c.connection}/mcp`' services/runner/src/engines.mjs \
   && grep -qF 'if (j.private && a.private_reads !== true) fail(' scripts/modules.mjs \
@@ -777,7 +782,7 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && grep -qF '(!c.private || p.o === true)' kernel/src/identity.ts \
   && grep -q 'export const observes = (engine) => engine?.reads === true;' services/runner/src/engines.mjs \
   && grep -q 'agent.metadata?.privateReads === true ? { reads: true }' services/runner/src/agents.mjs \
-  && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed, apply only files a card at the turn's end, and Primer publishing is checked against the user's words (services/runner/src/authorize.mjs); jobs hold no connection URL or token (their jobcaps go through the gateway with the job token), and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
+  && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed, apply only files a card at the turn's end, and every Primer publish is a primer.publish record at floor 1 the AI reviewer decides (no owner-words check); jobs hold no connection URL or token (their jobcaps go through the gateway with the job token), and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
 # engine@1: the runner writes `web: false` into job.json for a job holding private data; every engine module keeps such a job
 # off the web (by behaviour: each module's own builder, as its bin/engine runs it).
 if web_probe="$(node --input-type=module -e '

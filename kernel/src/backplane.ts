@@ -6,7 +6,7 @@
 //   GET  /v1/agents            (module token) every agent's key, roles and the fields setup records for it, never its tools
 //   POST /c/<connection>/mcp   (run or module token) the tool proxy (proxy.ts)
 //   ANY  /v1/cp/agent/<path>   (module token + caller assertion) cp.ts
-//   POST /v1/writes            (run or module token) request a write (writes.ts); GET /v1/writes/:id its record (own only)
+//   POST /v1/writes            (run, module, or job token naming the kind) request a write (writes.ts); GET /v1/writes/:id its record (own only)
 //   POST /v1/writes/:id/outcome (the kind's executor module) the outcome of an execute
 //   GET  /v1/writes, POST /v1/writes/:id/{decide,review,panel}  (the board's key, 2d until 2f and 3a) the list of records,
 //                              the owner's decisions and the reviewer's verdicts the board forwards
@@ -91,7 +91,6 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         switch (`${hit.method} ${hit.path}`) {
           case "POST /v1/writes": {
             const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
-            if (w.kind === "job") throw fail(401, "unauthorized", "a job files writes through its own listener");
             const b = await json(req);
             const r = await writes.request(w, { kind: String(b.kind ?? ""), args: b.args, ...(typeof b.task === "string" ? { task: b.task } : {}), ...(b.evidence !== undefined ? { evidence: b.evidence } : {}) });
             return send(res, 200, { id: r.id, tier: r.tier, state: r.state });

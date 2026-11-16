@@ -14,7 +14,6 @@
     "test:unit": "npm run typecheck && node --disable-warning=ExperimentalWarning --test $(ls test/*.test.mjs | grep -vE '^test/(flow-|box\\.|adopt\\.)')",
     "test:flows": "node --disable-warning=ExperimentalWarning --test test/flow-*.test.mjs test/box.test.mjs test/adopt.test.mjs",
     "eval:intake": "node --disable-warning=ExperimentalWarning eval/intake.mjs",
-    "eval:authorize": "node --disable-warning=ExperimentalWarning eval/authorize.mjs",
     "eval:busy": "node --disable-warning=ExperimentalWarning eval/busy.mjs",
     "typecheck": "tsc -p . && ! (tsc -p . --checkJs | grep \"error TS2304\")"
   },
