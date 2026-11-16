@@ -62,6 +62,9 @@ describe("flow-review-check", { concurrency: 1 }, () => {
     const user = first.messages[1].content;
     assert.match(user, /action pr, sorted into Tier 1 by code rule "product-pr"/);
     assert.match(user, /\+second/, "the diff");
+    // The source records are read from the base branch by code, never from the branch under review: here the fake GitHub
+    // has no such file, and the reviewer is told there is no exception rather than left to read a chain's claim as one.
+    assert.match(user, /source exceptions recorded in this change's base: none \([^)]*\.github\/supply-chain-source-exceptions\.yaml\)/, "the reviewer is told there is no source exception");
     assert.match(user, /target: [^\n]*acme\/app feat\/second at [0-9a-f]{12}[^\n]*\nsummary: Push and open \(or update\) a PR for 2 branches, then merge each PR once its checks are green\./);
 
     // The first check's finding goes to every later review in code's words only (decision, code, target): never its note.

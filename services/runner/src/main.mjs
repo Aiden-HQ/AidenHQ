@@ -38,7 +38,7 @@ import { authorize } from "./authorize.mjs";
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
-import { LUNA, UNSURE, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
+import { LUNA, SOURCE_EXCEPTIONS_FILE, UNSURE, fileContext, openRouterAsk, openRouterKey, readSourceExceptions, review } from "./review.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
@@ -2182,7 +2182,10 @@ async function reviewOne(a, mode) {
       ? { decision: "reject", code: input.rule === "head-moved" ? "stale_head" : "refused_by_code", reason: `${input.reason}.`, model: LUNA }
       : input.tier > 1
         ? { decision: "escalate", code: "tier_raised", reason: `code now puts it at Tier 2: ${input.reason}`, model: LUNA }
-        : await askReviewer(issue, a, input, chain, { onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()), siblings: await cardSiblings(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }) });
+        : await askReviewer(issue, a, input, chain, {
+            onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()),
+            ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only })),
+          });
   // A failed call or check is friction, not a decision: it stays with the reviewer and is tried again later (1, 2, 4… minutes);
   // after REVIEW_TRIES it goes back to the agent, never to the owner.
   if (v.code === "reviewer_failed") {
@@ -2222,13 +2225,14 @@ async function reviewOne(a, mode) {
  * (agentReview) make this same call, so the check sees exactly the prompt, policy and models the card will.
  * `a`: { action, target, sentence, panel? }; `input`: currentTier()'s result with the diff.
  */
-function askReviewer(issue, a, input, chain, { onPanel, component, siblings } = {}) {
+function askReviewer(issue, a, input, chain, { onPanel, component, siblings, sources } = {}) {
   return review({
     card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
     diff: input.diff,
     files: input.files,
     chain,
     siblings,
+    sources,
     requesterModel: state.task(issue.id)?.engine?.model ?? "",
     ask: reviewerAsk(component),
     // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
@@ -2403,24 +2407,45 @@ async function taskChainRuns(issue) {
 }
 
 /**
- * The task's merged siblings for one card: each branch's base from GitHub (cardBase: a PR's own base, and the default
- * branch only when the branch has no PR at all), then the task's other PRs already merged into that base. A merge card's
- * bases are its PRs' own. Nothing readable gives an empty block, never a guessed base.
+ * A card's bases, from GitHub: cardBase (a PR's own base, the default branch only when the branch has no PR at all), and
+ * for a merge card each PR's own. `own` is the PR that is the card's, never its sibling.
  */
-async function cardSiblings(issue, { branches = [], prs = [] } = {}) {
+async function cardBases({ branches = [], prs = [] } = {}) {
+  const bases = [];
+  for (const b of branches) {
+    const own = await branchPr(b.repo, b.branch);
+    bases.push({ repo: b.repo, base: cardBase({ existing: own.existing, pr: own.pr, defaultBranch: await githubDefault(b.repo).catch(() => undefined) }), own: own.pr?.number });
+  }
+  for (const p of prs) {
+    const pr = (await mergeGithub.pr(p.repo, p.number).catch(() => undefined))?.repository?.pullRequest;
+    bases.push({ repo: p.repo, base: typeof pr?.baseRefName === "string" ? pr.baseRefName : "", own: p.number });
+  }
+  return bases;
+}
+
+/**
+ * The owner-approved source exceptions in a card's bases: `.github/supply-chain-source-exceptions.yaml` at each base branch,
+ * never at the branch under review, so a change can never record its own approval. A missing or unreadable file is no
+ * records, and no base at all (an apply card) is no block: an unread record never passes a new source.
+ */
+async function cardSources(bases) {
+  if (!bases.length) return undefined;
   try {
-    const bases = [];
-    for (const b of branches) {
-      const own = await branchPr(b.repo, b.branch);
-      bases.push({ repo: b.repo, base: cardBase({ existing: own.existing, pr: own.pr, defaultBranch: await githubDefault(b.repo).catch(() => undefined) }), own: own.pr?.number });
-    }
-    for (const p of prs) {
-      const pr = (await mergeGithub.pr(p.repo, p.number).catch(() => undefined))?.repository?.pullRequest;
-      bases.push({ repo: p.repo, base: typeof pr?.baseRefName === "string" ? pr.baseRefName : "" });
-    }
+    const gh = await findRealGh();
+    const read = async ({ repo, base }) => (await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${encodeURIComponent(SOURCE_EXCEPTIONS_FILE)}?ref=${encodeURIComponent(base)}`], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout;
+    return { where: bases.map((b) => `${b.repo} ${b.base} ${SOURCE_EXCEPTIONS_FILE}`).join("; "), records: (await Promise.all(bases.map((b) => read(b).catch(() => "")))).flatMap(readSourceExceptions) };
+  } catch (err) {
+    log("source exceptions unread", { err: String(err.message ?? err).slice(0, 200) });
+    return { where: `${SOURCE_EXCEPTIONS_FILE} (could not be read)`, records: [] };
+  }
+}
+
+/** The task's other PRs already merged into the card's bases: every name in the block is encoded, and it is fenced as data. */
+async function cardSiblings(issue, bases) {
+  try {
     // The task's PRs, and its parent tasks' (the fix may have landed as the delegator's PR): every branch record of the chain.
     // The card's own PRs are never its siblings: neither a merge card's nor the one its branch already has.
-    const own = new Set([...prs.map((p) => `${String(p.repo).toLowerCase()}#${p.number}`), ...bases.filter((b) => b.own).map((b) => `${b.repo.toLowerCase()}#${b.own}`)]);
+    const own = new Set(bases.filter((b) => b.own).map((b) => `${b.repo.toLowerCase()}#${b.own}`));
     const candidates = siblingCandidates(await taskChainRuns(issue), own);
     const seen = new Map();
     for (const { repo, base } of bases) {
@@ -3068,7 +3093,8 @@ async function agentReview(ctx, args) {
         const entry = { action: command, target: card.target, at: new Date().toISOString(), decision: "pending", code: "" };
         state.set(checksKey(ctx.issue.id), JSON.stringify([...checksOf(ctx.issue.id), entry]));
         const chain = await prRequest(await pc.issue(ctx.issue.id)).catch(() => "");
-        const v = await askReviewer(ctx.issue, card, input, chain, { component: "AI reviewer check", siblings: await cardSiblings(ctx.issue, { branches: branches.map((b) => ({ repo: b.repo, branch: b.branch })) }) });
+        const context = await cardContext(ctx.issue, { branches: branches.map((x) => ({ repo: x.repo, branch: x.branch })) });
+        const v = await askReviewer(ctx.issue, card, input, chain, { component: "AI reviewer check", ...context });
         log("review checked", { issue: ctx.issue.identifier, action: command, decision: v.decision, code: v.code, model: v.model, second: v.second, used: n + 1, target: card.target.slice(0, 300) });
         // No verdict (the call failed): the check doesn't count. Otherwise it is kept with its finding.
         const rest = checksOf(ctx.issue.id).filter((c) => c.at !== entry.at || c.target !== entry.target);
