@@ -16,8 +16,9 @@ export async function healthTick(p: Platform, log: Log, now: () => number = Date
   for (const app of p.apps()) {
     const last = p.store.lastDeploy(app.name);
     try {
-      // A failed first deploy was stopped, so there is nothing to probe; anything with a good deploy behind it is probed.
-      if (last && (last.status !== "failed" || p.store.goodDeploys(app.name).length) && !p.engine.locked(app) && now() - last.at >= app.health.grace_sec * 1000) {
+      // A deploy that got nothing running (a failed first deploy, or one whose build never ran and had nothing to fall back
+      // on) was stopped, so there is nothing to probe; anything with a good deploy behind it is probed.
+      if (last && ((last.status !== "failed" && last.status !== "build_failed") || p.store.goodDeploys(app.name).length) && !p.engine.locked(app) && now() - last.at >= app.health.grace_sec * 1000) {
         if (await p.probe(app)) {
           streaks.delete(app.name);
           p.store.closeIncident(app.name, ["unhealthy", "exited"]); // healthy again; a deploy_failed or rolled_back incident waits for a fixed deploy
@@ -84,10 +85,21 @@ async function watchRollback(p: Platform, app: App, last: Deploy, s: Streak, now
 
 const paged = new Set<string>(); // app@sha already paged for a failure before anything started
 
+/** The most attempts at one commit while every one of them fails to build (one per poll, then it counts as deployed). */
+export const BUILD_ATTEMPTS = 3;
+
+/**
+ * Whether these (all of one app's attempts at one commit, newest first) settle it. A deploy that never got running (its `up`
+ * failed: a build error, a missing docker plugin) says nothing about the commit, so it is tried again; a deploy that ran,
+ * healthy or not, settles it at once.
+ */
+const settled = (tries: Deploy[]): boolean => tries.some((d) => d.status !== "build_failed") || tries.length >= BUILD_ATTEMPTS;
+
 /**
  * Makes the registry true. Declared apps never deployed get deployed (stateful ones wait for the owner's approval); apps whose
- * origin/<branch> moved auto-deploy (polled; no inbound webhook), a bad commit is rolled back and raised once; apps running
- * but no longer declared are stopped (volumes kept); the apps' tailnet node serves exactly the exposed apps.
+ * origin/<branch> moved auto-deploy (polled; no inbound webhook), a bad commit is rolled back and raised once; a commit whose
+ * deploy never built is retried a bounded number of times; apps running but no longer declared are stopped (volumes kept);
+ * the apps' tailnet node serves exactly the exposed apps.
  */
 export async function reconcileTick(p: Platform, log: Log): Promise<void> {
   if (p.engine.draining()) return; // shutting down: no new deploys
@@ -98,7 +110,7 @@ export async function reconcileTick(p: Platform, log: Log): Promise<void> {
     let head = "";
     try {
       head = await remoteHead(p.cfg.git, app);
-      if (p.store.seen(app.name, head)) continue;
+      if (settled(p.store.deploysOf(app.name, head))) continue;
       const r = await p.engine.deploy(app, { sha: head, by: last ? "auto-deploy" : "reconcile" });
       p.errors.delete(app.name);
       // The failed checks' generated reasons (never page text): the maintainer sees why it rolled back.

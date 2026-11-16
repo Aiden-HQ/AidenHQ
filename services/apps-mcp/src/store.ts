@@ -25,7 +25,6 @@ export function openStore(path: string) {
   if (!(db.prepare(`PRAGMA table_info(incidents)`).all() as { name: string }[]).some((c) => c.name === "notified")) db.exec(`ALTER TABLE incidents ADD COLUMN notified INTEGER DEFAULT 1`);
   const addDeploy = db.prepare(`INSERT INTO deploys (app, sha, images_json, by, at, status, detail) VALUES (@app, @sha, @images_json, @by, @at, @status, @detail)`);
   const lastDeploy = db.prepare(`SELECT * FROM deploys WHERE app = ? ORDER BY id DESC LIMIT 1`);
-  const seen = db.prepare(`SELECT 1 FROM deploys WHERE app = ? AND sha = ? LIMIT 1`);
   const goodDeploys = db.prepare(`SELECT * FROM deploys WHERE app = ? AND status = 'healthy' ORDER BY id DESC`);
   const recent = db.prepare(`SELECT * FROM deploys WHERE app = ? ORDER BY id DESC LIMIT ?`);
   const rolledBack = db.prepare(`UPDATE deploys SET status = 'rolled_back', detail = ltrim(detail || '; ' || ?, '; ') WHERE id = ?`);
@@ -45,7 +44,6 @@ export function openStore(path: string) {
     running: (app: string) => (getRunning.get(app) as { sha: string } | undefined)?.sha,
     setRunning: (app: string, sha: string, at = Date.now()) => void setRunning.run(app, sha, at),
     clearRunning: (app: string) => void clearRunning.run(app),
-    seen: (app: string, sha: string) => !!seen.get(app, sha),
     goodDeploys: (app: string) => goodDeploys.all(app) as Deploy[],
     /** A healthy deploy that failed later (the post-deploy watch rolled it back): never a rollback target again. */
     markRolledBack: (id: number, why: string) => void rolledBack.run(why, id),
