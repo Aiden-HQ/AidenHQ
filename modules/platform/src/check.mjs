@@ -91,6 +91,11 @@ export const GATE_CORE = [
   // record carries.
   /^modules\/primer\/module\.yaml$/,
   /^modules\/primer\/connections\/primer-mcp\/src\/publish\.ts$/,
+  // Graded done's finish check (lean-core 3h): who may close a graded task, the grade it holds it in, and the manifest that
+  // registers the check with the kernel's finish gate (the board's gate route in app.ts before).
+  /^modules\/grading\/module\.yaml$/,
+  /^modules\/grading\/service\/src\/server\.ts$/,
+  /^modules\/grading\/service\/src\/grades\.ts$/,
   /^scripts\/modules\.(mjs|ts)$/,
   /^scripts\/paperclip-setup\.(mjs|ts)$/,
   /^scripts\/no-shell\.(mjs|ts)$/,
