@@ -731,7 +731,8 @@ async function handleRequest(issue, latest, { fromAgent = false } = {}) {
   // First run on a task the user wrote (or approved): its title and description are part of the request.
   if (!state.get(`history:${issue.id}`)) {
     const own = requestFrom(full);
-    if (own) instructions = [`${full.title}\n\n${own}`, instructions].filter(Boolean).join("\n\n");
+    // An agent-written description is shown once, under the Task block, and is the agent's request, never the owner's words.
+    if (own) instructions = ownRequest(full) ? [`${full.title}\n\n${own}`, instructions].filter(Boolean).join("\n\n") : instructions || `(From an agent, not ${cfg.selfName}'s own words.)\n\nThe request is the task above.`;
   }
   // A run or merges in progress: the comment may be about that work ("stop", "how's it going?").
   if (latest && (running.has(issue.id) || mergeQueue(issue.id)?.state === "running")) return whileBusy(issue, latest, instructions);
