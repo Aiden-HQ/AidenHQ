@@ -48,8 +48,10 @@ export function verdict(exitCode, stdout, sha = "", opts = {}) {
   const v = judge(exitCode, stdout, sha, opts);
   const scope = v.short ? "" : mode === "delta" ? `_Reviewed only the changes since ${old}, this PR's last green review (delta ${n} of at most 3 before a full review). codegenie saw that diff alone, not the rest of the PR's._`
     : mode === "full" ? "_Reviewed the whole PR._" : "";
-  // The depth the workflow picked: light by default, normal on a critical path (the first one it matched), deep on request.
-  const how = depth === "normal" && critical ? `_Depth normal: touches \`${clip(critical, 200).replace(/`/g, "")}\`._` : depth ? `_Depth ${depth}._` : "";
+  // The depth the workflow picked: quick (quick-review.mjs) or light by default, normal on a critical path (the first one it
+  // matched), deep on request.
+  const how = depth === "normal" && critical ? `_Depth normal: touches \`${clip(critical, 200).replace(/`/g, "")}\`._`
+    : depth === "quick" ? "_Quick review (one model call): it touches no critical path._" : depth ? `_Depth ${depth}._` : "";
   const notes = [scope, how].filter(Boolean).join(" ");
   return notes ? { ...v, body: `${v.body}\n\n${notes}` } : v;
 }

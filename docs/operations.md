@@ -339,8 +339,9 @@ once. The repo and PR come from that signed token. The CI token works only on th
 `chat/completions` with the models in `settings.ci_review_models` and no fallbacks, plugins or server tools, under CI's
 own caps (`ci_review_repo_day_usd`, `ci_review_day_usd`; always on; a refusal fails the
 review, no retry). Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job
-sent (advisory): the Costs tab's "App CI code review" line. codegenie has no base-URL option, so the job loads a small
-preload that sends its OpenRouter calls to the gateway. Revoke: `settings.ci_review: off` refuses every CI token at once.
+sent (advisory): the Costs tab's "App CI code review" line. A PR that touches no critical path gets the quick reviewer
+(`.github/quick-review.mjs`: one call, GPT Luna by default); a critical one gets codegenie, which has no base-URL option,
+so the job loads a small preload that sends its OpenRouter calls to the gateway. Revoke: `settings.ci_review: off` refuses every CI token at once.
 A same-repo PR can edit the workflow and spend up to its repo's day cap on the allowed models: the cap and scope are the
 boundary, not the job name. Instances without the gateway (no `AIDENHQ_GATEWAY_URL`) use the repo secret
 `OPENROUTER_API_KEY` instead; where the gateway is on, delete that secret from the app repos (an edited workflow could
@@ -351,7 +352,8 @@ read it).
    the agents org → Settings → Developer settings → GitHub Apps → the App → Permissions), save, then accept the new
    permission on each installation (every org that installed the App is asked). New Apps get it from the manifest.
 2. Agents org → Settings → Actions → Runner groups → Default: allow private repositories (and public if any). No model
-   secret: code review spends through the gateway (above). Optional variable `CODEGENIE_MODEL` (default
+   secret: code review spends through the gateway (above). Optional variables `QUICK_REVIEW_MODEL` (default
+   `openrouter/~openai/gpt-luna-latest`) and `CODEGENIE_MODEL` (default
    `openrouter/~deepseek/deepseek-flash-latest`; `openrouter/deepseek/deepseek-v4-flash-0731` gets codegenie's DeepSeek
    routing workaround if the `~` alias misbehaves: add it to `settings.ci_review_models` first).
 3. Instance repo: add `ci` to `modules:` in `instance.yaml`; deploy (`ops/apply-config.sh`).
