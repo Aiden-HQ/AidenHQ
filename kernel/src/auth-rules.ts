@@ -1,11 +1,9 @@
-// Accounts' shared rules (the access design doc; lean 3a): one Better Auth configuration for data/kernel/auth/auth.db,
-// used by the kernel (the admin listener: the owner's and admins' sign-in, TOTP, links) and, until 3g moves them, by the
-// board's gate-facing sign-in listener (3129) and app access. scripts/sync-shared.mjs copies this file to
-// services/board/src/auth-rules.ts, so both processes run the same options against the same file and the same secret: a
-// session one opens is a session for the other. No relative imports (it runs in both).
+// Accounts' rules (the access design doc; lean 3a, 3g): one Better Auth configuration for data/kernel/auth/auth.db, which only
+// the kernel opens: the admin listener (3120: the owner's and admins' sign-in, TOTP, links) and the gate-facing sign-in
+// listener (3129: shared apps' sign-in and app access) share one instance.
 // Better Auth does the passwords (argon2id), sessions, TOTP and reset tokens; this is the glue: which endpoints each listener
 // exposes, the admin-TOTP rules, the fixed 15-minute lockout, the per-address ban, the owner's sign-in alerts and notices, and
-// TOTP replay (spent codes live in the shared file, so a code used on one listener is spent on the other too).
+// TOTP replay (spent codes live in the file, so a code used on one listener is spent on the other too).
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -91,12 +89,12 @@ export function outboundCookie(c: string, https: boolean, listener: Listener): s
   return parts.join("; ");
 }
 
-/** The accounts file, mode 600, with a busy timeout: two processes (the kernel and the board's sign-in listener) open it. */
+/** The accounts file, mode 600, with a busy timeout. */
 export function openAuthDb(dbPath: string): DatabaseSync {
   if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(dbPath);
   if (dbPath !== ":memory:") chmodSync(dbPath, 0o600);
-  // totp_spent: codes used, on either listener. handoff_session: app host sessions the gate's handoff opened (the board's).
+  // totp_spent: codes used, on either listener. handoff_session: app host sessions the gate's handoff opened.
   db.exec(`PRAGMA busy_timeout = 5000; CREATE TABLE IF NOT EXISTS totp_spent (k TEXT PRIMARY KEY, until INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS handoff_session (token TEXT PRIMARY KEY, parent_id TEXT NOT NULL, host TEXT NOT NULL)`);
   return db;
@@ -186,7 +184,7 @@ export interface AuthCoreOptions {
   linkTtlMs: number;
   /** One line to the owner's channel: sign-in alerts and new-sign-in notices. */
   notify?: (line: string) => void;
-  /** After a link is claimed (the board re-exports the gate's account map). */
+  /** After a link is claimed (the gate's account map is exported again). */
   onPasswordReset?: (user: { id: string; email: string }) => void;
   log: Log;
   /** The clock (tests). */

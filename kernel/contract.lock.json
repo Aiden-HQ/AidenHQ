@@ -17,6 +17,10 @@
       "state": "experimental",
       "fp": "auth=session"
     },
+    "admin route GET /auth/handoff": {
+      "state": "experimental",
+      "fp": "auth=admin"
+    },
     "admin route GET /auth/password": {
       "state": "experimental",
       "fp": "auth=admin"
@@ -270,6 +274,18 @@
       "state": "stable",
       "fp": "auth=bearer"
     },
+    "route POST /v1/accounts/:op": {
+      "state": "experimental",
+      "fp": "auth=board+session"
+    },
+    "route POST /v1/apps/:op": {
+      "state": "experimental",
+      "fp": "auth=module"
+    },
+    "route POST /v1/auth/:op": {
+      "state": "experimental",
+      "fp": "auth=board"
+    },
     "route POST /v1/brake/notify": {
       "state": "experimental",
       "fp": "auth=module"
@@ -289,6 +305,10 @@
     "route POST /v1/channel/stop": {
       "state": "experimental",
       "fp": "auth=module"
+    },
+    "route POST /v1/operator/:op": {
+      "state": "experimental",
+      "fp": "auth=operator-key"
     },
     "route POST /v1/reviews": {
       "state": "experimental",

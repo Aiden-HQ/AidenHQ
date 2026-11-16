@@ -1,6 +1,6 @@
 // Board accounts: the Accounts page (people and your own signed-in browsers), and the pointer to the kernel's sign-in pages.
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { SignInRequired, accountsApi, type Account, type AppAdmins, type AuthSession, type Session } from "./api";
+import { SignInRequired, accountsApi, api, type Account, type AppAdmins, type AuthSession, type Session } from "./api";
 import { SkeletonLines } from "./Skeleton";
 import { ago } from "./util";
 
@@ -35,14 +35,15 @@ function useSubmit(run: () => Promise<void>) {
   return { busy, error, submit };
 }
 
-/** Signing in, enrolling an authenticator and claiming a link happen on the kernel's admin pages; the session is the board's too. */
-export function SignInScreen({ session }: { session: Session }) {
-  const base = session.adminUrl ?? "";
-  const where = session.needsTotp ? `${base}/auth/enrol` : `${base}/auth/sign-in`;
+/**
+ * Signing in, enrolling an authenticator and claiming a link happen on the kernel's admin pages; /auth/start then has the
+ * kernel hand this board its own session (and sends the browser to sign in there first when it isn't).
+ */
+export function SignInScreen() {
   return (
-    <Screen title={session.needsTotp ? "Set up your authenticator" : "Sign in"} sub="Admins sign in on the AidenHQ sign-in page, then come back here.">
-      <a className="btn primary" href={where}>
-        {session.needsTotp ? "Set up the authenticator" : "Sign in"}
+    <Screen title="Sign in" sub="Admins sign in on the AidenHQ sign-in page, then come back here.">
+      <a className="btn primary" href="/auth/start">
+        Sign in
       </a>
     </Screen>
   );
@@ -108,8 +109,11 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
             Signed in as {session.account?.email}
             {session.account?.owner ? " (owner)" : ""}.{" "}
             <a className="link-btn" href={`${session.adminUrl ?? ""}/auth/password`}>
-              Password and sign out
-            </a>
+              Password
+            </a>{" "}
+            <button className="link-btn" onClick={() => void api.signOut().then(() => location.reload())}>
+              Sign out of the board
+            </button>
           </p>
         </div>
       </header>

@@ -13,7 +13,7 @@ import type { Writes } from "./writes.ts";
 
 /** config/kernel/modules.json (compile): modules with kernel roles, a privileged entry, a token of their own or a channel. */
 export type ModuleInfo = { roles?: string[]; privileged?: string[]; token?: string; channel?: { stamp?: string; stale?: boolean }; settings?: Record<string, unknown> };
-export type ModulesFile = { modules?: Record<string, ModuleInfo>; owner?: { name?: string; timezone?: string } };
+export type ModulesFile = { modules?: Record<string, ModuleInfo>; owner?: { name?: string; email?: string; timezone?: string } };
 export type Api = (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>;
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 type OwnerWords = { text?: unknown; voice?: unknown; forward?: unknown; task?: unknown; agent?: unknown; note?: unknown };
@@ -42,13 +42,15 @@ export const neutral = (v: string) => v.replace(/<!/g, "‹!").replace(/-->/g, "
 /** May this module speak as the owner (a channel)? */
 export const isChannel = (m: ModuleInfo | undefined) => Boolean(m?.channel && m.privileged?.includes("speaks-as-owner"));
 
-export function createChannels({ db, writes, board, owner, modules, log = () => {}, now = Date.now }: {
+export function createChannels({ db, writes, board, owner, modules, resetLinks = () => [], log = () => {}, now = Date.now }: {
   db: DatabaseSync; writes: Writes;
   /** The board's internal listener with the kernel's key (the runner's cards, successors, the owner's notices). */
   board: Api;
   /** The control plane as the owner (the board key, held only by the kernel). */
   owner: Api;
   modules: () => ModulesFile; log?: Log; now?: () => number;
+  /** Account reset links waiting for the owner (accounts.ts), each handed over once. */
+  resetLinks?: () => { email: string; url: string }[];
 }) {
   db.exec(`CREATE TABLE IF NOT EXISTS channel_tokens (hash TEXT PRIMARY KEY, card TEXT NOT NULL, digest TEXT NOT NULL, channel TEXT NOT NULL, decision TEXT NOT NULL, created_at TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '', panel INTEGER NOT NULL DEFAULT 0);
     CREATE INDEX IF NOT EXISTS channel_tokens_card ON channel_tokens (card, channel);
@@ -257,10 +259,11 @@ export function createChannels({ db, writes, board, owner, modules, log = () => 
     async notices(module: string) {
       channelOf(module);
       // Each is handed over once: one failing call never drops what the others already took.
-      const [lines, links, digest] = (await Promise.allSettled([board("GET", "/internal/owner/grades"), board("GET", "/internal/owner/reset-links"), board("GET", "/internal/owner/approvals/digest")]))
+      const [lines, digest] = (await Promise.allSettled([board("GET", "/internal/owner/grades"), board("GET", "/internal/owner/approvals/digest")]))
         .map((r) => (r.status === "fulfilled" && r.value.status === 200 ? r.value.json : {}));
+      const links = resetLinks();
       const own = (db.prepare("DELETE FROM owner_lines WHERE id IN (SELECT id FROM owner_lines ORDER BY id LIMIT 20) RETURNING id, text").all() as { id: number; text: string }[]).sort((x, y) => x.id - y.id).map((r) => r.text);
-      return { lines: [...own, ...(Array.isArray(lines!.lines) ? lines!.lines.map(String) : [])], links: Array.isArray(links!.links) ? links!.links : [], digest: typeof digest!.text === "string" ? digest!.text : null };
+      return { lines: [...own, ...(Array.isArray(lines!.lines) ? lines!.lines.map(String) : [])], links, digest: typeof digest!.text === "string" ? digest!.text : null };
     },
     /** A one-line notice for the owner from the kernel itself (the admin listener's sign-in alerts), handed to the next channel that collects. */
     ownerLine(text: string) {

@@ -445,8 +445,8 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   if (Array.isArray(settings.exposure)) fail("settings.exposure: one of public, tailscale, cloudflare or local, not a list");
   settings.exposure ??= "tailscale";
 
-  // settings.owner_email is the owner's board account (the only one setup creates, ops/setup.sh); core passes it to the
-  // board (BOARD_OWNER_EMAIL). Checked here, after the modules' own required settings.
+  // settings.owner_email is the owner's account (the only one setup creates, ops/setup.sh); the kernel reads it from
+  // config/kernel/modules.json (owner.email). Checked here, after the modules' own required settings.
   if (!settings.owner_email) fail("settings.owner_email is required (the owner's board account)");
 
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
@@ -584,8 +584,8 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     }
   }
   for (const k of Object.keys(compose.services)) if (!serviceModule[k] && claimed[k]) fail(`module ${claimed[k]}: the service name ${k} is a root service's`);
-  // One host port, one owner: the product's compose, the modules', the gate, the board's auth listener and the apps.
-  checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "board"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
+  // One host port, one owner: the product's compose, the modules', the gate, the kernel's sign-in listener and the apps.
+  checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
 
   instanceAgents(instanceDir, settings, paperclip, routineTitles);
   // Paperclip's crew adapter args come from the engine module that contributes them.
@@ -805,7 +805,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), ...(reviewer ? { reviewer } : {}) };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), ...(reviewer ? { reviewer } : {}) };
   return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 

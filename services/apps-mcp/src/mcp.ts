@@ -10,7 +10,7 @@ import { canView, viewApp, viewContent, webView } from "./view.js";
 import { decideIdentity } from "./people.js";
 import { findingVerdict, sourceAck, sourceNew, VIEWS, warehouseQuery } from "./sources.js";
 
-/** POSTs to the board's /internal/apps/<path> with the apps token (main.ts): in-app requests, app roles. */
+/** POSTs to the kernel's /v1/apps/<op> with this module's token (main.ts): in-app requests, app roles. */
 export type Board = (path: string, body: unknown) => Promise<any>;
 
 /** Request text inside a fence it can't close. */
@@ -97,10 +97,10 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
   );
 
   // In-app requests and roles (docs/design/access.md, In-app requests and roles): for the app's owner agent and
-  // agents with the app-requests role (the DevOps Engineer). The board makes the one check that matters (the request's
+  // agents with the app-requests role (the DevOps Engineer). The kernel makes the one check that matters (the request's
   // gate-verified requester is an admin of the app now); this only says which agent asked.
   const toBoard = (path: string, body: unknown) => {
-    if (!board) throw new Error("the board isn't wired to apps-mcp (APPS_INTERNAL_TOKEN / BOARD_URL)");
+    if (!board) throw new Error("the kernel isn't wired to apps-mcp");
     return board(path, body);
   };
   const requestsOf = (name: string) => {
@@ -129,7 +129,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
     "Answer an in-app request: status done (you did it), declined (you won't; say why) or answered (a reply only), and one line the requester sees on the app's /.aidenhq/requests page. Say exactly what changed.",
     { name, id: z.string().max(40), status: z.enum(["done", "declined", "answered"]), reply: z.string().min(1).max(300) },
     true,
-    async ({ name, id, status, reply }) => toBoard("requests/reply", { app: requestsOf(name).name, id, status, reply }),
+    async ({ name, id, status, reply }) => toBoard("reply", { app: requestsOf(name).name, id, status, reply }),
   );
   tool(
     "app_roles",
@@ -143,7 +143,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
     "Set a person's role on a shared app (blocked, member, admin or one of the app's own roles; role null removes their assignment so the default applies), for the in-app request that asked. The board refuses unless that request's requester is an admin of the app now. Never for a request that didn't ask for exactly this.",
     { name, request_id: z.string().max(40).describe("the request that asked (app_requests)"), email: z.string().max(200), role: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/).nullable() },
     true,
-    async ({ name, request_id, email, role }) => toBoard("role-set", { app: requestsOf(name).name, agent: caller.key, request_id, email, role }),
+    async ({ name, request_id, email, role }) => toBoard("role_set", { app: requestsOf(name).name, agent: caller.key, request_id, email, role }),
   );
 
   tool(

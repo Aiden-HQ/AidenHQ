@@ -127,10 +127,14 @@ set_env() { # KEY VALUE: sets KEY in .env (replacing a commented or old line, el
 }
 json() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }   # a JSON string, without node (a dry run has none)
 read_secret() { [ -s "$SECRETS/$1" ] && cat "$SECRETS/$1" || true; }
-board() { # METHOD PATH [JSON]: the board's internal listener, with the operator's key (setup link, welcome chat, resets)
+board() { # METHOD PATH [JSON]: the board's internal listener, with the operator's key (the welcome chat)
   # The keys go in on stdin (-H @-), never in argv where other processes could read them.
   printf 'x-operator-key: %s\nauthorization: Bearer %s\n' "$(read_secret board_operator_key)" "$(read_secret board_internal_token)" \
     | curl -sS -X "$1" "http://127.0.0.1:3122$2" -H 'host: 127.0.0.1:3122' -H 'content-type: application/json' -H @- ${3:+--data "$3"} "${@:4}"
+}
+operator() { # OP [JSON]: the kernel's accounts (its backplane, POST /v1/operator/<op>) with the operator's key: setup link, resets
+  printf 'x-operator-key: %s\n' "$(read_secret board_operator_key)" \
+    | curl -sS -X POST "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/v1/operator/$1" -H 'content-type: application/json' -H @- ${2:+--data "$2"} "${@:3}"
 }
 
 # The board's address on the tailnet: the link, Google's redirect and the apps all hang off it.
@@ -148,18 +152,18 @@ fi
 # The owner's way in: the one-time setup link for OWNER_EMAIL (it sets a password; the board then asks for an
 # authenticator), only while no owner account exists.
 owner_link() {
-  if [ "$DRY" = 1 ]; then echo "  + board: the owner's one-time setup link"; return 0; fi
-  for _ in $(seq 60); do curl -fsS -o /dev/null http://127.0.0.1:3121/healthz 2>/dev/null && break; sleep 2; done
+  if [ "$DRY" = 1 ]; then echo "  + kernel: the owner's one-time setup link"; return 0; fi
+  for _ in $(seq 60); do curl -fsS -o /dev/null "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/healthz" 2>/dev/null && break; sleep 2; done
   local resp code url
   # The status too: only 409 (the owner already exists) is a quiet answer; any other failure stops setup.
-  resp="$(board POST /internal/accounts/setup "{\"email\":$(json "$OWNER_EMAIL"),\"name\":$(json "$OWNER_NAME")}" -w '\n%{http_code}' 2>/dev/null || true)"
+  resp="$(operator setup "{\"email\":$(json "$OWNER_EMAIL"),\"name\":$(json "$OWNER_NAME")}" -w '\n%{http_code}' 2>/dev/null || true)"
   code="${resp##*$'\n'}"; url="$(printf '%s' "${resp%$'\n'*}" | jq -r '.url // empty' 2>/dev/null || true)"
   if [ "$code" = 200 ] && [[ "$url" =~ ^https?://[^[:space:]]+$ ]]; then
     echo "$url"
     # The installer reads this line (the last one wins).
     [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SETUP_URL=$url"
   elif [ "$code" = 409 ]; then echo "(the owner's account already exists; a new link goes to the owner's Telegram: sudo ops/setup.sh ${CONFIG:+--config $CONFIG }--reset $OWNER_EMAIL)"
-  else die "the board gave no setup link for $OWNER_EMAIL (HTTP ${code:-none}; is it up? docker compose ps board)"; fi
+  else die "the kernel gave no setup link for $OWNER_EMAIL (HTTP ${code:-none}; is it up? systemctl --user status aidenhq-kernel)"; fi
 }
 
 if [ "$LINK_ONLY" = 1 ]; then
@@ -168,11 +172,11 @@ if [ "$LINK_ONLY" = 1 ]; then
   exit 0
 fi
 
-# Recovery: the board's internal listener with the operator key; the link goes to the owner's Telegram
+# Recovery: the kernel's accounts with the operator key; the link goes to the owner's Telegram
 # through the owner channel, never back here.
 if [ -n "$RESET" ]; then
-  if [ "$DRY" = 1 ]; then echo "  + board: reset $RESET (its link to the owner's Telegram)"; exit 0; fi
-  board POST /internal/accounts/reset "{\"email\":$(json "$RESET")}" -f >/dev/null || die "the board refused the reset (is $RESET an account?)"
+  if [ "$DRY" = 1 ]; then echo "  + kernel: reset $RESET (its link to the owner's Telegram)"; exit 0; fi
+  operator reset "{\"email\":$(json "$RESET")}" -f >/dev/null || die "the kernel refused the reset (is $RESET an account?)"
   echo "Reset $RESET: its sessions ended. A new one-time link (72 hours) goes to the owner's Telegram within a minute."
   exit 0
 fi

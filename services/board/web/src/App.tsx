@@ -228,7 +228,7 @@ export function App() {
   // The cache (cache.ts) belongs to the signed-in account; with one, the last board paints at once while /api/board loads.
   useEffect(() => {
     if (!session) return;
-    const admin = session.account?.role === "admin" && !session.needsTotp;
+    const admin = session.account?.role === "admin";
     setAccount(admin ? session.account!.id : null);
     const cached = admin ? peek<Board>("board")?.data : undefined;
     if (!cached) return;
@@ -557,7 +557,7 @@ export function App() {
     if (needsSignIn) void api.session().then(setSession, () => {});
   }, [needsSignIn]);
   // Signed out, or an admin without an authenticator yet: both are done on the kernel's sign-in pages.
-  if (session && (!session.account || session.needsTotp)) return <SignInScreen session={session} />;
+  if (session && !session.account) return <SignInScreen />;
 
   if (!board || !items || !filtered)
     return <div className="splash">{error ? <>Can't reach the board: {error}</> : <span className="spinner" />}</div>;

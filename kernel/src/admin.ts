@@ -13,7 +13,10 @@ import type { Api } from "./channels.ts";
 
 type Card = Record<string, any>;
 type Deps = {
-  accounts: { sessionOf: (req: IncomingMessage) => Promise<AdminSession | null>; step: (req: IncomingMessage, sub: string, body: Record<string, unknown>) => Promise<Step>; secret: string };
+  accounts: {
+    sessionOf: (req: IncomingMessage) => Promise<AdminSession | null>; step: (req: IncomingMessage, sub: string, body: Record<string, unknown>) => Promise<Step>; secret: string;
+    mintUiCode: (who: AdminSession, module: string, origin: string, state: string) => string;
+  };
   cards: { ownerCards: () => Promise<{ live: Card[]; finished: Card[] }>; decideCard: (id: string, digest: string, decision: "approve" | "reject", by: string, via: string) => Promise<{ identifier: string; sentence: string; state: string }> };
   ownerMessage: (b: { text?: unknown; task?: unknown }) => Promise<{ task: { identifier: string } }>;
   /** The control plane as the owner (a confirmed status change). */
@@ -26,6 +29,8 @@ type Deps = {
   origins: () => string[];
   /** Origins that may frame /owner/message (the board's). */
   frameOrigins: () => string[];
+  /** Module UI origins a session may be handed to (/auth/handoff), each with its module: the board's origins. */
+  uiOrigins?: () => Record<string, string>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
@@ -43,6 +48,7 @@ export const ROUTES = [
   { method: "GET", path: "/auth/password", auth: "admin" },
   { method: "POST", path: "/auth/password", auth: "admin+csrf" },
   { method: "POST", path: "/auth/sign-out", auth: "origin" },
+  { method: "GET", path: "/auth/handoff", auth: "admin" },
   { method: "GET", path: "/", auth: "admin" },
   { method: "GET", path: "/approvals", auth: "admin" },
   { method: "GET", path: "/approvals/:id", auth: "admin" },
@@ -92,7 +98,7 @@ export function createAdmin(d: Deps) {
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) =>
     void res.writeHead(303, { location: to, "cache-control": "no-store", ...(cookies.length ? { "set-cookie": cookies } : {}) }).end();
   const form = (action: string, inner: string, s?: AdminSession | null) => `<form method="post" action="${esc(action)}">${s ? `<input type="hidden" name="csrf" value="${csrf(s)}">` : ""}${inner}</form>`;
-  const safeNext = (n: string | null) => (n && /^\/(approvals|owner)[\w/?=&.-]*$/.test(n) ? n : "/approvals");
+  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner)[\w/?=&.-]*$/.test(n) || /^\/auth\/handoff\?[\w=&.%:-]*$/.test(n)) ? n : "/approvals");
 
   async function body(req: IncomingMessage): Promise<URLSearchParams> {
     const chunks: Buffer[] = [];
@@ -188,6 +194,14 @@ export function createAdmin(d: Deps) {
       if (req.method === "POST") checkCsrf(s, f);
       const by = `account:${s.account.id}`;
       switch (`${hit.method} ${hit.path}`) {
+        case "GET /auth/handoff": {
+          const to = url.searchParams.get("to") ?? "", state = url.searchParams.get("state") ?? "";
+          const module = Object.hasOwn(d.uiOrigins?.() ?? {}, to) ? d.uiOrigins!()[to]! : undefined;
+          if (!module) throw new Refusal(400, "that address isn't an installed module's");
+          const code = d.accounts.mintUiCode(s, module, to, state);
+          log("session handed to a module", { module, origin: to, by });
+          return redirect(res, `${to}/auth/handoff?${new URLSearchParams({ code, state })}`);
+        }
         case "GET /auth/password": return send(res, 200, doc("Change password", `<h1>Change password</h1>${form("/auth/password", `<label>Current password<input name="current" type="password" autocomplete="current-password" required></label><label>New password (12 characters or more)<input name="password" type="password" minlength="12" autocomplete="new-password" required></label><button class="b">Change</button>`, s)}`, s));
         case "POST /auth/password": {
           const r = await step(req, "/change-password", { currentPassword: f.get("current") ?? "", newPassword: f.get("password") ?? "", revokeOtherSessions: true });

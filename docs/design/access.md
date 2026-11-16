@@ -28,7 +28,7 @@ interface, input and forward) lets in. Everything else on that interface is drop
 | `cloudflare` | cloudflared (outbound only) behind Cloudflare Access | tcp 22 |
 | `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |
 
-- **Admin and board listeners stay loopback** (the kernel's 3120; the board's 3121, 3122, 3129). The front door reaches
+- **Admin and board listeners stay loopback** (the kernel's 3120 and 3129; the board's 3121, 3122). The front door reaches
   3121 and 3120 on loopback. The one
   exception: a LAN-only VM in `local` mode with `AIDENHQ_PUBLIC_IF=none` may publish 3121 on the LAN.
 - **443 opens only once a Caddy front door is compiled** (a `caddy` service in `compose.modules.yaml`). Until then
@@ -45,19 +45,30 @@ The full design, including the switch from public to Tailscale or Cloudflare, is
 
 ## Accounts and sign-in
 
-Accounts use Better Auth inside the kernel (lean-core 3a), stored in its own SQLite file `data/kernel/auth/auth.db`
-(mode 600, its `auth.secret` beside it). `kernel/src/auth-rules.ts` holds the options and sign-in rules,
-`kernel/src/accounts.ts` the kernel's side and `kernel/src/admin.ts` its pages. Until 3g moves them, the board's
-gate-facing sign-in listener (3129), app access and account administration open the same file with the same options
-(a synced copy, `services/board/src/auth-rules.ts`; the board mounts only `data/kernel/auth/`).
+Accounts use Better Auth inside the kernel (lean-core 3a, 3g), stored in its own SQLite file `data/kernel/auth/auth.db`
+(mode 600, its `auth.secret` beside it). Only the kernel opens it. `kernel/src/auth-rules.ts` holds the options and sign-in
+rules, `kernel/src/accounts.ts` accounts, sessions, links, handoffs and the gate's account map, `kernel/src/admin.ts` the
+admin pages, `kernel/src/signin.ts` the gate-facing sign-in listener (127.0.0.1:3129), `kernel/src/app-access.ts` per-app
+roles and in-app requests, and `kernel/src/auth-api.ts` the backplane routes modules use (the board's session and account
+administration, apps-mcp's in-app requests, `ops/setup.sh`'s setup link and resets with the operator key).
+
+- **The board on its own origin** (3g). The board mounts no accounts file. `/auth/start` on the board sets a state nonce in
+  its own cookie and sends the browser to the kernel's `/auth/handoff?to=<board origin>&state=`. There a ready admin
+  (otherwise sign-in first) gets a one-time code (60 s, single use) bound to that origin, the module and the state; `to` must
+  be exactly one of the installed UI origins (`AIDENHQ_BOARD_ORIGINS`, default `BOARD_LAN_URL`'s origin), so there is no
+  open redirect. The board exchanges the code on the backplane (`POST /v1/auth/exchange`, `gateway_board_key`), only in the
+  browser whose state cookie matches, and keeps the session token in its own host-only cookie (`__Host-aidenhq-board` on
+  https). Every board request checks it with the kernel (`POST /v1/auth/session`, believed for 5 seconds): the admin
+  listener's sign-out, a disable, a role change or a reset ends it. The kernel's own session cookie, which reaches the
+  board's origin too, is never read there. Account administration on the board goes to the kernel as that admin's session
+  (`/v1/accounts/*`).
 
 - **The admin listener** is the kernel's, on `127.0.0.1:3120`, behind its own front door (`tailscale serve --https=8444`,
   or the SSH tunnel). It serves sign-in, TOTP enrolment, link claims, the approval list and card pages, batch decide, the
   owner's confirmation page and the owner message frame, server-rendered with no script. Every page sends
   `frame-ancestors 'none'` except `/owner/message`, which the board's origins may frame. Every form carries this
   listener's own Origin exactly (cookies ignore ports, so the board's origin on the same host is refused) and, signed in,
-  a token bound to the session. The board (3121) reads the same session cookie and links each card to its kernel page;
-  it decides nothing.
+  a token bound to the session. The board (3121) links each card to its kernel page; it decides nothing.
 - **Two kinds of account.** An admin signs in on the admin listener with email, password and TOTP and can approve cards
   there. A user never gets the board or the kernel pages; the account only opens shared apps.
 - **Credentials.** Passwords are argon2id with a 12-character minimum. An admin session is refused unless TOTP is
@@ -148,14 +159,15 @@ With `settings.edge.previews: true`, each open PR on a shared app's repo also ru
 Each mode is a sign-in adapter in the gate (`authenticate(req) → { email, idp }`; [app-identity.md](app-identity.md)); a
 new identity provider is one more adapter.
 
-`settings.app_login` chooses how people sign in (the "gate sign-in listener" is the board's auth listener on 3129):
+`settings.app_login` chooses how people sign in (the "gate sign-in listener" is the kernel's on 127.0.0.1:3129; the gate
+serves the sign-in pages itself, `services/gate/signin-pages.ts`, and passes only their steps on):
 
 - **`access` (default).** The Access token for the host's audience tag (`share.aud`) is required and verified against
   the team's JWKS (signature, issuer, audience, expiry). The identity provider is configured in Access by the
   organization's administrators, never in this code. Any email Access admits is a platform member unless its account is
   disabled.
 - **`password`.** For instances without single sign-on. The gate delegates sign-in to Better Auth on 3129, which serves
-  only sign-in pages, Better Auth's endpoints and the handoff and app-access calls; no board route. Sign-in lives only on
+  only Better Auth's endpoints and the handoff and app-access calls; no page and no admin or board route. Sign-in lives only on
   the my-apps host. Each app host gets its own host-only `__Host-` session cookie through a one-time, 60-second handoff
   code bound to that host; there is no shared cookie. The gate calls 3129 with `gate_board_secret`, caches
   `get-session` for 60 seconds, and a membership is an enabled account. A host that also has an `aud` still needs Access:
