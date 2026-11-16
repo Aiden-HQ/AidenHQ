@@ -36,6 +36,8 @@ agents:
     model: ~openai/gpt-luna-latest
     reasoning_effort: medium
     timeout_sec: 2400
+    # It judges our own pages' screenshots: no web search.
+    web_search: disabled
     image: agent-base
     connections:
       slack_live: [ notify_owner ]

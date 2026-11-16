@@ -98,12 +98,8 @@ async function api(method, path, body, { auth = "board", allow = [] } = {}) {
   let json;
   try {
     json = text ? JSON.parse(text) : {};
-  } catch {
-    json = { raw: text.slice(0, 300) };
-  }
-  if (!res.ok && !allow.includes(res.status)) {
-    throw new Error(`${method} ${path} → ${res.status}: ${JSON.stringify(json).slice(0, 400)}`);
-  }
+  } catch { json = { raw: text.slice(0, 300) }; }
+  if (!res.ok && !allow.includes(res.status)) throw new Error(`${method} ${path} → ${res.status}: ${JSON.stringify(json).slice(0, 400)}`);
   return { status: res.status, json, headers: res.headers };
 }
 
@@ -187,9 +183,7 @@ async function ensureCompany() {
   if (!company) {
     company = (await api("POST", "/api/companies", { name: cfg.company.name, description: cfg.company.description ?? null })).json;
     step(`Created company ${company.name} (${company.issuePrefix})`);
-  } else {
-    step(`Company ${company.name} exists (${company.issuePrefix})`);
-  }
+  } else step(`Company ${company.name} exists (${company.issuePrefix})`);
   return company;
 }
 
@@ -457,7 +451,7 @@ async function ensureAgents(companyId, fleetIssues) {
   const { json: agents } = await api("GET", `/api/companies/${companyId}/agents`);
   // Everything that needs no Paperclip call first, in config order (revInputs and handbooks stay keyed by config).
   const plans = Object.entries(cfg.agents ?? {}).map(([key, a]) => {
-    const instructions = readInstructions(a) + personaSection(key, a) + computerSection(a) + (a.adapter === "codex_local" ? howWeWork(a) + PROGRESS_SECTION + APPROVALS_SECTION + REPLIES_SECTION + (a.enabled_tools?.slack_live?.includes("notify_owner") ? ASKING_SECTION : "") + DELEGATING_SECTION + (cfg.agents?.["ui-designer"] && !["ui-designer", "ui-reviewer"].includes(key) ? DESIGN_REVIEW_LINE : "") + WEB_SECTION + PRIVACY_SECTION + DEPENDENCIES_SECTION + improvingSection(key, a) + appFollowupSection(a) + (a.enabled_tools?.paperclip_tasks?.includes("advisor_ask") ? ADVISOR_SECTION : "") + (a.enabled_tools?.paperclip_tasks?.includes("fanout_map") ? FANOUT_SECTION : "") : "") + memorySection(a) + sourcesSection(a, cfg.mcp_servers ?? {}) + heartbeatSection(a, fleetIssues, repo);
+    const instructions = readInstructions(a) + personaSection(key, a) + computerSection(a) + (a.adapter === "codex_local" ? howWeWork(a) + PROGRESS_SECTION + APPROVALS_SECTION + REPLIES_SECTION + (a.enabled_tools?.slack_live?.includes("notify_owner") ? ASKING_SECTION : "") + DELEGATING_SECTION + (cfg.agents?.["ui-designer"] && !["ui-designer", "ui-reviewer"].includes(key) ? DESIGN_REVIEW_LINE : "") + (a.web_search === "disabled" ? WEB_SECTION.replace("You have live web search, `web_view`", "You have `web_view`") : WEB_SECTION) + PRIVACY_SECTION + DEPENDENCIES_SECTION + improvingSection(key, a) + appFollowupSection(a) + (a.enabled_tools?.paperclip_tasks?.includes("advisor_ask") ? ADVISOR_SECTION : "") + (a.enabled_tools?.paperclip_tasks?.includes("fanout_map") ? FANOUT_SECTION : "") : "") + memorySection(a) + sourcesSection(a, cfg.mcp_servers ?? {}) + heartbeatSection(a, fleetIssues, repo);
     const agent = agents.find((x) => x.metadata?.setupKey === `aidenhq:${key}` && x.status !== "terminated") ?? agents.find((x) => x.name === a.name && x.status !== "terminated");
     const body = agentBody(key, a, agent);
     revInputs[key] = instructions + JSON.stringify(body.adapterConfig); // the rev's text (revOf)
