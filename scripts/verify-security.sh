@@ -485,14 +485,16 @@ if net_probe="$(node --input-type=module -e '
     `[ "$(curl -s -o /dev/null -m 10 -w %{http_code} https://openrouter.ai/api/v1/models)" = 200 ] || echo "no Internet (openrouter.ai)"`,
     `[ "$(curl -s -m 5 http://127.0.0.1:${hp}/)" = ok ] || echo "the helper port ${hp} is not reachable"`,
     ...loopbackPorts(mcp).filter((p) => local.has(p)).map((p) => `${tcp(`127.0.0.1:${p}`)} >/dev/null || echo "MCP port ${p} is not reachable"`),
-    ...blocked.map((t) => `${tcp(t)} | sed "s/^open/reaches/"`),
+    // One list piped to xargs, 32 at a time: a line per target outgrew the 128 KB limit of one argument (E2BIG) at ~1200 pairs.
+    `printf "%s\\n" ${blocked.map((t) => t.replace(":", "/")).join(" ")} | xargs -P 32 -I@ bash -c "timeout 3 bash -c \x27exec 3<>/dev/tcp/@\x27 2>/dev/null && echo reaches @" | sed "s|/|:|"`,
     "echo probe-done",
   ].join("\n");
   const [c, ...a] = hiding(cfg, ["bash", "-c", script], [...mcp, `http://127.0.0.1:${hp}`]);
   const r = spawnSync(c, a, { encoding: "utf8", timeout: 180000 });
   helper.kill();
   const out = `${r.stdout}`.trim().split("\n").filter((l) => l && l !== "probe-done");
-  if (!r.stdout.includes("probe-done")) out.push(`the jailed probe did not run (exit ${r.status ?? r.signal}): ${r.stderr.trim().slice(0, 200)}`);
+  if (r.error) out.push(`the jailed probe could not start: ${r.error.message} (${c})`);
+  else if (!r.stdout.includes("probe-done")) out.push(`the jailed probe did not run (exit ${r.status ?? r.signal}): ${r.stderr.trim().slice(0, 200)}`);
   process.stdout.write(out.length ? out.join(", ") : `${blocked.length} host address:port pairs refused`);
   process.exit(out.length ? 1 : 0);
 ' 2>&1)"; then
