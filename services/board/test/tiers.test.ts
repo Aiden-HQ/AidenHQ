@@ -56,6 +56,7 @@ describe("tiered approvals", () => {
     expect((await file(2)).tier).toBe(2);
     const one = await file(1);
     expect(one.tier).toBe(1);
+    expect(await pendingIds()).not.toContain(one.id); // not the owner's card until the reviewer has read it
     expect((await verdict(one.id, { digest: one.digest, decision: "approve" })).status).toBe(409);
     expect((await verdict(one.id, { digest: one.digest, decision: "escalate", reason: "The AI reviewer approved: fine." })).json).toMatchObject({ tier: 2, review: "The AI reviewer approved: fine." });
     expect(await pendingIds()).toContain(one.id);

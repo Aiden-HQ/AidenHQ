@@ -2065,7 +2065,8 @@ const authorityOf = (st) => {
 async function tierFor(issue, action, own, also = []) {
   const common = await commonTierState(issue, action, also);
   const s = { ...common, ...own };
-  const t = autonomyCap(classify(action, s), autonomyNow());
+  // `close` has no card: Tier 0 or refused, at any autonomy.
+  const t = action === "close" ? classify(action, s) : autonomyCap(classify(action, s), autonomyNow());
   log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject), panel: Boolean(t.panel), reviewFirst: Boolean(t.reviewFirst) });
   // The reviewer's earlier rejections on this task, attached to a fresh review of the changed request.
   const prior = priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s), common.requestChain);
