@@ -145,8 +145,11 @@ const LOCKOUT = { failures: 5, accountFailures: 20, windowMs: 15 * 60_000 };
 const BAN = { failures: 20, windowMs: 15 * 60_000, forMs: 3_600_000 };
 /** Per account, every address: more than 30 failures in an hour tell the owner (once an hour); nothing is locked. */
 const ALERT = { failures: 30, windowMs: 3_600_000 };
-/** Unnamed (shared) peers: backoff up to 15 minutes per email, and a ceiling per hour past which unnamed sign-in stops. */
-const UNNAMED = { maxMs: 15 * 60_000, ceiling: 20, hourMs: 3_600_000 };
+/**
+ * Unnamed (shared) peers, per email: one check in flight (a stuck one frees itself after `busyMs`), a hold after a failure of
+ * at most `maxMs`, and past `ceiling` failures in an hour the owner hears once. Nothing longer: the owner arrives this way too.
+ */
+const UNNAMED = { maxMs: 5000, busyMs: 10_000, ceiling: 20, hourMs: 3_600_000 };
 /** At most this many failed-sign-in alerts an hour; new-session notices are never capped (only someone who got in triggers one). */
 const ALERTS_PER_HOUR = 5;
 /** The steps a ban refuses: signing in and claiming a link. Open sessions keep working. */
@@ -175,10 +178,11 @@ export function authCore(o: AuthCoreOptions) {
    * The lockout, per email + listener + client address (memory only): 5 failed passwords or codes in 15 minutes block new
    * sign-ins for that pair for 15 minutes. Only an address a proxy named with its secret is locked: an unnamed peer is
    * shared (every client behind `tailscale serve` or an SSH tunnel arrives as loopback), so a lock there would let a stranger
-   * lock the owner out. There each email has a next allowed attempt instead: one password check at a time (a sign-in step
-   * reserves a second), each failure pushes it out (1 s, doubling, at most 15 minutes), an attempt before it is refused at
-   * once (429, Retry-After, no hashing), and past 20 failures in an hour unnamed sign-in for that email stops for the hour
-   * and the owner hears once. A named address (the front door's secret) is never held by any of it. Sessions already open stay (nobody can sign the owner out by failing on purpose).
+   * lock the owner out (the owner's own way in, `tailscale serve` or the gate, arrives the same way). There each email gets
+   * one password or code check in flight at a time and, after a failure, a hold of a few seconds (500 ms, doubling, at most
+   * 5 s); anything else is refused at once (429, Retry-After: 2, the wrong-password words, no hashing). The right password
+   * and code always get through on a retry. Past 20 failures in an hour the owner hears once; nothing more is blocked.
+   * Sessions already open stay (nobody can sign the owner out by failing on purpose).
    * The account-wide ceiling (`${email}|signin|*`) is counted and enforced only on the sign-in listener: strangers on the
    * internet can pause an account's sign-ins through the gate, never the owner's own sign-in on the admin listener.
    */
@@ -186,7 +190,7 @@ export function authCore(o: AuthCoreOptions) {
   const locks = new Map<string, number>();
   const lockKey = (email: string, listener: Listener | null | undefined, ip: string) => `${email}|${listener ?? "admin"}|${ip}`;
   /** Unnamed peers' failures (the last hour) and next allowed attempt, per email + listener. */
-  const unnamed = new Map<string, { fails: number[]; next: number }>();
+  const unnamed = new Map<string, { fails: number[]; next: number; busy: number; told: number }>();
   const forget = (email: string) => {
     for (const m of [failures, locks, unnamed]) for (const k of [...m.keys()]) if (k.startsWith(`${email}|`)) m.delete(k);
   };
@@ -197,26 +201,26 @@ export function authCore(o: AuthCoreOptions) {
   const unnamedOf = (email: string, ctx: { headers?: Headers }) => {
     const k = `${email}|${listenerOf(ctx) ?? "admin"}|unnamed`;
     const now = Date.now();
-    const u = unnamed.get(k) ?? { fails: [], next: 0 };
+    const u = unnamed.get(k) ?? { fails: [], next: 0, busy: 0, told: 0 };
     u.fails = u.fails.filter((t) => now - t < UNNAMED.hourMs);
     unnamed.set(k, u);
     return u;
   };
-  const backoff = (n: number) => (n ? Math.min(UNNAMED.maxMs, 1000 * 2 ** (n - 1)) : 0);
-  const refuseIfLocked = async (email: string, ctx: { headers?: Headers }, signIn: boolean) => {
+  const hold = (n: number) => (n ? Math.min(UNNAMED.maxMs, 500 * 2 ** (n - 1)) : 0);
+  const refuseIfLocked = async (email: string, ctx: { headers?: Headers }) => {
     const now = Date.now();
     const listener = listenerOf(ctx);
     if (!isNamed(ctx)) {
       const u = unnamedOf(email, ctx);
-      const until = u.fails.length >= UNNAMED.ceiling ? u.fails[0]! + UNNAMED.hourMs : u.next;
-      // The same words as a wrong password: a stranger learns nothing about the account from being held.
-      if (until > now) throw new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": String(Math.ceil((until - now) / 1000)) });
-      // Reserved before the hash: concurrent attempts wait their turn instead of all being checked at once.
-      u.next = now + Math.max(signIn ? 1000 : 0, backoff(u.fails.length));
+      // The same words as a wrong password: a stranger learns nothing about the account from waiting.
+      if (u.busy > now || u.next > now) throw new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": "2" });
+      u.busy = now + UNNAMED.busyMs; // taken before the hash: concurrent attempts are refused, not all checked at once
+      return u;
     }
     const pair = isNamed(ctx) && (locks.get(lockKey(email, listener, ipOf(ctx))) ?? 0) > now;
     const account = listener === "signin" && (locks.get(lockKey(email, "signin", "*")) ?? 0) > now;
     if (pair || account) throw new APIError("FORBIDDEN", { message: "too many failed sign-ins: try again in 15 minutes, or ask the owner for a new link" });
+    return undefined;
   };
 
   /** The per-address ban (memory only): `${listener}|${key}`; only an address a proxy named with its secret counts. */
@@ -233,6 +237,7 @@ export function authCore(o: AuthCoreOptions) {
       if (m.size > 1000) for (const [k, ts] of m) if (ts.every((t) => old(t, win))) m.delete(k);
     for (const m of [locks, bans]) if (m.size > 1000) for (const [k, t] of m) if (t <= now) m.delete(k);
     if (accountFailures.size > 1000) for (const [k, ts] of accountFailures) if (ts.every((f) => old(f.at, ALERT.windowMs))) accountFailures.delete(k);
+    if (unnamed.size > 1000) for (const [k, u] of unnamed) if (u.busy <= now && u.next <= now && u.fails.every((t) => old(t, UNNAMED.hourMs))) unnamed.delete(k);
   };
   const tell = (line: string) => (o.notify ? o.notify(line) : log.warn({ line }, "no owner channel for sign-in notices"));
   /** A failed-sign-in alert, within the hourly cap; false when this one was held back. */
@@ -308,8 +313,10 @@ export function authCore(o: AuthCoreOptions) {
       max: 200,
       storage: "memory",
       customRules: {
-        "/sign-in/email": { window: 60, max: 20 },
-        "/two-factor/verify-totp": { window: 60, max: 20 },
+        // A shared (unnamed) peer is everyone behind the front door: there the per-email guard above stands in, so a stranger
+        // can't spend the address's budget for the owner.
+        "/sign-in/email": (req) => (req.headers.get(NAMED_HEADER) ? { window: 60, max: 20 } : false),
+        "/two-factor/verify-totp": (req) => (req.headers.get(NAMED_HEADER) ? { window: 60, max: 20 } : false),
         "/two-factor/enable": { window: 60, max: 10 },
         "/reset-password": { window: 60, max: 20 },
       },
@@ -323,26 +330,34 @@ export function authCore(o: AuthCoreOptions) {
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
         const listener = listenerOf(ctx);
-        if (ctx.path === "/sign-in/email") {
-          const email = String((ctx.body as { email?: unknown })?.email ?? "").toLowerCase();
-          await refuseIfLocked(email, ctx, true);
-          const found = (await ctx.context.internalAdapter.findUserByEmail(email))?.user as { role?: string; twoFactorEnabled?: boolean } | undefined;
-          if (listener === "admin" && found && found.role !== "admin") throw new APIError("FORBIDDEN", { message: "this account has no admin access" });
-          if (listener === "signin" && found?.role === "admin" && !found.twoFactorEnabled) throw new APIError("FORBIDDEN", { message: "set up your authenticator on the admin sign-in page first" });
-        }
-        if (ctx.path === "/two-factor/verify-totp") {
-          const body = ctx.body as { code?: unknown; trustDevice?: unknown };
-          if (body?.trustDevice) throw new APIError("BAD_REQUEST", { message: "trusted devices are off: every sign-in asks for a code" });
-          const userId = await pendingUser(ctx);
-          const pendingEmail = userId ? (await ctx.context.internalAdapter.findUserById(userId))?.email : undefined;
-          if (pendingEmail) await refuseIfLocked(pendingEmail.toLowerCase(), ctx, false);
-          if (userId) {
-            // Better Auth accepts a code for its whole ±1 step window, more than once: a code is spent once, on any listener.
-            const now = Date.now();
-            db.prepare("DELETE FROM totp_spent WHERE until < ?").run(now);
-            const spent = db.prepare("INSERT OR IGNORE INTO totp_spent (k, until) VALUES (?, ?)").run(`${userId}:${String(body?.code ?? "")}`, now + 90_000);
-            if (spent.changes === 0) throw new APIError("UNAUTHORIZED", { message: "that code was already used: wait for the next one" });
+        // A check this hook refuses itself (a spent code, an account without access) never reaches the after hook: the
+        // shared peer's turn is handed back here.
+        let held: { busy: number } | undefined;
+        try {
+          if (ctx.path === "/sign-in/email") {
+            const email = String((ctx.body as { email?: unknown })?.email ?? "").toLowerCase();
+            held = await refuseIfLocked(email, ctx);
+            const found = (await ctx.context.internalAdapter.findUserByEmail(email))?.user as { role?: string; twoFactorEnabled?: boolean } | undefined;
+            if (listener === "admin" && found && found.role !== "admin") throw new APIError("FORBIDDEN", { message: "this account has no admin access" });
+            if (listener === "signin" && found?.role === "admin" && !found.twoFactorEnabled) throw new APIError("FORBIDDEN", { message: "set up your authenticator on the admin sign-in page first" });
           }
+          if (ctx.path === "/two-factor/verify-totp") {
+            const body = ctx.body as { code?: unknown; trustDevice?: unknown };
+            if (body?.trustDevice) throw new APIError("BAD_REQUEST", { message: "trusted devices are off: every sign-in asks for a code" });
+            const userId = await pendingUser(ctx);
+            const pendingEmail = userId ? (await ctx.context.internalAdapter.findUserById(userId))?.email : undefined;
+            if (pendingEmail) held = await refuseIfLocked(pendingEmail.toLowerCase(), ctx);
+            if (userId) {
+              // Better Auth accepts a code for its whole ±1 step window, more than once: a code is spent once, on any listener.
+              const now = Date.now();
+              db.prepare("DELETE FROM totp_spent WHERE until < ?").run(now);
+              const spent = db.prepare("INSERT OR IGNORE INTO totp_spent (k, until) VALUES (?, ?)").run(`${userId}:${String(body?.code ?? "")}`, now + 90_000);
+              if (spent.changes === 0) throw new APIError("UNAUTHORIZED", { message: "that code was already used: wait for the next one" });
+            }
+          }
+        } catch (e) {
+          if (held) held.busy = 0;
+          throw e;
         }
       }),
       after: createAuthMiddleware(async (ctx) => {
@@ -378,10 +393,14 @@ export function authCore(o: AuthCoreOptions) {
             ? String((ctx.body as { email?: unknown })?.email ?? "").toLowerCase()
             : ((await ctx.context.internalAdapter.findUserById((await pendingUser(ctx)) ?? ""))?.email ?? "").toLowerCase();
         if (!email) return;
+        if (!isNamed(ctx)) {
+          const u = unnamedOf(email, ctx);
+          u.busy = 0;
+          if (!failed) u.next = 0; // the right password: the code step follows at once
+        }
         if (!failed) {
           if (returned instanceof APIError) return;
           log.info({ email, step: ctx.path, listener: listenerOf(ctx) }, "sign-in step passed");
-          if (!isNamed(ctx)) unnamedOf(email, ctx).next = 0; // the right password: the code step follows at once
           // A session opened (not the password step before the authenticator's): every new admin session tells the owner,
           // with the time and the address (never the user agent: the client wrote it), uncapped.
           const s = fresh && !enrolment && (await ctx.context.internalAdapter.findSession(fresh.session.token));
@@ -410,18 +429,18 @@ export function authCore(o: AuthCoreOptions) {
           log.warn({ email, ip: key.endsWith("|*") ? "any" : ip }, "sign-ins paused for 15 minutes");
           return recent.length;
         };
+        prune(now);
         const listener = listenerOf(ctx);
         let n: number;
         if (isNamed(ctx)) n = count(lockKey(email, listener, ip), LOCKOUT.failures);
         else {
-          if (unnamed.size > 1000) for (const [k, v] of unnamed) if (v.fails.every((t) => now - t >= UNNAMED.hourMs)) unnamed.delete(k);
           const u = unnamedOf(email, ctx);
           u.fails = [...u.fails, now].slice(-UNNAMED.ceiling);
-          u.next = now + backoff(u.fails.length);
+          u.next = now + hold(u.fails.length);
           n = u.fails.length;
-          if (n === UNNAMED.ceiling) {
-            alert(email, `🛡 **Sign-in held**: ${n} failed sign-ins for ${email} in the last hour from the shared address behind the front door, so sign-in from there is held for that email until the hour is up. A named address (the front door's secret) still gets in; claiming a reset link (ops/setup.sh --reset) lifts it.`);
-            log.warn({ email }, "unnamed sign-in held for the hour");
+          if (n >= UNNAMED.ceiling && now - u.told >= UNNAMED.hourMs) {
+            u.told = now;
+            alert(email, `🛡 **Sign-in attempts**: ${n} failed sign-ins for ${email} in the last hour from the shared address behind the front door. Nothing is locked; each attempt there waits a few seconds after a failure. If they aren't yours, check Settings → Accounts.`);
           }
         }
         if (listener === "signin") count(lockKey(email, "signin", "*"), LOCKOUT.accountFailures);

@@ -191,30 +191,48 @@ test("every kernel page refuses a frame except the owner message frame (A7); a s
     assert.match(csp(r), /frame-ancestors 'none'/, path);
     assert.equal(r.headers["x-frame-options"], "DENY", path);
   }
-  // Behind the front door every client shares one peer (forged addresses without the front door's secret count as it). 50
-  // bad attempts at once get a handful of password checks; the rest are refused at once (429, Retry-After), and the owner,
-  // from an address the front door names, signs in meanwhile.
+  // Behind the front door every client shares one peer (forged addresses without the front door's secret count as it), the
+  // owner included. 50 bad attempts at once get a handful of password checks, the rest an immediate 429 (Retry-After: 2);
+  // the owner, on that same peer, gets in during the attack by retrying, and again within seconds of it stopping.
   const stranger = browser(url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.9", "x-aidenhq-edge": "forged" });
   const named = (ip) => browser(url, HOST, false, { "x-aidenhq-client-ip": ip, "x-aidenhq-edge": "edge-secret" });
+  const retrying = async (who, step) => {
+    const until = Date.now() + 15_000;
+    for (;;) {
+      const pw = await who("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
+      if (pw.status === 303) break;
+      assert.equal(pw.status, 429, pw.html);
+      assert.ok(Date.now() < until, "the owner never got a turn");
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    for (;;) {
+      const code = await who("POST", "/auth/totp", { code: totp(OWNER.b32, step) });
+      if (code.status === 303) return;
+      assert.equal(code.status, 429, code.html);
+      assert.ok(Date.now() < until, "the owner's code never got a turn");
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  };
   const [burst] = await Promise.all([
     Promise.all(Array.from({ length: 50 }, (_, i) => stranger("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` }))),
-    signIn(named("198.51.100.8")),
+    retrying(b, 0),
   ]);
   const checked = burst.filter((r) => r.status === 401).length;
   assert.ok(checked >= 1 && checked <= 3, `${checked} password checks`);
   assert.equal(burst.filter((r) => r.status === 429).length, 50 - checked);
-  assert.ok(Number(burst.find((r) => r.status === 429 && r.headers["retry-after"]).headers["retry-after"]) >= 1);
-  // Nothing said about the account (Better Auth's own per-address limit answers the same way past 20 a minute).
-  for (const r of burst.filter((x) => x.status === 429)) assert.match(r.html, /Invalid email or password|Too many requests/);
-  // The shared peer stays held for that email, even with the right password.
-  assert.equal((await b("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw })).status, 429);
-  // An address the front door names (with its secret) is locked after five failures; the owner, from another, isn't.
+  assert.equal(burst.find((r) => r.status === 429).headers["retry-after"], "2");
+  for (const r of burst.filter((x) => x.status === 429)) assert.match(r.html, /Invalid email or password/); // nothing said about the account
+  assert.equal((await b("GET", "/approvals")).status, 200);
+  // The attack stopped: the owner, on the same peer, is in again within the hold (at most 5 s).
+  const after = Date.now();
+  await retrying(browser(url), 1);
+  assert.ok(Date.now() - after < 7000, `${Date.now() - after} ms after the attack`);
   const attacker = named("198.51.100.7");
   for (let i = 0; i < 5; i++) assert.equal((await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401);
   const locked = await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
   assert.equal(locked.status, 401);
   assert.match(locked.html, /too many failed sign-ins/);
-  await signIn(named("198.51.100.6"), 1);
+  await signIn(named("198.51.100.6"), -1);
 
   // Signed in (on a fresh copy: TOTP steps above are spent), the pages a session reaches refuse frames too.
   const fresh = boardData();

@@ -68,11 +68,11 @@ gate-facing sign-in listener (3129), app access and account administration open 
   trigger resets; it never creates sessions or decides approvals.
 - **Lockout.** 5 failed sign-ins in 15 minutes pause that (email, listener, address) for 15 minutes, but only for an
   address a proxy named with its secret; open sessions are unaffected. An unnamed peer is shared by everyone behind the
-  front door, so it gets a next allowed attempt per email instead: one password check at a time, each failure pushing it
-  out (1 s, doubling, at most 15 minutes), anything earlier refused at once (429, Retry-After, the wrong-password words);
-  past 20 failures in an hour, unnamed sign-in for that email stops for the hour and the owner hears once. A named address
-  is never held by it, and claiming a reset link lifts it. A 20-failure account-wide ceiling applies only on the gate-facing
-  listener.
+  front door (the owner's own way in too), so it gets one password or code check in flight per email at a time and, after
+  a failure, a hold of a few seconds (500 ms, doubling, at most 5 s); anything else is refused at once (429, Retry-After: 2,
+  the wrong-password words, no hashing). The right password and code always get through on a retry; past 20 failures in an
+  hour the owner hears once, and nothing more is blocked. Better Auth's own per-address limit applies only to named
+  addresses on those steps. A 20-failure account-wide ceiling applies only on the gate-facing listener.
 - **Client addresses.** The address every limit counts is the socket's, unless a proxy names the client beside its
   shared secret: the gate on 3129 (`X-AidenHQ-Gate`, `gate_board_secret`; the gate itself believes CF-Connecting-IP only on
   cloudflared's unix socket, `data/gate/socket`), the front door on the board listener (`X-AidenHQ-Edge`,
