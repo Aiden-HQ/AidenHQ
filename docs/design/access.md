@@ -28,7 +28,8 @@ interface, input and forward) lets in. Everything else on that interface is drop
 | `cloudflare` | cloudflared (outbound only) behind Cloudflare Access | tcp 22 |
 | `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |
 
-- **Board listeners stay loopback in every mode** (3120, 3121, 3122, 3129). The front door reaches 3121 on loopback.
+- **Board listeners stay loopback** (3120, 3121, 3122, 3129). The front door reaches 3121 on loopback. The one
+  exception: a LAN-only VM in `local` mode with `AIDENHQ_PUBLIC_IF=none` may publish 3121 on the LAN.
 - **443 opens only once a Caddy front door is compiled** (a `caddy` service in `compose.modules.yaml`). Until then
   `public` keeps the firewall at `local`, and setup says so. An active ufw gets `allow 443/tcp` in that case, and only
   then.

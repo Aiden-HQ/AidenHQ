@@ -31,6 +31,9 @@ read_split() { # service container-address:port
   rm -f "$list"
 }
 
+# settings.exposure, compiled (unset = tailscale): how admins reach the board (docs/design/access.md, Exposure modes).
+mode="$(tr -d '[:space:]' 2>/dev/null < config/exposure)"; mode="${mode:-tailscale}"
+
 containers="$(docker ps --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')"
 [ -n "$containers" ] || { echo "no running containers for project $project"; exit 1; }
 
@@ -160,11 +163,23 @@ for c in $containers; do
       local_port="$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3120/tcp")}}')"
       echo "$local_port" | grep -q '"HostIp":"127.0.0.1"' && ! echo "$local_port" | grep -qE '"HostIp":"(0\.0\.0\.0)?"' \
         && pass "board: local port published on 127.0.0.1 only" || fail "board local port is not loopback-only: $local_port"
-      # 3121, the browser listener, is loopback in every exposure mode: the front door (tailscale serve, Caddy, the tunnel)
-      # reaches it there, and it trusts X-Forwarded-Proto from whoever does.
-      lan_port="$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3121/tcp")}}')"
-      [ "$lan_port" = "null" ] || { echo "$lan_port" | grep -q '"HostIp":"127.0.0.1"' && ! echo "$lan_port" | grep -qE '"HostIp":"(0\.0\.0\.0)?"'; } \
-        && pass "board: browser listener on 127.0.0.1 only" || fail "board browser listener (3121) is not loopback-only: $lan_port"
+      # 3121, the browser listener, is loopback: the front door (tailscale serve, Caddy, the tunnel) reaches it there, and
+      # it trusts X-Forwarded-Proto from whoever does. The one exception is a LAN VM in local mode with no public firewall
+      # (AIDENHQ_PUBLIC_IF=none), whose phones use it over the LAN; it must still refuse a read without a session.
+      lan_json="$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3121/tcp")}}')"
+      lan_port="$(docker inspect "$c" --format '{{range (index .HostConfig.PortBindings "3121/tcp")}}{{.HostIp}}:{{.HostPort}}{{end}}')"
+      lan_dev="$(ip -4 route show default | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+      lan_ip="$(ip -4 -o addr show dev "${lan_dev:-none}" scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1]; exit }')"
+      if [ "$lan_json" = "null" ] || { echo "$lan_json" | grep -q '"HostIp":"127.0.0.1"' && ! echo "$lan_json" | grep -qE '"HostIp":"(0\.0\.0\.0)?"'; }; then
+        pass "board: browser listener on 127.0.0.1 only (${lan_port:-not published})"
+      elif [ "$mode" != local ] || [ -e /etc/default/aidenhq-public-fw ]; then
+        fail "board browser listener (3121) is beyond loopback in exposure $mode, or on a host with a public firewall: $lan_port"
+      elif [ -n "$lan_ip" ]; then
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'Host: aidenhq.local' "http://$lan_ip:${lan_port##*:}/api/board")"
+        [ "$code" = "401" ] || [ "$code" = "403" ] && pass "board: LAN port (local mode, LAN VM) refuses a read without a session ($code)" || fail "board LAN port answered a read without a session ($code)"
+      else
+        pass "board: LAN listener published, but no LAN address to probe (${lan_port})"
+      fi
       code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -H 'Origin: http://evil.example' -H 'x-aidenhq-board: 1' http://127.0.0.1:3120/api/issues -d '{}')"
       [ "$code" = "403" ] && pass "board: refuses cross-origin writes" || fail "board accepted a cross-origin write ($code)"
       # Every host process shares 3120's loopback (Engineer jobs, Tailscale serve): a well-formed write or a read without a
@@ -312,9 +327,8 @@ dups="$(for c in $containers; do docker port "$c" 2>/dev/null | sed -E 's/.*:([0
 [ -z "$dups" ] && pass "no host port is published by two containers" || fail "host ports published twice: $(echo $dups)"
 
 echo "Exposure"
-# settings.exposure (config/exposure, compiled; unset = tailscale) decides the public interface's open ports
-# (ops/vm/public-fw.sh). Public opens 443 only once a Caddy front door is compiled; until then it is closed like local.
-mode="$(tr -d '[:space:]' 2>/dev/null < config/exposure)"; mode="${mode:-tailscale}"
+# The public interface's open ports follow the exposure mode (ops/vm/public-fw.sh). Public opens 443 only once a Caddy
+# front door is compiled; until then it is closed like local.
 fw="$mode"; [ "$mode" = public ] && ! grep -qx '  caddy:' compose.modules.yaml 2>/dev/null && fw=local
 label="$mode"; [ "$fw" = "$mode" ] || label="$mode, no Caddy yet"
 case "$fw" in public) want="tcp/22 tcp/443" ;; tailscale) want="tcp/22 udp/41641" ;; *) want="tcp/22" ;; esac
