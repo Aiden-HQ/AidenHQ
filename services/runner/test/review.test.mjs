@@ -143,35 +143,81 @@ test("a source exception is a record only when it says the owner approved it, fo
 });
 
 test("a record read from one base never covers a source change in another repo", async () => {
-  // The runner reads each base's records and writes one `### <repo> <branch>` section per branch: a record keeps the repo
-  // and base it came from, and is matched only against that repo's own section of the combined diff.
+  // The runner reads each base's records and writes one `### <repo> <branch> ... base <branch>` section per branch: a
+  // record keeps the repo and base it came from, and is matched only against that repo's own section off that base.
   const plain = "+x";
-  const sections = `### acme/app fix/a (aaaaaaaaaaaa)\n${aptSourceDiff}\n\n### acme/other fix/b (bbbbbbbbbbbb)\n${plain}`;
-  assert.deepEqual(diffSections(sections).map((x) => x.repo), ["acme/app", "acme/other"], "one part per section, with its repo");
+  const sections = `### acme/app fix/a (aaaaaaaaaaaa) base main\n${aptSourceDiff}\n\n### acme/other fix/b (bbbbbbbbbbbb) base main\n${plain}`;
+  assert.deepEqual(diffSections(sections).map((x) => [x.repo, x.base]), [["acme/app", "main"], ["acme/other", "main"]], "one part per section, with its repo and base");
   const [record] = readSourceExceptions(sourceFile([ghRecord]));
   // The record is acme/app's: it covers acme/app's own change, and never another repo's section, even one that adds the
   // same source (the record's repo is what ties it to a change).
   assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app", base: "main" }], sections)], [0]);
   assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/other", base: "main" }], sections)], [], "a record read from another repo's base covers none of this repo's");
-  const both = `### acme/app fix/a (aaaaaaaaaaaa)\n${plain}\n\n### acme/other fix/b (bbbbbbbbbbbb)\n${aptSourceDiff}`;
+  const both = `### acme/app fix/a (aaaaaaaaaaaa) base main\n${plain}\n\n### acme/other fix/b (bbbbbbbbbbbb) base main\n${aptSourceDiff}`;
   assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app", base: "main" }], both)], [], "the source added in acme/other reaches no record from acme/app's base");
   assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/other", base: "main" }], both)], [0], "and does reach one read from acme/other's own base");
   assert.deepEqual([...sourcesInDiff([record], both)], [], "a record tied to no repo covers no section of a headed diff");
+  assert.deepEqual([...sourcesInDiff([{ ...record, base: "main" }], both)], [], "nor does one tied to no repo");
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/other" }], both)], [], "nor one tied to a repo but no base");
 });
 
-test("a source change passes on its own base's record and is rejected when another base holds it", async () => {
+test("a source change passes on its own repo and base's record and is rejected when another holds it", async () => {
   // The same combined diff twice: with the record on acme/app's base (approved) and with it only on acme/other's (no
   // record on acme/app's own base, so its new source has no exception).
   const policyModel = async (_m, { user }) => (/<<<APPROVED_SOURCE_EXCEPTIONS\n[\s\S]*\[the diff adds this source\][\s\S]*APPROVED_SOURCE_EXCEPTIONS>>>/.test(user)
     ? ok
     : { content: JSON.stringify({ decision: "reject", reason_code: "supply_chain", reason: "it points a package at a new source", second_review: false }) });
   const [record] = readSourceExceptions(sourceFile([ghRecord]));
-  const diff = `### acme/app fix/a (aaaaaaaaaaaa)\n${aptSourceDiff}`;
+  const diff = `### acme/app fix/a (aaaaaaaaaaaa) base main\n${aptSourceDiff}`;
   const where = "acme/app main .github/supply-chain-source-exceptions.yaml";
   const own = await review({ card, diff, policy: "p", sources: { where, records: [{ ...record, repo: "acme/app", base: "main" }] }, ask: policyModel });
   assert.deepEqual([own.decision, own.code], ["approve", "in_scope"]);
   const elsewhere = await review({ card, diff, policy: "p", sources: { where, records: [{ ...record, repo: "acme/other", base: "main" }] }, ask: policyModel });
   assert.deepEqual([elsewhere.decision, elsewhere.code], ["reject", "supply_chain"]);
+});
+
+test("a record on another base of the same repo covers nothing; the same change on its own repo and base is approved", async () => {
+  // acme/app's `main` holds the record and acme/app's `release` branch does not. The same new-source change comes off each
+  // base: the release change has no exception (rejected), and the main change has one (approved).
+  const policyModel = async (_m, { user }) => (/<<<APPROVED_SOURCE_EXCEPTIONS\n[\s\S]*\[the diff adds this source\][\s\S]*APPROVED_SOURCE_EXCEPTIONS>>>/.test(user)
+    ? ok
+    : { content: JSON.stringify({ decision: "reject", reason_code: "supply_chain", reason: "it points a package at a new source", second_review: false }) });
+  const [record] = readSourceExceptions(sourceFile([ghRecord]));
+  const records = [{ ...record, repo: "acme/app", base: "main" }];
+  const where = "acme/app main .github/supply-chain-source-exceptions.yaml";
+  const release = `### acme/app fix/a (aaaaaaaaaaaa) base release\n${aptSourceDiff}`;
+  const offMain = `### acme/app fix/a (aaaaaaaaaaaa) base main\n${aptSourceDiff}`;
+  const rejected = await review({ card, diff: release, policy: "p", sources: { where, records }, ask: policyModel });
+  assert.deepEqual([rejected.decision, rejected.code], ["reject", "supply_chain"], "a record on main authorises nothing off release");
+  assert.deepEqual([...sourcesInDiff(records, release)], [], "nor does it reach the release section");
+  const approved = await review({ card, diff: offMain, policy: "p", sources: { where, records }, ask: policyModel });
+  assert.deepEqual([approved.decision, approved.code], ["approve", "in_scope"], "the same change off its own base is approved");
+  // Both bases in one card: only the section off main is marked, and the release one still has no exception.
+  const both = `${release}\n\n${offMain}`;
+  assert.deepEqual([...sourcesInDiff(records, both)], [0], "one record, matched to the section whose base it was read from");
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app", base: "main" }, { ...record, repo: "acme/app", base: "release" }], both)], [0, 1], "each record covers its own base's section, and only that one");
+});
+
+test("a record naming no repo or no base authorises nothing in a headed diff", async () => {
+  // The runner always labels a record with the repo and base it read: one that carries neither (or only one) is not tied
+  // to any section, and covers none of them, whatever source it names.
+  const [record] = readSourceExceptions(sourceFile([ghRecord]));
+  const sections = `### acme/app fix/a (aaaaaaaaaaaa) base main\n${aptSourceDiff}`;
+  assert.deepEqual([...sourcesInDiff([record], sections)], [], "no repo, no base, no section");
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app" }], sections)], [], "a repo and no base covers no section");
+  assert.deepEqual([...sourcesInDiff([{ ...record, base: "main" }], sections)], [], "a base and no repo covers no section");
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app", base: "main" }], sections)], [0], "both, and it covers its own section");
+});
+
+test("a section heading that names no base matches no record", async () => {
+  // An older heading (no `base`) is a section code cannot tie a record to: never guessed from the repo alone.
+  const [record] = readSourceExceptions(sourceFile([ghRecord]));
+  const unbased = `### acme/app fix/a (aaaaaaaaaaaa)\n${aptSourceDiff}`;
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app", base: "main" }], unbased)], [], "a heading with no base takes no record");
+  const url = `### https://github.com/acme/app/pull/7 base release\n${aptSourceDiff}`;
+  assert.deepEqual(diffSections(url).map((s) => [s.repo, s.base]), [["acme/app", "release"]], "a PR heading carries its repo and base");
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app", base: "main" }], url)], [], "the PR's base is release, not main");
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app", base: "release" }], url)], [0], "the PR's own base matches");
 });
 
 test("the reviewer is given the base's source records as data, or told plainly there are none", async () => {
