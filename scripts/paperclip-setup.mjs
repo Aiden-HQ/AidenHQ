@@ -416,13 +416,11 @@ const HOW_WE_BUILD_SECTION = "\n\n## How we build\n\n- Less code: delete before 
  * verbatim and in compile's order. `{{fleet_issues}}`: the Fleet issues task; `{{memory}}`: the agent's curated memory.
  * `lane`: only those marked for the fast chat lane.
  */
-function promptsOf(a, fleetIssues, { lane = false } = {}) {
-  return (a.prompts ?? []).filter((id) => !lane || cfg.prompts?.[id]?.lane).map((id) => {
-    let text = readInside(join(repo, "modules"), cfg.prompts?.[id]?.file, `agent ${a.name}: prompt ${id}`);
-    if (text.includes("{{fleet_issues}}")) text = fleetIssues ? text.replaceAll("{{fleet_issues}}", fleetIssues) : fail(`prompt ${id}: the Fleet issues task is missing`);
-    return text.replace("{{memory}}", () => a.memory ?? "");
-  }).join("");
-}
+const promptsOf = (a, fleetIssues, { lane = false } = {}) => (a.prompts ?? []).filter((id) => !lane || cfg.prompts?.[id]?.lane).map((id) => {
+  const text = readInside(join(repo, "modules"), cfg.prompts?.[id]?.file, `agent ${a.name}: prompt ${id}`);
+  if (text.includes("{{fleet_issues}}") && !fleetIssues) fail(`prompt ${id}: the Fleet issues task is missing`);
+  return text.replaceAll("{{fleet_issues}}", fleetIssues).replace("{{memory}}", () => a.memory ?? "");
+}).join("");
 
 const revInputs = {};
 const handbooks = {}; // each agent's compiled AGENTS.md (the fast lane's prompt)

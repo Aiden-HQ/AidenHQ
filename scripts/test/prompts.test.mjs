@@ -42,5 +42,5 @@ test("a prompt with an unknown field or test fails compile", () => {
   const file = join(copy, "modules/model-tools/module.yaml");
   const def = YAML.parse(readFileSync(file, "utf8"));
   writeFileSync(file, YAML.stringify({ ...def, prompts: [{ ...def.prompts[0], when: { agents: ["x"] } }] }));
-  assert.throws(() => compile(copy, instance()), /prompt advisor: when\.agents isn't a test/);
+  assert.throws(() => compile(copy, instance()), /prompt advisor: unknown when\.agents/);
 });

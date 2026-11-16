@@ -845,13 +845,10 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // Prompt contributions (spec §3.1 `prompts`): each crew (codex_local) agent's handbook gets the sections whose `when` holds and
   // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. Last, after the
   // overrides (an override may set heartbeat or image).
-  const prompts = enabled.flatMap((name) => promptEntries(name, all.get(name).def, all.get(name).root)).sort(promptOrder);
+  const prompts = enabled.flatMap((n) => promptEntries(n, all.get(n).def, all.get(n).root)).sort(promptOrder);
+  if (new Set(prompts.map((p) => p.id)).size !== prompts.length) fail("two prompts share an id");
   paperclip.prompts = Object.fromEntries(prompts.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}) }]));
-  for (const a of Object.values(paperclip.agents)) {
-    if (a.adapter !== "codex_local") continue;
-    const ids = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
-    if (ids.length) a.prompts = ids;
-  }
+  for (const a of Object.values(paperclip.agents)) if (a.adapter === "codex_local" && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
   const catalog = [...all.values()].map(({ name, root, def, marketplace, tier, sha, source }) => ({
     name, description: def.description ?? "", enabled: enabled.includes(name), chosen: chosen.includes(name), requires: def.requires ?? [],
     agents: Object.keys(def.agents ?? {}), routines: Object.keys(def.routines ?? {}), connections: Object.keys(def.connections ?? {}),
@@ -1133,45 +1130,24 @@ export function memoryOf(instanceDir, key, warnings = []) {
   return text;
 }
 
-const PROMPT_FIELDS = ["id", "file", "order", "when", "unless", "lane"];
-const PROMPT_ORDER = ["first", "normal", "last"];
-const PROMPT_TESTS = ["tools", "roles", "modules", "fields"];
+const PROMPT = { fields: ["id", "file", "order", "when", "unless", "lane"], order: ["first", "normal", "last"], tests: ["tools", "roles", "modules", "fields"] };
 /**
- * A module's `prompts:` (spec §3.1), checked and sorted: [{id: <module>.<id>, file, order, when, unless, lane}]. `file` is a
- * file under the module's prompts/ dir, used verbatim (its leading blank lines included). `when` and `unless` test presence:
- * `tools` (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` = set and not false,
- * anything else = equal). Every `when` test must hold, and no `unless` test. `lane: true`: the fast chat lane's prompt gets it too.
+ * A module's `prompts:` (spec §3.1): [{id: <module>.<id>, file, order, when, unless, lane}]. `file` is a prompts/<name>.md in the
+ * module, used verbatim (its leading blank lines included). `when` and `unless` test presence: `tools` (`connection.tool`
+ * granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` = set and not false, anything else = equal).
+ * Every `when` test must hold, and no `unless` test. `lane: true`: the fast chat lane's prompt gets it too.
  */
 export function promptEntries(name, def, root) {
-  if (def.prompts == null) return [];
-  if (!Array.isArray(def.prompts)) fail(`module ${name}: prompts is a list`);
-  const out = def.prompts.map((p) => {
-    const where = `module ${name}: prompt ${p?.id}`;
-    for (const f of Object.keys(p ?? {})) if (!PROMPT_FIELDS.includes(f)) fail(`${where}: unknown field ${f} (known: ${PROMPT_FIELDS.join(", ")})`);
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(p.id ?? "")) fail(`module ${name}: a prompt's id is a-z, 0-9 and -`);
-    if (!/^prompts\/[a-z0-9][a-z0-9-]*\.md$/.test(p.file ?? "") || !existsSync(join(root, p.file))) fail(`${where}: file must be a prompts/<name>.md that exists`);
-    const order = p.order ?? "normal";
-    if (!PROMPT_ORDER.includes(order)) fail(`${where}: order is ${PROMPT_ORDER.join(", ")}`);
-    for (const k of ["when", "unless"]) for (const [t, v] of Object.entries(p[k] ?? {})) {
-      if (!PROMPT_TESTS.includes(t)) fail(`${where}: ${k}.${t} isn't a test (${PROMPT_TESTS.join(", ")})`);
-      if (t === "fields" ? typeof v !== "object" || Array.isArray(v) : !Array.isArray(v)) fail(`${where}: ${k}.${t} is a ${t === "fields" ? "map" : "list"}`);
-    }
-    if (p.lane != null && typeof p.lane !== "boolean") fail(`${where}: lane is true or false`);
-    return { id: `${name}.${p.id}`, module: name, file: join(root, p.file), order, when: p.when ?? {}, unless: p.unless ?? {}, ...(p.lane ? { lane: true } : {}) };
+  return [def.prompts ?? []].flat().map((p) => {
+    const bad = Object.keys(p ?? {}).find((f) => !PROMPT.fields.includes(f)) ?? ["when", "unless"].flatMap((k) => Object.keys(p[k] ?? {}).filter((t) => !PROMPT.tests.includes(t)).map((t) => `${k}.${t}`))[0];
+    if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(p.id ?? "") || !PROMPT.order.includes(p.order ?? "normal") || !/^prompts\/[a-z0-9-]+\.md$/.test(p.file ?? "") || !existsSync(join(root, p.file))) fail(`module ${name}: prompt ${p?.id}: ${bad ? `unknown ${bad} (fields: ${PROMPT.fields.join(", ")}; tests: ${PROMPT.tests.join(", ")})` : "needs an id (a-z, 0-9, -), a prompts/<name>.md file that exists and an order of first, normal or last"}`);
+    return { id: `${name}.${p.id}`, module: name, file: join(root, p.file), order: p.order ?? "normal", when: p.when ?? {}, unless: p.unless ?? {}, lane: p.lane === true };
   });
-  const ids = out.map((p) => p.id);
-  if (new Set(ids).size !== ids.length) fail(`module ${name}: two prompts share an id`);
-  return out;
 }
-/** Every prompt, in handbook order: first, normal, last; then module; then id. */
-export const promptOrder = (a, b) => PROMPT_ORDER.indexOf(a.order) - PROMPT_ORDER.indexOf(b.order) || a.module.localeCompare(b.module) || a.id.localeCompare(b.id);
-const promptTests = (t, a, enabled) => [
-  ...(t.tools ?? []).map((x) => { const [c, tool] = String(x).split("."); return a.enabled_tools?.[c]?.includes(tool) ?? false; }),
-  ...(t.roles ?? []).map((r) => (a.roles ?? []).includes(r)),
-  ...(t.modules ?? []).map((m) => enabled.includes(m)),
-  ...Object.entries(t.fields ?? {}).map(([f, v]) => (v === true ? a[f] != null && a[f] !== false : a[f] === v)),
-];
-export const promptApplies = (p, a, enabled) => promptTests(p.when, a, enabled).every(Boolean) && !promptTests(p.unless, a, enabled).some(Boolean);
+/** Handbook order: first, normal, last; then module; then id. */
+export const promptOrder = (a, b) => PROMPT.order.indexOf(a.order) - PROMPT.order.indexOf(b.order) || a.module.localeCompare(b.module) || a.id.localeCompare(b.id);
+const holds = (t, a, enabled) => [...(t.tools ?? []).map((x) => a.enabled_tools?.[x.split(".")[0]]?.includes(x.split(".")[1]) ?? false), ...(t.roles ?? []).map((r) => (a.roles ?? []).includes(r)), ...(t.modules ?? []).map((m) => enabled.includes(m)), ...Object.entries(t.fields ?? {}).map(([f, v]) => (v === true ? a[f] != null && a[f] !== false : a[f] === v))];
+export const promptApplies = (p, a, enabled) => holds(p.when, a, enabled).every(Boolean) && !holds(p.unless, a, enabled).some(Boolean);
 
 /**
  * fn over items, at most `limit` at a time, results in input order: setup's independent Paperclip calls (one agent, one
