@@ -385,7 +385,7 @@ const trialNoTap = (issue, grants) => trialNoTapBy(issue, grants, runnerMade(iss
 /**
  * Once a minute, one read of the product repo's open PRs (product-prs.ts). A Dependabot PR whose checks have finished
  * gets one Platform Engineer task; a runner-made Dependabot task closes once its PR is merged or closed; an agent's PR
- * that conflicts with the default branch (or went red while behind it) wakes its task once per default-branch commit.
+ * that conflicts with the default branch (or went red while behind it) wakes its task, at most once per half hour.
  */
 async function watchProductPrs() {
   const repo = cfg.productRepo;
@@ -415,7 +415,8 @@ async function watchProductPrs() {
   const bot = app ? (await botIdentity()).name.replace(/\[bot\]$/, "") : undefined;
   for (const pr of open) {
     if (isDependabot(pr) || pr.isCrossRepository !== false) continue;
-    const key = `rebase-ping:${pr.url.toLowerCase()}:${main.oid}`;
+    const url = pr.url.toLowerCase();
+    const key = `rebase-ping:${url}:${main.oid}`;
     const conflict = pr.mergeable === "CONFLICTING";
     const red = conflict ? [] : redChecks(pr);
     if (!conflict && (!red.length || pr.mergeable !== "MERGEABLE")) continue;
@@ -430,6 +431,17 @@ async function watchProductPrs() {
     const env = conflict ? [] : await merges.environmentFailure(mergeGithub, repo, pr).catch((err) => (log("check classification failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 200) }), []));
     const want = prAttention(pr, main.rollup, env);
     if (!want) continue;
+    // Only a task that can still publish is asked or told. A comment on a finished task reopens it (Paperclip), so a done
+    // task's PR is left alone and a cancelled task's PR is closed once, with the reason on the PR.
+    const issue = await pc.issue(issueId);
+    if (issue.status === "done") continue;
+    if (issue.status === "cancelled") {
+      if (state.get(`abandoned:${url}`)) continue;
+      state.set(`abandoned:${url}`, new Date().toISOString());
+      const [line] = await merges.closePrs([{ repo, number: pr.number, url: pr.url }], `Closed by the runner: ${issue.identifier}, the task this PR was for, is cancelled.`, mergeGithub);
+      log("abandoned PR", { pr: pr.url, issue: issue.identifier, line });
+      continue;
+    }
     if (want.do === "environment") {
       const r = await merges.environmentRetry(mergeGithub, repo, pr.number, pr, pr.url, want.checks);
       const seen = `environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`;
@@ -440,7 +452,8 @@ async function watchProductPrs() {
       await pc.comment(issueId, r.stop);
       continue;
     }
-    if (state.get(key)) continue;
+    // One ask per PR per half hour, and none while its task runs: main moves every few minutes, and each ask is a run.
+    if (state.get(key) || running.has(issueId) || Date.now() - Date.parse(state.get(`rebase-asked:${url}`) ?? "") < ASK_GAP_MS) continue;
     if (want.why === "red") {
       const behind = Number((await execFileP(await findRealGh(), ["api", `repos/${repo}/compare/${main.oid}...${pr.headRefOid}`, "--jq", ".behind_by"], await gho(repo, READ))).stdout.trim());
       if (!(behind > 0)) {
@@ -449,9 +462,13 @@ async function watchProductPrs() {
       }
     }
     state.set(key, new Date().toISOString());
-    await wakeForRebase(issueId, pr, want.why, main);
+    // Parked (the AI reviewer's rejections ran out): its publish is refused, so a rebase is a run for nothing.
+    if (priorDecisions((await commonTierState(issue, "pr")).records, "pr").rejects >= MAX_REJECTS) continue;
+    state.set(`rebase-asked:${url}`, new Date().toISOString());
+    await wakeForRebase(issue, pr, want.why, main);
   }
 }
+const ASK_GAP_MS = 30 * 60_000;
 
 /**
  * A task the runner files runs in its assignee's own folder, never a folder it shares with the task that asked for it: in
@@ -606,22 +623,13 @@ async function fileDependabotTask(repo, pr, pe) {
  * Wake the task that opened a PR now conflicting with (or red behind) the default branch: rebase and publish once. Only an
  * active task: a done or cancelled one is never reopened from here (someone closed it on purpose); it gets one note per PR.
  */
-async function wakeForRebase(issueId, pr, why, main) {
-  const issue = await pc.issue(issueId);
+async function wakeForRebase(issue, pr, why, main) {
   const what = why === "conflict"
     ? `${pr.url} now conflicts with \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`).`
     : `${pr.url}'s checks failed (\`gh pr checks ${pr.url}\` names them) while it is behind \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`, green): perhaps only because \`${main.name}\` moved.`;
-  if (["done", "cancelled"].includes(issue.status)) {
-    const once = `rebase-note:${pr.url.toLowerCase()}`;
-    if (!state.get(once)) {
-      state.set(once, new Date().toISOString());
-      await pc.comment(issueId, `${what} This task is ${issue.status}, so nobody was woken: reopen it, or close the PR.`);
-    }
-    return;
-  }
-  if (stopped(issueId)) return;
+  if (stopped(issue.id)) return;
   if (await rebaseInCode(issue, pr, why).catch((err) => (log("rebase in code failed", { issue: issue.identifier, pr: pr.url, err: String(err.message ?? err).slice(0, 300) }), false))) return;
-  await pc.comment(issueId, `${what} Asking for one rebase onto \`${main.name}\` and one publish.`);
+  await pc.comment(issue.id, `${what} Asking for one rebase onto \`${main.name}\` and one publish.`);
   log("rebase requested", { issue: issue.identifier, pr: pr.url, why, main: main.oid });
   await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq pr\`, without \`--title\` or \`--body-file\` (the PR keeps its own, and a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.` });
 }
