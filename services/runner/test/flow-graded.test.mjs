@@ -68,6 +68,34 @@ describe("flow-graded", { concurrency: true }, () => {
     });
   });
 
+  // The rubric asks what the PR records ("reported in the PR description"), which only the PR's own text can show.
+  describe("flow-graded: a criterion only the PR description can meet", () => {
+    const body = "## Reproduction\n\nAt the old 5s limit the test fails: `Error: Test timed out in 5000ms`.\n\nNo existing test was removed, skipped or changed.";
+    // A Paperclip agent's part, held in review with its grade row open: no Engineer run, only the grader's pass.
+    const t = flow({
+      part: { status: "in_review", assigneeAgentId: "assistant" },
+      grades: { part: { rubric: ["the PR records the exact failure", "the PR says no existing test was changed"], deliverable: { kind: "pr", ref: "" }, state: "open" } },
+    });
+
+    it("the grader is sent the PR's title and description, and meets both from it", async () => {
+      const { waitFor, paperclip } = t;
+      const state = new State(join(t.dir, "state"));
+      state.saveBranch("part", { repo: "acme/app", branch: "fix/remove-legacy", base: "main" });
+      state.updateBranch("part", "acme/app", "fix/remove-legacy", { pr_url: "https://github.com/acme/app/pull/7" });
+      state.db.close();
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 7: { branch: "fix/remove-legacy", files: ["a.txt"], checks: "SUCCESS", merged: true, title: "fix(ci): prove the timeout", body } }));
+      paperclip.graderAnswers.push(answer(["yes", "yes"]));
+      Object.assign(paperclip.grades.get("part"), { state: "pending", updatedAt: new Date(0).toISOString() });
+      await waitFor("the grader's call", () => paperclip.graderCalls.length === 1);
+      const asked = paperclip.graderCalls[0].messages;
+      assert.match(asked[0].content, /PR_DESCRIPTION, when present, is each graded pull request's title and description/);
+      assert.match(asked[1].content, /<<<PR_DESCRIPTION\n### https:\/\/github\.com\/acme\/app\/pull\/7\ntitle: fix\(ci\): prove the timeout[^]*Error: Test timed out in 5000ms[^]*No existing test was removed, skipped or changed\.[^]*PR_DESCRIPTION>>>/);
+      await waitFor("done", () => paperclip.issues.get("part").status === "done");
+      assert.equal(paperclip.grades.get("part").state, "satisfied");
+      assert.ok(t.partComments().some((c) => /Graded: done[^]*the PR records the exact failure/.test(c)), "both criteria met from the description");
+    });
+  });
+
   // A Paperclip agent's part already finished and held (in review): no Engineer run.
   const held = (name, grade, over = {}) => {
     const d = delegated(name);

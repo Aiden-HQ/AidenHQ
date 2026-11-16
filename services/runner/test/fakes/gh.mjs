@@ -1,11 +1,11 @@
 // No GitHub API: every gh call fails (so PRs can't open), as it may on a bad day. Only an edit to
 // an open PR's title and description goes through, logged with what it would have written.
-// Opt-in (a github-prs.json next to $FAKE_LOG, { "<number>": { branch, files, checks, author?, mergeable? } }): those PRs of
+// Opt-in (a github-prs.json next to $FAKE_LOG, { "<number>": { branch, files, checks, title?, body?, author?, mergeable? } }): those PRs of
 // acme/app read as open (also in the open-PR list), their head the branch's tip on the fake GitHub, and merge (logged; the PR
 // reads as merged after). `checks`: SUCCESS, FAILURE or PENDING (still running); `author`: "dependabot" for Dependabot's;
 // `mergeable`: CONFLICTING for a conflict with main; `base`: the base branch (main when unset), stacked on another PR's branch.
-// `checks` may also be NONE (no checks on the head yet). Also the default branch, a branch's PRs, a retarget, and an update of
-// a PR's head with its base (a merge commit).
+// `checks` may also be NONE (no checks on the head yet); `title` and `body` are the PR's own text, as GitHub returns it. Also
+// the default branch, a branch's PRs, a retarget, and an update of a PR's head with its base (a merge commit).
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -150,7 +150,7 @@ if (args.includes("PATCH") && field("base")) {
   console.log(p.files.length);
 } else if (field("query")?.includes("pullRequest(number")) {
   const pullRequest = {
-    id: `PR_${number}`, number: Number(number), url: `https://github.com/acme/app/pull/${number}`, state: p.merged ? "MERGED" : "OPEN", isDraft: false, reviewDecision: null,
+    id: `PR_${number}`, number: Number(number), title: p.title ?? `PR ${number}`, body: p.body ?? "", url: `https://github.com/acme/app/pull/${number}`, state: p.merged ? "MERGED" : "OPEN", isDraft: false, reviewDecision: null,
     mergeStateStatus: p.mergeable === "CONFLICTING" ? "DIRTY" : "CLEAN", headRefOid: tip(p.branch), headRefName: p.branch, isCrossRepository: false, baseRefName: p.base ?? "main", latestOpinionatedReviews: { nodes: [] },
     commits: { nodes: [{ commit: { ...commits(p).nodes[0].commit, parents: { nodes: parents(tip(p.branch)) } } }] },
     baseRef: { target: { oid: tip(p.base ?? "main"), statusCheckRollup: rollup("SUCCESS") } },
