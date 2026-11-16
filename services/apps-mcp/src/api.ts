@@ -1,6 +1,7 @@
 // app_api: an agent's narrow, audited write path into an app's own API. The app declares `api: { callers, paths }`; only
-// those agents, only under those path prefixes. apps-mcp signs the call's identity token (identity.ts: agent:<key>, bound to
-// this method and path) and adds it to the request; the agent never sees it.
+// those agents, only under those path prefixes. A caller's entry may instead name one exact route (`POST /api/x/{id}/y`: the
+// method, then `{name}` for one segment), holding it to the routes it uses rather than a namespace. apps-mcp signs the call's
+// identity token (identity.ts: agent:<key>, bound to this method and path) and adds it to the request; the agent never sees it.
 import { IDENTITY_HEADER, type Sign } from "./identity.js";
 import type { App } from "./registry.js";
 
@@ -8,6 +9,24 @@ export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type Method = (typeof METHODS)[number];
 export const TIMEOUT_MS = 30_000;
 export const BODY_CAP = 50_000;
+
+/** An exact route entry: `METHOD /path`, with `{name}` standing for exactly one segment (`POST /api/x/{id}/y`). */
+interface Route { method: Method; segments: (string | undefined)[] } // undefined: a {name}, one non-empty segment
+const SEGMENT = /^(?:([A-Za-z0-9._~-]+)|\{([A-Za-z0-9_]+)\})$/;
+
+/** The segments of a plain absolute path, without its leading slash: `/api/x/3` is ["api", "x", "3"]. */
+const segmentsOf = (p: string) => p.slice(1).split("/");
+
+/** A caller's `api.paths` entry read as one exact route, or undefined for a bare path, which stays a prefix (any method,
+ * anything below it). One grammar: registry.ts accepts the form and checkPath holds calls to it. */
+export function parseRoute(entry: string): Route | undefined {
+  const [method, path, ...rest] = entry.split(" ");
+  if (!path || !path.startsWith("/") || rest.length || !METHODS.includes(method as Method)) return undefined;
+  const parts = segmentsOf(path).map((s) => SEGMENT.exec(s));
+  // Every segment is a plain word or one whole {name}, and no segment is "." or "..": a route is never a traversal.
+  if (parts.some((m) => !m || m[1] === "." || m[1] === "..")) return undefined;
+  return { method: method as Method, segments: parts.map((m) => (m![2] !== undefined ? undefined : m![1]!)) };
+}
 
 /** A plain absolute path with an optional plain query string (no traversal, no escapes); returns the path part. */
 export function plainPath(path: string): string {
@@ -18,19 +37,26 @@ export function plainPath(path: string): string {
   return p;
 }
 
-/** plainPath, under one of the app's prefixes (on a segment boundary). Refuses rather than normalizes. */
-export function checkPath(app: App, path: string, paths = app.api!.paths): void {
+/** plainPath, under one of these prefixes (on a segment boundary) or on one of these exact routes for this method. A
+ * route only reaches where the app's own API lives. Refuses rather than normalizes. */
+export function checkPath(app: App, path: string, paths = app.api!.paths, method?: string): void {
   const p = plainPath(path);
   const under = (pre: string) => p === pre || p.startsWith(pre.endsWith("/") ? pre : `${pre}/`);
-  if (!paths.some(under)) throw new Error(`${path} isn't under ${app.name}'s agent API paths for this caller (${paths.join(", ")})`);
+  const seg = segmentsOf(p);
+  const ok = (entry: string) => {
+    const r = parseRoute(entry);
+    if (!r) return under(entry);
+    return r.method === method && app.api!.paths.some(under) && r.segments.length === seg.length && r.segments.every((s, i) => (s === undefined ? seg[i] !== "" : s === seg[i]));
+  };
+  if (!paths.some(ok)) throw new Error(`${path} isn't under ${app.name}'s agent API paths for this caller (${paths.join(", ")})`);
 }
 
-export function authorize(app: App, callerKey: string, path: string): void {
+export function authorize(app: App, callerKey: string, path: string, method?: string): void {
   if (!app.api) throw new Error(`${app.name} has no agent API (no api: block in the registry)`);
   const keyOf = (c: string | { agent: string }) => (typeof c === "string" ? c : c.agent);
   const c = callerKey ? app.api.callers.find((x) => keyOf(x) === callerKey) : undefined;
   if (!c) throw new Error(`${callerKey || "this agent"} may not call ${app.name}'s API (callers: ${app.api.callers.map(keyOf).join(", ")})`);
-  checkPath(app, path, typeof c === "string" ? app.api.paths : c.paths);
+  checkPath(app, path, typeof c === "string" ? app.api.paths : c.paths, method);
 }
 
 export interface ApiRequest { url: string; method: Method; headers: Record<string, string>; body?: string; timeout?: number }
@@ -66,8 +92,8 @@ export async function targetContainer(app: App, service: string, resolve: Resolv
 }
 
 export async function callApi(app: App, callerKey: string, req: { method: Method; path: string; body?: unknown }, d: { sign: Sign; send: Send; resolve: Resolve; audit?: (o: object) => void }): Promise<{ status: number; body: unknown }> {
-  authorize(app, callerKey, req.path);
   if (!METHODS.includes(req.method)) throw new Error(`method must be one of ${METHODS.join(", ")}`);
+  authorize(app, callerKey, req.path, req.method);
   const t = apiTarget(app);
   const container = await targetContainer(app, t.service, d.resolve);
   const base = `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}`;

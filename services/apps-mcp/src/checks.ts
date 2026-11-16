@@ -46,7 +46,7 @@ export function plan(app: App, declared: Declared = {}): { render: { path: strin
  * come back (judgeAgent), never the body.
  */
 export function agentProbeScope(app: App, path: string): Scope {
-  checkPath(app, path); // the bearer goes only under the app's agent API paths
+  checkPath(app, path, app.api!.paths, "GET"); // the bearer goes only under the app's own agent API paths, and only reads
   return { role: "admin", methods: ["GET"], path: plainPath(path) };
 }
 

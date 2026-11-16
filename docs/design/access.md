@@ -221,7 +221,8 @@ run, without the text leaving the app and without giving app users' words a priv
      `task_comments`, `task_list`, `task_comment`, `task_finish`, `task_set_status`, `task_delegate`, the automatic
      `memory_note`): any other tool, a read included, fails, and so does that agent in another app's `api.callers`;
    - apps-mcp refuses it any app but the ones that name it, with any tool (`feedbackOnly`), and an app may give it narrower
-     API paths than its other callers (`api.callers: [{agent, paths}]`);
+     API paths than its other callers (`api.callers: [{agent, paths}]`), down to exact routes: `GET /api/agent/intake` and
+     `POST /api/agent/intake/{reference}/decision` (the method, then `{name}` for one segment; `services/apps-mcp/src/api.ts`);
    - what it delegates or comments for others starts with `(From app feedback, untrusted: …)` (tasks-mcp, from the grants
      table's `feedback_for`); the runner then shows the task to the Engineer as a person's suggestion, as untrusted input,
      never as the agent's or the owner's request, and the AI reviewer sees the mark in the request chain;
