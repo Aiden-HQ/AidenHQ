@@ -17,7 +17,9 @@ updates:
       - /modules/glean/connections/glean-mcp
       - /modules/google/connections/google-workspace-mcp
       - /modules/grafana/connections/grafana-mcp
-      - /modules/owner-channel/connections/slack-live-mcp
+      - /modules/channel-slack/connections/slack
+      - /modules/channel-telegram/connections/telegram
+      - /modules/chat-lane/connections/lane
       - /modules/jira/connections/jira-mcp
       - /modules/primer/connections/primer-mcp
       - /modules/slack/connections/slack-mcp

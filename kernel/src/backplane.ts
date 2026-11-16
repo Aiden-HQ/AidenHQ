@@ -8,11 +8,19 @@
 //   ANY  /v1/cp/agent/<path>   (module token + caller assertion) cp.ts
 //   POST /v1/writes            (run, module, or job token naming the kind) request a write (writes.ts); GET /v1/writes/:id its record (own only)
 //   POST /v1/writes/:id/outcome (the kind's executor module) the outcome of an execute
-//   GET  /v1/writes, POST /v1/writes/:id/{decide,review,panel}  (the board's key, 2d until 2f and 3a) the list of records,
-//                              the owner's decisions and the reviewer's verdicts the board forwards
+//   GET  /v1/writes, POST /v1/writes/:id/{review,panel}  (the board's key, 2d until 3a) the list of records and the
+//                              reviewer's verdicts the board forwards (the owner decides by channel token, channels.ts)
+//   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop}, GET /v1/channel/notices  (a speaks-as-owner
+//                              channel's token) cards with decision tokens, a token spent, the owner's words, notices (channels.ts)
+//   POST /v1/channel/outbox, GET /v1/channel/outbox  (a channel) a message for the owner handed to another channel; drained by it
+//   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
+//   POST /v1/brake/notify      (a channel) may an agent message the owner about a task again (brake.ts)
+//   POST /v1/wake              (a module with role kernel.wake) a labelled wake notice on a task, which wakes its agent
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
+import type { Brake } from "./brake.ts";
+import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Whoami } from "./identity.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
@@ -36,9 +44,18 @@ export const ROUTES = [
   { method: "GET", path: "/v1/writes", auth: "board" },
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
   { method: "POST", path: "/v1/writes/:id/outcome", auth: "module" },
-  { method: "POST", path: "/v1/writes/:id/decide", auth: "board" },
   { method: "POST", path: "/v1/writes/:id/review", auth: "board" },
   { method: "POST", path: "/v1/writes/:id/panel", auth: "board" },
+  { method: "GET", path: "/v1/channel/cards", auth: "module" },
+  { method: "POST", path: "/v1/channel/decide", auth: "module" },
+  { method: "POST", path: "/v1/channel/owner-message", auth: "module" },
+  { method: "POST", path: "/v1/channel/stop", auth: "module" },
+  { method: "GET", path: "/v1/channel/notices", auth: "module" },
+  { method: "POST", path: "/v1/channel/outbox", auth: "module" },
+  { method: "GET", path: "/v1/channel/outbox", auth: "module" },
+  { method: "GET", path: "/v1/cp/read/*", auth: "module" },
+  { method: "POST", path: "/v1/brake/notify", auth: "module" },
+  { method: "POST", path: "/v1/wake", auth: "module" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
@@ -52,10 +69,20 @@ async function json(req: IncomingMessage): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, boardKey = () => "", log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
+  /** 2f: channel tokens and owner messages, the notify brake, and the control plane as the owner (reads, wake notices). */
+  channels?: Channels; brake?: Brake; owner?: Api; modules?: () => ModulesFile;
 }) {
+  /** The calling module (its own token), or 401. */
+  const moduleOf = async (req: IncomingMessage) => {
+    const w = await whoami(bearer(req)).catch(() => undefined);
+    if (w?.kind !== "module" || !w.module) throw fail(401, "unauthorized", "a module's own token is required");
+    return w;
+  };
+  /** The chief of staff's agent id, from the grants table (where owner messages go by default). */
+  const cos = () => Object.entries(grantsFile().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0];
   const isBoard = (req: IncomingMessage) => { const a = Buffer.from(bearer(req)), b = Buffer.from(boardKey()); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
   const board = (req: IncomingMessage) => { if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); };
   const record = (id: string) => records?.get(id) ?? (() => { throw fail(404, "not_found", `no record ${id}`); })();
@@ -84,6 +111,43 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         }
         case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);
+      }
+      if (hit && /^\/v1\/(channel|cp\/read|brake|wake)/.test(hit.path)) {
+        const w = await moduleOf(req);
+        const mod = w.module!;
+        if (!channels || !brake || !owner) throw fail(503, "unavailable", "channels are off");
+        switch (`${hit.method} ${hit.path}`) {
+          case "GET /v1/channel/cards": return send(res, 200, await channels.cards(mod, new URLSearchParams(q ?? "").get("resync") === "1"));
+          case "POST /v1/channel/decide": return send(res, 200, await channels.decide(mod, await json(req)));
+          case "POST /v1/channel/owner-message": return send(res, 200, await channels.ownerMessage(mod, await json(req), cos));
+          case "POST /v1/channel/stop": return send(res, 200, await channels.stop(mod, await json(req)));
+          case "GET /v1/channel/notices": return send(res, 200, await channels.notices(mod));
+          case "POST /v1/channel/outbox": return send(res, 200, channels.file(mod, await json(req)));
+          case "GET /v1/channel/outbox": return send(res, 200, channels.drain(mod));
+          case "GET /v1/cp/read/*": {
+            if (!isChannel(modules().modules?.[mod]) && !w.roles.includes("kernel.cp-read")) throw fail(403, "forbidden", `${mod} has no read access to the control plane (role kernel.cp-read)`);
+            if (!CP_READ_PATHS.some((re) => re.test(m[0]!))) throw fail(403, "forbidden", `GET ${m[0]} isn't a read route`);
+            const r = await owner("GET", `${m[0]}${query}`);
+            return send(res, r.status, r.json);
+          }
+          case "POST /v1/brake/notify": {
+            if (!isChannel(modules().modules?.[mod])) throw fail(403, "forbidden", "only a channel asks the notify brake");
+            return send(res, 200, await brake(await json(req)));
+          }
+          case "POST /v1/wake": {
+            if (!w.roles.includes("kernel.wake")) throw fail(403, "forbidden", `${mod} may not post wake notices (role kernel.wake)`);
+            const b = await json(req);
+            const task = typeof b.task === "string" ? b.task.slice(0, 100) : "", text = typeof b.text === "string" ? neutral(b.text).trim().slice(0, 2000) : "";
+            if (!task || !text) throw fail(400, "bad_request", "send {task, text}");
+            const issue = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
+            if (issue.status !== 200) throw fail(404, "not_found", `no task ${task}`);
+            if (["done", "cancelled"].includes(issue.json.status)) return send(res, 200, { posted: false, closed: true });
+            const c = await owner("POST", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`, { body: `[wake] ${text}\n\n<!-- aidenhq-wake -->` });
+            if (c.status >= 300) throw fail(502, "upstream", `the control plane answered ${c.status}`);
+            log("wake notice", { module: mod, task: issue.json.identifier });
+            return send(res, 200, { posted: true });
+          }
+        }
       }
       if (hit && hit.path.startsWith("/v1/writes")) {
         if (!writes || !records) throw fail(503, "unavailable", "records are off");
@@ -118,12 +182,6 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             const b = await json(req);
             if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 200_000))) throw fail(409, "conflict", `this record is ${record(id).state}`);
             return send(res, 200, { ok: true });
-          }
-          case "POST /v1/writes/:id/decide": {
-            board(req);
-            const b = await json(req);
-            if (!["approve", "reject"].includes(b.decision)) throw fail(400, "bad_request", "decision is approve or reject");
-            return send(res, 200, decided(writes.decide(id, { digest: String(b.digest ?? ""), decision: b.decision, by: String(b.by ?? ""), via: String(b.via ?? "") })));
           }
           case "POST /v1/writes/:id/review": {
             board(req);

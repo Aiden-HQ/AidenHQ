@@ -87,21 +87,16 @@ export interface AppOptions {
   clickhouse?: McpAuth;
   /** Jira sign-in state and sign-in; no banner and no sign-in without it (the jira module is off). */
   jira?: McpAuth;
-  /**
-   * "internal" mode: the owner-channel's decide key (secret owner_decide_key, mounted only into the owner-channel and the
-   * board). It proves a Telegram decision (x-owner-key); agents can reach the internal token, never this key. Without it,
-   * no chat decision is taken.
-   */
-  decideKey?: string;
   /** "internal" mode: the runner's reviewer key (secret reviewer_key): the only way a Tier 1 verdict is taken. */
   reviewerKey?: string;
-  /** "internal" mode: the owner's Claude watcher's decide key (secret watcher_decide_key): decides like the owner channel, stamped `watcher`. */
-  watcherKey?: string;
-  /** "internal" mode: the model gateway's key (secret gateway_board_key, x-gateway-key): files raise_cap, nothing else. */
+  /**
+   * "internal" mode: the kernel's key (secret gateway_board_key, x-gateway-key; held only by the kernel and the board): the model
+   * gateway files raise_cap, and channels reach the owner's cards, decisions and notices only through the kernel (lean-core 2f).
+   */
   gatewayKey?: string;
   /** The model gateway (every listener: a raise_cap is applied where it is tapped): an approved raise_cap sets the new cap there. */
   gateway?: { url: string; token: string };
-  /** The kernel's record routes (lean-core 2d), with gateway_board_key: module write kinds' cards are shown and decided here until 3a. */
+  /** The kernel's record routes (lean-core 2d), with gateway_board_key: module write kinds' cards are shown here (decided by channel token) until 3a. */
   kernel?: { url: string; token: string };
   /**
    * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only: on "local", the owner's setup
@@ -273,11 +268,6 @@ export function createApp(opts: AppOptions): Server {
   }
   const kernelList = async (state: "review" | "owner" | "recent", task?: string) => (kernel.enabled ? Promise.all((await kernel.list(state, task).catch((err) => (log.warn({ err: String(err) }, "kernel records unavailable"), [] as Approval[]))).map(named)) : []);
   const fromKernel = <T extends Approval>(p: Promise<T>) => p.then(named, (e: Error & { status?: number }) => { throw new HttpError(e.status && e.status < 500 ? (e.status === 404 ? 404 : 409) : 502, e.message); });
-  async function kernelDecided(id: string, decision: "approve" | "reject", by: string, via: string) {
-    const a = await fromKernel(kernel.decide(id, decision, by, via));
-    log.info({ approval: id, task: a.identifier, action: a.action, state: a.state, via: by }, "approval decided");
-    return shownApproval(await bylines(), a);
-  }
 
   const sessionOf = liveActivity(opts.sessions);
   const runOf = makeRuns({ pc, store, sessionsDir: opts.sessions?.dir, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
@@ -352,9 +342,8 @@ export function createApp(opts: AppOptions): Server {
   function requireRunner(req: IncomingMessage, what: string) {
     if (!runnerKeyed(req)) throw new HttpError(403, `only the runner ${what}`);
   }
-  /** The owner channel (owner_decide_key) or the owner's Claude watcher (watcher_decide_key). */
-  const ownerKeyed = (req: IncomingMessage) =>
-    Boolean(opts.decideKey && keyMatches(req.headers["x-owner-key"], opts.decideKey)) || Boolean(opts.watcherKey && keyMatches(req.headers["x-owner-key"], opts.watcherKey));
+  /** The kernel (gateway_board_key): every channel reaches the owner's cards, decisions and notices only through it. */
+  const kernelKeyed = (req: IncomingMessage) => Boolean(opts.gatewayKey && keyMatches(req.headers["x-gateway-key"], opts.gatewayKey));
   /** An agent through the tasks bridge: the kernel's caller assertion (X-AidenHQ-Caller), granted `tool` on paperclip_tasks (and `role`, if named). */
   async function requireAgentTool(req: IncomingMessage, tool: string, role?: string) {
     const ok = (g: { roles?: string[]; tools?: Record<string, string[]> }) => (g.tools?.paperclip_tasks ?? []).includes(tool) && (!role || (g.roles ?? []).includes(role));
@@ -1164,16 +1153,16 @@ export function createApp(opts: AppOptions): Server {
     },
     {
       // Where a message to a task the board moved to a successor goes (rollover.ts): read-only, from the board's own record.
-      // Only the owner channel (decide key) asks, before delivering a reply or a daily-chat message.
+      // Only the kernel asks, before it delivers a channel's message to the owner's chat.
       method: "GET",
       path: /^\/internal\/successor\/([A-Za-z0-9_-]+)$/,
       handle: async (m, _b, _u, req) => {
-        if (!ownerKeyed(req)) throw new HttpError(403, "only the owner's channel asks where a chat continues");
+        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel asks where a chat continues");
         return { id: successorOf(store, m[1]!) ?? null };
       },
     },
     {
-      // pending: the cards the owner-channel sends; approved: what the runner may claim (with the args it replays).
+      // pending: the cards the kernel hands channels (with their tokens); approved: what the runner may claim (with the args it replays).
       method: "GET",
       path: /^\/internal\/approvals$/,
       handle: async (_m, _b, url, req) => {
@@ -1187,15 +1176,15 @@ export function createApp(opts: AppOptions): Server {
           const all = [...(await (task ? kernelList("recent", task) : [])), ...store.approvals.on(issue)];
           return { approvals: all.map((a) => (runnerKeyed(req) ? { ...approvalView(a), args: a.args } : approvalView(a))) };
         }
-        // pending and finished: the owner channel's (or the watcher's); review and approved: the runner's.
+        // pending and finished: the kernel's (for the channels); review and approved: the runner's.
         if (state === "pending" || state === "finished") {
-          if (!ownerKeyed(req) && !runnerKeyed(req)) throw new HttpError(403, "only the owner's channel or the runner reads the cards");
+          if (!kernelKeyed(req) && !runnerKeyed(req)) throw new HttpError(403, "only the kernel or the runner reads the cards");
         } else if (!runnerKeyed(req)) throw new HttpError(403, "only the runner reads its queue");
         // pending: the owner's cards (Tier 2); review: the reviewer's queue (Tier 1), with the args it checks.
         if (state === "pending") return { approvals: [...store.approvals.pending(), ...(await kernelList("owner"))].map(approvalView) };
         if (state === "review") return { approvals: [...store.approvals.pending(Date.now(), 1), ...(await kernelList("review"))].map((a) => ({ ...approvalView(a), args: a.args })) };
         if (state === "approved") return { approvals: store.approvals.approved(Object.keys(ARGS) as RunnerAction[]).map(approvalView) };
-        // finished: recent records with an outcome (or that died mid-way), for the owner channel to report under its card.
+        // finished: recent records with an outcome (or that died mid-way), for a channel to report under its card.
         if (state === "finished") return { approvals: [...store.approvals.list(50), ...(await kernelList("recent"))].map(approvalView).filter((a) => a.outcome || a.state === "unknown") };
         throw new HttpError(400, "state=pending, review, approved or finished, or issue=<task>");
       },
@@ -1424,20 +1413,20 @@ export function createApp(opts: AppOptions): Server {
     },
     {
       // The owner's one-line notices (critical monitoring alerts, a paused routine, Fleet Ops unreachable), each handed over
-      // once (the owner channel, decide key). Escalated grades are not here: they go to the task's delegator (wake.ts).
+      // once (to a channel, through the kernel). Escalated grades are not here: they go to the task's delegator (wake.ts).
       method: "GET",
       path: /^\/internal\/owner\/grades$/,
       handle: async (_m, _b, _u, req) => {
-        if (!opts.decideKey || !keyMatches(req.headers["x-owner-key"], opts.decideKey)) throw new HttpError(403, "only the owner's channel collects owner notices");
+        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel collects owner notices");
         return { lines: takeOwnerLines(store) };
       },
     },
     {
-      // Account reset links for the owner's Telegram: only the owner channel (decide key) collects them, once.
+      // Account reset links for the owner's Telegram: only the kernel collects them (for the owner's channel), once.
       method: "GET",
       path: /^\/internal\/owner\/reset-links$/,
       handle: async (_m, _b, _u, req) => {
-        if (!opts.decideKey || !keyMatches(req.headers["x-owner-key"], opts.decideKey)) throw new HttpError(403, "only the owner's channel collects reset links");
+        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel collects reset links");
         return { links: opts.accounts?.takeResetLinks() ?? [] };
       },
     },
@@ -1453,58 +1442,25 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // A decision in Telegram (the owner chat): a card's button (by id) or an exact typed reply (by task). The owner-channel
-      // proves it with its own decide key (owner_decide_key), which no agent holds; without it configured, nothing is decided here.
+      // A channel's decision on one of the board's cards, spent and stamped by the kernel (lean-core 2f: a decision token bound
+      // to the card's digest). Only the kernel's key; `by` is one of the stamps a channel decision carries, never an account's.
       method: "POST",
       path: /^\/internal\/owner\/approvals\/decide$/,
-      // The owner's Claude watcher decides here too, with its own key (watcher_decide_key): stamped `watcher`. Who decided is
-      // stamped from the key used, never from the body (`via` is accepted and ignored).
       handle: async (_m, body, _u, req) => {
-        const owner = Boolean(opts.decideKey && keyMatches(req.headers["x-owner-key"], opts.decideKey));
-        const watcher = !owner && Boolean(opts.watcherKey && keyMatches(req.headers["x-owner-key"], opts.watcherKey));
-        if (!owner && !watcher) throw new HttpError(403, "only the owner's channel decides");
-        const b = parse(z.object({ id: z.string().regex(/^(A[0-9a-f]{8}|k-[0-9a-f]{16})$/).optional(), task: z.string().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/).optional(), target: z.string().trim().min(1).max(500).optional(), batch: z.string().regex(/^B[0-9a-f]{8}$/).optional(), decision: z.enum(["approve", "reject"]), via: z.enum(["telegram", "slack"]).optional(), stale: z.literal(true).optional() }).strict(), body);
-        if ([b.id, b.task, b.batch].filter(Boolean).length !== 1) throw new HttpError(400, "id, task or batch");
-        // A watcher's housekeeping no on one card (stale, a duplicate): stamped `stale:watcher`, so it never vetoes the action
-        // on the task (ownerVetoed, the runner's priorDecisions). A plain watcher no stays a real veto.
-        if (b.stale && !(watcher && b.id && b.decision === "reject")) throw new HttpError(400, "stale is only the watcher's reject of one card by id");
-        const by = b.stale ? "stale:watcher" : watcher ? "watcher" : b.id || b.batch ? "owner:telegram" : "owner:reply";
-        if (b.id && KERNEL_ID.test(b.id)) return kernelDecided(b.id, b.decision, by, watcher ? "watcher" : (b.via ?? "telegram"));
-        if (b.batch) {
-          // A Telegram list's button: the cards exactly as that message showed them, used once (see the batch route below).
-          if (!batchesOn()) throw new HttpError(409, "batch approvals are off; tap each card");
-          const items = store.approvals.takeBatch(b.batch);
-          if (!items) throw new HttpError(409, "this list was already used or is over a day old; tap the cards one by one");
-          return decidedMany(store.approvals.decideMany(items, b.decision, by), by);
-        }
-        return decided(b.id ? store.approvals.decide(b.id, b.decision, by) : store.approvals.decideByReply(b.task!, b.decision, by, new Date(), b.target), by);
-      },
-    },
-    {
-      // A list of the owner's pending cards the owner channel is about to send to Telegram with Approve all / Reject all:
-      // stored as shown (id and digest each) under one id its buttons carry. Only the owner channel's decide key.
-      method: "POST",
-      path: /^\/internal\/owner\/approvals\/batch$/,
-      handle: async (_m, body, _u, req) => {
-        if (!opts.decideKey || !keyMatches(req.headers["x-owner-key"], opts.decideKey)) throw new HttpError(403, "only the owner's channel lists batches");
-        if (!batchesOn()) throw new HttpError(409, "batch approvals are off");
-        // A kernel record (k-) is decided on its own card: a list carries only the board's.
-        const b = body as { items?: { id?: unknown }[] } | undefined;
-        if (Array.isArray(b?.items)) b.items = b.items.filter((x) => !KERNEL_ID.test(String(x?.id ?? "")));
-        if (b?.items?.length === 0) throw new HttpError(409, "no board cards to list together");
-        const { items } = parse(z.object({ items: BatchItemsSchema }).strict(), body);
-        const r = store.approvals.snapshot(items);
-        if (!r.ok) throw new HttpError(409, r.reason);
-        return { batch: r.id, approvals: r.approvals.map(approvalView) };
+        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel decides for a channel");
+        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/), digest: z.string().min(1).max(128), decision: z.enum(["approve", "reject"]), by: z.enum(["owner:telegram", "owner:slack", "owner:reply", "watcher", "stale:watcher"]), via: z.string().regex(/^[a-z]{1,16}$/) }).strict(), body);
+        const a = store.approvals.get(b.id);
+        if (!a || a.digest !== b.digest) throw new HttpError(409, "this card changed since it was shown");
+        return decided(store.approvals.decide(b.id, b.decision, b.by), b.by);
       },
     },
     {
       // The daily digest: once a day from 21:00 in the owner's timezone, what was decided without the owner (Tier 0
-      // runs, the reviewer's verdicts) and what was escalated. Handed once to the owner channel, which sends it; null otherwise.
+      // runs, the reviewer's verdicts) and what was escalated. Handed once to a channel through the kernel; null otherwise.
       method: "GET",
       path: /^\/internal\/owner\/approvals\/digest$/,
       handle: async (_m, _b, _u, req) => {
-        if (!opts.decideKey || !keyMatches(req.headers["x-owner-key"], opts.decideKey)) throw new HttpError(403, "only the owner's channel collects the digest");
+        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel collects the digest");
         const now = new Date();
         const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: opts.timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(now).map((p) => [p.type, p.value]));
         const day = `${parts.year}-${parts.month}-${parts.day}`;
@@ -1842,7 +1798,8 @@ export function createApp(opts: AppOptions): Server {
       path: /^\/api\/approvals\/(A[0-9a-f]{8}|k-[0-9a-f]{16})\/(approve|reject)$/,
       handle: async (m, _b, _u, req) => {
         const by = requireAdmin(req);
-        if (KERNEL_ID.test(m[1]!)) return kernelDecided(m[1]!, m[2] === "approve" ? "approve" : "reject", by, "web");
+        // A module write kind's card is decided in a channel (its token) until the kernel's own page lands (3a).
+        if (KERNEL_ID.test(m[1]!)) throw new HttpError(409, "decide this card in Telegram (or your channel): the board decides it again once the kernel's approval page lands");
         return decided(store.approvals.decide(m[1]!, m[2] === "approve" ? "approve" : "reject", by), by);
       },
     },

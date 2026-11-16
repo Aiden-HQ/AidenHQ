@@ -41,7 +41,7 @@ const ask = (sha = "a") => ({ issue: "WOR-184", action: "apply", args: args(sha)
 
 describe("approval routes", () => {
   const store = new Store(":memory:");
-  const internal = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, decideKey: DECIDE_KEY, reviewerKey: RUNNER_KEY }));
+  const internal = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: DECIDE_KEY, reviewerKey: RUNNER_KEY }));
   // The runner's calls: the internal token plus its own key.
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) => internal("POST", path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-reviewer-key": RUNNER_KEY, ...headers });
   const get = (path: string, headers: Record<string, string> = {}) => internal("GET", path, undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...headers });
@@ -55,11 +55,11 @@ describe("approval routes", () => {
     // The card is the board's, from the args: the sha and the diff the runner rechecks before landing.
     expect(filed.json).toMatchObject({ state: "pending", identifier: "WOR-184", issueId: issue.id, sentence: "Apply a change to the fleet's configuration (commit aaaaaaaaaaaa).", details: "+schedule: daily" });
     expect((await post(`/internal/approvals/${id}/claim`, {})).status).toBe(409); // not approved
-    const decide = { id, decision: "approve", via: "telegram" };
+    const decide = { id, digest: filed.json.digest, decision: "approve", by: "owner:telegram", via: "telegram" };
     expect((await post("/internal/owner/approvals/decide", decide)).status).toBe(403); // the internal token alone
-    expect((await post("/internal/owner/approvals/decide", decide, { "x-owner-key": "nope" })).status).toBe(403);
-    expect((await post("/internal/owner/approvals/decide", decide, { "x-owner-key": DECIDE_KEY })).json).toMatchObject({ state: "approved", decidedBy: "owner:telegram" });
-    expect((await post("/internal/owner/approvals/decide", decide, { "x-owner-key": DECIDE_KEY })).status).toBe(409);
+    expect((await post("/internal/owner/approvals/decide", decide, { "x-gateway-key": "nope" })).status).toBe(403);
+    expect((await post("/internal/owner/approvals/decide", decide, { "x-gateway-key": DECIDE_KEY })).json).toMatchObject({ state: "approved", decidedBy: "owner:telegram" });
+    expect((await post("/internal/owner/approvals/decide", decide, { "x-gateway-key": DECIDE_KEY })).status).toBe(409);
     // The internal token alone (agents can read it) files, claims and reads nothing.
     const tokenOnly = { "x-reviewer-key": "" };
     expect((await post(`/internal/approvals/${id}/claim`, {}, tokenOnly)).json).toEqual({ error: "only the runner claims approved work" });
@@ -74,7 +74,7 @@ describe("approval routes", () => {
     expect((await post(`/internal/approvals/${id}/outcome`, { nonce: claimed.json.nonce, ok: true, text: "Applied." })).status).toBe(200);
     expect(store.approvals.get(id)).toMatchObject({ outcome: "applied", outcomeText: "Applied." });
     // The owner channel learns the outcome, to tell him under the card he tapped.
-    const done = await get("/internal/approvals?state=finished", { "x-owner-key": DECIDE_KEY });
+    const done = await get("/internal/approvals?state=finished", { "x-gateway-key": DECIDE_KEY });
     expect(done.json.approvals.find((a: any) => a.id === id)).toMatchObject({ outcome: "applied", outcomeText: "Applied." });
     // The runner reads the cards on one task, any state (agents do too, with their own credential and task_approvals).
     expect((await get("/internal/approvals?issue=WOR-184")).status).toBe(403);
@@ -99,7 +99,7 @@ describe("approval routes", () => {
 
   it("a rejected request is never claimable; a board-applied one is never claimed or reported by the runner", async () => {
     const id = (await post("/internal/approvals", ask("c"))).json.id;
-    expect((await post("/internal/owner/approvals/decide", { task: "wor-184", decision: "reject", via: "telegram" }, { "x-owner-key": DECIDE_KEY })).json).toMatchObject({ id, state: "rejected" });
+    expect((await post("/internal/owner/approvals/decide", { id, digest: store.approvals.get(id)!.digest, decision: "reject", by: "owner:reply", via: "telegram" }, { "x-gateway-key": DECIDE_KEY })).json).toMatchObject({ id, state: "rejected" });
     // The asking task hears it, so its agent doesn't wait on a card that will never run.
     await new Promise((r) => setTimeout(r, 20));
     expect(posted.find((c) => c.id === issue.id && c.body.includes(`approval ${id}`))?.body).toMatch(/^\*\*Rejected\*\*/);
@@ -118,7 +118,7 @@ describe("approval routes", () => {
     ];
     const pr = (await post("/internal/approvals", { issue: "WOR-184", action: "pr", args: { only } })).json;
     const push = (await post("/internal/approvals", { issue: "WOR-184", action: "push", args: { only } })).json;
-    const reject = (id: string) => post("/internal/owner/approvals/decide", { id, decision: "reject", via: "telegram" }, { "x-owner-key": DECIDE_KEY });
+    const reject = (id: string) => post("/internal/owner/approvals/decide", { id, digest: store.approvals.get(id)!.digest, decision: "reject", by: "owner:telegram", via: "telegram" }, { "x-gateway-key": DECIDE_KEY });
     expect((await reject(pr.id)).status).toBe(200);
     await new Promise((r) => setTimeout(r, 20));
     const text = posted.find((c) => c.body.includes(`approval ${pr.id}`))?.body ?? "";
@@ -172,7 +172,7 @@ describe("module write kinds' records (kept by the kernel)", () => {
   const KEY = "g".repeat(48);
   const rec = { id: "k-0123456789abcdef", kind: "apps-platform.run", args: { name: "roadmap-keeper", script: "seed:backfill", service: "app", sha: "0".repeat(40) }, digest: "d".repeat(64), tier: 1, panel: false, task: "WOR-184", state: "review", review: null, decided_by: null, outcome: null, created_at: "2026-11-16T00:00:00.000Z", updated_at: "2026-11-16T00:00:00.000Z", card: { sentence: "Run `npm run seed:backfill` once in app roadmap-keeper.", changes: "c", reads: "r", cost: "", details: "Reason (written by the requesting agent): x" }, requester: { agent: "fe", key: "app-maintainer", name: "DevOps" } };
   const kernel: { method: string; url: string; auth: string; body?: any }[] = [];
-  const internal = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, decideKey: DECIDE_KEY, reviewerKey: RUNNER_KEY, kernel: { url: "http://kernel.test", token: KEY } }));
+  const internal = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: DECIDE_KEY, reviewerKey: RUNNER_KEY, kernel: { url: "http://kernel.test", token: KEY } }));
   const call = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => internal(method, path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...headers });
   beforeAll(() => vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
@@ -184,30 +184,26 @@ describe("module write kinds' records (kept by the kernel)", () => {
   }));
   afterAll(() => vi.unstubAllGlobals());
 
-  it("lists them with the board's cards, under the kinds' card names, and forwards each verdict and decision by digest", async () => {
+  it("lists them with the board's cards, under the kinds' card names, and forwards each verdict (never a decision) by digest", async () => {
     // The reviewer's queue (the runner) and the owner's (the owner channel) carry them, the ported kinds under their old names.
     const queue = (await call("GET", "/internal/approvals?state=review", undefined, { "x-reviewer-key": RUNNER_KEY })).json.approvals;
     expect(queue).toEqual([expect.objectContaining({ id: rec.id, action: "app_run", tier: 1, state: "pending", digest: rec.digest, args: rec.args, identifier: "WOR-184" })]);
-    expect((await call("GET", "/internal/approvals?state=pending", undefined, { "x-owner-key": DECIDE_KEY })).json.approvals).toEqual([expect.objectContaining({ id: rec.id, tier: 2 })]);
+    expect((await call("GET", "/internal/approvals?state=pending", undefined, { "x-gateway-key": DECIDE_KEY })).json.approvals).toEqual([expect.objectContaining({ id: rec.id, tier: 2 })]);
     // The reviewer's verdict goes to the kernel with the board's key; autonomy off still refuses an approve here first.
     const verdict = { digest: rec.digest, decision: "escalate", reason: "fine", model: "~openai/gpt-luna-latest" };
     expect((await call("POST", `/internal/approvals/${rec.id}/review`, { ...verdict, decision: "approve" }, { "x-reviewer-key": RUNNER_KEY })).status).toBe(409);
     expect((await call("POST", `/internal/approvals/${rec.id}/review`, verdict, { "x-reviewer-key": RUNNER_KEY })).json).toMatchObject({ id: rec.id, tier: 2 });
     expect(kernel.at(-1)).toEqual({ method: "POST", url: `http://kernel.test/v1/writes/${rec.id}/review`, auth: `Bearer ${KEY}`, body: verdict });
-    // The owner's tap in Telegram: stamped by the board from its key, the digest read from the kernel's record.
-    expect((await call("POST", "/internal/owner/approvals/decide", { id: rec.id, decision: "approve", via: "telegram" })).status).toBe(403);
-    const r = await call("POST", "/internal/owner/approvals/decide", { id: rec.id, decision: "approve", via: "telegram" }, { "x-owner-key": DECIDE_KEY });
-    expect(r.json).toMatchObject({ id: rec.id, state: "approved", decidedBy: "owner:telegram" });
-    expect(kernel.at(-1)).toEqual({ method: "POST", url: `http://kernel.test/v1/writes/${rec.id}/decide`, auth: `Bearer ${KEY}`, body: { digest: rec.digest, decision: "approve", by: "owner:telegram", via: "telegram" } });
-    // A batch never takes them (each is the kernel's, decided on its own).
-    expect((await call("POST", "/internal/owner/approvals/batch", { items: [{ id: rec.id, digest: rec.digest }] }, { "x-owner-key": DECIDE_KEY })).status).toBe(409);
+    // Decisions are the kernel's own: the board no longer forwards them, and the web card answers 409 until the kernel page lands.
+    expect((await call("POST", "/internal/owner/approvals/decide", { id: rec.id, digest: rec.digest, decision: "approve", by: "owner:telegram", via: "telegram" }, { "x-gateway-key": DECIDE_KEY })).status).toBe(400);
+    expect(kernel.every((k) => !k.url.endsWith("/decide"))).toBe(true);
   });
 });
 
 describe("raise_cap from the model gateway", () => {
   const GATEWAY_KEY = "g".repeat(48);
   const store = new Store(":memory:");
-  const internal = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY, decideKey: DECIDE_KEY, gatewayKey: GATEWAY_KEY, gateway: { url: "http://gateway:8201", token: GATEWAY_KEY } }));
+  const internal = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY, gatewayKey: GATEWAY_KEY, gateway: { url: "http://gateway:8201", token: GATEWAY_KEY } }));
   const post = (body: unknown, key: string) => internal("POST", "/internal/approvals/raise-cap", body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-gateway-key": key });
   const ask = { issue: issue.id, scope: "task", agentId: "fe", subject: issue.id, cap: 10, spent: 10.02 };
 
@@ -228,7 +224,7 @@ describe("raise_cap from the model gateway", () => {
     const filed = (await post({ ...ask, cap: 20, spent: 20.4 }, GATEWAY_KEY)).json;
     const id = filed.id;
     expect(store.approvals.review(id, { digest: filed.digest, decision: "escalate", code: "owner_tier", reason: "The AI reviewer approved: fine.", model: "~openai/gpt-luna-latest" }).ok).toBe(true);
-    const decided = await internal("POST", "/internal/owner/approvals/decide", { id, decision: "approve", via: "telegram" }, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-owner-key": DECIDE_KEY });
+    const decided = await internal("POST", "/internal/owner/approvals/decide", { id, digest: filed.digest, decision: "approve", by: "owner:telegram", via: "telegram" }, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-gateway-key": GATEWAY_KEY });
     expect(decided.json).toMatchObject({ state: "approved" });
     await vi.waitFor(() => expect(store.approvals.get(id)!.outcome).toBe("applied"));
     vi.unstubAllGlobals();
@@ -252,9 +248,9 @@ describe("cards on a closed task", () => {
     issue: async (ref: string) => (ref === "WOR-1" ? aidens : closed),
   } as unknown as Paperclip;
   const store = new Store(":memory:");
-  const internal = listen(createApp({ paperclip: closedPc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, decideKey: DECIDE_KEY, gatewayKey: GATEWAY_KEY, gateway: { url: "http://gateway:8201", token: GATEWAY_KEY } }));
+  const internal = listen(createApp({ paperclip: closedPc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: GATEWAY_KEY, gateway: { url: "http://gateway:8201", token: GATEWAY_KEY } }));
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) => internal("POST", path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...headers });
-  const decide = (id: string, decision: string) => post("/internal/owner/approvals/decide", { id, decision, via: "telegram" }, { "x-owner-key": DECIDE_KEY });
+  const decide = (id: string, decision: string) => post("/internal/owner/approvals/decide", { id, digest: store.approvals.get(id)!.digest, decision, by: "owner:telegram", via: "telegram" }, { "x-gateway-key": GATEWAY_KEY });
 
   for (const status of ["done", "cancelled"]) {
     it(`an approved raise_cap on a ${status} task runs nothing, and the task keeps its status, labels and comments`, async () => {

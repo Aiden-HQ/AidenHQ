@@ -263,7 +263,10 @@ jobs:
           modules/grafana/connections/grafana-mcp|npm ci && npm test && npm run typecheck|modules/grafana
           modules/jira/connections/jira-mcp|npm ci && npm test && npm run typecheck|modules/jira
           modules/meetings/connections/ops-mcp|npm ci && npm test && npm run typecheck|modules/meetings
-          modules/owner-channel/connections/slack-live-mcp|npm ci --ignore-scripts && npm test && npm run typecheck|modules/owner-channel
+          modules/channel-slack/connections/slack|npm ci --ignore-scripts && npm test && npm run typecheck|modules/channel-slack
+          modules/channel-telegram/connections/telegram|npm ci --ignore-scripts && npm test && npm run typecheck|modules/channel-telegram
+          modules/chat-lane/connections/lane|npm ci --ignore-scripts && npm test && npm run typecheck|modules/chat-lane
+          modules/channel-operator|node --test test/*.test.mjs|modules/channel-operator
           modules/primer/connections/primer-mcp|npm ci && npm test && npm run typecheck|modules/primer
           modules/slack/connections/slack-mcp|npm ci && npm test && npm run typecheck|modules/slack
           modules/tasks/connections/tasks-mcp|npm ci && npm test|modules/tasks kernel/sdk

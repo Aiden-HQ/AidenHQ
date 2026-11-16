@@ -7,8 +7,6 @@ import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
-const TOKEN = "t".repeat(64);
-const DECIDE_KEY = "k".repeat(48);
 const posted: string[] = [];
 const pc = { addComment: async (id: string) => void posted.push(id), issue: async () => ({ parentId: null }) } as unknown as Paperclip;
 const log = pino({ level: "silent" });
@@ -36,9 +34,7 @@ function call(port: number, method: string, path: string, body: unknown, headers
 }
 
 const board = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) }));
-const internal = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, decideKey: DECIDE_KEY }));
 const tap = (path: string, body: unknown) => call(board.port(), "POST", path, body, { host: "localhost:3120", "content-type": "application/json", "x-aidenhq-board": "1" });
-const owner = (path: string, body: unknown) => call(internal.port(), "POST", path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-owner-key": DECIDE_KEY });
 
 let n = 0;
 /** A pending apply card on its own task (Tier 2 unless said). */
@@ -71,16 +67,6 @@ describe("batch approvals", () => {
     expect((await tap("/api/approvals/batch/reject", { items: [{ id: t2.id, digest: "0".repeat(40) }] })).json.error).toContain("changed since it was shown");
     expect((await tap("/api/approvals/batch/reject", { items: Array.from({ length: 11 }, () => file("d")).map(item) })).status).toBe(400);
     expect(store.approvals.get(t2.id)!.state).toBe("pending");
-  });
-
-  it("Telegram: the owner channel stores the list it shows; its button decides that list once, stamped owner:telegram", async () => {
-    const cards = [file(), file()];
-    const listed = await owner("/internal/owner/approvals/batch", { items: cards.map(item) });
-    expect(listed.json.batch).toMatch(/^B[0-9a-f]{8}$/);
-    expect(listed.json.approvals.map((x: any) => x.id)).toEqual(cards.map((x) => x.id));
-    const decided = await owner("/internal/owner/approvals/decide", { batch: listed.json.batch, decision: "reject", via: "telegram" });
-    expect(decided.json.approvals.map((x: any) => [x.state, x.decidedBy])).toEqual(Array(2).fill(["rejected", "owner:telegram"]));
-    expect((await owner("/internal/owner/approvals/decide", { batch: listed.json.batch, decision: "approve" })).status).toBe(409); // used up
   });
 });
 

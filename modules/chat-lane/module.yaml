@@ -1,0 +1,49 @@
+name: chat-lane
+description: "The fast chat lane: agents with a `chat:` block answer their chats (the board and their own Telegram bots) in seconds with a light model, plus wake_at, wake_list and chat_send. Always installed (core requires it)."
+# It keeps the owner's words inside the lane and never speaks as the owner: task wakes are the kernel's labelled notices
+# (kernel.wake), and it reads task states through the kernel (kernel.cp-read).
+roles:
+  requests: [ kernel.cp-read, kernel.wake ]
+connections:
+  chat_lane:
+    url: http://lane:8089/mcp
+    auth: chat_lane_service_key
+    tools:
+      # wake_list: your pending wakes, what counts toward wake_at's cap (only wakes on tasks still open).
+      read: [ wake_list ]
+      # wake_at: wake yourself later (a reminder or follow-up). chat_send: answer in your own fast-lane chat from a background run.
+      write: [ wake_at, chat_send ]
+# The board's lane chat (services/board lane.ts) calls /lane/* here with its own key.
+board_env:
+  CHAT_LANE_URL: http://lane:8089
+  CHAT_LANE_KEY_FILE: ${secrets.chat_lane_board_key}
+services:
+  data: true
+  run:
+    lane:
+      build: ./connections/lane
+      tmp: 16m
+      egress: true # each lane agent's own Telegram bot
+      links: [ board ] # the board's lane chat reaches /lane/* (until the board becomes a module, 3g)
+      data: ["lane:/data"]
+      env:
+        LANE_DB: /data/lane.sqlite
+        OWNER_NAME: "${settings.owner_name}"
+        OWNER_TIMEZONE: "${settings.timezone}"
+        MCP_BEARER_TOKEN_FILE: ${secrets.chat_lane_service_key}
+        CHAT_LANE_BOARD_KEY_FILE: ${secrets.chat_lane_board_key}
+        # The lane's config (agents with a `chat:` block, their keys and tools; scripts/paperclip-setup.mjs writes it), and the
+        # secret its per-turn model tokens are signed with (capped agent calls only, through the gateway).
+        LANE_CONFIG_FILE: ${secrets.lane_config}
+        GATEWAY_LANE_SECRET_FILE: ${secrets.gateway_lane_secret}
+        AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
+        # Host-controlled (.env): only the owner's chat reaches a lane agent's bot.
+        TELEGRAM_OWNER_CHAT_ID: "${TELEGRAM_OWNER_CHAT_ID:-}"
+optional_secrets:
+  - lane_config
+generated_secrets:
+  - chat_lane_service_key
+  - chat_lane_board_key
+  # Signs the fast chat lane's per-turn model tokens (agent kind only; the gateway refuses any other kind signed with it).
+  - gateway_lane_secret
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

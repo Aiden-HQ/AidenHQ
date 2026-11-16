@@ -4,7 +4,7 @@ AidenHQ runs on one host. Docker Compose holds the control plane, the board and 
 and the computer launcher are systemd user units on the host itself.
 
 ```
- Owner ── Telegram / Slack ──► owner channel (slack-live-mcp) ──► Aiden (chief of staff)
+ Owner ── Telegram / Slack ──► owner channels (Telegram, Slack) ──► Aiden (chief of staff)
                                                                      │ delegates
  Board (daily view, approvals) ┐                                     ▼
  Paperclip UI (fleet console) ─┼────────── Paperclip (tasks, routines, runs) ── crews (Codex on OpenRouter)
@@ -79,9 +79,12 @@ consumers.
 connections, apps and the fleet. Approvals are board records: the exact request, one tap by a signed-in admin or from
 the owner channel, or an exact typed reply. Each is claimed once and the outcome is shown on the card.
 
-**Owner channel.** `slack-live-mcp` bridges Telegram and Slack (both optional) to Aiden and provides
-`notify_owner`, the way agents reach the owner. Telegram decisions and approval replies are proven with a generated
-key (`owner_decide_key`) that only this service and the board hold.
+**Owner channels.** `channel-telegram` (the Telegram owner bot, always installed) and `channel-slack` (optional: one
+Slack Socket Mode listener) bridge the owner to Aiden and provide `notify_owner`, the way agents reach the owner.
+`chat-lane` (always installed) is the fast chat lane. Approval cards are decided with per-card, per-channel,
+single-use decision tokens that the kernel mints (bound to the card's digest) at `/v1/channel/cards` and
+`/v1/channel/decide`. Owner messages from a channel go through the kernel's `/v1/channel/owner-message`; only the
+kernel holds the Paperclip board key.
 
 **Agent computers (`services/computer`).** Optional per-agent isolated containers for runs, started by a launcher that
 issues each run a token. Off unless an agent definition sets `image:`.

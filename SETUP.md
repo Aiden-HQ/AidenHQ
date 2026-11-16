@@ -288,9 +288,9 @@ read -rs V && printf '%s' "$V" > ~/.config/aidenhq/<name> && chmod 600 ~/.config
 3. Save the token as `telegram_notify_bot_token` in the vault (snippet above), and add your chat id to `.env`:
    `echo 'TELEGRAM_OWNER_CHAT_ID=<chat id>' >> ~/aidenhq/.env`. Only that chat is accepted.
 4. Add `telegram` to `channels:` in `instance.yaml` (see [docs/configuration.md](docs/configuration.md)) and apply.
-5. Restart the service that holds the token: `cd ~/aidenhq && docker compose up -d --force-recreate slack-live-mcp`.
+5. Restart the service that holds the token: `cd ~/aidenhq && docker compose up -d --force-recreate channel-telegram-telegram`.
 
-**Check:** `docker compose exec slack-live-mcp printenv TELEGRAM_OWNER_CHAT_ID` prints your chat id, and sending the
+**Check:** `docker compose exec channel-telegram-telegram printenv TELEGRAM_OWNER_CHAT_ID` prints your chat id, and sending the
 bot `/help` gets an immediate reply listing `/waiting`, `/status` and `/brief` (these quick commands don't wake a
 model). Any other message goes to Aiden; forward messages to the bot to give Aiden work.
 
@@ -301,15 +301,15 @@ Slack has two parts, both served by one Slack app.
 **a. Owner channel** (Aiden DMs you, agents post to channels you list, live events):
 
 1. [org admin] At api.slack.com/apps: *Create New App*, *From an app manifest*, and paste
-   [modules/owner-channel/slack-app-manifest.yml](modules/owner-channel/slack-app-manifest.yml). Install it in the
+   [modules/channel-slack/slack-app-manifest.yml](modules/channel-slack/slack-app-manifest.yml). Install it in the
    workspace. A workspace that requires admin approval queues the install for an admin.
 2. Save three tokens in the vault: the app-level token (`xapp-`, scope `connections:write`, under Basic Information,
    App-Level Tokens) as `slack_live_app_token`, the bot token (`xoxb-`) as `slack_live_bot_token`, and your user token
    (`xoxp-`) as `slack_live_user_token`.
 3. Set your Slack member id (Slack profile, *Copy member ID*) in `.env`: replace the `OWNER_SLACK_USER_ID=U00000000`
    line. It decides whose words count and who gets paged.
-4. Add `slack` to `channels:` in `instance.yaml`, apply, then
-   `docker compose up -d --force-recreate slack-live-mcp`.
+4. Add `channel-slack` to `modules:` in `instance.yaml`, apply, then
+   `docker compose up -d --force-recreate channel-slack-slack`.
 
 **b. Slack reads for agents** (the `slack` module, through Slack's own MCP server):
 
@@ -322,7 +322,7 @@ Slack has two parts, both served by one Slack app.
    `ssh -N -L 3118:127.0.0.1:3118 <you>@<host>`. Then run `cd ~/aidenhq && scripts/slack-auth.sh` on the server and
    open the URL it prints [human].
 
-**Check:** `docker compose logs --tail 20 slack-live-mcp` shows no token errors, and
+**Check:** `docker compose logs --tail 20 channel-slack-slack` shows no token errors, and
 `scripts/healthcheck.sh | grep slack` shows `ok  slack read (own profile)`.
 
 ### Others (optional)

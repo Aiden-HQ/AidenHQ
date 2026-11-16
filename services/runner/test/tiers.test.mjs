@@ -380,7 +380,7 @@ test("apply: agents", () => {
 
 test("apply: instance settings, pin and apps", () => {
   const f = ["instance.yaml"];
-  assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst().replace("[C1]", "[C1, C2]") })), 1, "slack_post_channels addition");
+  assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst().replace("[C1]", "[C1, C2]") })), "panel", "slack_post_channels: a setting like any other (2f)");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst({ github_orgs: [] }) }, { "instance.yaml": inst({ github_orgs: ["evil"] }) })), "panel", "github_orgs");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({ autonomy: "full" }) })), "panel", "any other setting");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({ spend_caps: "off" }) })), "panel", "the spend caps' kill switch is the owner's");

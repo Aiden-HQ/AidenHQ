@@ -13,6 +13,8 @@ import { configDir, dataDir, env, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
 import { createAsserter, loadKey } from "./assert.ts";
 import { createBackplane } from "./backplane.ts";
+import { createBrake } from "./brake.ts";
+import { createChannels, type Api, type ModulesFile } from "./channels.ts";
 import { createAsCaller, createCp } from "./cp.ts";
 import { createIdentity, type Connection, type Grant, type Jobcap } from "./identity.ts";
 import { createResolver } from "./net.ts";
@@ -35,8 +37,10 @@ async function runTask(runId: string): Promise<string | undefined> {
   const r = (await res.json()) as { issueId?: string; contextSnapshot?: { issueId?: string } };
   return r.issueId ?? r.contextSnapshot?.issueId ?? undefined;
 }
+// Modules with kernel roles, a privileged entry, a token of their own or a channel (compile).
+const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile, {});
 const whoami = createIdentity({
-  grants: () => grantsTable().agents ?? {}, connections,
+  grants: () => grantsTable().agents ?? {}, connections, modules: () => modulesFile().modules ?? {},
   jobcaps: watched(path.join(configDir, "jobcaps.json"), (j) => j as Record<string, Jobcap>, {}), // runner jobs' reads (compile)
   secret, controlUrl, launcherUrl, runTask,
 });
@@ -53,7 +57,17 @@ let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => (
 const writes = createWrites({ records, registry, connections, secret, resolver, onTask, log, replay: (r) => replay(r as never), autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never });
 const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, log });
 replay = proxy.replay as never;
-const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, boardKey: () => secret("gateway_board_key"), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
+// JSON both ways: the control plane as the owner (only the kernel holds the board key), and the board's internal listener with
+// the kernel's key (gateway_board_key; the runner's cards stay there until 3b).
+const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api => async (method, p, body) => {
+  const r = await call(p, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+  return { status: r.status, json: await r.json().catch(() => ({})) };
+};
+const ownerApi = asApi(cpApi);
+const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
+const channels = createChannels({ db: records.db, writes, board: boardApi, owner: ownerApi, modules: modulesFile, log });
+const brake = createBrake({ db: records.db, owner: ownerApi, on: () => grantsTable().loop_brake !== "off" });
+const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
 setTimeout(() => void writes.reconcile().then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })), 60_000).unref();

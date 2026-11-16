@@ -100,7 +100,7 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.ping", args: {} }, job(["twin.ping"]))).status, 403, "never a Tier 0 kind");
 });
 
-test("a changed target on revalidate gives stale and a refile; the owner's decision comes only from the board, stamped as one", async (t) => {
+test("a changed target on revalidate gives stale and a refile; the owner's decision is a channel's token, stamped as one", async (t) => {
   const { k, fx, tool, pending } = await twin(t);
   const p = await pending(await tool("post_note", { note: "a" }));
   // The same request again while it is open is that record, never a second card.
@@ -109,10 +109,11 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   // The reviewer escalates: the owner decides (Tier 2), never with a reviewer's or the code's stamp.
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/review`, { digest: rec.digest, decision: "escalate", reason: "owner's", model: "~acme/model-a" })).json.state, "owner");
   const decide = { digest: rec.digest, decision: "approve", by: "owner:chat", via: "chat" };
-  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/decide`, decide, "twin-key")).status, 401);
-  for (const by of ["reviewer:~acme/model-a", "kernel", "auto:x", ""]) assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/decide`, { ...decide, by })).status, 409);
+  // No route decides a record any more (channels spend tokens, channels.test.mjs); the stamps writes.decide takes are closed.
+  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/decide`, decide)).status, 404);
+  for (const by of ["reviewer:~acme/model-a", "kernel", "auto:x", ""]) assert.equal(typeof k.writes.decide(p.approval, { ...decide, by }), "string");
   fx.target = "c2"; // what it acts on moves after the card was filed
-  assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/decide`, decide)).json.decided_by, "owner:chat");
+  assert.equal(k.writes.decide(p.approval, decide).decided_by, "owner:chat");
   await until(() => k.records.get(p.approval).state === "stale" && k.records.list(["review"]).length === 1); // the refile follows the stale close
   assert.equal(fx.executes.length, 0);
   const refiled = k.records.list(["review"]);
@@ -125,7 +126,7 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   const veto = await pending(await tool("post_note", { note: "w" }));
   const vr = k.records.get(veto.approval);
   await k.v1("POST", `/v1/writes/${veto.approval}/review`, { digest: vr.digest, decision: "escalate", reason: "r", model: "~acme/model-a" });
-  await k.v1("POST", `/v1/writes/${veto.approval}/decide`, { ...decide, digest: vr.digest, decision: "reject" });
+  k.writes.decide(veto.approval, { ...decide, digest: vr.digest, decision: "reject" });
   const again = await pending(await tool("post_note", { note: "v" }));
   assert.notEqual(again.approval, open1.approval);
   assert.equal(again.tier, 2);
@@ -134,7 +135,7 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   // The owner's no on a kind makes the next request on the task theirs (Tier 2), the reviewer still first.
   const next = k.records.get(refiled[0].id);
   await k.v1("POST", `/v1/writes/${next.id}/review`, { digest: next.digest, decision: "escalate", reason: "r", model: "~acme/model-a" });
-  await k.v1("POST", `/v1/writes/${next.id}/decide`, { ...decide, digest: next.digest, decision: "reject" });
+  k.writes.decide(next.id, { ...decide, digest: next.digest, decision: "reject" });
   assert.equal((await pending(await tool("post_note", { note: "b" }))).tier, 2);
   // Tier 2 on its merits (the veto): the reviewer's reject reaches the owner with its note, not a final no. A record only
   // capped to Tier 2 (autonomy, merit 1) keeps Tier 1's final reject.
@@ -196,7 +197,7 @@ test("a destructive tool with no kind is conn.tool at Tier 1: replayed once, as 
   const q = await pending(await tool("note_drop", { id: 8 }));
   const qr = k.records.get(q.approval);
   await k.v1("POST", `/v1/writes/${q.approval}/review`, { digest: qr.digest, decision: "escalate", reason: "r", model: "~acme/model-a" });
-  await k.v1("POST", `/v1/writes/${q.approval}/decide`, { digest: qr.digest, decision: "reject", by: "owner:chat", via: "chat" });
+  k.writes.decide(q.approval, { digest: qr.digest, decision: "reject", by: "owner:chat", via: "chat" });
   assert.equal((await pending(await tool("note_drop", { id: 9 }))).tier, 2);
   assert.match(await text(await tool("note_write", { text: "y" })), /note_write done/);
 });

@@ -36,7 +36,7 @@ test("not yet in a computer: an agent in trial (its limits run inside the box); 
   assert.throws(() => validateImages({ x: { image: "agent-base", trial: true } }), /in trial/);
   const r = compile(product, inst({ agents: { "app-maintainer": { image: "agent-base" } } }));
   assert.equal(r.paperclip.agents["app-maintainer"].image, "agent-base");
-  assert.ok(r.paperclip.agents["app-maintainer"].enabled_tools.slack_live.includes("notify_owner"));
+  assert.ok(r.paperclip.agents["app-maintainer"].enabled_tools.telegram.includes("notify_owner"));
 });
 
 test("the design module: designer and reviewer run in computers with repo-checkout; only the reviewer may post design-review", () => {

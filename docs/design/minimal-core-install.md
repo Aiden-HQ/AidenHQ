@@ -81,7 +81,7 @@ closed list, and each costs a pinned image, never a host package. Decision D5 as
 | **Chrome for Testing + agent-browser + ~16 shared libs** (`/opt/aidenhq/browser`) | Headless browser for Engineer jobs (`aidenhq-browse`) | `engineering` and `design` (screenshots and click-throughs) | **Yes, as a module feature (`browser`)** | Engineers can't screenshot the apps they build; the UI review loses its evidence. | none |
 | **gh CLI** (checksummed .deb) | GitHub CLI in the runner's cache clone | `codehost-github` (default bundle) | **Yes, as a module feature (`gh`)** | No PRs or merges through gh | none |
 | **Codex CLI, opencode CLI** (`npm -g`, `ops/setup.sh:188-189`) | Engine binaries | `engine-codex` (default), `engine-opencode` (optional) | **Yes, per engine module** (features `codex-cli`, `opencode-cli`) | That engine can't run | none. Today opencode is installed even when unused. |
-| **whisper** (built from `modules/owner-channel/whisper`, 2 GB RAM) | Local speech-to-text for Telegram voice notes | Voice notes on the owner channel | **Yes, as its own `voice` module** (today it is in `owner-channel`, which core requires, so it is built and run on every instance) | Voice notes aren't transcribed; text still works. | none (audio stays on the host either way) |
+| **whisper** (built from `modules/channel-telegram/whisper`, 2 GB RAM) | Local speech-to-text for Telegram voice notes | Voice notes on the owner channel | **Yes, as its own `voice` module** (today it is in `channel-telegram`, which is always installed, so it is built and run on every instance) | Voice notes aren't transcribed; text still works. | none (audio stays on the host either way) |
 | **computer-net and ci-net units** (nft rules) | Keep agent computers and CI runners off the host, LAN and tailnet | `computer`, `ci` modules | **Yes, as module features** | Nothing until those modules are on | None, provided the units are installed *before* the module's containers start (the root step runs first; section 5). |
 | **unattended-upgrades** | Distro security updates | The host | **No** (keep; free) | Unpatched host | Removing it is a real risk for an Internet-facing host |
 | **qemu-guest-agent** | VM integration | VMs only (already conditional) | already optional | n/a | none |
@@ -438,8 +438,8 @@ There is no public port, no Caddy and no certificate.
   generated compose. Move `apps-edge` from `compose.yaml` into the generated compose (only in `tailscale` mode).
   `ops/setup.sh` stops reading `tailscale status` and stops running `tailscale serve`. `--host-tailscale` keeps the old
   path for owners who want tailnet SSH.
-- **whisper.** Move the `whisper` service from `modules/owner-channel/module.yaml` into a new `modules/voice`. The
-  slack-live `WHISPER_URL` becomes optional (unset: voice notes get "voice notes are off; install the voice module").
+- **whisper.** Move the `whisper` service from `modules/channel-telegram/module.yaml` into a new `modules/voice`. The
+  channel-telegram `WHISPER_URL` becomes optional (unset: voice notes get "voice notes are off; install the voice module").
   Default off (D7).
 - **browser, gh, Codex and opencode CLIs.** Feature tags on `engineering`/`design`, `codehost-github`, `engine-codex`
   and `engine-opencode`. `ops/setup.sh:188-189` and the browser block in `ops/vm/setup.sh` move under their features.
@@ -516,7 +516,7 @@ Migration of existing instances:
   `provides: exposure` modules.
 - **D6 Tailscale mode.** (a) A containerised userspace node with no host package, plus `--host-tailscale` for tailnet
   SSH (recommended); (b) keep the host package for the Tailscale mode.
-- **D7 whisper.** (a) Its own `voice` module, off by default (recommended); (b) keep it in owner-channel, always on.
+- **D7 whisper.** (a) Its own `voice` module, off by default (recommended); (b) keep it in channel-telegram, always on.
 - **D8 Many failures across addresses for one account.** (a) Alert the owner and never lock (recommended); (b) lock the
   account's sign-ins for 15 minutes after 50 failures in an hour (anyone can then lock the owner out).
 - **D9 Setup-link lifetime in public mode.** (a) 24 hours (recommended); (b) 72 hours, as today; (c) 1 hour.

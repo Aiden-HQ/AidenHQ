@@ -10,6 +10,22 @@
       "source": "./apps-platform"
     },
     {
+      "name": "channel-operator",
+      "source": "./channel-operator"
+    },
+    {
+      "name": "channel-slack",
+      "source": "./channel-slack"
+    },
+    {
+      "name": "channel-telegram",
+      "source": "./channel-telegram"
+    },
+    {
+      "name": "chat-lane",
+      "source": "./chat-lane"
+    },
+    {
       "name": "ci",
       "source": "./ci"
     },
@@ -80,10 +96,6 @@
     {
       "name": "open-loops",
       "source": "./open-loops"
-    },
-    {
-      "name": "owner-channel",
-      "source": "./owner-channel"
     },
     {
       "name": "primer",

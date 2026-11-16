@@ -1,7 +1,8 @@
 name: core
 description: Aiden (chief of staff), the Researcher, the apps platform's DevOps Engineer, the Agent Architect (designs new agents), the Agent Coach (reviews agents' outcomes) and the Platform Engineer. Always installed.
 requires:
-  - owner-channel
+  - channel-telegram
+  - chat-lane
   - tasks
   - engine-codex
   - apps-platform
@@ -125,7 +126,7 @@ agents:
       google_workspace?: [ calendar_list_events, calendar_get_event ]
       # A quick lookup answered in the owner's chat, not delegated (reads only): Drive, Confluence, Jira and Slack in one search.
       glean?: [ search, read_document ]
-      slack_live: [ notify_owner ]
+      telegram: [ notify_owner ]
       apps: [ app_list, app_status, app_view, web_view, warehouse_query, source_new, source_ack ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_set_status, task_finish, task_team, task_delegate, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, app_request_from_owner ]
     # Woken every heartbeat_hours to check the work it waits on (modules/core/heartbeat.md); events wake it sooner (board wake.ts).
@@ -179,7 +180,8 @@ agents:
       apps: [ app_list, app_status, app_logs, app_view, app_check, web_view, warehouse_query, source_new, app_requests, app_roles, app_deploy, app_restart, app_rollback, app_create, app_remove, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
       # wake_at: its follow-up checks an hour and a day after an app change deploys (paperclip-setup APP_FOLLOWUP_SECTION);
       # wake_list: which of them the 50-wake cap counts.
-      slack_live: [ notify_owner, wake_at, wake_list ]
+      telegram: [ notify_owner ]
+      chat_lane: [ wake_at, wake_list ]
       # fleet_catalog: who owns an app, and which modules are on (the ci module, before adding CI to a repo).
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_comment, task_set_status, task_finish, task_team, task_delegate, fleet_catalog ]
     heartbeat: true
@@ -201,7 +203,7 @@ agents:
     # owner's tap (an approval record). It can't grant itself anything: its own grants live here, in the product.
     # Research (read access to every source, and the web): reads only, so it still changes nothing itself.
     connections:
-      slack_live: [ notify_owner ]
+      telegram: [ notify_owner ]
       # Explicit lists (tool-budget slimming, 2026-11-13): the research reads, not the plumbing (source cursors, sprints, board config).
       apps: [ app_list, app_status, app_logs, app_view, web_view, warehouse_query ]
       glean?: read
@@ -346,7 +348,7 @@ optional_secrets:
 # The computer plugin's key to the launcher (services/computer): compile creates it when missing.
 generated_secrets:
   - computer_launcher_token
-  # The board's internal API: the runner, the kernel, the tasks module and the owner channel (rotated by deleting it).
+  # The board's internal API: the runner, the kernel and the tasks module (rotated by deleting it).
   - board_internal_token
   # The gate's proof to the board's sign-in listener (3129): the board trusts the gate's client-IP header only beside it.
   - gate_board_secret
@@ -354,10 +356,9 @@ generated_secrets:
   - edge_board_secret
   # The board's key to the launcher's /progress only (the live view); never the plugin's full control key.
   - computer_progress_token
-  # Tiered approvals: the runner's AI reviewer posts Tier 1 verdicts with this (board + runner only); the owner's
-  # Claude watcher decides with the other (stamped `watcher`), never with owner_decide_key.
+  # Tiered approvals: the runner's AI reviewer posts Tier 1 verdicts with this (board + runner only). The owner's Claude
+  # watcher decides through the channel-operator module (a decision token per card, stamped `watcher`).
   - reviewer_key
-  - watcher_decide_key
   # ops/setup.sh's key to the board: the owner's setup link and welcome chat (3120) and account resets (3122), nothing
   # else; every other board route needs a signed-in admin (Engineer jobs share the host's loopback).
   - board_operator_key

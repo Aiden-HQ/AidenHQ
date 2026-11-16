@@ -76,7 +76,7 @@ export const SIGN_IN_HINT = "To sign in, run ssh -N -L 3120:127.0.0.1:3120 <you>
 /** What a built-in connection is for, in the owner's words (it runs inside each agent run: nothing to check). */
 const BUILT_IN: Record<string, string> = { paperclip_tasks: "How agents read and update their tasks, delegate, and ask for approvals." };
 
-const NAMES: Record<string, string> = { google_workspace: "Google", ops_mcp: "Meetings and notes", slack_live: "Owner channel", paperclip_tasks: "Tasks bridge", apps: "Apps and warehouse", glean: "Glean", jira: "Jira", primer: "Primer", slack: "Slack", github: "GitHub", grafana: "Grafana", clickhouse: "ClickHouse" };
+const NAMES: Record<string, string> = { google_workspace: "Google", ops_mcp: "Meetings and notes", telegram: "Telegram", slack_live: "Slack live", chat_lane: "Fast chat lane", paperclip_tasks: "Tasks bridge", apps: "Apps and warehouse", glean: "Glean", jira: "Jira", primer: "Primer", slack: "Slack", github: "GitHub", grafana: "Grafana", clickhouse: "ClickHouse" };
 export const displayName = (name: string) => NAMES[name] ?? name.replace(/[_-]+/g, " ").replace(/^./, (c) => c.toUpperCase());
 
 const day = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });

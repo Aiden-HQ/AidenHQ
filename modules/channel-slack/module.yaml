@@ -1,0 +1,75 @@
+name: channel-slack
+description: "The instance's Slack app: the live listener (Socket Mode) that feeds triage and src_slack, the owner's Slack command channel as chat with Aiden, notify_owner as a Slack DM, and slack_post (the channel-slack.post write kind)."
+# A channel (channel@1): what the owner writes in their command channel is posted as theirs (stamped [slack]).
+privileged: [ speaks-as-owner ]
+providers:
+  channel: {}
+  # The kernel calls channel-slack.post's plan, execute and status here, with the connection's key (executor@1).
+  executor:
+    url: http://slack:8089/aidenhq/v1/executor
+    auth: slack_live_service_key
+connections:
+  slack_live:
+    setup: "Put slack_live_app_token and slack_live_bot_token in the vault (the app's manifest: slack-app-manifest.yml) and the owner's Slack user id in .env as OWNER_SLACK_USER_ID, then run `docker compose up -d --force-recreate channel-slack-slack`. See SETUP.md step 7."
+    url: http://slack:8089/mcp
+    auth: slack_live_service_key
+    tools:
+      read: [ slack_pending_events ]
+      # notify_owner: a Slack DM to the owner (urgent pages too). slack_post: filed as channel-slack.post; granted per agent.
+      write: [ notify_owner, slack_post ]
+# Every agent post is a kernel record the AI reviewer reads first; a channel outside slack_post_channels is the owner's too.
+writes:
+  post:
+    args: schemas/post.json
+    floor: 1
+    tools: [ slack_post ]
+    card:
+      sentence: "Post as {{agent}} (AI agent) in {{where}}."
+      changes: "A new Slack message from the instance's bot in {{where}}, which everyone in that channel sees."
+      reads: "Nothing new: the message below."
+      cost: "No model cost."
+      details: "{{text}}"
+settings:
+  # Slack channel ids agents may post to at the AI reviewer's word (an agent still needs slack_post granted); any other
+  # channel needs the owner's approval too.
+  slack_post_channels:
+    default: []
+services:
+  data: true
+  run:
+    slack:
+      build: ./connections/slack
+      tmp: 16m
+      egress: true
+      # src_slack: the warehouse (the shared-sources network); paperclip: the HMAC-signed triage webhook (no key). Until 3g.
+      links: [ sources, paperclip ]
+      data: ["slack-live:/data"]
+      env:
+        SLACK_LIVE_DB: /data/slack-live.sqlite
+        # Host-controlled (.env), never instance.yaml: whose Slack words count, and who gets paged.
+        OWNER_SLACK_USER_ID: "${OWNER_SLACK_USER_ID:-}"
+        IGNORE_CHANNELS: "${SLACK_LIVE_IGNORE_CHANNELS:-}"
+        OWNER_COMMAND_CHANNEL: "${OWNER_COMMAND_CHANNEL:-}"
+        SLACK_POST_CHANNELS: "${settings.slack_post_channels}"
+        URGENT_COOLDOWN_MIN: "60"
+        MCP_BEARER_TOKEN_FILE: ${secrets.slack_live_service_key}
+        SLACK_APP_TOKEN_FILE: ${secrets.slack_live_app_token}
+        SLACK_BOT_TOKEN_FILE: ${secrets.slack_live_bot_token}
+        TRIAGE_WEBHOOK_URL_FILE: ${secrets.slack_live_triage_webhook_url}
+        TRIAGE_WEBHOOK_SECRET_FILE: ${secrets.slack_live_triage_webhook_secret}
+        # Shared sources (src_slack): its warehouse login, and the owner's user token (xoxp, history scopes) for the gap sync.
+        WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_slack_password}
+        SLACK_USER_TOKEN_FILE: ${secrets.slack_live_user_token}
+optional_secrets:
+  - slack_live_app_token
+  - slack_live_bot_token
+  - slack_live_triage_webhook_url
+  - slack_live_triage_webhook_secret
+  # The owner's user token (xoxp-) of the Slack live app, for the src_slack gap sync: channels:history, groups:history,
+  # im:history, mpim:history, channels:read, groups:read, im:read, mpim:read, users:read (users:read.email for emails).
+  - slack_live_user_token
+generated_secrets:
+  - slack_live_service_key
+  # src_slack's warehouse login (ops/warehouse-sources.sh gives the role this password).
+  - warehouse_src_slack_password
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

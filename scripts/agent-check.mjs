@@ -48,7 +48,7 @@ export function staticCheck(cfg, { read = readText } = {}) {
       if (m != null && !(typeof m === "string" && MODEL_ID.test(m))) errors.push(`${key}: model ${JSON.stringify(m)} isn't an OpenRouter model id (vendor/model)`);
     }
     const granted = new Set(Object.values(a.enabled_tools ?? {}).flat());
-    // A trial agent's writes: the trial ones, and (with a `trial_writes:` list) the owner-channel ones it names, and nothing
+    // A trial agent's writes: the trial ones, and (with a `trial_writes:` list) the channel and lane ones it names, and nothing
     // else. This is the second lock on the compile's rules, on a hand-written or compiled config alike.
     const trialWrites = a.trial_writes == null ? [] : a.trial_writes;
     if (a.trial === true) {

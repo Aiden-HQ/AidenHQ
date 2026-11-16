@@ -220,7 +220,7 @@ for c in $containers; do
         code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST http://127.0.0.1:3122/internal/recurring/claim)"
         [ "$code" = "401" ] && pass "board: internal API refuses requests without the token" || fail "board internal API answered without the token ($code)"
         # Agents can read the token in their shell: alone it must not claim, report outcomes, read the cards or change the
-        # board. Each route also wants the runner's key, the owner channel's or the calling agent's own credential.
+        # board. Each route also wants the runner's key, the kernel's (channels decide only through it, 2f) or the calling agent's own credential.
         bt="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/board_internal_token" 2>/dev/null)"
         if [ -z "$bt" ]; then
           fail "board: can't read board_internal_token to check what the token alone opens"
@@ -243,6 +243,9 @@ GET /internal/approvals?issue=X-1
 POST /internal/approvals {}
 POST /internal/issues/X-1/schedule {"clear":true}
 POST /internal/recurring/runs/00000000-0000-0000-0000-000000000000/2000-01-01T00:00 {}
+POST /internal/owner/approvals/decide {"id":"A00000000","digest":"x","decision":"approve","by":"owner:telegram","via":"telegram"}
+GET /internal/owner/reset-links
+GET /internal/successor/X-1
 PROBES
           [ -z "$opened" ] && pass "board: the internal token alone claims, reports, reads and changes nothing" || fail "board: the internal token alone was not refused by caller:$opened"
         fi
@@ -530,6 +533,18 @@ kbinds="$(ss -Hltnp 2>/dev/null | awk -v k="pid=${kpid:-none}," 'index($0, k) {p
 first_conn="$(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync("config/kernel/connections.json","utf8")))[0] ?? "")' 2>/dev/null)"
 [ -n "$first_conn" ] && [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "http://10.231.0.1:3130/c/$first_conn/mcp" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')" = 401 ] \
   && pass "kernel: /c/ without a credential is refused (401)" || fail "kernel: /c/$first_conn answers without a credential"
+# Channels (2f): the owner's cards, decisions and words go through the kernel, to a speaks-as-owner module's own token only;
+# no module mounts the board key, and the old decide keys are gone from the vault.
+chan="$(for p in "GET /v1/channel/cards" "POST /v1/channel/decide" "POST /v1/channel/owner-message" "GET /v1/cp/read/api/companies"; do
+  for tok in "" "$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/board_internal_token" 2>/dev/null)"; do
+    data=""; [ "${p%% *}" = POST ] && data="{}"
+    c="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X "${p%% *}" ${tok:+-H "Authorization: Bearer $tok"} -H 'content-type: application/json' ${data:+-d "$data"} "http://10.231.0.1:3130${p#* }" 2>/dev/null || true)"
+    [ "$c" = 401 ] || echo "${p} answered $c"
+  done; done)"
+[ -z "$chan" ] && pass "kernel: channel routes refuse no credential and the board's internal token (401)" || fail "kernel: $chan"
+! grep -q 'paperclip_board_key' compose.modules.yaml 2>/dev/null && pass "modules: no module mounts the Paperclip board key" || fail "modules: a module mounts paperclip_board_key (compose.modules.yaml)"
+[ ! -e "${AIDENHQ_SECRETS_DIR:-/nonexistent}/owner_decide_key" ] && [ ! -e "${AIDENHQ_SECRETS_DIR:-/nonexistent}/watcher_decide_key" ] \
+  && pass "vault: no owner_decide_key or watcher_decide_key (channels decide by token)" || fail "vault: an old decide key is still there"
 pc="$(docker ps --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=paperclip" --format '{{.Names}}' | head -1)"
 if [ -n "$pc" ]; then
   # The server's own environment (what its entrypoint exported, which `docker exec env` doesn't show) and its secrets.

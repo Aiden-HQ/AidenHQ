@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { createGateway, watched } from "../src/gateway/lib.ts";
 import { createAsserter, loadKey } from "../src/assert.ts";
 import { createBackplane } from "../src/backplane.ts";
+import { createBrake } from "../src/brake.ts";
+import { createChannels } from "../src/channels.ts";
 import { createAsCaller, createCp } from "../src/cp.ts";
 import { createIdentity } from "../src/identity.ts";
 import { createResolver } from "../src/net.ts";
@@ -20,7 +22,7 @@ export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data",
  * agents: { token: {id, name} } the control plane knows; boxes: { ahqc_token: {agentId, runId, issueId} } the launcher knows;
  * grants: the grants table's agents; connections(urls): config/kernel/connections.json from the fake servers' URLs.
  */
-export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [] } = {}) {
+export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }) } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kernel-"));
   const control = [];
   const cpServer = await serve(async (req, res) => {
@@ -42,13 +44,15 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   writeFileSync(join(dir, "jobcaps.json"), JSON.stringify(jobcaps));
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ ...settings, agents: grants }));
   writeFileSync(join(dir, "writes.json"), JSON.stringify(kinds));
+  writeFileSync(join(dir, "modules.json"), JSON.stringify(modules));
   const allSecrets = { gateway_job_secret: "job-secret", gateway_lane_secret: "lane-secret", gateway_harness_key: "harness-key", paperclip_board_key: "board-key", gateway_board_key: "the-boards-key", ...secrets };
   const secret = (n) => allSecrets[n] ?? "";
   const log = [];
   const logf = (msg, fields) => log.push({ msg, ...fields });
   const grantsTable = watched(join(dir, "grants.json"), (j) => j, {});
   const connectionsTable = watched(join(dir, "connections.json"), (j) => j, {});
-  const whoami = createIdentity({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, jobcaps: watched(join(dir, "jobcaps.json"), (j) => j, {}), secret, controlUrl: cpServer.url, launcherUrl: launcher.url, runTask: async () => "TASK-1" });
+  const modulesFile = watched(join(dir, "modules.json"), (j) => j, {});
+  const whoami = createIdentity({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, modules: () => modulesFile().modules ?? {}, jobcaps: watched(join(dir, "jobcaps.json"), (j) => j, {}), secret, controlUrl: cpServer.url, launcherUrl: launcher.url, runTask: async () => "TASK-1" });
   const asserter = createAsserter(loadKey(join(dir, "caller-key.pem")));
   // Records (kernel.db) and the write lifecycle, as main.ts wires them; notices on onTask are kept in `notices`.
   const notices = [];
@@ -58,7 +62,13 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
     autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text) => void notices.push({ task, text }) } });
   const proxy = createProxy({ whoami, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, log: logf });
   replay = proxy.replay;
-  const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, boardKey: () => secret("gateway_board_key"), proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, controlUrl: cpServer.url, launcherUrl: launcher.url, log: logf }) });
+  // The control plane as the owner (board key) and the board's internal listener (a fake: `board(method, path, body)`).
+  const owner = async (method, path, body) => { const r = await fetch(new URL(path, cpServer.url), { method, headers: { authorization: "Bearer board-key", "content-type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }); return { status: r.status, json: await r.json().catch(() => ({})) }; };
+  const boardCalls = [];
+  const boardApi = async (method, path, body) => (boardCalls.push({ method, path, body }), board(method, path, body));
+  const channels = createChannels({ db: records.db, writes, board: boardApi, owner, modules: modulesFile, log: logf });
+  const brake = createBrake({ db: records.db, owner, on: () => grantsTable().loop_brake !== "off" });
+  const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, owner, modules: modulesFile, boardKey: () => secret("gateway_board_key"), proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, controlUrl: cpServer.url, launcherUrl: launcher.url, log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const gw = createGateway({ asCaller, dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), tools: proxy, secret });
   const bp = await serve(backplane);
@@ -70,7 +80,7 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   });
   /** The backplane's /v1/writes routes, with a bearer (the board's key by default). */
   const v1 = (method, path, body, token = "the-boards-key") => fetch(`${bp.url}${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async (r) => ({ status: r.status, json: await r.json() }));
-  return { dir, url: bp.url, jobsUrl: jobs.url, call, control, log, asserter, asCaller, jwks: asserter.jwks, records, writes, notices, v1 };
+  return { dir, url: bp.url, jobsUrl: jobs.url, call, control, log, asserter, asCaller, jwks: asserter.jwks, records, writes, notices, v1, boardCalls };
 }
 
 /** A module's MCP server: answers tools/list with `tools` and tools/call with `answer(msg, req)`; records what it saw. */

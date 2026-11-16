@@ -1,6 +1,6 @@
 // K1 whoami: who a bearer is, from the credential alone. A control-plane run JWT or agent key (its /api/agents/me, cached 5
 // minutes by the credential's hash), an agent computer's run token (the launcher's /whoami, asked every time so a revoked
-// token stops at once), a runner job's token (gateway_job_secret), a module's token (its connection's service key), or the
+// token stops at once), a runner job's token (gateway_job_secret), a module's token (its connection's service key, or its own `<module>_token`), or the
 // harness key (the new-agent hello probe: no agent, no grants). What an agent may do comes from the grants table setup
 // writes (config/grants/grants.json), never from control-plane metadata, which agents can edit.
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -33,8 +33,10 @@ const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length 
 /** The roles an assertion carries: the agent's own, plus kernel.trial for an agent in trial. */
 export const rolesOf = (g: Grant) => [...(g.roles ?? []), ...(g.trial === true ? ["kernel.trial"] : [])];
 
-export function createIdentity({ grants, connections, jobcaps, secret, controlUrl, launcherUrl, runTask, now = Date.now }: {
+export function createIdentity({ grants, connections, jobcaps, modules = () => ({}), secret, controlUrl, launcherUrl, runTask, now = Date.now }: {
   grants: () => Record<string, Grant>; connections: () => Record<string, Connection>; jobcaps: () => Record<string, Jobcap>;
+  /** Modules with kernel roles or a token of their own (config/kernel/modules.json): a module with no connection is known by its token. */
+  modules?: () => Record<string, { roles?: string[]; token?: string }>;
   secret: (name: string) => string; controlUrl?: string; launcherUrl?: string;
   /** The task a control-plane run is on (its run record), or undefined. */
   runTask?: (runId: string) => Promise<string | undefined>; now?: () => number;
@@ -48,9 +50,9 @@ export function createIdentity({ grants, connections, jobcaps, secret, controlUr
 
   return async function whoami(token: string): Promise<Identity> {
     if (!token) throw new Unknown("no credential");
-    for (const [, c] of Object.entries(connections())) {
-      if (same(token, secret(c.auth_secret))) return { kind: "module", module: c.module, roles: [], tools: {}, credential: "" };
-    }
+    const mod = (m: string): Identity => ({ kind: "module", module: m, roles: modules()[m]?.roles ?? [], tools: {}, credential: "" });
+    for (const [, c] of Object.entries(connections())) if (same(token, secret(c.auth_secret))) return mod(c.module);
+    for (const [m, d] of Object.entries(modules())) if (d.token && same(token, secret(d.token))) return mod(m);
     if (same(token, secret("gateway_harness_key"))) return { kind: "run", roles: [], tools: {}, credential: "" };
     if (token.startsWith("ahqj_")) {
       const p = verifyToken(secret("gateway_job_secret"), token, now());

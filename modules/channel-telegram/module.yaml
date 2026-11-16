@@ -1,0 +1,78 @@
+name: channel-telegram
+description: "The owner's Telegram: their chat with Aiden (typed and voice notes), approval cards decided with single-use decision tokens, and notify_owner (Telegram and their chat on the board). Always installed (core requires it); Telegram itself is optional."
+# A channel (channel@1): the kernel hands it each pending card with a single-use approve and reject token bound to the card's
+# digest and this channel, and posts what the owner writes here as theirs (stamped [telegram]). It can approve every card it
+# is sent: telegram_decide is how the owner limits that.
+privileged: [ speaks-as-owner ]
+providers:
+  channel: {}
+connections:
+  telegram:
+    setup: "Put the bot token in the vault as telegram_notify_bot_token and the owner chat's id in .env as TELEGRAM_OWNER_CHAT_ID, then run `docker compose up -d --force-recreate channel-telegram-telegram`. See SETUP.md step 7."
+    url: http://telegram:8089/mcp
+    auth: telegram_service_key
+    tools:
+      # notify_owner: a message to the owner on Telegram and, with `task`, on their chat on the board.
+      read: []
+      write: [ notify_owner ]
+settings:
+  # notify_owner messages of kind fyi (news to read later) on Telegram: send, or mute (they still show on the board's chat).
+  # Decisions and results are never muted.
+  telegram_fyi:
+    default: send
+    values: [ send, mute ]
+  # Which approval cards may be decided in Telegram: all; standard (all but Tier 2 panel cards and applies, which come as
+  # text to decide on the board); or none (every card is text only).
+  telegram_decide:
+    default: all
+    values: [ all, standard, none ]
+  # Approve all / Reject all on a list of two or more waiting cards (each still decided on its own token): on or off.
+  telegram_batch:
+    default: "on"
+    values: [ "on", "off" ]
+services:
+  data: true
+  run:
+    telegram:
+      build: ./connections/telegram
+      tmp: 16m
+      egress: true
+      data: ["telegram:/data"]
+      env:
+        TELEGRAM_DB: /data/telegram.sqlite
+        OWNER_NAME: "${settings.owner_name}"
+        OWNER_TIMEZONE: "${settings.timezone}"
+        OWNER_COMPANY: "${settings.company_name}"
+        TELEGRAM_FYI: "${settings.telegram_fyi}"
+        TELEGRAM_DECIDE: "${settings.telegram_decide}"
+        TELEGRAM_BATCH: "${settings.telegram_batch}"
+        URGENT_COOLDOWN_MIN: "60"
+        MCP_BEARER_TOKEN_FILE: ${secrets.telegram_service_key}
+        TELEGRAM_NOTIFY_BOT_TOKEN_FILE: ${secrets.telegram_notify_bot_token}
+        # Host-controlled (.env), never instance.yaml: whose chat counts as the owner's, and where task links point.
+        TELEGRAM_OWNER_CHAT_ID: "${TELEGRAM_OWNER_CHAT_ID:-}"
+        TELEGRAM_TASK_URL: "${TELEGRAM_TASK_URL:-}"
+        # Voice notes are transcribed on this host (audio never leaves it).
+        WHISPER_URL: http://whisper:9000
+    # Local speech-to-text for Telegram voice notes (faster-whisper, CPU). The model downloads once into the data dir.
+    # Built here from upstream v1.10.0 on patched bases (see whisper/Dockerfile), not pulled from the upstream tag.
+    whisper:
+      build: ./whisper
+      user: image # root in the container owns its model dir, so cap_drop ALL is enough
+      read_only: false
+      egress: true
+      data: ["whisper:/data/whisper"]
+      env:
+        ASR_ENGINE: faster_whisper
+        ASR_MODEL: small
+        ASR_MODEL_PATH: /data/whisper
+        MODEL_IDLE_TIMEOUT: "300" # unload the model after 5 idle minutes (it holds ~1.5 GB); reloads on the next note
+      memory: 2g
+      cpus: 2
+# Telegram is optional: created empty when missing, so compose starts; an empty token means "not configured".
+optional_secrets:
+  - telegram_notify_bot_token
+# The kernel's bearer for this module's connection, and this module's own token at the kernel: compile creates it.
+generated_secrets:
+  - telegram_service_key
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

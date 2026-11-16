@@ -436,7 +436,9 @@ function CapsRow({ name, agent, caps, defaults }: { name: string; agent: string;
 }
 
 function NotificationsPage({ rows, conns }: { rows: SettingRow[]; conns: ConnectionsData | null }) {
-  const live = conns?.connections.find((c) => c.name === "slack_live")?.probe;
+  // Each channel module's health says which of its channels have tokens (channel-telegram: telegram, voice; channel-slack: slack).
+  const probes = (conns?.connections ?? []).filter((c) => c.name === "telegram" || c.name === "slack_live").map((c) => c.probe?.channels).filter(Boolean);
+  const live = probes.length ? { channels: Object.assign({}, ...probes) as Record<string, boolean> } : undefined;
   const chosen = (rows.find((r) => r.key === "channels")?.value as string[] | undefined) ?? [];
   const [perm, setPerm] = useState(() => (notificationsSupported() ? Notification.permission : "unsupported"));
   const state = (k: string) => (!live?.channels ? "unknown" : live.channels[k] ? "set up" : "not set up");
@@ -461,7 +463,7 @@ function NotificationsPage({ rows, conns }: { rows: SettingRow[]; conns: Connect
           }
         />
       </Group>
-      <Group title="Channels" hint={!live?.channels ? "The owner channel didn't say which channels have tokens." : undefined}>
+      <Group title="Channels" hint={!live?.channels ? "The channel modules didn't say which channels have tokens." : undefined}>
         {channels.map(([k, name, what]) => (
           <Row key={k} title={name} sub={what} meta={<>{k !== "voice" && <span className="st-chip">{chosen.includes(k) ? "in your channels" : "not in your channels"}</span>}<StatusPill tone={state(k) === "set up" ? "ok" : "off"}>{state(k)}</StatusPill></>} />
         ))}
