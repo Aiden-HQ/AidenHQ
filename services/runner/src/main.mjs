@@ -2430,10 +2430,12 @@ async function cardBases({ branches = [], prs = [] } = {}) {
  */
 async function cardSources(bases) {
   if (!bases.length) return undefined;
+  // A base code could not name (a merge card's unreadable PR) is never guessed: no records from it.
+  const known = bases.filter((b) => b.base);
   try {
     const gh = await findRealGh();
     const read = async ({ repo, base }) => (await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${encodeURIComponent(SOURCE_EXCEPTIONS_FILE)}?ref=${encodeURIComponent(base)}`], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout;
-    return { where: bases.map((b) => `${b.repo} ${b.base} ${SOURCE_EXCEPTIONS_FILE}`).join("; "), records: (await Promise.all(bases.map((b) => read(b).catch(() => "")))).flatMap(readSourceExceptions) };
+    return { where: known.map((b) => `${b.repo} ${b.base} ${SOURCE_EXCEPTIONS_FILE}`).join("; "), records: (await Promise.all(known.map((b) => read(b).catch(() => "")))).flatMap(readSourceExceptions) };
   } catch (err) {
     log("source exceptions unread", { err: String(err.message ?? err).slice(0, 200) });
     return { where: `${SOURCE_EXCEPTIONS_FILE} (could not be read)`, records: [] };
