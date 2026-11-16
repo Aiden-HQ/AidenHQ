@@ -251,22 +251,24 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       }
       if (req.method === "GET") return send(i);
     }
-    // Graded done: the board's grades contract (services/board/src/grades.ts), simplified, and a scripted grader model.
+    // Graded done: the grading module's contract (modules/grading/service/src/grades.ts), simplified, and a scripted grader
+    // model; the runner's own closes ask the kernel's finish gate (/v1/finish), which the grading check answers.
+    if (path === "/v1/finish" && req.method === "POST") {
+      const { task } = JSON.parse(body);
+      const g = grades.get(find(task)?.id);
+      if (gateDelayMs) await new Promise((r) => setTimeout(r, gateDelayMs));
+      if (gradingOff || !g || g.state === "satisfied") return send({ pass: true });
+      if (!["pending", "awaiting_evidence", "grading_failed", "escalated"].includes(g.state)) Object.assign(g, { state: "pending", updatedAt: new Date().toISOString() });
+      return send({ pass: false, state: g.state });
+    }
     const gradeOne = /^\/internal\/grades\/([^/]+)$/.exec(path);
     if (gradeOne && req.method === "GET") return send({ state: (!gradingOff && grades.get(find(decodeURIComponent(gradeOne[1]))?.id)?.state) || null });
-    const gradeRoute = /^\/internal\/grades\/([^/]+)\/(gate|verdict|release)$/.exec(path);
+    const gradeRoute = /^\/internal\/grades\/([^/]+)\/(verdict|release)$/.exec(path);
     if (gradeRoute) {
       const id = find(decodeURIComponent(gradeRoute[1]))?.id;
       const g = grades.get(id);
       if (gradeRoute[2] === "release") return send({ ok: grades.delete(id) });
       const stamp = (state) => Object.assign(g, { state, updatedAt: new Date().toISOString() });
-      if (gradeRoute[2] === "gate") {
-        // A board round trip takes time on a loaded runner: a flow can hold the gate open to see what the turn has recorded.
-        if (gateDelayMs) await new Promise((r) => setTimeout(r, gateDelayMs));
-        if (gradingOff || !g || g.state === "satisfied") return send({ pass: true });
-        if (!["pending", "awaiting_evidence", "grading_failed", "escalated"].includes(g.state)) stamp("pending");
-        return send({ pass: false, state: g.state, label: "grading" });
-      }
       const v = JSON.parse(body);
       gradeLog.push(v);
       if (v.outcome === "awaiting_evidence") stamp("awaiting_evidence");
@@ -462,6 +464,7 @@ ${runnerYaml}`,
         PAPERCLIP_URL: url,
         BOARD_INTERNAL_URL: url,
         AIDENHQ_KERNEL_URL: url,
+        AIDENHQ_GRADING_URL: url,
         FAKE_LOG: join(dir, "fake.log"),
         FAKE_STEP: join(dir, "claude-step"),
         AIDENHQ_GRADER_URL: `${url}/grader`,
