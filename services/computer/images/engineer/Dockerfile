@@ -24,11 +24,15 @@ RUN mkdir -m 700 -p /tmp/gh-gpg \
     && apt-get update && apt-get install -y --no-install-recommends gh=2.104.0 \
     && rm -rf /var/lib/apt/lists/* /tmp/gh-keyring.gpg /tmp/gh-gpg \
     && gh --version
-# rustup-init 1.29.3 (archived 2026-11-03), checksummed; it installs the pinned toolchain into /opt/rust (readable by all). At run
+# rustup-init 1.29.3 (archived 2026-11-03; per-arch sha256 from the .sha256 files beside each binary), checksummed; it installs the pinned toolchain into /opt/rust (readable by all). At run
 # time RUSTUP_HOME stays there; CARGO_HOME is unset, so cargo's registry and builds go under the user's own HOME.
 ENV RUSTUP_HOME=/opt/rust/rustup
-RUN curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.29.3/x86_64-unknown-linux-gnu/rustup-init \
-    && echo "b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55  /tmp/rustup-init" | sha256sum -c - \
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) triple=x86_64-unknown-linux-gnu sum=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55 ;; \
+      arm64) triple=aarch64-unknown-linux-gnu sum=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282 ;; \
+    esac \
+    && curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/1.29.3/$triple/rustup-init" \
+    && echo "$sum  /tmp/rustup-init" | sha256sum -c - \
     && chmod +x /tmp/rustup-init && CARGO_HOME=/opt/rust/cargo /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.91.0 && rm /tmp/rustup-init \
     && chmod -R a+rX /opt/rust && /opt/rust/cargo/bin/rustc --version
 ENV PATH=/opt/rust/cargo/bin:$PATH

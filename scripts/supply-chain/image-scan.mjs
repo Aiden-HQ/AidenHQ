@@ -30,7 +30,7 @@ const REPO = `(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/)?${COMPONENT}
 const IMAGE = new RegExp(`^${REPO}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$`);
 const NAMED = new RegExp(`^${REPO}$`); // an image name alone: a --local name, an exception's image
 const SYNTAX = /^(?:docker\.io\/)?docker\/dockerfile:[0-9][0-9a-z.-]*@sha256:[0-9a-f]{64}$/; // the official frontend only
-const PLATFORM = /^--platform=(?:linux\/amd64|\$\{?(?:BUILDPLATFORM|TARGETPLATFORM)\}?)$/; // CI and the hosts are amd64
+const PLATFORM = /^--platform=(?:linux\/amd64|\$\{?(?:BUILDPLATFORM|TARGETPLATFORM)\}?)$/; // CI scans linux/amd64; every pinned base is multi-arch, so an arm64 host builds the same references
 const PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9._/-]+$/; // repository-relative, no . or .. segments
 const PLAIN = "[A-Za-z0-9 ._@\/=:+,-]*"; // plain words and spaces: all a RUN step may hold to satisfy an exception
 const PLAIN_PART = new RegExp(`^${PLAIN}$`), PLAIN_RUN = new RegExp(`^${PLAIN}(?:&&${PLAIN})*$`);

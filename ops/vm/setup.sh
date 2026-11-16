@@ -159,10 +159,19 @@ pinned='.apt + .releases[$c].apt | to_entries[] | select(.key != "tailscale" or 
 mapfile -t held < <(jq -r --arg c "$codename" --arg ts "$NO_TS" "$pinned | .key" "$pins")
 mapfile -t apt_pins < <(jq -r --arg c "$codename" --arg ts "$NO_TS" "$pinned"' | "\(.key)=\(.value)"' "$pins")
 apt-get -y install --allow-downgrades --allow-change-held-packages "${apt_pins[@]}"
-# GitHub CLI: its apt repo keeps only the newest build, so the release .deb (v2.103.3, released 2026-10-26), checksummed.
+# GitHub CLI: its apt repo keeps only the newest build, so the release .deb for this architecture (v2.103.3, released
+# 2026-10-26; sha256s from the release's gh_2.103.3_checksums.txt), checksummed.
+# The browser's Chrome for Testing build and agent-browser binary for this architecture are chosen here too (below).
+case "$arch" in
+  amd64) gh_sum=e3bafef96328d1a67de3a968bdfe1cc2ffd58cf6aba8b5e201356897ed06bb3d cft=linux64 ab=x64
+    cft_sum=9223832977a13db3646201b1341c1f9cf08afa3ceae92540116d7b0c062364fb ;;
+  arm64) gh_sum=cac3ff84b60b68e64cca69f31f303210c26320361cc3286b773655d4226b7b06 cft=linux-arm64 ab=arm64
+    cft_sum=f354d666822a11d8fe99e923c44be77dd226fab2750c5b5947e6318818bf10f1 ;;
+  *) die "'$arch' is not supported; AidenHQ's host setup supports amd64 and arm64" ;;
+esac
 if [ "$(dpkg-query -W -f='${Version}' gh 2>/dev/null)" != 2.103.3 ]; then
-  curl -fsSLo /tmp/gh.deb https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_linux_amd64.deb
-  echo "e3bafef96328d1a67de3a968bdfe1cc2ffd58cf6aba8b5e201356897ed06bb3d  /tmp/gh.deb" | sha256sum -c -
+  curl -fsSLo /tmp/gh.deb "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_linux_$arch.deb"
+  echo "$gh_sum  /tmp/gh.deb" | sha256sum -c -
   apt-get -y install --allow-downgrades --allow-change-held-packages /tmp/gh.deb
   rm -f /tmp/gh.deb
 fi
@@ -173,16 +182,18 @@ apt-get -y upgrade
 # The browser for Engineer jobs (services/runner/bin/aidenhq-browse: screenshots and click-throughs of the app they build):
 # AidenHQ's one browser, as in the browser image (services/computer/images/browser): agent-browser 0.41.2 and Chrome for
 # Testing 157.0.8103.78 (2026-11-11, critical CVE fixes; supply-chain exception), checksummed, root-owned under /opt; the runner binds it read-only into every job. Move
-# both pins with the image's. Reinstalled only when a pin moves.
+# both pins with the image's. Reinstalled only when a pin moves. Chrome for Testing publishes linux64 and linux-arm64
+# builds of the same version and agent-browser ships both binaries. Google publishes no checksums: the zip sha256s are
+# of the archives as served from the official bucket over https (the arm64 one matches the bucket's own md5).
 browser=/opt/aidenhq/browser
 if [ "$(jq -r .version "$browser/lib/node_modules/agent-browser/package.json" 2>/dev/null)" != 0.41.2 ] \
   || [ "$(cat "$browser/chrome/VERSION" 2>/dev/null)" != 157.0.8103.78 ]; then
   rm -rf "$browser"
   npm i -g --prefix="$browser" --ignore-scripts --no-audit --no-fund agent-browser@0.41.2
-  chmod a+x "$browser/lib/node_modules/agent-browser/bin/agent-browser-linux-x64" # what its install script would do
-  curl -fsSLo /tmp/chrome.zip https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.78/linux64/chrome-linux64.zip
-  echo "9223832977a13db3646201b1341c1f9cf08afa3ceae92540116d7b0c062364fb  /tmp/chrome.zip" | sha256sum -c -
-  unzip -q /tmp/chrome.zip -d "$browser" && mv "$browser/chrome-linux64" "$browser/chrome" && rm /tmp/chrome.zip
+  chmod a+x "$browser/lib/node_modules/agent-browser/bin/agent-browser-linux-$ab" # what its install script would do
+  curl -fsSLo /tmp/chrome.zip "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.78/$cft/chrome-$cft.zip"
+  echo "$cft_sum  /tmp/chrome.zip" | sha256sum -c -
+  unzip -q /tmp/chrome.zip -d "$browser" && mv "$browser/chrome-$cft" "$browser/chrome" && rm /tmp/chrome.zip
   echo 157.0.8103.78 >"$browser/chrome/VERSION"
   chmod -R a+rX "$browser"
 fi
