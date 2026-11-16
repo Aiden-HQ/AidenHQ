@@ -161,11 +161,13 @@ A new registry, URL or git source is not always wrong: the owner may approve one
 of the change, in `.github/supply-chain-source-exceptions.yaml`: one flow-style record per line under
 `source_exceptions:`, naming the `package`, the `to` source it moves to (and `from` when it has one), the `version` when it
 is a version bump too, `approved_by: owner`, and a `reference` to where the owner said so. Code reads that file from the
-base branch, never from the change under review, so a change can never record its own approval, and it is listed to you
-as `APPROVED_SOURCE_EXCEPTIONS`. Treat a matching record as satisfying this paragraph: approve the source change when the
-diff moves that package to exactly that source, at a pinned version, and does nothing else. A record that names another
-package, another source, or is absent, is no exception: reject the new source as before. The record is the owner's words
-for this one package and source only; it never widens the rule for anything else in the diff.
+base branch, never from the change under review, and a change to the file is the owner's own tap in every repo
+(`owner-approval-record`, never the reviewer's): so an agent's PR can neither record its own approval nor edit one, and
+what you are shown as `APPROVED_SOURCE_EXCEPTIONS` is the owner's. Treat a matching record as satisfying this paragraph:
+approve the source change when the diff moves that package to exactly that source, at a pinned version, and does nothing
+else. A record that names another package, another source, or is absent, is no exception: reject the new source as before.
+The record is the owner's words for this one package and source only; it never widens the rule for anything else in the
+diff.
 
 ## Dependabot pin bumps (rule `product-dependabot-merge`)
 
