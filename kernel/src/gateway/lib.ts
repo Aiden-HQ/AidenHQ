@@ -10,8 +10,10 @@
 //   POST /c/<connection>/mcp      (Bearer: a job's own `ahqj_` token) the job's reads of a connection, its jobcaps only (../proxy.ts)
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
-//   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at}: an opaque CI token
-//   POST /api/v1/chat/completions  kind ci-code-review: the allowed models only, CI's own caps, attributed to repo and PR
+//   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at, review}: an opaque CI
+//                                 token, and the instance's review model and effort (settings.ci_review_model)
+//   POST /api/v1/chat/completions | /api/v1/responses  kind ci-code-review: the allowed models and fields only (ci.ts), CI's
+//                                 own caps, attributed to repo and PR; streamed or not, reserved and settled like any call
 //   GET /health
 // Credentials: a Paperclip run JWT (Codex in Paperclip, env_key PAPERCLIP_API_KEY; checked at Paperclip's /api/agents/me,
 // its run id from the checked token, the task from that run); an agent computer's run token `ahqc_` (the launcher forwards
@@ -51,7 +53,7 @@ type Caps = { run_usd: number; task_usd: number; day_usd: number };
 /** config/grants/grants.json `agents`, by Paperclip id (setup writes it). */
 type Grants = Record<string, { rev?: string; key?: string; caps?: Partial<Caps> }>;
 /** config/gateway.json `ci` (compile writes it from the ci module's settings). */
-type CiConf = { enabled?: boolean; orgs?: unknown; models?: unknown; repo_day_usd?: unknown; day_usd?: unknown };
+type CiConf = { enabled?: boolean; orgs?: unknown; models?: unknown; review?: unknown; repo_day_usd?: unknown; day_usd?: unknown };
 /** A run key's settled identity (the runs table), or the same fields resolved for one call. */
 type RunRow = { run_key: string; agent_id: string | null; run_id: string | null; issue_id: string | null; rev: string | null; perpetual: number; at: string };
 type RunIdentity = Pick<RunRow, "agent_id" | "run_id" | "issue_id" | "rev"> & { perpetual: number | boolean };
@@ -448,7 +450,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       throw fail(401, "unauthorized", "this run attempt has already traded its GitHub token");
     }
     log("ci token issued", { repo: claims.repo, pr: claims.pr, run: claims.runId });
-    send(res, 200, { token, expires_at: exp });
+    send(res, 200, { token, expires_at: exp, review: c.review ?? null });
   }
 
   /** One raise_cap per scope, subject and cap value, filed on the board with the gateway's key (needs the run's task). */
@@ -503,7 +505,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       // CI's own gates: the models and fields it may use. A refusal is a 403 or 402 (codegenie and the workflow read those as
       // permanent: no retry).
       const c = ciOn();
-      const problem = ciBodyProblem(body, Array.isArray(c.models) ? c.models : []);
+      const problem = ciBodyProblem(body, Array.isArray(c.models) ? c.models : [], path);
       if (problem) throw fail(403, "not_allowed", problem);
     }
     const price = priceOf(body);
@@ -608,7 +610,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       if (req.method === "GET" && path === "/health") return send(res, 200, ci ? { ok: true } : { ok: true, inflight: (q.inflight.get() as { n: number }).n });
       if (ci) {
         if (req.method === "POST" && path === "/ci/token") return await ciToken(req, res);
-        if (req.method === "POST" && path === "/api/v1/chat/completions") return await model(req, res, "agent", "chat/completions", true);
+        const m = /^\/api\/v1\/(chat\/completions|responses)$/.exec(path);
+        if (req.method === "POST" && m) return await model(req, res, "agent", m[1]!, true);
         return send(res, 404, { error: { code: 404, type: "not_found", message: "no such route" } });
       }
       const c = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(path);

@@ -348,7 +348,8 @@ export function modelPrices(defs) {
 
 /**
  * The gateway's CI code review switches (config/gateway.json `ci`, kernel/src/gateway/ci.ts): only the agents org's app repos;
- * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped).
+ * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped); the review model and
+ * effort the code-review job gets with its CI token (always one of the allowed models).
  */
 function ciReview(settings) {
   const usd = (k) => {
@@ -356,8 +357,9 @@ function ciReview(settings) {
     if (!(v > 0 && v <= 1000)) fail(`settings.${k}: USD per day, above 0 and at most 1000`);
     return v;
   };
-  const models = [settings.ci_review_models ?? []].flat().map((m) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "")).filter(Boolean);
-  return { enabled: String(settings.ci_review ?? "on") !== "off", orgs: [agentsOrg(settings)].filter(Boolean), models, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
+  const want = String(settings.ci_review_model ?? "~deepseek/deepseek-flash-latest:high").trim(), bare = (m) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "");
+  const review = { model: bare(want), effort: /:(minimal|low|medium|high|xhigh)$/.exec(want)?.[1] ?? "high" }, models = [...new Set([...[settings.ci_review_models ?? []].flat().map(bare), review.model])].filter(Boolean);
+  return { enabled: String(settings.ci_review ?? "on") !== "off", orgs: [agentsOrg(settings)].filter(Boolean), models, review, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
 }
 
 /**

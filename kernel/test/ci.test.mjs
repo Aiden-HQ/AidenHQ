@@ -1,6 +1,7 @@
 // App CI code review end to end, against a fake GitHub (its OIDC keys) and a fake OpenRouter: a job's OIDC token traded for
 // a CI token bound to its repo and PR; the token's scope (the CI listener only, the allowed model and fields only); the
-// ledger record; the repo-day cap's refusal (a reservation that doesn't fit); the off switch.
+// ledger record; the repo-day cap's refusal (a reservation that doesn't fit); the off switch. Then the Responses route a CLI
+// reviewer uses: the same guarantees (ZDR, priced models, reservation and settlement, A11 and A12 within CI's caps).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -20,7 +21,7 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   const settingsFile = join(dir, "gateway.json");
   // A review call reserves 4096 output tokens at $25 per million: $0.1024 (and a little for its input).
   const models = { "~deepseek/deepseek-flash-latest": { in: 0, cached_in: 0, out: 25, peak: 1, max_output: 4096 } };
-  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ models, ci: { enabled: true, orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest"], repo_day_usd: 0.22, day_usd: 1, ...ci } }));
+  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ models, ci: { enabled: true, orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest"], review: { model: "~deepseek/deepseek-flash-latest", effort: "high" }, repo_day_usd: 0.22, day_usd: 1, ...ci } }));
   settings({});
 
   const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -61,6 +62,7 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   const got = await exchange(oidc());
   assert.equal(got.status, 200);
   const tok = got.json.token;
+  assert.deepEqual(got.json.review, { model: "~deepseek/deepseek-flash-latest", effort: "high" }); // the instance's review model
   assert.match(tok, /^ahqci_[\w-]{43}$/);
   for (const bad of [
     oidc({ repository: "evil/app", repository_owner: "evil" }), // another org (the product org's runners share the network)
@@ -100,7 +102,7 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   assert.equal((await review("src-key")).status, 401);
   assert.equal((await review(tok, {}, main.url)).status, 401);
   assert.equal((await post(`${ci.url}/usage`, "gw-board", {})).status, 404);
-  assert.equal((await post(`${ci.url}/api/v1/responses`, tok, { model: "~deepseek/deepseek-flash-latest" })).status, 404);
+  assert.equal((await post(`${ci.url}/api/v1/embeddings`, tok, { model: "~deepseek/deepseek-flash-latest" })).status, 404);
   // Only the allowed models, and nothing that changes what OpenRouter runs.
   assert.equal((await review(tok, { model: "openai/gpt-sol" })).status, 403);
   assert.equal((await review(tok, { models: ["openai/gpt-sol"] })).status, 403);
@@ -137,4 +139,78 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   assert.deepEqual(many.map((r) => r.status), Array(12).fill(200));
   now += 3 * 3600_000;
   assert.equal((await review(tok)).status, 401);
+});
+
+test("gateway: CI's Responses route (a CLI reviewer): ZDR, priced models only, reserved then settled from response.completed, A11 and A12", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "gw-ci-responses-"));
+  const settingsFile = join(dir, "gateway.json");
+  // $25 per million output tokens, input free: a call reserves 4096 output tokens, $0.1024. acme/unpriced is allowed, not priced.
+  const models = { "~deepseek/deepseek-flash-latest": { in: 0, cached_in: 0, out: 25, peak: 1, max_output: 4096 } };
+  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ models, ci: { enabled: true, orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest", "acme/unpriced"], repo_day_usd: 5, day_usd: 5, ...ci } }));
+  settings({});
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const github = await serve((req, res) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1", alg: "RS256", use: "sig" }] })));
+  const now = Date.parse("2026-11-16T10:00:00Z");
+  const body = `${b64({ alg: "RS256", kid: "k1" })}.${b64({ iss: GITHUB_ISSUER, aud: CI_AUDIENCE, exp: now / 1000 + 300, repository: "acme-agents/app", repository_owner: "acme-agents", runner_environment: "self-hosted", event_name: "pull_request", ref: "refs/pull/7/merge", workflow_ref: "acme-agents/app/.github/workflows/ci.yml@refs/pull/7/merge", base_ref: "main", run_id: "1", run_attempt: "1" })}`;
+  const oidc = `${body}.${sign("RSA-SHA256", Buffer.from(body), privateKey).toString("base64url")}`;
+
+  const seen = [];
+  let held = [], release;
+  const upstream = await serve((req, res) => {
+    let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
+      const j = JSON.parse(b), n = seen.push({ path: req.url, body: j });
+      const done = { type: "response.completed", response: { id: `resp-${n}`, model: "deepseek/v4", usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 4 }, output_tokens: 2, cost: 0.01 } } };
+      const answer = () => {
+        if (!j.stream) return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(done.response));
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(["response.created", "response.output_text.delta"].map((type) => `event: ${type}\ndata: ${JSON.stringify({ type })}\n\n`).join("") + `event: response.completed\ndata: ${JSON.stringify(done)}\n\n`);
+      };
+      if (j.input?.[0] === "cut") { res.writeHead(200, { "content-type": "text/event-stream" }); res.write(`data: ${JSON.stringify({ type: "response.created" })}\n\n`); return setTimeout(() => res.destroy(), 20); }
+      if (j.input?.[0] === "hold") return held.push(answer) && release?.();
+      answer();
+    });
+  });
+  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile, secret: (n) => ({ openrouter_key: "sk-real" })[n] ?? "", upstream: upstream.url, githubJwksUrl: github.url, now: () => now });
+  const ci = await serve((req, res) => gw.handle(req, res, { ci: true }));
+  t.after(() => { for (const x of [github, upstream, ci]) x.s.close(); gw.close(); });
+  const tok = (await (await fetch(`${ci.url}/ci/token`, { method: "POST", headers: { authorization: `Bearer ${oidc}` }, body: "{}" })).json()).token;
+  const call = async (extra = {}) => {
+    const res = await fetch(`${ci.url}/api/v1/responses`, { method: "POST", headers: { authorization: `Bearer ${tok}` }, body: JSON.stringify({ model: "~deepseek/deepseek-flash-latest", input: [], store: false, include: ["reasoning.encrypted_content"], tools: [{ type: "function", name: "view_image" }, { type: "namespace", name: "mcp__repo", tools: [{ type: "function", name: "read_file" }] }], reasoning: { effort: "high" }, ...extra }) });
+    return { status: res.status, text: await res.text() };
+  };
+  const rows = () => gw.db.prepare("SELECT key, status, cost_usd, input, cached, output, task_subject FROM calls ORDER BY rowid").all().map((r) => ({ ...r }));
+
+  // Not streamed and streamed: the real key, ZDR and a bounded max_output_tokens upstream; settled at what was billed, the
+  // streamed one from its response.completed event, both attributed to the repo and PR.
+  assert.equal((await call()).status, 200);
+  const streamed = await call({ stream: true });
+  assert.equal(streamed.status, 200);
+  assert.match(streamed.text, /response\.completed/);
+  assert.deepEqual(seen.map((s) => [s.path, s.body.provider.zdr, s.body.max_output_tokens]), [["/responses", true, 4096], ["/responses", true, 4096]]);
+  assert.deepEqual(rows(), ["resp-1", "resp-2"].map((key) => ({ key, status: "ok", cost_usd: 0.01, input: 6, cached: 4, output: 2, task_subject: "acme-agents/app#7" })));
+
+  // Refused before anything is reserved or sent: a stored response, a server tool, a stored conversation, a fallback model,
+  // a model CI may not use, and an allowed model with no declared price.
+  for (const extra of [{ store: true }, { tools: [{ type: "web_search" }] }, { tools: [{ type: "namespace", name: "x", tools: [{ type: "mcp", server_url: "https://example.com" }] }] }, { previous_response_id: "resp-1" }, { models: ["openai/gpt-sol"] }, { model: "openai/gpt-sol" }, { model: "acme/unpriced" }]) {
+    assert.equal((await call(extra)).status, 403, JSON.stringify(extra));
+  }
+  assert.equal(seen.length, 2);
+
+  // A12: a stream cut before its response.completed is charged its whole reservation (fail closed).
+  await call({ stream: true, input: ["cut"] }).catch(() => {});
+  assert.deepEqual(rows().at(-1).status, "upstream_aborted");
+  assert.ok(Math.abs(rows().at(-1).cost_usd - 0.1024) < 1e-9);
+
+  // A11: 20 calls in flight with room for 3 under the repo-day cap ($0.1224 spent; 3 x $0.1024 left, plus $0.01, under the
+  // least output of 1024 tokens): exactly 3 reach the upstream, the other 17 are refused at the cap.
+  settings({ repo_day_usd: 0.1224 + 3 * 0.1024 + 0.01 });
+  const reached = new Promise((r) => (release = () => held.length === 3 && r()));
+  const calls = Array.from({ length: 20 }, () => call({ stream: true, input: ["hold"] }));
+  await reached;
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(held.length, 3);
+  held.splice(0).forEach((f) => f());
+  const out = await Promise.all(calls);
+  assert.deepEqual(out.map((c) => c.status).sort(), [...Array(3).fill(200), ...Array(17).fill(402)]);
+  assert.deepEqual(rows().filter((r) => r.status === "ok").map((r) => r.cost_usd), Array(5).fill(0.01));
 });
