@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "yaml";
-import { bases, ignored, readExceptions } from "../supply-chain/image-scan.mjs";
+import { acceptedFor, bases, ignored, readAccepted, readExceptions } from "../supply-chain/image-scan.mjs";
 
 const root = join(import.meta.dirname, "../..");
 const files = [".github/workflows/ci.yml", "modules/core/templates/ci/.github/workflows/ci.yml"];
@@ -171,4 +171,20 @@ test("image-scan fails closed: a quoted or commented RUN never meets an exceptio
   const r = spawnSync(process.execPath, [join(root, "scripts/supply-chain/image-scan.mjs"), "--", "--local"], { cwd: tmpdir(), encoding: "utf8" });
   assert.match(r.stdout, /lstat .*--local/); // treated as a file name, not the --local option
   assert.equal(spawnSync(process.execPath, [join(root, "scripts/supply-chain/image-scan.mjs"), "--bogus"], { cwd: tmpdir(), encoding: "utf8" }).status, 1);
+});
+
+test("accepted risks: one id in one exact image, at most 14 days ahead; an expired one is reported to fail the scan", () => {
+  const now = Date.parse("2026-11-16T12:00:00Z");
+  const d = (c) => `sha256:${c.repeat(64)}`;
+  const line = (id, image, expires) => `  - { id: ${id}, image: ${image}, expires: ${expires}, reason: "internal only, no release fixes it" }`;
+  const { entries, expired } = readAccepted(["accepted:", "  # a comment", line("GO-2026-6888", `grafana/grafana:13.3.0@${d("a")}`, "2026-11-30"), line("CVE-2026-1234", "prom/x:v1", "2026-11-20"), line("GO-2026-1000", "prom/old:v1", "2026-11-01")].join("\n"), now);
+  assert.deepEqual(entries.map((e) => e.id), ["GO-2026-6888", "CVE-2026-1234"]);
+  assert.deepEqual(expired.map((e) => e.id), ["GO-2026-1000"]);
+  assert.deepEqual(acceptedFor(`grafana/grafana:13.3.0@${d("a")}`, entries), ["GO-2026-6888"]);
+  assert.deepEqual(acceptedFor(`grafana/grafana:13.3.0@${d("b")}`, entries), [], "another digest of the same tag");
+  assert.deepEqual(acceptedFor(`prom/x:v1@${d("c")}`, entries), ["CVE-2026-1234"], "a name:tag entry covers its pinned digest");
+  assert.deepEqual(acceptedFor(`prom/x:v2@${d("c")}`, entries), [], "never another version");
+  // Never a bare name, never more than 14 days out, never an odd id or a line in another shape.
+  for (const bad of [line("GO-2026-1000", "prom/x", "2026-11-20"), line("GO-2026-1000", "prom/x:v1", "2026-12-15"), line("evil", "prom/x:v1", "2026-11-20"), "  - { id: GO-2026-1000, image: prom/x:v1 }"])
+    assert.throws(() => readAccepted(bad, now), /accepted risk/, bad);
 });
