@@ -3,10 +3,11 @@
 # The job names `tests`, `code-review` and `image-scan` are the check names graders and rubrics cite: don't rename them,
 # don't add a matrix.
 # code-review's model key: on AidenHQ's runners none (it spends through the instance's model gateway, below); elsewhere the
-# secret OPENROUTER_API_KEY. Optional variable CODEGENIE_MODEL (default below).
-# Code-review depth: light by default, whatever the size; normal when the PR touches a critical path; deep with the PR's
-# `deep-review` label. Critical paths are built in (dependency manifests such as package.json, .github/, Dockerfiles, and paths
-# naming auth, security, tokens, sessions or permissions) plus the app's own `.github/code-review-critical`: one glob per
+# secret OPENROUTER_API_KEY. Optional variables CODEGENIE_MODEL and QUICK_REVIEW_MODEL (defaults below).
+# Code-review depth: light by default, whatever the size, reviewed by the quick reviewer (.github/quick-review.mjs: one model
+# call over the diff and the changed files); normal when the PR touches a critical path, and deep with the PR's
+# `deep-review` label, both reviewed by codegenie (agentic, many calls). Critical paths are built in (dependency manifests such as package.json, lockfiles by name, .github/, Dockerfiles,
+# binary files, and paths naming auth, security, tokens, sessions or permissions) plus the app's own `.github/code-review-critical`: one glob per
 # line (bash pattern: `*` also matches `/`, so `src/server/db/*` covers everything under it), `#` comments allowed. That
 # file is read from the default branch, never the PR, so a PR can't drop its own critical paths (and editing it is itself
 # critical: it is under .github/). package-lock.json (any depth) is left out of the changed-line count and never raises
@@ -57,6 +58,13 @@ jobs:
           node "$d/npm-age.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
           node "$d/pins.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
           exit $status
+      # .aidenhq/out/ holds an agent's evidence, left out of the code review: screenshots and reports only, so nothing that
+      # runs can hide there. The list is the code-review job's (and quick-review.mjs OUT_TYPES); changing it is a .github/
+      # change, so critical. Read from the PR's own ci.yml: a PR that edits it gets codegenie's review anyway.
+      - name: Evidence
+        run: |
+          bad=$(git diff --name-only --diff-filter=AMR "$BASE_SHA...$HEAD_SHA" -- .aidenhq/out | grep -viE '\.(png|jpe?g|webp|gif|json|txt)$' || true)
+          [ -z "$bad" ] || { echo "::error::.aidenhq/out/ takes only screenshots and reports (png, jpg, webp, gif, json, txt): $(printf '%s' "$bad" | head -5 | tr '\n' ' ')"; exit 1; }
       - name: Test
         run: npm ci && npm run --if-present lint && npm test
 
@@ -157,7 +165,7 @@ jobs:
           set -f
           GRYPE_DB_CACHE_DIR="$RUNNER_TEMP/grype-db" node "$RUNNER_TEMP/image-scan.mjs" --exceptions "$RUNNER_TEMP/exceptions.yaml" -- $DOCKERFILES
 
-  # Never runs the PR's code: codegenie only reads it from git objects. Its config and rules come from the base commit
+  # Never runs the PR's code: codegenie and the quick reviewer only read it from git objects. Its config and rules come from the base commit
   # (reviewed code), so a PR can't loosen its own review; the gate comes from the default branch's current tip, so a
   # gate update protects every open PR at once. Only the PR that first adds CI (no gate on the default branch yet)
   # passes unreviewed; changes under .github/ get a human review anyway.
@@ -204,7 +212,12 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           MODEL: ${{ vars.CODEGENIE_MODEL || 'openrouter/~deepseek/deepseek-flash-latest' }}
+          # The quick reviewer's model: GPT Luna at medium reasoning answered in 15-55 s for under a cent in the 2026-11-16 eval;
+          # DeepSeek Flash with reasoning often ran on to its 131k-token limit (minutes, no answer). Variable QUICK_REVIEW_MODEL.
+          QUICK_MODEL: ${{ vars.QUICK_REVIEW_MODEL || 'openrouter/~openai/gpt-luna-latest' }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_AUTHOR_ASSOC: ${{ github.event.pull_request.author_association }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         # fetch-depth 0 fetched every branch, the PR's head included (app PRs come from branches of the same repo).
         run: |
           set +e
@@ -220,14 +233,20 @@ jobs:
           # Depth: light by default, whatever the size (a big diff gets more calls through --budget-boost below). Normal
           # when the diff touches a critical path (see the header) or can't be read. Deep only when asked: the PR's
           # `deep-review` label.
-          # package-lock.json (see the header) is out of both the line count and the critical-path list.
+          # package-lock.json (see the header) is out of both the line count and the critical-path list, and so are an agent's
+          # screenshots and reports under .aidenhq/out/ (roadmap-keeper#167 counted 40,230 lines of them): only the types the
+          # tests job's Evidence step allows there (quick-review.mjs OUT_TYPES), so code under .aidenhq/out/ is reviewed.
           nolock=(':(exclude,glob)**/package-lock.json')
+          for t in png jpg jpeg webp gif json txt; do nolock+=(":(exclude,glob).aidenhq/out/**/*.$t"); done
           unreadable=""
           stat=$(git diff --numstat "$from...$HEAD_SHA" -- . "${nolock[@]}") || { stat=""; unreadable=1; }
-          # lines: added plus deleted (the small-change skip below); added: added only (the budget boost).
-          lines=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 1000; next} {n += $1 + $2} END {print n + 0}')
-          added=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 1000; next} {n += $1} END {print n + 0}')
+          # lines: added plus deleted (the small-change skip below); added: added only (the budget boost). A binary file has
+          # no lines a reviewer reads: 20 in lines (so never a tiny-change skip), none in added (no budget boost).
+          lines=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 20; next} {n += $1 + $2} END {print n + 0}')
+          added=$(printf '%s\n' "$stat" | awk '$1 == "-" {next} {n += $1} END {print n + 0}')
           # The app's own list comes from the default branch (as fetched at checkout), never the PR's head.
+          # A binary file anywhere else is critical: no reviewer reads it.
+          binary=$(printf '%s\n' "$stat" | awk -F'\t' '$1 == "-" {print $3; exit}')
           globs=$(git show "origin/$DEFAULT_BRANCH:.github/code-review-critical" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v -e '^#' -e '^$')
           critical=""
           # Paths raw and NUL-separated (no quoting of odd names, so a tab or non-ASCII name still matches its glob); a
@@ -235,7 +254,9 @@ jobs:
           if git -c core.quotePath=false diff --name-only -z --no-renames "$from...$HEAD_SHA" -- . "${nolock[@]}" > "$RUNNER_TEMP/changed-paths"; then
             set -f
             while IFS= read -r -d '' p; do
-              if printf '%s' "$p" | grep -qiE 'package\.json|lock|\.github/|dockerfile|auth|secur|token|session|permission'; then critical=$p; break; fi
+              # Lockfiles by name (any *.lock, *-lock.json/yaml, bun.lockb, go.sum, npm-shrinkwrap.json), never a name that only
+              # contains "lock" (roadmap-keeper#167: "blockstm").
+              if printf '%s' "$p" | grep -qiE 'package\.json|(^|/)([^/]+\.lock|[^/]+-lock\.(json|ya?ml)|bun\.lockb|go\.sum|npm-shrinkwrap\.json)$|\.github/|dockerfile|auth|secur|token|session|permission'; then critical=$p; break; fi
               while IFS= read -r g; do
                 case "$g" in ''|'#'*) continue ;; esac
                 if [[ "$p" == $g ]]; then critical=$p; break 2; fi
@@ -245,6 +266,7 @@ jobs:
           else
             critical="(a diff that can't be listed)"
           fi
+          [ -z "$critical" ] && [ -n "$binary" ] && critical="$binary (binary)"
           [ -n "$unreadable" ] && critical="(a diff that can't be read)"
           depth=light
           [ -n "$critical" ] && depth=normal
@@ -294,6 +316,30 @@ jobs:
           };
           JS
             node_opts="--import=file://$RUNNER_TEMP/codegenie-gateway.mjs"
+          fi
+          # Light (no critical path, no deep-review label): the quick reviewer, one model call over the diff and the changed
+          # files (.github/quick-review.mjs, from the base commit like everything here; a base without it uses codegenie).
+          # About a minute and a cent, where codegenie's agentic review takes minutes and many calls. Only for a PR by a repo
+          # member or a bot (the org's App): anyone else's gets codegenie. codegenie also takes a diff too large for one call
+          # (exit 3) or one with no findings on many lines (5) at light, and at deep one whose text addresses a reviewer (4).
+          case "$PR_AUTHOR_ASSOC" in OWNER|MEMBER|COLLABORATOR) trusted=1 ;; *) trusted="" ;; esac
+          [ "$PR_AUTHOR_TYPE" = Bot ] && trusted=1
+          if [ "$depth" = light ] && [ -n "$trusted" ] && [ -f .github/quick-review.mjs ]; then
+            OPENROUTER_BASE="${AIDENHQ_CI_GATEWAY_BASE:-}" MODEL="$QUICK_MODEL" REASONING=medium RULES=.codegenie/skills/house-rules.md \
+              node .github/quick-review.mjs "$from" "$HEAD_SHA" > "$RUNNER_TEMP/review.json" 2> "$RUNNER_TEMP/review.err"
+            code=$?
+            cat "$RUNNER_TEMP/review.err" >&2
+            case "$code" in
+              3|5) ;;
+              4) depth=deep; echo "REVIEW_DEPTH=deep" >> "$GITHUB_ENV" ;;
+              *)
+                echo "REVIEW_DEPTH=quick" >> "$GITHUB_ENV"
+                printf 'CODEGENIE_EXIT=%s\nCODEGENIE_ATTEMPTS=1\n' "$code" >> "$GITHUB_ENV"
+                if [ "$code" = 0 ]; then echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV"
+                elif [ "$code" = 2 ]; then printf 'CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=gateway refused the quick review\n' >> "$GITHUB_ENV"
+                else printf 'CODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=no-review-output\n' >> "$GITHUB_ENV"; fi
+                exit 0 ;;
+            esac
           fi
           # codegenie's own telemetry (events.jsonl) is where a failed run's cause is: its review JSON can carry only "The
           # underlying cause was not captured" (roadmap-keeper#131, #134). On only for this job, outside the checkout.

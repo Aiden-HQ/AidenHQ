@@ -229,6 +229,11 @@ for (const line of tools) {
     continue;
   }
   const [cmd, ...cmdArgs] = line.split(" ");
+  // `emit <Tool> <command…>`: a tool call the engine shows as a step, as the real agent's calls are.
+  if (cmd === "emit") {
+    out({ type: "assistant", message: { content: [{ type: "tool_use", id: `t${Date.now()}`, name: cmdArgs[0], input: { command: cmdArgs.slice(1).join(" ") } }] } });
+    continue;
+  }
   const res = spawnSync(cmd, cmdArgs, { cwd: process.cwd(), encoding: "utf8" });
   log("tool", { line, code: res.status, out: (res.stdout ?? "") + (res.stderr ?? "") });
 }

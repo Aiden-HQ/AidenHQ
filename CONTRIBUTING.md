@@ -98,7 +98,8 @@ Images are dated by the registry's own record (Docker Hub's push time, ghcr.io's
 the image's `created` field, which its author sets; an image no record dates fails. A security
 fix is the one exception: add `{ecosystem, package, version, advisory, reason}` to `.github/supply-chain-exceptions.yaml`
 in a PR of its own (CI reads it from the base); for npm, CI checks the advisory patches that version; the owner's review
-of the file is the approval. CI also scans new commits for secrets (gitleaks); fake values in tests go in `.gitleaks.toml` by exact
+of the file is the approval. An owner-approved entry (`owner: approved, expires: YYYY-MM-DD`, exact version, expiring within 14 days, no
+advisory) is for when waiting would block a release of code already running elsewhere in the product. CI also scans new commits for secrets (gitleaks); fake values in tests go in `.gitleaks.toml` by exact
 value.
 
 A fix that needs a **new registry, URL or git source** (a vendor's apt repository, say, because the distro's package is too

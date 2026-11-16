@@ -102,9 +102,8 @@ describe("flow-cancelled", { concurrency: true }, () => {
     it("never errors or asks for a repository along the way", () => t.noErrors());
   });
 
-  // The refusal is the card's alone: the runner's own notes still land on a finished task. A conflicting PR of a task
-  // already done gets one note and no run: nothing here is gated on comments to a done task.
-  describe("the runner's own notes still reach a done task", { concurrency: 1 }, () => {
+  // A comment on a finished task reopens it (Paperclip): a conflicting PR of a task already done gets no note and no run.
+  describe("a done task's conflicting PR leaves the task alone", { concurrency: 1 }, () => {
     const t = flow({
       grants: { autonomy: "off", agents: { "engineer-claude": { key: "fleet-engineer", roles: ["platform-engineer"] } } },
       env: { AIDENHQ_PRODUCT_REPO: "acme/app", AIDENHQ_GITHUB_AGENTS_ORG: "acme-agents" },
@@ -118,19 +117,17 @@ describe("flow-cancelled", { concurrency: true }, () => {
       t.startRunner();
     };
 
-    it("posts the conflict note on the done task and leaves it done", async () => {
+    it("posts nothing on the done task and leaves it done", async () => {
       const state = new State(join(t.dir, "state"));
       state.saveBranch("part", { repo: "acme/app", branch: "feat/old", base: "main" });
       state.updateBranch("part", "acme/app", "feat/old", { pr_url: "https://github.com/acme/app/pull/11" });
       state.db.close();
       Object.assign(t.paperclip.issues.get("part"), { status: "done", labels: [] });
-      const notes = () => t.partComments().filter((c) => /pull\/11 now conflicts[\s\S]*nobody was woken/.test(c));
+      const notes = () => t.partComments().filter((c) => /pull\/11/.test(c));
       writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 11: { branch: "feat/old", files: ["a.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } }));
       await restart();
-      await t.waitFor("the note", () => notes().length === 1);
-      await restart();
-      await t.idle(2000);
-      assert.equal(notes().length, 1, "one note per PR");
+      await t.idle(3000);
+      assert.equal(notes().length, 0, "no note");
       assert.equal(t.paperclip.issues.get("part").status, "done", "still done");
       assert.equal(t.claudeRuns().length, 0, "nothing dispatched");
     });

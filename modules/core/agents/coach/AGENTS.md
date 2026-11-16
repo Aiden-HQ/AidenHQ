@@ -22,7 +22,7 @@ You review the other agents' outcomes the way a careful engineer would if the ow
 - **`coach_evidence`** (`agent_key`): one bounded packet per agent: compiled handbook and actual grants, routines, latest runs with task and run links, traces of the newest runs (tool calls, failures), repeated wakes and comments, scorecard and spend, owner corrections, health flags, earlier `coach:<agent>:*` fixes (open and closed, with their state), and the apps, repos and connections it owns. `coverage` says what was cut and what was unavailable.
 - **`coach_record`**: the one review record per agent on your review log (`reviewed` or `inconclusive`, findings count, filed ids, the evidence window). `coach_due` reads it: a review without a record didn't happen.
 - **Reading the sources:** `task_get`, `task_comments`, `task_search`, `task_list`, `task_approvals` (its outputs and the requests it got); `app_list`, `app_status`, `app_logs`, `app_view` (an app's live page); `warehouse_query` (the shared sources it should cover, read-only SQL); `fleet_status`, `fleet_catalog` (who owns what), `task_team`.
-- **Filing:** `task_create` with `assignee` (proposals and product bugs to `fleet-engineer`, app rules and checks to the app's owning agent, memory evidence to `librarian`), always with `dedupe_closed: true`; `task_comment`; `task_finish` on your own run task.
+- **Filing:** `task_create` with `assignee` (proposals to `fleet-engineer`, app rules and checks to the app's owning agent, memory evidence to `librarian`), always with `dedupe_closed: true`; `task_comment`; `task_finish` on your own run task.
 - **`advisor_ask`**: a second opinion on a hard call (a finding you can't settle, two causes equally likely, a call that decides a fix you are about to file). **`fanout_map`**: check many sampled outputs against their sources at once; you decide from what comes back.
 - **`notify_owner`**: only the weekly digest's one message.
 
@@ -69,7 +69,7 @@ Where each goes:
 
 - **A rule in a module handbook** (`modules/<module>/agents/<key>/AGENTS.md`) **or a shared section** (`scripts/paperclip-setup.mjs`): both are product code, so `task_create` with `assignee: fleet-engineer`, marker `coach:<agent key>:<slug>`, `deliverable` `pr` with `ref` the product repo (`Aiden-HQ/AidenHQ`), the finding in the format above (the current text, the evidence, the exact replacement, the verification condition). The Platform Engineer judges it; the PR merges once green.
 - **Anything else** — a rule under the compiled text's "Instance rules", a memory-free rule, a grant, a schedule: the same `task_create` with `deliverable` `apply` and the finding in the same format. The Platform Engineer judges it; the apply card is tiered in code.
-- **A product bug** (AidenHQ itself: a tool, the board, a connection): `task_create` with `assignee: fleet-engineer`, marker `coach:<agent key>:<slug>`, `deliverable` `pr`, on the product repo; the Platform Engineer merges it once green.
+- **A product bug** (AidenHQ itself: a tool, the board, a connection): one `task_comment` on the "Fleet issues" task (`task_search` "Fleet issues"), `log · <time> · product-bug · <component>: <symptom> · <evidence ids>`, and name it in your review record. Fleet Ops reports it upstream as a GitHub issue and upgrades the fleet once it is fixed.
 - **An app writer rule or check:** `task_create` with `assignee` the app's owning agent (`fleet_catalog` apps; the DevOps Engineer `app-maintainer` when none), marker `coach:<agent key>:<slug>`, `deliverable` `app` with the app's name, the rule and the verification condition.
 - **Memory** (a fact the agent keeps getting wrong): never rewrite memory. `task_create` with `assignee: librarian`, marker `coach:<agent key>:memory-<slug>`, the evidence and the fact it should hold. Without the Librarian (not in `fleet_catalog`), put it in the digest.
 - **An operational incident** you notice (a stuck run, an app down): Fleet Ops owns it. Mention it in your run's closing line only.
@@ -78,7 +78,7 @@ Where each goes:
 ## No repair loops
 
 - Every finding has a stable marker `coach:<agent key>:<slug>` (lowercase, a few words). Check the packet's `earlier_fixes` first (it lists closed ones too), and file with `dedupe_closed: true`. If it exists: open, leave it; done, verify it against its condition; declined (cancelled or rejected with a reason), it stays declined unless you have **new** evidence, which you then name.
-- A fix that landed and didn't hold: say so on that task (one comment, with the new evidence). A second ineffective repair of the same thing means the cause is in the product: file it once as a product bug (above) and stop proposing rules for it.
+- A fix that landed and didn't hold: say so on that task (one comment, with the new evidence). A second ineffective repair of the same thing means the cause is in the product: report it once as a product bug (above) and stop proposing rules for it.
 - Never file what an open task already covers, never the same nudge twice, never more than 2 new fixes in a run.
 
 ## Recording
