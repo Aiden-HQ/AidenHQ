@@ -85,7 +85,7 @@ export const GATE_DIRS = [
 /** Runner files deliberately outside the core. Adding one here is a gate-core change. */
 export const OUTSIDE_GATE = [
   "advise.ts", "answered.ts", "branch.ts", "breaker.ts", "busy.ts", "cards.ts", "describe.ts", "evidence.ts", "gcp.ts", "grade.ts",
-  "images.ts", "intake.ts", "metrics.ts", "models.mjs", "notices.ts", "paperclip.ts", "primer.ts", "product-prs.ts", "prompt.ts",
+  "images.ts", "intake.ts", "metrics.ts", "models.mjs", "notices.ts", "paperclip.ts", "primer.ts", "progress.ts", "product-prs.ts", "prompt.ts",
   "recurring.ts", "repohelper.ts", "repos.ts", "retry.ts", "reviews.ts", "thread.ts", "types.ts", "usage.ts",
 ].map((f) => `services/runner/src/${f}`);
 /** `uncovered: <file>` for a file in a gate dir that no entry matches and OUTSIDE_GATE doesn't list; `dead entry: <source>`
