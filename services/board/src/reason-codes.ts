@@ -44,9 +44,9 @@ export const REVIEW_CODES = [
 ] as const;
 export type ReviewCode = (typeof REVIEW_CODES)[number];
 
-/** A grant refusal (agent-auth.ts): the tool isn't granted, the agent lacks a role, or it has no grants at all. */
+/** A grant refusal (kernel/src/identity.ts): the tool isn't granted, the agent lacks a role, or it has no grants at all. */
 export const GRANT_CODES = ["denied_not_granted", "denied_role", "denied_no_grants", "denied_unknown_caller"] as const;
-/** A model gateway refusal (services/gateway). */
+/** A model gateway refusal (kernel/src/gateway). */
 export const GATEWAY_CODES = ["cap_reached", "model_not_granted", "advisor_limit"] as const;
 /** A request already satisfied on its target: no card is filed (the duplicate-card guard). */
 export const ALREADY_APPLIED_CODE = "already_applied";

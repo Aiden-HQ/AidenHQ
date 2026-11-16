@@ -27,11 +27,9 @@ test("the instance switches one agent on; the launcher learns the image tag and 
   assert.match(c.images.browser, /^aidenhq\/computer-browser:[0-9a-f]{12}$/);
   assert.match(computersConfig(compile(product, inst({})).paperclip, product).images.browser, /^aidenhq\/computer-browser:/);
   assert.throws(() => validateImages({ x: { image: "browser" } }), /image must be one of agent-base, engineer/);
-  assert.deepEqual(c.connections.apps, { url: "http://apps-mcp:8090/mcp", tool_timeout_sec: 600 });
-  assert.equal(c.connections.slack_live.bearer_secret, "slack_live_mcp_token");
-  // The board token is host-only: the stdio tasks bridge runs in the box without it.
-  assert.ok(!c.connections.paperclip_tasks.env_vars.includes("AIDENHQ_BOARD_TOKEN"));
-  assert.ok(c.connections.paperclip_tasks.env_vars.includes("PAPERCLIP_API_KEY"));
+  // No URL or secret reaches the launcher: every connection goes through the kernel's proxy, tasks included.
+  assert.deepEqual(c.connections.apps, { tool_timeout_sec: 600 });
+  assert.deepEqual(c.connections.paperclip_tasks, { tool_timeout_sec: 300 });
 });
 
 test("not yet in a computer: an agent in trial (its limits run inside the box); one that messages the owner may (replies land via the launcher)", () => {

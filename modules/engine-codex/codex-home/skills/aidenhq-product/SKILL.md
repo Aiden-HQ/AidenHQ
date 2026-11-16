@@ -13,7 +13,7 @@ Read `CLAUDE.md` at the repo root first: it is the source for layout, convention
   `review.mjs`, `modules/core/security/` or `services/runner/test/reviewer-cases/` needs the maintainer's reviewer eval:
   say so in the PR.
 - **No owner data.** Tests and docs use `acme`, `example.com` and documentation IP ranges.
-- **Shared code.** After editing `services/shared/agent-auth.ts` or `services/shared/source-store.ts`, or the design
+- **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts` or `services/shared/source-store.ts`, or the design
   system, run `node scripts/sync-shared.mjs`; a test fails on drift.
 
 ## Tests per area (Node 24, `npm ci` once per package)

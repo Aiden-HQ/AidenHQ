@@ -2,7 +2,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { posix } from "node:path";
 import { checkOrg, commitPush, pullMain, show } from "./git.js";
-import type { Caller } from "./agent-auth.js";
 import type { Platform } from "./platform.js";
 import { appendApp, isSensitive, parseApp, removeApp, type App, checkRemovable } from "./registry.js";
 import { checkPort } from "./tailnet.js";
@@ -22,8 +21,10 @@ const ok = (v: unknown) => ({ content: [{ type: "text" as const, text: typeof v 
 const fail = (e: unknown) => ({ isError: true, content: [{ type: "text" as const, text: String((e as Error).message ?? e) }] });
 
 // Reads need the app to be open or a matching role; mutations need ownership (the maintainer also acts on an app's open incident). Roles never grant mutation.
+/** The calling agent, from the kernel's assertion (an empty id: no tool call, so no caller). */
+export interface Caller { id: string; key: string; name: string; roles: string[] }
 const canRead = (a: App, c: Caller) => canView(a, c.roles);
-// Its owner (the agent key from the grants table, which agents can't edit), or an agent with the app-incidents role during an incident.
+// Its owner (the agent key from the kernel's assertion), or an agent with the app-incidents role during an incident.
 const canMutate = (p: Platform, a: App, c: Caller) => c.key === a.owner || (c.roles.includes("app-incidents") && !!p.store.openIncident(a.name));
 
 let busy = false; // registry edits are serialised across requests (a server is built per request)

@@ -21,8 +21,10 @@ never in this file.
 
 - `modules/<name>/`: `module.yaml`, plus `agents/<key>/AGENTS.md` handbooks, `connections/<svc>/` MCP servers,
   `apps/<app>/` and `compose.yaml`. `modules/core` is always installed.
+- `kernel/`: the `aidenhq-kernel` host service (the model gateway and the tool proxy in front of every connection: grants,
+  caller assertions, fencing) and the module SDK (`kernel/sdk`).
 - `services/`: `board` (owner UI and approvals), `runner` (host coding jobs and git gates), `apps-mcp`,
-  `paperclip-tasks-mcp` (tested from `scripts/test`), `computer` (agent computers), `gate` (shared-app door),
+  `paperclip-tasks-mcp` (the `codex-model` launcher), `computer` (agent computers), `gate` (shared-app door),
   `shared` (code synced into services).
 - `scripts/`: compiler (`compile.mjs`, `modules.mjs`), Paperclip setup (`paperclip-setup.mjs`), account auth,
   health, backup and restore.
@@ -36,17 +38,17 @@ Everything runs offline; no live instance or paid key is needed. Node 24. Instal
 On macOS the `flock` apply-lock tests (scripts, runner) fail; that's expected, and CI judges them.
 
 ```sh
-cd scripts && npm test                       # compiler, setup, paperclip-tasks-mcp, sync-shared drift
+cd scripts && npm test                       # compiler, setup, sync-shared drift
 cd services/runner && npm test
 cd services/computer && node --test test/*.test.mjs
 cd services/gate && npm test && npm run typecheck
 cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build
-# services/gateway, services/apps-mcp, modules/*/connections/*, modules/security/scanner:
+# kernel, services/apps-mcp, modules/*/connections/*, modules/security/scanner:
 npm test && npm run typecheck
 ```
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
-editing `services/shared/agent-auth.ts`, `services/shared/source-store.ts`, `modules/core/design-system/` or the app starter (`modules/core/templates/app/`), run `node scripts/sync-shared.mjs` (a
+editing `kernel/sdk/src/caller.ts` or `fence.ts`, `services/shared/source-store.ts`, `modules/core/design-system/` or the app starter (`modules/core/templates/app/`), run `node scripts/sync-shared.mjs` (a
 test fails on drift). CI (`.github/workflows/ci.yml`) runs all of the above on every PR.
 
 The app starter (`modules/core/templates/app/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
@@ -157,7 +159,7 @@ the board key (it writes as the owner). Agents never claim something is done unt
   unasked) any agent's comment while it reopens the task to `todo` start a job; other agent comments are ignored.
 - OpenRouter runs are unpriced, so any `budgetMonthlyCents` pauses the agent at $0. Keep budgets at 0; cap spend with
   the OpenRouter key limit.
-- Agents in computers cannot share a folder: delegated tasks need `agent_default` (`paperclip-tasks-mcp` sets this on
+- Agents in computers cannot share a folder: delegated tasks need `agent_default` (the `tasks` module sets this on
   every delegated task) or the parent's agent gets `workspace_busy`.
 - A routine may set its own `model:` (routine env + the `codex-model` launcher; docs/configuration.md).
 - Debug a run from its Codex session log: `**/sessions/**/*.jsonl` under the Paperclip container's codex home, or

@@ -3,7 +3,7 @@ import { DEFAULT_IDENTITY, identityEnv } from "./github-app.ts";
 import { appendFileSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { mintToken } from "../../gateway/token.ts";
+import { mintToken } from "../../../kernel/src/gateway/token.ts";
 import { BOX_EXEC_WRAP } from "../../computer/lib.mjs";
 import { appendLine, lines, readFrom } from "../../../kernel/sdk/src/engine-io.ts";
 import { REPO_ROOT } from "./config.mjs";
@@ -302,7 +302,7 @@ export async function releaseBox(call, container, { everyMs = 2000, forMs = 20 *
 }
 
 /**
- * A model credential for the gateway (services/gateway/token.ts), signed with gateway_job_secret: a job's (kind agent, capped,
+ * A model credential for the gateway (kernel/src/gateway/token.ts), signed with gateway_job_secret: a job's (kind agent, capped,
  * billed to its Engineer and task) or the runner's own (reviewer, grader, intake). Never the OpenRouter key.
  */
 export function modelToken(cfg, claims, now = Date.now()) {

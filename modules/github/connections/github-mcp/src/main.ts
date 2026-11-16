@@ -13,7 +13,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
 import { z } from "zod";
-import { makeAuthorize, type Caller } from "./agent-auth.js";
+import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { GitHub, GitHubAuthError, GitHubRefused, parseRef } from "./github.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "github-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
@@ -23,8 +23,20 @@ const inboundToken = tokenFile && existsSync(tokenFile) ? readFileSync(tokenFile
 // The agents org: commit_status_set writes only to its repos.
 const agentsOrg = (process.env.GITHUB_AGENTS_ORG ?? "").trim().toLowerCase();
 const commentOrgs = new Set((process.env.GITHUB_COMMENT_ORGS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
-// Who is calling, and may it use this tool (the run key against the grants table).
-const authorize = makeAuthorize({ log });
+// Who is calling: the kernel's signed assertion (the kernel enforces grants).
+const jwks = kernelJwks();
+async function authorize(req: IncomingMessage, body: unknown): Promise<{ ok: true; caller?: Caller } | { ok: false; body: unknown }> {
+  const msgs = (Array.isArray(body) ? body : [body]) as { id?: unknown; method?: unknown }[];
+  if (!msgs.some((m) => m?.method === "tools/call")) return { ok: true };
+  try {
+    return { ok: true, caller: await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "github") };
+  } catch (err) {
+    const reason = (err as Error).message;
+    log.warn({ reason }, "tool call refused");
+    const refusal = (m: { id?: unknown }) => ({ jsonrpc: "2.0", id: m?.id ?? null, result: { isError: true, content: [{ type: "text", text: `Refused: ${reason}.` }] } });
+    return { ok: false, body: Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!) };
+  }
+}
 const projects = new Projects(process.env.GITHUB_APP_DIR ?? "/secrets/github-app");
 // Reads of a repo the App installation covers use its read-only token (the agents org's repos aren't visible to the
 // user's own token); everything else, and every write, keeps the user's token.
@@ -271,8 +283,8 @@ const http = createServer(async (req, res) => {
     for await (const c of req) chunks.push(c as Buffer);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
     const auth = await authorize(req, body);
-    if (!auth.ok) return void res.writeHead(auth.status, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
-    const server = buildServer(auth.ok ? auth.caller : undefined);
+    if (!auth.ok) return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(auth.body));
+    const server = buildServer(auth.caller);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();

@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { asAgent } from "./caller.js";
 import type { Agent, Comment, Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
@@ -40,7 +41,6 @@ describe("/internal/relay", () => {
   const pc = {
     me: async () => ME,
     agents: async () => agents,
-    agentMe: async (key: string) => agents.find((a) => a.id === key) ?? Promise.reject(new Error("401")),
     labels: async () => [],
     company: async () => ({ issuePrefix: "WOR" }),
     companyId: "co",
@@ -62,7 +62,7 @@ describe("/internal/relay", () => {
   afterAll(() => app.close());
   const relay = (body: unknown, key: string | null = COS, path = "/internal/relay") =>
     new Promise<{ status: number; json: any }>((resolve, reject) => {
-      const req = request({ host: "127.0.0.1", port, method: "POST", path, headers: { "content-type": "application/json", host: "board:3122", authorization: `Bearer ${TOKEN}`, ...(key ? { "x-agent-key": key } : {}) } }, (res) => {
+      const req = request({ host: "127.0.0.1", port, method: "POST", path, headers: { "content-type": "application/json", host: "board:3122", authorization: `Bearer ${TOKEN}`, ...(key ? asAgent(key) : {}) } }, (res) => {
         let text = "";
         res.on("data", (c) => (text += c));
         res.on("end", () => resolve({ status: res.statusCode!, json: text ? JSON.parse(text) : undefined }));

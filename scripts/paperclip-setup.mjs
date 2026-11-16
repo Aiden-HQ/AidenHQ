@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { heartbeatSection, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, memorySection, routineAutonomyDefault, sourcesSection } from "./modules.mjs";
+import { codexMcpBlock, heartbeatSection, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, memorySection, routineAutonomyDefault, sourcesSection } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, computerSection, ensureComputers, runnerBox } from "./computers.mjs";
 import { assertNoShell } from "./no-shell.mjs";
@@ -336,7 +336,7 @@ function agentBody(key, a, existing) {
   // harness test (the new-agent hello probe) runs Codex with only the adapter env and no run, so it gets the gateway's harness key.
   if (base.some((x) => String(x).startsWith("model_provider="))) adapterConfig.env = { OPENAI_API_KEY: { type: "secret_ref", secretId: dummyOpenAiSecretId, version: "latest" }, ...(harnessSecretId ? { PAPERCLIP_API_KEY: { type: "secret_ref", secretId: harnessSecretId, version: "latest" } } : {}) };
   // Paperclip's own server secrets sit in the container env and Codex inherits it; adapter env overrides process env, so blank
-  // them. AIDENHQ_BOARD_TOKEN stays: the stdio tasks bridge, a child of Codex, needs it. Computer agents get a stripped env.
+  // them. Computer agents get a stripped env.
   adapterConfig.env = { ...adapterConfig.env, ...Object.fromEntries(SERVER_SECRETS.map((k) => [k, ""])) };
   if (a.reasoning_effort) adapterConfig.modelReasoningEffort = a.reasoning_effort;
   return {
@@ -582,7 +582,7 @@ async function ensureOpsKey(agent) {
 /**
  * The fast chat lane's config (secret `lane_config`, read by slack-live-mcp): per agent with a `chat:` block, its id, name,
  * its own agent key (`paperclip_lane_key_<agent>`, kept while it still names that agent), its chat settings, handbook,
- * lane tools with each one's MCP server and bearer token, and its own Telegram bot token (`chat_<agent>_telegram_bot_token`)
+ * lane tools (connection and tool: called through the kernel's proxy with its own key), and its own Telegram bot token (`chat_<agent>_telegram_bot_token`)
  * when chat.telegram is on. Rewritten in place only when it changes (the lane re-reads it; no restart).
  */
 async function ensureLaneConfig(agents) {
@@ -599,9 +599,7 @@ async function ensureLaneConfig(agents) {
     }
     const tools = (a.chat.tools ?? []).map((t) => {
       const [connection, tool] = t.split(".");
-      const m = cfg.mcp_servers?.[connection];
-      const bearer = m?.bearer_token_env_var ? readSecret(m.bearer_token_env_var.replace(/^AIDENHQ_/, "").toLowerCase()) : "";
-      return { connection, name: tool, url: m?.url ?? "", token: bearer };
+      return { connection, name: tool }; // through the kernel's proxy, with the lane agent's own key
     });
     const telegram = a.chat.telegram ? readSecret(`chat_${key}_telegram_bot_token`) : "";
     if (a.chat.telegram && !telegram) console.warn(`warning: ${a.name} has chat.telegram on but no chat_${key}_telegram_bot_token in the vault; board chat only`);
@@ -726,31 +724,14 @@ async function ensureRoutines(companyId, agents) {
 }
 
 /**
- * Register the paperclip-tasks stdio MCP bridge in the shared Codex config. Paperclip
- * copies this file into each company's managed Codex home before every run.
+ * Every connection in the shared Codex config, at the kernel's tool proxy with the run's own credential (PAPERCLIP_API_KEY):
+ * no service URL, token or stdio bridge. Paperclip copies this file into each company's managed Codex home before every run.
  */
-const toml = (v) => (Array.isArray(v) ? `[${v.map(toml).join(", ")}]` : JSON.stringify(String(v)));
 
 function ensureCodexConfig() {
   const dataDir = resolve(repo, env("AIDENHQ_DATA_DIR", "./data"));
   const path = join(dataDir, "paperclip", ".codex", "config.toml");
-  const lines = ["# >>> aidenhq (managed by scripts/paperclip-setup.mjs)"];
-  for (const [name, m] of Object.entries(cfg.mcp_servers ?? {})) {
-    if (!/^[a-z0-9_]+$/.test(name)) fail(`invalid MCP server name ${name}`);
-    lines.push(`[mcp_servers.${name}]`);
-    if (m.url) lines.push(`url = ${toml(m.url)}`);
-    if (m.bearer_token_env_var) lines.push(`bearer_token_env_var = ${toml(m.bearer_token_env_var)}`);
-    // Headers filled from the agent's own environment, e.g. X-Agent-Key from PAPERCLIP_API_KEY.
-    if (m.env_http_headers) lines.push(`env_http_headers = { ${Object.entries(m.env_http_headers).map(([h, v]) => `${JSON.stringify(h)} = ${toml(v)}`).join(", ")} }`);
-    if (m.command) lines.push(`command = ${toml(m.command)}`);
-    if (m.args) lines.push(`args = ${toml(m.args)}`);
-    if (m.env_vars) lines.push(`env_vars = ${toml(m.env_vars)}`);
-    lines.push("startup_timeout_sec = 20", `tool_timeout_sec = ${m.tool_timeout_sec ?? 300}`);
-    // Tools are pre-approved: the agents' only capabilities are these vetted servers.
-    lines.push('default_tools_approval_mode = "approve"', "");
-  }
-  lines.push("# <<< aidenhq");
-  const block = lines.join("\n");
+  const block = codexMcpBlock(cfg.mcp_servers);
   const upsert = (file, create) => {
     if (!create && !existsSync(file)) return false;
     const current = existsSync(file) ? readFileSync(file, "utf8") : "";
@@ -797,7 +778,8 @@ function writeCatalog() {
     routines: Object.values(cfg.routines ?? {}).filter((r) => r.agent === key).map((r) => r.title),
   }));
   const mcp = Object.fromEntries(Object.keys(cfg.mcp_servers ?? {}).map((n) => [n, agentsOut.filter((a) => a.mcp_servers.includes(n)).map((a) => a.key)]));
-  const path = join(resolve(repo, env("AIDENHQ_DATA_DIR", "./data")), "paperclip", "catalog.static.json");
+  // The tasks module's fleet_catalog reads it (modules/tasks/compose.yaml mounts data/tasks read-only).
+  const path = join(resolve(repo, env("AIDENHQ_DATA_DIR", "./data")), "tasks", "catalog.static.json");
   mkdirSync(dirname(path), { recursive: true });
   // Every module found, enabled or not (scripts/compile.mjs): what can be installed, and what each one brings.
   const modulesFile = join(repo, "config/modules.json");
@@ -832,9 +814,9 @@ function appendRevs(table) {
 }
 
 /**
- * The grants table every connection checks callers against (whoami, services/shared/agent-auth.ts): Paperclip agent id →
+ * The grants table the kernel's tool proxy checks every caller against (kernel/src/identity.ts): Paperclip agent id →
  * {key, roles, tools, models, caps, graded} (the last three: grantEntry in scripts/modules.mjs). Keyed by id because
- * Paperclip lets agents edit their own metadata (setupKey, roles). Written in place, never renamed: connections bind-mount
+ * Paperclip lets agents edit their own metadata (setupKey, roles). Written in place, never renamed: the board bind-mounts
  * its directory read-only.
  */
 /** owner/name of the product repo: AIDENHQ_PRODUCT_REPO, else this checkout's GitHub origin (services/runner/src/config.mjs agrees). */

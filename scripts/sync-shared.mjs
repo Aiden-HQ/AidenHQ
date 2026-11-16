@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Copies shared code into the services that use it. Each service is its own Docker build context, so it holds a
 // byte-identical copy; scripts/test/shared.test.mjs fails when one drifts.
-//   services/shared/agent-auth.ts    run identity and grants, in every service that checks callers
+//   kernel/sdk/src/{caller,fence}.ts the caller assertion check and the fence, in every module server (src/aidenhq-sdk/)
 //   services/shared/source-store.ts  the shared-sources writer side, in every source writer
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
@@ -16,18 +16,20 @@ import { fileURLToPath } from "node:url";
 
 export const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const SHARED = {
-  "services/shared/agent-auth.ts": [
-    "services/apps-mcp/src/agent-auth.ts",
-    "services/board/src/agent-auth.ts",
-    "modules/github/connections/github-mcp/src/agent-auth.ts",
-    "modules/glean/connections/glean-mcp/src/agent-auth.ts",
-    "modules/google/connections/google-workspace-mcp/src/agent-auth.ts",
-    "modules/jira/connections/jira-mcp/src/agent-auth.ts",
-    "modules/meetings/connections/ops-mcp/src/agent-auth.ts",
-    "modules/owner-channel/connections/slack-live-mcp/src/agent-auth.ts",
-    "modules/primer/connections/primer-mcp/src/agent-auth.ts",
-    "modules/slack/connections/slack-mcp/src/agent-auth.ts",
-  ],
+  // Every module server checks the kernel's caller assertion (and fences what it must) with the SDK (lean-core 2a).
+  ...Object.fromEntries(["caller.ts", "fence.ts"].map((f) => [`kernel/sdk/src/${f}`, [
+    "services/apps-mcp/src",
+    "services/board/src",
+    "modules/github/connections/github-mcp/src",
+    "modules/glean/connections/glean-mcp/src",
+    "modules/google/connections/google-workspace-mcp/src",
+    "modules/jira/connections/jira-mcp/src",
+    "modules/meetings/connections/ops-mcp/src",
+    "modules/owner-channel/connections/slack-live-mcp/src",
+    "modules/primer/connections/primer-mcp/src",
+    "modules/slack/connections/slack-mcp/src",
+    "modules/tasks/connections/tasks-mcp/src",
+  ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   "services/shared/source-store.ts": [
     "modules/owner-channel/connections/slack-live-mcp/src/source-store.ts",
     "modules/github/connections/github-mcp/src/source-store.ts",

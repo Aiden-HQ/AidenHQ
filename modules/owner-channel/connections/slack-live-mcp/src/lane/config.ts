@@ -1,11 +1,11 @@
 // The fast chat lane's configuration: one secret file setup writes (scripts/paperclip-setup.mjs, `lane_config`), re-read
 // whenever it changes, so an apply that adds or changes a lane agent needs no restart. Empty or missing: no lane agents.
-// Per agent: its Paperclip id and name, its own agent API key (tool calls run as that agent, so the normal grants apply),
-// the model settings from its `chat:` block, its handbook, the tools it may use here with each tool's MCP server, and its
+// Per agent: its Paperclip id and name, its own agent API key (tool calls cross the kernel as that agent, so the normal grants apply),
+// the model settings from its `chat:` block, its handbook, the tools it may use here (by connection name), and its
 // own Telegram bot token if it has one.
 import { readFileSync, statSync } from "node:fs";
 
-export interface LaneTool { connection: string; name: string; url: string; token: string }
+export interface LaneTool { connection: string; name: string }
 export interface LaneAgent {
   key: string;
   id: string;
@@ -38,7 +38,7 @@ export function parseLaneConfig(text: string): Record<string, LaneAgent> {
       reasoning: a.reasoning === "low" ? "low" : "off",
       deadlineS: Number(a.deadline_s) > 0 ? Number(a.deadline_s) : 8,
       prompt: str(a.prompt),
-      tools: tools.filter((t) => str(t.connection) && str(t.name) && str(t.url)).map((t) => ({ connection: str(t.connection), name: str(t.name), url: str(t.url), token: str(t.token) })),
+      tools: tools.filter((t) => str(t.connection) && str(t.name)).map((t) => ({ connection: str(t.connection), name: str(t.name) })),
       ...(str(a.telegram_token) ? { telegramToken: str(a.telegram_token) } : {}),
     };
   }

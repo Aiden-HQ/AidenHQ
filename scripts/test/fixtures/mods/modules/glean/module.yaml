@@ -1,4 +1,4 @@
 name: glean
 description: Glean
 connections:
-  glean: { url: "http://glean:1/mcp", tools: { read: [search, chat], write: [] } }
+  glean: { url: "http://glean:1/mcp", auth: glean_service_key, tools: { read: [search, chat], write: [] } }

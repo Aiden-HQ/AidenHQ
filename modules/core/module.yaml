@@ -2,6 +2,7 @@ name: core
 description: Aiden (chief of staff), the Researcher, the apps platform's DevOps Engineer, the Agent Architect (designs new agents), the Agent Coach (reviews agents' outcomes) and the Platform Engineer. Always installed.
 requires:
   - owner-channel
+  - tasks
   - engine-codex
 settings:
   owner_name:
@@ -74,12 +75,12 @@ settings:
   # Off-host backup (ops/backup-offsite.sh): a restic repository, e.g. sftp://u12345@u12345.your-storagebox.de:23/aidenhq.
   # Set, apply installs a nightly timer (03:00 UTC); its password is the vault's restic_password. Unset = no off-host backup.
   backup_repository:
-  # Model tools (services/paperclip-tasks-mcp/models.mjs): advisor_ask for every agent, fanout_map where granted. "off" =
+  # Model tools (modules/tasks/connections/tasks-mcp/src/models.mjs): advisor_ask for every agent, fanout_map where granted. "off" =
   # the kill switch: compile drops both from every agent's grants.
   model_tools:
     default: "on"
     values: ["on", "off"]
-  # Agent memory (scripts/modules.mjs memoryOf, memory_note in the tasks bridge): "on" = every Codex agent can note facts for the
+  # Agent memory (scripts/modules.mjs memoryOf, memory_note in the tasks module): "on" = every Codex agent can note facts for the
   # Librarian's daily curation, and its agents/<key>/memory.md (max 4 KB) is compiled into its handbook. "off" = the kill switch:
   # no memory_note, no memory section.
   agent_memory:
@@ -222,10 +223,10 @@ agents:
       # task_comment, task_finish on its own run. No task_delegate (no Engineer directly) and no task_set_status on others' tasks.
       # coach_*: the due list, evidence packets and its review log.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team, task_create, task_comment, task_finish, fleet_status, fleet_catalog, coach_due, coach_evidence, coach_record, fanout_map ]
-    # It reads untrusted content broadly: the tasks bridge lets it assign work only to these (app-owners: an app's owning agent).
+    # It reads untrusted content broadly: the tasks module lets it assign work only to these (app-owners: an app's owning agent).
     # Their own writes stay tiered; code jobs come from them, never from the Coach.
     delegate_to: [ fleet-engineer, librarian?, app-owners ]
-    # fleet-read: fleet_status. fleet-audit: any agent's evidence packet and its own review log (board coach.ts, tasks bridge).
+    # fleet-read: fleet_status. fleet-audit: any agent's evidence packet and its own review log (board coach.ts, tasks module).
     roles: [ fleet-read, fleet-audit ]
   fleet-engineer:
     department: platform
@@ -323,11 +324,12 @@ routines:
     autonomy: tier0 # app users' text drives it: Tier 1 work from a request is the owner's
 # Connections: every tool tagged read (changes nothing), write, or destructive (deletes: delete, trash, remove, purge;
 # compile refuses such a name under read or write). Agents grant `read`, `write` (never destructive) or a tool list, the only
-# way to grant a destructive tool (compile resolves them); each HTTP call carries the agent's run key and the service checks it against the grants table.
+# way to grant a destructive tool (compile resolves them); every call crosses the kernel's proxy, which checks the grants.
 connections:
   apps:
     setup: "Built in (apps-mcp). If it is down, run `docker compose up -d apps-mcp` on the host, then read `docker compose logs apps-mcp`."
     url: http://apps-mcp:8090/mcp
+    auth: apps_service_key
     tool_timeout_sec: 600 # deploys are synchronous
     tools:
       # warehouse_query, source_new, source_ack: the shared warehouse's sources (services/apps-mcp/src/sources.ts).
@@ -336,19 +338,6 @@ connections:
       write: [ app_deploy, app_restart, app_rollback, app_create, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
       # Granted only by name (the `write` shorthand never includes it): it stops an app and drops its registry entry.
       destructive: [ app_remove ]
-  paperclip_tasks:
-    setup: "Built in: the tasks bridge runs inside Paperclip for each agent run. Nothing to set up."
-    command: node
-    args: [ /opt/aidenhq/paperclip-tasks-mcp.mjs ]
-    # AIDENHQ_BOARD_TOKEN: the board's internal API (scheduled moves, recurring tasks). It only reaches the listener:
-    # the board decides by PAPERCLIP_API_KEY (the agent's own credential, sent as x-agent-key) and its grants.
-    env_vars: [ PAPERCLIP_API_KEY, PAPERCLIP_API_URL, PAPERCLIP_RUN_ID, PAPERCLIP_COMPANY_ID, PAPERCLIP_TASK_ID, AIDENHQ_BOARD_TOKEN ]
-    tools:
-      # advisor_ask, fanout_map (models.mjs): model calls billed to the caller's run through the gateway; they change nothing.
-      # memory_note: a comment on the caller's own memory inbox task (a note for the Librarian), so trial agents have it too.
-      # coach_due, coach_evidence, coach_record: the Agent Coach's (fleet-audit role; services/board/src/coach.ts).
-      read: [ task_current, task_get, task_search, task_list, task_team, task_comments, task_files, task_file_read, task_approvals, fleet_status, fleet_costs, fleet_catalog, handbook_list, handbook_read, advisor_ask, fanout_map, memory_note, coach_due, coach_evidence ]
-      write: [ coach_record, task_create, task_create_engineer_task, task_delegate, task_propose_rule, task_join, task_schedule, task_recurring, task_merge, task_update, task_pass_on, task_handoff, task_comment, task_finish, task_set_status, task_relay_owner_words, app_request_from_owner, fleet_control ]
 # The apps' tailnet node's join key (compose.yaml apps-edge; docs/setup.md): created empty, the owner fills it once.
 optional_secrets:
   - tailscale_apps_authkey
@@ -358,6 +347,10 @@ optional_secrets:
 # The computer plugin's key to the launcher (services/computer): compile creates it when missing.
 generated_secrets:
   - computer_launcher_token
+  # The kernel's key to apps-mcp's /mcp (agents' calls arrive only through the kernel's proxy).
+  - apps_service_key
+  # The board's internal API: the runner, the kernel, the tasks module and the owner channel (rotated by deleting it).
+  - board_internal_token
   # The gate's proof to the board's sign-in listener (3129): the board trusts the gate's client-IP header only beside it.
   - gate_board_secret
   # The board's key to the launcher's /progress only (the live view); never the plugin's full control key.
@@ -369,7 +362,7 @@ generated_secrets:
   # ops/setup.sh's key to the board: the owner's setup link and welcome chat (3120) and account resets (3122), nothing
   # else; every other board route needs a signed-in admin (Engineer jobs share the host's loopback).
   - board_operator_key
-  # The model gateway (services/gateway): the runner signs its jobs' and its own model tokens with gateway_job_secret; the
+  # The model gateway (kernel/src/gateway): the runner signs its jobs' and its own model tokens with gateway_job_secret; the
   # board pulls usage and files raise_cap with gateway_board_key; source writers call with gateway_source_key; Paperclip's
   # new-agent hello probe with gateway_harness_key (a run gets its own run JWT instead).
   - gateway_job_secret

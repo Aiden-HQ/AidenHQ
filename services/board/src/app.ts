@@ -334,11 +334,11 @@ export function createApp(opts: AppOptions): Server {
   /** The owner channel (owner_decide_key) or the owner's Claude watcher (watcher_decide_key). */
   const ownerKeyed = (req: IncomingMessage) =>
     Boolean(opts.decideKey && keyMatches(req.headers["x-owner-key"], opts.decideKey)) || Boolean(opts.watcherKey && keyMatches(req.headers["x-owner-key"], opts.watcherKey));
-  /** An agent through the tasks bridge: its own credential (x-agent-key), granted `tool` on paperclip_tasks (and `role`, if named). */
+  /** An agent through the tasks bridge: the kernel's caller assertion (X-AidenHQ-Caller), granted `tool` on paperclip_tasks (and `role`, if named). */
   async function requireAgentTool(req: IncomingMessage, tool: string, role?: string) {
     const ok = (g: { roles?: string[]; tools?: Record<string, string[]> }) => (g.tools?.paperclip_tasks ?? []).includes(tool) && (!role || (g.roles ?? []).includes(role));
     try {
-      return await requireAgent(pc, String(req.headers["x-agent-key"] ?? ""), ok, `only an agent granted ${tool}${role ? ` with the ${role} role` : ""} may call this`);
+      return await requireAgent(pc, req, ok, `only an agent granted ${tool}${role ? ` with the ${role} role` : ""} may call this`);
     } catch (err) {
       throw err instanceof Refused ? new HttpError(403, err.message) : err;
     }
@@ -957,7 +957,7 @@ export function createApp(opts: AppOptions): Server {
 
   // The tasks bridge (agents' tools, with the agent's own credential) and the runner (its key), behind the internal token.
   const internal: typeof routes = [
-    // Fleet tools of the Chief of Staff: the caller's own Paperclip credential rides in x-agent-key and must be the CoS's.
+    // Fleet tools of the Chief of Staff: the kernel's caller assertion names the caller, who must be the CoS.
     // The status read also takes fleet-read (Fleet Ops), with the detector's open and recovered incidents.
     { method: "POST", path: /^\/internal\/fleet\/status$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc) => {
       // The summary is extra: a failed read there never fails fleet_status (summary: null). After the status reads, not beside
@@ -1207,7 +1207,7 @@ export function createApp(opts: AppOptions): Server {
       handle: async (_m, body, _u, req) => {
         // Any tool that hands a task to an agent files its rubric: task_delegate, task_create with an assignee, Engineer sub-tasks.
         const filers = ["task_delegate", "task_propose_rule", "task_create", "task_create_engineer_task"];
-        const agent = await requireAgent(pc, String(req.headers["x-agent-key"] ?? ""), (g) => (g.tools?.paperclip_tasks ?? []).some((t) => filers.includes(t)), `only an agent granted one of ${filers.join(", ")} may file a rubric`).catch((err) => {
+        const agent = await requireAgent(pc, req, (g) => (g.tools?.paperclip_tasks ?? []).some((t) => filers.includes(t)), `only an agent granted one of ${filers.join(", ")} may file a rubric`).catch((err) => {
           throw err instanceof Refused ? new HttpError(403, err.message) : err;
         });
         const b = parse(FileGradeSchema, body);
@@ -1559,7 +1559,7 @@ export function createApp(opts: AppOptions): Server {
         const b = parse(z.object({ issue: z.string().min(1).max(100), comment: z.string().min(1).max(100) }), body);
         let caller = "runner";
         if (!runnerKeyed(req)) {
-          const me = await requireAgent(pc, String(req.headers["x-agent-key"] ?? ""), () => true, "only the runner or an agent reports its comments here").catch((err) => {
+          const me = await requireAgent(pc, req, () => true, "only the runner or an agent reports its comments here").catch((err) => {
             throw err instanceof Refused ? new HttpError(403, err.message) : err;
           });
           caller = me.id;
@@ -2184,7 +2184,7 @@ export function createApp(opts: AppOptions): Server {
 
   async function fleetCall<T>(req: IncomingMessage, run: (pc: Paperclip, caller: Agent) => Promise<T>, allowed = ["fleet-admin"]): Promise<T> {
     try {
-      return await run(pc, await requireFleetRole(pc, String(req.headers["x-agent-key"] ?? ""), allowed));
+      return await run(pc, await requireFleetRole(pc, req, allowed));
     } catch (err) {
       throw err instanceof Refused ? new HttpError(403, err.message) : err;
     }

@@ -7,7 +7,7 @@ company: { name: "${settings.company_name}", description: Core company }
 requires: [eng]
 labels: [ { name: todo, color: "#000" } ]
 connections:
-  tasks: { command: node, tools: { read: [t], write: [t2] } }
+  tasks: { url: "http://tasks-mcp:8080/mcp", auth: tasks_service_key, tools: { read: [t], write: [t2] } }
 agents:
   boss: { adapter: codex_local, connections: { tasks: [t] } }
 routines:

@@ -94,6 +94,10 @@
       "source": "./slack"
     },
     {
+      "name": "tasks",
+      "source": "./tasks"
+    },
+    {
       "name": "warehouse",
       "source": "./warehouse"
     }

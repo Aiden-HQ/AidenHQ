@@ -21,13 +21,13 @@
     "id": "A4",
     "attack": "Replay a caller assertion at /v1/cp/agent/*, or present it to another module (aud)",
     "unit": "2a",
-    "test": null
+    "test": "kernel/test/proxy.test.mjs"
   },
   {
     "id": "A5",
     "attack": "Cross-module tool access: module A calls module B's MCP server directly, or through the proxy without a services.grants entry",
     "unit": "2a",
-    "test": null
+    "test": "kernel/test/proxy.test.mjs"
   },
   {
     "id": "A6",

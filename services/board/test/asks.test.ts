@@ -8,6 +8,7 @@ import { join } from "node:path";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { asAgent } from "./caller.js";
 import { chatAgentMarker } from "../src/chats.js";
 import type { Comment, Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
@@ -45,7 +46,6 @@ const ask = (question: string, options: string[]) =>
 const pc = {
   me: async () => ME,
   agents: async () => agents,
-  agentMe: async (key: string) => agents.find((a) => a.id === key) ?? Promise.reject(new Error("401")),
   labels: async () => [chatLabel],
   company: async () => ({ issuePrefix: "WOR" }),
   companyId: "co",
@@ -79,7 +79,7 @@ describe("a delegated agent asks the owner through the chat that handed it the w
   const call = (which: "board" | "internal", method: string, path: string, body?: unknown) =>
     new Promise<{ status: number; json: any }>((resolve, reject) => {
       const headers: Record<string, string> =
-        which === "board" ? { host: "localhost:3120", "content-type": "application/json", "x-aidenhq-board": "1", origin: "http://localhost:3120" } : { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-agent-key": COS };
+        which === "board" ? { host: "localhost:3120", "content-type": "application/json", "x-aidenhq-board": "1", origin: "http://localhost:3120" } : { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...asAgent(COS) };
       const req = request({ host: "127.0.0.1", port: ports[which], method, path, headers }, (res) => {
         let text = "";
         res.on("data", (c) => (text += c));

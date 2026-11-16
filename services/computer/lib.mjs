@@ -5,7 +5,7 @@ import { realpathSync, statSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 
-const RUN_TOKEN_PREFIX = "ahqc_"; // services/shared/agent-auth.ts resolves these through /whoami
+const RUN_TOKEN_PREFIX = "ahqc_"; // the kernel resolves these through /whoami
 const RUN_TOKEN_ENV = "AIDENHQ_RUN_TOKEN";
 const MCP_BLOCK_ENV = "AIDENHQ_MCP_B64";
 const TOKEN_TTL_MS = 6 * 3600_000; // longer than any run (Paperclip's sandbox backstop is 4 h)
@@ -61,8 +61,8 @@ export class Tokens {
 const toml = (v) => (Array.isArray(v) ? `[${v.map(toml).join(", ")}]` : JSON.stringify(String(v)));
 
 /**
- * The agent's granted connections as Codex config, for the box only: HTTP ones through the gateway with the run token as
- * X-Agent-Key; stdio ones (the tasks bridge) as they are. Wrapped in markers so applying it twice replaces it.
+ * The agent's granted connections as Codex config, for the box only: each through the launcher's gateway with the run token
+ * as X-Agent-Key (the launcher passes it on to the kernel's proxy). Wrapped in markers so applying it twice replaces it.
  */
 export function mcpBlock(tools, connections, gatewayUrl) {
   const lines = ["# >>> aidenhq-computer (written by the launcher)"];
@@ -70,8 +70,7 @@ export function mcpBlock(tools, connections, gatewayUrl) {
     const c = connections[name];
     if (!c || !/^[a-z0-9_]+$/.test(name)) continue;
     lines.push(`[mcp_servers.${name}]`);
-    if (c.url) lines.push(`url = ${toml(`${gatewayUrl}/c/${name}/mcp`)}`, `env_http_headers = { "X-Agent-Key" = ${toml(RUN_TOKEN_ENV)} }`);
-    else lines.push(`command = ${toml(c.command)}`, `args = ${toml(c.args ?? [])}`, `env_vars = ${toml(c.env_vars ?? [])}`);
+    lines.push(`url = ${toml(`${gatewayUrl}/c/${name}/mcp`)}`, `env_http_headers = { "X-Agent-Key" = ${toml(RUN_TOKEN_ENV)} }`);
     lines.push(`enabled_tools = ${toml(list)}`, "startup_timeout_sec = 20", `tool_timeout_sec = ${Number(c.tool_timeout_sec) || 300}`, 'default_tools_approval_mode = "approve"', "");
   }
   lines.push("# <<< aidenhq-computer", "");
@@ -374,16 +373,8 @@ export function runCredential(env) {
   return { apiUrl: String(apiUrl), apiKey: String(apiKey), taskId: env.PAPERCLIP_TASK_ID ? String(env.PAPERCLIP_TASK_ID) : undefined };
 }
 
-/** Why a reply can't be posted for this run (null: it can). A run posts only on its own task; for a chat run that is the chat. */
-export function replyRefusal(cred, issueId, body) {
-  if (!cred) return "this run has no Paperclip credential (no exec from Paperclip yet, or the run ended)";
-  if (typeof body !== "string" || !body.trim()) return "a reply needs a body";
-  if (typeof issueId !== "string" || !cred.taskId || issueId !== cred.taskId) return "a run may reply only on its own task";
-  return null;
-}
-
-/** Runs in the box (node): posts the comment through the box's bridge. Everything, the key included, comes on stdin. */
-export const REPLY_SCRIPT = `let s="";process.stdin.on("data",d=>s+=d).on("end",async()=>{const r=JSON.parse(s);try{const res=await fetch(new URL("/api/issues/"+encodeURIComponent(r.issueId)+"/comments",r.url),{method:"POST",headers:{authorization:"Bearer "+r.key,"content-type":"application/json"},body:JSON.stringify({body:r.body}),signal:AbortSignal.timeout(25000)});console.log(res.status);process.exit(res.ok?0:1)}catch(e){console.log("error "+e.message);process.exit(1)}});`;
+/** Runs in the box (node): one control-plane call through the box's bridge. Everything, the key included, comes on stdin. */
+export const CP_SCRIPT = `let s="";process.stdin.on("data",d=>s+=d).on("end",async()=>{const r=JSON.parse(s);try{const res=await fetch(new URL(r.path,r.url),{method:r.method,headers:{authorization:"Bearer "+r.key,accept:"application/json",...(r.body?{"content-type":"application/json"}:{})},body:r.body?Buffer.from(r.body,"base64"):undefined,signal:AbortSignal.timeout(50000)});const b=Buffer.from(await res.arrayBuffer());console.log(JSON.stringify({status:res.status,type:res.headers.get("content-type")||"application/json",body:b.toString("base64")}))}catch(e){console.log(JSON.stringify({status:502,type:"text/plain",body:Buffer.from("the bridge failed: "+e.message).toString("base64")}))}});`;
 
 /**
  * A long control call (the agent's whole turn is one /exec): headers go out at once and a space every interval, then the

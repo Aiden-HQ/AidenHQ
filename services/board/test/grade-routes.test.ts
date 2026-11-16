@@ -6,6 +6,7 @@ import { join } from "node:path";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { asAgent } from "./caller.js";
 import { checks } from "../src/fleet-ops.js";
 import { backfillEscalatedDelegators, completionGate } from "../src/grades.js";
 import type { Paperclip } from "../src/paperclip.js";
@@ -43,7 +44,6 @@ const comments = vi.fn(async () => [lookalike]);
 const reviewCheck = (patch: Record<string, unknown>) => Date.parse((patch.executionPolicy as { monitor?: { nextCheckAt?: string } }).monitor?.nextCheckAt ?? "");
 const pc = {
   companyId: "co",
-  agentMe: async (key: string) => agents.find((a) => a.id === key) ?? Promise.reject(new Error("401")),
   issue: async (ref: string) => ({ [engineerTask.identifier]: engineerTask, [engineerTask.id]: engineerTask, [parentTask.identifier]: parentTask, [parentTask.id]: parentTask, [childTask.identifier]: childTask, [childTask.id]: childTask, [orphanTask.identifier]: orphanTask, [orphanTask.id]: orphanTask })[ref] ?? task,
   comments,
   labels: async () => [{ id: "lbl-grading", name: "grading" }],
@@ -59,7 +59,7 @@ async function gateApp(store: Store, paperclip: Paperclip = pc): Promise<{ gateF
   return {
     gateFor: (task, who) =>
       new Promise((resolve, reject) => {
-        const req = request({ host: "127.0.0.1", port, method: "POST", path: `/internal/grades/${task}/gate`, headers: { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-agent-key": who } }, (res) => {
+        const req = request({ host: "127.0.0.1", port, method: "POST", path: `/internal/grades/${task}/gate`, headers: { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...asAgent(who) } }, (res) => {
           let text = "";
           res.on("data", (c) => (text += c));
           res.on("end", () => resolve({ status: res.statusCode!, json: text ? JSON.parse(text) : undefined }));
@@ -90,7 +90,7 @@ describe("grade routes", () => {
       req.on("error", reject);
       req.end(JSON.stringify(body));
     });
-  const as = (id: string) => ({ "x-agent-key": id });
+  const as = (id: string) => asAgent(id);
   const runner = { "x-reviewer-key": RUNNER_KEY };
   const gate = (who: Record<string, string>, via = "task_finish") => post("/internal/grades/WOR-7/gate", { via }, who);
 
@@ -113,23 +113,6 @@ describe("grade routes", () => {
     const grade = { issue: "WOR-8", rubric: [], deliverable: { kind: "pr", ref: "" } };
     expect((await post("/internal/grades", grade, as("forged"))).status).toBe(403);
     expect((await post("/internal/grades", grade, as("ra"))).json).toEqual({ created: true, state: "open" });
-  });
-
-  it("an assignee in its own computer finishes with its run token: held for grading; a dead token is refused", async () => {
-    // The launcher's /whoami (through its gateway, the box's only way to the board): live run tokens name their agent.
-    process.env.AIDENHQ_LAUNCHER_URL = "http://launcher.test:8199";
-    const whoami = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
-      const auth = new Headers(init?.headers).get("authorization");
-      return auth === "Bearer ahqc_live" ? Response.json({ agentId: "eng" }) : new Response("unknown run token", { status: 401 });
-    });
-    try {
-      const boxGate = (key: string) => post("/internal/grades/WOR-8/gate", { via: "task_finish" }, as(key));
-      expect((await boxGate("ahqc_dead")).status).toBe(403);
-      expect((await boxGate("ahqc_live")).json).toEqual({ pass: false, state: "pending", label: "grading" });
-      expect(engineerTask.status).toBe("in_review");
-    } finally {
-      whoami.mockRestore();
-    }
   });
 
   it("satisfied is not sticky: a reopened task finished again is graded again, with a saved review path", async () => {
@@ -230,7 +213,7 @@ describe("grade routes", () => {
     try {
       expect((await call("GET", "/internal/owner/grades", { "x-owner-key": decideKey })).json).toEqual({ lines: [] });
       // Its delegator's close accepts the work.
-      expect((await call("POST", "/internal/grades/WOR-7/gate", { "x-agent-key": "cos" }, { via: "task_set_status" })).json).toEqual({ pass: true });
+      expect((await call("POST", "/internal/grades/WOR-7/gate", asAgent("cos"), { via: "task_set_status" })).json).toEqual({ pass: true });
       const accepted = s.grades.get(task.id)!;
       expect(accepted.state).toBe("satisfied");
       expect(accepted.verdicts.at(-1)).toMatchObject({ verdict: "accepted", by: "cos" });
@@ -402,7 +385,6 @@ describe("grade routes", () => {
     const wrote: Record<string, unknown>[] = [];
     const own = {
       companyId: "co",
-      agentMe: async (key: string) => agents.find((a) => a.id === key) ?? Promise.reject(new Error("401")),
       issue: async () => cancelled,
       labels: async () => [{ id: "lbl-grading", name: "grading" }],
       updateIssue: async (_id: string, body: Record<string, unknown>) => void wrote.push(body),

@@ -1,7 +1,7 @@
 // jira-mcp: see src/app.ts. Configuration from the module's compose service.
 import { existsSync, readFileSync } from "node:fs";
 import pino from "pino";
-import { makeAuthorize } from "./agent-auth.js";
+import { kernelJwks } from "./aidenhq-sdk/caller.js";
 import { createApp } from "./app.js";
 import { SourceStore } from "./source-store.js";
 import { startConfluenceSync } from "./confluence.js";
@@ -19,8 +19,7 @@ const http = createApp({
   stateDir: process.env.JIRA_STATE_DIR ?? "/state",
   inboundToken: readToken(process.env.MCP_TOKEN_FILE),
   authToken: readToken(process.env.JIRA_AUTH_TOKEN_FILE),
-  // Who is calling, and may it use this tool: the run key against the grants table.
-  authorize: makeAuthorize({ log }),
+  jwks: kernelJwks(),
   log,
 });
 

@@ -1,14 +1,14 @@
-// apps-mcp: deploys and runs sandboxed apps from the git registry; MCP over streamable HTTP, identified by Paperclip agent keys.
+// apps-mcp: deploys and runs sandboxed apps from the git registry; MCP over streamable HTTP behind the kernel (service key bearer, caller assertion).
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync, statfsSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
-import { makeAuthorize } from "./agent-auth.js";
+import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { startLoops } from "./loops.js";
 import { startPeople } from "./people.js";
 import { appTokens, readAgentsOrg, readOrgs } from "./github-app.js";
-import { buildServer, type Board } from "./mcp.js";
+import { buildServer, type Board, type Caller } from "./mcp.js";
 import { RUN_TIMEOUT_MS } from "./run.js";
 import { createPlatform } from "./platform.js";
 import { posix } from "node:path";
@@ -28,6 +28,8 @@ const instanceDir = need("INSTANCE_DIR");
 const appsData = need("APPS_DATA");
 const internalToken = file("APPS_INTERNAL_TOKEN");
 if (!internalToken) throw new Error("APPS_INTERNAL_TOKEN(_FILE) is required");
+const serviceKey = file("APPS_SERVICE_KEY");
+if (!serviceKey) throw new Error("APPS_SERVICE_KEY(_FILE) is required");
 const tokenFile = process.env.GITHUB_TOKEN_FILE;
 // The agents org is always allowed; its private repos are read with the instance's GitHub App when its key is mounted.
 const agentsOrg = readAgentsOrg(instanceDir);
@@ -54,8 +56,7 @@ const p = createPlatform(
   },
   log,
 );
-// Who is calling, and may it use this tool: the run key against the grants table.
-const authorize = makeAuthorize({ log });
+const jwks = kernelJwks();
 // With the GitHub App, the registry is pulled and pushed over https with repo-narrowed App tokens (git.ts registryCmd);
 // without it, the instance checkout's origin remote over SSH with the deploy key.
 const repo = { dir: instanceDir, pushUrl: process.env.REGISTRY_PUSH_URL || (appToken && agentsOrg ? `https://github.com/${agentsOrg}/aidenhq-instance.git` : "origin") };
@@ -101,11 +102,12 @@ const readBody = async (req: IncomingMessage): Promise<any> => {
   }
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
 };
-const internalAuthorized = (req: IncomingMessage): boolean => {
+const bearerIs = (req: IncomingMessage, token: string): boolean => {
   const presented = Buffer.from((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
-  const expected = Buffer.from(internalToken);
+  const expected = Buffer.from(token);
   return presented.length === expected.length && timingSafeEqual(presented, expected);
 };
+const internalAuthorized = (req: IncomingMessage): boolean => bearerIs(req, internalToken);
 
 // Nothing is published to the host: only containers on the compose network reach this port. /internal/* is the board's and
 // watcher's API; the one write (a stateful deploy, already approved in chat) needs the internal token, which agents don't have.
@@ -223,12 +225,23 @@ const http = createServer(async (req, res) => {
       return;
     }
     if (url.pathname !== "/mcp") return send(res, 404);
+    if (!bearerIs(req, serviceKey)) return send(res, 401, { error: "unauthorized" });
     if (req.method !== "POST") return send(res, 405);
     const body = await readBody(req);
-    // Only the handshake and tool listing run without identity; every tool call needs a known agent granted that tool.
-    const auth = await authorize(req, body);
-    if (!auth.ok) return send(res, auth.status, auth.body);
-    const caller = auth.caller ?? { id: "", key: "", name: "anonymous", roles: [], tools: {} };
+    // Only the handshake and tool listing run without identity; every tool call needs the kernel's assertion of its caller.
+    const msgs = (Array.isArray(body) ? body : [body]) as { id?: unknown; method?: unknown }[];
+    let caller: Caller = { id: "", key: "", name: "anonymous", roles: [] };
+    if (msgs.some((m) => m?.method === "tools/call")) {
+      try {
+        const c = await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "core");
+        caller = { id: c.agent, key: c.key, name: c.name, roles: c.roles };
+      } catch (err) {
+        const reason = (err as Error).message;
+        log.warn({ reason }, "tool call refused");
+        const refusal = (m: { id?: unknown }) => ({ jsonrpc: "2.0", id: m?.id ?? null, result: { isError: true, content: [{ type: "text", text: `Refused: ${reason}` }] } });
+        return send(res, 200, Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!));
+      }
+    }
     const server = buildServer(p, caller, repo, reconcile, board);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {

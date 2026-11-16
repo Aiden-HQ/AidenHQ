@@ -37,7 +37,7 @@ connections:
     setup: "Set VAULT_DIR (and KNOWLEDGE_BASES for reference docs) in the host's .env, then run `ops/apply-config.sh`. Check with `scripts/healthcheck.sh`."
     guide: "The owner's notes vault: meeting notes, voice notes and reference documents."
     url: http://ops-mcp:8080/mcp
-    bearer_token_env_var: AIDENHQ_OPS_MCP_TOKEN
+    auth: ops_service_key
     tools:
       read: [ source_read, sync_cursor_get, obsidian_search, obsidian_read, obsidian_read_document_map, voice_note_read, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
       write: [ transcripts_scan, source_register_drive_document, meeting_match, meeting_resolve, meeting_publish, meeting_note_correct, source_mark_failed, sync_cursor_set, voice_note_add ]
@@ -46,4 +46,5 @@ labels:
 compose: compose.yaml
 # src_meetings' warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.
 generated_secrets:
+  - ops_service_key
   - warehouse_src_meetings_password

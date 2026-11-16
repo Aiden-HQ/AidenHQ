@@ -25,14 +25,11 @@ services:
     entrypoint:
       - /bin/sh
       - -c
-      # Also exports every MCP bearer token mounted here: /run/secrets/<name>_mcp_token → AIDENHQ_<NAME>_MCP_TOKEN (the
-      # bearer_token_env_var in the shared Codex config). scripts/compile.mjs mounts one per enabled connection
-      # (compose.modules.yaml). $$ escapes compose interpolation.
+      # No connection token or internal token lives here: agents' tool calls go to the kernel's proxy with the run's own
+      # credential (scripts/paperclip-setup.mjs ensureCodexConfig). $$ escapes compose interpolation.
       - >-
         export BETTER_AUTH_SECRET="$$(cat /run/secrets/paperclip_auth_secret)"
-        PAPERCLIP_AGENT_JWT_SECRET="$$(cat /run/secrets/paperclip_agent_jwt_secret)"
-        AIDENHQ_BOARD_TOKEN="$$(cat /run/secrets/board_internal_token)";
-        for f in /run/secrets/*_mcp_token; do [ -e "$$f" ] || continue; n="$$(basename "$$f" | tr a-z A-Z)"; export "AIDENHQ_$$n=$$(cat "$$f")"; done;
+        PAPERCLIP_AGENT_JWT_SECRET="$$(cat /run/secrets/paperclip_agent_jwt_secret)";
         exec /usr/bin/tini -- docker-entrypoint.sh "$$@"
       - paperclip
     # The image CMD (overriding entrypoint drops it); 2026.1106 boots from the precompiled runtime bundle.
@@ -59,24 +56,20 @@ services:
       # Paperclip's secret-store key, from the secret vault (ops/vault) instead of its data dir.
       PAPERCLIP_SECRETS_MASTER_KEY_FILE: /run/secrets/paperclip_master_key
       # OpenRouter as an extra Codex provider (no model_provider here: agents opt in, so ChatGPT-login agents are unaffected),
-      # through the model gateway on the host (services/gateway): the key is the run's own Paperclip credential, never
+      # through the model gateway on the host (kernel/src/gateway): the key is the run's own Paperclip credential, never
       # OpenRouter's (only the gateway holds that).
       PAPERCLIP_CODEX_PROVIDERS: '{"providers":{"or":{"name":"OpenRouter","base_url":"http://10.231.0.1:8201/api/v1","env_key":"PAPERCLIP_API_KEY","wire_api":"responses"}}}'
     ports:
       - "127.0.0.1:3100:3100"
     volumes:
       - ${AIDENHQ_DATA_DIR:-./data}/paperclip:/paperclip
-      # Stdio MCP bridge for Paperclip task updates from sandboxed agents (read-only).
+      # The codex-model launcher (a routine's own model; read-only).
       - ./services/paperclip-tasks-mcp:/opt/aidenhq:ro
-      # The grants table (setup writes it): the tasks bridge checks the calling agent's tools and roles there.
-      - ${AIDENHQ_CONFIG_DIR:-./config}/grants:/aidenhq-grants:ro
       # The agent-computer provider plugin (services/computer): setup installs it from here when an agent has an image.
       - ./services/computer/plugin:/opt/aidenhq-computer:ro
     secrets:
       - paperclip_auth_secret
       - paperclip_agent_jwt_secret
-      # The board's internal API, for the Researcher's task_schedule / task_recurring.
-      - board_internal_token
       - paperclip_master_key
       - computer_launcher_token # the computer plugin's key to the launcher on the host
     pids_limit: 2048
@@ -125,11 +118,11 @@ services:
       GITHUB_TOKEN_FILE: /run/secrets/github_token
       APPS_INTERNAL_TOKEN_FILE: /run/secrets/apps_internal_token
       PAPERCLIP_URL: http://paperclip:3100
-      # Caller identity and grants (services/shared/agent-auth.ts), as compile wires every module connection.
-      AIDENHQ_CONNECTION: apps
-      AIDENHQ_GRANTS_FILE: /grants/grants.json
-      # Run tokens from agent computers are resolved by the computer launcher on the host (services/computer).
-      AIDENHQ_LAUNCHER_URL: "${AIDENHQ_LAUNCHER_URL:-http://10.231.0.1:8199}"
+      # Agents' calls arrive only through the kernel's proxy (its service key); the caller is the kernel's signed assertion
+      # for the core module, as compile wires every module connection.
+      APPS_SERVICE_KEY_FILE: /run/secrets/apps_service_key
+      AIDENHQ_MODULE: core
+      AIDENHQ_KERNEL_URL: "${AIDENHQ_KERNEL_URL:-http://10.231.0.1:3130}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # The apps node's serve config (apps-edge reads it); never the host's tailscaled.
@@ -150,10 +143,10 @@ services:
       # Its agent-signing key (compile creates it), never the gate's: agents' identity at apps (app_api, app_view).
       - ${AIDENHQ_SECRETS_DIR}/identity/apps.pem:/secrets/identity_key:ro
       - ${HOME}/.ssh/aidenhq_instance_deploy:/secrets/deploy_key:ro
-      - ${AIDENHQ_CONFIG_DIR:-./config}/grants:/grants:ro
     secrets:
       - github_token
       - apps_internal_token
+      - apps_service_key # the kernel proxy's key: agents' calls reach /mcp only through it
       - apps_incident_webhook_url
       - apps_incident_webhook_secret
     dns: [ 1.1.1.1, 8.8.8.8 ] # see paperclip
@@ -217,15 +210,16 @@ services:
       BOARD_GOOGLE_CONNECT: "${BOARD_GOOGLE_CONNECT:-}"
       # apps-mcp's internal API: the Apps tab, and stateful deploys approved in chat (needs the token).
       APPS_INTERNAL_TOKEN_FILE: /run/secrets/apps_internal_token
-      # Roles of the calling agent (fleet tools): the grants table setup writes.
+      # Roles of the calling agent (fleet tools): the grants table setup writes; the agent is the kernel's caller assertion.
       AIDENHQ_GRANTS_FILE: /grants/grants.json
+      AIDENHQ_KERNEL_URL: "${AIDENHQ_KERNEL_URL:-http://10.231.0.1:3130}"
       # Live view of what an agent is doing: Codex session logs under Paperclip's data (below), and for agents in their own
       # computers the launcher's /progress (the board is on the backplane, which the launcher's address belongs to).
       PAPERCLIP_COMPANIES_DIR: /paperclip-companies
       AIDENHQ_LAUNCHER_URL: "${AIDENHQ_LAUNCHER_URL:-http://10.231.0.1:8199}"
       # The Costs tab: OpenRouter's own spend for the key (GET /api/v1/key), next to the board's token estimate.
       OPENROUTER_KEY_FILE: /run/secrets/openrouter_key
-      # The model gateway (services/gateway, on the host's backplane address): the board pulls its billed ledger and it files
+      # The model gateway (kernel/src/gateway, on the host's backplane address): the board pulls its billed ledger and it files
       # raise_cap here, each with gateway_board_key.
       AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
       # The gate's sign-in listener answers only to these Host names (the
@@ -322,6 +316,8 @@ secrets:
     file: ${AIDENHQ_SECRETS_DIR}/paperclip_board_key
   board_internal_token:
     file: ${AIDENHQ_SECRETS_DIR}/board_internal_token
+  apps_service_key:
+    file: ${AIDENHQ_SECRETS_DIR}/apps_service_key
   openrouter_key:
     file: ${AIDENHQ_SECRETS_DIR}/openrouter_key
   gateway_board_key:

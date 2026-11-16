@@ -1,0 +1,22 @@
+name: tasks
+description: "Task tools for every agent: read, create, delegate, comment on and close Paperclip tasks, as the calling agent."
+connections:
+  paperclip_tasks:
+    setup: "Built in (tasks-mcp). If it is down, run `docker compose up -d tasks-mcp` on the host, then read `docker compose logs tasks-mcp`."
+    url: http://tasks-mcp:8080/mcp
+    auth: tasks_service_key
+    returns: untrusted
+    # advisor_ask and fanout_map bill the caller's run through the gateway.
+    model_as_caller: true
+    tools:
+      # advisor_ask, fanout_map (models.mjs): model calls billed to the caller's run through the gateway; they change nothing.
+      # memory_note: a comment on the caller's own memory inbox task (a note for the Librarian), so trial agents have it too.
+      # coach_due, coach_evidence, coach_record: the Agent Coach's (fleet-audit role; services/board/src/coach.ts).
+      read: [ task_current, task_get, task_search, task_list, task_team, task_comments, task_files, task_file_read, task_approvals, fleet_status, fleet_costs, fleet_catalog, handbook_list, handbook_read, advisor_ask, fanout_map, memory_note, coach_due, coach_evidence ]
+      write: [ coach_record, task_create, task_create_engineer_task, task_delegate, task_propose_rule, task_join, task_schedule, task_recurring, task_merge, task_update, task_pass_on, task_handoff, task_comment, task_finish, task_set_status, task_relay_owner_words, app_request_from_owner, fleet_control ]
+compose: compose.yaml
+generated_secrets:
+  - tasks_service_key
+# setup writes the capabilities catalog here (fleet_catalog); compile creates it before compose binds it.
+data_dirs:
+  - tasks

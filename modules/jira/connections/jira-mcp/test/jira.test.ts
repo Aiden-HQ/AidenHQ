@@ -1,3 +1,4 @@
+import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -8,7 +9,6 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeAuthorize } from "../src/agent-auth.js";
 import { createApp, NOT_CONNECTED } from "../src/app.js";
 import { EXPOSED, READ_TOOLS, SCOPES, WRITE_TOOLS } from "../src/policy.js";
 import { SignIn } from "../src/signin.js";
@@ -48,12 +48,14 @@ const upstream = createServer(async (req, res) => {
   await transport.handleRequest(req, res);
 });
 
-// Paperclip's /api/agents/me: the run key names the agent; the grants table gives the Researcher Jira reads only.
-const paperclip = createServer((req, res) => {
-  const id = { "Bearer assistant-key": "a1", "Bearer writer-key": "w1" }[String(req.headers.authorization)];
-  if (!id) return void res.writeHead(401).end();
-  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id, name: id }));
-});
+// The kernel's caller assertions: signed with a throwaway key whose public half is the JWKS the app trusts.
+const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+const jwks = { keys: [publicKey.export({ format: "jwk" })] };
+const b64 = (v: unknown) => Buffer.from(typeof v === "string" ? v : JSON.stringify(v)).toString("base64url");
+function assertion(key: string, aud = "jira") {
+  const head = `${b64({ alg: "EdDSA" })}.${b64({ agent: `id-${key}`, key, name: key, roles: [], tool: "t", jti: "c1", aud, exp: Math.floor(Date.now() / 1000) + 60 })}`;
+  return `${head}.${sign(null, Buffer.from(head), privateKey).toString("base64url")}`;
+}
 
 let base = "";
 let state = "";
@@ -62,23 +64,20 @@ let app: HttpServer;
 
 beforeAll(async () => {
   up = await listen(upstream);
-  const pc = await listen(paperclip);
   state = tmp();
-  const grantsFile = join(tmp(), "grants.json");
-  writeFileSync(grantsFile, JSON.stringify({ agents: { a1: { key: "assistant", tools: { jira: READ_TOOLS } }, w1: { key: "writer", tools: { jira: EXPOSED } } } }));
   app = createApp({
     upstreamUrl: `${up}/v2/mcp?tools=all`, siteUrl: "https://acme.atlassian.net", stateDir: state, inboundToken: "pc", authToken: "board", log,
-    authorize: makeAuthorize({ connection: "jira", paperclipUrl: pc, grantsFile }),
+    jwks, module: "jira",
   });
   base = await listen(app);
 });
-afterAll(() => { app.close(); upstream.close(); paperclip.close(); });
+afterAll(() => { app.close(); upstream.close(); });
 
 let id = 0;
-async function rpc(method: string, params: unknown, agentKey = "assistant-key") {
+async function rpc(method: string, params: unknown, caller = assertion("assistant")) {
   const res = await fetch(`${base}/mcp`, {
     method: "POST",
-    headers: { authorization: "Bearer pc", "x-agent-key": agentKey, "content-type": "application/json", accept: "application/json, text/event-stream" },
+    headers: { authorization: "Bearer pc", ...(caller ? { "x-aidenhq-caller": caller } : {}), "content-type": "application/json", accept: "application/json, text/event-stream" },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
   });
   return (await res.json()) as { result: { tools?: { name: string; inputSchema: { properties?: object; required?: string[] }; annotations?: object }[]; isError?: boolean; content?: { text: string }[] } };
@@ -122,20 +121,18 @@ describe("jira-mcp", () => {
 
   it("refuses hidden upstream tools (gateway, delete) even for an agent granted them by name", async () => {
     for (const name of ["discover", "executeWrite", "deleteJiraIssue", "getAccessibleAtlassianResources"]) {
-      const r = await rpc("tools/call", { name, arguments: {} }, "writer-key");
+      const r = await rpc("tools/call", { name, arguments: {} }, assertion("writer"));
       expect(r.result.isError).toBe(true);
     }
   });
 
-  it("refuses a write tool to an agent granted only reads (agent-auth), and allows it with a grant", async () => {
+  it("refuses a tool call without a valid caller assertion, and lists tools without one", async () => {
     const before = calls.length;
-    const r = await rpc("tools/call", { name: "addOrEditJiraIssueComment", arguments: { issueIdOrKey: "POS-1", body: "hi" } });
-    expect(text(r)).toMatch(/assistant isn't granted addOrEditJiraIssueComment on jira/);
+    const args = { name: "getJiraIssue", arguments: {} };
+    expect(text(await rpc("tools/call", args, ""))).toMatch(/^Refused: no caller assertion/);
+    expect(text(await rpc("tools/call", args, assertion("assistant", "github")))).toMatch(/^Refused: the caller assertion is for github, not jira/);
     expect(calls.length).toBe(before);
-    const ok = await rpc("tools/call", { name: "addOrEditJiraIssueComment", arguments: { issueIdOrKey: "POS-1", body: "hi" } }, "writer-key");
-    expect(JSON.parse(text(ok))).toMatchObject({ tool: "addOrEditJiraIssueComment", cloudId: "acme-id" });
-    // No key at all: refused.
-    expect(text(await rpc("tools/call", { name: "getJiraIssue", arguments: {} }, ""))).toMatch(/^Refused/);
+    expect((await rpc("tools/list", {}, "")).result.tools!.length).toBe(EXPOSED.length);
   });
 });
 

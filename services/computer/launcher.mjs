@@ -11,17 +11,17 @@
 //   POST /progress {agentId}  the tail of that agent's Codex session log from its live box → {lines} (the board's live view)
 //   GET /health (no auth)     GET /whoami (Bearer <run token>) → {agentId, runId, issueId}: connections and the model gateway
 //                             resolve run tokens here (runId, issueId: the Paperclip run and task the token's first exec named)
-//   POST /reply {issueId, body} (Bearer <run token>): a comment on the run's own task, posted inside the box through Paperclip's
-//                             bridge with the run's own credential (notify_owner from a computer; slack-live calls it)
+//   POST /cp {method, path, body?} (Bearer <run token>): one control-plane call as the run itself, made inside its box through
+//                             Paperclip's bridge with the run's own credential (the kernel's /v1/cp/agent/*, which checks
+//                             the path, calls it for a computer's run) → {status, type, body} (bodies base64)
 // Gateway, on the computers network gateway (only boxes reach it; ops/vm/computer-net.sh):
 //   POST /api/v1/responses    model calls: the "API key" must be a live run token; passed on to the model gateway
-//                             (services/gateway, which counts and caps them like every agent's) with that token
-//   /c/<connection>/mcp       tool calls to a connection: X-Agent-Key must be a live run token; the service's bearer is added here
+//                             (the kernel's model gateway, which counts and caps them like every agent's) with that token
+//   /c/<connection>/mcp       tool calls to a connection: X-Agent-Key must be a live run token; passed on to the kernel's proxy
+//                             (aidenhq-kernel) with that token as the bearer: the kernel checks the grants and holds the keys
 //   POST /repo {repo, sha}    the box's `repo-checkout`: a snapshot (no .git, no credentials) of an agents-org repo at a commit,
 //                             from the runner's cache clone, into /workspace/repos/<name>; agents with the repo-checkout role
 //   POST /helper/<command>  a runner job box's `aidenhq` command (bearer = its run token), to the runner's helper bound to that job
-//   POST /board/internal/grades/<task>/gate   the tasks bridge's completion gate (graded done), passed to the board with
-//                             the run token as the caller and the internal token added here; no other board route
 //
 // Runner jobs (the runner calls these; bearer = secret computers_runner_key, which opens nothing else and which the plugin's
 // key can't open). A job's process runs in the box through the runner's own `docker exec`; the runner keeps workspace and git.
@@ -33,11 +33,11 @@
 //
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, REPLY_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, replyRefusal, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -63,7 +63,6 @@ const CFG = {
   idleMs: Number(env("AIDENHQ_COMPUTERS_IDLE_MIN", 10)) * 60_000,
   limits: { memory: env("AIDENHQ_COMPUTERS_MEMORY", "6g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "1g", pids: 1024 },
   grantsFile: path.join(configDir, "grants", "grants.json"),
-  catalogFile: path.join(path.resolve(repo, env("AIDENHQ_DATA_DIR", "data")), "paperclip", "catalog.static.json"),
   computersFile: env("AIDENHQ_COMPUTERS_FILE", path.join(configDir, "computers.json")),
   composeProject: env("COMPOSE_PROJECT_NAME", "aidenhq"),
   // The runner's work and state dirs (services/runner/src/config.mjs: work_dir and state_dir in config/runner.yaml): its cache
@@ -80,8 +79,10 @@ function runnerDir(key, fallback) {
   return dir.startsWith("~/") ? path.join(os.homedir(), dir.slice(2)) : dir;
 }
 const GATEWAY_URL = `http://${CFG.gateway.host}:${CFG.gateway.port}`;
-// The model gateway on host loopback (services/gateway): every box's model call goes on to it.
+// The model gateway on host loopback (kernel/src/gateway): every box's model call goes on to it.
 const MODEL_GATEWAY_URL = env("AIDENHQ_MODEL_GATEWAY_URL", "http://127.0.0.1:8201");
+// The kernel's backplane listener: every box's tool call goes on to its proxy, and it asks /v1/whoami what a run is granted.
+const KERNEL_URL = env("AIDENHQ_KERNEL_URL", "http://10.231.0.1:3130");
 const TOKEN = secret("computer_launcher_token");
 const PROGRESS_TOKEN = secret("computer_progress_token");
 // The runner's key: the job routes only. Unset, runner jobs are off (every /job call is refused).
@@ -95,12 +96,9 @@ const resolvConf = path.join(stateDir, "resolv.conf");
 writeFileSync(resolvConf, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n");
 const MOUNTS = [
   `${resolvConf}:/etc/resolv.conf:ro`,
-  // The tasks bridge (stdio MCP, through Paperclip's own bridge) and the grants table it checks; no secrets. File by file:
-  // a mount of the whole folder at /opt/aidenhq would hide the image's own /opt/aidenhq (app-starter, design-system).
-  ...readdirSync(path.join(repo, "services/paperclip-tasks-mcp")).map((f) => `${path.join(repo, "services/paperclip-tasks-mcp", f)}:/opt/aidenhq/${f}:ro`),
-  `${path.dirname(CFG.grantsFile)}:/aidenhq-grants:ro`,
-  // fleet_catalog's static half (agents, tools, modules; no secrets): the one file, never the data dir around it.
-  ...(existsSync(CFG.catalogFile) ? [`${CFG.catalogFile}:/paperclip/catalog.static.json:ro`] : []),
+  // The codex-model launcher (a routine's own model). One file: a mount of the folder at /opt/aidenhq would hide the image's
+  // own /opt/aidenhq (app-starter, design-system).
+  `${path.join(repo, "services/paperclip-tasks-mcp/codex-model")}:/opt/aidenhq/codex-model:ro`,
 ];
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -112,7 +110,7 @@ const tokensFile = path.join(stateDir, "run-tokens.json");
 try { tokens.load(readJson(tokensFile)); } catch {}
 // Written whole then renamed, so a crash never leaves a half file.
 const saveTokens = () => { try { writeFileSync(`${tokensFile}.tmp`, JSON.stringify(tokens.dump()), { mode: 0o600 }); renameSync(`${tokensFile}.tmp`, tokensFile); } catch (e) { log("couldn't save run tokens:", e.message); } };
-const boxes = new Map(); // container → { agentId, lastUsed, busy, cred? } (cred: the current run's Paperclip credential, for /reply)
+const boxes = new Map(); // container → { agentId, lastUsed, busy, cred? } (cred: the current run's Paperclip credential, for /cp)
 // Runner jobs' records (lease, task, helper binding), saved the same way: a restart reloads them before it admits or reaps.
 const jobs = new Jobs();
 const jobsFile = path.join(stateDir, "jobs.json");
@@ -179,7 +177,12 @@ async function imageFor(agentId) {
   if (!tag) throw fail(500, `image ${g.image} has no tag in computers.json (run scripts/compile.mjs and ops/computer-images.sh)`);
   return builtImage(tag, docker, log);
 }
-const mcpFor = (agentId) => mcpBlock(readJson(CFG.grantsFile).agents?.[agentId]?.tools, readJson(CFG.computersFile).connections ?? {}, GATEWAY_URL);
+/** The box's Codex config: the tools the kernel says this run token's agent is granted (GET /v1/whoami), never the caller's word. */
+async function mcpFor(token) {
+  const res = await fetch(new URL("/v1/whoami", KERNEL_URL), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw fail(502, `the kernel didn't name this computer's agent (${res.status})`);
+  return mcpBlock((await res.json()).tools, readJson(CFG.computersFile).connections ?? {}, GATEWAY_URL);
+}
 
 /** A free slot for a new box: the least recently used idle box goes (never a leased job's); all busy → wait up to 45 s. */
 async function makeRoom() {
@@ -249,7 +252,7 @@ const control = {
     if (cred) b.cred = cred;
     // The run's token names its Paperclip run and task from here on: the model gateway attributes and caps by them.
     if (cred && tokens.bind(container, { runId: e.PAPERCLIP_RUN_ID, issueId: cred.taskId })) saveTokens();
-    const xenv = execEnv(e, { token, mcp: e.CODEX_HOME && token ? mcpFor(b.agentId) : undefined });
+    const xenv = execEnv(e, { token, mcp: e.CODEX_HOME && token ? await mcpFor(token) : undefined });
     const [cmd, cargs] = wrapExec(command, routineArgs(command, args, e), xenv);
     if (DEBUG) log("exec env keys", container, Object.keys(xenv).sort().join(","));
     // Env through a 0600 file so values never show in the host's process list; multi-line values can't go that way.
@@ -351,7 +354,7 @@ const runnerControl = {
       // aidenhq-browse uses the image's own agent-browser and Chrome (the browser image every computer builds on).
       const r = await docker(dockerRunArgs({ name, image, agentId, network: CFG.network, limits: { ...CFG.limits, memory: CFG.jobMemory }, mounts, user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME }));
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
-      writeFileSync(envFile, jobEnvFile({ token, mcp: mcpFor(agentId), gatewayUrl: GATEWAY_URL, identity }), { mode: 0o600 });
+      writeFileSync(envFile, jobEnvFile({ token, mcp: await mcpFor(token), gatewayUrl: GATEWAY_URL, identity }), { mode: 0o600 });
     } catch (e) {
       await destroy(name, "job box failed to start");
       throw e;
@@ -380,22 +383,19 @@ const runnerControl = {
 };
 
 /**
- * notify_owner(task) from a computer: the agent's key is a run token, which Paperclip doesn't know. The reply is posted inside the
- * run's box through Paperclip's own bridge with the run's credential (the author is the agent and its run), on its own task only.
+ * POST /cp from the kernel: one control-plane call as a computer's run, whose credential works only inside its box (Paperclip's
+ * bridge). The kernel has already checked the path against its agent routes; the run token names the box.
  */
-async function reply(req, raw) {
+async function cp(req, raw) {
   const who = tokens.whoami(bearer(req));
   if (!who) return { status: 401, body: { error: "unknown run token" } };
   let p;
   try { p = JSON.parse(raw || "{}"); } catch { return { status: 400, body: { error: "bad json" } }; }
   const b = boxes.get(who.container);
-  const why = replyRefusal(b?.cred, p.issueId, p.body);
-  if (why) { log("/reply", who.container, "refused:", why); return { status: 403, body: { error: why } }; }
-  const t0 = Date.now();
-  const r = await docker(["exec", "-i", who.container, "node", "-e", REPLY_SCRIPT], { stdin: JSON.stringify({ url: b.cred.apiUrl, key: b.cred.apiKey, issueId: p.issueId, body: p.body }), timeoutMs: 30_000 });
-  const out = r.stdout.trim() || r.stderr.trim().slice(0, 200) || "nothing";
-  log("/reply", who.container, p.issueId, `${Date.now() - t0}ms`, out);
-  return r.exitCode === 0 ? { status: 200, body: { ok: true } } : { status: 502, body: { error: `the bridge answered ${out}` } };
+  if (!b?.cred) return { status: 409, body: { error: "this run has no control-plane credential yet (no exec from Paperclip)" } };
+  if (!/^[A-Z]{3,6}$/.test(String(p.method)) || typeof p.path !== "string" || !p.path.startsWith("/api/")) return { status: 400, body: { error: "send {method, path: /api/..., body?}" } };
+  const r = await docker(["exec", "-i", who.container, "node", "-e", CP_SCRIPT], { stdin: JSON.stringify({ url: b.cred.apiUrl, key: b.cred.apiKey, method: p.method, path: p.path, body: p.body }), timeoutMs: 60_000 });
+  try { return { status: 200, body: JSON.parse(r.stdout.trim().split("\n").pop()) }; } catch { return { status: 502, body: { error: `the box answered ${(r.stderr || r.stdout).trim().slice(0, 200)}` } }; }
 }
 
 /**
@@ -437,20 +437,6 @@ async function checkout(who, raw) {
   return { path: dest, repo: p.repo, sha, note: "a snapshot of that commit: no .git, no credentials; nothing here can be pushed" };
 }
 
-/**
- * POST /board/internal/grades/<task>/gate from a box: graded done's completion gate, the only board route a box reaches. The
- * run token (X-Agent-Key) must be live; it goes on as the caller's identity (the board asks /whoami), with the board's internal
- * token added here. Nothing else from the request is forwarded.
- */
-const BOARD_INTERNAL_URL = env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122");
-async function boardGate(req, res, route, deny) {
-  const token = String(req.headers["x-agent-key"] ?? "");
-  if (!tokens.whoami(token)) return deny(401, "not a live computer");
-  const chunks = [];
-  for await (const c of req) chunks.push(c);
-  const up = await fetch(`${BOARD_INTERNAL_URL}${route}`, { method: "POST", headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-agent-key": token, "content-type": "application/json" }, body: Buffer.concat(chunks).toString("utf8").slice(0, 4096), signal: AbortSignal.timeout(30_000) });
-  res.writeHead(up.status, { "content-type": "application/json" }).end(await up.text());
-}
 
 const bearer = (req) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
 const send = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
@@ -464,7 +450,7 @@ const controlServer = http.createServer((req, res) => {
   let body = "";
   req.on("data", (d) => (body += d));
   req.on("end", async () => {
-    if (req.method === "POST" && req.url === "/reply") return reply(req, body).then((r) => send(res, r.status, r.body));
+    if (req.method === "POST" && req.url === "/cp") return cp(req, body).then((r) => send(res, r.status, r.body));
     // The board's progress key opens /progress only, the runner's key the job routes only; the rest needs the plugin's key.
     if (!controlAllowed(bearer(req), req.method, req.url, { plugin: TOKEN, runner: RUNNER_KEY, progress: PROGRESS_TOKEN })) return send(res, 401, { error: "unauthorized" });
     const fn = JOB_ROUTES.includes(req.url) ? runnerControl[req.url] : req.method === "POST" && Object.hasOwn(control, req.url.slice(1)) ? control[req.url.slice(1)] : null;
@@ -493,19 +479,6 @@ const controlServer = http.createServer((req, res) => {
 
 // ------------------------------------------------------------------ gateway (boxes only)
 
-const upstreamIps = new Map(); // service host → { ip, at }
-async function upstream(urlStr) {
-  const u = new URL(urlStr);
-  const hit = upstreamIps.get(u.hostname);
-  if (!hit || Date.now() - hit.at > 60_000) {
-    const r = await docker(["inspect", "-f", `{{(index .NetworkSettings.Networks "${CFG.composeProject}_backplane").IPAddress}}`, `${CFG.composeProject}-${u.hostname}-1`]);
-    const ip = r.stdout.trim();
-    if (r.exitCode !== 0 || !/^[0-9.]+$/.test(ip)) throw new Error(`connection service ${u.hostname} isn't running`);
-    upstreamIps.set(u.hostname, { ip, at: Date.now() });
-  }
-  return { ip: upstreamIps.get(u.hostname).ip, port: Number(u.port || 80), path: u.pathname };
-}
-
 const gatewayServer = http.createServer(async (req, res) => {
   const deny = (status, msg) => { log("gateway", req.method, req.url, status, msg); res.writeHead(status, { "content-type": "text/plain" }).end(`gateway: ${msg}`); };
   try {
@@ -529,20 +502,17 @@ const gatewayServer = http.createServer(async (req, res) => {
         (e) => deny(e.status ?? 500, e.message),
       );
     }
-    const g = req.method === "POST" ? /^\/board(\/internal\/grades\/[A-Za-z0-9-]{1,64}\/gate)$/.exec(req.url) : null;
-    if (g) return await boardGate(req, res, g[1], deny);
     const m = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(req.url.split("?")[0]);
     if (!m) return deny(403, "refused");
-    const conn = readJson(CFG.computersFile).connections?.[m[1]];
-    if (!conn?.url) return deny(404, `no connection ${m[1]}`);
-    const who = tokens.whoami(String(req.headers["x-agent-key"] ?? ""));
-    if (!who) return deny(401, "not a live computer");
-    const to = await upstream(conn.url);
-    const headers = { ...req.headers, host: `${new URL(conn.url).host}` };
-    delete headers.authorization;
-    if (conn.bearer_secret) headers.authorization = `Bearer ${secret(conn.bearer_secret)}`;
-    const up = http.request({ host: to.ip, port: to.port, path: to.path, method: req.method, headers }, (ur) => { res.writeHead(ur.statusCode ?? 502, ur.headers); ur.pipe(res); });
-    up.on("error", (e) => { upstreamIps.delete(new URL(conn.url).hostname); if (!res.headersSent) deny(502, e.message); else res.destroy(); });
+    if (!readJson(CFG.computersFile).connections?.[m[1]]) return deny(404, `no connection ${m[1]}`);
+    const token = String(req.headers["x-agent-key"] ?? "");
+    if (!tokens.whoami(token)) return deny(401, "not a live computer");
+    // The kernel's proxy decides: the run token is the caller (it asks /whoami here); only MCP transport headers go on.
+    const k = new URL(`/c/${m[1]}/mcp`, KERNEL_URL);
+    const headers = { authorization: `Bearer ${token}` };
+    for (const h of ["accept", "content-type", "content-length", "mcp-session-id", "mcp-protocol-version"]) if (req.headers[h]) headers[h] = req.headers[h];
+    const up = http.request({ host: k.hostname, port: Number(k.port || 80), path: k.pathname, method: req.method, headers }, (ur) => { res.writeHead(ur.statusCode ?? 502, ur.headers); ur.pipe(res); });
+    up.on("error", (e) => { if (!res.headersSent) deny(502, e.message); else res.destroy(); });
     req.pipe(up);
   } catch (e) {
     if (!res.headersSent) deny(502, e.message); else res.destroy();

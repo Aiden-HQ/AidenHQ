@@ -12,8 +12,8 @@ import { promisify } from "node:util";
 import { startRepoHelper } from "../src/repohelper.ts";
 import { jobAdvise } from "../src/advise.ts";
 import { jobToken } from "../src/engines.mjs";
-import { verifyToken } from "../../gateway/token.ts";
-import { ADVISOR_MODEL } from "../../paperclip-tasks-mcp/models.mjs";
+import { verifyToken } from "../../../kernel/src/gateway/token.ts";
+import { ADVISOR_MODEL } from "../../../modules/tasks/connections/tasks-mcp/src/models.mjs";
 
 const CLI = join(import.meta.dirname, "..", "bin", "aidenhq");
 

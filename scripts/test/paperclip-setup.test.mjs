@@ -10,6 +10,14 @@ import { fileURLToPath } from "node:url";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "../paperclip-setup.mjs");
 
+test("every MCP server points at the kernel proxy and none is stdio", async () => {
+  const { codexMcpBlock } = await import("../modules.mjs");
+  const block = codexMcpBlock({ glean: { url: "http://glean-mcp:8085/mcp", auth: "glean_service_key" }, paperclip_tasks: { url: "http://tasks-mcp:8080/mcp", tool_timeout_sec: 600 } });
+  assert.match(block, /\[mcp_servers\.glean\]\nurl = "http:\/\/10\.231\.0\.1:3130\/c\/glean\/mcp"\nbearer_token_env_var = "PAPERCLIP_API_KEY"/);
+  assert.match(block, /\[mcp_servers\.paperclip_tasks\]\nurl = "http:\/\/10\.231\.0\.1:3130\/c\/paperclip_tasks\/mcp"/);
+  assert.doesNotMatch(block, /command|glean-mcp|service_key|X-Agent-Key/);
+});
+
 test("paperclip-setup.mjs passes a syntax check", () => {
   execFileSync(process.execPath, ["--check", script], { encoding: "utf8" });
 });

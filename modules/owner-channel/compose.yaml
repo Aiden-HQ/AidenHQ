@@ -23,7 +23,7 @@ services:
       # notify_owner kind fyi on Telegram: send, or mute (they still land on the chat).
       TELEGRAM_FYI: "${settings.telegram_fyi}"
       URGENT_COOLDOWN_MIN: "60"
-      MCP_BEARER_TOKEN_FILE: /run/secrets/slack_live_mcp_token
+      MCP_BEARER_TOKEN_FILE: /run/secrets/slack_live_service_key
       SLACK_APP_TOKEN_FILE: /run/secrets/slack_live_app_token
       SLACK_BOT_TOKEN_FILE: /run/secrets/slack_live_bot_token
       TRIAGE_WEBHOOK_URL_FILE: /run/secrets/slack_live_triage_webhook_url
@@ -53,7 +53,7 @@ services:
     volumes:
       - ${AIDENHQ_DATA_DIR:-./data}/slack-live:/data
     secrets:
-      - slack_live_mcp_token
+      - slack_live_service_key
       - slack_live_app_token
       - slack_live_bot_token
       - slack_live_triage_webhook_url
@@ -90,8 +90,8 @@ services:
       - backplane
       - egress
 secrets:
-  slack_live_mcp_token:
-    file: ${AIDENHQ_SECRETS_DIR}/slack_live_mcp_token
+  slack_live_service_key:
+    file: ${AIDENHQ_SECRETS_DIR}/slack_live_service_key
   slack_live_app_token:
     file: ${AIDENHQ_SECRETS_DIR}/slack_live_app_token
   slack_live_bot_token:

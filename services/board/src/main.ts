@@ -64,7 +64,7 @@ startDetector(paperclip, store, log);
 startWake(paperclip, store, log);
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
 startRollover(paperclip, store, log);
-// The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (services/gateway), agent
+// The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent
 // computers' included (the launcher forwards their calls there).
 pullUsage(cfg.gateway, store, log, 60_000, "gateway_usage_pulled_at");
 

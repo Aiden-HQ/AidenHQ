@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
-import { Tokens, admit, builtImage, dockerRunArgs, oomMessage, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, replyRefusal, REPLY_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
+import { Tokens, admit, builtImage, dockerRunArgs, oomMessage, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, CP_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
 
 test("only execs carrying a CODEX_HOME are wrapped", () => {
   assert.deepEqual(wrapExec("ls", ["-l"], {}), ["ls", ["-l"]]);
@@ -58,11 +58,12 @@ test("an exec gets no real key, no AIDENHQ_* token, and this run's token", () =>
 });
 
 test("the box's Codex config lists only granted connections, through the gateway, keyed by the run token", () => {
-  const conns = { apps: { url: "http://apps-mcp:8090/mcp", tool_timeout_sec: 600 }, slack: { url: "http://slack-mcp:8082/mcp", bearer_secret: "slack_mcp_token" }, paperclip_tasks: { command: "node", args: ["/opt/aidenhq/paperclip-tasks-mcp.mjs"], env_vars: ["PAPERCLIP_API_KEY"] } };
+  const conns = { apps: { tool_timeout_sec: 600 }, slack: { tool_timeout_sec: 300 }, paperclip_tasks: { tool_timeout_sec: 300 } };
   const b = mcpBlock({ apps: ["app_list"], paperclip_tasks: ["task_finish"] }, conns, "http://10.231.2.1:8200");
   assert.match(b, /\[mcp_servers\.apps\]\nurl = "http:\/\/10\.231\.2\.1:8200\/c\/apps\/mcp"\nenv_http_headers = \{ "X-Agent-Key" = "AIDENHQ_RUN_TOKEN" \}\nenabled_tools = \["app_list"\]/);
-  assert.match(b, /\[mcp_servers\.paperclip_tasks\]\ncommand = "node"/);
-  assert.doesNotMatch(b, /slack|slack_mcp_token/);
+  // The tasks tools too: no stdio bridge in the box any more.
+  assert.match(b, /\[mcp_servers\.paperclip_tasks\]\nurl = "http:\/\/10\.231\.2\.1:8200\/c\/paperclip_tasks\/mcp"/);
+  assert.doesNotMatch(b, /slack|command/);
 });
 
 test("the scrub drops Paperclip's JWT block and the shared block, adds ours once, and refuses a leftover token", () => {
@@ -103,35 +104,26 @@ test("admission: room → go; full → evict the least recently used idle box; a
   assert.deepEqual(stale(boxes, 10, 100), ["c"]);
 });
 
-test("a run's Paperclip credential comes from the exec env (bridge URL + key + task); posting is limited to that task", () => {
+test("a run's Paperclip credential comes from the exec env (bridge URL + key + task)", () => {
   assert.equal(runCredential({ PATH: "/bin" }), undefined);
-  const c = runCredential({ PAPERCLIP_API_URL: "http://127.0.0.1:4567", PAPERCLIP_API_KEY: "bridge", PAPERCLIP_TASK_ID: "issue-1" });
-  assert.deepEqual(c, { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
-  assert.equal(replyRefusal(c, "issue-1", "hi"), null);
-  assert.match(replyRefusal(c, "issue-2", "hi"), /only on its own task/);
-  assert.match(replyRefusal(undefined, "issue-1", "hi"), /no Paperclip credential/);
-  assert.match(replyRefusal({ ...c, taskId: undefined }, "issue-1", "hi"), /only on its own task/);
-  assert.match(replyRefusal(c, "issue-1", ""), /body/);
+  assert.deepEqual(runCredential({ PAPERCLIP_API_URL: "http://127.0.0.1:4567", PAPERCLIP_API_KEY: "bridge", PAPERCLIP_TASK_ID: "issue-1" }), { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
 });
 
-test("the reply script posts the comment through the box's bridge with the key from stdin, never argv", async () => {
+test("the cp script makes one control-plane call through the box's bridge with the key from stdin, never argv", async () => {
   const got = [];
-  const srv = createServer((req, res) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { got.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(b) }); res.writeHead(201).end("{}"); }); });
+  const srv = createServer((req, res) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { got.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: JSON.parse(b) }); res.writeHead(201, { "content-type": "application/json" }).end('{"id":"c1"}'); }); });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${srv.address().port}`;
-  const run = (input) => new Promise((resolve) => {
-    const ch = spawn(process.execPath, ["-e", REPLY_SCRIPT]);
-    let out = "";
-    ch.stdout.on("data", (d) => (out += d));
-    ch.on("close", (code) => resolve({ code, out }));
-    ch.stdin.end(JSON.stringify(input));
-  });
-  const r = await run({ url, key: "bridge", issueId: "issue-1", body: "line 1\n<!-- aidenhq-reply -->" });
+  const ch = spawn(process.execPath, ["-e", CP_SCRIPT]);
+  let out = "";
+  ch.stdout.on("data", (d) => (out += d));
+  const code = await new Promise((resolve) => { ch.on("close", resolve); ch.stdin.end(JSON.stringify({ url, key: "bridge", method: "POST", path: "/api/issues/issue-1/comments", body: Buffer.from('{"body":"hi"}').toString("base64") })); });
   srv.close();
-  assert.equal(r.code, 0);
-  assert.equal(r.out.trim(), "201");
-  assert.deepEqual(got, [{ url: "/api/issues/issue-1/comments", auth: "Bearer bridge", body: { body: "line 1\n<!-- aidenhq-reply -->" } }]);
-  assert.ok(!REPLY_SCRIPT.includes("bridge"));
+  assert.equal(code, 0);
+  const r = JSON.parse(out.trim());
+  assert.deepEqual([r.status, Buffer.from(r.body, "base64").toString()], [201, '{"id":"c1"}']);
+  assert.deepEqual(got, [{ method: "POST", url: "/api/issues/issue-1/comments", auth: "Bearer bridge", body: { body: "hi" } }]);
+  assert.ok(!CP_SCRIPT.includes("bridge\""));
 });
 
 test("repo-checkout: only the agents org, only a full SHA; the launcher picks the folder", () => {

@@ -84,7 +84,7 @@ export function loadConfig() {
     repoAccessScript: join(REPO_ROOT, "ops/vm/add-deploy-key.sh"),
     boardInternalUrl: env.BOARD_INTERNAL_URL ?? cfg.recurring?.board_url ?? "http://127.0.0.1:3122",
     openrouterKeyFile: expand(cfg.engines?.openrouter?.key_file ?? join(secrets, "openrouter_key")),
-    // The model gateway (services/gateway) on host loopback: opencode jobs, the AI reviewer and the intake call it with
+    // The model gateway (kernel/src/gateway) on host loopback: opencode jobs, the AI reviewer and the intake call it with
     // tokens the runner signs with gateway_job_secret; only the gateway holds the OpenRouter key.
     gatewayUrl: cfg.gateway?.url ?? "http://127.0.0.1:8201",
     gatewayJobSecretFile: join(secrets, "gateway_job_secret"),

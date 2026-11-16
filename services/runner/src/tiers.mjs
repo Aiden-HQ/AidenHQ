@@ -11,8 +11,8 @@ import YAML from "yaml";
  * and a second, independent reviewer on another model family must both approve (`panel`); a split goes to the owner. The
  * approval path (tiers, the reviewer, its policy and its eval cases, the owner's-words check, the merge queue's writes,
  * apply), the state classify() trusts and the runner's GitHub writes (main, state, config, github-app, host git on agent
- * clones), the job jail, who an agent is and what it may call (agent-auth, the compiler's grants, setup), the board's
- * approval records, decision routes, tier rules and sign-in, the sandboxes, the model gateway (key and spend caps), host
+ * clones), the job jail, who an agent is and what it may call (the kernel's identity and tool proxy, the modules' caller check, the compiler's grants, setup), the board's
+ * approval records, decision routes, tier rules and sign-in, the sandboxes, the kernel (its model gateway: key and spend caps), host
  * privileges, the security checks, and the product's CI (the checks a merge waits on). A file stays here when it moves from
  * `.mjs` to `.ts` (the TypeScript conversion), so each name matches either extension.
  */
@@ -28,7 +28,10 @@ export const GATE_CORE = [
   /^services\/runner\/test\/reviewer-cases\//,
   /^services\/runner\/scripts\/reviewer-eval\.(mjs|ts)$/,
   /^modules\/core\/security\//,
-  /(^|\/)agent-auth\.ts$/,
+  // The kernel (the tool proxy, caller identity and assertions, the model gateway) and each module server's copy of the
+  // SDK's caller check (scripts/sync-shared.mjs).
+  /^kernel\//,
+  /(^|\/)aidenhq-sdk\/caller\.ts$/,
   /^scripts\/modules\.(mjs|ts)$/,
   /^scripts\/paperclip-setup\.(mjs|ts)$/,
   /^scripts\/no-shell\.(mjs|ts)$/,
@@ -38,7 +41,6 @@ export const GATE_CORE = [
   /^services\/board\/src\/accounts\.ts$/,
   /^services\/board\/src\/session\.ts$/,
   /^services\/computer\//,
-  /^services\/gateway\//,
   /^ops\//,
   /^scripts\/verify-security\.sh$/,
   /^scripts\/supply-chain\//,
@@ -54,7 +56,7 @@ export const GATE_CORE = [
  * `/` is a prefix; anything else is an exact path. */
 export const GATE_DIRS = [
   "services/runner/src/",
-  "services/gateway/",
+  "kernel/",
   "services/computer/",
   "ops/",
   "modules/core/security/",

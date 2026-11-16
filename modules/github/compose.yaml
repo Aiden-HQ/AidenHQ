@@ -14,7 +14,7 @@ services:
       GITHUB_COMMENT_ORGS: "${GITHUB_COMMENT_ORGS:-}"
       # commit_status_set (the design-review check) writes only here, as the GitHub App.
       GITHUB_AGENTS_ORG: "${settings.agents_org}"
-      MCP_TOKEN_FILE: /run/secrets/github_mcp_token
+      MCP_TOKEN_FILE: /run/secrets/github_service_key
       # Shared sources (src_github): the orgs it syncs (github_orgs plus the agents org) and its warehouse login.
       GITHUB_SYNC_ORGS: "${settings.github_sync_orgs}"
       WAREHOUSE_PASSWORD_FILE: /run/secrets/warehouse_src_github_password
@@ -23,7 +23,7 @@ services:
       - ${AIDENHQ_SECRETS_DIR}/github-app:/secrets/github-app:ro
     secrets:
       - github_token
-      - github_mcp_token
+      - github_service_key
       - warehouse_src_github_password
     dns: [ 1.1.1.1, 8.8.8.8 ] # see paperclip
     networks:
@@ -31,7 +31,7 @@ services:
       - egress
       - sources # the warehouse (shared sources)
 secrets:
-  github_mcp_token:
-    file: ${AIDENHQ_SECRETS_DIR}/github_mcp_token
+  github_service_key:
+    file: ${AIDENHQ_SECRETS_DIR}/github_service_key
   warehouse_src_github_password:
     file: ${AIDENHQ_SECRETS_DIR}/warehouse_src_github_password

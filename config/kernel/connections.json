@@ -1,0 +1,301 @@
+{
+  "apps": {
+    "url": "http://apps-mcp:8090/mcp",
+    "auth_secret": "apps_service_key",
+    "module": "core",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "app_list",
+        "app_status",
+        "app_logs",
+        "app_view",
+        "app_check",
+        "web_view",
+        "warehouse_query",
+        "source_new",
+        "app_requests",
+        "app_roles"
+      ],
+      "write": [
+        "app_deploy",
+        "app_restart",
+        "app_rollback",
+        "app_create",
+        "app_run_request",
+        "app_api",
+        "source_ack",
+        "person_identity_decide",
+        "finding_verdict",
+        "app_request_reply",
+        "app_role_set"
+      ],
+      "destructive": [
+        "app_remove"
+      ]
+    },
+    "tool_timeout_s": 600
+  },
+  "github": {
+    "url": "http://github-mcp:8086/mcp",
+    "auth_secret": "github_service_key",
+    "module": "github",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "github_whoami",
+        "github_project_read",
+        "github_issue_read",
+        "github_search_issues"
+      ],
+      "write": [
+        "github_issue_comment",
+        "github_issue_create",
+        "github_issue_update",
+        "github_pr_review",
+        "github_rerun_failed",
+        "commit_status_set"
+      ],
+      "destructive": []
+    }
+  },
+  "glean": {
+    "url": "http://glean-mcp:8085/mcp",
+    "auth_secret": "glean_service_key",
+    "module": "glean",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "search",
+        "read_document",
+        "employee_search",
+        "meeting_lookup",
+        "code_search",
+        "chat"
+      ],
+      "write": [],
+      "destructive": []
+    }
+  },
+  "google_workspace": {
+    "url": "http://google-workspace-mcp:8081/mcp",
+    "auth_secret": "google_service_key",
+    "module": "google",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "calendar_list_events",
+        "calendar_search_events",
+        "calendar_get_event",
+        "drive_list_recent_files",
+        "drive_list_meeting_documents",
+        "drive_search_files",
+        "drive_read_file",
+        "gmail_search",
+        "gmail_read_thread",
+        "docs_read"
+      ],
+      "write": [],
+      "destructive": []
+    }
+  },
+  "grafana": {
+    "url": "http://grafana-mcp:8087/mcp",
+    "auth_secret": "grafana_service_key",
+    "module": "grafana",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "query_prometheus",
+        "query_prometheus_histogram",
+        "list_prometheus_metric_names",
+        "list_prometheus_label_names",
+        "list_prometheus_label_values",
+        "list_prometheus_metric_metadata",
+        "list_datasources",
+        "search_dashboards",
+        "get_dashboard_summary",
+        "get_dashboard_panel_queries",
+        "get_dashboard_by_uid",
+        "alerting_rules_read"
+      ],
+      "write": [],
+      "destructive": []
+    }
+  },
+  "jira": {
+    "url": "http://jira-mcp:8091/mcp",
+    "auth_secret": "jira_service_key",
+    "module": "jira",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "searchJiraIssuesUsingJql",
+        "getJiraIssue",
+        "listJiraIssueChangelogs",
+        "listJiraIssueComments",
+        "listJiraProjects",
+        "getJiraProjectVersions",
+        "getJiraProjectVersionRelatedWork",
+        "listJiraBoards",
+        "getJiraBoardConfig",
+        "listJiraBoardSprints",
+        "lookupJiraAccountId",
+        "searchConfluence",
+        "getConfluenceContent"
+      ],
+      "write": [
+        "addOrEditJiraIssueComment",
+        "createJiraIssue"
+      ],
+      "destructive": []
+    }
+  },
+  "ops_mcp": {
+    "url": "http://ops-mcp:8080/mcp",
+    "auth_secret": "ops_service_key",
+    "module": "meetings",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "source_read",
+        "sync_cursor_get",
+        "obsidian_search",
+        "obsidian_read",
+        "obsidian_read_document_map",
+        "voice_note_read",
+        "knowledge_list",
+        "knowledge_index",
+        "knowledge_search",
+        "knowledge_read"
+      ],
+      "write": [
+        "transcripts_scan",
+        "source_register_drive_document",
+        "meeting_match",
+        "meeting_resolve",
+        "meeting_publish",
+        "meeting_note_correct",
+        "source_mark_failed",
+        "sync_cursor_set",
+        "voice_note_add"
+      ],
+      "destructive": []
+    }
+  },
+  "slack_live": {
+    "url": "http://slack-live-mcp:8089/mcp",
+    "auth_secret": "slack_live_service_key",
+    "module": "owner-channel",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "slack_pending_events"
+      ],
+      "write": [
+        "notify_owner",
+        "slack_post",
+        "wake_at",
+        "chat_send"
+      ],
+      "destructive": []
+    }
+  },
+  "primer": {
+    "url": "http://primer-mcp:8084/mcp",
+    "auth_secret": "primer_service_key",
+    "module": "primer",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "primer_whoami",
+        "primer_resolve_url",
+        "primer_get_document",
+        "primer_get_version_content",
+        "primer_list_versions",
+        "primer_get_comments",
+        "primer_get_document_comments",
+        "primer_list_documents",
+        "primer_find_document"
+      ],
+      "write": [
+        "primer_create_document",
+        "primer_add_version"
+      ],
+      "destructive": []
+    }
+  },
+  "slack": {
+    "url": "http://slack-mcp:8082/mcp",
+    "auth_secret": "slack_service_key",
+    "module": "slack",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "slack_search_public",
+        "slack_search_public_and_private",
+        "slack_search_channels",
+        "slack_search_users",
+        "slack_read_channel",
+        "slack_read_thread",
+        "slack_read_user_profile",
+        "slack_list_user_channels"
+      ],
+      "write": [
+        "slack_send_message_draft"
+      ],
+      "destructive": []
+    }
+  },
+  "paperclip_tasks": {
+    "url": "http://tasks-mcp:8080/mcp",
+    "auth_secret": "tasks_service_key",
+    "module": "tasks",
+    "returns": "untrusted",
+    "tools": {
+      "read": [
+        "task_current",
+        "task_get",
+        "task_search",
+        "task_list",
+        "task_team",
+        "task_comments",
+        "task_files",
+        "task_file_read",
+        "task_approvals",
+        "fleet_status",
+        "fleet_costs",
+        "fleet_catalog",
+        "handbook_list",
+        "handbook_read",
+        "advisor_ask",
+        "fanout_map",
+        "memory_note",
+        "coach_due",
+        "coach_evidence"
+      ],
+      "write": [
+        "coach_record",
+        "task_create",
+        "task_create_engineer_task",
+        "task_delegate",
+        "task_propose_rule",
+        "task_join",
+        "task_schedule",
+        "task_recurring",
+        "task_merge",
+        "task_update",
+        "task_pass_on",
+        "task_handoff",
+        "task_comment",
+        "task_finish",
+        "task_set_status",
+        "task_relay_owner_words",
+        "app_request_from_owner",
+        "fleet_control"
+      ],
+      "destructive": []
+    },
+    "model_as_caller": true
+  }
+}

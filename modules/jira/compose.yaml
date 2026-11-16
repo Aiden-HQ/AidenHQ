@@ -15,7 +15,7 @@ services:
       JIRA_STATE_DIR: /state
       HISTORY_PROJECTS: "${settings.history_projects}"
       HISTORY_DAYS: "${settings.history_days}"
-      MCP_TOKEN_FILE: /run/secrets/jira_mcp_token
+      MCP_TOKEN_FILE: /run/secrets/jira_service_key
       # The board's sign-in endpoints: state, and starting or finishing a sign-in.
       JIRA_AUTH_TOKEN_FILE: /run/secrets/jira_auth_token
       # Shared sources (src_jira): its warehouse login.
@@ -28,7 +28,7 @@ services:
       # Read-write: the registered client and the token pair, refreshed here.
       - ${AIDENHQ_SECRETS_DIR}/jira:/state
     secrets:
-      - jira_mcp_token
+      - jira_service_key
       - jira_auth_token
       - warehouse_src_jira_password
       - gateway_source_key
@@ -42,8 +42,8 @@ services:
     secrets:
       - jira_auth_token
 secrets:
-  jira_mcp_token:
-    file: ${AIDENHQ_SECRETS_DIR}/jira_mcp_token
+  jira_service_key:
+    file: ${AIDENHQ_SECRETS_DIR}/jira_service_key
   jira_auth_token:
     file: ${AIDENHQ_SECRETS_DIR}/jira_auth_token
   warehouse_src_jira_password:

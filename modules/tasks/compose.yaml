@@ -1,0 +1,33 @@
+# tasks module: the task tools (paperclip_tasks). Paths are relative to this module; scripts/compile.mjs makes them absolute.
+
+services:
+  tasks-mcp:
+    extends: { file: ../../compose.base.yaml, service: hardened }
+    build: ./connections/tasks-mcp
+    image: aidenhq/tasks-mcp:local
+    user: "${PUID:-1000}:${PGID:-100}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      MCP_TOKEN_FILE: /run/secrets/tasks_service_key
+      # The board's internal API (grades, schedules, fleet tools), as the caller (X-AidenHQ-Caller).
+      AIDENHQ_BOARD_URL: http://board:3122
+      BOARD_INTERNAL_TOKEN_FILE: /run/secrets/board_internal_token
+      APPS_MCP_URL: http://apps-mcp:8090
+      # advisor_ask, fanout_map: billed to the caller's run.
+      AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
+      # fleet_catalog's static half (scripts/paperclip-setup.mjs writes it).
+      AIDENHQ_CATALOG_FILE: /catalog/catalog.static.json
+    volumes:
+      - ${AIDENHQ_DATA_DIR:-./data}/tasks:/catalog:ro
+    secrets:
+      - tasks_service_key
+      - board_internal_token
+    networks:
+      - backplane
+secrets:
+  tasks_service_key:
+    file: ${AIDENHQ_SECRETS_DIR}/tasks_service_key
+  board_internal_token:
+    file: ${AIDENHQ_SECRETS_DIR}/board_internal_token

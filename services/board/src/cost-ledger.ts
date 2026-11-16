@@ -13,7 +13,7 @@ import type { LedgerFilter, LedgerMetrics, Store } from "./store.js";
 const DAY = 864e5;
 /** The board keeps 62 days of usage (pullUsage); a range may not reach further back than that. */
 const MAX_SPAN = 62 * DAY;
-/** The gateway's default agent-day cap (services/gateway/lib.ts DEFAULT_CAPS); grants may set another. */
+/** The gateway's default agent-day cap (kernel/src/gateway/lib.ts DEFAULT_CAPS); grants may set another. */
 const DEFAULT_DAY_CAP = 30;
 
 /** A group's figures; ms is the mean latency of its ok calls that timed themselves (null: none did). */
