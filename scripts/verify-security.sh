@@ -36,23 +36,31 @@ containers="$(docker ps --filter "label=com.docker.compose.project=$project" --f
 
 echo "Containers: $(echo $containers)"
 for c in $containers; do
-  mounts="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}|{{.Destination}}|{{.RW}};{{end}}')"
+  # One read per container: a one-job CI runner can exit between reads, and a container gone mid-check is not a finding.
+  info="$(docker inspect "$c" --format '{{.HostConfig.Privileged}}
+{{json .HostConfig.SecurityOpt}}
+{{json .HostConfig.CapDrop}}
+{{index .Config.Labels "com.docker.compose.service"}}
+{{.HostConfig.NetworkMode}}
+{{range .Mounts}}{{.Source}}|{{.Destination}}|{{.RW}};{{end}}' 2>/dev/null)" || { echo "  skip  $c: exited during the check"; continue; }
+  field() { printf '%s\n' "$info" | sed -n "$1p"; }
+  mounts="$(field 6)"; service="$(field 4)"
   # apps-mcp alone holds the Docker socket: it builds and runs the apps (services/apps-mcp/src/policy.ts refuses an app's
   # own socket mount). Matched by its compose service, never by name; any other container with it fails.
-  if [ "$(docker inspect "$c" --format '{{index .Config.Labels "com.docker.compose.service"}}')" = "apps-mcp" ]; then
+  if [ "$service" = "apps-mcp" ]; then
     pass "$c: Docker socket allowed (apps-mcp builds and runs the apps)"
   else
     echo "$mounts" | grep -q 'docker.sock' && fail "$c mounts the Docker socket" || pass "$c: no Docker socket"
   fi
   echo "$mounts" | grep -q 'tailscaled.sock' && fail "$c mounts the host's tailscaled socket" || pass "$c: no tailscaled socket"
   echo "$mounts" | tr ';' '\n' | awk -F'|' -v h="$HOME" '$1==h || $1==h"/"' | grep -q . && fail "$c mounts \$HOME" || pass "$c: home directory not mounted"
-  [ "$(docker inspect "$c" --format '{{.HostConfig.Privileged}}')" = "false" ] && pass "$c: not privileged" || fail "$c is privileged"
-  docker inspect "$c" --format '{{json .HostConfig.SecurityOpt}}' | grep -q 'no-new-privileges' && pass "$c: no-new-privileges" || fail "$c lacks no-new-privileges"
-  docker inspect "$c" --format '{{json .HostConfig.CapDrop}}' | grep -q 'ALL' && pass "$c: all capabilities dropped" || fail "$c keeps capabilities"
-  if [ "$(docker inspect "$c" --format '{{index .Config.Labels "com.docker.compose.service"}}')" = "gate" ]; then
+  [ "$(field 1)" = "false" ] && pass "$c: not privileged" || fail "$c is privileged"
+  field 2 | grep -q 'no-new-privileges' && pass "$c: no-new-privileges" || fail "$c lacks no-new-privileges"
+  field 3 | grep -q 'ALL' && pass "$c: all capabilities dropped" || fail "$c keeps capabilities"
+  if [ "$service" = "gate" ]; then
     pass "$c: host networking allowed (the gate binds only the addresses checked below)"
   else
-    [ "$(docker inspect "$c" --format '{{.HostConfig.NetworkMode}}')" != "host" ] && pass "$c: not host networking" || fail "$c uses host networking"
+    [ "$(field 5)" != "host" ] && pass "$c: not host networking" || fail "$c uses host networking"
   fi
   case "$c" in
     *paperclip*)
@@ -633,14 +641,14 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF '? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p' "$rmain" \
   && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues re-tier; reviewed queues replay the approved commits first, leased push), merged-head branch deletes (after any agents-org merge), one re-run per head of a queued PR's infrastructure-failed jobs or of an agent's product PR's never-started jobs, a pending design-review status (never a verdict), and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
-# autonomy cap, a spend-cap raise or nothing recognised (the only Tier 2 rules left in tiers.mjs). The gate's own core is
+# autonomy cap (autonomy off: after the AI review, #110), an owner-recorded source exception (#101), a spend-cap raise or nothing recognised (the only Tier 2 rules left in tiers.mjs). The gate's own core is
 # authority-expanding: tiers, review, authorize, the reviewer policy and its eval cases, the board's approval routes and
 # sign-in, setup, the sandboxes and the product's CI all go to the panel (two reviewers of different model families, both
 # approving), enforced by the runner and again by the board. Code's panel flag reaches the reviewer and the board, the
 # reviewer's own flag can only add the second reviewer, a reviewer-approved card that is panel now is never run on one
 # reviewer's yes, and a CI template copy is Tier 0 only when its .github tree is the deployed product's template tree.
 rreview="services/runner/src/review.mjs"; bapprovals="services/board/src/approvals.ts"
-[ "$(grep -oE 'T\(2, "[a-z-]+"' "$rtiers" | sort -u | tr '\n' ' ')" = 'T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
+[ "$(grep -oE 'T\(2, "[a-z-]+"' "$rtiers" | sort -u | tr '\n' ' ')" = 'T(2, "autonomy-off" T(2, "owner-approval-record" T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
   && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review","authorize","merges","apply","netjail","state","config","github-app","git","main","engines","workspace","files","agents"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["approvals","app","fleet","accounts","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/assert.ts", "kernel/src/cp.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "services/apps-mcp/src/aidenhq-sdk/caller.ts"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
   && grep -qF '/^services\/runner\/test\/reviewer-cases\//,' "$rtiers" && grep -qF '/^modules\/core\/security\//,' "$rtiers" \
   && true && grep -qF '/(^|\/)\.github\//,' "$rtiers" \
