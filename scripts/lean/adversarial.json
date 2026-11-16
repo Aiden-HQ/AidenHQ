@@ -84,6 +84,12 @@
     "test": "kernel/test/advisories.test.mjs"
   },
   {
+    "id": "A18",
+    "attack": "An upstream issue or PR carrying the owner's name, a hostname, an IP or a secret",
+    "unit": "4f",
+    "test": "modules/github/connections/github-mcp/test/projects.test.ts"
+  },
+  {
     "id": "H1",
     "attack": "Hostile job: symlink in the workspace pointing outside it",
     "unit": "1a",

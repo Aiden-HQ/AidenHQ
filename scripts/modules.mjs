@@ -361,6 +361,34 @@ function ciReview(settings) {
 }
 
 /**
+ * The owner-data scrub's literals (spec §6.9a), comma-separated: the owner's and company's names and each word of them (a
+ * module default names nobody), the instance name and every org the instance names, and every host and email an instance
+ * setting holds (a URL's host, a value that is a hostname; an email's address, local part and domain). The tool that files
+ * upstream drops the upstream's own org and host.
+ */
+const COMMON_WORDS = new Set(["the", "and", "for", "inc", "ltd", "llc", "labs", "lab", "company", "corp", "group", "team", "work", "home", "personal", "admin", "user", "mail", "info"]);
+function ownerTerms(own, settings, declared) {
+  const terms = new Set();
+  const add = (t) => { const v = String(t ?? "").replace(/[,$]/g, "").trim(); if (v.length >= 3 && !COMMON_WORDS.has(v.toLowerCase())) terms.add(v); };
+  const isDefault = (k) => declared.some((d) => d[k] && "default" in d[k] && d[k].default === settings[k]);
+  for (const k of ["owner_name", "company_name", "instance_name", "agents_org"]) {
+    if (isDefault(k) || settings[k] == null) continue;
+    add(settings[k]);
+    if (k === "owner_name" || k === "company_name") for (const w of String(settings[k]).split(/[^\p{L}\p{N}]+/u)) add(w);
+  }
+  for (const o of [settings.github_orgs ?? []].flat()) add(o);
+  const walk = (v) => {
+    if (Array.isArray(v) || (v && typeof v === "object")) return Object.values(v).forEach(walk);
+    if (typeof v !== "string") return;
+    for (const m of v.matchAll(/([\w.+-]+)@([\w-]+(?:\.[\w-]+)+)/g)) { add(m[0]); add(m[1]); add(m[2]); }
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) { try { add(new URL(v).hostname); } catch {} }
+    else if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(v)) add(v);
+  };
+  walk({ own, email: settings.owner_email });
+  return [...terms].join(",");
+}
+
+/**
  * Replaces ${settings.x} in every string. `compose`: the result is a compose file, which expands `$` itself, so a setting
  * holding one (`${SOME_SECRET}`) fails rather than smuggle another variable in.
  */
@@ -459,6 +487,8 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const shownSettings = Object.fromEntries([...new Set([...enabled.flatMap((n) => Object.keys(all.get(n).def.settings ?? {})), ...Object.keys(instance.settings ?? {})])]
     .filter((k) => !/token|secret|password/i.test(k) && settings[k] !== undefined)
     .map((k) => [k, { value: settings[k], set: Object.hasOwn(instance.settings ?? {}, k) }]));
+  // Derived for upstream contributions (spec §6.9): the owner-data scrub's literals (ownerTerms).
+  settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, enabled.map((n) => all.get(n).def.settings ?? {}));
 
   const core = substitute(all.get("core").def, settings);
   const paperclip = { company: core.company, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), grading: String(settings.grading ?? "on"), live_updates: String(settings.live_updates ?? "on"), batch_approvals: String(settings.batch_approvals ?? "on"), dup_guard: String(settings.dup_guard ?? "on"), coach: String(settings.coach ?? "on"), wake_ups: String(settings.wake_ups ?? "on"), loop_brake: String(settings.loop_brake ?? "on"), settings: shownSettings, labels: [], mcp_servers: {}, codex_args: [], agents: {}, routines: {} };
@@ -498,6 +528,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       if (!/^[a-z0-9_]+_service_key$/.test(c.auth ?? "")) fail(`connection ${k}: auth must name its service key secret (<name>_service_key)`);
       if (c.returns != null && !["trusted", "untrusted"].includes(c.returns)) fail(`connection ${k}: returns is trusted or untrusted`);
       if (c.model_as_caller != null && typeof c.model_as_caller !== "boolean") fail(`connection ${k}: model_as_caller is true or false`);
+      if (c.upstream != null && (!Array.isArray(c.upstream) || c.upstream.some((t) => ![...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])].includes(t)))) fail(`connection ${k}: upstream lists tools it tags read, write or destructive`);
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
     Object.assign(writes, writeKinds(name, def, root, instance.writes ?? {}, writes));
@@ -626,7 +657,11 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       const all = [...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])];
       const list = grant === "read" ? c.tools.read : grant === "write" ? [...c.tools.read, ...c.tools.write] : Array.isArray(grant) ? grant : fail(`${key}: grant to ${name} must be read, write or a list of tools`);
       for (const t of list) if (!all.includes(t)) fail(`${key}: ${name} has no tool ${t}`);
-      tools[name] = [...list];
+      // A connection's `upstream` tools file to the product's upstream repos: granted only while the upstream setting
+      // allows issues (spec §6.9a; off grants none of them).
+      const upstreamOff = !["issues", "prs"].includes(String(settings.upstream ?? "off"));
+      tools[name] = list.filter((t) => !(upstreamOff && (c.upstream ?? []).includes(t)));
+      if (!tools[name].length) delete tools[name];
     }
     // Every Codex agent can reply to and ask the owner (notify_owner, the "Asking the owner" shared section), except in
     // trial or in an untrusted module, where write tools stay off.
