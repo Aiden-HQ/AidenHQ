@@ -35,7 +35,7 @@ const gitEnv = {
 };
 
 /** A Paperclip with one parent task (the user's) and one part of it for Ada. */
-export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0, onIssueCreated }) {
+export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0, onIssueCreated, ownerFallback = false }) {
   const gradeLog = [];
   const graderCalls = [];
   const graderAnswers = [];
@@ -56,6 +56,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const records = new Map();
   const autos = [];
   const created = []; // tasks the runner filed (POST …/issues), as the board key
+  const filings = []; // every POST …/issues, created or answered from an idempotency key
   const runs = []; // the runs Paperclip started, one per task it could dispatch
   const wakes = []; // the runs a comment on a task started: Paperclip's task-scoped wake
   let n = 0;
@@ -128,7 +129,15 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     if (req.method === "GET" && path === "/api/cli-auth/me") return send({ userId: USER });
     if (req.method === "POST" && path === `/api/companies/${COMPANY}/issues`) {
       const b = JSON.parse(body);
-      const i = { id: `made-${created.length + 1}`, identifier: `PEN-${100 + created.length}`, status: b.status, title: b.title, description: b.description, assigneeAgentId: b.assigneeAgentId, assigneeUserId: null, parentId: null, createdByUserId: USER, createdByAgentId: null, labels: [], executionWorkspacePreference: b.executionWorkspacePreference ?? null, executionWorkspaceSettings: b.executionWorkspaceSettings ?? null };
+      filings.push(b);
+      // The same idempotency key returns the task it made, marked as such (the board's deduplicated response): an earlier
+      // filing's task, whose run may have ended.
+      const seen = b.idempotencyKey && [...issues.values()].find((x) => x.idempotencyKey === b.idempotencyKey);
+      if (seen) return send({ ...seen, deduplicated: true });
+      // An assignee the company doesn't have (a removed or replaced agent) files to whoever asked, the owner: the row is
+      // found assigned to the owner and no run ever picks it up (opt-in: the fixtures keep ids outside the agent list).
+      const known = !ownerFallback || !b.assigneeAgentId || engineers.some((a) => a.id === b.assigneeAgentId);
+      const i = { id: `made-${created.length + 1}`, identifier: `PEN-${100 + created.length}`, status: b.status, title: b.title, description: b.description, assigneeAgentId: known ? b.assigneeAgentId : null, assigneeUserId: known ? null : USER, idempotencyKey: b.idempotencyKey ?? null, parentId: null, createdByUserId: USER, createdByAgentId: null, labels: [], executionWorkspacePreference: b.executionWorkspacePreference ?? null, executionWorkspaceSettings: b.executionWorkspaceSettings ?? null };
       created.push({ ...b, id: i.id });
       issues.set(i.id, i);
       comments.set(i.id, []);
@@ -265,14 +274,14 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     a.state = state;
     return a;
   };
-  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created, runs, wakes, hang, failRead };
+  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead };
 }
 
 /**
  * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
-export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, setup } = {}) {
+export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, ownerFallback = false, setup } = {}) {
   let dir, runner, runnerEnv, paperclip, output = "";
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -391,7 +400,7 @@ ${runnerYaml}`,
     Object.assign(part, partOver);
     // Agents in a computer (`image:` in the module): Paperclip runs them, and a task they get must have a folder of its own.
     const inComputers = computers.map((id) => ({ id, name: id, status: "idle", adapterType: "codex_local", adapterConfig: {}, defaultEnvironmentId: "env-computer", metadata: { setupKey: `aidenhq:${id}` } }));
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated });
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated, ownerFallback });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 

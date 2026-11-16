@@ -173,7 +173,8 @@ describe("flow-autonomy", { concurrency: true }, () => {
   });
 
   describe("autonomy tier0 with a design reviewer, end to end", { concurrency: 1 }, () => {
-    const t = tier0();
+    // The reviewer is an agent of the company (the runner files to one it can still dispatch to).
+    const t = flow({ grants: { autonomy: "tier0", agents: {} }, env: { AIDENHQ_GITHUB_AGENTS_ORG: "acme", AIDENHQ_PRODUCT_REPO: "acme/aidenhq" }, runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n", computers: ["designer-1"] });
 
     // Owner, 2026-11-13: with a design reviewer in the fleet, a green UI PR's Tier 0 merge waits for design-review, and the
     // reviewer gets a task for that head.
@@ -233,6 +234,7 @@ describe("flow-autonomy", { concurrency: true }, () => {
       grants: { autonomy: "off", agents: { "designer-1": { key: "ui-designer", roles: ["design-review"] } } },
       env: { AIDENHQ_GITHUB_AGENTS_ORG: "acme", AIDENHQ_PRODUCT_REPO: "acme/aidenhq" },
       runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n",
+      computers: ["designer-1"],
     });
 
     // A UI PR on its card (autonomy off): the runner's own `ui` flag used to ride along in the card's args, and the board's
