@@ -474,6 +474,7 @@ const ACTIVITY = [
 function Blocks() {
   const [sort, setSort] = React.useState<"name" | "open">("open")
   const [pageNo, setPageNo] = React.useState(1)
+  const [picked, setPicked] = React.useState<string | null>("waiting")
   const sorted = [...SAMPLE].sort((a, b) => (sort === "open" ? b.open - a.open : a.name.localeCompare(b.name, undefined, { numeric: true })))
   const page = paginate(sorted, pageNo, 5)
   const sortBy = (col: "name" | "open") => () => {
@@ -501,8 +502,16 @@ function Blocks() {
         <StatStrip
           stats={[
             { label: "Open", value: 42, note: "8 opened this week", tone: "hero" },
-            { label: "Waiting on us", value: 9, note: "Oldest is 3 days", dot: "bg-warn-solid", tone: "warn", pressed: true, onPick: () => {} },
-            { label: "Overdue", value: 3, note: "Past the agreed date", dot: "bg-danger-solid", tone: "danger", onPick: () => {} },
+            {
+              label: "Waiting on us",
+              value: 9,
+              note: "Oldest is 3 days",
+              dot: "bg-warn-solid",
+              tone: "warn",
+              pressed: picked === "waiting",
+              onPick: () => setPicked((p) => (p === "waiting" ? null : "waiting")),
+            },
+            { label: "Overdue", value: 3, note: "Past the agreed date", dot: "bg-danger-solid", tone: "danger" },
             { label: "Closed", value: 118, note: "Last 30 days" },
           ]}
         />

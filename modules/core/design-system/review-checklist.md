@@ -23,8 +23,10 @@ A PR that breaks one of these, where its base held it, is blocked.
 
 - [ ] The page renders, styled, loads every resource and runs cleanly under the CSP.
 - [ ] Each core flow the PR touches works and gives the right result.
-- [ ] Every nav link and in-app link renders its page on click, on Back and Forward, and on reload (`ui-review`'s
-      route check lists each one under "Routes").
+- [ ] Every nav link and in-app link renders its page on click, on Back and Forward, and on reload, and the header's
+      brand opens home at the top from every page (`ui-review`'s route check lists each one under "Routes").
+- [ ] Every visible button, `[role=button]` and other clickable element visibly acts when clicked: the address, the
+      page, the focus or what is open changes. A click that changes nothing is a dead click.
 - [ ] The data on screen is present and right (real values, the right counts and totals), and everything people could
       see or do before is still there unless the request or the mockup changes it.
 - [ ] The layout is usable at desktop width: content fits, sits clear of other content, and can be reached.
@@ -53,4 +55,6 @@ better, suggest a mockup from the UI/UX Designer.
 - [ ] Every nav link and in-app link renders its page on click, Back/Forward and reload: routes and links go through
       the starter's navigation (`Link`, `useLocation`), each route is in the server's `PAGES`, and `ui-review`'s route
       check reports every link as rendering.
+- [ ] The header brand is `Link href="/"`, opens home at the top from every page, and every visible control acts:
+      `ui-review` reports the brand and each control it clicks, with no dead click.
 - [ ] A seed or fixture mode runs the app locally with realistic data, so a reviewer can screenshot it.

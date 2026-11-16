@@ -7,7 +7,8 @@ import { cn } from "@/lib/utils"
 // The pieces a data table needs beyond shadcn's Table: sortable headers that say which way they sort,
 // and a page of rows at a time, with the page in the URL (`?page=`) like the filters. Reset the page when a filter changes.
 
-/** A column header that sorts. The page keeps the sort in the URL (`?sort=`) and passes whether this column is active. */
+/** A column header that sorts. The page keeps the sort in the URL (`?sort=`) and passes whether this column is active;
+ * the active one is a heading with `aria-sort`, not a button, since clicking it again would sort the same way. */
 export function SortHead({
   active,
   direction = "ascending",
@@ -24,17 +25,23 @@ export function SortHead({
   const Arrow = direction === "descending" ? ArrowDownIcon : ArrowUpIcon
   return (
     <TableHead className={className} aria-sort={active ? direction : undefined}>
-      <button
-        type="button"
-        onClick={onSort}
-        className={cn(
-          "inline-flex items-center gap-1 rounded-sm font-medium outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring",
-          active ? "text-foreground" : "text-muted-foreground"
-        )}
-      >
-        {children}
-        <Arrow aria-hidden className={cn("size-3.5", !active && "opacity-0")} />
-      </button>
+      {active ? (
+        <span className="inline-flex items-center gap-1 font-medium text-foreground">
+          {children}
+          <Arrow aria-hidden className="size-3.5" />
+        </span>
+      ) : (
+        <button
+          type="button"
+          onClick={onSort}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring"
+          )}
+        >
+          {children}
+          <Arrow aria-hidden className="size-3.5 opacity-0" />
+        </button>
+      )}
     </TableHead>
   )
 }

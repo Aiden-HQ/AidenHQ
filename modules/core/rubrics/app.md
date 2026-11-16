@@ -8,3 +8,4 @@ Used when a delegation names an `app` deliverable without its own rubric (see pr
 - The behaviour the task asked for is what the change does (the diff or the agent's evidence shows it).
 - Every nav link's page renders at its own path: the home page and each path named here show their own page in their
   capture, not another page or a not-found one.
+- The header's brand is `Link href="/"` and opens home in its default state; a redesign starts from the starter's shells; every clickable element visibly acts.

@@ -79,3 +79,12 @@ test("every agent gets how we work, builders also how we build, and asking the o
   assert.ok(section("HOW_WE_BUILD_SECTION").includes("- Comments: code is self-explanatory to agents; a comment only where the why is not visible in the code."));
   assert.ok(section("ASKING_SECTION").includes("When a call is the owner's (How we work), ask before acting on it"));
 });
+
+test("a UI task's rubric names the brand, the shells and every clickable element acting", () => {
+  // The recurring "looks clickable, does nothing" class: a build is asked for the same three things, in the words the
+  // starter's handbook and the app rubric use.
+  const text = section();
+  assert.ok(text.includes('the header\'s brand is `Link href="/"` and opens home in its default state'));
+  assert.ok(text.includes("a redesign starts from the starter's shells"));
+  assert.ok(text.includes("every clickable element visibly acts"));
+});

@@ -26,7 +26,9 @@ the AidenHQ design system. `README.md` says what's where. These rules keep its p
 - **Navigation:** routes and links use the starter's navigation (`src/lib/navigation.tsx`): pick the page from
   `useLocation().path` (as `src/App.tsx` does), link with `Link`, move from code with `navigate`, and keep page state in
   the query with `useUrlState`. Every route is also in `server.mjs` `PAGES`. Then every page works on a link click, on
-  Back and Forward, and on a reload or a shared link, with the state its URL carries.
+  Back and Forward, and on a reload or a shared link, with the state its URL carries. A page's shell says who the app is
+  and where home is: the header's brand is `Link href="/"` and opens home in its default state; a redesign starts from
+  the starter's shells; every clickable element visibly acts.
 - **Keep `feature-map.json` current:** it lists the app's pages and a few stateful URLs (`?status=…`, `?item=…`), each
   with what should be visible there, and `ui-review` reviews those paths by default (README, "The feature map"). Add an
   entry when a page or a view that lives at a URL changes.

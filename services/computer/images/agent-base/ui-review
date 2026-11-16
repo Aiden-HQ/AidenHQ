@@ -17,7 +17,8 @@
 //
 // Options: --widths 390,768,1280  --modes light,dark  --full (whole-page screenshots)  --palettes a,b (adds ?palette=&mode=,
 // for pages that read them, like the catalog)  --wait-text "<text>" (wait for it before each screenshot)  --no-routes (skip
-// the route check: by default every in-app link on the pages is clicked and must render on click, Back/Forward and reload)
+// the route check: by default the header brand on every page must go home to the top, every in-app link must render on
+// click, Back/Forward and reload, and every visible button must visibly act)
 // --commit <sha> (the commit the app was built from; default: the current folder's git HEAD and working tree).
 //
 // Every screenshot is stamped with that commit, its URL, width and mode and the time (an `aidenhq` PNG text chunk), so a
@@ -167,12 +168,22 @@ for (const path of paths) for (const palette of variants) {
   }
 }
 
-// Routes: every link on the reviewed pages to another page of the app is clicked, and that page must render on the
-// click, again after Back and Forward, and on a reload (answering under 400 and showing what the click showed). A URL
-// that changes while the page stays the same is the commonest navigation bug in apps. Once, at the widest width in the
-// first mode; one link per kind (its path and query names: ten "?item=" rows are one check), up to 12, the navigation's
-// first. Skipped with --palettes (the catalog) and --no-routes (a mockup
-// whose links lead nowhere yet). Findings name the link and its path only, so a baseline run can match them.
+// Routes, once, at the widest width in the first mode:
+// - the header brand on every reviewed page goes to / with no query, at the top (checked on "/" too, from the foot of
+//   the page, so a brand that looks clickable and does nothing fails);
+// - every link on the reviewed pages to another page of the app is clicked, and that page must render on the click,
+//   again after Back and Forward, and on a reload (answering under 400 and showing what the click showed). A URL that
+//   changes while the page stays the same is the commonest navigation bug in apps; one link per kind (its path and
+//   query names: ten "?item=" rows are one check), up to 12, the navigation's first;
+// - every visible link to the page it is on (a nav "Home" on "/", say) must visibly act too: the page is scrolled to
+//   its foot first, and the link must move the address, the scroll or the page. ROUTE_LINKS skips these, so they get
+//   their own pass;
+// - every visible button, [role=button], tab, option or summary must visibly act when clicked: the address, the page,
+//   the scroll, the focus or what is open changes. A click that changes nothing at all is the other bug in this class,
+//   "looks clickable, does nothing". Every state is clicked too, the pressed toggle and the current sort included: a
+//   control that can't act again shouldn't be a button. Only a form's submit and a destructive control are left alone.
+// Skipped with --palettes (the catalog) and --no-routes (a mockup whose links lead nowhere yet). Findings name the link
+// or control and its path only, so a baseline run can match them.
 const ROUTE_LINKS = `/*routes:links*/(() => JSON.stringify([...document.querySelectorAll("a[href]")].map((a) => {
   const u = new URL(a.href, location.href), r = a.getBoundingClientRect();
   const ok = u.origin === location.origin && !a.target && !a.hasAttribute("download") && !u.pathname.startsWith("/api/") && !/\\.[a-z0-9]{2,5}$/i.test(u.pathname)
@@ -184,6 +195,47 @@ const ROUTE_MARK = (href) => `/*routes:mark*/(() => { document.querySelectorAll(
   if (a) a.setAttribute("data-ui-review-link", ""); return a ? "ok" : "missing"; })()`;
 const ROUTE_PAGE = `/*routes:page*/(() => JSON.stringify({ at: location.pathname + location.search, status: performance.getEntriesByType("navigation")[0]?.responseStatus ?? 0,
   text: (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 20000) }))()`;
+// The header's brand: the first header link to "/" that isn't one of the nav links (a nav "Home" doesn't stand in for a
+// dead logo).
+const ROUTE_BRAND_FIND = `[...document.querySelectorAll("header a[href], [role=banner] a[href], [data-slot=sidebar-header] a[href]")].find((a) => a.origin === location.origin && a.pathname === "/" && !a.search && !a.closest("nav, [role=navigation]") && a.getBoundingClientRect().width > 0 && a.getBoundingClientRect().height > 0)`;
+const ROUTE_MARK_BRAND = `/*routes:mark-brand*/(() => { const a = ${ROUTE_BRAND_FIND}; if (a) { a.setAttribute("data-ui-review-brand", ""); return "ok"; }
+  return document.querySelector("header, [role=banner], [data-slot=sidebar-header]") ? "missing" : "none"; })()`;
+// A direct DOM click: a pointer click would scroll the brand into view first, and that scroll would pass for an effect.
+const ROUTE_CLICK_BRAND = `/*routes:click-brand*/(() => { const a = document.querySelector("[data-ui-review-brand]"); if (!a) return "missing"; a.click(); return "ok"; })()`;
+const ROUTE_SCROLL = `/*routes:scroll*/(() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }); return String(Math.round(scrollY)); })()`;
+// A click must change something people can see: the address, the scroll, where focus went, or the page itself. Its own
+// marker attribute is left out of the page signature, so marking an element isn't mistaken for an effect of clicking it.
+const ROUTE_STATE = `/*routes:state*/(() => {
+  const label = (e) => e && e !== document.body ? (e.tagName + " " + (e.getAttribute("aria-label") || e.textContent || "")).trim().replace(/\\s+/g, " ").slice(0, 60) : "";
+  const html = document.documentElement.outerHTML.replace(/\\sdata-ui-review-[a-z-]+(="[^"]*")?/g, "");
+  let h = 0;
+  for (let i = 0; i < html.length; i++) h = (Math.imul(31, h) + html.charCodeAt(i)) | 0;
+  // A control's live state (a checkbox's checked, a field's value) is a property, not markup: outerHTML alone reads a
+  // toggle that ticks a box but leaves the markup to React as a dead click.
+  const live = [...document.querySelectorAll("input, select, textarea")]
+    .map((e) => [e.type, e.checked, e.selectedIndex, e.value].join(":")).join("|");
+  return JSON.stringify({ origin: location.origin, at: location.pathname + location.search + location.hash, scrollY: Math.round(scrollY), focus: label(document.activeElement), html: h + ":" + html.length, live });
+})()`;
+// Links to the page they are on: visible, same origin, same path and query, not a download, a new tab or a log-out. The
+// header brand is checked on its own, more strictly (it must land at the top of /), so it is left out here.
+const SAME_PAGE_LINKS = `[...document.querySelectorAll("a[href]")].filter((a) => !(a.getAttribute("href") === "/" && a.closest("header, [role=banner], [data-slot=sidebar-header]") && !a.closest("nav, [role=navigation]")))
+  .map((a) => ({ a, u: new URL(a.href, location.href) }))
+  .filter(({ a, u }) => { const r = a.getBoundingClientRect(), s = getComputedStyle(a); return u.origin === location.origin && u.pathname + u.search === location.pathname + location.search && !a.target && !a.hasAttribute("download") && !u.pathname.startsWith("/api/") && !/log-?out|sign-?out/i.test(u.pathname + " " + a.textContent) && r.width > 0 && r.height > 0 && s.visibility !== "hidden" && a.getAttribute("aria-disabled") !== "true" && !a.closest("[inert], [aria-hidden=true]"); })
+  .filter(({ a }) => !/\\b(delete|remove|discard|sign ?out|log ?out|pay|purchase|send|publish|deploy|archive|reset)\\b/i.test(a.getAttribute("aria-label") || a.textContent || ""))`;
+const ROUTE_SAME = `/*routes:same-links*/(() => JSON.stringify(${SAME_PAGE_LINKS}.map(({ a, u }) => ({ href: a.getAttribute("href"), to: u.pathname + u.search + u.hash, hash: u.hash, label: (a.textContent || a.getAttribute("aria-label") || "").trim().replace(/\\s+/g, " ").slice(0, 40) }))))()`;
+const ROUTE_MARK_SAME = (i) => `/*routes:mark-same*/(() => { const e = (${SAME_PAGE_LINKS})[${i}]?.a; if (!e) return "missing"; e.setAttribute("data-ui-review-same", ""); return "ok"; })()`;
+// A direct DOM click, so the pointer's scroll-into-view can't stand in for the link's own effect; a link with no handler
+// of its own is followed by the browser, as a reader's click would be.
+const ROUTE_CLICK_SAME = `/*routes:click-same*/(() => { const a = document.querySelector("[data-ui-review-same]"); if (!a) return "missing"; a.click(); return "ok"; })()`;
+// Clickable controls: every visible, enabled one, whatever its state: a pressed toggle, the selected tab or the current
+// sort is clicked like any other, because its own state is no reason for a dead click to pass (a chosen control that
+// cannot act again shouldn't be a button). Never a form's submit or one that deletes, sends or pays (a review clicks to
+// see what happens, never to change data).
+const CLICKABLES = `[...document.querySelectorAll("button, [role=button], [role=tab], [role=option], [role=menuitem], [role=switch], [role=checkbox], [role=link], summary, input[type=checkbox], input[type=radio], [onclick]")]
+  .filter((e) => { const r = e.getBoundingClientRect(), s = getComputedStyle(e); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && !e.disabled && e.getAttribute("aria-disabled") !== "true" && !e.closest("[inert], [aria-hidden=true]") && !(e.closest("form") && e.type === "submit"); })
+  .filter((e) => !/\\b(delete|remove|discard|sign ?out|log ?out|pay|purchase|send|publish|deploy|archive|reset)\\b/i.test(e.getAttribute("aria-label") || e.textContent || ""))`;
+const ROUTE_CLICKS = `/*routes:clicks*/(() => JSON.stringify(${CLICKABLES}.map((e) => ({ label: (e.getAttribute("aria-label") || e.textContent || e.tagName).trim().replace(/\\s+/g, " ").slice(0, 40), kind: e.tagName === "BUTTON" ? "button" : e.tagName === "A" ? "link" : e.getAttribute("role") || e.type || e.tagName.toLowerCase() }))))()`;
+const ROUTE_MARK_CLICK = (i) => `/*routes:mark-click*/(() => { const e = ${CLICKABLES}[${i}]; if (!e) return "missing"; e.setAttribute("data-ui-review-click", ""); e.scrollIntoView({ block: "center" }); try { e.focus({ preventScroll: true }); } catch {} return "ok"; })()`;
 /** How alike two pages' text is (shared words over all words, 0..1): live clocks and counts don't make two views of one page differ. */
 function alike(a, b) {
   const words = (t) => new Set(t.toLowerCase().replace(/\d+/g, "#").split(/[^\p{L}#]+/u).filter(Boolean));
@@ -198,6 +250,63 @@ if (!palettes.length && !args.includes("--no-routes")) {
   ab("set", "media", modes[0]);
   const settle = () => { ab("wait", "--load", "networkidle"); ab("wait", "300"); };
   const look = () => JSON.parse(run(ROUTE_PAGE));
+  const openAt = (path) => { ab("open", path === "/" ? base : new URL(path, base).href); settle(); };
+  // The header brand, on every reviewed page: it goes home, with no query, and lands at the top. The page is scrolled to
+  // its foot first, so a brand that looks clickable and does nothing fails here, on "/" too.
+  for (const path of paths) {
+    const route = { from: path, what: "the header brand", problems: [] };
+    report.routes.push(route);
+    try {
+      openAt(path);
+      run(ROUTE_SCROLL);
+      const brand = run(ROUTE_MARK_BRAND);
+      if (brand === "none") { route.problems.push(`there is no header brand to click on ${path}`); continue; }
+      if (brand !== "ok") { route.problems.push("its header has no brand link to /"); continue; }
+      if (run(ROUTE_CLICK_BRAND) !== "ok") { route.skipped = "the brand went away before it was clicked"; continue; }
+      settle();
+      const page = JSON.parse(run(ROUTE_STATE));
+      if (page.origin !== new URL(base).origin) route.problems.push(`clicking it leaves the app for ${page.origin}${page.at}`);
+      else if (page.at !== "/") route.problems.push(`clicking it goes to ${page.at}, not /`);
+      else if (page.scrollY) route.problems.push(`clicking it leaves the page scrolled ${page.scrollY}px down, not at the top`);
+    } catch (e) {
+      route.skipped = `couldn't check it: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}`;
+    }
+    for (const p of route.problems) blocking.push(`${path} the header brand: ${p}`);
+  }
+  // Links to the page they are on: from the foot of the page, such a link must act: scroll the page, move the address (a
+  // hash) or change the page. A link with no hash on a page too short to scroll has nothing to do, so it is skipped: on a
+  // short page a reader sees nothing either.
+  for (const path of paths) {
+    let sameLinks = [];
+    try {
+      openAt(path);
+      sameLinks = JSON.parse(run(ROUTE_SAME));
+    } catch (e) {
+      report.routes.push({ from: path, what: "its links to this page", problems: [], skipped: `couldn't read them: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}` });
+      continue;
+    }
+    for (let i = 0; i < sameLinks.length; i++) {
+      const l = sameLinks[i];
+      const route = { from: path, link: l.label, to: l.to, samePage: true, problems: [] };
+      report.routes.push(route);
+      try {
+        openAt(path);
+        const foot = Number(run(ROUTE_SCROLL));
+        if (!(foot > 1) && !l.hash) { route.skipped = "the page is too short to scroll, so a link to it has nothing to do"; continue; }
+        if (run(ROUTE_MARK_SAME(i)) !== "ok") { route.skipped = "the link wasn't on the page when it was opened again"; continue; }
+        const start = JSON.parse(run(ROUTE_STATE));
+        if (run(ROUTE_CLICK_SAME) !== "ok") { route.skipped = "the link went away before it was clicked"; continue; }
+        settle();
+        const after = JSON.parse(run(ROUTE_STATE));
+        if (after.origin !== start.origin) route.problems.push(`clicking it leaves the app for ${after.origin}${after.at}`);
+        else if (after.at === start.at && after.scrollY === start.scrollY && after.focus === start.focus && after.html === start.html && after.live === start.live)
+          route.problems.push("clicking it changes nothing: same address, same page, same focus, nothing opens");
+      } catch (e) {
+        route.skipped = `couldn't check it: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}`;
+      }
+      for (const p of route.problems) blocking.push(`${path} link "${l.label || l.href}" (${l.to}): ${p}`);
+    }
+  }
   const links = [], seen = new Set();
   for (const path of paths) {
     try {
@@ -246,6 +355,34 @@ if (!palettes.length && !args.includes("--no-routes")) {
     }
     for (const p of route.problems) blocking.push(`${l.from} link "${l.label || l.href}" (${l.to}): ${p}`);
   }
+  // Every other visible control (a button, [role=button], a tab or option, a summary) must visibly act when clicked:
+  // the address, the scroll, the focus or the page changes, or something opens. A click that changes nothing at all is
+  // the dead click this checks for. Every one on the page; never one that deletes, sends or pays.
+  for (const path of paths) {
+    let controls = [];
+    try { openAt(path); controls = JSON.parse(run(ROUTE_CLICKS)); } catch (e) {
+      report.routes.push({ from: path, what: "its controls", problems: [], skipped: `couldn't read them: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}` });
+      continue;
+    }
+    for (let i = 0; i < controls.length; i++) {
+      const c = controls[i];
+      const route = { from: path, what: `${c.kind} "${c.label}"`, problems: [] };
+      report.routes.push(route);
+      try {
+        openAt(path);
+        if (run(ROUTE_MARK_CLICK(i)) !== "ok") { route.skipped = "the control wasn't on the page when it was opened again"; continue; }
+        const start = JSON.parse(run(ROUTE_STATE));
+        try { ab("click", "[data-ui-review-click]"); } catch { run(`document.querySelector("[data-ui-review-click]").click()`); }
+        settle();
+        const after = JSON.parse(run(ROUTE_STATE));
+        if (after.at === start.at && after.scrollY === start.scrollY && after.focus === start.focus && after.html === start.html && after.live === start.live)
+          route.problems.push("clicking it changes nothing: same address, same page, same focus, nothing opens");
+      } catch (e) {
+        route.skipped = `couldn't check it: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}`;
+      }
+      for (const p of route.problems) blocking.push(`${path} ${route.what}: ${p}`);
+    }
+  }
 }
 
 /**
@@ -280,7 +417,7 @@ for (const p of report.pages) {
   if (small) lines.push(`Phone: ${small} controls are 24-43px tall (44px is the phone rule; check the main ones).`);
   lines.push("", "Screenshots (open each one):", ...p.shots.map((s) => `- ${s.name}${s.compare ? ` · before|after: ${s.compare.compare ?? "–"} · diff: ${s.compare.diff} (${s.compare.diffResult})` : ""}`), "");
 }
-if (report.routes.length) lines.push("## Routes (click, Back, Forward, reload)", "", ...report.routes.map((r) => `- ${r.from} → "${r.link}" ${r.to}: ${r.skipped ?? (r.problems.join("; ") || "renders")}`), ...(report.routesCut ? ["- (more kinds of link than the 12 checked: review the rest with --paths on their pages)"] : []), "");
+if (report.routes.length) lines.push("## Routes (brand, click, Back, Forward, reload)", "", ...report.routes.map((r) => `- ${r.from} ${r.link ? `link "${r.link}" (${r.to})` : r.what}: ${r.skipped ?? (r.problems.join("; ") || (r.link && !r.samePage ? "renders" : "acts"))}`), ...(report.routesCut ? ["- (more kinds of link than the 12 checked: review the rest with --paths on their pages)"] : []), "");
 lines.push("Automated checks find maybe a third of what matters. Now look at every screenshot against the review checklist.");
 writeFileSync(join(out, "report.md"), lines.join("\n"));
 writeFileSync(join(out, "report.json"), JSON.stringify({ ...report, blocking: introduced, preexisting }, null, 2));
