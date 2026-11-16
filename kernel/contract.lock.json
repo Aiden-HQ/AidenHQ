@@ -296,7 +296,7 @@
     },
     "schema advisories.json.advisories[].url": {
       "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^https://[^\\\\s]{1,500}$\"}"
+      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^https://[A-Za-z0-9.~:/?#@!$&+,;=%_-]{1,500}$\"}"
     },
     "schema services.json": {
       "state": "experimental",

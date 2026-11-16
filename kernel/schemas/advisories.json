@@ -19,7 +19,7 @@
           "fixed": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
           "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
           "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
-          "url": { "type": "string", "pattern": "^https://[^\\s]{1,500}$" }
+          "url": { "type": "string", "pattern": "^https://[A-Za-z0-9.~:/?#@!$&+,;=%_-]{1,500}$" }
         }
       }
     }

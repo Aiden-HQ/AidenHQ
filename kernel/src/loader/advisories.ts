@@ -18,6 +18,13 @@ const DAY = 86_400_000;
 export type Open = { id: string; module: string; severity: string; fixed: string; summary: string; url: string };
 type File = { advisories: { id: string; module: string; affected: string[]; fixed?: string; severity: string; summary: string; url?: string }[] };
 
+/** An advisory's link: re-parsed, https only, and only characters that can't carry markup (the schema allows no others). */
+const link = (u: string | undefined) => {
+  if (!u) return "";
+  const href = new URL(u).href;
+  return /^https:\/\/[A-Za-z0-9.~:/?#@!$&+,;=%_-]+$/.test(href) ? href : "";
+};
+
 /** Untrusted text on one line, inside a code span it can't close, and never an HTML comment. */
 export const fenced = (s: string) => `\`${neutral(s).replace(/[`\p{Cc}\p{Cf}]+/gu, " ").trim().slice(0, 300)}\``;
 
@@ -29,7 +36,7 @@ export function openAdvisories(listed: string[], file: unknown, installed: Recor
   validate(SCHEMA, file, "advisories.json");
   return (file as File).advisories
     .filter((a) => listed.includes(a.module) && installed[a.module] && a.affected.some((c) => isAncestor(c, installed[a.module]!)) && !(a.fixed && isAncestor(a.fixed, installed[a.module]!)))
-    .map((a) => ({ id: a.id, module: a.module, severity: a.severity, fixed: a.fixed ?? "", summary: fenced(a.summary), url: a.url ?? "" }));
+    .map((a) => ({ id: a.id, module: a.module, severity: a.severity, fixed: a.fixed ?? "", summary: fenced(a.summary), url: link(a.url) }));
 }
 
 const git = (repo: string, args: string[], timeout = 60_000) =>
@@ -74,7 +81,7 @@ export function createAdvisories({ db, repo, catalog, ownerLine, log = () => {},
       for (const o of open.filter((x) => ["high", "critical"].includes(x.severity))) {
         // Recorded before it is queued: a restart or the next read never sends it again.
         if (db.prepare("INSERT OR IGNORE INTO advisory_notices (id, at) VALUES (?, ?)").run(o.id, new Date(now()).toISOString()).changes !== 1) continue;
-        ownerLine(`⚠️ **Advisory ${o.id}** (${o.severity}) affects the installed ${o.module}: ${o.summary}${o.url ? ` ${o.url}` : ""}. The fix is an ordinary update (a newer product pin); nothing changed on its own.`);
+        ownerLine(`⚠️ **Advisory ${neutral(o.id)}** (${o.severity}) affects the installed ${neutral(o.module)}: ${o.summary}${o.url ? ` <${o.url}>` : ""}. The fix is an ordinary update (a newer product pin); nothing changed on its own.`);
       }
       db.exec("COMMIT");
     } catch (e) {
