@@ -48,9 +48,9 @@ function sandbox() {
   return { dir, cfg };
 }
 const req = (over = {}) => ({ agent: "agent-1", task: "task-1", label: "PEN-1", workspace: { module: "engineering", id: "PEN-1" }, prompt: "hello there", engine: { kind: "echo" }, ...over });
-const inProcess = (cfg, cp = {}) => createJobs({
-  db: new DatabaseSync(":memory:"), cfg, boxWrap: 'exec "$@"', jobcaps: () => [], log: () => {},
-  cp: { agent: async (id) => ({ id, metadata: { runnerEngine: true } }), task: async (id) => ({ id, assigneeAgentId: "agent-1", status: "todo" }), ...cp },
+const inProcess = (cfg, cp = {}, mayDispatch = (module, agent) => module === "engineering" && agent === "agent-1") => createJobs({
+  db: new DatabaseSync(":memory:"), cfg, boxWrap: 'exec "$@"', jobcaps: () => [], log: () => {}, mayDispatch,
+  cp: { agent: async (id) => ({ id, metadata: { runnerEngine: true } }), task: async (id) => ({ id, identifier: id === "task-2" ? "PEN-2" : "PEN-1", assigneeAgentId: "agent-1", status: "todo" }), ...cp },
 });
 const finished = (jobs, id) => until(`job ${id} to end`, async () => { const v = await jobs.get("engineering", id); return v.state !== "running" && v; });
 
@@ -77,11 +77,13 @@ test("a job runs for its task, in its workspace, and reports its end: final word
 test("identity binding: only an engine agent, on a task assigned to it now and still open, gets a job (one at a time)", async () => {
   const { cfg } = sandbox();
   const refused = async (jobs, body, code) => assert.equal((await jobs.start("engineering", body).catch((e) => e)).code, code);
-  await refused(inProcess(cfg, { task: async (id) => ({ id, assigneeAgentId: "agent-2", status: "todo" }) }), req(), "task-not-assigned");
-  await refused(inProcess(cfg, { task: async (id) => ({ id, assigneeAgentId: null, status: "todo" }) }), req(), "task-not-assigned");
+  await refused(inProcess(cfg), req({ agent: "agent-9" }), "not-your-agent");
+  await refused(inProcess(cfg, {}, (module) => module === "other"), req(), "not-your-agent");
+  await refused(inProcess(cfg, { task: async (id) => ({ id, identifier: "PEN-1", assigneeAgentId: "agent-2", status: "todo" }) }), req(), "task-not-assigned");
+  await refused(inProcess(cfg, { task: async (id) => ({ id, identifier: "PEN-1", assigneeAgentId: null, status: "todo" }) }), req(), "task-not-assigned");
   await refused(inProcess(cfg, { task: async () => undefined }), req(), "task-not-assigned");
   await refused(inProcess(cfg, { agent: async (id) => ({ id, metadata: {} }) }), req(), "not-an-engine-agent");
-  await refused(inProcess(cfg, { task: async (id) => ({ id, assigneeAgentId: "agent-1", status: "done" }) }), req(), "task-closed");
+  await refused(inProcess(cfg, { task: async (id) => ({ id, identifier: "PEN-1", assigneeAgentId: "agent-1", status: "done" }) }), req(), "task-closed");
   const jobs = inProcess(cfg);
   await refused(jobs, req({ engine: { kind: "nope" } }), "unknown-engine");
   const j = await jobs.start("engineering", req({ engine: { kind: "slow" } }));
@@ -90,16 +92,36 @@ test("identity binding: only an engine agent, on a task assigned to it now and s
   await finished(jobs, j.id);
 });
 
-test("a workspace through a symlink, outside the tasks folder or another module's is refused", async () => {
+test("a job's workspace, cloud session and box are its own task's: another task's, a symlinked one or another module's is refused", async () => {
   const { dir, cfg } = sandbox();
+  const code = async (jobs, over) => (await jobs.start("engineering", req(over)).catch((e) => e)).code;
   const jobs = inProcess(cfg);
+  // The workspace is derived from the task (work/tasks/<identifier>): naming another task's is refused.
+  assert.equal(await code(jobs, { workspace: { module: "engineering", id: "PEN-2" } }), "workspace-refused");
+  assert.equal(await code(jobs, { workspace: { module: "engineering", id: "../../secrets" } }), "workspace-refused");
+  assert.equal(await code(jobs, { workspace: { module: "other", id: "PEN-1" } }), "workspace-refused");
+  // The task's folder itself a symlink (to the vault), or missing: refused.
   symlinkSync(join(dir, "secrets"), join(dir, "work/tasks/LINK"));
-  const code = async (over) => (await jobs.start("engineering", req(over)).catch((e) => e)).code;
-  assert.equal(await code({ workspace: { module: "engineering", id: "LINK" } }), "workspace-refused");
-  assert.equal(await code({ workspace: { module: "engineering", id: ".." } }), "workspace-refused");
-  assert.equal(await code({ workspace: { module: "engineering", id: "MISSING" } }), "workspace-refused");
-  assert.equal(await code({ workspace: { module: "other", id: "PEN-1" } }), "workspace-refused");
-  assert.equal(await code({ workspace: { module: "engineering", id: "../../secrets" } }), "workspace-refused");
+  const linked = inProcess(cfg, { task: async (id) => ({ id, identifier: "LINK", assigneeAgentId: "agent-1", status: "todo" }) });
+  assert.equal(await code(linked, {}), "workspace-refused");
+  const missing = inProcess(cfg, { task: async (id) => ({ id, identifier: "PEN-9", assigneeAgentId: "agent-1", status: "todo" }) });
+  assert.equal(await code(missing, {}), "workspace-refused");
+  // A cloud session is the task's own (state/gcloud/<identifier>), for an agent with private reads.
+  for (const t of ["PEN-1", "PEN-2"]) mkdirSync(join(dir, "state/gcloud", t), { recursive: true });
+  const reads = inProcess(cfg, { agent: async (id) => ({ id, metadata: { runnerEngine: true, privateReads: true } }) });
+  const other = join(dir, "state/gcloud/PEN-2");
+  assert.equal(await code(reads, { cloud: { root: other, env: { CLOUDSDK_CONFIG: join(other, "config") } } }), "cloud-refused");
+  // A box is the one the launcher recorded for this task and agent, in this task's workspace.
+  const boxes = inProcess(cfg, { agent: async (id) => ({ id, metadata: { runnerEngine: true, box: true } }) });
+  mkdirSync(join(cfg.boxDir, "box-a"), { recursive: true });
+  mkdirSync(join(cfg.boxDir, "box-b"), { recursive: true });
+  writeFileSync(join(dir, "jobs.json"), JSON.stringify([
+    { container: "box-a", issueId: "task-2", agentId: "agent-1", workspace: join(cfg.workDir, "tasks/PEN-2") },
+    { container: "box-b", issueId: "task-1", agentId: "agent-7", workspace: join(cfg.workDir, "tasks/PEN-1") },
+  ]));
+  assert.equal(await code(boxes, { box: { container: "box-a" } }), "box-refused", "another task's box");
+  assert.equal(await code(boxes, { box: { container: "box-b" } }), "box-refused", "another agent's box");
+  assert.equal(await code(boxes, { box: { container: "box-z" } }), "box-refused", "a box the launcher doesn't know");
 });
 
 test("a job's env is the kernel's: nothing else of the kernel's own env, and only allowlisted names from its dispatcher", async () => {
@@ -166,8 +188,8 @@ for (const signal of ["SIGUSR2", "SIGKILL"]) {
   test(`a kernel restart (${signal}) leaves the job running and the next kernel adopts it: one finish, from where the last left off`, async () => {
     const { dir } = sandbox();
     const a = await host(dir);
-    const j = await a.call("POST", "/jobs", req({ engine: { kind: "slow" } }));
-    await until("some progress", async () => /^step [3-9]/.test((await a.call("GET", `/jobs/${j.id}`)).progress.said ?? ""));
+    const j = await a.call("POST", "/v1/jobs", req({ engine: { kind: "slow" } }));
+    await until("some progress", async () => /^step [3-9]/.test((await a.call("GET", `/v1/jobs/${j.id}`)).progress.said ?? ""));
     a.p.kill(signal);
     await a.exited;
     await wait(400);
@@ -180,7 +202,7 @@ for (const signal of ["SIGUSR2", "SIGKILL"]) {
     const b = await host(dir);
     assert.match(b.log(), /adopted a running job/);
     writeFileSync(join(dir, "state/logs/release"), "");
-    const v = await until("the adopted job's end", async () => { const x = await b.call("GET", `/jobs/${j.id}`); return x.state !== "running" && x; });
+    const v = await until("the adopted job's end", async () => { const x = await b.call("GET", `/v1/jobs/${j.id}`); return x.state !== "running" && x; });
     assert.equal(v.state, "done");
     assert.match(v.final, /^released after \d+/);
     assert.equal(v.session, "slow-1");
@@ -193,8 +215,8 @@ for (const signal of ["SIGUSR2", "SIGKILL"]) {
 test("a job that died while no kernel followed it is lost (exit null); a reused pid is never adopted", async () => {
   const { dir } = sandbox();
   const a = await host(dir);
-  const j = await a.call("POST", "/jobs", req({ engine: { kind: "slow" } }));
-  await until("the job going", async () => (await a.call("GET", `/jobs/${j.id}`)).progress.said);
+  const j = await a.call("POST", "/v1/jobs", req({ engine: { kind: "slow" } }));
+  await until("the job going", async () => (await a.call("GET", `/v1/jobs/${j.id}`)).progress.said);
   a.p.kill("SIGKILL");
   await a.exited;
   process.kill(-j.pid, "SIGKILL"); // the whole group, the recording shell too: no exit status is left
@@ -206,7 +228,7 @@ test("a job that died while no kernel followed it is lost (exit null); a reused 
   db.close();
   const b = await host(dir);
   for (const id of [j.id, "j-00000000000000ff"]) {
-    const v = await b.call("GET", `/jobs/${id}`);
+    const v = await b.call("GET", `/v1/jobs/${id}`);
     assert.equal(v.state, "lost", id);
     assert.equal(v.exit, null);
   }

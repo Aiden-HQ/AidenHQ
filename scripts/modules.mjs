@@ -807,6 +807,12 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
   const kernelModules = { owner: { name: String(settings.owner_name ?? ""), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), ...(reviewer ? { reviewer } : {}) };
+  // The engine-run agents (`dispatch: runner`, any module's or the instance's) are the job dispatcher's: the one enabled module
+  // with kernel.jobs. The kernel starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
+  const dispatchers = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
+  const runAgents = Object.entries(paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
+  if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
+  if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = runAgents;
   return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 

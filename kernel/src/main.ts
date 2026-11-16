@@ -90,6 +90,9 @@ if (sandbox.sandbox?.extra_writable_roots?.length) {
 }
 const jobs = createJobs({
   db: records.db, cfg: sandbox, log, boxWrap: BOX_EXEC_WRAP,
+  // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key;
+  // their jobcaps are their own grants.
+  mayDispatch: (module, agent) => { const key = grantsTable().agents?.[agent]?.key; return Boolean(key) && [(modulesFile().modules?.[module] as { dispatches?: string[] } | undefined)?.dispatches ?? []].flat().includes(String(key)); },
   jobcaps: (agent) => [grantsTable().agents?.[agent]?.jobcaps ?? []].flat().map(String),
   cp: {
     agent: async (id) => { const r = await cpApi(`/api/agents/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },

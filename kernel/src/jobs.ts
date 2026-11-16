@@ -16,10 +16,13 @@ import { SESSION, buildJob, observes, readEngines, type Box, type Engine, type S
 /** What the control plane says: the agent (setup's metadata: its module, engine run, private reads, box) and the task. */
 export interface ControlPlane {
   agent(id: string): Promise<{ id: string; metadata?: Record<string, unknown> } | undefined>;
-  task(id: string): Promise<{ id: string; assigneeAgentId?: string | null; status?: string } | undefined>;
+  task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string } | undefined>;
 }
+// Every resource a job gets is derived from the verified (module, agent, task), never taken from the request: its workspace is
+// work/tasks/<the task's identifier>, its cloud session state/gcloud/<identifier>, its box the one the launcher recorded for
+// this task and agent. A request that names anything else is refused.
 export interface JobRequest {
-  agent: string; task: string; workspace: { module: string; id: string }; prompt: string; session?: string;
+  agent: string; task: string; workspace?: { module: string; id: string }; prompt: string; session?: string;
   engine: { kind: string; model?: string; effort?: string };
   /** The job's own settings from its dispatcher, by name only from ENV_NAMES: its helper, its gh read token, its git identity. */
   env?: Record<string, string>;
@@ -97,6 +100,7 @@ const redact = (t: string) =>
 const PLAN = (p: unknown) => (Array.isArray(p) ? p.slice(0, 20).map((i: any) => ({ text: clip(i?.step, 200), state: i?.done ? "done" : i?.doing ? "doing" : "todo" })).filter((i) => i.text) : undefined);
 const STEPS = (s: unknown) => (Array.isArray(s) ? s.slice(-30).map((x: any) => ({ at: typeof x?.at === "string" ? x.at.slice(0, 40) : new Date().toISOString(), kind: "tool", text: clip(redact(String(x?.text ?? "")), 200) })) : undefined);
 
+const realpathOr = (p: string) => { try { return realpathSync(p); } catch { return ""; } };
 /** A folder inside `root` with no symlink on the way (bwrap would bind its target), resolved. */
 export function insideNoLinks(root: string, path: string, what: string): string {
   const base = realpathSync(root);
@@ -121,8 +125,10 @@ const DDL = `CREATE TABLE IF NOT EXISTS jobs (
   box TEXT, session TEXT, offset INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, exit INTEGER, final TEXT NOT NULL DEFAULT '',
   why TEXT NOT NULL DEFAULT '{}', usage TEXT, progress TEXT NOT NULL DEFAULT '{}', ended INTEGER)`;
 
-export function createJobs({ db, cfg, cp, jobcaps, log, boxWrap }: {
+export function createJobs({ db, cfg, cp, jobcaps, mayDispatch, log, boxWrap }: {
   db: DatabaseSync; cfg: SandboxConfig; cp: ControlPlane;
+  /** Whether this module dispatches this agent's jobs (compile: config/kernel/modules.json `dispatches`, by agent key). */
+  mayDispatch: (module: string, agent: string) => boolean;
   /** The agent's jobcaps (the grants table). */
   jobcaps: (agent: string) => string[];
   log: (msg: string, fields?: Record<string, unknown>) => void;
@@ -276,20 +282,24 @@ export function createJobs({ db, cfg, cp, jobcaps, log, boxWrap }: {
   async function start(module: string, b: JobRequest): Promise<JobView> {
     if (!b || typeof b !== "object" || !ID.test(String(b.agent)) || !ID.test(String(b.task)) || typeof b.prompt !== "string" || !b.engine || typeof b.engine.kind !== "string") throw new JobError(400, "bad-request", "send {agent, task, workspace: {module, id}, prompt, engine: {kind, model?, effort?}}");
     // Identity binding (spec §5.11): an engine-run agent, on a task the control plane assigns to it now.
+    if (!mayDispatch(module, b.agent)) throw new JobError(403, "not-your-agent", `module ${module} doesn't dispatch agent ${b.agent}'s jobs`);
     const agent = await cp.agent(b.agent);
     if (agent?.metadata?.runnerEngine !== true) throw new JobError(403, "not-an-engine-agent", `agent ${b.agent} isn't one that runs engine jobs`);
     const task = await cp.task(b.task);
     if (!task || task.assigneeAgentId !== b.agent) throw new JobError(403, "task-not-assigned", `task ${b.task} isn't assigned to agent ${b.agent}`);
+    const ident = String(task.identifier ?? "");
+    if (!ID.test(ident)) throw new JobError(400, "bad-task", `task ${b.task} has no identifier`);
     if (["done", "cancelled"].includes(String(task.status))) throw new JobError(409, "task-closed", `task ${b.task} is ${task.status}`);
     if (db.prepare("SELECT 1 FROM jobs WHERE task = ? AND state = 'running'").get(b.task)) throw new JobError(409, "job-running", `task ${b.task} already has a job running`);
     const entry = readEngines(cfg)[b.engine.kind];
     if (!entry) throw new JobError(400, "unknown-engine", `no engine module provides "${b.engine.kind}"`);
     // Private reads come with the agent, never with the request; a box only for a box agent on an engine that runs in one.
-    const box = b.box ? checkBox(b.box) : undefined;
+    const workPath = join(cfg.workDir, "tasks", ident);
+    const box = b.box ? checkBox(b.box, b.task, b.agent, workPath) : undefined;
     if (box && agent.metadata?.box !== true) throw new JobError(403, "not-a-box-agent", `agent ${b.agent} doesn't run its jobs in a computer`);
     const engine: Engine = { kind: b.engine.kind, model: String(b.engine.model ?? ""), effort: String(b.engine.effort ?? ""), ...(agent.metadata?.privateReads === true ? { reads: true } : {}), ...(box ? { box: true } : {}) };
-    if (b.workspace?.module !== module || !ID.test(String(b.workspace?.id))) throw new JobError(403, "workspace-refused", "a job's workspace is its own module's (workspace: {module, id})");
-    const worktree = insideNoLinks(join(cfg.workDir, "tasks"), join(cfg.workDir, "tasks", b.workspace.id), "workspace");
+    if (b.workspace && (b.workspace.module !== module || b.workspace.id !== ident)) throw new JobError(403, "workspace-refused", `a job works in its own task's workspace (${module}, ${ident})`);
+    const worktree = insideNoLinks(join(cfg.workDir, "tasks"), workPath, "workspace");
     const extra: Record<string, string> = {};
     for (const [k, v] of Object.entries(b.env ?? {})) {
       if (!ENV_NAMES.has(k) || typeof v !== "string" || v.length > 4096) throw new JobError(400, "env-refused", `a job's env may not set ${k}`);
@@ -300,7 +310,8 @@ export function createJobs({ db, cfg, cp, jobcaps, log, boxWrap }: {
     if (helper !== undefined && !/^http:\/\/127\.0\.0\.1:([1-9]\d{3,4})$/.test(helper)) throw new JobError(400, "env-refused", "the job's helper is http://127.0.0.1:<port>");
     let cloud: JobRequest["cloud"];
     if (b.cloud && observes(engine) && !box) {
-      const root = insideNoLinks(join(cfg.stateDir, "gcloud"), b.cloud.root, "cloud session");
+      const root = insideNoLinks(join(cfg.stateDir, "gcloud"), join(cfg.stateDir, "gcloud", ident), "cloud session");
+      if (resolve(String(b.cloud.root)) !== resolve(join(cfg.stateDir, "gcloud", ident)) && realpathOr(String(b.cloud.root)) !== root) throw new JobError(403, "cloud-refused", `a job's cloud session is its own task's (gcloud/${ident})`);
       for (const [k, v] of Object.entries(b.cloud.env ?? {})) if (!CLOUD_ENV.has(k) || typeof v !== "string" || !resolve(v).startsWith(root + sep)) throw new JobError(400, "env-refused", `a job's cloud env may not set ${k}`);
       cloud = { root, env: b.cloud.env };
     }
@@ -349,10 +360,18 @@ export function createJobs({ db, cfg, cp, jobcaps, log, boxWrap }: {
     return view(row(id)!);
   }
 
-  function checkBox(x: Box): Box {
-    if (!ID.test(String(x.container)) || x.outDir !== join(cfg.boxDir, x.container) || x.envFile !== join(cfg.boxDir, `${x.container}.env`)) throw new JobError(400, "box-refused", "a box job names the launcher's box: {container, envFile, outDir} under its jobs folder");
-    if (!existsSync(x.outDir)) throw new JobError(400, "box-refused", `no box folder for ${x.container}`);
-    return { container: x.container, envFile: x.envFile, outDir: x.outDir };
+  /** The box the computer launcher recorded (its jobs.json) for this task and agent, in this task's workspace; its paths are derived. */
+  function checkBox(x: Box, task: string, agent: string, workspace: string): Box {
+    const container = String(x?.container ?? "");
+    if (!ID.test(container)) throw new JobError(400, "box-refused", "a box job names the launcher's box by its container");
+    let recs: { container?: string; issueId?: string; agentId?: string; workspace?: string }[] = [];
+    try { recs = JSON.parse(readFileSync(join(dirname(cfg.boxDir), "jobs.json"), "utf8")); } catch {}
+    const rec = Array.isArray(recs) ? recs.find((r) => r?.container === container) : undefined;
+    if (!rec || rec.issueId !== task || rec.agentId !== agent || resolve(String(rec.workspace)) !== resolve(workspace)) throw new JobError(403, "box-refused", `box ${container} isn't this task's and agent's (the launcher's record)`);
+    const box = { container, envFile: join(cfg.boxDir, `${container}.env`), outDir: join(cfg.boxDir, container) };
+    if ((x.envFile && x.envFile !== box.envFile) || (x.outDir && x.outDir !== box.outDir)) throw new JobError(400, "box-refused", "a box's files are the launcher's, under its jobs folder");
+    if (!existsSync(box.outDir)) throw new JobError(400, "box-refused", `no box folder for ${container}`);
+    return box;
   }
 
   const own = (module: string, id: string) => {
