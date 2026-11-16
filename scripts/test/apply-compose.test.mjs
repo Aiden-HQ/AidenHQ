@@ -134,15 +134,15 @@ const recreates = (r) => calls(r, "docker compose up");
 // `ci-runner` is under the inactive `ci` profile, so `up`'s own service list doesn't have it; the finished job's
 // container is a named one-off (`docker compose run --name`) removing itself. `orphan1` is the real leftover: compose's
 // old <12hex>_aidenhq-whisper-live-mcp-1 name, stopped, for a module this config turned off. Everything else must be
-// left alone: a running container of that same dropped service, a stopped one under any other compose name, a stopped
-// container of a service still in the config, and a container whose name isn't compose's own.
+// left alone: a running container of that same dropped service, a stopped one under any other compose name, and a
+// container whose name isn't compose's own. (That name, stopped, for a service still in the config is a killed recreate's
+// half-made container: its own test below.)
 const services = ["board", "paperclip"];
 const containers = {
   board1: { name: "/aidenhq-board-1", running: "true" },
   [ciRunnerId]: { name: `/${ciRunner}`, running: "true" },
   orphan1: { name: "/0123456789ab_aidenhq-whisper-live-mcp-1", running: "false" },
   live1: { name: "/0123456789ab_aidenhq-some-dropped-service-1", running: "true" },
-  kept1: { name: "/0123456789ab_aidenhq-paperclip-1", running: "false" },
   second1: { name: "/0123456789ab_aidenhq-some-dropped-service-2", running: "false" },
   other1: { name: "/handmade", running: "false" },
   bare1: { name: "/aidenhq-some-dropped-service-1", running: "false" },
@@ -383,4 +383,29 @@ test("a secret that rotated while its container started is not recorded as read,
   const third = await apply(f);
   assert.equal(third.status, 0, third.out);
   assert.equal(recreates(third).length, 0, `a stable start is recorded: ${third.calls}`);
+});
+
+test("a killed recreate's half-made container is removed before anything moves, so the retry never trips on its name", async () => {
+  // As compose v5 leaves it when its up is killed mid-stop: the old paperclip still running under its own name, the new one
+  // created (never started) as <old id>_aidenhq-paperclip-1. board's own up was cut short after its create: left created.
+  const f = fixture({
+    containers: {
+      paper1: { name: "/aidenhq-paperclip-1", running: "true", image: "sha256:new", hash: "old" },
+      half1: { name: "/0123456789ab_aidenhq-paperclip-1", running: "false", image: "sha256:new", hash: "new" },
+      board1: { name: "/aidenhq-board-1", running: "true" },
+    },
+    services,
+    hashes: { paperclip: "new" },
+  });
+  writeFileSync(join(f.dir, "psid-paperclip"), "paper1\n");
+  writeFileSync(join(f.dir, "state-board"), "created\n");
+  const r = await apply(f);
+  assert.equal(r.status, 0, r.out);
+  assert.deepEqual(removals(r), ["docker rm half1"], "only the half-made container goes; the running one is never touched");
+  const lines = r.calls.split("\n");
+  assert.ok(lines.indexOf("docker rm half1") < lines.findIndex((l) => l.startsWith("docker compose up")), r.calls);
+  assert.match(recreates(r)[0], /--force-recreate .*paperclip/);
+  assert.match(r.out, /compose: paperclip half-made container cleaned/);
+  assert.ok(lines.includes("docker compose start board"), r.calls);
+  assert.match(r.out, /compose: board was left created: started/);
 });

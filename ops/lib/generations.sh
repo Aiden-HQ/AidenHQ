@@ -6,6 +6,7 @@
 #           failed (failed its health check after the switch: the auto-revert ran), refused (stopped at validation:
 #           nothing was switched)
 #   revert_of  set on the auto-revert's own line (the failed generation it reverted), with lkg (the generation it re-applied)
+#   recovered_at  when a later apply found this generation's apply dead and finished it (recoverDead in apply-config-work.sh)
 #   snapshot   the directory of this apply's module data snapshots (spec §6.4.1, genSnapshot below), taken at snapshot_at
 #   data_versions  each data module's data_version as this generation compiled it (config/module-data.json); absent = 0
 # The last known good (LKG) is the newest `good` line. ops/apply-config-work.sh sources this before any checkout, so these
@@ -36,6 +37,16 @@ switch (op) {
   }
   case "mark": { const [n, health, reason, log] = a; set(n, { health, ...(reason ? { reason } : {}), ...(log ? { log } : {}) }); break; } // n health [reason] [log]
   case "snapshot": set(a[0], { snapshot: a[1], snapshot_at: new Date().toISOString() }); break; // n dir
+  case "recovered": set(a[0], { recovered_at: new Date().toISOString() }); break; // n
+  // unsettled: "<n> <target>" when the newest generation is one an apply that died left behind: still pending, or marked
+  // failed with no auto-revert after it (one recovery each). target is the generation to revert (for a dead auto-revert, the
+  // failed generation it was reverting), or "-" for a rollback, which is only marked.
+  case "unsettled": {
+    const l = rows.at(-1);
+    if (l?.health === "pending") out(`${l.n} ${l.revert_of ?? (l.lkg ? "-" : l.n)}`);
+    else if (l?.health === "failed" && !l.revert_of && !l.lkg && !l.recovered_at && rows.some((r) => r.health === "good")) out(`${l.n} ${l.n}`);
+    break;
+  }
   case "versions": set(a[0], { data_versions: Object.fromEntries(Object.entries(JSON.parse(fs.readFileSync(a[1], "utf8"))).map(([m, d]) => [m, d.data_version])) }); break; // n module-data.json
   // n data-dir: "<module> <k> <time> <archive>" for each module whose marker is above the data_version generation n declared,
   // from the earliest snapshot taken after n (spec §6.4.1); refuses when that snapshot is gone (pruned).

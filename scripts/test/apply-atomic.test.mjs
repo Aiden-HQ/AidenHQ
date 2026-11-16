@@ -8,7 +8,7 @@
 // (/proc, flock, stat -c): CI's runners.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -63,7 +63,12 @@ echo "  skip  ops-mcp (meetings module not installed)"
 if [ -f "$CTRL/break" ] && git cat-file -e "$(cat data/applied-product 2>/dev/null)":BAD_HEALTH 2>/dev/null; then echo "  FAIL  kernel (10.231.0.1:3130)  down"; exit 1; fi
 echo "  ok    kernel (10.231.0.1:3130)"
 `,
-  "ops/compose-recreate.sh": `#!/usr/bin/env bash\necho recreate >> "$CALLS"\necho "compose: recreated what moved"\n`,
+  // With ctrl/block the step waits (blocked) until ctrl/release, then lets later applies through: an apply to kill mid-compose.
+  "ops/compose-recreate.sh": `#!/usr/bin/env bash
+echo recreate >> "$CALLS"
+if [ -f "$CTRL/block" ]; then touch "$CTRL/blocked"; while [ ! -f "$CTRL/release" ]; do sleep 0.1; done; rm -f "$CTRL/block"; fi
+echo "compose: recreated what moved"
+`,
   "ops/computer-images.sh": "#!/usr/bin/env bash\n",
   "ops/warehouse-sources.sh": "#!/usr/bin/env bash\n",
   "ops/ci-runner-units.sh": "#!/usr/bin/env bash\n",
@@ -105,7 +110,7 @@ function world() {
   for (const f of REAL) exe(d("pw", f), readFileSync(join(repo, f), "utf8"));
   for (const [f, t] of Object.entries(FAKES)) { mkdirSync(dirname(d("pw", f)), { recursive: true }); writeFileSync(d("pw", f), t); }
   for (const [f, t] of Object.entries(SCRIPTS)) exe(d("pw", f), t);
-  for (const u of ["aidenhq-kernel.service", "aidenhq-runner.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer"]) {
+  for (const u of ["aidenhq-kernel.service", "aidenhq-runner.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer"]) {
     mkdirSync(d("pw", "ops/units"), { recursive: true });
     writeFileSync(d("pw", "ops/units", u), `[Unit]\nDescription=${u}\n`);
   }
@@ -134,20 +139,27 @@ function world() {
   };
   const i1 = commitInstance(p1);
   git(root, "clone", "-q", d("i.git"), "inst");
+  const env = () => ({
+    PATH: `${d("bin")}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: d("home"), AIDENHQ_STATE_DIR: d("state"), AIDENHQ_INSTANCE_DIR: d("inst"),
+    CTRL: d("ctrl"), CALLS: d("calls"), AIDENHQ_HEALTH_DEADLINE_S: "2", AIDENHQ_KERNEL_DEADLINE_S: "2", AIDENHQ_HEALTH_INTERVAL_S: "1",
+    GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com",
+  });
   const sh = (script, ...args) => new Promise((resolve) => {
-    execFile("bash", [script, ...args], {
-      cwd: d("prod"),
-      env: {
-        PATH: `${d("bin")}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: d("home"), AIDENHQ_STATE_DIR: d("state"), AIDENHQ_INSTANCE_DIR: d("inst"),
-        CTRL: d("ctrl"), CALLS: d("calls"), AIDENHQ_HEALTH_DEADLINE_S: "2", AIDENHQ_KERNEL_DEADLINE_S: "2", AIDENHQ_HEALTH_INTERVAL_S: "1",
-        GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com",
-      },
-    }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
+    execFile("bash", [script, ...args], { cwd: d("prod"), env: env() }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
   });
   const run = (...args) => sh("ops/apply-config.sh", ...args);
+  // An apply in its own process group, to kill: the group (SIGKILL, as a host loses it) or just its shell.
+  const start = (...args) => {
+    const child = spawn("bash", ["ops/apply-config.sh", ...args], { cwd: d("prod"), env: env(), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (b) => { out += b; });
+    child.stderr.on("data", (b) => { out += b; });
+    const done = new Promise((resolve) => child.on("close", (code, signal) => resolve({ code, signal, out })));
+    return { child, done };
+  };
   const gens = () => (existsSync(d("state/generations.jsonl")) ? readFileSync(d("state/generations.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   const head = (r) => git(d(r), "rev-parse", "HEAD");
-  return { d, p1, i1, commitProduct, commitInstance, run, sh, gens, head, calls: () => readFileSync(d("calls"), "utf8") };
+  return { d, p1, i1, commitProduct, commitInstance, run, start, sh, gens, head, calls: () => readFileSync(d("calls"), "utf8") };
 }
 
 test("a first apply seeds the running pair as the last known good, validates, switches and marks itself good", async () => {
@@ -196,7 +208,7 @@ test("A14: a post-apply health failure reverts to the LKG and marks the generati
   assert.throws(() => git(w.d("inst"), "symbolic-ref", "-q", "HEAD"), "detached");
   assert.equal(git(w.d("inst"), "rev-parse", "origin/main"), i2, "the instance's origin/main is not moved");
   assert.equal(readFileSync(w.d("prod/data/applied-product"), "utf8").trim(), w.p1);
-  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /apply alert: generation 3 failed its health check .* reverted to generation 2/);
+  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /apply alert: generation 3 failed \(checks that passed .*\) and was reverted to generation 2/);
   // The owner's alert: the monitoring textfile the ApplyFailed rule reads.
   mkdirSync(w.d("data/modules/monitoring/textfile"), { recursive: true });
   execFileSync("bash", [join(repo, "ops/host-metrics.sh")], { env: { PATH: `${w.d("bin")}:/usr/bin:/bin`, HOME: w.d("home"), AIDENHQ_DATA_DIR: w.d("data"), AIDENHQ_STATE_DIR: w.d("state") } });
@@ -303,4 +315,82 @@ test("a replace with a claimed record reconciles it before A stops: the records 
   const after = w.calls().slice(before);
   assert.match(after, /^reconcile config\/modules\.json config\.next\/modules\.json$/m);
   assert.ok(after.indexOf("reconcile") < after.indexOf("aidenhq.module=acme"), after);
+});
+
+const until = async (ok, ms = 20000) => { const end = Date.now() + ms; while (!ok()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 50)); } };
+
+/** Applies p2 and kills it mid-compose: the whole process group with SIGKILL (no trap runs, nothing is left holding the lock). */
+async function killedMidCompose(w) {
+  assert.equal((await w.run()).status, 0);
+  const p2 = w.commitProduct("2");
+  const i2 = w.commitInstance(p2);
+  writeFileSync(w.d("ctrl/block"), "");
+  const { child, done } = w.start();
+  await until(() => existsSync(w.d("ctrl/blocked")));
+  process.kill(-child.pid, "SIGKILL");
+  await done;
+  rmSync(w.d("ctrl/block"));
+  assert.deepEqual(w.gens().map((g) => [g.n, g.health]), [[1, "good"], [2, "good"], [3, "pending"]]);
+  assert.equal(w.head("prod"), p2, "the checkout sits on the new product, half switched");
+  return { p2, i2 };
+}
+
+const reverted = (w) => {
+  const g = w.gens();
+  assert.deepEqual(g.map((x) => [x.n, x.health]), [[1, "good"], [2, "good"], [3, "failed"], [4, "good"]]);
+  assert.equal(g[2].reason, "the apply died mid-run");
+  assert.ok(g[2].recovered_at);
+  assert.deepEqual([g[3].product, g[3].instance, g[3].revert_of, g[3].lkg], [w.p1, w.i1, 3, 2]);
+  assert.equal(w.head("prod"), w.p1);
+  assert.equal(w.head("inst"), w.i1);
+  assert.equal(readFileSync(w.d("prod/data/applied-product"), "utf8").trim(), w.p1);
+  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /generation 3: the apply died mid-run, and no apply is finishing it: reverting[\s\S]*compose: recreated what moved[\s\S]*apply alert: generation 3 failed \(the apply died mid-run\) and was reverted to generation 2/);
+};
+
+test("an apply SIGKILLed mid-compose is reverted to the last known good by the next apply, which then holds the dead pair", async () => {
+  const w = world();
+  const { p2, i2 } = await killedMidCompose(w);
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  reverted(w);
+  assert.match(r.out, /reverted to generation 2/);
+  assert.match(r.out, /refusing: product .* failed its health check as generation 3 .* --retry/);
+  const retry = await w.run("--retry");
+  assert.equal(retry.status, 0, retry.out);
+  assert.deepEqual([w.gens().at(-1).product, w.gens().at(-1).instance, w.gens().at(-1).health], [p2, i2, "good"]);
+});
+
+test("at boot, --recover finishes a dead apply and applies nothing else; with nothing dead it does nothing", async () => {
+  const w = world();
+  await killedMidCompose(w);
+  const r = await w.run("--recover");
+  assert.equal(r.status, 0, r.out);
+  reverted(w);
+  const again = await w.run("--recover");
+  assert.equal(again.status, 0, again.out);
+  assert.equal(w.gens().length, 4, "nothing more ran");
+});
+
+test("an apply whose shell is killed mid-compose (SIGTERM) reverts itself on the way out", async () => {
+  const w = world();
+  assert.equal((await w.run()).status, 0);
+  w.commitInstance(w.commitProduct("2"));
+  writeFileSync(w.d("ctrl/block"), "");
+  const { child, done } = w.start();
+  await until(() => existsSync(w.d("ctrl/blocked")));
+  child.kill("SIGTERM");
+  writeFileSync(w.d("ctrl/release"), "");
+  const r = await done;
+  assert.notEqual(r.code, 0, r.out);
+  reverted(w);
+});
+
+test("a log follower that dies mid-apply costs only the copy: the apply finishes good and its log is whole", async () => {
+  const w = world();
+  // A follower that crashes as it starts, as uutils tee/tail 0.10 have.
+  exe(w.d("bin/gnutail"), "#!/usr/bin/env bash\nkill -SEGV $$\n");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.equal(w.gens().at(-1).health, "good");
+  assert.match(readFileSync(w.d("state/apply-2.log"), "utf8"), /generation 2: product [\s\S]*apply timing: compose[\s\S]*generation 2 is good: the last known good[\s\S]*apply timing: total/);
 });
