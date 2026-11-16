@@ -28,14 +28,15 @@ wait plainly when the lock does not clear in that time, instead of the change as
 
 `ops/compose-recreate.sh` is the compose step. It stops before building, dumping or removing anything when the config
 lists no services; dumps the warehouse first, when this host runs one (a fresh file created exclusively under `umask 077`
-in a `0700` directory, so a taken name is skipped rather than truncated and the dump is `0600`; older dumps keep their
-bytes and only have their mode tightened); builds every image; recreates only the services whose image, compose config or
-mounted secret content moved; removes compose's leftovers for services this config dropped, never a CI job's runner; and
-retries once for the daemon's two races (a removal already in progress, a container name still in use). A recreate that
-was killed leaves its half-made replacement behind (compose creates it as `<12hex>_<project>-<service>-1` and renames it
-only once the old one is gone); each pass removes those, never a running one, before deciding what moved, so a retry never
-trips on "name already in use". A service still left `created` at the end is started. It prints one line per service
-saying what became of it: `recreated`, `kept`, or `leftover cleaned`.
+in a `0700` directory, so a taken name is skipped rather than truncated and the dump is `0600`; an older dump is never
+rewritten, only has its mode tightened, and only the newest two are kept, the rest removed); builds every image;
+recreates only the services whose image, compose config or mounted secret content moved; removes compose's leftovers for
+services this config dropped, never a CI job's runner; and retries once for the daemon's two races (a removal already in
+progress, a container name still in use). A recreate that was killed leaves its half-made replacement behind (compose
+creates it as `<12hex>_<project>-<service>-1` and renames it only once the old one is gone); each pass removes those,
+never a running one, before deciding what moved, so a retry never trips on "name already in use". A service still left
+`created` at the end is started. It prints one line per service saying what became of it: `recreated`, `kept`, or
+`leftover cleaned`.
 
 An apply that dies mid-run (killed, its shell gone) leaves its generation `pending`, or `failed` before the auto-revert
 ran. It is finished like a failed health check (the snapshot put back, the last known good re-applied) by whichever comes
@@ -64,7 +65,7 @@ Module data (spec §6.4.1): before an apply switches, it stops the containers of
 `services.data: true` (its code, its compose services with their settings, or its `data_version` changed) and archives `data/modules/<module>/` to
 `~/checkpoints/gen-<n>/<module>.tar` (as root in a pinned container, so root-owned files come along; the archive is the
 owner's, `0600`). Without room for it (1.2 times the dirs plus 20 GB, as `scripts/backup.sh`) the apply is refused and the
-containers start again. The newest five `gen-*` snapshots are kept. A failed health check puts the whole snapshot back
+containers start again. The newest two `gen-*` snapshots are kept. A failed health check puts the whole snapshot back
 before the last known good starts. `ops/rollback.sh <n>` puts back only modules whose `.data_version` marker is above the
 `data_version` generation `n` declared, each from the earliest snapshot after `n`, and refuses when that snapshot was
 pruned. A restore unpacks into a fresh sibling folder and swaps it in, so a module never has half its old data.
@@ -130,7 +131,8 @@ runs, its live database is left out and its hourly dumps carry it; for a complet
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
-Postgres on 2026-11-16). Each successful apply prunes build cache and dangling images older than 48 hours.
+Postgres on 2026-11-16). Each successful apply prunes build cache and unused images older than 48 hours; `prune-docker.timer`
+does the same daily on a host that hasn't applied.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the runner are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be

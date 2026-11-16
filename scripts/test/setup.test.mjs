@@ -56,6 +56,12 @@ test("person.env: an unquoted value ends at ' #', a quoted one keeps it", () => 
   assert.ok(out.includes("openrouter-key.mjs create aidenhq-alice 75"), out);
 });
 
+test("dry run installs and starts the Docker prune timer, so a fresh host cleans its images", () => {
+  const out = dry(conf(person));
+  assert.match(out, /cp .*prune-docker\.service .*prune-docker\.timer /, out);
+  assert.match(out, /enable --now .*prune-docker\.timer/, out);
+});
+
 test("dry run needs no node, and a missing OpenRouter key is 'would fail'", () => {
   const file = conf(person.filter((l) => !l.startsWith("OPENROUTER")));
   const out = execFileSync("/bin/bash", [setup, "--dry-run", "--config", file], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent" } });
