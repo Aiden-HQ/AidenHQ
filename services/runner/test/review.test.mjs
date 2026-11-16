@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_DIFF, MAX_FILES, MODEL_CODES, fileContext, readSourceExceptions, review, reviewPrompt, sourcesInDiff } from "../src/review.mjs";
+import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_DIFF, MAX_FILES, MODEL_CODES, diffSections, fileContext, readSourceExceptions, review, reviewPrompt, sourcesInDiff } from "../src/review.mjs";
 import { siblingBlock } from "../src/siblings.ts";
 import { REPO_ROOT } from "../src/config.mjs";
 import { padCase } from "./case-pad.mjs";
@@ -140,6 +140,37 @@ test("a source exception is a record only when it says the owner approved it, fo
   // The source a diff adds is what a record is matched on, so the reviewer is told which record the change reaches for.
   assert.deepEqual([...sourcesInDiff(records, aptSourceDiff)], [0]);
   assert.deepEqual([...sourcesInDiff(records, "+RUN apt-get install -y gh")], [], "the same package from the distro's own source reaches no new source");
+});
+
+test("a record read from one base never covers a source change in another repo", async () => {
+  // The runner reads each base's records and writes one `### <repo> <branch>` section per branch: a record keeps the repo
+  // and base it came from, and is matched only against that repo's own section of the combined diff.
+  const plain = "+x";
+  const sections = `### acme/app fix/a (aaaaaaaaaaaa)\n${aptSourceDiff}\n\n### acme/other fix/b (bbbbbbbbbbbb)\n${plain}`;
+  assert.deepEqual(diffSections(sections).map((x) => x.repo), ["acme/app", "acme/other"], "one part per section, with its repo");
+  const [record] = readSourceExceptions(sourceFile([ghRecord]));
+  // The record is acme/app's: it covers acme/app's own change, and never another repo's section, even one that adds the
+  // same source (the record's repo is what ties it to a change).
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app", base: "main" }], sections)], [0]);
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/other", base: "main" }], sections)], [], "a record read from another repo's base covers none of this repo's");
+  const both = `### acme/app fix/a (aaaaaaaaaaaa)\n${plain}\n\n### acme/other fix/b (bbbbbbbbbbbb)\n${aptSourceDiff}`;
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app", base: "main" }], both)], [], "the source added in acme/other reaches no record from acme/app's base");
+  assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/other", base: "main" }], both)], [0], "and does reach one read from acme/other's own base");
+});
+
+test("a source change passes on its own base's record and is rejected when another base holds it", async () => {
+  // The same combined diff twice: with the record on acme/app's base (approved) and with it only on acme/other's (no
+  // record on acme/app's own base, so its new source has no exception).
+  const policyModel = async (_m, { user }) => (/<<<APPROVED_SOURCE_EXCEPTIONS\n[\s\S]*\[the diff adds this source\][\s\S]*APPROVED_SOURCE_EXCEPTIONS>>>/.test(user)
+    ? ok
+    : { content: JSON.stringify({ decision: "reject", reason_code: "supply_chain", reason: "it points a package at a new source", second_review: false }) });
+  const [record] = readSourceExceptions(sourceFile([ghRecord]));
+  const diff = `### acme/app fix/a (aaaaaaaaaaaa)\n${aptSourceDiff}`;
+  const where = "acme/app main .github/supply-chain-source-exceptions.yaml";
+  const own = await review({ card, diff, policy: "p", sources: { where, records: [{ ...record, repo: "acme/app", base: "main" }] }, ask: policyModel });
+  assert.deepEqual([own.decision, own.code], ["approve", "in_scope"]);
+  const elsewhere = await review({ card, diff, policy: "p", sources: { where, records: [{ ...record, repo: "acme/other", base: "main" }] }, ask: policyModel });
+  assert.deepEqual([elsewhere.decision, elsewhere.code], ["reject", "supply_chain"]);
 });
 
 test("the reviewer is given the base's source records as data, or told plainly there are none", async () => {

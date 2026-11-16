@@ -2479,8 +2479,9 @@ async function cardSources(bases) {
   const known = bases.filter((b) => b.base);
   try {
     const gh = await findRealGh();
-    const read = async ({ repo, base }) => (await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${encodeURIComponent(SOURCE_EXCEPTIONS_FILE)}?ref=${encodeURIComponent(base)}`], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout;
-    return { where: known.map((b) => `${b.repo} ${b.base} ${SOURCE_EXCEPTIONS_FILE}`).join("; "), records: (await Promise.all(known.map((b) => read(b).catch(() => "")))).flatMap(readSourceExceptions) };
+    // Each record keeps the repo and base it was read from: it may only ever cover that repo's own change.
+    const read = async ({ repo, base }) => readSourceExceptions((await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${encodeURIComponent(SOURCE_EXCEPTIONS_FILE)}?ref=${encodeURIComponent(base)}`], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout).map((r) => ({ ...r, repo, base }));
+    return { where: known.map((b) => `${b.repo} ${b.base} ${SOURCE_EXCEPTIONS_FILE}`).join("; "), records: (await Promise.all(known.map((b) => read(b).catch(() => [])))).flat() };
   } catch (err) {
     log("source exceptions unread", { err: String(err.message ?? err).slice(0, 200) });
     return { where: `${SOURCE_EXCEPTIONS_FILE} (could not be read)`, records: [] };

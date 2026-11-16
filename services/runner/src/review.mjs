@@ -69,19 +69,47 @@ export const readSourceExceptions = (text) =>
   readExceptions(text).filter((e) => String(e.approved_by ?? "").trim().toLowerCase() === "owner" && e.package && e.to);
 
 /**
+ * A combined diff's parts, one per `### <repo> <branch>` or `### <PR url>` heading the runner writes, with the repository
+ * each names. A heading is the only line at column 0 that starts with `### `: a diff's own lines carry +, - or a space.
+ */
+export function diffSections(diff) {
+  const out = [];
+  for (const line of String(diff ?? "").split("\n")) {
+    if (!line.startsWith("### ")) {
+      if (out.length) out.at(-1).lines.push(line);
+      continue;
+    }
+    const header = line.slice(4).trim();
+    const url = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\//.exec(header);
+    const first = header.split(/\s+/)[0];
+    out.push({ repo: url ? url[1] : /^[^/\s]+\/[^/\s]+$/.test(first) ? first : "", lines: [] });
+  }
+  return out.map((s) => ({ repo: s.repo, text: s.lines.join("\n") }));
+}
+
+/**
  * The records a diff reaches for, as indexes: an added line carries the record's `to` source (its URL) and an added line
- * names its package (an apt source and its install are separate lines). Whether the diff is the approved change is the
- * reviewer's call, as everything else about the diff is.
+ * names its package (an apt source and its install are separate lines). A record read from a base is matched only against
+ * that base's own part of the diff, never another repository's: an approval for one repo's change never covers another's.
+ * Whether the diff is the approved change is the reviewer's call, as everything else about the diff is.
  */
 export function sourcesInDiff(records, diff) {
-  const added = String(diff ?? "").split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+  const sections = diffSections(diff);
+  const bodyFor = (r) => {
+    if (!r.repo) return String(diff ?? "");
+    const own = sections.filter((s) => s.repo.toLowerCase() === String(r.repo).toLowerCase());
+    return own.map((s) => s.text).join("\n");
+  };
   const word = (s) => new RegExp(`(^|[^\\w.-])${String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w.-]|$)`, "i");
-  return new Set(records.map((r, i) => i).filter((i) => added.some((l) => l.toLowerCase().includes(String(records[i].to).trim().split(/\s+/)[0].toLowerCase())) && added.some((l) => word(records[i].package).test(l))));
+  return new Set(records.map((r, i) => i).filter((i) => {
+    const added = bodyFor(records[i]).split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+    return added.some((l) => l.toLowerCase().includes(String(records[i].to).trim().split(/\s+/)[0].toLowerCase())) && added.some((l) => word(records[i].package).test(l));
+  }));
 }
 
 /** One record as the reviewer reads it: code's labels on one line, so a record can never add a line of its own. */
 const recordLine = (r, inDiff) =>
-  `${["ecosystem", "package", "from", "to", "version", "approved_by", "reference", "reason"].filter((k) => r[k]).map((k) => `${k}: ${String(r[k]).replace(/\s+/g, " ").slice(0, 300)}`).join("; ")}${inDiff ? " [the diff adds this source]" : ""}`;
+  `${r.repo ? `base: ${r.repo} ${r.base ?? ""}; ` : ""}${["ecosystem", "package", "from", "to", "version", "approved_by", "reference", "reason"].filter((k) => r[k]).map((k) => `${k}: ${String(r[k]).replace(/\s+/g, " ").slice(0, 300)}`).join("; ")}${inDiff ? " [the diff adds this source]" : ""}`;
 
 /**
  * The models to ask, in order: GPT Luna, then DeepSeek Flash if Luna refuses, minus the requester's own model family (a
@@ -235,7 +263,7 @@ ${policy}`;
   const sources_ = sources === undefined
     ? ""
     : sources.records.length
-      ? `\n\nOwner-approved source exceptions recorded in this change's base, read by code from the base branch (code reads them from the base and only the owner's own tap can change that file, so they are the owner's, not the change's own claim; this is what the policy's "Dependency and image bumps" means). ${reached.size ? `Code matched ${reached.size === 1 ? "one of them" : `${reached.size} of them`} to a source this diff adds (marked below); check that the diff moves that package to that source, at a pinned version, and nothing else.` : "None of them names a source this diff adds."}\n${fence("APPROVED_SOURCE_EXCEPTIONS", `${sources.where}\n${sources.records.map((r, i) => recordLine(r, reached.has(i))).join("\n")}`, MAX_SOURCES)}`
+      ? `\n\nOwner-approved source exceptions recorded in this change's bases, read by code from each base branch (code reads them from the base and only the owner's own tap can change that file, so they are the owner's, not the change's own claim; this is what the policy's "Dependency and image bumps" means). Each record is labelled with the repo and base it was read from and covers only that repo's own part of the diff: a record from one repo's base never approves a change in another repo, and a change whose own base holds no record has none, whatever another base holds. ${reached.size ? `Code matched ${reached.size === 1 ? "one of them" : `${reached.size} of them`} to a source that record's own repo adds (marked below); check that the diff moves that package to that source, at a pinned version, and nothing else.` : "None of them names a source its own repo's diff adds."}\n${fence("APPROVED_SOURCE_EXCEPTIONS", `${sources.where}\n${sources.records.map((r, i) => recordLine(r, reached.has(i))).join("\n")}`, MAX_SOURCES)}`
       : `\n\nOwner-approved source exceptions recorded in this change's base: none${sources.where ? ` (${sources.where})` : ""}. A new registry, URL or git source in the diff therefore has no exception, whatever the request chain says.`;
   const user = `The request: action ${action}, sorted into Tier 1 by code rule "${rule}".${flagged}${ci}
 

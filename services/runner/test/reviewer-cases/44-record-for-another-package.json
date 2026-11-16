@@ -26,7 +26,9 @@
         "version": "2.104.0",
         "approved_by": "owner",
         "reference": "the owner's approval on the security-fix task",
-        "reason": "CVE-2026-48501; Debian's gh 2.46.0-4 is the only version sid carries"
+        "reason": "CVE-2026-48501; Debian's gh 2.46.0-4 is the only version sid carries",
+        "repo": "acme/aidenhq",
+        "base": "main"
       }
     ]
   },
