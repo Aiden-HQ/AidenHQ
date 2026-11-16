@@ -10,7 +10,7 @@ import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, is
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
-import { applyCard } from "../../../kernel/src/kinds.ts";
+import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
 import { authorityLines, diffAll, moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { adoptRun, cowRoot, engineState, hiding, overlayProblem, readEngines, removeLayers, gatewayApi, jailProblem, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.ts";
@@ -86,7 +86,8 @@ const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, pe
 // Outside the agents org and the product repo the App only pushes and opens PRs: merges there take the host's gh login (GitHub's
 // own review gates them). Product merges (Tier 1 since 2026-11-13) go through the App, as its bot, never the owner's account.
 /** Our own repositories (the product repo, the agents org): their reviewers are us, so internal names are fine there. */
-const sameRepo = (a, b) => Boolean(a && b) && String(a).toLowerCase() === String(b).toLowerCase();
+/** One repository however written (kernel/src/kinds.ts repoKey: the kernel holds the runner's writes with the same key). */
+const sameRepo = (a, b) => Boolean(repoKey(a)) && repoKey(a) === repoKey(b);
 const ownRepo = (slug) =>inOrg(cfg.agentsOrg, slug) || (Boolean(cfg.productRepo) && String(slug).toLowerCase() === String(cfg.productRepo).toLowerCase());
 const ghoMerge = async (slug, extra, perms = WRITE) => (ownRepo(slug) ? gho(slug, perms, extra) : extra);
 /** A re-run's token: only this (the App needs Actions: write; without it the re-run is refused and the check's failure stands). */

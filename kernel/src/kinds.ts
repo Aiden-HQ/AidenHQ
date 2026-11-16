@@ -10,7 +10,9 @@ import { requestPatches } from "./tier.ts";
 import type { Kind, Schema } from "./writes.ts";
 
 const SHA: Schema = { type: "string", pattern: "^[0-9a-f]{40}$" };
-const REPO: Schema = { type: "string", pattern: "^[\\w.-]+\\/[\\w.-]+$" };
+// owner/name only: no `.git`, no trailing slash, no further path (repoKey canonicalises what reaches the same repo).
+const NAME = "[\\w.-]+\\/(?![\\w.-]*\\.git(?:$|\\/))[\\w.-]*[\\w-]";
+const REPO: Schema = { type: "string", pattern: `^${NAME}$` };
 const PATCH: Schema = { type: "string", pattern: "^[0-9a-f]{64}$" };
 const REF: Schema = { type: "string", minLength: 1, maxLength: 200, pattern: "^[^\\s`]+$" };
 const BRANCH: Schema = { type: "object", additionalProperties: false, required: ["repo", "branch", "sha"], properties: { repo: REPO, branch: REF, sha: SHA, base: SHA, patch: PATCH } };
@@ -22,11 +24,11 @@ export const RUNNER_ARGS: Record<string, Schema> = {
   // merge: the product repo's one-card path (push, PR, then merge at exactly these commits once green), shown on the card.
   pr: obj({ only: BRANCHES, text: obj({ title: { type: "string", maxLength: 300 }, body: { type: "string", maxLength: 60_000 } }, ["title", "body"]), merge: { enum: [true] } }, ["only"]),
   merge: obj({
-    prs: { type: "array", minItems: 1, maxItems: 30, items: obj({ repo: REPO, number: { type: "integer", minimum: 1 }, url: { type: "string", pattern: "^https:\\/\\/github\\.com\\/[\\w.-]+\\/[\\w.-]+\\/pull\\/\\d+$" }, head: SHA, noReview: { enum: [true] }, patch: PATCH }, ["repo", "number", "url"]) },
+    prs: { type: "array", minItems: 1, maxItems: 30, items: obj({ repo: REPO, number: { type: "integer", minimum: 1 }, url: { type: "string", pattern: `^https:\\/\\/github\\.com\\/${NAME}\\/pull\\/\\d+$` }, head: SHA, noReview: { enum: [true] }, patch: PATCH }, ["repo", "number", "url"]) },
     gap: { type: "integer", minimum: 0, maximum: 720 },
   }, ["prs"]),
   // A new app's repository in the agents org (the runner's tiers.mjs refuses any other org or name before filing).
-  create_repo: obj({ repo: { type: "string", pattern: "^[\\w.-]+\\/[a-z][a-z0-9-]{0,62}$" } }, ["repo"]),
+  create_repo: obj({ repo: { type: "string", pattern: "^[\\w.-]+\\/[a-z][a-z0-9-]{0,62}$" } }, ["repo"]), // never `.git`: the name is lower-case letters, digits, dashes
 };
 
 // authority: the module changes the apply brings, one line each (kernel/src/loader/authority.ts), shown on the card;
@@ -62,8 +64,16 @@ export function raiseCapCard(a: { scope: string; agentId: string; subject: strin
 
 /** The product and instance repositories (owner/name), from the host's settings (AIDENHQ_PRODUCT_REPO, AIDENHQ_INSTANCE_REPO). */
 export type Repos = { product?: string; instance?: string };
-const lower = (v: unknown) => String(v ?? "").toLowerCase();
-const urlRepo = (url: unknown) => /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/\d+$/.exec(String(url ?? ""))?.[1];
+/**
+ * A repository as one key, however it is written: owner/name lower-cased, a trailing `.git` and slashes dropped; anything
+ * else (more path, odd characters, nothing) is no repository (undefined). Every rule here compares only these keys, and the
+ * runner compares with the same function.
+ */
+export function repoKey(v: unknown): string | undefined {
+  const s = String(v ?? "").trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, "").replace(/\/+$/, "");
+  return /^[\w.-]+\/[\w.-]+$/.test(s) && !/(^|\/)\.+($|\/)/.test(s) ? s : undefined;
+}
+const urlRepo = (url: unknown) => repoKey(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+\/*$/.exec(String(url ?? "").trim())?.[1]);
 /**
  * What the kernel derives from a runner kind's args itself, never from the runner's plan:
  * - unknown product or instance repo: nothing can be told apart from them, so every runner kind is the owner's after the
@@ -79,16 +89,18 @@ export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 |
   const branches: { repo: string; branch: string }[] = args?.only ?? [];
   const prs: { repo: string; url: string }[] = args?.prs ?? [];
   const refused = (why: string) => ({ floor: 2 as const, owner: false, refuse: why, ownerRequired: false, content: null });
-  if (prs.some((p) => lower(urlRepo(p.url)) !== lower(p.repo))) return refused("a PR's URL names another repository than its repo");
-  const touched = [...branches.map((b) => b.repo), ...prs.map((p) => p.repo), ...(action === "create_repo" ? [args?.repo] : [])].map(lower);
-  const product = lower(repos.product), instance = lower(repos.instance);
+  if (prs.some((p) => !urlRepo(p.url) || urlRepo(p.url) !== repoKey(p.repo))) return refused("a PR's URL names another repository than its repo");
+  const named = [...branches.map((b) => b.repo), ...prs.map((p) => p.repo), ...(action === "create_repo" || action === "apply" ? [args?.repo] : [])];
+  const touched = named.map(repoKey);
+  if (touched.some((r) => !r)) return refused("a repository isn't owner/name");
+  const product = repoKey(repos.product) ?? "", instance = repoKey(repos.instance) ?? "";
   if (instance && action !== "apply" && touched.includes(instance)) return refused("the instance repo changes only through apply");
   if (product && action === "create_repo" && touched.includes(product)) return refused("the product repo already exists");
   const unknown = !product || !instance;
   const floor = unknown ? 2 : touched.includes(product) || branches.some((b) => /^(main|master)$/.test(b.branch)) || args?.merge === true ? 1 : 0;
-  const target = action === "merge" && prs.length ? prs.map((p) => lower(p.url)).sort().join(" ")
-    : (action === "push" || action === "pr") && branches.length ? branches.map((b) => `${lower(b.repo)} ${b.branch}`).sort().join(" ")
-    : action === "apply" ? `${lower(args.repo)} ${args.branch}` : action === "create_repo" ? lower(args.repo) : undefined;
+  const target = action === "merge" && prs.length ? prs.map((p) => `${urlRepo(p.url)}#${String(p.url).replace(/\/+$/, "").split("/").pop()}`).sort().join(" ")
+    : (action === "push" || action === "pr") && branches.length ? branches.map((b) => `${repoKey(b.repo)} ${b.branch}`).sort().join(" ")
+    : action === "apply" ? `${repoKey(args.repo)} ${args.branch}` : action === "create_repo" ? repoKey(args.repo) : undefined;
   const p = requestPatches(action, { branches, prs });
   return { floor, owner: unknown, ownerRequired: action === "apply" && args?.ownerRequired === true, ...(target ? { target } : {}), content: p === undefined ? null : p === null ? "?" : p };
 }

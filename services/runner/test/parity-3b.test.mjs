@@ -165,6 +165,14 @@ test("the kernel decides what the plan only proposes: new module authority, the 
   assert.equal(two("d".repeat(40), ["4", "2"]).rule, "owner-veto");
   assert.equal(two("e".repeat(40), ["2", "5", "6"]).rule, "owner-veto");
   assert.equal(two("f".repeat(40), ["5"]).state, "claimed");
+  // However a repository is written, it is one repository to every rule: case, `.git` and a trailing slash change nothing, and
+  // the args schema takes owner/name only.
+  const pushTo = (repo, branch = "feat/s") => () => k.writes.fileRunner({ kind: "runner.push", task: "i-6", args: { only: [{ repo, branch, sha: "a".repeat(40) }] }, plan: { tier: 0, card: { sentence: "x" } } });
+  for (const repo of ["Acme-Agents/AidenHQ-Instance", "acme-agents/aidenhq-instance.git", "acme-agents/aidenhq-instance/", "acme-agents/aidenhq-instance.git/"]) assert.throws(pushTo(repo), /only through apply|args\.only\[0\]\.repo/, repo);
+  for (const repo of ["acme/aidenhq.git", "acme/aidenhq/", "acme/aidenhq/x"]) assert.throws(pushTo(repo), /args\.only\[0\]\.repo/, repo);
+  assert.equal(pushTo("ACME/AidenHQ")().state, "review"); // the product repo, in any case: at least the reviewer
+  for (const url of ["https://github.com/acme-agents/aidenhq-instance.git/pull/2", "https://github.com/Acme-Agents/AidenHQ-Instance/pull/2"]) assert.throws(() => mergeOf("acme-agents/aidenhq-instance", url), /only through apply|args\.prs/, url);
+  assert.throws(() => mergeOf("ACME-AGENTS/AIDENHQ-INSTANCE", "https://github.com/acme-agents/aidenhq-instance/pull/2"), /only through apply/);
   // An unknown product or instance repo: every runner write is the owner's after the reviewer (fails closed).
   const blind = kernel("full", undefined, {}).writes.fileRunner({ kind: "runner.push", task: "i-5", args: { only: [{ repo: "acme-agents/app", branch: "feat/c", sha: "9".repeat(40) }] }, plan: { tier: 0, card: { sentence: "x" } } });
   assert.deepEqual([blind.state, blind.review_first, blind.rule], ["review", "owner", "unknown-repos"]);
