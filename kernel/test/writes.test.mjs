@@ -120,7 +120,6 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   assert.notEqual(again.approval, open1.approval);
   assert.equal(again.tier, 2);
   assert.equal(k.records.get(open1.approval).state, "cancelled");
-  // Another agent's identical request is never folded into it either.
   assert.equal((await pending(await tool("post_note", { note: "v" }))).approval, again.approval);
   // The owner's no on a kind makes the next request on the task theirs (Tier 2), the reviewer still first.
   const next = k.records.get(refiled[0].id);
@@ -200,4 +199,24 @@ test("a replace with a claimed record reconciles it before A stops: its executor
   assert.deepEqual(status.sort(), [done, lost].sort());
   assert.deepEqual([done, lost, open, other].map((id) => k.records.get(id).state), ["done", "unknown", "cancelled", "review"]);
   assert.equal(k.records.get(done).outcome.text, "it went through");
+});
+
+test("another requester's identical request is its own record, and a stricter refile never cancels an approved one", async (t) => {
+  const { k, tool, pending } = await twin(t);
+  const a = await pending(await tool("post_note", { note: "same" }));
+  // Cy files the same request on the same task: its own record; Ada's is untouched.
+  const cy = { kind: "run", agent: "ag-cy", key: "cy", name: "Cy", roles: [], tools: { twin: ["post_note"] }, task: "TASK-1", credential: "" };
+  const c = await k.writes.request(cy, { kind: "twin.post", args: { note: "same" } });
+  assert.notEqual(c.id, a.approval);
+  assert.equal(k.records.get(a.approval).state, "review");
+  assert.equal((await k.writes.request(cy, { kind: "twin.post", args: { note: "same" } })).id, c.id);
+  // An approved record (here one a restart left unclaimed) stays approved when a stricter refile comes after the owner's no.
+  const ar = k.records.get(a.approval);
+  const approved = k.records.file({ ...ar, state: "approved" });
+  const veto = k.records.file({ ...ar, args: { note: "other" }, state: "owner", tier: 2 });
+  k.records.decide(veto.id, veto.digest, "reject", "owner:chat", "chat");
+  const again = await pending(await tool("post_note", { note: "same" }));
+  assert.equal(again.tier, 2);
+  assert.equal(k.records.get(approved.id).state, "approved");
+  assert.equal(k.records.get(c.id).state, "review");
 });

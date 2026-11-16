@@ -73,8 +73,8 @@ export function openRecords(file: string) {
       return (db.prepare(`SELECT * FROM records WHERE state IN (${states.map(() => "?").join(",")})${reviewed ? " AND tier > 0" : ""}${task ? " AND task = ?" : ""} ORDER BY created_at DESC LIMIT ?`)
         .all(...states, ...(task ? [task] : []), limit) as any[]).map((r) => row(r)!);
     },
-    /** The open record of this content on this task, if there is one (a repeated request returns it, never a second card). */
-    open: (task: string, kind: string, digest: string) => row(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') LIMIT 1").get(task, kind, digest)),
+    /** The open records of this content on this task (a repeated request returns its own, never a second card). */
+    open: (task: string, kind: string, digest: string): Rec[] => (db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved')").all(task, kind, digest) as any[]).map((r) => row(r)!),
     /** Records of these modules' kinds in these states (a reconcile before the modules are removed). */
     ofModules(modules: string[], states: State[]): Rec[] {
       if (!modules.length) return [];

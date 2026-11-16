@@ -114,12 +114,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     const t = computeTier({ floor: k.floor, raise, priorVeto: task ? records.vetoed(task, kind) : false, autonomy: autonomy(), panel: k.panel === true });
     if (t.tier > 0 && !task) throw fail(400, "no_task", `${kind} needs approval: pass your current task`);
-    // The same request still open on the task is that record, never a second card that would run twice: only while it is
-    // the same requester's and at least as strict (tier and panel). Otherwise it is cancelled and this one is filed.
-    const same = t.tier > 0 ? records.open(task, kind, digestOf(base)) : undefined;
+    // The same requester's same request still open on the task is that record, never a second card that would run twice,
+    // while it is at least as strict (tier and panel). A stricter one replaces it only while it waits for the reviewer; a
+    // record with the owner or approved stays as it is. Another requester's record is never touched: this one is its own.
     const who = (q: Requester) => `${q.kind}|${q.agent}|${q.key}|${q.module ?? ""}`;
-    if (same && same.tier >= t.tier && (same.panel || !t.panel) && who(same.requester) === who(requester)) return same;
-    if (same) records.close(same.id, "cancelled", "replaced by the same request at a stricter tier or from another requester");
+    const same = t.tier > 0 ? records.open(task, kind, digestOf(base)).find((r) => who(r.requester) === who(requester)) : undefined;
+    if (same && same.tier >= t.tier && (same.panel || !t.panel)) return same;
+    if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
     return records.file({ ...base, card: { ...card, reason: raise?.reason?.slice(0, 300) ?? "" }, tier: t.tier, panel: t.panel, state: t.tier === 0 ? "claimed" : "review" });
   }
 
