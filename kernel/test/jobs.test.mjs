@@ -33,12 +33,14 @@ function sandbox() {
   const slow = engine("slow.mjs", `emit({ t: "session", id: "slow-1" });\nlet n = 0;\nwhile (!existsSync(join(dir, "..", "release"))) { emit({ t: "progress", text: "step " + n++ }); await new Promise((r) => setTimeout(r, 100)); }\nemit({ t: "final", text: "released after " + n });`);
   const envdump = engine("env.mjs", `emit({ t: "final", text: JSON.stringify(process.env) });`);
   const silent = engine("silent.mjs", `await new Promise((r) => setTimeout(r, 60_000));`);
+  // An engine whose program isn't installed: it exits 127, as a shell does for a command it can't find.
+  const missing = engine("missing.mjs", `import { spawnSync } from "node:child_process";\nconst r = spawnSync("aidenhq-no-such-program", [], { stdio: "inherit" });\nprocess.exit(r.error?.code === "ENOENT" ? 127 : 1);`);
   const engines = {
     echo: { module: "engine-echo", dir: "fixtures/engine-echo", bin: "fixtures/engine-echo/bin/engine", kind: "echo", live_input: true },
     slow: { module: "test", dir: join(dir, "engines"), bin: slow, kind: "slow" },
     env: { module: "test", dir: join(dir, "engines"), bin: envdump, kind: "env" },
     silent: { module: "test", dir: join(dir, "engines"), bin: silent, kind: "silent" },
-    codex: { module: "engine-codex", dir: "modules/engine-codex", bin: "modules/engine-codex/bin/engine", kind: "codex" },
+    missing: { module: "test", dir: join(dir, "engines"), bin: missing, kind: "missing" },
   };
   writeFileSync(join(dir, "engines.json"), JSON.stringify(engines));
   writeFileSync(join(dir, "jobcaps.json"), "{}");
@@ -50,17 +52,17 @@ function sandbox() {
   writeFileSync(join(dir, "sandbox.json"), JSON.stringify(cfg));
   return { dir, cfg };
 }
-const req = (over = {}) => ({ agent: "agent-1", task: "task-1", label: "PEN-1", workspace: { module: "engineering", id: "PEN-1" }, prompt: "hello there", engine: { kind: "echo" }, ...over });
-const inProcess = (cfg, cp = {}, mayDispatch = (module, agent) => module === "engineering" && agent === "agent-1") => createJobs({
+const req = (over = {}) => ({ agent: "agent-1", task: "task-1", label: "PEN-1", workspace: { module: "acme-dispatch", id: "PEN-1" }, prompt: "hello there", engine: { kind: "echo" }, ...over });
+const inProcess = (cfg, cp = {}, mayDispatch = (module, agent) => module === "acme-dispatch" && agent === "agent-1") => createJobs({
   db: new DatabaseSync(":memory:"), cfg, boxWrap: 'exec "$@"', jobcaps: () => [], log: () => {}, mayDispatch,
   cp: { agent: async (id) => ({ id, metadata: { runnerEngine: true } }), task: async (id) => ({ id, identifier: id === "task-2" ? "PEN-2" : "PEN-1", assigneeAgentId: "agent-1", status: "todo" }), ...cp },
 });
-const finished = (jobs, id) => until(`job ${id} to end`, async () => { const v = await jobs.get("engineering", id); return v.state !== "running" && v; });
+const finished = (jobs, id) => until(`job ${id} to end`, async () => { const v = await jobs.get("acme-dispatch", id); return v.state !== "running" && v; });
 
 test("a job runs for its task, in its workspace, and reports its end: final words, session, usage", async () => {
   const { cfg } = sandbox();
   const jobs = inProcess(cfg);
-  const j = await jobs.start("engineering", req());
+  const j = await jobs.start("acme-dispatch", req());
   assert.match(j.id, /^j-[0-9a-f]{16}$/);
   assert.equal(j.state, "running");
   const v = await finished(jobs, j.id);
@@ -79,7 +81,7 @@ test("a job runs for its task, in its workspace, and reports its end: final word
 
 test("identity binding: only an engine agent, on a task assigned to it now and still open, gets a job (one at a time)", async () => {
   const { cfg } = sandbox();
-  const refused = async (jobs, body, code) => assert.equal((await jobs.start("engineering", body).catch((e) => e)).code, code);
+  const refused = async (jobs, body, code) => assert.equal((await jobs.start("acme-dispatch", body).catch((e) => e)).code, code);
   await refused(inProcess(cfg), req({ agent: "agent-9" }), "not-your-agent");
   await refused(inProcess(cfg, {}, (module) => module === "other"), req(), "not-your-agent");
   await refused(inProcess(cfg, { task: async (id) => ({ id, identifier: "PEN-1", assigneeAgentId: "agent-2", status: "todo" }) }), req(), "task-not-assigned");
@@ -89,19 +91,19 @@ test("identity binding: only an engine agent, on a task assigned to it now and s
   await refused(inProcess(cfg, { task: async (id) => ({ id, identifier: "PEN-1", assigneeAgentId: "agent-1", status: "done" }) }), req(), "task-closed");
   const jobs = inProcess(cfg);
   await refused(jobs, req({ engine: { kind: "nope" } }), "unknown-engine");
-  const j = await jobs.start("engineering", req({ engine: { kind: "slow" } }));
+  const j = await jobs.start("acme-dispatch", req({ engine: { kind: "slow" } }));
   await refused(jobs, req(), "job-running");
-  jobs.stop("engineering", j.id);
+  jobs.stop("acme-dispatch", j.id);
   await finished(jobs, j.id);
 });
 
 test("a job's workspace, cloud session and box are its own task's: another task's, a symlinked one or another module's is refused", async () => {
   const { dir, cfg } = sandbox();
-  const code = async (jobs, over) => (await jobs.start("engineering", req(over)).catch((e) => e)).code;
+  const code = async (jobs, over) => (await jobs.start("acme-dispatch", req(over)).catch((e) => e)).code;
   const jobs = inProcess(cfg);
   // The workspace is derived from the task (work/tasks/<identifier>): naming another task's is refused.
-  assert.equal(await code(jobs, { workspace: { module: "engineering", id: "PEN-2" } }), "workspace-refused");
-  assert.equal(await code(jobs, { workspace: { module: "engineering", id: "../../secrets" } }), "workspace-refused");
+  assert.equal(await code(jobs, { workspace: { module: "acme-dispatch", id: "PEN-2" } }), "workspace-refused");
+  assert.equal(await code(jobs, { workspace: { module: "acme-dispatch", id: "../../secrets" } }), "workspace-refused");
   assert.equal(await code(jobs, { workspace: { module: "other", id: "PEN-1" } }), "workspace-refused");
   // The task's folder itself a symlink (to the vault), or missing: refused.
   symlinkSync(join(dir, "secrets"), join(dir, "work/tasks/LINK"));
@@ -134,9 +136,9 @@ test("a job's env is the kernel's: nothing else of the kernel's own env, and onl
   process.env.GITHUB_TOKEN = "planted";
   try {
     for (const env of [{ PATH: "/evil" }, { LD_PRELOAD: "/x.so" }, { AIDENHQ_REPO_URL: "http://10.0.0.1:3120" }, { AIDENHQ_REPO_URL: "http://127.0.0.1:22" }]) {
-      assert.equal((await jobs.start("engineering", req({ env })).catch((e) => e)).code, "env-refused", JSON.stringify(env));
+      assert.equal((await jobs.start("acme-dispatch", req({ env })).catch((e) => e)).code, "env-refused", JSON.stringify(env));
     }
-    const j = await jobs.start("engineering", req({ engine: { kind: "env" }, env: { AIDENHQ_REPO_URL: "http://127.0.0.1:4567", GH_TOKEN: "ghs_read", GIT_AUTHOR_NAME: "bot" } }));
+    const j = await jobs.start("acme-dispatch", req({ engine: { kind: "env" }, env: { AIDENHQ_REPO_URL: "http://127.0.0.1:4567", GH_TOKEN: "ghs_read", GIT_AUTHOR_NAME: "bot" } }));
     const env = JSON.parse((await finished(jobs, j.id)).final);
     assert.equal(env.AIDENHQ_PLANTED_SECRET, undefined);
     assert.equal(env.GITHUB_TOKEN, undefined);
@@ -158,18 +160,18 @@ test("a job's env is the kernel's: nothing else of the kernel's own env, and onl
 test("a comment reaches a live run while it works; a stop cancels a run", async () => {
   const { cfg } = sandbox();
   const jobs = inProcess(cfg);
-  const j = await jobs.start("engineering", req());
-  await until("the first progress", async () => (await jobs.get("engineering", j.id)).progress.said);
-  assert.deepEqual(jobs.input("engineering", j.id, "also this"), { sent: true });
-  await until("the comment heard", async () => (await jobs.get("engineering", j.id)).progress.said === "heard: also this");
+  const j = await jobs.start("acme-dispatch", req());
+  await until("the first progress", async () => (await jobs.get("acme-dispatch", j.id)).progress.said);
+  assert.deepEqual(jobs.input("acme-dispatch", j.id, "also this"), { sent: true });
+  await until("the comment heard", async () => (await jobs.get("acme-dispatch", j.id)).progress.said === "heard: also this");
   assert.equal((await finished(jobs, j.id)).state, "done");
-  assert.deepEqual(jobs.input("engineering", j.id, "too late"), { sent: false });
-  const s = await jobs.start("engineering", req({ engine: { kind: "slow" } }));
-  const v0 = await jobs.get("engineering", s.id);
+  assert.deepEqual(jobs.input("acme-dispatch", j.id, "too late"), { sent: false });
+  const s = await jobs.start("acme-dispatch", req({ engine: { kind: "slow" } }));
+  const v0 = await jobs.get("acme-dispatch", s.id);
   // A status read waits for a change when asked to.
-  const v1 = await jobs.get("engineering", s.id, { after: v0.version, waitMs: 5000 });
+  const v1 = await jobs.get("acme-dispatch", s.id, { after: v0.version, waitMs: 5000 });
   assert.ok(v1.version > v0.version);
-  jobs.stop("engineering", s.id);
+  jobs.stop("acme-dispatch", s.id);
   const v = await finished(jobs, s.id);
   assert.equal(v.state, "cancelled");
   assert.equal(v.cancelled, true);
@@ -180,19 +182,12 @@ test("a comment reaches a live run while it works; a stop cancels a run", async 
 test("a program that isn't installed ends the job with the reason; a silent run is stopped as stalled", async () => {
   const { cfg } = sandbox();
   const jobs = inProcess({ ...cfg, stall_minutes: 0.02 });
-  const path = process.env.PATH;
-  process.env.PATH = "/nonexistent";
-  let j;
-  try {
-    j = await jobs.start("engineering", req({ engine: { kind: "codex" } }));
-  } finally {
-    process.env.PATH = path;
-  }
+  const j = await jobs.start("acme-dispatch", req({ engine: { kind: "missing" } }));
   const v = await finished(jobs, j.id);
   assert.notEqual(v.exit, 0);
   assert.match(v.final, /couldn't start \S+: ENOENT/);
   const t0 = Date.now();
-  const s = await jobs.start("engineering", req({ engine: { kind: "silent" } }));
+  const s = await jobs.start("acme-dispatch", req({ engine: { kind: "silent" } }));
   const w = await finished(jobs, s.id);
   assert.equal(w.state, "stalled");
   assert.ok(w.stalled && w.timedOut);
@@ -211,7 +206,7 @@ test("a box job's gh token reaches the box through docker exec's env, by name: n
   process.env.PATH = `${bin}:${path}`;
   let j;
   try {
-    j = await jobs.start("engineering", req({ box: { container: "aidenhq-computer-gh" }, env: { GH_TOKEN: "ghs_read" } }));
+    j = await jobs.start("acme-dispatch", req({ box: { container: "aidenhq-computer-gh" }, env: { GH_TOKEN: "ghs_read" } }));
   } finally {
     process.env.PATH = path; // spawn has copied it
   }

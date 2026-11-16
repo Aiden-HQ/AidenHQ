@@ -22,7 +22,7 @@ const JOBS_HOST = join(import.meta.dirname, "../../../kernel/test/fixtures/jobs-
 
 /** The kernel's job half for a flow: its own process (a restart test kills and starts it again), over `db`. */
 export function jobsHost(env, db) {
-  const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", JOBS_HOST], { env: { ...env, JOBS_DB: db }, stdio: ["ignore", "pipe", "pipe"] });
+  const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", JOBS_HOST], { env: { ...env, JOBS_DB: db, JOBS_MODULE: "engineering" }, stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
   p.stderr.on("data", (d) => (log += d));
   const port = new Promise((res, rej) => { p.stdout.once("data", (d) => res(Number(String(d).trim()))); p.once("exit", (c) => rej(new Error(`the jobs host exited (${c}): ${log}`))); });

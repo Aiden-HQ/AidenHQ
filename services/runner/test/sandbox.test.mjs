@@ -1,4 +1,4 @@
-// The job sandbox (kernel/src/sandbox.ts): what a job sees of the host's files (bwrap allowlist, masks), its own network (pasta
+// The job sandbox (kernel/src/sandbox.ts), with each engine module the engineering module runs in it: what a job sees of the host's files (bwrap allowlist, masks), its own network (pasta
 // netjail), its engine module and state, its cloud session and jobcaps. The real-bwrap cases run where bwrap works (the host,
 // CI on Linux).
 import assert from "node:assert/strict";
@@ -8,13 +8,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildJob, cowRoot, layout, removeLayers, sandboxConfig } from "../src/sandbox.ts";
-import { readEvents } from "../src/jobs.ts";
-import { appendLine } from "../sdk/src/engine-io.ts";
-import { codexCommand } from "../../modules/engine-codex/src/codex.ts";
-import { claudeCommand } from "../../modules/engine-claude/src/claude.ts";
-import { opencodeCommand } from "../../modules/engine-opencode/src/opencode.ts";
-import { enginesFile, registry } from "../../services/runner/test/fakes/engines.mjs";
+import { buildJob, cowRoot, layout, removeLayers, sandboxConfig } from "../../../kernel/src/sandbox.ts";
+import { readEvents } from "../../../kernel/src/jobs.ts";
+import { appendLine } from "../../../kernel/sdk/src/engine-io.ts";
+import { codexCommand } from "../../../modules/engine-codex/src/codex.ts";
+import { claudeCommand } from "../../../modules/engine-claude/src/claude.ts";
+import { opencodeCommand } from "../../../modules/engine-opencode/src/opencode.ts";
+import { enginesFile, registry } from "./fakes/engines.mjs";
 
 const ENGINES = enginesFile(mkdtempSync(join(tmpdir(), "k-engines-")));
 /** One engine@1 job's command, env and spec, in a fresh job dir and state dir, with a vault holding the Claude token. */
@@ -57,7 +57,7 @@ describe("the job sandbox", () => {
     const tasks = join(dir, "tasks");
     for (const t of ["WOR-1", "WOR-2"]) mkdirSync(join(tasks, t), { recursive: true });
     mkdirSync(join(tasks, "WOR-1", "gcloud-in-task"));
-    const repo = fileURLToPath(new URL("../..", import.meta.url)).replace(/\/$/, "");
+    const repo = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
     const jc = { ...c, binDir: join(repo, "services/runner/bin"), hidden: [join(dir, "gcloud-user"), join(tasks, "WOR-1", "gcloud-in-task")] };
     for (const kind of ["codex", "claude", "openrouter", "codex-openrouter"]) {
       const { argv } = bj({ cfg: jc, engine: { kind, model: "m" }, worktree: join(tasks, "WOR-1"), job: { issueId: "i1" } });
@@ -116,7 +116,7 @@ describe("the job sandbox", () => {
       mkdirSync(join(tasks, t), { recursive: true });
       writeFileSync(join(tasks, t, "f"), t);
     }
-    const repo = fileURLToPath(new URL("../..", import.meta.url)).replace(/\/$/, "");
+    const repo = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
     const { argv } = bj({ cfg: { ...c, binDir: join(repo, "services/runner/bin") }, engine: { kind: "codex" }, worktree: join(tasks, "WOR-1") });
     const inner = argv.indexOf("--") + 1;
     const run = (path) => spawnSync(argv[0], [...argv.slice(1, inner), "cat", path], { encoding: "utf8" });
@@ -186,7 +186,7 @@ describe("the job sandbox", () => {
     const rc = claude.indexOf("/etc/resolv.conf");
     assert.deepEqual(claude.slice(rc - 4, rc), ["--tmpfs", "/run/systemd/resolve", "--ro-bind-data", "5"]);
     const jail = claude.indexOf("aidenhq-jail");
-    assert.deepEqual(claude.slice(jail + 1, jail + 3), [process.execPath, join(fileURLToPath(new URL("../..", import.meta.url)), "modules/engine-claude/bin/engine")]); // the engine itself, after the jail's own setup: bwrap is its boundary
+    assert.deepEqual(claude.slice(jail + 1, jail + 3), [process.execPath, join(fileURLToPath(new URL("../../..", import.meta.url)), "modules/engine-claude/bin/engine")]); // the engine itself, after the jail's own setup: bwrap is its boundary
     // The job's first step: private and reserved ranges, and each of the host's own addresses (a public one too), are unreachable.
     for (const n of ["192.168.0.0/16", "240.0.0.0/4", "10.0.2.7/32", "203.0.113.9/32"]) assert.ok(claude[jail - 1].split(/[ ;]/).includes(n), n);
     // The model gateway's port for its model calls; a job with neither jobcaps nor gateway models gets only its helper.

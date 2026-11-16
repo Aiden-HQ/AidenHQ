@@ -142,6 +142,10 @@
       "state": "stable",
       "fp": "auth=bearer"
     },
+    "route DELETE /v1/jobs/:job": {
+      "state": "experimental",
+      "fp": "auth=module"
+    },
     "route GET /healthz": {
       "state": "stable",
       "fp": "auth=none"
@@ -163,6 +167,10 @@
       "fp": "auth=module"
     },
     "route GET /v1/cp/read/*": {
+      "state": "experimental",
+      "fp": "auth=module"
+    },
+    "route GET /v1/jobs/:job": {
       "state": "experimental",
       "fp": "auth=module"
     },
@@ -203,6 +211,14 @@
       "fp": "auth=module"
     },
     "route POST /v1/channel/stop": {
+      "state": "experimental",
+      "fp": "auth=module"
+    },
+    "route POST /v1/jobs": {
+      "state": "experimental",
+      "fp": "auth=module"
+    },
+    "route POST /v1/jobs/:job/input": {
       "state": "experimental",
       "fp": "auth=module"
     },

@@ -1,10 +1,10 @@
 // A kernel's job half in its own process, as main.ts runs it (createJobs, adopt at start, detach and exit on SIGTERM, SIGINT or
 // SIGUSR2), serving the backplane's job routes (POST /v1/jobs, GET/DELETE /v1/jobs/:id, POST /v1/jobs/:id/input) for the
-// module `engineering`. Prints its port.
+// module JOBS_MODULE (the dispatcher). Prints its port.
 // - JOBS_DIR: kernel.db and sandbox.json there, unconfined (kernel/test/jobs.test.mjs); the control plane assigns every task to
 //   agent-1, an engine agent.
 // - Otherwise (services/runner's flows): the sandbox from config/runner.yaml as main.ts reads it (sandboxConfig, the jail
-//   check), the control plane at PAPERCLIP_URL with the board key, jobcaps from the grants table, kernel.db at JOBS_DB.
+//   check), the control plane at its URL (env) with the board key, jobcaps from the grants table, kernel.db at JOBS_DB.
 import http from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import { createJobs } from "../../src/jobs.ts";
 import { jailProblem, sandboxConfig } from "../../src/sandbox.ts";
 
 const dir = process.env.JOBS_DIR;
+const MODULE = process.env.JOBS_MODULE ?? "acme-dispatch";
 let cfg, cp, jobcaps = () => [];
 if (dir) {
   cfg = JSON.parse(readFileSync(join(dir, "sandbox.json"), "utf8"));
@@ -26,7 +27,7 @@ if (dir) {
   jobcaps = (agent) => { try { return JSON.parse(readFileSync(join(process.env.AIDENHQ_CONFIG_DIR, "grants/grants.json"), "utf8")).agents?.[agent]?.jobcaps ?? []; } catch { return []; } };
 }
 const db = new DatabaseSync(dir ? join(dir, "kernel.db") : process.env.JOBS_DB);
-// Which module dispatches which agent is compile's (kernel/test/jobs.test.mjs covers it); here every agent is engineering's.
+// Which module dispatches which agent is compile's (kernel/test/jobs.test.mjs covers it); here every agent is MODULE's.
 const jobs = createJobs({ db, cfg, cp, jobcaps, mayDispatch: () => true, boxWrap: 'exec "$@"', log: (msg, f = {}) => console.error(msg, JSON.stringify(f)) });
 jobs.adopt();
 for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"]) process.on(sig, () => { jobs.detach(); process.exit(0); });
@@ -37,10 +38,10 @@ const server = http.createServer(async (req, res) => {
     const [, id, input] = /^\/v1\/jobs\/(j-[0-9a-f]{16})(\/input)?$/.exec(u.pathname) ?? [];
     let b = "";
     for await (const c of req) b += c;
-    if (req.method === "POST" && u.pathname === "/v1/jobs") return send(200, await jobs.start("engineering", JSON.parse(b)));
-    if (req.method === "GET" && id && !input) return send(200, await jobs.get("engineering", id, { ...(u.searchParams.has("after") ? { after: Number(u.searchParams.get("after")) } : {}), waitMs: Number(u.searchParams.get("wait") ?? 0) }));
-    if (req.method === "DELETE" && id && !input) return send(200, jobs.stop("engineering", id));
-    if (req.method === "POST" && id && input) { const j = JSON.parse(b); return send(200, jobs.input("engineering", id, j.text, j.from)); }
+    if (req.method === "POST" && u.pathname === "/v1/jobs") return send(200, await jobs.start(MODULE, JSON.parse(b)));
+    if (req.method === "GET" && id && !input) return send(200, await jobs.get(MODULE, id, { ...(u.searchParams.has("after") ? { after: Number(u.searchParams.get("after")) } : {}), waitMs: Number(u.searchParams.get("wait") ?? 0) }));
+    if (req.method === "DELETE" && id && !input) return send(200, jobs.stop(MODULE, id));
+    if (req.method === "POST" && id && input) { const j = JSON.parse(b); return send(200, jobs.input(MODULE, id, j.text, j.from)); }
     send(404, { error: { message: "no such route" } });
   } catch (e) {
     send(e.status ?? 500, { error: { message: e.message, code: e.code } });
