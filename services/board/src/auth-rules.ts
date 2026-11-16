@@ -166,6 +166,8 @@ export function tailnetPeer(req: Pick<IncomingMessage, "headers" | "socket">, li
   if (peer !== "127.0.0.1" && peer !== "::1") return "";
   return String(req.headers["tailscale-user-login"] ?? "").trim() ? "tailnet" : "";
 }
+/** Failures a minute from the tailnet peer (rate limit only: it is never locked or banned). */
+const TAILNET_PER_MINUTE = 20;
 /** At most this many failed-sign-in alerts an hour; new-session notices are never capped (only someone who got in triggers one). */
 const ALERTS_PER_HOUR = 5;
 /** The steps a ban refuses: signing in and claiming a link. Open sessions keep working. */
@@ -207,8 +209,12 @@ export function authCore(o: AuthCoreOptions) {
   const lockKey = (email: string, listener: Listener | null | undefined, ip: string) => `${email}|${listener ?? "admin"}|${ip}`;
   /** Unnamed peers' failures (the last hour) and next allowed attempt, per email + listener. */
   const unnamed = new Map<string, { fails: number[]; next: number; busy: number; told: number }>();
-  /** Checks in flight from the tailnet peer, per email (capped like unidentified ones: one per email, `inFlight` in all). */
+  /**
+   * The tailnet peer is rate-limited only, never locked or banned (the tailnet is the owner's own: one member slowing another
+   * is accepted): checks in flight per email (one each, `inFlight` in all) and failures in the last minute (`TAILNET_PER_MINUTE`).
+   */
   const tailnetBusy = new Map<string, number>();
+  let tailnetFails: number[] = [];
   /** Unnamed failures across every email, the last minute. */
   let unnamedFails: number[] = [];
   const forget = (email: string) => {
@@ -232,9 +238,12 @@ export function authCore(o: AuthCoreOptions) {
     const now = clock();
     const listener = listenerOf(ctx);
     if (ipOf(ctx) === "tailnet") {
+      tailnetFails = tailnetFails.filter((t) => now - t < 60_000);
       const busy = [...tailnetBusy.values()].filter((t) => t > now).length;
-      if ((tailnetBusy.get(email) ?? 0) > now || busy >= UNNAMED.inFlight) throw new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": "2" });
+      const until = Math.max((tailnetBusy.get(email) ?? 0) > now || busy >= UNNAMED.inFlight ? now + 2000 : 0, tailnetFails.length >= TAILNET_PER_MINUTE ? tailnetFails[0]! + 60_000 : 0);
+      if (until > now) throw new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": String(Math.ceil((until - now) / 1000)) });
       tailnetBusy.set(email, now + UNNAMED.busyMs);
+      return () => void tailnetBusy.delete(email);
     }
     if (!isNamed(ctx)) {
       const u = unnamedOf(email, ctx);
@@ -249,8 +258,8 @@ export function authCore(o: AuthCoreOptions) {
     }
     const pair = isNamed(ctx) && (locks.get(lockKey(email, listener, ipOf(ctx))) ?? 0) > now;
     const account = listener === "signin" && (locks.get(lockKey(email, "signin", "*")) ?? 0) > now;
-    if (pair || account) { tailnetBusy.delete(email); throw new APIError("FORBIDDEN", { message: "too many failed sign-ins: try again in 15 minutes, or ask the owner for a new link" }); }
-    return ipOf(ctx) === "tailnet" ? () => void tailnetBusy.delete(email) : undefined;
+    if (pair || account) { throw new APIError("FORBIDDEN", { message: "too many failed sign-ins: try again in 15 minutes, or ask the owner for a new link" }); }
+    return undefined;
   };
 
   /** The per-address ban (memory only): `${listener}|${key}`; only an address a proxy named with its secret counts. */
@@ -290,7 +299,7 @@ export function authCore(o: AuthCoreOptions) {
   };
   const banKey = (ctx: { headers?: Headers }) => {
     const named = ctx.headers?.get(NAMED_HEADER);
-    return named ? `${listenerOf(ctx) ?? "admin"}|${addressKey(named)}` : undefined;
+    return named && named !== "tailnet" ? `${listenerOf(ctx) ?? "admin"}|${addressKey(named)}` : undefined;
   };
   const when = (t: number) => `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
@@ -344,8 +353,9 @@ export function authCore(o: AuthCoreOptions) {
       max: 200,
       storage: "memory",
       customRules: {
-        "/sign-in/email": { window: 60, max: 20 },
-        "/two-factor/verify-totp": { window: 60, max: 20 },
+        // The tailnet peer has its own per-minute limit (TAILNET_PER_MINUTE), on this module's clock.
+        "/sign-in/email": (req) => (req.headers.get(PEER_HEADER) === "tailnet" ? false : { window: 60, max: 20 }),
+        "/two-factor/verify-totp": (req) => (req.headers.get(PEER_HEADER) === "tailnet" ? false : { window: 60, max: 20 }),
         "/two-factor/enable": { window: 60, max: 10 },
         "/reset-password": { window: 60, max: 20 },
       },
@@ -461,7 +471,10 @@ export function authCore(o: AuthCoreOptions) {
         prune(now);
         const listener = listenerOf(ctx);
         let n: number;
-        if (isNamed(ctx)) n = count(lockKey(email, listener, ip), LOCKOUT.failures);
+        if (ip === "tailnet") {
+          tailnetFails.push(now);
+          n = tailnetFails.length;
+        } else if (isNamed(ctx)) n = count(lockKey(email, listener, ip), LOCKOUT.failures);
         else {
           const u = unnamedOf(email, ctx);
           u.fails = [...u.fails, now].slice(-UNNAMED.ceiling);

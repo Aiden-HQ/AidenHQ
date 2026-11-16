@@ -253,11 +253,20 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
   assert.match(csp(frame), /frame-ancestors https:\/\/board\.example\.com/);
   assert.equal(frame.headers["x-frame-options"], undefined);
 
-  // Varying the tailnet login makes no new bucket: five failures under five logins lock the one tailnet peer for that email.
+  // The tailnet is one peer whatever login it names, rate-limited only: sustained failures under varied logins never lock or
+  // ban it; past 20 a minute it waits (429), and once the minute has passed the right password and code get in.
   const third = boardData();
   moveAccounts(third);
-  const tn = await adminOn(t, third);
-  for (let i = 0; i < 5; i++) assert.equal((await browser(tn.url, HOST, false, { "tailscale-user-login": `login-${i}@example.com` })("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401);
-  const blocked = await browser(tn.url, HOST, false, { "tailscale-user-login": "login-9@example.com" })("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
-  assert.match(blocked.html, /too many failed sign-ins/);
+  let tclock = Date.now();
+  const tn = await adminOn(t, third, () => tclock);
+  const as = (login) => browser(tn.url, HOST, false, { "tailscale-user-login": login });
+  const statuses = [];
+  for (let i = 0; i < 25; i++) {
+    const r = await as(`login-${i}@example.com`)("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` });
+    assert.doesNotMatch(r.html, /too many failed sign-ins|BANNED|an hour/);
+    statuses.push(r.status);
+  }
+  assert.deepEqual(statuses, [...Array(20).fill(401), ...Array(5).fill(429)]);
+  tclock += 61_000;
+  await signIn(as("owner@example.com"), 0);
 });
