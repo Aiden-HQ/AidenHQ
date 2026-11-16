@@ -395,8 +395,7 @@ export async function resolvePrBase(path: string, { branch, base, defaultBranch 
 export async function retargetBase(path: string, { branch, base, current, defaultBranch }: { branch: string; base: string; current: string; defaultBranch: string }): Promise<string> {
   const want = await resolvePrBase(path, { branch, base, defaultBranch });
   if (want.error || want.base === current) return "";
-  const still = want.base === defaultBranch && (await resolvePrBase(path, { branch, base: current, defaultBranch }));
-  return still && (still.error || still.base === current) ? "" : want.base;
+  return want.base === defaultBranch && (await resolvePrBase(path, { branch, base: current, defaultBranch }).then((s) => Boolean(s.error) || s.base === current)) ? "" : want.base;
 }
 
 /** Commits on `branch` that aren't on GitHub yet (oldest first), and the diffstat against its base. */
