@@ -1,12 +1,13 @@
 # syntax=docker/dockerfile:1.28@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 
-# Rebuild of the upstream v1.10.0 image on patched bases: current python:3.12 (3.12.16),
+# Rebuild of the upstream v1.10.0 image on patched bases: current python:3.12 slim (3.12.16; the full image shipped libpq
+# builds with fixable High CVEs, and the apt upgrade below brings libpq5 15.20 anyway),
 # Debian bookworm security updates, static ffmpeg 9.0.2 and refreshed Python dependencies.
 FROM mwader/static-ffmpeg:9.0.2-1@sha256:f5d100184884eb3e82b0eb14bb5ebf98da99826ac824989720297fb9ef21c822 AS ffmpeg
 
 FROM swaggerapi/swagger-ui:v5.34.1@sha256:59ee9021a8884437c7fd8aae79e0a46ee6b6dd3afd7f24a587c4501585fde53b AS swagger-ui
 
-FROM python:3.12.16-bookworm@sha256:4209fae09a3e20afd863e528bfddc235da5fd5977983e1996cd54cc9a72e6267
+FROM python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
 
 LABEL org.opencontainers.image.source="https://github.com/ahmetoner/whisper-asr-webservice"
 
