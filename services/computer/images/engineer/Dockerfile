@@ -5,8 +5,25 @@
 ARG BASE=aidenhq/computer-agent-base
 FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential pkg-config libssl-dev python3-pip python3-dev golang-go make gh \
+      build-essential pkg-config libssl-dev python3-pip python3-dev golang-go make gnupg \
     && rm -rf /var/lib/apt/lists/*
+# gh from GitHub's own apt repository, not Debian's: the base is debian:sid-slim (the browser image), whose gh is 2.46.0-4,
+# with no fix for CVE-2026-48501 (the auth layer sent a github.com token to tuf-repo.github.com, fixed upstream in 2.93.0)
+# and a Go stdlib carrying published advisories. 2.104.0 (2026-11-12) is built with go1.27.4. The keyring is read into /tmp
+# first and written only after its non-expired primary key is exactly the GitHub CLI key: every other key counts, so one
+# added is refused. `signed-by` carries the same fingerprint, for this repository alone, in the vendor's suite matching
+# sid. The repository keeps only the newest build, so the pin moves.
+RUN mkdir -m 700 -p /tmp/gh-gpg \
+    && curl -fsSLo /tmp/gh-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && keys="$(GNUPGHOME=/tmp/gh-gpg gpg --batch --show-keys --with-colons /tmp/gh-keyring.gpg \
+      | awk -F: '$1 == "pub" { p = ($2 != "e"); next } p && $1 == "fpr" { print $10; p = 0 }')" \
+    && [ "$keys" = 7F38BBB59D064DBCB3D84D725612B36462313325 ] \
+    && install -m 0644 /tmp/gh-keyring.gpg /etc/apt/keyrings/github-cli.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/github-cli.gpg,7F38BBB59D064DBCB3D84D725612B36462313325] https://cli.github.com/packages sid main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh=2.104.0 \
+    && rm -rf /var/lib/apt/lists/* /tmp/gh-keyring.gpg /tmp/gh-gpg \
+    && gh --version
 # rustup-init 1.29.3 (archived 2026-11-03), checksummed; it installs the pinned toolchain into /opt/rust (readable by all). At run
 # time RUSTUP_HOME stays there; CARGO_HOME is unset, so cargo's registry and builds go under the user's own HOME.
 ENV RUSTUP_HOME=/opt/rust/rustup
