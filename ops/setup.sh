@@ -262,10 +262,11 @@ fi
 # Fail now on a rejected key, not after an apply that waits minutes per agent. (A dry run only says what it would check.)
 if [ "$DRY" = 1 ]; then echo "  + check the OpenRouter key against openrouter.ai (GET /api/v1/key); stop if it is rejected"
 else as_user AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.mjs" check || die "the OpenRouter key was rejected (see above)"; fi
-if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && ! grep -q '"client_id"' "$SECRETS/google_oauth.json" 2>/dev/null; then
+if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && ! grep -q '"client_id"' "$SECRETS/modules/google/google_oauth.json" 2>/dev/null; then
   say "Google: the company OAuth app behind Connect"
+  [ "$DRY" = 1 ] || as_user mkdir -p -m 700 "$SECRETS/modules/google"
   printf '{\n  "client_id": %s,\n  "client_secret": %s,\n  "accounts": {}\n}' "$(json "$(cfg GOOGLE_CLIENT_ID)")" "$(json "$(cfg GOOGLE_CLIENT_SECRET)")" \
-    | write_user_file "$SECRETS/google_oauth.json" 600
+    | write_user_file "$SECRETS/modules/google/google_oauth.json" 600
 fi
 if [ -n "$(cfg TS_APPS_AUTHKEY)" ] && [ -z "$(read_secret tailscale_apps_authkey)" ]; then
   say "Tailscale: the apps node's join key"

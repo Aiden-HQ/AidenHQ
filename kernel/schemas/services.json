@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidenhq.dev/schemas/services.json",
+  "title": "A module's services (spec §5.11): the only compose a module contributes. kernel/src/loader/services.ts enforces it; any other field is a compile error.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run"],
+  "properties": {
+    "data": { "type": "boolean", "description": "the module's data dir, data/modules/<module>/, for its services' `data` entries" },
+    "run": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]{0,40}$" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "image": { "type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*(:[\\w.-]+)?@sha256:[0-9a-f]{64}$" },
+          "build": { "type": "string", "pattern": "^\\./[\\w./-]+$", "description": "a folder in the module with a Dockerfile; local marketplace sources only" },
+          "command": { "type": "array", "items": { "type": "string" } },
+          "entrypoint": { "type": "array", "items": { "type": "string" } },
+          "env": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] }, "description": "${settings.x}, ${secrets.y} (its file path), the module's legacy host variables" },
+          "secrets": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" }, "description": "the module's own, mounted at /run/secrets/<name>" },
+          "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "ui_port": { "type": "integer", "minimum": 1024, "maximum": 65535, "description": "published on 127.0.0.1 only, for `port`" },
+          "healthcheck": { "type": "object", "additionalProperties": false, "required": ["test"], "properties": { "test": { "type": "array", "items": { "type": "string" } }, "interval": { "type": "string" }, "timeout": { "type": "string" }, "retries": { "type": "integer" }, "start_period": { "type": "string" } } },
+          "cpus": { "type": "number", "exclusiveMinimum": 0, "maximum": 64 },
+          "memory": { "type": "string", "pattern": "^\\d{1,5}[mg]$" },
+          "pids": { "type": "integer", "minimum": 1 },
+          "user": { "enum": ["owner", "nobody", "image"], "default": "owner" },
+          "read_only": { "type": "boolean", "default": true },
+          "tmp": { "type": "string", "pattern": "^\\d{1,5}[mg]$", "description": "a tmpfs at /tmp of this size" },
+          "data": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*:/[^:]+(:ro)?$" }, "description": "<folder of the module's data dir>:<container path>[:ro]" },
+          "state": { "type": "string", "pattern": "^/[^:]+(:ro)?$", "description": "the module's own vault dir (secrets.state: true) at this path" },
+          "host_mounts": { "type": "array", "items": { "type": "string", "pattern": "^(/|/sys|/proc):/[\\w./-]+:ro(,rslave)?$" }, "description": "privileged: [host-metrics] only" },
+          "egress": { "type": "boolean", "description": "outbound Internet, on the module's own egress network" },
+          "links": { "type": "array", "items": { "type": "string" }, "description": "root services or networks the module's closed legacy list allows" },
+          "join": { "type": "array", "items": { "type": "string" }, "description": "networks of modules it requires" },
+          "on_demand": { "type": "boolean", "description": "started only by `docker compose run` (profile <module>, no restart)" }
+        }
+      }
+    }
+  }
+}

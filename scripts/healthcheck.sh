@@ -7,6 +7,14 @@ cd "$repo" || exit 1
 env_file="${AIDENHQ_ENV_FILE:-.env}"
 [ -f "$env_file" ] && { set -a; . "$env_file"; set +a; }
 dc() { docker compose --env-file "$env_file" "$@"; }
+# A module service's base URL from the host: its container address (module services publish no ports; any network's address
+# works from the host), found by the name it declares (label aidenhq.service).
+svc() {
+  local id ip
+  id="$(docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-aidenhq}" --filter "label=aidenhq.service=$1" | head -1)"
+  ip="$([ -n "$id" ] && docker inspect "$id" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' | awk '{print $1}')"
+  echo "http://${ip:-not-running}:$2"
+}
 
 fails=0
 check() { # name, command...
@@ -45,8 +53,7 @@ check "paperclip http (127.0.0.1:3100)" sh -c 'curl -fsS --max-time 5 http://127
 check "paperclip bootstrap (account claimed)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3100/api/health | grep -q "\"bootstrapStatus\":\"ready\""'
 
 if module_on meetings; then
-  # ops-mcp is only reachable inside the compose network; ask Paperclip's container.
-  ops_health="$(dc exec -T paperclip node -e "fetch('http://ops-mcp:8080/healthz').then(r=>r.text()).then(t=>console.log(t)).catch(e=>{console.log(JSON.stringify({error:e.message}));process.exit(1)})" 2>/dev/null)"
+  ops_health="$(curl -s -m 10 "$(svc ops-mcp 8080)/healthz" 2>/dev/null)"
   check "ops-mcp reachable" test -n "$ops_health"
   for k in sqlite_writable transcripts_readable vault_available vault_writable paperclip_api; do
     check "ops-mcp $k" sh -c "echo '$ops_health' | grep -q '\"$k\":{\"ok\":true'"
@@ -73,7 +80,7 @@ fi
 # The kernel: every agent tool call crosses its proxy (aidenhq-kernel, backplane address).
 check "kernel (10.231.0.1:3130)" sh -c 'curl -fsS --max-time 5 http://10.231.0.1:3130/healthz | grep -qx ok'
 
-g_health="$(dc exec -T paperclip node -e "fetch('http://google-workspace-mcp:8081/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
+g_health="$(curl -s -m 10 "$(svc google-workspace-mcp 8081)/healthz" 2>&1)"
 if echo "$g_health" | grep -q '"ok":true'; then
   # Harmless reads: one message, today's events.
   dc cp scripts/dev/mcp-call.mjs paperclip:/tmp/mcp-call.mjs >/dev/null 2>&1
@@ -86,7 +93,7 @@ if echo "$g_health" | grep -q '"ok":true'; then
   # Every connected account, not just the one the reads above happened to use.
   atoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/google_auth_token" 2>/dev/null)"
   if [ -n "$atoken" ]; then
-    accounts="$(dc exec -T -e T="$atoken" paperclip node -e "fetch('http://google-workspace-mcp:8081/auth/status',{headers:{authorization:'Bearer '+process.env.T}}).then(r=>r.json()).then(s=>{for(const a of s.accounts)console.log(a.email+' '+a.state)}).catch(e=>console.log('? '+e.message))" 2>/dev/null)"
+    accounts="$(curl -s -m 10 -H "Authorization: Bearer $atoken" "$(svc google-workspace-mcp 8081)/auth/status" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{for(const a of JSON.parse(d).accounts)console.log(a.email+' '+a.state)}catch(e){console.log('? '+e.message)}})" 2>/dev/null)"
     while read -r email state; do
       [ -n "$email" ] || continue
       check "google sign-in $email" sh -c "[ '$state' = ok ] || { echo '$state: reconnect it from the board (http://127.0.0.1:3120) or run scripts/google-auth.sh --email $email'; exit 1; }"
@@ -97,33 +104,33 @@ else
 fi
 
 dc cp scripts/dev/mcp-call.mjs paperclip:/tmp/mcp-call.mjs >/dev/null 2>&1
-s_health="$(dc exec -T paperclip node -e "fetch('http://slack-mcp:8082/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
+s_health="$(curl -s -m 10 "$(svc slack-mcp 8082)/healthz" 2>&1)"
 if echo "$s_health" | grep -q '"ok":true'; then
   # The host's read-only endpoint (its own token): /mcp needs an agent's key.
   stoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/slack_mcp_read_token" 2>/dev/null)"
-  check "slack read (own profile)" sh -c "docker compose --env-file '$env_file' exec -T paperclip node /tmp/mcp-call.mjs http://slack-mcp:8082/mcp/read slack_read_user_profile '{\"response_format\":\"concise\"}' '$stoken' >/dev/null"
+  check "slack read (own profile)" sh -c "node scripts/dev/mcp-call.mjs '$(svc slack-mcp 8082)/mcp/read' slack_read_user_profile '{\"response_format\":\"concise\"}' '$stoken' >/dev/null"
 else
   printf '  skip  slack (not connected: %s)\n' "$(echo "$s_health" | cut -c1-80)"
 fi
 
-p_health="$(dc exec -T paperclip node -e "fetch('http://primer-mcp:8084/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
+p_health="$(curl -s -m 10 "$(svc primer-mcp 8084)/healthz" 2>&1)"
 if echo "$p_health" | grep -q '"ok":true'; then
   # The runner's publish endpoint (host-only token): /mcp needs an agent's key.
   ptoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/primer_mcp_publish_token" 2>/dev/null)"
-  check "primer (whoami)" sh -c "docker compose --env-file '$env_file' exec -T paperclip node /tmp/mcp-call.mjs http://primer-mcp:8084/mcp/publish primer_whoami '{}' '$ptoken' >/dev/null"
-  # The Engineer jobs' read-only endpoint on loopback, with its own token.
+  check "primer (whoami)" sh -c "node scripts/dev/mcp-call.mjs '$(svc primer-mcp 8084)/mcp/publish' primer_whoami '{}' '$ptoken' >/dev/null"
+  # The Engineer jobs' read-only endpoint (the kernel forwards their calls there), with its own token.
   prtoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/primer_mcp_read_token" 2>/dev/null)"
-  check "primer (runner, read-only)" sh -c "curl -fsS -X POST http://127.0.0.1:3123/mcp/read -H 'Authorization: Bearer $prtoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q primer_get_document"
+  check "primer (runner, read-only)" sh -c "curl -fsS -X POST '$(svc primer-mcp 8084)/mcp/read' -H 'Authorization: Bearer $prtoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q primer_get_document"
 else
   printf '  skip  primer (not connected: %s)\n' "$(echo "$p_health" | cut -c1-80)"
 fi
 
-gl_health="$(dc exec -T paperclip node -e "fetch('http://glean-mcp:8085/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
+gl_health="$(curl -s -m 10 "$(svc glean-mcp 8085)/healthz" 2>&1)"
 if echo "$gl_health" | grep -q '"ok":true'; then
   # Listing tools signs in to Glean without running a search.
-  # The jobs' read endpoint on loopback, with its own token (agents reach /mcp only through the kernel).
+  # The jobs' read endpoint, with its own token (agents reach /mcp only through the kernel).
   gltoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/glean_mcp_read_token" 2>/dev/null)"
-  check "glean (read tools)" sh -c "curl -fsS -m 30 -X POST http://127.0.0.1:3126/mcp/read -H 'Authorization: Bearer $gltoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q '\"search\"'"
+  check "glean (read tools)" sh -c "curl -fsS -m 30 -X POST '$(svc glean-mcp 8085)/mcp/read' -H 'Authorization: Bearer $gltoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q '\"search\"'"
 elif echo "$gl_health" | grep -q '"ok":false' && ! echo "$gl_health" | grep -q "not set"; then
   # Set up but not signed in, or Glean stopped accepting the sign-in.
   check "glean sign-in" sh -c "echo '$(echo "$gl_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'glean-mcp unreachable'; exit 1"
@@ -131,11 +138,11 @@ else
   printf '  skip  glean (off, or its URL is not set: Settings, Connections)\n'
 fi
 
-# Grafana for the runner's Engineer jobs, on loopback; listing tools signs in without running a query.
-gf_health="$(curl -s -m 10 http://127.0.0.1:3124/healthz 2>/dev/null)"
+# Grafana for the runner's Engineer jobs (through the kernel); listing tools signs in without running a query.
+gf_health="$(curl -s -m 10 "$(svc grafana-mcp 8087)/healthz" 2>/dev/null)"
 if echo "$gf_health" | grep -q '"ok":true'; then
   gftoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/grafana_mcp_token" 2>/dev/null)"
-  check "grafana (read tools)" sh -c "curl -fsS -m 30 -X POST http://127.0.0.1:3124/mcp -H 'Authorization: Bearer $gftoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q query_prometheus"
+  check "grafana (read tools)" sh -c "curl -fsS -m 30 -X POST '$(svc grafana-mcp 8087)/mcp' -H 'Authorization: Bearer $gftoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q query_prometheus"
 elif echo "$gf_health" | grep -q '"ok":false' && ! echo "$gf_health" | grep -q "not set"; then
   # Set up but not signed in, or Grafana stopped accepting the sign-in.
   check "grafana sign-in" sh -c "echo '$(echo "$gf_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'grafana-mcp unreachable'; exit 1"
@@ -143,11 +150,11 @@ else
   printf '  skip  grafana (off, or its URL is not set: Settings, Connections)\n'
 fi
 
-# ClickHouse for the runner's Engineer jobs, on loopback; listing tools signs in without running a query.
-ch_health="$(curl -s -m 10 http://127.0.0.1:3127/healthz 2>/dev/null)"
+# ClickHouse for the runner's Engineer jobs (through the kernel); listing tools signs in without running a query.
+ch_health="$(curl -s -m 10 "$(svc clickhouse-mcp 8088)/healthz" 2>/dev/null)"
 if echo "$ch_health" | grep -q '"ok":true'; then
   chtoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/clickhouse_mcp_token" 2>/dev/null)"
-  check "clickhouse (read tools)" sh -c "curl -fsS -m 30 -X POST http://127.0.0.1:3127/mcp -H 'Authorization: Bearer $chtoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q run_select_query"
+  check "clickhouse (read tools)" sh -c "curl -fsS -m 30 -X POST '$(svc clickhouse-mcp 8088)/mcp' -H 'Authorization: Bearer $chtoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q run_select_query"
 elif echo "$ch_health" | grep -q '"ok":false' && ! echo "$ch_health" | grep -q "not set"; then
   # Set up but not signed in, or ClickHouse stopped accepting the sign-in.
   check "clickhouse sign-in" sh -c "echo '$(echo "$ch_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'clickhouse-mcp unreachable'; exit 1"
@@ -155,7 +162,7 @@ else
   printf '  skip  clickhouse (off, or its URL is not set: Settings, Connections)\n'
 fi
 
-gh_health="$(dc exec -T paperclip node -e "fetch('http://github-mcp:8086/healthz').then(r=>r.text()).then(console.log).catch(e=>{console.log(e.message);process.exit(1)})" 2>/dev/null)"
+gh_health="$(curl -s -m 10 "$(svc github-mcp 8086)/healthz" 2>&1)"
 if echo "$gh_health" | grep -q '"ok":true'; then
   gh_whoami() {
     local out

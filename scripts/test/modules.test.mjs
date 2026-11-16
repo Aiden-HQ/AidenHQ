@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts, mapLimit } from "../modules.mjs";
+import { compile, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -110,12 +110,65 @@ test("grants entry: models, fleet caps under the agent's override, graded off by
 });
 test("jobcaps: compiled for the gateway, carried in the grants entry; unknown or private-without-private_reads fail", () => {
   const out = compile(mods, inst(["jc"]));
-  assert.deepEqual(out.jobcaps["jc-read"], { connection: "jconn", url: "http://127.0.0.1:3199/mcp/read", bearer_secret: "j_mcp_read_token", tools: ["j_get", "j_list"] });
+  assert.deepEqual(out.jobcaps["jc-read"], { connection: "jconn", url: "http://j-mcp:81/mcp/read", bearer_secret: "j_mcp_read_token", tools: ["j_get", "j_list"] });
   assert.equal(out.jobcaps["jc-secret"].tool_timeout_s, 90);
   assert.deepEqual(grantEntry("eng", out.paperclip.agents.eng).jobcaps, ["jc-read"]); // nope-read? is optional
   assert.deepEqual(out.paperclip.agents.deep.jobcaps, ["jc-read", "jc-secret"]);
   assert.throws(() => compile(mods, inst(["jcunknown"])), /lost: unknown jobcap nope-read/);
   assert.throws(() => compile(mods, inst(["jcpriv"])), /nosy: jobcap jc-secret reads private data: set private_reads: true/);
+});
+test("generated compose: module services from services:, root services only gain board_env, links and secrets; compose fragments fail", () => {
+  const a = compile(mods, inst(["a"])).compose;
+  assert.deepEqual(a.services["a-mcp"].volumes, ["${AIDENHQ_DATA_DIR:-./data}/modules/a/a:/data"]);
+  assert.deepEqual(Object.keys(a.services["a-mcp"].networks), ["mod-a"]);
+  assert.equal(a.networks["mod-a"].name, "aidenhq-mod-a");
+  const dir = mkdtempSync(join(tmpdir(), "prod-"));
+  cpSync(join(here, "fixtures/mods"), dir, { recursive: true });
+  writeFileSync(join(dir, "modules/a/compose.yaml"), "services: {}\n");
+  writeFileSync(join(dir, "modules/a/module.yaml"), readFileSync(join(dir, "modules/a/module.yaml"), "utf8") + "compose: compose.yaml\n");
+  assert.throws(() => compile(dir, inst(["a"])), /module a: compose fragments are gone/);
+});
+test("privileged: entries from the closed list only, at most 8 official modules (spec §5.6, raised from 7 for host-metrics)", async () => {
+  const { PRIVILEGED } = await import("../../kernel/src/loader/services.ts");
+  const product = join(here, "../..");
+  const priv = JSON.parse(readFileSync(join(product, "modules/marketplace.json"), "utf8")).plugins.map((p) => [p.name, [YAML.parse(readFileSync(join(product, "modules", p.name, "module.yaml"), "utf8")).privileged ?? []].flat()]).filter(([, l]) => l.length);
+  for (const [, l] of priv) for (const e of l) assert.ok(PRIVILEGED.includes(e), e);
+  assert.ok(priv.length <= 8, priv.map(([n]) => n).join(", "));
+});
+test("H4: a module can't take another's network or service name (a link network's, a declared name the kernel resolves)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "prod-"));
+  cpSync(join(here, "fixtures/mods"), dir, { recursive: true });
+  cpSync(join(here, "../../compose.yaml"), join(dir, "compose.yaml")); // the root services
+  const add = (name, yaml) => {
+    mkdirSync(join(dir, "modules", name), { recursive: true });
+    writeFileSync(join(dir, "modules", name, "module.yaml"), `name: ${name}\ndescription: hostile\n${yaml}`);
+    const m = JSON.parse(readFileSync(join(dir, "modules/marketplace.json"), "utf8"));
+    m.plugins.push({ name, source: `./${name}` });
+    writeFileSync(join(dir, "modules/marketplace.json"), JSON.stringify(m));
+  };
+  const img = `image: "example.com/acme/x:1@sha256:${"b".repeat(64)}"`;
+  writeFileSync(join(dir, "modules/a/module.yaml"), readFileSync(join(dir, "modules/a/module.yaml"), "utf8").replace("      data: [\"a:/data\"]", "      data: [\"a:/data\"]\n      egress: true"));
+  add("a-egress", `services:\n  run:\n    srv: { ${img} }\n`);
+  assert.throws(() => compile(dir, inst(["a", "a-egress"])), /module a-egress: its network aidenhq-mod-a-egress is already a's/);
+  add("glean-board", ""); // an empty module named like another's link network
+  add("joiner", `requires: [glean-board]\nservices:\n  run:\n    srv: { ${img}, join: [glean-board] }\n`);
+  assert.throws(() => compile(dir, inst(["joiner"])), /module joiner: joiner-srv joins glean-board, which defines no network of its own/);
+  add("copycat", `services:\n  run:\n    a-mcp: { ${img} }\n`);
+  assert.throws(() => compile(dir, inst(["a", "copycat"])), /module copycat: the service name a-mcp is already module a's/);
+  add("boardy", `services:\n  run:\n    board: { ${img} }\n`);
+  assert.throws(() => compile(dir, inst(["boardy"])), /module boardy: the service name board is already a root service's/);
+});
+test("legacy lists stay closed: links, root secrets and host variables may only shrink", () => {
+  const was = {
+    links: { "owner-channel": ["board", "paperclip", "sources"], monitoring: ["board"], tasks: ["backplane"], meetings: ["backplane", "sources"], google: ["board", "sources"], jira: ["board", "sources"], glean: ["board"], grafana: ["board"], clickhouse: ["board"], github: ["board", "sources"], primer: ["board"], slack: ["board"], security: ["paperclip", "sources"] },
+    secrets: { "owner-channel": ["paperclip_board_key", "board_internal_token", "owner_decide_key"], tasks: ["board_internal_token"], google: ["google_auth_token", "gateway_source_key"], jira: ["gateway_source_key"], glean: ["glean_auth_token"], grafana: ["grafana_auth_token"], clickhouse: ["clickhouse_auth_token"], github: ["github_token", "github_app"] },
+    host: { "owner-channel": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL", "OWNER_COMMAND_CHANNEL", "AIDENHQ_GATEWAY_URL"], google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"], jira: ["AIDENHQ_GATEWAY_URL"], tasks: ["AIDENHQ_GATEWAY_URL"], github: ["GITHUB_COMMENT_ORGS"], slack: ["SLACK_CLIENT_ID"] },
+  };
+  const within = (now, before) => Object.entries(now).every(([m, l]) => l.every((x) => (before[m] ?? []).includes(x)));
+  assert.ok(within(Object.fromEntries(Object.entries(LEGACY_LINKS).map(([m, v]) => [m, v.to])), was.links));
+  assert.ok(within(LEGACY_SECRETS, was.secrets));
+  assert.ok(within(LEGACY_HOST_ENV, was.host));
+  assert.deepEqual(OPS_NETWORKS, { ci: "aidenhq-ci" });
 });
 test("reports_to a disabled agent is an error", () => assert.throws(() => compile(mods, inst(["orphan"])), /z: reports_to y, which is not enabled/));
 test("untrusted app compiles to untrusted: true", () => {
@@ -169,10 +222,10 @@ const owner = { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x"
 test("core compiles without the slack module", () => {
   const r = compile(product, inst(["core"], owner));
   assert.equal(r.compose.services["slack-mcp"], undefined);
-  assert.ok(r.compose.services["slack-live-mcp"]);
+  assert.ok(r.compose.services["owner-channel-slack-live-mcp"]);
   assert.ok(r.paperclip.mcp_servers.slack_live);
   assert.ok(r.compose.secrets.telegram_notify_bot_token, "owner-channel declares its secrets");
-  assert.deepEqual(r.compose.services.whisper.networks, ["backplane", "egress"]);
+  assert.deepEqual(Object.keys(r.compose.services["owner-channel-whisper"].networks), ["mod-owner-channel", "mod-owner-channel-egress"]);
 });
 test("channels must be web, telegram or slack, and not empty", () => {
   assert.throws(() => compile(product, inst(["core"], { ...owner, channels: ["web", "fax"] })), /settings\.channels: each must be web, telegram or slack/);
@@ -202,7 +255,7 @@ test("autonomy: off by default, reaches the compiled config, a bad value fails; 
 
 test("two modules extending the same service merge environment and secrets", () => {
   const board = compile(mods, inst(["ext1", "ext2"])).compose.services.board;
-  assert.deepEqual(board.environment, { A: "1", B: "2" });
+  assert.deepEqual(board.environment, { A: "1", S1_FILE: "/run/secrets/s1", B: "2", S2_FILE: "/run/secrets/s2" });
   assert.deepEqual(board.secrets, ["s1", "s2"]);
 });
 test("destructive tools: `write` never grants them, a list must name them; compile refuses a delete-looking tool tagged write", () => {

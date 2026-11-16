@@ -98,7 +98,10 @@ settings:
     default: access
     values: [access, password, header-jwt]
 # The owner's email for the board (merged into the root compose's board service).
-compose: compose.yaml
+# The owner's email (his board account), added to the root compose's board service. Port 3129 is in the root compose;
+# config/gate.json and data/gate come with settings.edge (scripts/edge.mjs).
+board_env:
+  BOARD_OWNER_EMAIL: "${settings.owner_email}"
 agents:
   chief-of-staff:
     department: leadership

@@ -45,6 +45,7 @@ import { jobUsage } from "./usage.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { repoAccess } from "./repos.ts";
+import { createResolver } from "../../../kernel/src/net.ts";
 
 const execFileP = promisify(execFile);
 const cfg = loadConfig();
@@ -3807,13 +3808,16 @@ const savePrimer = (issueId, record) => state.set(`primer:${issueId}`, JSON.stri
  * After a finished run on a task that asked for Primer: publish the agent's document if it changed.
  * Resolves with a line for the task comment ("" when there was nothing to do).
  */
+const services = createResolver();
 async function publishToPrimer(issue, full, workspace) {
   const record = primerRecord(issue.id);
   if (!record) return "";
   const token = existsSync(cfg.primerPublishTokenFile) ? readFileSync(cfg.primerPublishTokenFile, "utf8").trim() : "";
   try {
     if (!token) throw new Error("primer-mcp isn't set up (no primer_mcp_publish_token)");
-    const res = await publishDocument({ endpoint: { url: cfg.primerPublishUrl, token }, workspace, record, fallbackTitle: full.title });
+    // primer-mcp's container address (no published port): resolved like the kernel resolves module services.
+    const t = await services.resolve(cfg.primerPublishUrl);
+    const res = await publishDocument({ endpoint: { url: `http://${t.host}:${t.port}${t.path}`, token }, workspace, record, fallbackTitle: full.title });
     if (res.outcome === "missing") return `_No Primer document: the run didn't write ${PRIMER_FILES}._`;
     if (res.outcome === "unchanged") return record.url ? `**Primer:** ${record.url} (unchanged)` : "";
     savePrimer(issue.id, res.record);

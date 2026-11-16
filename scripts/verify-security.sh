@@ -14,11 +14,13 @@ fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 # A service's /mcp/read for the runner's jobs: its read token opens only /mcp/read, which lists
 # no write tools, and the service's key (the kernel's, for agents' calls) doesn't open it. Only the kernel holds either: jobs
 # reach /mcp/read through its proxy (POST /c/<connection>/mcp on 8201) with their own job token (checked below).
-read_split() { # service port
+# Module services publish no ports: the host reaches them at their container address (any network's works from the host).
+cip() { docker inspect "$1" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' | awk '{print $1}'; }
+read_split() { # service container-address:port
   local rt mt list
   rt="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/$1_mcp_read_token" 2>/dev/null)"
   mt="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/$1_service_key" 2>/dev/null)"
-  call() { curl -s -m 30 -o "${3:-/dev/null}" -w '%{http_code}' -X POST "http://127.0.0.1:$2/$1" -H "Authorization: Bearer $4" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'; }
+  call() { curl -s -m 30 -o "${3:-/dev/null}" -w '%{http_code}' -X POST "http://$2/$1" -H "Authorization: Bearer $4" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'; }
   list="$(mktemp)"
   if [ -n "$rt" ] && [ "$(call mcp "$2" "" "$rt")" = 401 ] && [ "$(call mcp/read "$2" "" "$mt")" = 401 ] && [ "$(call mcp/read "$2" "$list" "$rt")" = 200 ] \
     && ! grep -qiE '"name":"[a-z_]*(send|draft|post|create|add_version|update|delete|publish|write)' "$list"; then
@@ -72,45 +74,40 @@ for c in $containers; do
       fi
       ;;
     *slack-mcp*)
-      # Loopback only, for the runner's Engineer jobs: /mcp/read with its own token, reads only.
-      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = '{"8082/tcp":[{"HostIp":"127.0.0.1","HostPort":"3125"}]}' ] \
-        && pass "slack-mcp: published on 127.0.0.1:3125 only" || fail "slack-mcp ports are not loopback 3125 only"
-      read_split slack 3125
+      # Nothing published: the kernel reaches /mcp/read (jobs, its own token, reads only) at the container's address.
+      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "slack-mcp: no published ports" || fail "slack-mcp publishes ports"
+      read_split slack "$(cip "$c"):8082"
       ;;
     *primer-mcp*)
-      # Loopback only, for the runner's Engineer jobs; bearer token required.
-      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = '{"8084/tcp":[{"HostIp":"127.0.0.1","HostPort":"3123"}]}' ] \
-        && pass "primer-mcp: published on 127.0.0.1:3123 only" || fail "primer-mcp ports are not loopback 3123 only"
-      [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3123/mcp/read)" = "401" ] \
-        && pass "primer-mcp: loopback endpoint requires the token" || fail "primer-mcp: loopback endpoint answers without the token"
-      read_split primer 3123
+      # Nothing published: the kernel (jobs) and the runner (publishing) reach it at its container address; bearer required.
+      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "primer-mcp: no published ports" || fail "primer-mcp publishes ports"
+      [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8084/mcp/read")" = "401" ] \
+        && pass "primer-mcp: the read endpoint requires the token" || fail "primer-mcp: the read endpoint answers without the token"
+      read_split primer "$(cip "$c"):8084"
       [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
         && pass "primer-mcp: only its own token directory and secrets mounted" || fail "primer-mcp has unexpected mounts: $mounts"
       ;;
     *glean-mcp*)
-      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = '{"8085/tcp":[{"HostIp":"127.0.0.1","HostPort":"3126"}]}' ] \
-        && pass "glean-mcp: published on 127.0.0.1:3126 only" || fail "glean-mcp ports are not loopback 3126 only"
-      read_split glean 3126
+      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "glean-mcp: no published ports" || fail "glean-mcp publishes ports"
+      read_split glean "$(cip "$c"):8085"
       [ "$(echo "$mounts" | tr ';' '\n' | grep -c '|/state|')" = "1" ] && ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/state|' | grep -q . \
         && pass "glean-mcp: only its own token directory and secrets mounted" || fail "glean-mcp has unexpected mounts: $mounts"
       ;;
     *grafana-mcp*)
-      # Loopback only, for the runner's Engineer jobs; bearer token required.
-      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = '{"8087/tcp":[{"HostIp":"127.0.0.1","HostPort":"3124"}]}' ] \
-        && pass "grafana-mcp: published on 127.0.0.1:3124 only" || fail "grafana-mcp ports are not loopback 3124 only"
-      [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3124/mcp)" = "401" ] \
-        && pass "grafana-mcp: loopback endpoint requires the token" || fail "grafana-mcp: loopback endpoint answers without the token"
+      # Nothing published (the kernel reaches it at its container address); bearer token required.
+      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "grafana-mcp: no published ports" || fail "grafana-mcp publishes ports"
+      [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8087/mcp")" = "401" ] \
+        && pass "grafana-mcp: its endpoint requires the token" || fail "grafana-mcp: its endpoint answers without the token"
       # Exactly: its secrets, read-only (the board's sign-in token, the jobs' read token, the kernel's service key), and its own
       # token directory, the only writable mount. No grants table: the kernel checks agents' grants.
       [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/grafana_auth_token|false /run/secrets/grafana_mcp_token|false /run/secrets/grafana_service_key|false /state|true ' ] \
         && pass "grafana-mcp: only its secrets (read-only) and its own token directory mounted" || fail "grafana-mcp has unexpected mounts: $mounts"
       ;;
     *clickhouse-mcp*)
-      # Loopback only, for the runner's Engineer jobs; bearer token required.
-      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = '{"8088/tcp":[{"HostIp":"127.0.0.1","HostPort":"3127"}]}' ] \
-        && pass "clickhouse-mcp: published on 127.0.0.1:3127 only" || fail "clickhouse-mcp ports are not loopback 3127 only"
-      [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3127/mcp)" = "401" ] \
-        && pass "clickhouse-mcp: loopback endpoint requires the token" || fail "clickhouse-mcp: loopback endpoint answers without the token"
+      # Nothing published (the kernel reaches it at its container address); bearer token required.
+      [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "clickhouse-mcp: no published ports" || fail "clickhouse-mcp publishes ports"
+      [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8088/mcp")" = "401" ] \
+        && pass "clickhouse-mcp: its endpoint requires the token" || fail "clickhouse-mcp: its endpoint answers without the token"
       # Exactly: its two secrets, read-only, and its own token directory, the only writable mount. No grants table: it serves
       # only the runner's jobs, not a Paperclip connection.
       [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/clickhouse_auth_token|false /run/secrets/clickhouse_mcp_token|false /state|true ' ] \
@@ -118,11 +115,11 @@ for c in $containers; do
       ;;
     *mcp-grafana*|*prometheus*|*alertmanager*|*cadvisor*)
       # The monitoring module's inner services: nothing published, and none on the backplane (their APIs take no auth:
-      # Alertmanager's silences, Prometheus, mcp-grafana). Only their own networks: monitoring, monitoring-board (the board),
-      # grafana-local (grafana-mcp).
+      # Alertmanager's silences, Prometheus, mcp-grafana). Only their module's networks: its own, the one it shares with the
+      # board (Prometheus, Alertmanager) and the grafana module's (mcp-grafana, which joins it to meet grafana-mcp).
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "$c: no published ports" || fail "$c publishes ports"
       nets="$(docker inspect "$c" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')"
-      ! echo "$nets" | tr ' ' '\n' | grep -v '^$' | grep -qvxE "${project}_(monitoring|monitoring-board|grafana-local)" \
+      ! echo "$nets" | tr ' ' '\n' | grep -v '^$' | grep -qvxE "aidenhq-mod-(monitoring|monitoring-board|grafana)" \
         && pass "$c: on the monitoring networks only ($nets)" || fail "$c is on another network (backplane?): $nets"
       ;;
     *node-exporter*)
@@ -247,6 +244,31 @@ PROBES
       ;;
   esac
 done
+
+# Module isolation (spec §5.11; compose is generated from each module's `services:`, kernel/src/loader/services.ts): a module's
+# container is on its module's own networks only, plus a module it joins and the root networks its legacy links name (both
+# labels compile writes from closed lists; a hand edit in compose.override.yaml shows here); it mounts no vault path but its
+# own secrets and its module's own vault dir; and none publishes beyond loopback. Every module container is checked.
+echo "Module isolation"
+mods=0
+for c in $containers; do
+  m="$(docker inspect "$c" --format '{{index .Config.Labels "aidenhq.module"}}')"
+  [ -n "$m" ] || continue
+  mods=$((mods + 1))
+  join="$(docker inspect "$c" --format '{{index .Config.Labels "aidenhq.join"}}')"
+  links="$(docker inspect "$c" --format '{{index .Config.Labels "aidenhq.links"}}')"
+  ops="$(docker inspect "$c" --format '{{index .Config.Labels "aidenhq.ops_network"}}')"
+  allowed="^(aidenhq-mod-$m(-egress$(for l in ${links//,/ }; do printf '|-%s' "$l"; done))?$(for j in ${join//,/ }; do printf '|aidenhq-mod-%s' "$j"; done)$(for l in ${links//,/ }; do printf '|%s_%s' "$project" "$l"; done)${ops:+|$ops})$"
+  nets="$(docker inspect "$c" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')"
+  bad="$(echo "$nets" | tr ' ' '\n' | grep -v '^$' | grep -vE "$allowed" | tr '\n' ' ')"
+  [ -z "$bad" ] && pass "$c ($m): on its own networks only ($nets)" || fail "$c ($m) is on another module's or a root network: $bad"
+  vault="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}|{{.Destination}};{{end}}' | tr ';' '\n' | grep "^${AIDENHQ_SECRETS_DIR:-/nonexistent}" | grep -v '|/run/secrets/' | grep -v "^${AIDENHQ_SECRETS_DIR:-/nonexistent}/modules/$m|" | tr '\n' ' ')"
+  [ -z "$vault" ] && pass "$c ($m): no vault path but its secrets and its own vault dir" || fail "$c ($m) mounts another vault path: $vault"
+  ! docker inspect "$c" --format '{{json .HostConfig.PortBindings}}' | grep -qE '"HostIp":"(0\.0\.0\.0)?"' && pass "$c ($m): published on loopback only, if at all" || fail "$c ($m) publishes beyond loopback"
+done
+[ "$mods" -gt 0 ] && pass "module isolation: $mods module containers checked" || fail "module isolation: no module container found (labels aidenhq.module missing?)"
+# The connections' old loopback read ports (3123-3127) are gone: the kernel reaches each service at its container address.
+[ "$(ss -ltnH 2>/dev/null | grep -cE '127\.0\.0\.1:312[3-7] ')" = 0 ] && pass "no loopback port 3123-3127 (module services publish nothing)" || fail "a loopback port 3123-3127 is published"
 
 # App identity (docs/design/app-identity.md): a shared app answers nothing without a valid token, and the gate never
 # passes a client's own X-AidenHQ-Identity on (a request with a forged one and no sign-in is refused).
@@ -447,7 +469,8 @@ if grep -q '"primer-read"' config/jobcaps.json 2>/dev/null; then
 fi
 # Live, the kernel's tool proxy (aidenhq-kernel): its backplane listener is 10.231.0.1:3130 alone; /c/ without a credential is
 # 401; the paperclip container holds no connection token, internal token or grants table, and calling any module's MCP
-# endpoint directly from it without the service key gets 401.
+# endpoint directly without the service key gets 401 (from the host, at the container's address: paperclip shares no network
+# with most modules any more, so an unreachable endpoint fails here rather than passing).
 kpid="$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)"
 kbinds="$(ss -Hltnp 2>/dev/null | awk -v k="pid=${kpid:-none}," 'index($0, k) {print $4}' | grep -v ':8201$' | sort -u | tr '\n' ' ')"
 [ "$(echo $kbinds)" = "10.231.0.1:3130" ] && pass "kernel: the proxy listens on 10.231.0.1:3130 only" || fail "kernel: listens on ${kbinds:-nothing} (want 10.231.0.1:3130 only, plus 8201)"
@@ -464,18 +487,21 @@ if [ -n "$pc" ]; then
     pass "paperclip: no internal, connection or service token in its environment or secrets"
   fi
   docker inspect "$pc" --format '{{range .Mounts}}{{.Destination}} {{end}}' | grep -q 'grants' && fail "paperclip: the grants table is mounted" || pass "paperclip: no grants table mounted"
-  if direct="$(docker exec -i "$pc" node -e '
-    const conns = JSON.parse(require("fs").readFileSync(0, "utf8"));
-    (async () => {
-      const open = [];
-      for (const [name, c] of Object.entries(conns)) {
-        const r = await fetch(c.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }), signal: AbortSignal.timeout(10000) }).catch(() => undefined);
-        if (r && r.status !== 401) open.push(`${name} ${r.status}`);
-      }
-      process.stdout.write(open.join(", "));
-      process.exit(open.length ? 1 : 0);
-    })();
-  ' < config/kernel/connections.json 2>&1)"; then
+  if direct="$(P="$project" node --input-type=module -e '
+    import { readFileSync } from "node:fs";
+    import { createResolver } from "./kernel/src/net.ts";
+    const conns = JSON.parse(readFileSync("config/kernel/connections.json", "utf8"));
+    const services = createResolver({ project: process.env.P });
+    const open = [];
+    for (const [name, c] of Object.entries(conns)) {
+      const t = await services.resolve(c.url).catch((e) => ({ err: e.message }));
+      const r = t.err ? undefined : await fetch(`http://${t.host}:${t.port}${t.path}`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }), signal: AbortSignal.timeout(10000) }).catch(() => undefined);
+      if (!r) open.push(`${name} unreachable${t.err ? ` (${t.err})` : ""}`);
+      else if (r.status !== 401) open.push(`${name} ${r.status}`);
+    }
+    process.stdout.write(open.join(", "));
+    process.exit(open.length ? 1 : 0);
+  ' 2>&1)"; then
     pass "kernel: every module's MCP endpoint refuses a direct call without its service key (401)"
   else
     fail "kernel: a module's MCP endpoint answers without its service key: $direct"

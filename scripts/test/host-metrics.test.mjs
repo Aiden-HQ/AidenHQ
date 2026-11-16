@@ -13,7 +13,7 @@ const script = join(dirname(fileURLToPath(import.meta.url)), "../../ops/host-met
 /** A checkout with a data dir and a fake `systemctl` whose `list-units` prints `units`. */
 function checkout(units, record) {
   const dir = mkdtempSync(join(tmpdir(), "host-metrics-"));
-  for (const d of ["data/monitoring/textfile", "bin"]) mkdirSync(join(dir, d), { recursive: true });
+  for (const d of ["data/modules/monitoring/textfile", "bin"]) mkdirSync(join(dir, d), { recursive: true });
   writeFileSync(join(dir, "ops-script"), "");
   mkdirSync(join(dir, "ops"), { recursive: true });
   if (record) writeFileSync(join(dir, "data/fleet-paused.json"), typeof record === "string" ? record : JSON.stringify(record, null, 2) + "\n");
@@ -36,7 +36,7 @@ function metrics(dir) {
       cwd: dir,
       env: { ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, AIDENHQ_DATA_DIR: join(dir, "data"), UNITS: join(dir, "units") },
     }, (error, stdout, stderr) => {
-      const file = join(dir, "data/monitoring/textfile/units.prom");
+      const file = join(dir, "data/modules/monitoring/textfile/units.prom");
       resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}`, prom: existsSync(file) ? readFileSync(file, "utf8") : "" });
     });
   });

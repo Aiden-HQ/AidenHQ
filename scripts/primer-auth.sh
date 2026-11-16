@@ -12,7 +12,7 @@ AIDENHQ_SECRETS_DIR="${AIDENHQ_SECRETS_DIR:-$(env_get AIDENHQ_SECRETS_DIR)}"
 export PRIMER_MCP_URL
 : "${PRIMER_MCP_URL:?set Primer's URL on the board first (Settings, Connections)}"
 : "${AIDENHQ_SECRETS_DIR:?set AIDENHQ_SECRETS_DIR in .env}"
-dir="$AIDENHQ_SECRETS_DIR/primer"
+dir="$AIDENHQ_SECRETS_DIR/modules/primer"
 mkdir -p "$dir" && chmod 0700 "$dir"
 node modules/primer/connections/primer-mcp/src/auth.ts "$dir/token.json" "${PRIMER_CALLBACK_PORT:-3123}"
 docker compose up -d --force-recreate primer-mcp

@@ -346,7 +346,7 @@ A push runs about 21 jobs (the test matrix is 18), each in a fresh container tha
 10 minutes on two runners. Jobs for one org never take another org's runners.
 
 **Rotate.** Nothing long-lived to rotate: each job's token is minted fresh from the App key (to rotate the App key, generate a new private key in the App's settings and replace
-`github-app/key.pem` in the vault). Upgrade the runner by bumping the image tag in `modules/ci/compose.yaml`; GitHub stops accepting
+`github-app/key.pem` in the vault). Upgrade the runner by bumping the base image in `modules/ci/runner/Dockerfile`; GitHub stops accepting
 runners some weeks after a newer release, so bump when the org's runners page warns.
 
 **Scale.** One unit per concurrent job: `systemctl --user enable --now aidenhq-ci-runner@3`, or `disable --now` one to

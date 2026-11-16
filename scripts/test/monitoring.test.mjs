@@ -18,43 +18,50 @@ function instance(modules, settings = {}) {
   return dir;
 }
 
+const M = ["prometheus", "node-exporter", "cadvisor", "alertmanager", "grafana", "mcp-grafana"].map((k) => `monitoring-${k}`);
 test("monitoring: services, fleet-ops, secrets, data dirs and loopback-only ports", () => {
   const r = compile(product, instance(["monitoring"], { monitoring_retention: "45d" }));
   const s = r.compose.services;
-  for (const k of ["prometheus", "node-exporter", "cadvisor", "alertmanager", "grafana", "mcp-grafana"]) {
+  for (const k of M) {
     assert.ok(s[k], k);
-    assert.match(s[k].image, /@sha256:[0-9a-f]{64}$/, `${k} pinned by digest`);
+    if (s[k].build) assert.match(readFileSync(join(s[k].build, "Dockerfile"), "utf8"), /^FROM \S+@sha256:[0-9a-f]{64}$/m, `${k}: base pinned by digest`);
+    else assert.match(s[k].image, /@sha256:[0-9a-f]{64}$/, `${k} pinned by digest`);
   }
   assert.ok(r.catalog.find((m) => m.name === "fleet-ops").enabled, "fleet-ops comes along");
-  assert.ok(s.prometheus.command.includes("--storage.tsdb.retention.time=45d"));
+  assert.ok(s["monitoring-prometheus"].command.includes("--storage.tsdb.retention.time=45d"));
   assert.deepEqual(s.board.secrets.filter((x) => x === "monitoring_token"), ["monitoring_token"]);
   assert.equal(s.board.environment.MONITORING_TOKEN_FILE, "/run/secrets/monitoring_token");
-  assert.deepEqual(r.generatedSecrets.filter((x) => /monitoring|grafana/.test(x)), ["monitoring_token", "grafana_admin_password"]);
+  assert.deepEqual(r.generatedSecrets.filter((x) => /monitoring|grafana/.test(x)), ["grafana_service_key", "monitoring_token", "grafana_admin_password"]);
   assert.ok(r.optionalSecrets.includes("grafana_service_account_token"));
-  assert.deepEqual(r.dataDirs.filter((d) => d.startsWith("monitoring/")), ["monitoring/textfile", "monitoring/prometheus", "monitoring/alertmanager", "monitoring/grafana"]);
-  const published = Object.entries(s).filter(([k]) => ["prometheus", "node-exporter", "cadvisor", "alertmanager", "grafana", "mcp-grafana"].includes(k)).flatMap(([k, v]) => (v.ports ?? []).map((p) => `${k} ${p}`));
-  assert.deepEqual(published, ["grafana 127.0.0.1:3131:3000"]);
-  assert.equal(s.grafana.environment.GF_AUTH_ANONYMOUS_ENABLED, "false");
-  assert.equal(s["node-exporter"].user, "65534:65534");
-  for (const k of ["prometheus", "node-exporter", "cadvisor", "alertmanager", "grafana", "mcp-grafana"]) assert.ok(!JSON.stringify(s[k]).includes("docker.sock"), `${k}: no Docker socket`);
-  for (const n of ["monitoring", "monitoring-board", "grafana-local"]) assert.equal(r.compose.networks[n].internal, true, n);
+  assert.deepEqual(r.dataDirs.filter((d) => d.startsWith("modules/monitoring/")).sort(), ["modules/monitoring/alertmanager", "modules/monitoring/grafana", "modules/monitoring/prometheus", "modules/monitoring/textfile"]);
+  const published = M.flatMap((k) => (s[k].ports ?? []).map((p) => `${k} ${p}`));
+  assert.deepEqual(published, ["monitoring-grafana 127.0.0.1:3131:3000"]);
+  assert.equal(s["monitoring-grafana"].environment.GF_AUTH_ANONYMOUS_ENABLED, "false");
+  assert.equal(s["monitoring-node-exporter"].user, "65534:65534");
+  // privileged: [host-metrics]: read-only host /, /sys and /proc for the two collectors, nothing else.
+  assert.deepEqual(M.flatMap((k) => (s[k].volumes ?? []).filter((v) => !v.includes("/modules/monitoring/"))), ["/:/host:ro,rslave", "/sys:/sys:ro", "/proc:/rootfs/proc:ro"]);
+  for (const k of M) assert.ok(!JSON.stringify(s[k]).includes("docker.sock"), `${k}: no Docker socket`);
+  for (const n of ["mod-monitoring", "mod-monitoring-board"]) assert.equal(r.compose.networks[n].internal, true, n);
   // Nothing unauthenticated sits on the backplane: Prometheus and Alertmanager meet the board on their own network, and
-  // mcp-grafana meets grafana-mcp on another.
-  const nets = Object.fromEntries(["prometheus", "alertmanager", "mcp-grafana", "node-exporter", "cadvisor", "grafana"].map((k) => [k, [...s[k].networks].sort()]));
-  assert.deepEqual(nets, { prometheus: ["monitoring", "monitoring-board"], alertmanager: ["monitoring", "monitoring-board"], "mcp-grafana": ["grafana-local", "monitoring"], "node-exporter": ["monitoring"], cadvisor: ["monitoring"], grafana: ["egress", "monitoring"] });
-  assert.deepEqual(s.board.networks, ["monitoring-board"]); // added to the root compose's backplane and egress
+  // mcp-grafana meets grafana-mcp on the grafana module's.
+  const nets = Object.fromEntries(M.map((k) => [k, Object.keys(s[k].networks).sort()]));
+  assert.deepEqual(nets, {
+    "monitoring-prometheus": ["mod-monitoring", "mod-monitoring-board"], "monitoring-alertmanager": ["mod-monitoring", "mod-monitoring-board"], "monitoring-mcp-grafana": ["mod-grafana", "mod-monitoring"],
+    "monitoring-node-exporter": ["mod-monitoring"], "monitoring-cadvisor": ["mod-monitoring"], "monitoring-grafana": ["mod-monitoring", "mod-monitoring-egress"],
+  });
+  assert.ok(s.board.networks.includes("mod-monitoring-board")); // added to the root compose's backplane and egress
 });
 
 test("monitoring off: none of it", () => {
   const r = compile(product, instance([]));
-  assert.equal(r.compose.services.prometheus, undefined);
-  assert.deepEqual(r.dataDirs.filter((d) => d.startsWith("monitoring/")), []);
+  assert.equal(r.compose.services["monitoring-prometheus"], undefined);
+  assert.deepEqual(r.dataDirs.filter((d) => d.startsWith("modules/monitoring/")), []);
 });
 
 test("grafana_source: local points grafana-mcp at the monitoring module's Grafana, and agents can be granted it", () => {
   const r = compile(product, instance(["monitoring", "grafana"], { grafana_source: "local" }));
   assert.equal(r.compose.services["grafana-mcp"].environment.GRAFANA_SOURCE, "local");
-  assert.ok(r.compose.services["grafana-mcp"].networks.includes("grafana-local"));
+  assert.deepEqual(Object.keys(r.compose.services["grafana-mcp"].networks), ["mod-grafana", "mod-grafana-egress", "mod-grafana-board"]);
   assert.deepEqual(r.paperclip.mcp_servers.grafana.tools.write, []);
   assert.ok(r.paperclip.mcp_servers.grafana.tools.read.includes("query_prometheus"));
 });

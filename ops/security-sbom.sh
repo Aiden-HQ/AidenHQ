@@ -7,14 +7,14 @@
 #   repo:instance   the instance checkout
 #   app:<name>      each app's deployed source (data/apps/.platform/<name>/src, what apps-mcp checked out)
 # It runs here, not in the scanner, because these need the Docker socket and the host's root filesystem, which the
-# long-running scanner never gets. Output: <data>/security/sbom/current/targets.tsv (target, file, error) and one
+# long-running scanner never gets. Output: <data>/modules/security/sbom/current/targets.tsv (target, file, error) and one
 # syft-json per target; the scanner (read-only mount) matches a new batch within the hour. One target failing is a line
 # with its error, never the batch.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 set -a; [ -f .env ] && . ./.env; set +a
 SYFT="anchore/syft:v1.57.1@sha256:03215d0e98b661d0ecbc8575dbc14d65be1743b5de5df6410aecb7e80f95b060"
-out="${AIDENHQ_DATA_DIR:-$PWD/data}/security/sbom"
+out="${AIDENHQ_DATA_DIR:-$PWD/data}/modules/security/sbom"
 mkdir -p "$out"
 [ -w "$out" ] || { echo "security-sbom: $out isn't writable by $(id -un) (created by Docker?): sudo chown $(id -u):$(id -g) $out" >&2; exit 1; }
 next="$out/next"

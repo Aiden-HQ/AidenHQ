@@ -127,7 +127,7 @@ main() {
   fi
   # The monitoring module's host metrics (ops/host-metrics.sh): its timer runs while compile made the textfile directory
   # (the module is on), and is removed once the module is off.
-  if grep -q '^  node-exporter:' compose.modules.yaml 2>/dev/null; then
+  if grep -q '^  monitoring-node-exporter:' compose.modules.yaml 2>/dev/null; then
     if ! cmp -s ops/units/aidenhq-host-metrics.service "$units/aidenhq-host-metrics.service" || ! cmp -s ops/units/aidenhq-host-metrics.timer "$units/aidenhq-host-metrics.timer"; then
       cp ops/units/aidenhq-host-metrics.service ops/units/aidenhq-host-metrics.timer "$units/" && systemctl --user daemon-reload && echo "host metrics timer installed/updated"
     fi

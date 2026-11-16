@@ -10,7 +10,7 @@
 // files `app_run_request`"), and no instance commit is checked before it lands, so a hard failure here would land and then
 // stop every later apply until reverted.
 // At apply (ops/apply-config.sh runs `node scripts/agent-check.mjs live --since <the previous config>` at the end):
-//   - each connection an agent is granted answers its /healthz (which also reports sign-in: 503 until signed in).
+//   - each connection an agent is granted answers its /healthz (which also reports sign-in: 503 until signed in), from the host.
 //   A failing connection is an error (exit 1) where it is newly granted since --since (a new agent: all of its
 //   connections); a warning where it was granted before, so one vendor being down doesn't fail every apply.
 // Kill switch: instance setting `agent_check: off` (both steps print that they're off and pass).
@@ -105,13 +105,16 @@ export function liveVerdict(cfg, health, fresh) {
   return { errors, warnings };
 }
 
-/** Each granted HTTP connection's /healthz, asked from inside the Paperclip container (where agents reach them). */
+/**
+ * Each granted HTTP connection's /healthz, asked from the host at the service's container address, as the kernel reaches it
+ * (kernel/src/net.ts): module services share no network with Paperclip any more.
+ */
 export function connectionHealth(cfg, repo) {
   const used = new Set(Object.values(cfg.agents ?? {}).flatMap((a) => a.mcp_servers ?? []));
   const targets = Object.fromEntries(Object.entries(cfg.mcp_servers ?? {}).filter(([n, c]) => used.has(n) && c.url).map(([n, c]) => [n, new URL("/healthz", c.url).href]));
   if (!Object.keys(targets).length) return {};
-  const probe = `const t=JSON.parse(process.argv[1]);Promise.all(Object.entries(t).map(([n,u])=>fetch(u,{signal:AbortSignal.timeout(8000)}).then(async r=>{const b=await r.text();let j={};try{j=JSON.parse(b)}catch{}return [n,{ok:r.ok&&j.ok!==false,detail:r.ok&&j.ok!==false?"ok":String(j.detail??j.state??r.status).slice(0,160)}]}).catch(e=>[n,{ok:false,detail:"unreachable: "+e.message}]))).then(x=>console.log(JSON.stringify(Object.fromEntries(x))))`;
-  const out = execFileSync("docker", ["compose", "exec", "-T", "paperclip", "node", "-e", probe, JSON.stringify(targets)], { cwd: repo, encoding: "utf8", timeout: 60_000 });
+  const probe = `import { createResolver } from "./kernel/src/net.ts";const s=createResolver({project:process.env.COMPOSE_PROJECT_NAME||"aidenhq"});const t=JSON.parse(process.argv[1]);Promise.all(Object.entries(t).map(([n,u])=>s.resolve(u).then((a)=>fetch("http://"+a.host+":"+a.port+a.path,{signal:AbortSignal.timeout(8000)})).then(async r=>{const b=await r.text();let j={};try{j=JSON.parse(b)}catch{}return [n,{ok:r.ok&&j.ok!==false,detail:r.ok&&j.ok!==false?"ok":String(j.detail??j.state??r.status).slice(0,160)}]}).catch(e=>[n,{ok:false,detail:"unreachable: "+e.message}]))).then(x=>console.log(JSON.stringify(Object.fromEntries(x))))`;
+  const out = execFileSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", probe, JSON.stringify(targets)], { cwd: repo, encoding: "utf8", timeout: 60_000 });
   return JSON.parse(out.trim().split("\n").at(-1));
 }
 

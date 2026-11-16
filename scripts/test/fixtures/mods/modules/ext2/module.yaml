@@ -1,3 +1,4 @@
 name: ext2
 description: also extends the board
-compose: compose.yaml
+generated_secrets: [s2]
+board_env: { B: "2", S2_FILE: "${secrets.s2}" }

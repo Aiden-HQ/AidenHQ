@@ -14,7 +14,8 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 env_file="${AIDENHQ_ENV_FILE:-.env}"
 set -a; . "$env_file"; set +a
-out="$AIDENHQ_SECRETS_DIR/google_oauth.json"
+out="$AIDENHQ_SECRETS_DIR/modules/google/google_oauth.json"
+mkdir -p "$(dirname "$out")" && chmod 0700 "$(dirname "$out")"
 extra=()
 client=""
 while [ $# -gt 0 ]; do

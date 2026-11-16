@@ -778,8 +778,8 @@ function writeCatalog() {
     routines: Object.values(cfg.routines ?? {}).filter((r) => r.agent === key).map((r) => r.title),
   }));
   const mcp = Object.fromEntries(Object.keys(cfg.mcp_servers ?? {}).map((n) => [n, agentsOut.filter((a) => a.mcp_servers.includes(n)).map((a) => a.key)]));
-  // The tasks module's fleet_catalog reads it (modules/tasks/compose.yaml mounts data/tasks read-only).
-  const path = join(resolve(repo, env("AIDENHQ_DATA_DIR", "./data")), "tasks", "catalog.static.json");
+  // The tasks module's fleet_catalog reads it (its data dir's catalog folder, mounted read-only).
+  const path = join(resolve(repo, env("AIDENHQ_DATA_DIR", "./data")), "modules", "tasks", "catalog", "catalog.static.json");
   mkdirSync(dirname(path), { recursive: true });
   // Every module found, enabled or not (scripts/compile.mjs): what can be installed, and what each one brings.
   const modulesFile = join(repo, "config/modules.json");
@@ -867,7 +867,7 @@ function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}) {
 function restartOpsMcp() {
   if (env("AIDENHQ_SKIP_RESTART") === "1") return;
   try {
-    execFileSync("docker", ["compose", "up", "-d", "--no-deps", "--force-recreate", "ops-mcp"], { cwd: repo, stdio: "ignore", env: { ...process.env, ...dotenv } });
+    execFileSync("docker", ["compose", "up", "-d", "--no-deps", "--force-recreate", "meetings-ops-mcp"], { cwd: repo, stdio: "ignore", env: { ...process.env, ...dotenv } });
     step("Restarted ops-mcp to pick up the new key/config");
   } catch {
     console.warn("  warning: could not restart ops-mcp; run `docker compose up -d --force-recreate ops-mcp`");
@@ -927,7 +927,7 @@ if (!codexAuth) {
   console.log("Next: log Codex in with your ChatGPT account (once):");
   console.log("  docker compose exec -it -u node paperclip codex -c 'cli_auth_credentials_store=\"file\"' login --device-auth");
 }
-if (readSecret("google_oauth.json") === "{}" || !readSecret("google_oauth.json")) {
+if (readSecret("modules/google/google_oauth.json") === "{}" || !readSecret("modules/google/google_oauth.json")) {
   console.log("Google Calendar/Drive is not connected yet: see README.md › Google.");
 }
 

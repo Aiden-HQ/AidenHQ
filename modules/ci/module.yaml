@@ -2,7 +2,37 @@ name: ci
 description: "Self-hosted GitHub Actions runners (labels self-hosted, aidenhq) for the agents org's app repos and any other org the App serves runners for (the product repo's): one fresh container per job."
 # No agents and no connections: the runner service (compose.yaml) is started per job by the host's
 # aidenhq-ci-runner@[<org>-]<n> units (ops/ci-runner.sh), never by `docker compose up`. docs/operations.md, "CI runners".
-compose: compose.yaml
+# The self-hosted Actions runner. on_demand: `docker compose up` never starts it; each aidenhq-ci-runner@[<org>-]<n> unit runs
+# `docker compose run --rm ci-runner` (ops/ci-runner.sh), so every job gets a new container (nothing shared between jobs),
+# which registers ephemerally, runs one job, exits and is removed. It gets only a one-hour registration token (RUNNER_TOKEN,
+# minted on the host from the GitHub App): no host mounts, no docker socket, none of the instance's secrets, and the ops
+# shell's network (aidenhq-ci: the public Internet and, on the host, only the model gateway's CI listener 10.231.4.1:8201).
+services:
+  run:
+    ci-runner:
+      # The official runner image, less what our jobs never run and what carries known vulnerabilities (runner/Dockerfile).
+      build: ./runner
+      on_demand: true
+      user: image
+      read_only: false
+      egress: true
+      env:
+        RUNNER_URL: https://github.com/${settings.agents_org} # ops/ci-runner.sh sets another org's URL for @<org>-<n> units
+        # Not a secret: where the template's code-review job trades its OIDC token for a CI token (unset = the repo secret).
+        AIDENHQ_GATEWAY_URL: http://10.231.4.1:8201
+      # $$: compose leaves $ to the shell. The token is dropped from the environment before any job runs.
+      entrypoint:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+          : "$${RUNNER_TOKEN:?no registration token (ops/ci-runner.sh mints it)}"
+          ./config.sh --unattended --ephemeral --disableupdate --url "$$RUNNER_URL" --token "$$RUNNER_TOKEN" --name "aidenhq-$$(hostname)" --labels aidenhq --work _work
+          unset RUNNER_TOKEN
+          exec ./run.sh
+      cpus: 4
+      memory: 8g
+      pids: 2048
 settings:
   # App CI code review through the model gateway (services/gateway/ci.ts): "on" = the template's code-review job trades its
   # GitHub OIDC token for a short-lived CI token bound to its repo and PR, and spends through the gateway (ledger, caps

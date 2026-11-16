@@ -81,7 +81,35 @@ routines:
 labels:
   - { name: security, color: "#b91c1c" }
   - { name: red-team, color: "#7f1d1d" }
-compose: compose.yaml
+services:
+  data: true
+  run:
+    # src_security writer: matches the host's SBOMs (ops/security-sbom.sh, a user timer) with grype. No Docker socket, no
+    # host filesystem, no inbound port: it reads the SBOM folder read-only and writes the warehouse.
+    security-scanner:
+      build: ./scanner
+      tmp: 64m
+      egress: true # grype's vulnerability database, App Auditor
+      links: [paperclip, sources] # Paperclip's webhook; the warehouse (shared sources)
+      data:
+        - sbom:/sbom:ro # written by the host timer
+        - cache:/cache
+        - registry:/registry:ro # the instance's apps.yaml, copied by scripts/compile.mjs on every compile
+      env:
+        WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_security_password}
+        SBOM_DIR: /sbom
+        GRYPE_DB_CACHE_DIR: /cache/grype-db
+        TMPDIR: /cache/tmp
+        # The Security Watch routine's signed webhook (read at fire time; setup writes the files).
+        SCAN_WEBHOOK_URL_FILE: ${secrets.security_scan_webhook_url}
+        SCAN_WEBHOOK_SECRET_FILE: ${secrets.security_scan_webhook_secret}
+        # App Auditor (optional): vibe audits of app repos, off while the token files are empty.
+        AUDITOR_URL: "${settings.app_auditor_url}"
+        AGENTS_ORG: "${settings.agents_org}"
+        AUDITOR_CF_ID_FILE: ${secrets.app_auditor_cf_client_id}
+        AUDITOR_CF_SECRET_FILE: ${secrets.app_auditor_cf_client_secret}
+        # The instance's apps (agent-built, in the agents org); module apps such as the warehouse are product code.
+        APPS_REGISTRY_FILES: /registry/apps.yaml
 # Webhook files setup writes after compose is up (created empty first so compose starts), and App Auditor's Cloudflare
 # Access service token (from AppSec; empty = the App Auditor pass is off).
 optional_secrets:

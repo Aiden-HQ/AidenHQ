@@ -579,7 +579,7 @@ function composeWhy(base, head) {
 
 /**
  * The product files that need more than one reviewer's plain read: the gate's core (panel), other gate code and a role
- * holder's handbook (Tier 1, named), and module.yaml or a compose file (root or a module's fragment) judged by content.
+ * holder's handbook (Tier 1, named), and module.yaml or a compose file judged by content.
  * `texts` maps those config files to { base, head } (text, or undefined when absent on that side); a config file without
  * an entry couldn't be read: refused, to ask again.
  */
@@ -599,7 +599,7 @@ function productFileParts(files, texts = {}, s) {
   return parts;
 }
 
-/** Any compose file in the product (the root's, every module's fragment, whatever a module's `compose:` names). */
+/** Any compose file in the product (the root's; modules ship none, so one appearing under modules/ is judged the same way). */
 export const COMPOSE = /(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
 /** An image reference without its tag and digest: `registry/name`. */
 const imageRepo = (ref) => String(ref ?? "").replace(/@sha256:[0-9a-f]+$/, "").replace(/:[^/:]+$/, "");
@@ -619,7 +619,8 @@ function composeParts(f, baseText, headText) {
 const MODULE_AGENT_SAFE = new Set(["reasoning_effort", "timeout_sec", "heartbeat", "persona", "max_parallel", "graded", "brief"]);
 /**
  * Module keys that are the reviewer's (text, labels, schedules without a model); agents, routines, connections and apps are
- * checked below; the rest (settings and their defaults such as autonomy, compose, codex_args, isolation, secrets) are the panel's.
+ * checked below, services too (an image bump is the reviewer's); the rest (settings and their defaults such as autonomy,
+ * board_env, privileged, codex_args, isolation, secrets) are the panel's.
  */
 const MODULE_SAFE = new Set(["name", "description", "requires", "labels", "company"]);
 
@@ -668,6 +669,11 @@ function moduleParts(f, baseText, headText, connections = {}) {
         const fields = changedKeys(bc ?? {}, hc).filter((x) => x !== "guide" && x !== "tools");
         if (added.length || fields.length) why("module-tools", `connection ${c}: ${[...added, ...fields].join(", ")}`);
       }
+    } else if (k === "services") {
+      // The generated compose's input (kernel/src/loader/services.ts): image tags or digests only is an image bump.
+      const noImages = (sv) => ({ ...(sv ?? {}), run: Object.fromEntries(Object.entries(sv?.run ?? {}).map(([n, x]) => [n, { ...(x ?? {}), image: imageRepo(x?.image) }])) });
+      if (eq(noImages(b.services), noImages(h.services))) parts.push(T(1, "product-image-bump", `${f}: services image tags or digests only`));
+      else why("module-services", "changes its services (env, mounts, networks, links, joins, secrets, a service or another image)");
     } else if (k === "apps") {
       const ps = appsParts(b.apps ?? [], h.apps ?? []);
       parts.push(...ps.filter((x) => x.panel || x.tier === 2).map((x) => ({ ...x, reason: `${f}: ${x.reason}` })));
