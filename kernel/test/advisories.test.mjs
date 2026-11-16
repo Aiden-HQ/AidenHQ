@@ -39,7 +39,7 @@ function setup(t, { listed = ["widget"] } = {}) {
   const install = (sha) => writeFileSync(catalog, JSON.stringify([{ name: "widget", enabled: true, revision: sha }, { name: "gadget", enabled: true, revision: sha }]));
   const db = new DatabaseSync(":memory:");
   const board = async (_m, p) => (p === "/internal/owner/grades" ? { status: 200, json: { lines: [] } } : { status: 200, json: {} });
-  const channels = createChannels({ db, writes: {}, board, owner: async () => ({ status: 404, json: {} }), modules: () => ({ modules: { "channel-acme": { privileged: ["speaks-as-owner"], channel: {} } } }) });
+  const channels = createChannels({ db, records: { since: () => [] }, writes: {}, now: () => Date.parse("2026-01-01T12:00:00Z"), board, owner: async () => ({ status: 404, json: {} }), modules: () => ({ modules: { "channel-acme": { privileged: ["speaks-as-owner"], channel: {} } } }) });
   const log = [];
   const adv = createAdvisories({ db, repo, catalog, ownerLine: channels.ownerLine, log: (msg, f) => log.push({ msg, ...f }) });
   const lines = async () => (await channels.notices("channel-acme")).lines;
