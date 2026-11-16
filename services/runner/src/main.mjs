@@ -3893,19 +3893,23 @@ function headsOf(issueId) {
 
 /**
  * Whether the board already shows a task's work published, so the receipt leaves it out of its `pr` invitation: the task is
- * closed, or every branch it opened a PR for has that PR merged and every head the last run ended on is the commit that
- * merged (a merge after that run counts; a commit made on the branch since does not). A branch with no PR, or an open one,
- * keeps the invitation. Only the runner's own records are read: what the board already shows, never a guess.
+ * closed, or every branch it opened a PR for has that PR merged (or closed) and every head the last run ended on is the
+ * commit that PR merged (a merge after that run counts; a commit made on the branch since does not). A branch with no PR,
+ * or an open one, keeps the invitation. Only the runner's own records are read: what the board already shows, never a guess.
  */
 function publishedAt(issue) {
   if (CLOSED.includes(issue.status)) return true;
   const rows = state.branches(issue.id);
-  if (!rows.length || !rows.every((b) => b.pr_url && b.merged)) return false;
-  const mergedPrs = (mergeQueue(issue.id)?.prs ?? []).filter((p) => p.status === "merged");
+  // Merged, or closed without merging: either way the PR for that branch is finished, and no card is owed for it.
+  if (!rows.length || !rows.every((b) => (b.pr_url && b.merged) || b.closed)) return false;
+  const merged = (mergeQueue(issue.id)?.prs ?? []).filter((p) => p.status === "merged");
+  // A head the last run ended on is published only once its branch's PR is merged at that same commit (a merge after the
+  // run counts; a commit made on the branch since does not). A closed PR never covers a head: the commits were not merged.
   return headsOf(issue.id).every((h) => {
-    const prs = mergedPrs.filter((p) => sameRepo(p.repo, h.repo));
-    // Its merge queue says which commit each PR merged: a head newer than that is still unpublished. A PR merged outside
-    // the queue has no record to compare with, so its branch's merged flag is what the board shows.
+    const row = rows.find((b) => sameRepo(b.repo, h.repo) && b.branch === h.branch);
+    if (!row?.merged) return false;
+    const prs = merged.filter((p) => sameRepo(p.repo, h.repo));
+    // A PR merged outside the queue has no head on record to compare with: its branch's merged flag is what the board shows.
     return !prs.length || prs.some((p) => p.head === h.sha || p.headOid === h.sha);
   });
 }
@@ -4223,11 +4227,11 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   });
   const prUrl = stdout.trim().split("\n").pop();
   if (adopted) {
-    state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl });
+    state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0 });
     log("existing PR adopted", { issue: issue.identifier, url: prUrl });
     return `${pushed ? `${pushed} to the PR that was already open` : "This branch already has an open PR"}: ${prUrl}`;
   }
-  state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl });
+  state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0 });
   log("draft PR opened", { issue: issue.identifier, url: prUrl });
   return `${pushed ? `${pushed}, opened` : "Opened"} draft PR ${prUrl}`;
 }
@@ -4483,7 +4487,9 @@ async function leaveFinishedPrs(issue, workspace) {
     }
     if (pr.state === "OPEN") continue;
     if (pr.state === "CLOSED") {
-      state.updateBranch(issue.id, b.repo, b.branch, { pr_url: null });
+      // Closed without merging: remembered as closed, so a receipt leaves the finished work out. `pr` still opens a new one:
+      // it takes the closed row as a branch with no PR and clears the flag when it does.
+      state.updateBranch(issue.id, b.repo, b.branch, { pr_url: null, closed: 1 });
       notes.push(`PR #${pr.number} (\`${b.branch}\`) was closed without merging, so **pr** will open a new one.`);
       continue;
     }

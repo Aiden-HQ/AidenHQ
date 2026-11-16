@@ -61,6 +61,8 @@ export class State {
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('tasks') WHERE name = 'workspace'").get()) this.db.exec("ALTER TABLE tasks ADD COLUMN workspace TEXT");
     // A running job's process and what its finish needs, so the next runner can adopt it after a restart.
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('jobs') WHERE name = 'run_json'").get()) this.db.exec("ALTER TABLE jobs ADD COLUMN run_json TEXT");
+    // A PR that was closed without merging: the branch's work is finished, though `pr` would open a new PR for it.
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('branches') WHERE name = 'closed'").get()) this.db.exec("ALTER TABLE branches ADD COLUMN closed INTEGER NOT NULL DEFAULT 0");
     // Every commit the runner pushed as a branch's tip, any task: a merge without a card needs its PR's head to be one.
     this.db.exec("CREATE TABLE IF NOT EXISTS pushed_heads (repo TEXT NOT NULL, branch TEXT NOT NULL, sha TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (repo, branch, sha))");
   }

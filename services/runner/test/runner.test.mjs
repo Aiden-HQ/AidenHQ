@@ -504,6 +504,8 @@ describe("parent summary", async () => {
     assert.doesNotMatch(only, /Already requested|No further \*\*pr\*\*/);
     // Committed, no card and no merged PR: the invitation stays as it was.
     assert.match(subtaskSummary([stillOpen]), /Reply \*\*pr\*\* here to open all their PRs, or \*\*pr\*\* on a single task for just that one\./);
+    // A closed task is finished too, whatever its branches say.
+    assert.doesNotMatch(subtaskSummary([{ ...stillOpen, status: "cancelled", published: true }]), /Reply \*\*pr\*\*/);
   });
   it("matches a card only at the exact repository, branch and head", () => {
     const head = { repo: "Acme/app", branch: "fix/a", sha: "516c06b166d4" };

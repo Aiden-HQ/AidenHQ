@@ -132,3 +132,35 @@ describe("flow-receipt with a task whose PR merged but has newer commits", () =>
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
 });
+
+describe("flow-receipt with a task whose PR was closed without merging", () => {
+  // PEN-4's PR was closed (not merged) after its run, and the task is still open: its work is finished either way, so the
+  // receipt leaves it out, and only PEN-2, still unpublished, is invited.
+  const closed = {
+    issue: { id: "part2", identifier: "PEN-4", title: "Drop Legacy from infra", status: "in_review", parentId: "parent", assigneeAgentId: "engineer-codex", assigneeUserId: null, createdByUserId: null, createdByAgentId: "assistant", labels: [], description: "" },
+    comments: [],
+  };
+  const t = flow({
+    parent: { createdByUserId: null, createdByAgentId: "assistant", assigneeUserId: "user-1" },
+    part: { createdByUserId: null, createdByAgentId: "assistant", description: "Drop Legacy support in acme/app" },
+    siblings: [closed],
+    step: "commit",
+    setup: ({ dir }) => {
+      const state = new State(join(dir, "state"));
+      const job = state.startJob("part2", "claude", join(dir, "PEN-4.log"));
+      state.finishJob(job, "done", "committed");
+      state.saveBranch("part2", { repo: "acme/app", branch: "fix/closed", base: "main" });
+      state.updateBranch("part2", "acme/app", "fix/closed", { pr_url: "https://github.com/acme/app/pull/7", closed: 1 });
+      state.db.close();
+    },
+  });
+
+  it("does not invite pr for the closed task, and still invites it for the one not yet published", async () => {
+    await t.waitFor("the run-end receipt", () => Boolean(receiptOf(t)));
+    const receipt = receiptOf(t);
+    assert.match(receipt, /Reply \*\*pr\*\* here to open the PRs of PEN-2, or \*\*pr\*\* on a single task for just that one\./);
+    assert.doesNotMatch(receipt, /open all their PRs/);
+  });
+
+  it("never errors or asks for a repository along the way", () => t.noErrors());
+});
