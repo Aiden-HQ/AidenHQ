@@ -9,10 +9,10 @@ export class State {
   constructor(dir: string) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(dir, "state.sqlite"));
-    this.db.exec(`
-      PRAGMA busy_timeout = 5000;
-      PRAGMA journal_mode = WAL;
-    `);
+    this.db.exec("PRAGMA busy_timeout = 5000");
+    // Unlike a statement, this pragma ignores busy_timeout: another opener holding the lock makes it fail at once, so retry.
+    for (let deadline = Date.now() + 5000, wal = false; !wal; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5))
+      try { this.db.exec("PRAGMA journal_mode = WAL"); wal = true; } catch (e) { if ((e as { errcode?: number }).errcode !== 5 || Date.now() > deadline) throw e; }
     // One writer migrates at a time: the runner and a second opener (a test, a CLI) checking for a column at once would both
     // add it ("duplicate column name").
     this.db.exec("BEGIN IMMEDIATE");
