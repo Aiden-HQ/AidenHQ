@@ -48,7 +48,7 @@ to that account. If your data policy needs zero-data-retention routing, turn it 
 
 ## 1. Create the VM
 
-You need Ubuntu 24.04 or 26.04 (amd64), 4 vCPUs, 8 GB RAM and a 100 GB disk (the container images alone take about 25 GB, the
+You need Ubuntu 24.04 (recommended), 26.04 or 22.04, or Debian 12 or 13 (amd64), 4 vCPUs, 8 GB RAM and a 100 GB disk (the container images alone take about 25 GB, the
 Paperclip image 17 GB of it; a 40 GB disk runs out during the first build), plus a non-root user with `sudo` and your SSH
 key. A **virtual TPM** is strongly recommended: the secret vault (step 3) seals its password to the TPM. Without one
 the vault still works, but its password is sealed with a key stored on the same disk, which protects a copied vault

@@ -21,6 +21,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 export const DAY = 86400000;
 // gVisor's repo keeps each weekly release in its own suite (dists/<yyyymmdd>); `release` holds only the newest.
@@ -176,8 +177,8 @@ export async function aptIndex(source) {
   const dir = `${url.replace(/\/$/, "")}/dists/${dist}/${comp}/binary-amd64/Packages`;
   let text;
   try { text = await (await fetchRetry(dir)).text(); } catch {
-    const r = await fetchRetry(`${dir}.gz`);
-    text = await new Response(r.body.pipeThrough(new DecompressionStream("gzip"))).text();
+    // zlib, not DecompressionStream: Ubuntu 22.04's release-pocket indexes end in zero padding, which the stream rejects.
+    text = gunzipSync(Buffer.from(await (await fetchRetry(`${dir}.gz`)).arrayBuffer())).toString("utf8");
   }
   return text.split(/\n\n+/).map((s) => Object.fromEntries(s.split("\n").filter((l) => /^\S+: /.test(l)).map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 2)])))
     .map((p) => ({ ...p, url }));

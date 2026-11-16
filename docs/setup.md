@@ -6,8 +6,8 @@ shared access for colleagues.
 
 ## By hand
 
-The route `ops/setup.sh` automates, for a host you prepare yourself (Ubuntu 24.04 or 26.04 with Docker and Compose, Node.js 24,
-git, `bubblewrap` plus the private copy and `aidenhq-bwrap` AppArmor profile, `passt`; `sudo bash ops/vm/setup.sh` installs these). Use it only
+The route `ops/setup.sh` automates, for a host you prepare yourself (Ubuntu 22.04, 24.04 or 26.04, or Debian 12 or 13, with Docker and Compose, Node.js 24,
+git, `bubblewrap` plus the private copy (and, on AppArmor 4 hosts, the `aidenhq-bwrap` profile), `passt` where packaged; `sudo bash ops/vm/setup.sh` installs these). Use it only
 if `ops/setup.sh` doesn't fit.
 
 ```sh
