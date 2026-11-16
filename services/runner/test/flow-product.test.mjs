@@ -98,7 +98,7 @@ describe("flow-product", () => {
     t.paperclip.issues.get("part").status = "cancelled";
     const runs = t.claudeRuns().length;
     const notes = () => t.partComments().filter((c) => /pull\/11 now conflicts[\s\S]*nobody was woken/.test(c));
-    setPrs({ 11: { branch: "main", files: ["a.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } });
+    setPrs({ 11: { branch: "feat/old", files: ["a.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } });
     await restart();
     await t.waitFor("the note", () => notes().length === 1);
     await restart();

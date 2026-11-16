@@ -125,7 +125,7 @@ describe("flow-cancelled", { concurrency: true }, () => {
       state.db.close();
       Object.assign(t.paperclip.issues.get("part"), { status: "done", labels: [] });
       const notes = () => t.partComments().filter((c) => /pull\/11 now conflicts[\s\S]*nobody was woken/.test(c));
-      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 11: { branch: "main", files: ["a.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } }));
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 11: { branch: "feat/old", files: ["a.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } }));
       await restart();
       await t.waitFor("the note", () => notes().length === 1);
       await restart();
