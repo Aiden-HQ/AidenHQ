@@ -55,6 +55,8 @@ case "$1" in
           for s in "\${@:2}"; do
             case "$s" in -*) continue ;; esac
             [ -f "$dir/recreate-$s" ] || continue
+            # A rotation that lands while this container is starting: the file it read may be either value.
+            [ -f "$dir/rotate-$s" ] && cat "$dir/rotate-$s" > "$dir/secrets/grafana_mcp_token"
             old=$(cat "$dir/psid-$s"); g=$(( $(cat "$dir/recreated-$s" 2>/dev/null || echo 0) + 1 ))
             echo "$g" > "$dir/recreated-$s"; echo "\${s}recreated\${g}" > "$dir/psid-$s"
             cp "$dir/running-$old" "$dir/running-\${s}recreated\${g}"
@@ -352,4 +354,33 @@ test("a secret that rotated and raced before anything started is recreated by th
   assert.equal(r.status, 0, r.out);
   assert.equal(recreates(r).length, 2, `the retry recreates what the first pass never started: ${r.calls}`);
   assert.match(r.out, /compose: paperclip recreated/);
+});
+
+test("a secret that rotated while its container started is not recorded as read, and is recreated again", async () => {
+  // The container started while the file changed, so whether it read the old or the new value is unknown. Recording the
+  // new digest would claim it read that value and keep a container that may hold the old one.
+  const f = fixture({ containers, services: ["paperclip"], hashes: { paperclip: "h-paperclip" } });
+  writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);
+  mkdirSync(join(f.dir, "secrets"), { recursive: true });
+  writeFileSync(join(f.dir, "secrets/grafana_mcp_token"), "new-token\n");
+  writeFileSync(join(f.dir, "rotate-paperclip"), "rotated-mid-start\n");
+  writeFileSync(join(f.dir, "psid-paperclip"), "pc1\n");
+  writeFileSync(join(f.dir, "image-paperclip"), "aidenhq/paperclip:local\n");
+  writeFileSync(join(f.dir, "imageid-aidenhq_paperclip_local"), "sha256:paperclip\n");
+  writeFileSync(join(f.dir, "state-paperclip"), "running\n");
+  writeFileSync(join(f.dir, "recreate-paperclip"), "1\n");
+  writeFileSync(join(f.dir, "running-pc1"), "true\n");
+  writeFileSync(join(f.dir, "imageof-pc1"), "sha256:paperclip\n");
+  writeFileSync(join(f.dir, "hashof-pc1"), "h-paperclip\n");
+  const first = await apply(f);
+  assert.equal(first.status, 0, first.out);
+  assert.match(recreates(first).at(-1), /--force-recreate paperclip$/, first.calls);
+  // Nothing was recorded, so the next apply recreates the container that may still hold the value from before the rotation.
+  const second = await apply(f);
+  assert.equal(second.status, 0, second.out);
+  assert.match(recreates(second).at(-1), /--force-recreate paperclip$/, `an unknown start is recreated again: ${second.calls}`);
+  // That pass saw a stable file, so it records it and the apply after keeps the container.
+  const third = await apply(f);
+  assert.equal(third.status, 0, third.out);
+  assert.equal(recreates(third).length, 0, `a stable start is recorded: ${third.calls}`);
 });

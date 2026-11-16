@@ -32,6 +32,7 @@ secrets="${AIDENHQ_SECRETS_DIR:-}"
 secret_state="$data/compose-secret-digests"
 model=""
 declare -A WAS_IDS=()
+declare -A BEFORE_DIGESTS=()
 # The warehouse's own Postgres image, as scripts/backup.sh uses it: already pinned, so the dump needs nothing new.
 dump_image='postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f'
 warehouse_container=app-warehouse-postgres-1
@@ -135,15 +136,14 @@ secretDigest() {
   [ -z "$lines" ] || printf '%s' "$lines" | sha256sum | awk '{print $1}'
 }
 
-# Record what a running service read from its mounted secrets when its container started: the container and the digest.
-# A service with no mounted file secret has nothing to compare, so its old record is dropped. With a second argument,
-# only a container other than that one is recorded: the pass started it, so what it read is what is on disk now.
+# Record what a running container read from its mounted secrets when it started: the container, and the digest of the
+# files it mounted. Only a container other than the one the pass began with is recorded (the pass started this one).
+# A service with no mounted file secret has nothing to compare, so its old record is dropped.
 recordSecretState() {
-  local service="$1" was="${2-}" id digest
+  local service="$1" digest="$2" was="${3-}" id
   id="$(docker compose ps -a -q "$service" 2>/dev/null | head -1)"
   [ -n "$id" ] && [ "$id" != "$was" ] || return 0
   [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)" = true ] || return 0
-  digest="$(secretDigest "$service")" || return 1
   if [ -z "$digest" ]; then
     rm -f -- "$secret_state/$service"
     return 0
@@ -164,6 +164,7 @@ moved() {
   [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)" = "true" ] || return 0
   local digest
   digest="$(secretDigest "$service")" || exit 1
+  BEFORE_DIGESTS[$service]="$digest"
   local image want have
   image="$(docker compose config --images "$service" 2>/dev/null | head -1)"
   if [ -n "$image" ]; then
@@ -184,7 +185,7 @@ moved() {
 
 # One pass: recreate what moved, then clean up the leftovers. Output goes to $1, where the caller looks for a race.
 step() {
-  local out="$1" desired="$2" status=0 recorded=0 id service
+  local out="$1" desired="$2" status=0 recorded=0 id service after
   local -a recreate=()
   for service in $desired; do moved "$service" && recreate+=("$service"); done
   if [ "${#recreate[@]}" -gt 0 ]; then
@@ -193,10 +194,15 @@ step() {
   else
     : > "$out"
   fi
-  # Every service this pass recreated now has a container that read the files as they are: record it, whether or not the
-  # up went on to fail, so a retry keeps it instead of starting it twice. One the pass did not reach keeps its old record
-  # and is recreated again.
-  for service in "${recreate[@]}"; do recordSecretState "$service" "${WAS_IDS[$service]-}" || recorded=$?; done
+  # Record the digest the pass read before the up, against the container it started, whether or not the up went on to
+  # fail, so a retry keeps it instead of starting it twice. Only when the files are still that digest: a secret that
+  # changed while the container started may have been read either way, so what it holds is unknown, and its record is
+  # left alone to recreate it again on the next apply. A service the pass never started keeps its old record too.
+  for service in "${recreate[@]}"; do
+    after="$(secretDigest "$service")" || recorded=$?
+    [ "$after" = "${BEFORE_DIGESTS[$service]-}" ] || continue
+    recordSecretState "$service" "$after" "${WAS_IDS[$service]-}" || recorded=$?
+  done
   [ "$status" -eq 0 ] || return "$status"
   [ "$recorded" -eq 0 ] || return 1
   while read -r id service; do

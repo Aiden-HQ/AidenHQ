@@ -37,8 +37,11 @@ line per service saying what became of it: `recreated`, `kept`, or `leftover cle
 A service reads a mounted secret (a compose `secrets:` entry) once at start in most cases, and rotating the secret's file
 changes neither its image nor its compose config hash. The compose step therefore records a digest of each service's
 mounted secret files against the container it belongs to (`data/compose-secret-digests/`), and recreates the service when
-that content changes. A container with no record yet (the first apply after this was added) is recreated once, then
-recorded; a record is written for every service the step starts, so the retry after a daemon race does not start it again.
+that content changes. The digest is taken before a service starts, and recorded against the container the step started
+only if the files still match it afterwards: a secret that rotates mid-start may have been read either way, so that
+container is recreated again on the next apply rather than trusted. A container with no record yet (the first apply after
+this was added) is recreated once, then recorded, and a record written for a service the step started is what keeps the
+retry after a daemon race from starting it a second time.
 
 Each phase prints one line, `apply timing: <phase> <seconds>s`, and a total; setup prints its own sections on one
 `setup timing:` line. A cached image build costs a few seconds; a changed one is the real build (the board's tsc and vite
