@@ -234,7 +234,9 @@ Design: [design/access.md](design/access.md).
   its registry entry, the board runs its `App feedback: <app>` routine (tier0) with only a count: at once, then at most once
   per 10 minutes per app. Compile requires that agent to be narrow (exactly `app_api`, `app_view` and task tools; no other app's
   API), apps-mcp keeps it to its app, and its delegations are marked as untrusted app feedback
-  ([access](design/access.md#in-app-feedback)). `api.callers` entries may be `{agent, paths}` to narrow one caller's paths.
+  ([access](design/access.md#in-app-feedback)). `api.callers` entries may be `{agent, paths}` to narrow one caller's paths:
+  a bare path is a prefix (any method, anything below it), and `METHOD /path` with `{name}` for one segment names one exact
+  route (`GET /api/agent/intake`, `POST /api/agent/intake/{reference}/decision`). The app's own `api.paths` stay prefixes.
 - **Data:** `data/board/auth.db` (`app_roles`, `app_defaults`, `app_requests`, `app_access_log`), keyed by app name and
   exported to the gate in `data/gate/accounts.json`. An app that leaves `gate.json` takes its rows with it within a
   minute. A block or demotion returns only once the gate's file has it.
