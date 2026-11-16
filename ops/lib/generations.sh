@@ -87,8 +87,8 @@ genDataDir() { local d="${AIDENHQ_DATA_DIR:-$PWD/data}"; mkdir -p "$d/modules" &
 genContainers() { docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-aidenhq}" --filter "label=aidenhq.module=$1" | tr '\n' ' '; }
 
 # before product: the data modules this apply touches, one per line: in the staged config (config.next/module-data.json)
-# with a data dir on disk, and new to it, or with other services or data_version than the running config, or with files
-# changed under modules/<name>/ (its code).
+# with a data dir on disk, and new to it, or with other services (settings included) or data_version than the running
+# config, or with code changed under modules/<name>/ (not module.yaml, which the services digest covers, nor handbook text).
 genTouched() {
   local data; data="$(genDataDir)"
   # shellcheck disable=SC2016 # JavaScript
@@ -99,7 +99,8 @@ const read = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } cat
 const [a, b] = [read(old), read(next)];
 for (const [m, d] of Object.entries(b)) {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(m) || !fs.existsSync(`${data}/modules/${m}`)) continue;
-  if (JSON.stringify(a[m]) !== JSON.stringify(d) || changed.split("\n").some((f) => f.startsWith(`modules/${m}/`))) console.log(m);
+  const code = (f) => f.startsWith(`modules/${m}/`) && f !== `modules/${m}/module.yaml` && !f.endsWith(".md");
+  if (JSON.stringify(a[m]) !== JSON.stringify(d) || changed.split("\n").some(code)) console.log(m);
 }' config/module-data.json config.next/module-data.json "$data" "$(git diff --name-only "$1" "$2" -- modules)"
 }
 
@@ -129,7 +130,11 @@ genSnapshot() {
   rm -rf "$dir"; mkdir "$dir" || rc=1
   for m in "$@"; do
     [ "$rc" -eq 0 ] || break
-    docker run --rm --network none -v "$data/modules/$m:/d:ro" "$GEN_IMG" tar -C /d --numeric-owner -cf - . > "$dir/$m.tar" || { rc=$?; echo "generation $n snapshot: archiving $m failed (exit $rc)" >&2; break; }
+    # GNU tar exits 1 for a file that changed as it was read: only host writers are left (the runner's metrics textfile), so
+    # that is fine; 2 and up is a real failure.
+    docker run --rm --network none -v "$data/modules/$m:/d:ro" "$GEN_IMG" tar -C /d --numeric-owner --warning=no-file-changed -cf - . > "$dir/$m.tar" || rc=$?
+    [ "$rc" -le 1 ] || { echo "generation $n snapshot: archiving $m failed (exit $rc)" >&2; break; }
+    rc=0
     echo "generation $n snapshot: $m ($(du -h "$dir/$m.tar" | cut -f1)) in $dir/$m.tar"
   done
   umask "$was"

@@ -48,7 +48,7 @@ Each phase prints one line, `apply timing: <phase> <seconds>s`, and a total; set
 build is about 17s). Setup's Paperclip calls run four at a time.
 
 Module data (spec §6.4.1): before an apply switches, it stops the containers of each module it touches that has
-`services.data: true` (the module's files or its compose services changed) and archives `data/modules/<module>/` to
+`services.data: true` (its code, its compose services with their settings, or its `data_version` changed) and archives `data/modules/<module>/` to
 `~/checkpoints/gen-<n>/<module>.tar` (as root in a pinned container, so root-owned files come along; the archive is the
 owner's, `0600`). Without room for it (1.2 times the dirs plus 20 GB, as `scripts/backup.sh`) the apply is refused and the
 containers start again. The newest five `gen-*` snapshots are kept. A failed health check puts the whole snapshot back

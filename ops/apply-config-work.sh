@@ -141,7 +141,7 @@ main() {
   ( set -e; switchOver )
   rc=$?
   set -e
-  [ ! -f config/module-data.json ] || genJs versions "$n" config/module-data.json
+  [ ! -f config/module-data.json ] || genJs versions "$n" config/module-data.json || echo "generation $n: its data versions were not recorded (a rollback to it reads them as 0)"
   # 4. Health.
   if [ "$rc" -ne 0 ]; then why="the switch failed (exit $rc)"
   elif health "$baseline" "$prev_config"; then
@@ -212,7 +212,7 @@ applyGeneration() {
   ( set -e; switchOver )
   rc=$?
   set -e
-  [ ! -f config/module-data.json ] || genJs versions "$m" config/module-data.json
+  [ ! -f config/module-data.json ] || genJs versions "$m" config/module-data.json || echo "generation $m: its data versions were not recorded (a rollback to it reads them as 0)"
   local ok=0
   if [ "$rc" -ne 0 ]; then HEALTH_WHY="the switch failed (exit $rc)"; elif health "${AIDENHQ_HEALTH_BASELINE:-}" "$prev_config"; then ok=1; fi
   rm -f "$prev_config"

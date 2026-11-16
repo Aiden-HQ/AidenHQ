@@ -278,3 +278,13 @@ test("a module whose data migrates (marker 0 -> 1) and fails health comes back a
   assert.equal(refused.status, 1, refused.out);
   assert.match(refused.out, /refusing: acme: data newer than generation 2 declared, and no snapshot taken after it is kept/);
 });
+
+test("only a touched data module is snapshotted: its code, not its handbook text", async () => {
+  const w = world();
+  mkdirSync(w.d("prod/data/modules/acme/state"), { recursive: true });
+  assert.equal((await w.run()).status, 0);
+  mkdirSync(w.d("pw/modules/acme"), { recursive: true });
+  const apply = async (version, files) => { w.commitInstance(w.commitProduct(version, files)); const r = await w.run(); assert.equal(r.status, 0, r.out); return r.out; };
+  assert.match(await apply("2", { "modules/acme/AGENTS.md": "# acme\n" }), /generation 3 snapshot: no module data touched/);
+  assert.match(await apply("3", { "modules/acme/server.mjs": "export {};\n" }), /generation 4 snapshot: acme /);
+});
