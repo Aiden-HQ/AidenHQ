@@ -263,7 +263,9 @@ export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<a
   const facts = files.length ? [`${files.length} file${files.length > 1 ? "s" : ""} attached: ${files.map((f: any) => f.label).join(", ")} (their names and types, as the agent gave them, are in FILE_NAMES)`] : ["no files attached"];
   if (all.length) facts.push(picked.fact);
   const version = comments.length || files.length ? hash([...comments.map((c: any) => c.id), ...files.map((f: any) => f.id)].join(" ")) : "";
-  const names = files.map((f: any) => `${f.label}: ${String(f.originalFilename ?? f.name ?? "").slice(0, 200)} (${String(f.contentType ?? "").slice(0, 100)}; ${Number(f.byteSize) || 0} bytes)`).join("\n");
+  // Every attachment has a line, whatever its name's length: the prompt promises FILE_NAMES names them all, and its block has
+  // the room for one short line each (the prompt fences a block at 20,000 and a task has far fewer files than that).
+  const names = files.map((f: any) => `${f.label}: ${String(f.originalFilename ?? f.name ?? "").slice(0, 120)} (${String(f.contentType ?? "").slice(0, 60)}; ${Number(f.byteSize) || 0} bytes)`).join("\n");
   return { version, facts, files, data: { TASK_COMMENTS: picked.text, ...(files.length ? { FILE_NAMES: names } : {}) } };
 }
 
@@ -343,6 +345,8 @@ export const TEXT_TOTAL = 16_000; // all text files' characters (the prompt fenc
 const DOCUMENT_FILE = 6_000; // one task document's characters
 export const DOCUMENTS_TOTAL = 16_000; // all task documents' characters (its own fenced block, under 20,000)
 const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|ya?ml|log|html?|tsx|ts|jsx|js|css)$/i;
+/** Between two entries of one fenced block, in the prompt's characters. */
+const SEPARATOR = "\n\n";
 
 /** The fence characters the grader's prompt escapes: each '<', '>', '\u2039' or '\u203a' costs one more character there. */
 const FENCE_CHARS = /[<>\u2039\u203a]/g;
@@ -457,10 +461,6 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       facts.push(`${f.label}: attached, not sent to the grader (only ${MAX_IMAGES} images are sent: those the rubric names, then those the comments name, then the newest)`);
       continue;
     }
-    if (isText && textLeft <= 0) {
-      facts.push(`${f.label}: text, ${Number(f.byteSize) || 0} bytes, not sent to the grader (the text budget of ${TEXT_TOTAL} characters was spent on files the rubric names first)`);
-      continue;
-    }
     let buf: Buffer;
     try {
       buf = await content(f.id);
@@ -493,16 +493,19 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       continue;
     }
     const text = buf.toString("utf8");
-    const ex = excerpt(text, Math.min(TEXT_FILE, textLeft));
+    const head = `=== ${f.label}: ${name.slice(0, 200)} ===\n`;
+    const room = Math.min(TEXT_FILE, textLeft - promptLength(head) - SEPARATOR.length);
+    const ex = room > 0 ? excerpt(text, room) : undefined;
     if (!ex) {
-      facts.push(`${f.label}: text, ${text.length} characters, not sent to the grader (the remaining text budget of ${textLeft} characters has no room for a cut marker)`);
+      const why = textLeft <= 0 ? `the text budget of ${TEXT_TOTAL} characters was spent on files the rubric names first` : `${textLeft} characters of the text budget are left, less than this entry's heading and a cut marker`;
+      facts.push(`${f.label}: text, ${text.length} characters${escaped(text)}, not sent to the grader (${why})`);
       continue;
     }
-    textLeft -= promptLength(ex.shown);
-    texts.push(`=== ${f.label}: ${name.slice(0, 200)} ===\n${ex.shown}`);
+    textLeft -= promptLength(head) + promptLength(ex.shown) + SEPARATOR.length;
+    texts.push(`${head}${ex.shown}`);
     facts.push(`${f.label}: text, ${text.length} characters${escaped(text)}, in FILES${ex.cut ? ` (too large: ${ex.cut} characters cut from the middle, marked in FILES; ${ex.shown.length} characters shown)` : ""}`);
   }
-  return { facts, images, data: texts.length ? { FILES: texts.join("\n\n") } : {} };
+  return { facts, images, data: texts.length ? { FILES: texts.join(SEPARATOR) } : {} };
 }
 
 /**
@@ -530,27 +533,26 @@ export async function documentEvidence(documents: any[], { rubric = "", comments
   const rank = (d: any) => (exact(d, rubric) ? 3 : named(d, rubric) ? 2 : exact(d, comments) || named(d, comments) ? 1 : 0);
   const labelled = documents.map((d: any, i: number) => ({ ...d, label: `document_${i + 1}` }));
   const order = [...labelled].sort((a: any, b: any) => rank(b) - rank(a) || String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
-  const names = labelled.map((d: any) => `${d.label}: key=${keyOf(d).slice(0, 64)}; title=${titleOf(d).slice(0, 200)}; ${String(d.format ?? "text").slice(0, 40)}; ${bodyOf(d).length} characters; revision ${Number(d.latestRevisionNumber) || 0}`);
+  const names = labelled.map((d: any) => `${d.label}: key=${keyOf(d).slice(0, 48)}; title=${titleOf(d).slice(0, 120)}; ${String(d.format ?? "text").slice(0, 24)}; ${bodyOf(d).length} characters; revision ${Number(d.latestRevisionNumber) || 0}`);
   for (const d of order) {
     const body = bodyOf(d);
-    if (left <= 0) {
-      facts.push(`${d.label}: text, ${body.length} characters, not sent to the grader (the document budget of ${DOCUMENTS_TOTAL} characters was spent on documents the rubric names first)`);
-      continue;
-    }
-    const ex = excerpt(body, Math.min(DOCUMENT_FILE, left));
+    const head = `=== ${d.label}: ${keyOf(d).slice(0, 64)} — ${titleOf(d).slice(0, 200)} ===\n`;
+    const room = Math.min(DOCUMENT_FILE, left - promptLength(head) - SEPARATOR.length);
+    const ex = room > 0 ? excerpt(body, room) : undefined;
     if (!ex) {
-      facts.push(`${d.label}: text, ${body.length} characters, not sent to the grader (the remaining document budget of ${left} characters has no room for a cut marker)`);
+      const why = left <= 0 ? `the document budget of ${DOCUMENTS_TOTAL} characters was spent on documents the rubric names first` : `${left} characters of the document budget are left, less than this entry's heading and a cut marker`;
+      facts.push(`${d.label}: text, ${body.length} characters${escaped(body)}, not sent to the grader (${why})`);
       continue;
     }
-    left -= promptLength(ex.shown);
-    texts.push(`=== ${d.label}: ${keyOf(d).slice(0, 64)} — ${titleOf(d).slice(0, 200)} ===\n${ex.shown}`);
+    left -= promptLength(head) + promptLength(ex.shown) + SEPARATOR.length;
+    texts.push(`${head}${ex.shown}`);
     facts.push(`${d.label}: text, ${body.length} characters${escaped(body)}, in TASK_DOCUMENTS${ex.cut ? ` (too large: ${ex.cut} characters cut from the middle, marked in TASK_DOCUMENTS; ${ex.shown.length} characters shown)` : ""}`);
   }
   if (!documents.length) facts.push("no task documents");
   const ids = labelled.map((d: any) => String(d.latestRevisionId ?? d.id ?? `${keyOf(d)}:${bodyOf(d).length}`));
   return {
     facts,
-    data: documents.length ? { DOCUMENT_NAMES: names.join("\n"), TASK_DOCUMENTS: texts.join("\n\n") } : {},
+    data: documents.length ? { DOCUMENT_NAMES: names.join("\n"), TASK_DOCUMENTS: texts.join(SEPARATOR) } : {},
     version: ids.length ? hash(ids.join(" ")) : "",
   };
 }

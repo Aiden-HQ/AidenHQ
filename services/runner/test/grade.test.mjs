@@ -461,11 +461,12 @@ test("an oversized attachment is marked as cut, and the rubric-named one is sent
 });
 
 test("a file with no room for a cut marker is reported as not sent, never as marked", async () => {
-  // Two files spend 12,000 of the 16,000-character budget; a third spends 3,990 and leaves 10.
+  // Two files spend their 6,000 characters each plus their headings; a third fits with only a few characters to spare, so
+  // the fourth has no room for its heading and a cut marker.
   const texts = {
     a: "a".repeat(6_000),
     b: "b".repeat(6_000),
-    c: "c".repeat(3_990),
+    c: "c".repeat(3_920),
     d: `start\n${"d".repeat(12_002)}\nend`,
   };
   const ev = await gather(
@@ -479,7 +480,8 @@ test("a file with no room for a cut marker is reported as not sent, never as mar
     ["the logs are attached"],
   );
   const fact = ev.facts.find((f) => f.startsWith("file_4:"));
-  assert.match(fact, /file_4: text, 12012 characters, not sent to the grader \(the remaining text budget of 10 characters has no room for a cut marker\)/);
+  // Each entry's heading and separator are charged to the budget too, so the 10 characters left cannot hold one.
+  assert.match(fact, /file_4: text, 12012 characters, not sent to the grader \(\d+ characters of the text budget are left, less than this entry's heading and a cut marker\)/);
   assert.doesNotMatch(ev.data.FILES, /file_4|characters \d+-\d+ cut/);
   assert.ok(!ev.facts.some((f) => /file_4:.*marked in FILES/.test(f)), "the facts never claim a marker that is not there");
 });
@@ -565,6 +567,33 @@ test("fence characters in a text are escaped inside its budget: nothing the fact
   const block = asked.user.slice(asked.user.indexOf("<<<TASK_COMMENTS"));
   assert.ok(block.length < 20_000 + 200, `the escaped comment block is held to the prompt's 20,000-character limit: ${block.length}`);
   assert.match(block, /\[\.\.\. (?:characters \d+-\d+ cut|cut: )/, "and says where it was cut");
+});
+
+test("the outer fence caps never trim a block or a name list the facts call complete", async () => {
+  // Many entries, each with a long heading, and names near their limits: the per-entry budgets charge the framing, so the
+  // 20,000-character fence in gradePrompt finds every block already inside it.
+  const long = "n".repeat(180);
+  const files = Array.from({ length: 24 }, (_, i) => ({ id: `f${i}`, originalFilename: `${long}-${i}.log`, contentType: "text/plain", byteSize: 7_000, createdAt: `2026-11-14T10:00:${String(i).padStart(2, "0")}Z` }));
+  const docs = Array.from({ length: 6 }, (_, i) => ({ id: `d${i}`, key: `k${i}`, title: `${long}-${i}`, format: "markdown", body: `${"y".repeat(9_000)}\nend`, latestRevisionId: `r${i}`, latestRevisionNumber: 1 }));
+  const ev = await gather(
+    { kind: "report", ref: "" },
+    deps({ attachments: async () => files, content: async () => Buffer.from("z".repeat(7_000)), documents: async () => docs }),
+    ["the logs are attached"],
+  );
+  const prompt = gradePromptOf(ev);
+  for (const name of ["FILES", "TASK_DOCUMENTS"]) {
+    const block = prompt.slice(prompt.indexOf(`<<<${name}\n`) + name.length + 4, prompt.indexOf(`\n${name}>>>`));
+    assert.ok(block.length <= 20_000, `${name} is inside the prompt's 20,000-character fence: ${block.length}`);
+  }
+  // Every attachment and document keeps its own name line.
+  assert.equal(ev.data.FILE_NAMES.split("\n").length, files.length);
+  assert.equal(ev.data.DOCUMENT_NAMES.split("\n").length, docs.length);
+  for (let i = 1; i <= files.length; i++) assert.match(ev.data.FILE_NAMES, new RegExp(`^file_${i}: `, "m"));
+  for (let i = 1; i <= docs.length; i++) assert.match(ev.data.DOCUMENT_NAMES, new RegExp(`^document_${i}: `, "m"));
+  // A text the facts say is in a block is in the prompt, whole or with its cut marker: nothing is silently dropped.
+  const sent = ev.facts.filter((f) => / in (FILES|TASK_DOCUMENTS)\b/.test(f));
+  assert.ok(sent.length > 0);
+  for (const fact of sent) assert.ok(prompt.includes(`=== ${fact.split(":")[0]}: `), `${fact.split(":")[0]} is in the prompt`);
 });
 
 test("a task document alone reaches the grader, and a new revision is a new version", async () => {
