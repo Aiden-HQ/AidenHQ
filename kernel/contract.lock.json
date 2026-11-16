@@ -110,8 +110,16 @@
       "state": "experimental",
       "fp": ""
     },
+    "manifest key writes": {
+      "state": "experimental",
+      "fp": ""
+    },
     "provider engine@1": {
       "state": "stable",
+      "fp": ""
+    },
+    "provider executor@1": {
+      "state": "experimental",
       "fp": ""
     },
     "route ANY /v1/cp/agent/*": {
@@ -138,9 +146,37 @@
       "state": "experimental",
       "fp": "auth=bearer"
     },
+    "route GET /v1/writes": {
+      "state": "experimental",
+      "fp": "auth=board"
+    },
+    "route GET /v1/writes/:id": {
+      "state": "experimental",
+      "fp": "auth=bearer"
+    },
     "route POST /c/:connection/mcp": {
       "state": "stable",
       "fp": "auth=bearer"
+    },
+    "route POST /v1/writes": {
+      "state": "experimental",
+      "fp": "auth=bearer"
+    },
+    "route POST /v1/writes/:id/decide": {
+      "state": "experimental",
+      "fp": "auth=board"
+    },
+    "route POST /v1/writes/:id/outcome": {
+      "state": "experimental",
+      "fp": "auth=module"
+    },
+    "route POST /v1/writes/:id/panel": {
+      "state": "experimental",
+      "fp": "auth=board"
+    },
+    "route POST /v1/writes/:id/review": {
+      "state": "experimental",
+      "fp": "auth=board"
     },
     "schema services.json": {
       "state": "experimental",
@@ -301,6 +337,58 @@
     "schema services.json.run.*.user": {
       "state": "experimental",
       "fp": "{\"req\":false,\"enum\":[\"owner\",\"nobody\",\"image\"],\"default\":\"owner\"}"
+    },
+    "schema writes.json": {
+      "state": "experimental",
+      "fp": "{\"req\":true,\"type\":\"object\",\"propertyNames\":{\"pattern\":\"^[a-z][a-z0-9_]{0,40}$\"}}"
+    },
+    "schema writes.json.*": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"closed\":true,\"type\":\"object\"}"
+    },
+    "schema writes.json.*.args": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^schemas/[\\\\w.-]+\\\\.json$\"}"
+    },
+    "schema writes.json.*.card": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"closed\":true,\"type\":\"object\"}"
+    },
+    "schema writes.json.*.card.changes": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"string\"}"
+    },
+    "schema writes.json.*.card.cost": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"string\"}"
+    },
+    "schema writes.json.*.card.details": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"string\"}"
+    },
+    "schema writes.json.*.card.reads": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"string\"}"
+    },
+    "schema writes.json.*.card.sentence": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"string\"}"
+    },
+    "schema writes.json.*.floor": {
+      "state": "experimental",
+      "fp": "{\"req\":true,\"enum\":[0,1,2]}"
+    },
+    "schema writes.json.*.panel": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"boolean\"}"
+    },
+    "schema writes.json.*.tools": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"array\"}"
+    },
+    "schema writes.json.*.tools[]": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"string\"}"
     }
   }
 }

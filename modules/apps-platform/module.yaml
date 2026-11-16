@@ -1,0 +1,62 @@
+name: apps-platform
+description: "The apps platform's write kinds: deploys, one-off runs, restarts, rollbacks and app API writes, each a kernel record executed by apps-mcp. Always installed (core requires it)."
+# The apps connection: apps-mcp, still in the root compose until 4c moves it here.
+connections:
+  apps:
+    setup: "Built in (apps-mcp). If it is down, run `docker compose up -d apps-mcp` on the host, then read `docker compose logs apps-mcp`."
+    url: http://apps-mcp:8090/mcp
+    auth: apps_service_key
+    tool_timeout_sec: 600 # deploys are synchronous
+    tools:
+      # warehouse_query, source_new, source_ack: the shared warehouse's sources (services/apps-mcp/src/sources.ts).
+      # source_ack only moves the caller's own cursor. finding_verdict needs the security-verdict role (Security Watch).
+      read: [ app_list, app_status, app_logs, app_view, app_check, web_view, warehouse_query, source_new, app_requests, app_roles ]
+      write: [ app_deploy, app_restart, app_rollback, app_create, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
+      # Granted only by name (the `write` shorthand never includes it): it stops an app and drops its registry entry.
+      destructive: [ app_remove ]
+# The kernel calls these kinds' plan, execute and status on apps-mcp, with the connection's key (executor@1).
+providers:
+  executor:
+    url: http://apps-mcp:8090/aidenhq/v1/executor
+    auth: apps_service_key
+# Each tool call below is filed as its kind. The plan checks the caller (an app's owner, or the DevOps Engineer during an
+# incident) and pins the exact commit; a stateful deploy is raised to the reviewer, with the panel when it touches a migration.
+writes:
+  deploy:
+    args: schemas/deploy.json
+    floor: 0
+    tools: [ app_deploy ]
+    card:
+      sentence: "Deploy app {{name}} at {{short}}."
+      changes: "Rebuilds and restarts {{name}} at commit {{sha}}{{kept}}."
+      reads: "Nothing new."
+      cost: "No model cost; the app restarts."
+      details: "{{details}}"
+  run:
+    args: schemas/run.json
+    floor: 1
+    tools: [ app_run_request ]
+    card:
+      sentence: "Run `npm run {{script}}` once in app {{name}}."
+      changes: "Runs once inside {{name}}'s running {{service}} container at commit {{short}}; it can change the app's data. 10-minute limit. Refused if the app is redeployed before it runs."
+      reads: "Whatever the script reads (the app's own data and secrets)."
+      cost: "No model cost."
+      details: "{{details}}"
+  restart:
+    args: schemas/app.json
+    floor: 0
+    tools: [ app_restart ]
+    card: { sentence: "Restart app {{name}}.", changes: "Restarts {{name}}'s containers and waits for health.", reads: "Nothing new.", cost: "No model cost." }
+  rollback:
+    args: schemas/app.json
+    floor: 0
+    tools: [ app_rollback ]
+    card: { sentence: "Roll app {{name}} back to its previous good commit.", changes: "Redeploys {{name}}'s previous good commit (code only: volumes are not restored).", reads: "Nothing new.", cost: "No model cost; the app restarts." }
+  api_write:
+    args: schemas/api.json
+    floor: 0
+    tools: [ app_api ]
+    card: { sentence: "Call {{method}} {{path}} on app {{name}}'s agent API.", changes: "Whatever that path does in {{name}}, as agent {{caller}}.", reads: "The app's answer.", cost: "No model cost.", details: "{{details}}" }
+generated_secrets:
+  # The kernel's key to apps-mcp's /mcp and its executor (agents' calls arrive only through the kernel's proxy).
+  - apps_service_key

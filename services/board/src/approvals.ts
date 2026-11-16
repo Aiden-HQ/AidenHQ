@@ -170,40 +170,8 @@ export function card(action: RunnerAction, args: any, diff = ""): Pick<Request, 
   return { ...base, target: `${args.repo} ${args.branch}`, sentence: `Apply a change to the fleet's configuration (commit ${args.sha.slice(0, 12)}).`, changes: `Lands ${args.sha.slice(0, 12)} on ${args.repo}'s main and re-applies the live fleet. Files: ${args.files.join(", ")}${authority}`, cost: "No model cost; services restart.", details: diff };
 }
 
-/** An app_run: apps-mcp's checked request (owner, script in package.json at the running commit), filed with the apps token. */
-export const RunRequestSchema = z
-  .object({
-    agent_id: z.string().min(1).max(64),
-    task: z.string().min(1).max(64),
-    name: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
-    script: z.string().regex(/^[a-z0-9][a-z0-9:_-]{0,63}$/),
-    service: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$/),
-    sha: SHA,
-    // Shown in full on the card, never shortened or cleaned: what the owner reads is exactly what runs.
-    command: z.string().min(1).max(500).refine((c) => !/[\p{Cc}\p{Cf}]/u.test(c), "the script's command has control or format characters"),
-    reason: z.string().max(2000),
-  })
-  .strict();
-export type RunRequest = z.infer<typeof RunRequestSchema>;
-
 /** Printable, one line, capped: for app- or agent-written text, shown only in its own labelled field. */
 const oneLine = (s: string, max: number) => s.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, max);
-
-/** The card for an app_run (the args the board replays: name, script, service, sha), and its digest (args plus the command). */
-export function runCard(r: RunRequest): Pick<Request, "target" | "digest" | "args" | "sentence" | "reads" | "changes" | "cost" | "details"> {
-  const args = { name: r.name, script: r.script, service: r.service, sha: r.sha };
-  const command = r.command;
-  return {
-    target: r.name,
-    args,
-    digest: createHash("sha256").update(JSON.stringify({ action: "app_run", args, command })).digest("hex").slice(0, 40),
-    sentence: `Run \`npm run ${r.script}\` once in app ${r.name}.`,
-    reads: "Whatever the script reads (the app's own data and secrets).",
-    changes: `Runs once inside ${r.name}'s running ${r.service} container at commit ${r.sha.slice(0, 12)}; it can change the app's data. 10-minute limit. Refused if the app is redeployed before it runs.`,
-    cost: "No model cost.",
-    details: `app: ${r.name}\nservice: ${r.service}\ncommit: ${r.sha}\nruns: npm run ${r.script}\nScript (from the app's package.json): ${command}\nReason (written by the requesting agent): ${oneLine(r.reason, 300)}`,
-  };
-}
 
 /**
  * A raise_cap: the model gateway refused a call at a spend cap and asks to raise it (filed by the gateway's own key, the
@@ -265,15 +233,6 @@ export function autonomy(grantsFile = process.env.AIDENHQ_GRANTS_FILE): Autonomy
   } catch {
     return "off";
   }
-}
-
-/**
- * Whether a deploy's diff touches a migration, .sql or schema file (such a deploy is Tier 2, the owner's). Fails closed:
- * no SQL is parsed, so a destructive statement can't hide from it. File names come only from `diff --git` headers, which a
- * hunk line (always prefixed with +, - or a space) can't forge.
- */
-export function touchesMigrations(diff: string): boolean {
-  return diff.split("\n").some((line) => line.startsWith("diff --git ") && /migrat|\.sql\b|schema/i.test(line));
 }
 
 /**
@@ -760,4 +719,52 @@ export class Approvals {
     const a = this.db.prepare("SELECT outcome, claim_nonce FROM approvals WHERE id = ?").get(id) as { outcome: string | null; claim_nonce: string | null } | undefined;
     return a?.outcome != null && a.claim_nonce === nonce;
   }
+}
+
+/**
+ * A module write kind's record (the kernel's kernel.db, lean-core 2d): until 2f and 3a the board shows it with its own cards
+ * and forwards the owner's decisions and the reviewer's verdicts on it to the kernel, which keeps it and runs it.
+ */
+export type KernelRecord = {
+  id: string; kind: string; args: unknown; digest: string; tier: Tier; panel: boolean; task: string; state: string; review: string | null;
+  decided_by: string | null; outcome: { ok: boolean; text: string } | null; created_at: string; updated_at: string;
+  card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string }; requester: { agent: string; key: string; name: string };
+};
+export const KERNEL_ID = /^k-[0-9a-f]{16}$/;
+/** The two ported kinds keep their card names, so the reviewer reads them as it always has. */
+const LEGACY: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
+const KERNEL_STATE: Record<string, State> = { review: "pending", owner: "pending", approved: "approved", claimed: "used", done: "used", failed: "used", unknown: "used", rejected: "rejected", stale: "stale", cancelled: "expired" };
+
+export function recordApproval(r: KernelRecord): Approval {
+  const decided = r.decided_by ? r.updated_at : null;
+  return {
+    id: r.id, issueId: r.task, identifier: r.task, action: (LEGACY[r.kind] ?? r.kind) as Action, target: String((r.args as { name?: unknown })?.name ?? r.kind), digest: r.digest, args: r.args,
+    sentence: r.card.sentence, changes: r.card.changes, reads: r.card.reads, cost: r.card.cost, details: r.card.details, requestedBy: r.requester.name || r.requester.key,
+    tier: r.state === "review" ? 1 : r.state === "owner" ? 2 : r.tier, panel: r.panel, reason: r.card.reason ?? "", requesterId: r.requester.agent || null,
+    baseTier: r.tier, review: r.review, reasonCode: null, reviewCode: null, state: KERNEL_STATE[r.state] ?? "expired", decidedBy: r.decided_by, decidedAt: decided,
+    usedAt: ["claimed", "done", "failed", "unknown"].includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null,
+    outcomeText: r.outcome?.text ?? null, createdAt: r.created_at, expiresAt: "9999-12-31T00:00:00.000Z", replaced: false,
+  };
+}
+
+/** The kernel's record routes, with the board's key (gateway_board_key). Throws with the kernel's reason. */
+export function kernelRecords(k: { url: string; token: string } | undefined) {
+  const call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+    if (!k) throw new Error("the board has no kernel configured (AIDENHQ_KERNEL_URL, gateway_board_key)");
+    const res = await fetch(`${k.url}${path}`, { method, headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15_000) });
+    const j = (await res.json().catch(() => ({}))) as any;
+    if (!res.ok) throw Object.assign(new Error(String(j?.error?.message ?? `the kernel answered ${res.status}`)), { status: res.status });
+    return j as T;
+  };
+  return {
+    enabled: Boolean(k),
+    list: async (state: "review" | "owner" | "recent", task?: string) => (await call<{ records: KernelRecord[] }>("GET", `/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}`)).records.map(recordApproval),
+    get: async (id: string) => recordApproval(await call<KernelRecord>("GET", `/v1/writes/${id}`)),
+    decide: async (id: string, decision: "approve" | "reject", by: string, via: string) => {
+      const digest = (await call<KernelRecord>("GET", `/v1/writes/${id}`)).digest; // a record never changes after filing
+      return recordApproval(await call<KernelRecord>("POST", `/v1/writes/${id}/decide`, { digest, decision, by, via }));
+    },
+    review: async (id: string, v: unknown) => recordApproval(await call<KernelRecord>("POST", `/v1/writes/${id}/review`, v)),
+    panel: async (id: string, digest: string) => recordApproval(await call<KernelRecord>("POST", `/v1/writes/${id}/panel`, { digest })),
+  };
 }

@@ -6,6 +6,10 @@
   "description": "Official AidenHQ modules",
   "plugins": [
     {
+      "name": "apps-platform",
+      "source": "./apps-platform"
+    },
+    {
       "name": "ci",
       "source": "./ci"
     },

@@ -1247,9 +1247,8 @@ const TOOLS = {
 
 // Fleet tools (Chief of Staff only, by enabled_tools). The board holds the board key and does the work behind its internal
 // API; it checks that the caller is the Chief of Staff from the caller assertion, and enforces the owner-words gate.
-// A deploy builds and waits for health: control (deploy_app) outlasts the usual 20s.
-const fleet = (what, body) => boardApi(`/internal/fleet/${what}`, body, what === "control" ? 650_000 : 20_000);
-const ACTIONS = ["run_routine", "pause_agent", "resume_agent", "pause_routine", "resume_routine", "deploy_app"];
+const fleet = (what, body) => boardApi(`/internal/fleet/${what}`, body, 20_000);
+const ACTIONS = ["run_routine", "pause_agent", "resume_agent", "pause_routine", "resume_routine"];
 const APPS_URL = (process.env.APPS_MCP_URL || "http://apps-mcp:8090").replace(/\/$/, "");
 const CATALOG_FILE = process.env.AIDENHQ_CATALOG_FILE || "/catalog/catalog.static.json";
 
@@ -1329,22 +1328,21 @@ Object.assign(TOOLS, {
   },
   fleet_control: {
     description:
-      "Admin: run a routine now, pause/resume an agent or a routine, or deploy an app. Run/pause/resume only on the owner's explicit request, with their exact words as `quote`: the board refuses unless `quote` (12+ characters) is verbatim in the owner's own recent comment on this task, outside any forwarded/fenced block, names the target and asks for the action. `deploy_app` (`target` = app name, `sha` = the exact commit, required; `quote` may be empty; the only way a stateful app is deployed) files an approval card, tiered by code like every write: it deploys once the card is approved, not now. The Chief of Staff can't be paused. Config, schedule or agent changes are delegated, not done here.",
+      "Admin: run a routine now, or pause/resume an agent or a routine, only on the owner's explicit request, with their exact words as `quote`: the board refuses unless `quote` (12+ characters) is verbatim in the owner's own recent comment on this task, outside any forwarded/fenced block, names the target and asks for the action. Deploying an app is its maintainer's app_deploy (a stateful app's deploy goes to the AI reviewer first). The Chief of Staff can't be paused. Config, schedule or agent changes are delegated, not done here.",
     inputSchema: {
       type: "object",
       properties: {
         action: { type: "string", enum: ACTIONS },
-        target: { type: "string", description: "agent name, routine title or app name, as the owner said it (see fleet_status, fleet_catalog)" },
-        sha: { type: "string", description: "deploy_app only (required there): the commit to deploy; the card shows it in full" },
+        target: { type: "string", description: "agent name or routine title, as the owner said it (see fleet_status, fleet_catalog)" },
         quote: { type: "string", description: "The owner's exact words requesting this, copied from their comment" },
       },
       required: ["action", "target", "quote"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    run: async ({ action, target, sha, quote }) => {
+    run: async ({ action, target, quote }) => {
       if (!CURRENT()) throw new Error("no current task");
-      const r = await fleet("control", { action, target, ...(sha ? { sha } : {}), quote: String(quote ?? ""), task: CURRENT() });
+      const r = await fleet("control", { action, target, quote: String(quote ?? ""), task: CURRENT() });
       await api("POST", `/api/issues/${issueRef(CURRENT())}/comments`, { body: `fleet_control: ${r.done}.` }).catch(() => {});
       return r;
     },

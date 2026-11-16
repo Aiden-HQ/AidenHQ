@@ -39,11 +39,11 @@ const OLD = [
   /(^|\/)\.github\//,
 ];
 
-test("the split keeps every file the old list gated; the only additions are the lean files, the engine modules, the SDK, the kernel (the gateway moved in), the SDK caller copies and agents.mjs (commands.mjs renamed)", () => {
+test("the split keeps every file the old list gated; the only additions are the lean files, the engine modules, the SDK, the kernel (the gateway moved in), the SDK caller and executor copies, the apps platform's kinds and executor (2d) and agents.mjs (commands.mjs renamed)", () => {
   const gated = (list) => files.filter((f) => list.some((g) => g.test(f)));
   const before = gated(OLD);
   const after = gated(GATE_CORE);
   assert.deepEqual(before.filter((f) => !after.includes(f)), []);
   const added = after.filter((f) => !before.includes(f));
-  assert.ok(added.length > 0 && added.every((f) => f.startsWith("scripts/lean/") || f === "scripts/test/lean.test.mjs" || f === "services/runner/test/gate-coverage.test.mjs" || f.startsWith("kernel/sdk/") || f.startsWith("kernel/") || /(^|\/)aidenhq-sdk\/caller\.ts$/.test(f) || /^modules\/engine-[^/]+\//.test(f) || f === "services/runner/src/agents.mjs"), added.join(", "));
+  assert.ok(added.length > 0 && added.every((f) => f.startsWith("scripts/lean/") || f === "scripts/test/lean.test.mjs" || f === "services/runner/test/gate-coverage.test.mjs" || f.startsWith("kernel/sdk/") || f.startsWith("kernel/") || /(^|\/)aidenhq-sdk\/(caller|executor)\.ts$/.test(f) || f.startsWith("modules/apps-platform/") || f === "services/apps-mcp/src/executor.ts" || /^modules\/engine-[^/]+\//.test(f) || f === "services/runner/src/agents.mjs"), added.join(", "));
 });

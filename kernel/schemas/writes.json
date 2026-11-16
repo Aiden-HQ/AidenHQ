@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidenhq.dev/schemas/writes.json",
+  "title": "A module's write kinds (spec §5.2), each <module>.<kind>, executed by its providers.executor (executor@1). scripts/modules.mjs writeKinds enforces it; any other field is a compile error.",
+  "type": "object",
+  "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,40}$" },
+  "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["floor"],
+    "properties": {
+      "args": { "type": "string", "pattern": "^schemas/[\\w.-]+\\.json$", "description": "a strict JSON Schema in the module for the args its plan returns" },
+      "floor": { "enum": [0, 1, 2], "description": "the lowest tier; the instance may raise it (writes.<kind>.floor), plan may raise a request" },
+      "panel": { "type": "boolean", "description": "a second reviewer of another model family must approve too" },
+      "card": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "{{name}} templates over the plan's args, facts and card values; rendered by the kernel",
+        "properties": { "sentence": { "type": "string" }, "changes": { "type": "string" }, "reads": { "type": "string" }, "cost": { "type": "string" }, "details": { "type": "string" } }
+      },
+      "tools": { "type": "array", "items": { "type": "string" }, "description": "write or destructive tools of the module's own connections routed into this kind by the proxy" }
+    }
+  }
+}

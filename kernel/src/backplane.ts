@@ -6,10 +6,17 @@
 //   GET  /v1/agents            (module token) every agent's key, roles and the fields setup records for it, never its tools
 //   POST /c/<connection>/mcp   (run or module token) the tool proxy (proxy.ts)
 //   ANY  /v1/cp/agent/<path>   (module token + caller assertion) cp.ts
+//   POST /v1/writes            (run or module token) request a write (writes.ts); GET /v1/writes/:id its record (own only)
+//   POST /v1/writes/:id/outcome (the kind's executor module) the outcome of an execute
+//   GET  /v1/writes, POST /v1/writes/:id/{decide,review,panel}  (the board's key, 2d until 2f and 3a) the list of records,
+//                              the owner's decisions and the reviewer's verdicts the board forwards
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
 import type { Grant, Whoami } from "./identity.ts";
 import { fail } from "./proxy.ts";
+import type { Records, State } from "./records.ts";
+import { CONN_TOOL, type Writes } from "./writes.ts";
 
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
 /** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
@@ -25,13 +32,34 @@ export const ROUTES = [
   { method: "POST", path: "/c/:connection/mcp", auth: "bearer" },
   { method: "DELETE", path: "/c/:connection/mcp", auth: "bearer" },
   { method: "ANY", path: "/v1/cp/agent/*", auth: "module+assertion" },
+  { method: "POST", path: "/v1/writes", auth: "bearer" },
+  { method: "GET", path: "/v1/writes", auth: "board" },
+  { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
+  { method: "POST", path: "/v1/writes/:id/outcome", auth: "module" },
+  { method: "POST", path: "/v1/writes/:id/decide", auth: "board" },
+  { method: "POST", path: "/v1/writes/:id/review", auth: "board" },
+  { method: "POST", path: "/v1/writes/:id/panel", auth: "board" },
 ] as const;
-// `:name` matches [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+// `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+/** The record lists the board reads (`?state=`). */
+const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], recent: ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"] };
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, log = () => {} }: {
-  whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>; log?: (msg: string, f?: Record<string, unknown>) => void;
+async function json(req: IncomingMessage): Promise<any> {
+  const chunks: Buffer[] = [];
+  let n = 0;
+  for await (const c of req) { n += c.length; if (n > 1_000_000) throw fail(413, "too_large", "too large"); chunks.push(c); }
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
+}
+
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, boardKey = () => "", log = () => {} }: {
+  whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
+  writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
+  const isBoard = (req: IncomingMessage) => { const a = Buffer.from(bearer(req)), b = Buffer.from(boardKey()); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
+  const board = (req: IncomingMessage) => { if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); };
+  const record = (id: string) => records?.get(id) ?? (() => { throw fail(404, "not_found", `no record ${id}`); })();
+  const decided = (r: unknown) => { if (typeof r === "string") throw fail(409, "conflict", r); return r; };
   const send = (res: ServerResponse, status: number, body: unknown): void => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   const bearer = (req: IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -56,6 +84,61 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, log =
         }
         case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);
+      }
+      if (hit && hit.path.startsWith("/v1/writes")) {
+        if (!writes || !records) throw fail(503, "unavailable", "records are off");
+        const id = m[0] ?? "";
+        switch (`${hit.method} ${hit.path}`) {
+          case "POST /v1/writes": {
+            const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
+            if (w.kind === "job") throw fail(401, "unauthorized", "a job files writes through its own listener");
+            const b = await json(req);
+            const r = await writes.request(w, { kind: String(b.kind ?? ""), args: b.args, ...(typeof b.task === "string" ? { task: b.task } : {}), ...(b.evidence !== undefined ? { evidence: b.evidence } : {}) });
+            return send(res, 200, { id: r.id, tier: r.tier, state: r.state });
+          }
+          case "GET /v1/writes": {
+            board(req);
+            const p = new URLSearchParams(q ?? "");
+            const list = LISTS[p.get("state") ?? ""];
+            if (!list) throw fail(400, "bad_request", `state=${Object.keys(LISTS).join(", ")}`);
+            // The reviewed ones only: every Tier 0 write is a record too, and would crowd the cards out.
+            return send(res, 200, { records: records.list(list, 100, { reviewed: true, ...(p.get("task") ? { task: p.get("task")! } : {}) }) });
+          }
+          case "GET /v1/writes/:id": {
+            if (isBoard(req)) return send(res, 200, record(id));
+            const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
+            const r = record(id);
+            const own = w.kind === "module" ? w.module === r.requester.module && r.requester.kind === "module" : Boolean(w.agent) && w.agent === r.requester.agent;
+            if (!own) throw fail(404, "not_found", `no record ${id}`);
+            return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: r.outcome });
+          }
+          case "POST /v1/writes/:id/outcome": {
+            const w = await whoami(bearer(req)).catch(() => undefined);
+            const r = record(id);
+            if (w?.kind !== "module" || r.kind === CONN_TOOL || w.module !== r.executor.module) throw fail(403, "forbidden", "only the kind's executor reports its outcome");
+            const b = await json(req);
+            if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 200_000))) throw fail(409, "conflict", `this record is ${record(id).state}`);
+            return send(res, 200, { ok: true });
+          }
+          case "POST /v1/writes/:id/decide": {
+            board(req);
+            const b = await json(req);
+            if (!["approve", "reject"].includes(b.decision)) throw fail(400, "bad_request", "decision is approve or reject");
+            return send(res, 200, decided(writes.decide(id, { digest: String(b.digest ?? ""), decision: b.decision, by: String(b.by ?? ""), via: String(b.via ?? "") })));
+          }
+          case "POST /v1/writes/:id/review": {
+            board(req);
+            const b = await json(req);
+            if (!["approve", "reject", "escalate"].includes(b.decision)) throw fail(400, "bad_request", "decision is approve, reject or escalate");
+            return send(res, 200, decided(writes.review(id, { digest: String(b.digest ?? ""), decision: b.decision, reason: String(b.reason ?? ""), model: String(b.model ?? ""), ...(b.second ? { second: String(b.second) } : {}), ...(b.code ? { code: String(b.code) } : {}) })));
+          }
+          case "POST /v1/writes/:id/panel": {
+            board(req);
+            const b = await json(req);
+            if (!records.markPanel(id, String(b.digest ?? ""))) throw fail(409, "conflict", "no record in review with that digest");
+            return send(res, 200, record(id));
+          }
+        }
       }
       send(res, 404, { error: "no such route" });
     } catch (err) {

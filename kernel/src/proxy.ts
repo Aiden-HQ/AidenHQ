@@ -9,6 +9,8 @@ import { fence } from "../sdk/src/fence.ts";
 import type { Asserter } from "./assert.ts";
 import { NoGrants, type Connection, type Identity, type Whoami } from "./identity.ts";
 import type { Resolver } from "./net.ts";
+import type { Rec } from "./records.ts";
+import { CONN_TOOL, type Writes } from "./writes.ts";
 
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
 const MAX_BODY = 4 * 1024 * 1024;
@@ -88,10 +90,43 @@ export function fenceAnswer(m: Record<string, any>, source: string): void {
   }
 }
 
-export function createProxy({ whoami, connections, asserter, resolver, secret, log = () => {} }: {
-  whoami: Whoami; connections: () => Record<string, Connection>; asserter: Asserter; resolver: Resolver; secret: (name: string) => string; log?: Log;
+/** What a write tool call answers when its record isn't done at once: the record, and who decides it. */
+export function pendingText(r: Rec): string {
+  return `${JSON.stringify({ approval: r.id, tier: r.tier, state: r.state })}\nFiled for approval (${r.kind}): ${r.tier === 1 ? "the AI reviewer decides" : "the AI reviewer, then the owner, decide"}. It runs once approved, and the outcome lands on your task. Don't say it is done until then.`;
+}
+
+export function createProxy({ whoami, connections, asserter, resolver, secret, writes, log = () => {} }: {
+  whoami: Whoami; connections: () => Record<string, Connection>; asserter: Asserter; resolver: Resolver; secret: (name: string) => string; writes?: Writes; log?: Log;
 }) {
-  return async function proxy(req: IncomingMessage, res: ServerResponse, connection: string, { jobs = false }: { jobs?: boolean } = {}): Promise<void> {
+  /** An approved conn.tool record: its stored call, sent once to the module as its requester (no session: one tools/call). */
+  async function replay(r: Rec): Promise<{ ok: boolean; text: string }> {
+    const a = r.args as { connection: string; tool: string; arguments: unknown };
+    const conn = connections()[a.connection];
+    if (!conn) throw new Error(`no connection ${a.connection}`);
+    const q = r.requester;
+    const signed = asserter.signCaller({ agent: q.agent, key: q.key, name: q.name, roles: q.roles, ...(r.task ? { task: r.task } : {}), tool: `${a.connection}.${a.tool}`, aud: conn.module, kind: q.kind });
+    asserter.begin(signed.jti, { credential: "", aud: conn.module, kind: q.kind }, conn.tool_timeout_s ?? 300);
+    try {
+      const to = await resolver.resolve(conn.url);
+      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: a.tool, arguments: a.arguments } }));
+      const { status, sse, text } = await new Promise<{ status: number; sse: boolean; text: string }>((resolve, reject) => {
+        const out = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: ((conn.tool_timeout_s ?? 300) + 30) * 1000, headers: { host: new URL(conn.url).host, authorization: `Bearer ${secret(conn.auth_secret)}`, "x-aidenhq-caller": signed.jwt, accept: "application/json, text/event-stream", "content-type": "application/json", "content-length": body.length } }, async (ur) => {
+          try { resolve({ status: ur.statusCode ?? 502, sse: String(ur.headers["content-type"] ?? "").includes("text/event-stream"), text: (await readAll(ur, MAX_ANSWER)).toString("utf8") }); } catch (e) { reject(e); }
+        });
+        out.on("timeout", () => out.destroy(new Error(`${a.connection} didn't answer in time`)));
+        out.on("error", reject);
+        out.end(body);
+      });
+      if (status >= 300) return { ok: false, text: `${a.connection} answered ${status}: ${text.slice(0, 2000)}` };
+      let ok = true;
+      const answer = mapMessages(text, sse, (m) => { if (m.error || m.result?.isError) ok = false; });
+      return { ok, text: answer };
+    } finally {
+      asserter.end(signed.jti);
+    }
+  }
+
+  const proxy = async function proxy(req: IncomingMessage, res: ServerResponse, connection: string, { jobs = false }: { jobs?: boolean } = {}): Promise<void> {
     const t0 = Date.now();
     const conn = Object.hasOwn(connections(), connection) ? connections()[connection] : undefined;
     if (!conn && !jobs) throw fail(404, "not_found", `no connection ${connection}`);
@@ -114,7 +149,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, l
     if (req.method !== "POST" && req.method !== "DELETE") { res.writeHead(405, { allow: "POST, DELETE" }).end(); return; }
     const raw = await readAll(req, MAX_BODY);
     const { listed, allowed } = toolsFor(who, connection, conn);
-    let method = req.method, tool: string | undefined, body = Buffer.alloc(0), reqId: unknown = null;
+    let method = req.method, tool: string | undefined, body = Buffer.alloc(0), reqId: unknown = null, rec: Rec | undefined;
     // ms: the kernel's own time before the call goes on (identity, checks, signing); total: with the module's answer.
     let forwarded: number | undefined;
     const outcome = (o: string) => log("proxy", { connection, ...(tool ? { tool } : {}), method, agent: who.key || who.module || null, ms: (forwarded ?? Date.now()) - t0, total: Date.now() - t0, outcome: o });
@@ -137,14 +172,42 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, l
         tool = typeof params?.name === "string" ? params.name : "";
         if (!listed.has(tool)) return refuse(-32602, "tool-unlisted");
         if (!allowed.has(tool)) return refuse(-32602, "no-grant");
+        // Step 4: every write is a record. A tool mapped to a kind goes to its executor's lifecycle (Tier 0 answered inline
+        // with the outcome); any other write or destructive tool is conn.tool, forwarded below at Tier 0.
+        const routed = writes && !jobs ? writes.kindOf(connection, tool) : undefined;
+        if (routed) {
+          const reply = (text: string, isError = false) => {
+            outcome(isError ? "write-refused" : "ok");
+            if (!("id" in msg)) return void res.writeHead(isError ? 422 : 202).end();
+            res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) } }));
+          };
+          const own = (text: string) => (untrusted ? fence(text, source(tool)) : text);
+          try {
+            if (routed !== CONN_TOOL) {
+              let r = await writes!.request(who, { kind: routed, args: params?.arguments ?? {} });
+              if (r.state === "claimed") r = await writes!.wait(r.id, (conn!.tool_timeout_s ?? 300) * 1000);
+              if (r.tier === 0) return reply(r.outcome ? own(r.outcome.text) : `${pendingText(r)}\n(still running past the tool timeout)`, r.outcome ? !r.outcome.ok : false);
+              return reply(pendingText(r));
+            }
+            rec = writes!.fileTool(who, connection, tool, params?.arguments ?? {}, who.task ?? "");
+            if (rec.state !== "claimed") return reply(pendingText(rec));
+          } catch (e) {
+            const err = e as Error & { status?: number };
+            if (!err.status || err.status >= 500) throw e;
+            return reply(own(err.message), true);
+          }
+        }
         fwd = { name: tool, ...(params?.arguments !== undefined ? { arguments: params.arguments } : {}), ...(params?._meta !== undefined ? { _meta: params._meta } : {}) };
       } else if (method === "tools/list") fwd = typeof params?.cursor === "string" ? { cursor: params.cursor } : undefined;
       body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", ...("id" in msg ? { id } : {}), method, ...(fwd ? { params: fwd } : {}) }));
     }
+    // A conn.tool record's outcome: the module's answer as it came (capped), once.
+    let okAnswer = false;
+    const done = (ok: boolean, text: string) => { if (rec) writes!.outcome(rec.id, ok, text.slice(0, 4000)); rec = undefined; };
     const headers: Record<string, string> = { "content-length": String(body.length) };
     for (const h of PASS) { const v = req.headers[h]; if (typeof v === "string") headers[h] = v; }
     const key = secret(target.secret);
-    if (!key) throw fail(503, "no_service_key", `${connection}'s ${cap ? "read" : "service"} key is missing`);
+    if (!key) { done(false, "the service key is missing"); throw fail(503, "no_service_key", `${connection}'s ${cap ? "read" : "service"} key is missing`); }
     headers.authorization = `Bearer ${key}`;
     let jti: string | undefined;
     if (tool && !cap) {
@@ -153,7 +216,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, l
       headers["x-aidenhq-caller"] = signed.jwt;
       asserter.begin(jti, { credential: who.credential, aud: conn!.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, target.timeout + 30);
     }
-    const to = await resolver.resolve(target.url).catch((e: Error) => { throw fail(502, "bad_upstream", e.message); });
+    const to = await resolver.resolve(target.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
     headers.host = new URL(target.url).host;
     const timeoutMs = (target.timeout + 30) * 1000;
     try {
@@ -164,6 +227,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, l
             const status = ur.statusCode ?? 502;
             const hdrs = Object.fromEntries(Object.entries(ur.headers).filter(([k]) => !HOP.has(k)));
             const fenced = method === "tools/call" && untrusted;
+            if (rec && status >= 300) done(false, `${connection} answered ${status}`);
             if (fenced && status >= 300) {
               // An untrusted connection's failure: its body reaches the agent only fenced, as a JSON-RPC error.
               const text = (await readAll(ur, MAX_ANSWER).catch(() => Buffer.alloc(0))).toString("utf8").slice(0, 4000);
@@ -171,7 +235,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, l
               res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(err) }).end(err);
               return resolve();
             }
-            const rewrite = status < 300 && (method === "tools/list" || fenced);
+            const rewrite = status < 300 && (method === "tools/list" || fenced || !!rec);
             if (!rewrite) {
               res.writeHead(status, { ...hdrs, ...(ur.headers["content-length"] ? { "content-length": ur.headers["content-length"] } : {}) });
               ur.pipe(res);
@@ -185,16 +249,19 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, l
             try {
               answer = mapMessages(text, sse, (m) => {
               if (method === "tools/list" && Array.isArray(m.result?.tools)) m.result.tools = m.result.tools.filter((t: { name?: unknown }) => allowed.has(String(t?.name)));
+              if (rec && m.id === reqId && !("method" in m)) okAnswer = !m.error && m.result?.isError !== true;
               if (!fenced) return true;
               if (m.id !== reqId || "method" in m) return false; // notifications and server requests: only the answer passes
               fenceAnswer(m, source(tool));
             });
             } catch (e) {
               // Fail closed: an answer the kernel can't read strictly reaches the caller as an error naming no upstream text.
+              done(false, `${connection}'s answer isn't well-formed JSON-RPC`);
               const err = JSON.stringify({ jsonrpc: "2.0", id: reqId, error: { code: -32603, message: `${connection}: ${(e as Error).message}` } });
               res.writeHead(502, { "content-type": "application/json", "content-length": Buffer.byteLength(err) }).end(err);
               return resolve();
             }
+            if (rec) done(okAnswer, text);
             res.writeHead(status, { ...hdrs, "content-length": Buffer.byteLength(answer) }).end(answer);
             resolve();
           } catch (e) { reject(e); }
@@ -205,10 +272,12 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, l
       });
       outcome("ok");
     } catch (e) {
+      done(false, (e as Error).message);
       outcome(String((e as { type?: string }).type ?? "error"));
       throw e;
     } finally {
       if (jti) asserter.end(jti);
     }
   };
+  return Object.assign(proxy, { replay });
 }

@@ -10,6 +10,8 @@ import { createAsCaller, createCp } from "../src/cp.ts";
 import { createIdentity } from "../src/identity.ts";
 import { createResolver } from "../src/net.ts";
 import { createProxy } from "../src/proxy.ts";
+import { openRecords } from "../src/records.ts";
+import { createWrites } from "../src/writes.ts";
 
 export const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => r(b)); });
@@ -18,7 +20,7 @@ export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data",
  * agents: { token: {id, name} } the control plane knows; boxes: { ahqc_token: {agentId, runId, issueId} } the launcher knows;
  * grants: the grants table's agents; connections(urls): config/kernel/connections.json from the fake servers' URLs.
  */
-export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl } = {}) {
+export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kernel-"));
   const control = [];
   const cpServer = await serve(async (req, res) => {
@@ -39,7 +41,8 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   writeFileSync(join(dir, "connections.json"), JSON.stringify(conns));
   writeFileSync(join(dir, "jobcaps.json"), JSON.stringify(jobcaps));
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ ...settings, agents: grants }));
-  const allSecrets = { gateway_job_secret: "job-secret", gateway_lane_secret: "lane-secret", gateway_harness_key: "harness-key", paperclip_board_key: "board-key", ...secrets };
+  writeFileSync(join(dir, "writes.json"), JSON.stringify(kinds));
+  const allSecrets = { gateway_job_secret: "job-secret", gateway_lane_secret: "lane-secret", gateway_harness_key: "harness-key", paperclip_board_key: "board-key", gateway_board_key: "the-boards-key", ...secrets };
   const secret = (n) => allSecrets[n] ?? "";
   const log = [];
   const logf = (msg, fields) => log.push({ msg, ...fields });
@@ -47,8 +50,15 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   const connectionsTable = watched(join(dir, "connections.json"), (j) => j, {});
   const whoami = createIdentity({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, jobcaps: watched(join(dir, "jobcaps.json"), (j) => j, {}), secret, controlUrl: cpServer.url, launcherUrl: launcher.url, runTask: async () => "TASK-1" });
   const asserter = createAsserter(loadKey(join(dir, "caller-key.pem")));
-  const proxy = createProxy({ whoami, connections: connectionsTable, asserter, resolver: createResolver(), secret, log: logf });
-  const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log: logf, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, controlUrl: cpServer.url, launcherUrl: launcher.url, log: logf }) });
+  // Records (kernel.db) and the write lifecycle, as main.ts wires them; notices on onTask are kept in `notices`.
+  const notices = [];
+  const records = openRecords(join(dir, "kernel.db"));
+  let replay;
+  const writes = createWrites({ records, registry: watched(join(dir, "writes.json"), (j) => j, {}), connections: connectionsTable, secret, resolver: createResolver(), log: logf, replay: (r) => replay(r),
+    autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text) => void notices.push({ task, text }) } });
+  const proxy = createProxy({ whoami, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, log: logf });
+  replay = proxy.replay;
+  const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, boardKey: () => secret("gateway_board_key"), proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, controlUrl: cpServer.url, launcherUrl: launcher.url, log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const gw = createGateway({ asCaller, dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), tools: proxy, secret });
   const bp = await serve(backplane);
@@ -58,7 +68,9 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   const call = (connection, token, body, { jobsListener = false, accept = "application/json, text/event-stream", headers = {} } = {}) => fetch(`${(jobsListener ? jobs : bp).url}/c/${connection}/mcp`, {
     method: "POST", headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), "content-type": "application/json", accept, ...headers }, body: typeof body === "string" ? body : JSON.stringify({ jsonrpc: "2.0", id: 1, ...body }),
   });
-  return { dir, url: bp.url, jobsUrl: jobs.url, call, control, log, asserter, asCaller, jwks: asserter.jwks };
+  /** The backplane's /v1/writes routes, with a bearer (the board's key by default). */
+  const v1 = (method, path, body, token = "the-boards-key") => fetch(`${bp.url}${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async (r) => ({ status: r.status, json: await r.json() }));
+  return { dir, url: bp.url, jobsUrl: jobs.url, call, control, log, asserter, asCaller, jwks: asserter.jwks, records, writes, notices, v1 };
 }
 
 /** A module's MCP server: answers tools/list with `tools` and tools/call with `answer(msg, req)`; records what it saw. */

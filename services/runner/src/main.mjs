@@ -2154,7 +2154,7 @@ async function readFiles(list) {
 }
 
 /**
- * The diff of a board-applied card (deploy_app, app_run), from the card the board wrote: the author's commit message or
+ * The diff of a kernel record's card (deploy_app, app_run and the other module kinds), from the card: the author's commit message or
  * reason after its marker is cut off, so it never reaches the reviewer inside the DIFF fence (the reviewer is reasoning-blind).
  */
 function boardCardInput(a) {
@@ -2165,8 +2165,11 @@ function boardCardInput(a) {
   return a.action === "deploy_app" ? split("\n\nCommit message (written by the app's author): ") : split("\nReason (written by the requesting agent): ");
 }
 
-/** Approved on the board and applied there (apps-mcp), never claimed by the runner; reviewed here all the same. */
-const BOARD_APPLIED = ["deploy_app", "app_run"];
+/**
+ * Never claimed by the runner, reviewed here all the same: a module write kind's record (a `k-` id, lean-core 2d), which the
+ * kernel keeps and runs; the board lists it and forwards the verdict. Its tier comes from the kernel, its diff from its card.
+ */
+const kernelRecord = (a) => /^k-[0-9a-f]{16}$/.test(a.id);
 const reviewing = new Set();
 /**
  * Every poll: each pending Tier 1 card gets one reviewer call (src/review.mjs). The tier is recomputed first (a card filed
@@ -2201,12 +2204,12 @@ async function reviewOne(a, mode) {
   const wait = reviewRetries.get(a.id);
   if (wait && Date.now() < wait.next) return;
   const issue = await pc.issue(a.issueId);
-  const board = BOARD_APPLIED.includes(a.action);
+  const board = kernelRecord(a);
   let input;
   try {
     if (board) {
-      // The board files deploy_app and app_run at Tier 1 without classify(): a routine's cap (tier0 or off) still makes them
-      // the owner's, and earlier decisions on the task count as for any request (the card's digest is its content).
+      // The kernel files them without classify(): a routine's cap (tier0 or off) still makes them the owner's, and earlier
+      // decisions on the task count as for any request (the card's digest is its content).
       const common = await commonTierState(issue, a.action);
       const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain);
       const veto = priorPart(prior);

@@ -17,10 +17,10 @@ import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedC
 import { AccountError, forwardedProto, type Accounts, type AccountSession, type Role } from "./accounts.js";
 import { AccessError, assertNamesApp } from "./app-access.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, appsToken, assertMeantTask, boundedFleetStatus, deployApproved, fleetControl, fleetCosts, fleetStatus, relayableWords, requestRun, requireAgent, requireFleetRole, runApproved } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, appsToken, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { detectorState, kickDetector, staleSources, takeOwnerLines } from "./fleet-ops.js";
 import { AlertsSchema, metricsText, receiveAlerts } from "./monitoring.js";
-import { ARGS, BOARD_ACTIONS, BatchItemsSchema, REVIEWER_MODELS, RaiseCapSchema, RunRequestSchema, autonomy, batchesOn, card, digestText, parseReply, raiseCapRequest, shown, type Approval, type BatchResult, type RaiseCap, type RunnerAction } from "./approvals.js";
+import { ARGS, BOARD_ACTIONS, BatchItemsSchema, KERNEL_ID, REVIEWER_MODELS, RaiseCapSchema, autonomy, batchesOn, card, digestText, kernelRecords, parseReply, raiseCapRequest, shown, type Approval, type BatchResult, type RaiseCap, type RunnerAction } from "./approvals.js";
 import { liveUpdatesOn } from "./events.js";
 import { wakeCheck } from "./brake.js";
 import { REVIEW_CODES, TIER_RULE } from "./reason-codes.js";
@@ -101,6 +101,8 @@ export interface AppOptions {
   gatewayKey?: string;
   /** The model gateway (every listener: a raise_cap is applied where it is tapped): an approved raise_cap sets the new cap there. */
   gateway?: { url: string; token: string };
+  /** The kernel's record routes (lean-core 2d), with gateway_board_key: module write kinds' cards are shown and decided here until 3a. */
+  kernel?: { url: string; token: string };
   /**
    * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only: on "local", the owner's setup
    * link and the welcome chat; on "internal", an account reset. Nothing else.
@@ -257,6 +259,23 @@ export function createApp(opts: AppOptions): Server {
     const name = a.decidedBy?.startsWith("account:") ? names.get(a.decidedBy.slice("account:".length)) : undefined;
     return { ...approvalView(a), ...(name ? { decidedByName: name } : {}) };
   };
+  // Module write kinds' records live in the kernel (lean-core 2d): listed with the board's cards, and every decision or
+  // verdict on a k- id is forwarded there; the kernel keeps them, runs them and tells their task.
+  const kernel = kernelRecords(opts.kernel);
+  // A record names its task by id: shown by its identifier, as the board's cards are.
+  const identifiers = new Map<string, string>();
+  async function named<T extends Approval>(a: T): Promise<T> {
+    const id = identifiers.get(a.issueId) ?? (await pc.issue(a.issueId).then((i) => i.identifier, () => undefined));
+    if (id) identifiers.set(a.issueId, id);
+    return id ? { ...a, identifier: id } : a;
+  }
+  const kernelList = async (state: "review" | "owner" | "recent", task?: string) => (kernel.enabled ? Promise.all((await kernel.list(state, task).catch((err) => (log.warn({ err: String(err) }, "kernel records unavailable"), [] as Approval[]))).map(named)) : []);
+  const fromKernel = <T extends Approval>(p: Promise<T>) => p.then(named, (e: Error & { status?: number }) => { throw new HttpError(e.status && e.status < 500 ? (e.status === 404 ? 404 : 409) : 502, e.message); });
+  async function kernelDecided(id: string, decision: "approve" | "reject", by: string, via: string) {
+    const a = await fromKernel(kernel.decide(id, decision, by, via));
+    log.info({ approval: id, task: a.identifier, action: a.action, state: a.state, via: by }, "approval decided");
+    return shownApproval(await bylines(), a);
+  }
 
   const sessionOf = liveActivity(opts.sessions);
   const runOf = makeRuns({ pc, store, sessionsDir: opts.sessions?.dir, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
@@ -440,13 +459,10 @@ export function createApp(opts: AppOptions): Server {
     }
     const used = store.approvals.claim(a.id);
     if (!used) return;
-    const args = used.args as { name: string; sha: string; script: string; service: string };
     let ok = true;
     let text: string;
     try {
-      if (a.action === "app_run") text = await runApproved(args, a.id);
-      else if (a.action === "deploy_app") text = await deployApproved(args.name, args.sha, a.id);
-      else if (a.action === "raise_cap") text = await raiseCap(used.args as RaiseCap & { to: number });
+      if (a.action === "raise_cap") text = await raiseCap(used.args as RaiseCap & { to: number });
       else throw new Error(`${a.action} isn't applied by the board`);
     } catch (err) {
       ok = false;
@@ -1112,12 +1128,17 @@ export function createApp(opts: AppOptions): Server {
       // escalate, with its would-be verdict as the note; off: escalate or reject, the owner deciding the rest). decided_by is
       // `reviewer:<model>`, from the key and an allowed model.
       method: "POST",
-      path: /^\/internal\/approvals\/(A[0-9a-f]{8})\/review$/,
+      path: /^\/internal\/approvals\/(A[0-9a-f]{8}|k-[0-9a-f]{16})\/review$/,
       handle: async (m, body, _u, req) => {
         if (!runnerKeyed(req)) throw new HttpError(403, "only the reviewer decides Tier 1");
         const b = parse(ReviewSchema, body);
         if (b.decision === "approve" && autonomy() !== "full") throw new HttpError(409, "autonomy isn't full: the reviewer may not approve");
         if (b.decision === "reject" && autonomy() === "tier0") throw new HttpError(409, "autonomy is tier0: the reviewer may only escalate");
+        if (KERNEL_ID.test(m[1]!)) {
+          const a = await fromKernel(kernel.review(m[1]!, b));
+          log.info({ approval: a.id, task: a.identifier, model: b.model, code: b.code, decision: b.decision }, "kernel record reviewed");
+          return approvalView(a);
+        }
         const r = store.approvals.review(m[1]!, b);
         if (r.ok && b.decision === "escalate") {
           log.info({ approval: r.approval.id, task: r.approval.identifier, model: b.model, code: b.code }, "approval escalated by the reviewer");
@@ -1129,10 +1150,11 @@ export function createApp(opts: AppOptions): Server {
     {
       // The reviewer found a pending Tier 1 card authority-expanding: it needs a second reviewer from now on (set, never cleared).
       method: "POST",
-      path: /^\/internal\/approvals\/(A[0-9a-f]{8})\/panel$/,
+      path: /^\/internal\/approvals\/(A[0-9a-f]{8}|k-[0-9a-f]{16})\/panel$/,
       handle: async (m, body, _u, req) => {
         if (!runnerKeyed(req)) throw new HttpError(403, "only the reviewer marks a card for the panel");
         const b = parse(z.object({ digest: z.string().min(1).max(64) }).strict(), body);
+        if (KERNEL_ID.test(m[1]!)) return approvalView(await fromKernel(kernel.panel(m[1]!, b.digest)));
         const r = store.approvals.markPanel(m[1]!, b.digest);
         if (!r.ok) throw new HttpError(409, r.reason);
         return approvalView(r.approval);
@@ -1159,18 +1181,20 @@ export function createApp(opts: AppOptions): Server {
         if (issue) {
           if (!runnerKeyed(req)) await requireAgentTool(req, "task_approvals");
           // The runner gets the args too: earlier decisions count by content and target, and a product PR card carries its merge.
-          return { approvals: store.approvals.on(issue).map((a) => (runnerKeyed(req) ? { ...approvalView(a), args: a.args } : approvalView(a))) };
+          const task = kernel.enabled ? await pc.issue(issue).then((i) => i.id, () => undefined) : undefined;
+          const all = [...(await (task ? kernelList("recent", task) : [])), ...store.approvals.on(issue)];
+          return { approvals: all.map((a) => (runnerKeyed(req) ? { ...approvalView(a), args: a.args } : approvalView(a))) };
         }
         // pending and finished: the owner channel's (or the watcher's); review and approved: the runner's.
         if (state === "pending" || state === "finished") {
           if (!ownerKeyed(req) && !runnerKeyed(req)) throw new HttpError(403, "only the owner's channel or the runner reads the cards");
         } else if (!runnerKeyed(req)) throw new HttpError(403, "only the runner reads its queue");
         // pending: the owner's cards (Tier 2); review: the reviewer's queue (Tier 1), with the args it checks.
-        if (state === "pending") return { approvals: store.approvals.pending().map(approvalView) };
-        if (state === "review") return { approvals: store.approvals.pending(Date.now(), 1).map((a) => ({ ...approvalView(a), args: a.args })) };
+        if (state === "pending") return { approvals: [...store.approvals.pending(), ...(await kernelList("owner"))].map(approvalView) };
+        if (state === "review") return { approvals: [...store.approvals.pending(Date.now(), 1), ...(await kernelList("review"))].map((a) => ({ ...approvalView(a), args: a.args })) };
         if (state === "approved") return { approvals: store.approvals.approved(Object.keys(ARGS) as RunnerAction[]).map(approvalView) };
         // finished: recent records with an outcome (or that died mid-way), for the owner channel to report under its card.
-        if (state === "finished") return { approvals: store.approvals.list(50).map(approvalView).filter((a) => a.outcome || a.state === "unknown") };
+        if (state === "finished") return { approvals: [...store.approvals.list(50), ...(await kernelList("recent"))].map(approvalView).filter((a) => a.outcome || a.state === "unknown") };
         throw new HttpError(400, "state=pending, review, approved or finished, or issue=<task>");
       },
     },
@@ -1437,12 +1461,13 @@ export function createApp(opts: AppOptions): Server {
         const owner = Boolean(opts.decideKey && keyMatches(req.headers["x-owner-key"], opts.decideKey));
         const watcher = !owner && Boolean(opts.watcherKey && keyMatches(req.headers["x-owner-key"], opts.watcherKey));
         if (!owner && !watcher) throw new HttpError(403, "only the owner's channel decides");
-        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/).optional(), task: z.string().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/).optional(), target: z.string().trim().min(1).max(500).optional(), batch: z.string().regex(/^B[0-9a-f]{8}$/).optional(), decision: z.enum(["approve", "reject"]), via: z.enum(["telegram", "slack"]).optional(), stale: z.literal(true).optional() }).strict(), body);
+        const b = parse(z.object({ id: z.string().regex(/^(A[0-9a-f]{8}|k-[0-9a-f]{16})$/).optional(), task: z.string().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/).optional(), target: z.string().trim().min(1).max(500).optional(), batch: z.string().regex(/^B[0-9a-f]{8}$/).optional(), decision: z.enum(["approve", "reject"]), via: z.enum(["telegram", "slack"]).optional(), stale: z.literal(true).optional() }).strict(), body);
         if ([b.id, b.task, b.batch].filter(Boolean).length !== 1) throw new HttpError(400, "id, task or batch");
         // A watcher's housekeeping no on one card (stale, a duplicate): stamped `stale:watcher`, so it never vetoes the action
         // on the task (ownerVetoed, the runner's priorDecisions). A plain watcher no stays a real veto.
         if (b.stale && !(watcher && b.id && b.decision === "reject")) throw new HttpError(400, "stale is only the watcher's reject of one card by id");
         const by = b.stale ? "stale:watcher" : watcher ? "watcher" : b.id || b.batch ? "owner:telegram" : "owner:reply";
+        if (b.id && KERNEL_ID.test(b.id)) return kernelDecided(b.id, b.decision, by, watcher ? "watcher" : (b.via ?? "telegram"));
         if (b.batch) {
           // A Telegram list's button: the cards exactly as that message showed them, used once (see the batch route below).
           if (!batchesOn()) throw new HttpError(409, "batch approvals are off; tap each card");
@@ -1461,6 +1486,10 @@ export function createApp(opts: AppOptions): Server {
       handle: async (_m, body, _u, req) => {
         if (!opts.decideKey || !keyMatches(req.headers["x-owner-key"], opts.decideKey)) throw new HttpError(403, "only the owner's channel lists batches");
         if (!batchesOn()) throw new HttpError(409, "batch approvals are off");
+        // A kernel record (k-) is decided on its own card: a list carries only the board's.
+        const b = body as { items?: { id?: unknown }[] } | undefined;
+        if (Array.isArray(b?.items)) b.items = b.items.filter((x) => !KERNEL_ID.test(String(x?.id ?? "")));
+        if (b?.items?.length === 0) throw new HttpError(409, "no board cards to list together");
         const { items } = parse(z.object({ items: BatchItemsSchema }).strict(), body);
         const r = store.approvals.snapshot(items);
         if (!r.ok) throw new HttpError(409, r.reason);
@@ -1804,13 +1833,14 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     // Approvals: the cards, open ones first, then the newest decided ones with their outcome.
-    { method: "GET", path: /^\/api\/approvals$/, handle: async () => { const names = await bylines(); return { approvals: store.approvals.list().map((a) => shownApproval(names, a)) }; } },
+    { method: "GET", path: /^\/api\/approvals$/, handle: async () => { const names = await bylines(); return { approvals: [...store.approvals.list(), ...(await kernelList("recent"))].map((a) => shownApproval(names, a)) }; } },
     {
       // One tap: approve = apply. The approver is the listener's owner check, never a field in the request.
       method: "POST",
-      path: /^\/api\/approvals\/(A[0-9a-f]{8})\/(approve|reject)$/,
+      path: /^\/api\/approvals\/(A[0-9a-f]{8}|k-[0-9a-f]{16})\/(approve|reject)$/,
       handle: async (m, _b, _u, req) => {
         const by = requireAdmin(req);
+        if (KERNEL_ID.test(m[1]!)) return kernelDecided(m[1]!, m[2] === "approve" ? "approve" : "reject", by, "web");
         return decided(store.approvals.decide(m[1]!, m[2] === "approve" ? "approve" : "reject", by), by);
       },
     },
@@ -2192,25 +2222,9 @@ export function createApp(opts: AppOptions): Server {
     }
   }
 
-  // apps-mcp's own route, with the apps token (which agents never hold): it files app_run cards for an app's owner agent.
-  const fromApps: typeof routes = [
-    {
-      method: "POST",
-      path: /^\/internal\/apps\/run-request$/,
-      handle: async (_m, body) => {
-        try {
-          const r = await requestRun(pc, parse(RunRequestSchema, body), store);
-          log.info({ approval: r.approval, app: (body as { name?: string }).name }, "app_run requested");
-          return r;
-        } catch (err) {
-          throw err instanceof Refused ? new HttpError(403, err.message) : err;
-        }
-      },
-    },
-  ];
-
   // apps-mcp's tools for in-app requests and roles (docs/design/access.md, In-app requests and roles), with the apps token.
   // apps-mcp checked the calling agent may (the app's owner, or the app-requests role) and names it in `agent`.
+  const fromApps: typeof routes = [];
   const AppName = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/);
   const appAccess = () => {
     if (!opts.accounts) throw new HttpError(503, "board accounts are off");

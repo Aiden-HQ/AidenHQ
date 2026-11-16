@@ -9,7 +9,8 @@ import { startLoops } from "./loops.js";
 import { startPeople } from "./people.js";
 import { appTokens, readAgentsOrg, readOrgs } from "./github-app.js";
 import { buildServer, type Board, type Caller } from "./mcp.js";
-import { RUN_TIMEOUT_MS } from "./run.js";
+import { appsExecutor } from "./executor.js";
+import { serveExecutor } from "./aidenhq-sdk/executor.js";
 import { createPlatform } from "./platform.js";
 import { posix } from "node:path";
 import { show } from "./git.js";
@@ -61,9 +62,8 @@ const jwks = kernelJwks();
 // without it, the instance checkout's origin remote over SSH with the deploy key.
 const repo = { dir: instanceDir, pushUrl: process.env.REGISTRY_PUSH_URL || (appToken && agentsOrg ? `https://github.com/${agentsOrg}/aidenhq-instance.git` : "origin") };
 
-// app_run cards are filed on the board's internal API with the apps token (the board holds it too; agents don't).
+// In-app requests and app roles (app_requests, app_role_set…) go to the board's internal API with the apps token, under /internal/apps/.
 const boardUrl = (process.env.BOARD_URL ?? "http://board:3122").replace(/\/$/, "");
-// In-app requests and app roles (app_requests, app_role_set…) go the same way, under /internal/apps/.
 const board: Board = async (path, req) => {
   const res = await fetch(`${boardUrl}/internal/apps/${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${internalToken}` }, body: JSON.stringify(req), signal: AbortSignal.timeout(30_000) }).catch((e: Error) => {
     throw new Error(`the board is unreachable (${e.message})`);
@@ -73,18 +73,8 @@ const board: Board = async (path, req) => {
   return JSON.parse(text);
 };
 
-/** An approved app_run: rechecked against the approved commit (and the script at it), then run once. Never throws. */
-async function runApproved(b: any): Promise<{ ok: boolean; timed_out: boolean; output: string }> {
-  try {
-    const a = p.find(String(b?.name ?? ""));
-    const plan = await p.runPlan(a, String(b?.script ?? ""), String(b?.service ?? ""));
-    if (plan.sha !== b.sha) throw new Error(`${a.name} was redeployed (now ${plan.sha.slice(0, 12)}, approved ${String(b.sha).slice(0, 12)}); file a new request`);
-    log.info({ app: a.name, script: b.script, approval: b.approval }, "app_run");
-    return await p.engine.run(a, { script: b.script, service: plan.service, timeoutMs: RUN_TIMEOUT_MS });
-  } catch (err) {
-    return { ok: false, timed_out: false, output: `refused: ${(err as Error).message}` };
-  }
-}
+// The write kinds' executor (executor@1): the kernel calls it with the service key, for approved records only.
+const executor = serveExecutor(appsExecutor(p), { key: serviceKey, log: (msg, f) => log.warn(f ?? {}, msg) });
 
 const send = (res: ServerResponse, code: number, body?: unknown) => void res.writeHead(code, { "content-type": "application/json" }).end(body === undefined ? undefined : JSON.stringify(body));
 const readBody = async (req: IncomingMessage): Promise<any> => {
@@ -210,20 +200,7 @@ const http = createServer(async (req, res) => {
       if (!b?.name || !b.by || !b.approved_comment_id) return send(res, 400, { error: "name, by and approved_comment_id are required" });
       return send(res, 200, await p.engine.deploy(p.find(b.name), { sha: b.sha, by: `${b.by} (approved in ${b.approved_comment_id})`, allowStateful: true }));
     }
-    // An approved app_run (the board, after the owner's tap): rechecked against the approved commit, run once.
-    if (url.pathname === "/internal/run" && req.method === "POST") {
-      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
-      const b = await readBody(req);
-      // A run can outlast fetch's 5-minute header and body timeouts: headers now, a space every 30s, then the JSON.
-      res.writeHead(200, { "content-type": "application/json" });
-      const beat = setInterval(() => res.write(" "), 30_000);
-      try {
-        res.end(JSON.stringify(await runApproved(b)));
-      } finally {
-        clearInterval(beat);
-      }
-      return;
-    }
+    if (await executor(req, res)) return;
     if (url.pathname !== "/mcp") return send(res, 404);
     if (!bearerIs(req, serviceKey)) return send(res, 401, { error: "unauthorized" });
     if (req.method !== "POST") return send(res, 405);
@@ -233,7 +210,7 @@ const http = createServer(async (req, res) => {
     let caller: Caller = { id: "", key: "", name: "anonymous", roles: [] };
     if (msgs.some((m) => m?.method === "tools/call")) {
       try {
-        const c = await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "core");
+        const c = await verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "apps-platform");
         caller = { id: c.agent, key: c.key, name: c.name, roles: c.roles };
       } catch (err) {
         const reason = (err as Error).message;

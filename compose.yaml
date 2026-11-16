@@ -119,9 +119,9 @@ services:
       APPS_INTERNAL_TOKEN_FILE: /run/secrets/apps_internal_token
       PAPERCLIP_URL: http://paperclip:3100
       # Agents' calls arrive only through the kernel's proxy (its service key); the caller is the kernel's signed assertion
-      # for the core module, as compile wires every module connection.
+      # for the apps-platform module, as compile wires every module connection.
       APPS_SERVICE_KEY_FILE: /run/secrets/apps_service_key
-      AIDENHQ_MODULE: core
+      AIDENHQ_MODULE: apps-platform
       AIDENHQ_KERNEL_URL: "${AIDENHQ_KERNEL_URL:-http://10.231.0.1:3130}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
