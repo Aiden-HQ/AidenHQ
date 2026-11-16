@@ -78,6 +78,12 @@
     "test": "kernel/test/data-version.test.mjs"
   },
   {
+    "id": "A16",
+    "attack": "A marketplace's advisories.json names another marketplace's module, or carries instruction text",
+    "unit": "4e",
+    "test": "kernel/test/advisories.test.mjs"
+  },
+  {
     "id": "H1",
     "attack": "Hostile job: symlink in the workspace pointing outside it",
     "unit": "1a",
