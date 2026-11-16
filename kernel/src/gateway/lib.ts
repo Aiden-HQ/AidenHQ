@@ -152,7 +152,9 @@ export function moveLedger(db: DatabaseSync, legacy?: string): number {
     const has = new Set((db.prepare("SELECT name FROM legacy.sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name));
     db.exec("BEGIN IMMEDIATE");
     let n = 0;
-    for (const t of ["calls", "runs", "caps", "filed", "ci_tokens"]) if (has.has(t)) n += Number(db.prepare(`INSERT OR IGNORE INTO main.${t} SELECT * FROM legacy.${t}`).run().changes);
+    // Columns by name, whatever order the old file's tables have.
+    const cols = (t: string) => (db.prepare(`PRAGMA main.table_info(${t})`).all() as { name: string }[]).map((c) => c.name).join(", ");
+    for (const t of ["calls", "runs", "caps", "filed", "ci_tokens"]) if (has.has(t)) n += Number(db.prepare(`INSERT OR IGNORE INTO main.${t} (${cols(t)}) SELECT ${cols(t)} FROM legacy.${t}`).run().changes);
     db.exec("COMMIT");
     return n;
   } catch (e) {

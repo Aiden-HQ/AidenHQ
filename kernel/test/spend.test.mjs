@@ -117,6 +117,8 @@ test("ledger move: the old usage.db's rows land once in kernel.db, repeatably, a
   const old = openLedger(legacy).db; // the old gateway's file, as it wrote it
   const add = old.prepare("INSERT INTO calls (key, at, day, run_key, agent_id, issue_id, task_subject, kind, component, model, cost_usd, status) VALUES (?, ?, '2026-11-16', ?, 'ag', 'WOR-9', 'WOR-9', 'agent', 'agent', 'm', ?, 'ok')");
   for (let i = 0; i < 50; i++) add.run(`gen-${i}`, `2026-11-16T0${i % 10}:00:00Z`, `run-${i}`, 0.001);
+  // A table whose columns are in another order than today's (one grown by ALTER TABLE): moved by name.
+  old.exec("DROP TABLE caps; CREATE TABLE caps (cap REAL NOT NULL, at TEXT NOT NULL, scope TEXT NOT NULL, agent_id TEXT NOT NULL, subject TEXT NOT NULL, PRIMARY KEY (scope, agent_id, subject))");
   old.prepare("INSERT INTO caps (scope, agent_id, subject, cap, at) VALUES ('task', 'ag', 'WOR-9', 0.2, '2026-11-16T01:00:00Z')").run();
   old.prepare("INSERT INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES ('h', 'acme/app', 1, NULL, '7', '1', '2026-11-16T12:00:00Z', '2026-11-16T10:00:00Z')").run();
   old.close();
@@ -139,5 +141,5 @@ test("ledger move: the old usage.db's rows land once in kernel.db, repeatably, a
   const refused = await r.call({ model: "flat", messages: [] }, "WOR-10");
   assert.equal(refused.status, 402);
   assert.match(refused.json.error.message, /^spend cap reached: agent-day \$0\.05 of \$0\.05;/);
-  assert.equal(r.gw.db.prepare("SELECT cap FROM caps WHERE agent_id = 'ag'").get().cap, 0.2);
+  assert.deepEqual({ ...r.gw.db.prepare("SELECT scope, subject, cap FROM caps WHERE agent_id = 'ag'").get() }, { scope: "task", subject: "WOR-9", cap: 0.2 });
 });
