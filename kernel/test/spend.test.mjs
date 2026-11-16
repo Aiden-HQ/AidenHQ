@@ -92,10 +92,12 @@ test("a definite upstream refusal before any output is released at $0; a cut str
 
 test("A12: stream cut, restart mid-call, no usage, under-reported cost, unpriced model", async (t) => {
   let hang;
+  let arrived;
+  const hangArrived = new Promise((r) => (arrived = r));
   const r = await rig(t, {
     answer: (body, res, n) => {
       if (body.messages[0] === "cut") { res.writeHead(200, { "content-type": "text/event-stream" }); res.write(`data: {"id":"gen-${n}"}\n\n`); return setTimeout(() => res.destroy(), 20); }
-      if (body.messages[0] === "hang") return (hang = res);
+      if (body.messages[0] === "hang") { hang = res; return arrived(); }
       if (body.messages[0] === "none") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: `gen-${n}`, choices: [] }));
       // Under-reported: 1,000 input and 500 output tokens at $1 and $2 a million are $0.002, whatever it says.
       usage(0)(body, res, n);
@@ -117,7 +119,7 @@ test("A12: stream cut, restart mid-call, no usage, under-reported cost, unpriced
   // The kernel restarts while a call is in flight: the new one settles it at its reservation and counts it against the caps;
   // the old process finishing late changes nothing.
   const inFlight = r.call({ model: "flat", messages: ["hang"] });
-  await sleep(100);
+  await hangArrived; // the upstream has the request, so the call is reserved
   assert.equal(r.rows().at(-1).status, "reserved");
   const restarted = r.open();
   t.after(() => restarted.close());
