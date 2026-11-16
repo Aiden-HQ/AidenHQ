@@ -36,7 +36,7 @@ import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBran
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.ts";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.ts";
 import * as merges from "../../../modules/codehost-github/src/merge-gate.mjs";
-import * as mergeQueue from "../../../modules/engineering/src/merge-queue.mjs";
+import * as prQueue from "../../../modules/engineering/src/merge-queue.mjs";
 import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf } from "./siblings.ts";
 import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "../../../modules/engineering/src/product-prs.ts";
 import { State } from "./state.ts";
@@ -837,7 +837,7 @@ async function startMerges(issue, { prs = [], gapMinutes, strict = false, each =
     const waiting = existing.prs.filter((p) => p.status === "pending" && !prs.some((n) => n.url.toLowerCase() === p.url.toLowerCase()));
     if (waiting.length) requestAutoMerge(issue, waiting);
   }
-  const queue = each ? mergeQueue.addEach(existing, prs) : mergeQueue.startOrResume(existing, prs, { gapMinutes: gapMinutes ?? existing?.gapMinutes ?? cfg.merges?.gap_minutes ?? 15 });
+  const queue = each ? prQueue.addEach(existing, prs) : prQueue.startOrResume(existing, prs, { gapMinutes: gapMinutes ?? existing?.gapMinutes ?? cfg.merges?.gap_minutes ?? 15 });
   // Undefined both when every named PR merged and when none was named (and nothing earlier is waiting): say which.
   if (!queue) return void (await pc.comment(issue.id, prs.length ? "Nothing to merge: those PRs are merged already." : "Nothing to merge: no PR was named, and no earlier merge is waiting. Name the PRs (`aidenhq merge <PR link> …`)."));
   const engine = state.task(issue.id)?.engine;
@@ -1416,7 +1416,7 @@ function gradeDeps(issue) {
           ? "its merges are still running"
           : "",
     approvals: () => recordsOn(issue),
-    taskPrs: async () => mergeQueue.findPrs(state.branches(issue.id).map((b) => b.pr_url).filter(Boolean).join("\n")),
+    taskPrs: async () => prQueue.findPrs(state.branches(issue.id).map((b) => b.pr_url).filter(Boolean).join("\n")),
     // The PRs this task's own runner records tie to it when no branch row does: its merge queue for the task, the merges it was
     // asked to run, and the merge cards it filed on it. The runner's own state and the board's cards, never a comment: a
     // comment's runner marker is text any writer can copy, so it proves nothing about which task a PR belongs to.
@@ -2831,7 +2831,7 @@ async function mergeAfterPublish(issue, a, out) {
   const missing = [];
   for (const b of a.args.only) {
     const row = sameRepo(b.repo, cfg.productRepo) ? state.branches(issue.id).find((x) => sameRepo(x.repo, b.repo) && x.branch === b.branch) : undefined;
-    const pr = row?.pr_url && !row.merged ? mergeQueue.findPrs(row.pr_url)[0] : undefined;
+    const pr = row?.pr_url && !row.merged ? prQueue.findPrs(row.pr_url)[0] : undefined;
     if (pr) prs.push({ ...pr, head: b.sha, noReview: true });
     else missing.push(`${b.repo} \`${b.branch}\``);
   }
@@ -3331,7 +3331,7 @@ async function agentCleanup(ctx) {
 /** `aidenhq merge`: PRs for the merge queue, as an approval record; the queue starts on the user's tap. */
 async function agentMerge(ctx, args) {
   if (stopped(ctx.issue.id)) throw new UserError(stoppedText(stopped(ctx.issue.id)));
-  const prs = mergeQueue.findPrs((Array.isArray(args.prs) ? args.prs : []).join("\n"));
+  const prs = prQueue.findPrs((Array.isArray(args.prs) ? args.prs : []).join("\n"));
   if (!prs.length) throw new UserError("Name the pull requests as links or org/repo#number, in the order to merge them.");
   const outside = prs.filter((p) => !repoAllowed(normalizeRepo(p.repo), cfg.allowed_orgs));
   if (outside.length) throw new UserError(`Only PRs in ${cfg.allowed_orgs.join(", ")} can be merged: ${outside.map((p) => p.url).join(", ")}.`);
@@ -3376,7 +3376,7 @@ async function agentMerge(ctx, args) {
  * Engineer's line), the reason posted on each as a comment. Tier 0: no card.
  */
 async function agentClose(ctx, args) {
-  const prs = mergeQueue.findPrs((Array.isArray(args.prs) ? args.prs : []).join("\n"));
+  const prs = prQueue.findPrs((Array.isArray(args.prs) ? args.prs : []).join("\n"));
   if (!prs.length) throw new UserError("Name the pull requests as links or org/repo#number.");
   const reason = String(args.reason ?? "").trim();
   if (!reason) throw new UserError('Give a reason: `aidenhq close <PR link>… --reason "<one line>"`.');
@@ -4192,7 +4192,7 @@ async function publish(issue, workspace, command, signal, { only = [], text, che
   const autoMerge = ok
     ? state.branches(issue.id).filter((b) => b.pr_url && !b.merged && inOrg(cfg.agentsOrg, b.repo) && !sameRepo(b.repo, cfg.apply?.repo) && !sameRepo(b.repo, cfg.productRepo) && ordered.some((r) => sameRepo(r.repo, b.repo) && r.branch === b.branch))
     : [];
-  const prs = mergeQueue.findPrs(autoMerge.map((b) => b.pr_url).join("\n"));
+  const prs = prQueue.findPrs(autoMerge.map((b) => b.pr_url).join("\n"));
   if (prs.length) requestAutoMerge(issue, prs);
   const said = [...notes, ...tidyNotes.map((n) => `_${n}_`), "| Branch | Result |", "|---|---|", ...results, ...(prs.length ? ["", `_Merging requested: ${prs.map((p) => p.url).join(", ")}, each as soon as its checks are green on this head._`] : [])].join("\n");
   await pc.comment(issue.id, said);
