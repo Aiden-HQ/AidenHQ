@@ -157,10 +157,12 @@ test("model: on a routine runs it on that model: the agent gets the codex-model 
   // Without a routine model it still gets the launcher (a stable cwd, for prompt caching).
   assert.equal(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"].command, "/opt/aidenhq/codex-model");
   const boxed = { image: "agent-base", trial: undefined, reports_to: "chief-of-staff" };
-  const b = compile(product, withAgents({ "review-chaser": { yaml: { ...boxed, routines: sweep({ model: "m" }) } } }, ["github", "slack"]));
-  assert.equal(b.paperclip.routines["review-chaser-sweep"].model, "m");
+  const b = compile(product, withAgents({ "review-chaser": { yaml: { ...boxed, routines: sweep({ model: "z-ai/glm-5.3" }) } } }, ["github", "slack"]));
+  assert.equal(b.paperclip.routines["review-chaser-sweep"].model, "z-ai/glm-5.3");
   assert.equal(b.paperclip.agents["review-chaser"].command, undefined);
   assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { routines: sweep({ model: 3 }) } } }, ["github", "slack"])), /model must be a string/);
+  // The gateway refuses a model it can't price, so compile does first.
+  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { routines: sweep({ model: "acme/unpriced" }) } } }, ["github", "slack"])), /no declared price for acme\/unpriced/);
 });
 
 test("the codex-model launcher swaps the routine's model in for the agent's, and runs Codex as is otherwise", () => {
@@ -256,4 +258,12 @@ test("builder: true reaches the compiled config (setup adds How we build from it
   const builders = Object.entries(r.paperclip.agents).filter(([, a]) => a.builder === true).map(([k]) => k);
   assert.deepEqual(builders.sort(), ["app-maintainer", "architect", "review-chaser", "ui-designer", "ui-reviewer"]);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { builder: "yes" } } })), /x: builder is true, false or absent/);
+});
+
+test("the models the runner and the model tools name in code are priced (the gateway refuses an unpriced one)", () => {
+  const priced = YAML.parse(readFileSync(join(product, "modules/models-openrouter/module.yaml"), "utf8")).models.map((m) => m.id);
+  const named = ["modules/ai-reviewer/service/src/review.mjs", "services/runner/src/models.mjs", "services/runner/src/intake.ts", "modules/tasks/connections/tasks-mcp/src/models.mjs"]
+    .flatMap((f) => [...readFileSync(join(product, f), "utf8").matchAll(/"(~?(?:deepseek|openai|z-ai|moonshotai|qwen|google|anthropic|x-ai)\/[a-z0-9.-]+)"/g)].map((m) => m[1]));
+  assert.ok(named.length >= 4);
+  for (const m of named) assert.ok(priced.includes(m), m);
 });

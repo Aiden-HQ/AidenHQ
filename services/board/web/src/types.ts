@@ -643,5 +643,5 @@ export interface SettingsData {
   agents: AgentSettings[];
   choices: { heartbeatHours: number[]; models: string[] };
   approvals: { pending: number };
-  spend: { enforcing: boolean | null; defaults: Record<string, number>; pendingRaises: number };
+  spend: { defaults: Record<string, number>; pendingRaises: number };
 }

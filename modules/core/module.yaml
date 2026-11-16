@@ -7,6 +7,7 @@ requires:
   - engine-codex
   - apps-platform
   - ai-reviewer
+  - models-openrouter
 settings:
   owner_name:
     required: true
@@ -69,11 +70,6 @@ settings:
   # granted and routines' done conditions (warnings); at apply, each granted connection answers and is signed in (hard
   # where newly granted). "off" = the kill switch: both steps are skipped.
   agent_check:
-    default: "on"
-    values: ["on", "off"]
-  # Spend caps (the model gateway): "on" = a call past a run, task or agent-day cap is refused and the owner gets a raise
-  # card; "off" = the kill switch: costs are still tracked, nothing is refused.
-  spend_caps:
     default: "on"
     values: ["on", "off"]
   # Off-host backup (ops/backup-offsite.sh): a restic repository, e.g. sftp://u12345@u12345.your-storagebox.de:23/aidenhq.

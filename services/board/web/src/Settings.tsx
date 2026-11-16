@@ -191,7 +191,7 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
   }
   if (cat === "notifications") return <NotificationsPage rows={rows(["channels", "telegram_fyi", "slack_post_channels", "owner_slack_user_id"])} conns={conns} />;
   if (cat === "general") {
-    const elsewhere = new Set(["autonomy", "batch_approvals", "dup_guard", "grading", "channels", "telegram_fyi", "slack_post_channels", "owner_slack_user_id", "spend_caps"]);
+    const elsewhere = new Set(["autonomy", "batch_approvals", "dup_guard", "grading", "channels", "telegram_fyi", "slack_post_channels", "owner_slack_user_id"]);
     const general = data.settings.filter((s) => !s.switch && !elsewhere.has(s.key) && s.type !== "url");
     return (
       <Page title="General" sub={data.owner.name ? `This AidenHQ belongs to ${data.owner.name}. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.` : `Who this AidenHQ belongs to, and how it is named. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.`}>
@@ -360,13 +360,11 @@ const CAP_KEYS = ["run_usd", "task_usd", "day_usd"] as const;
 const CAP_NAMES = { run_usd: "a run", task_usd: "a task", day_usd: "an agent-day" };
 
 function SpendPage({ data }: { data: SettingsData }) {
-  const caps = data.settings.find((s) => s.key === "spend_caps");
   const d = data.spend.defaults;
   return (
     <Page
       title="Spend caps"
-      sub="The model gateway refuses a call past a cap and files a Raise card; approving it doubles that cap once."
-      tools={data.spend.enforcing === null ? <StatusPill tone="off">Gateway not answering</StatusPill> : data.spend.enforcing ? <StatusPill tone="ok">Enforcing</StatusPill> : <StatusPill tone="warn">Not enforcing</StatusPill>}
+      sub="The model gateway refuses a call that would pass a cap and files a Raise card; approving it doubles that cap once."
     >
       <div className="st-figures">
         {CAP_KEYS.map((k) => (
@@ -384,11 +382,6 @@ function SpendPage({ data }: { data: SettingsData }) {
           <CapsRow key={a.key} name={a.name} agent={a.key} caps={a.caps} defaults={d} />
         ))}
       </Group>
-      {caps && (
-        <Group title="Switch">
-          <SettingItem s={caps} title="Enforce spend caps" />
-        </Group>
-      )}
     </Page>
   );
 }

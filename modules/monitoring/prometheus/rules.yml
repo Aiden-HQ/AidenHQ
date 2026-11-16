@@ -127,7 +127,7 @@ groups:
         annotations:
           summary: "an Engineer job has run over 3 hours"
       - alert: GatewaySpendNearCap
-        expr: aidenhq_gateway_agent_day_spend_usd / aidenhq_gateway_agent_day_cap_usd > 0.8 and aidenhq_gateway_enforcing_caps == 1
+        expr: aidenhq_gateway_agent_day_spend_usd / aidenhq_gateway_agent_day_cap_usd > 0.8
         labels: { severity: warning }
         annotations:
           summary: "agent {{ $labels.agent }} has spent over 80% of its day cap ({{ $value | humanizePercentage }})"

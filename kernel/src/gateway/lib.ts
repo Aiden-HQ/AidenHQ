@@ -1,5 +1,5 @@
-// The model gateway's logic (gateway.ts wires it to its listeners): who a call is for, the spend caps, the pass-through
-// to OpenRouter with what it billed tapped from the answer, and the ledger (SQLite) the board pulls.
+// The model gateway's logic (main.ts wires it to its listeners): who a call is for, the spend caps, the pass-through to
+// OpenRouter with what it billed tapped from the answer, and the ledger (kernel.db's calls) the board pulls.
 //
 // Routes (OpenRouter-compatible; the caller's "API key" is its own per-run credential, never the OpenRouter key):
 //   POST /api/v1/responses | /api/v1/chat/completions            kind agent (or the service kind its credential fixes)
@@ -18,12 +18,17 @@
 // its boxes' calls here with it; the launcher's /whoami names the agent, Paperclip run and task, asked every call so a run
 // that ended stops at once); a runner token `ahqj_` (token.ts: an Engineer job, or the runner's reviewer/grader/intake), or a fast chat lane's turn token (same format, signed with gateway_lane_secret, agent kind only); the source writers' key (gateway_source_key); Paperclip's harness key
 // (gateway_harness_key: the new-agent hello probe, whose env has no run JWT). The run key is the credential's sha256.
-// Caps: run / task / agent-day (grants caps, defaults 2/10/30 USD), checked before each call as settled + in flight. A task
-// labelled `chat` or a routine's execution task is perpetual: its task cap counts the UTC day only. System kinds
-// (reviewer, grader, source) are never capped. config/gateway.json {"enforce_caps": false} turns refusals off (tracking stays).
-// CI caps (config/gateway.json `ci`: per repo per UTC day, all CI per day) are always enforced and never filed for raising.
+// Spend (spec §5.12): before forwarding, one transaction reserves (estimated input x in + max_output x out) x peak at the
+// model's declared prices (config/gateway.json `models`; an unpriced model is refused) as a `reserved` ledger row, so every
+// cap sum counts calls in flight; max_output is cut to what the tightest cap has left, and a call that can't buy MIN_OUTPUT
+// tokens is refused. Settlement replaces the row's cost with max(reported, tokens x price); no usage (a stream cut, an
+// upstream failure) leaves the reservation, and a restart settles every open one at it (fail closed).
+// Caps: run / task / agent-day (grants caps, defaults 2/10/30 USD), always enforced; only the owner raises one (raise_cap). A
+// task labelled `chat` or a routine's execution task is perpetual: its task cap counts the UTC day only. System kinds
+// (reviewer, grader, source) are never capped. CI caps (config/gateway.json `ci`: per repo per UTC day, all CI per day) are
+// never filed for raising.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseSync } from "node:sqlite";
@@ -56,8 +61,9 @@ type CallRow = {
 };
 type CiTokenRow = { hash: string; repo: string; pr: number; head: string | null; gh_run: string; attempt: string; exp: string; at: string };
 type Sum = { s: number };
-type SumN = { s: number; n: number };
 type Over = { scope: string; subject: string; cap: number; spent: number };
+/** A model's declared prices (config/gateway.json `models`): USD per million tokens, the reservation's multiple, the output limit. */
+type Price = { in: number; cached_in: number; out: number; peak: number; max_output: number };
 /** What OpenRouter billed for one call. */
 type Usage = { key: string; model: string; input: number; cached: number; output: number; costUsd: number | null };
 type UsageBlock = {
@@ -72,12 +78,12 @@ const SYSTEM: { source: string } & Record<string, string> = { reviewer: "AI revi
 const ROUTE = /^\/(?:(advisor|fanout)\/)?api\/v1\/(responses|chat\/completions)$/;
 const MAX_BODY = 32 * 1024 * 1024;
 const DAY_MS = 864e5;
-// CI: a token lives 2 h (the job's timeout is 90 min); a repo gets at most 200 a day and 8 calls in flight; each call in flight
-// holds at least $0.10 against the caps (a fresh token has no average), and a call OpenRouter didn't price is billed that.
+// The fewest output tokens a call may be cut to; below that it is refused at the cap instead.
+const MIN_OUTPUT = 1024;
+// CI: a token lives 2 h (the job's timeout is 90 min); a repo gets at most 200 a day. Calls in flight need no limit of their
+// own: each holds its reservation against CI's caps until it settles.
 const CI_TTL_MS = 2 * 3600_000;
 const CI_TOKENS_PER_DAY = 200;
-const CI_INFLIGHT = 8;
-const CI_RESERVE_USD = 0.1;
 const CI_MAX_BODY = 8 * 1024 * 1024;
 // CI tokens a repo may be issued a minute. Only verified exchanges count (ci.ts checks the claims, then GitHub's signature,
 // about 20 microseconds), so a flood of forged or foreign tokens never uses up a real job's budget; one repo's flood of
@@ -105,11 +111,12 @@ export function watched<T>(file: string, pick: (j: Record<string, unknown>) => T
   };
 }
 
-export function openLedger(file: string): DatabaseSync {
-  mkdirSync(dirname(file), { recursive: true });
+/** The ledger's tables in kernel.db; `legacy` (the gateway's old data/gateway/usage.db) is merged in first (moveLedger). */
+export function openLedger(file: string, legacy?: string): { db: DatabaseSync; moved: number } {
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(file);
   db.exec(`
-    PRAGMA journal_mode = WAL;
+    PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS calls (key TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, run_key TEXT NOT NULL, run_id TEXT, agent_id TEXT,
       issue_id TEXT, task_subject TEXT, rev TEXT, kind TEXT NOT NULL, component TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL DEFAULT 0,
       cached INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0, cost_usd REAL, ms INTEGER, status TEXT NOT NULL);
@@ -117,6 +124,7 @@ export function openLedger(file: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS calls_task ON calls (agent_id, task_subject);
     CREATE INDEX IF NOT EXISTS calls_day ON calls (agent_id, day);
     CREATE INDEX IF NOT EXISTS calls_at ON calls (at);
+    CREATE INDEX IF NOT EXISTS calls_status ON calls (status);
     -- Who a run key is: settled at its first call (a gateway restart or the JWT's expiry never re-derives it), with its rev.
     CREATE TABLE IF NOT EXISTS runs (run_key TEXT PRIMARY KEY, agent_id TEXT, run_id TEXT, issue_id TEXT, rev TEXT, perpetual INTEGER NOT NULL, at TEXT NOT NULL);
     -- Caps the owner raised (board → POST /internal/caps): the cap in force for that scope and subject.
@@ -129,7 +137,32 @@ export function openLedger(file: string): DatabaseSync {
     CREATE TABLE IF NOT EXISTS ci_tokens (hash TEXT PRIMARY KEY, repo TEXT NOT NULL, pr INTEGER NOT NULL, head TEXT, gh_run TEXT NOT NULL, attempt TEXT NOT NULL,
       exp TEXT NOT NULL, at TEXT NOT NULL, UNIQUE (repo, gh_run, attempt));
   `);
-  return db;
+  return { db, moved: moveLedger(db, legacy) };
+}
+
+/**
+ * Copies every row of the old ledger file into kernel.db in one transaction, keyed by each table's primary key (INSERT OR
+ * IGNORE), so a partial or repeated move never counts a call twice or loses one; run at every start while the old file is
+ * there, which also picks up what a rolled-back kernel wrote to it. The old file is left as it is. Returns the rows added.
+ */
+export function moveLedger(db: DatabaseSync, legacy?: string): number {
+  if (!legacy || !existsSync(legacy)) return 0;
+  db.prepare("ATTACH DATABASE ? AS legacy").run(legacy);
+  try {
+    const has = new Set((db.prepare("SELECT name FROM legacy.sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name));
+    db.exec("BEGIN IMMEDIATE");
+    let n = 0;
+    // Columns by name, whatever order the old file's tables have.
+    const cols = (t: string) => (db.prepare(`PRAGMA main.table_info(${t})`).all() as { name: string }[]).map((c) => c.name).join(", ");
+    for (const t of ["calls", "runs", "caps", "filed", "ci_tokens"]) if (has.has(t)) n += Number(db.prepare(`INSERT OR IGNORE INTO main.${t} (${cols(t)}) SELECT ${cols(t)} FROM legacy.${t}`).run().changes);
+    db.exec("COMMIT");
+    return n;
+  } catch (e) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw e;
+  } finally {
+    db.exec("DETACH DATABASE legacy");
+  }
 }
 
 /**
@@ -176,31 +209,35 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, boardUrl, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }: {
-  dbFile: string; grantsFile: string; settingsFile: string; tools?: (req: IncomingMessage, res: ServerResponse, connection: string, o: { jobs: boolean }) => Promise<void>;
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, boardUrl, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }: {
+  dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string; tools?: (req: IncomingMessage, res: ServerResponse, connection: string, o: { jobs: boolean }) => Promise<void>;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
   boardUrl?: string; launcherUrl?: string; githubJwksUrl?: string; log?: Log; now?: () => number;
 }) {
-  const db = openLedger(dbFile);
+  const { db, moved } = openLedger(dbFile, legacyDbFile);
+  if (moved) log("ledger rows moved into kernel.db", { rows: moved });
+  // A reservation a restart left open is settled at its reserved amount (fail closed).
+  db.prepare("UPDATE calls SET status = 'unsettled', at = ? WHERE status = 'reserved'").run(new Date(now()).toISOString());
   const grants = watched(grantsFile, (j) => (j.agents ?? {}) as Grants, {});
-  const enforcing = watched(settingsFile, (j) => j.enforce_caps !== false, true);
+  const prices = watched(settingsFile, (j) => (j.models && typeof j.models === "object" ? (j.models as Record<string, Price>) : {}), {});
   // CI code review (compile writes it from the ci module's settings): { enabled, orgs, models, repo_day_usd, day_usd } or null.
   const ciConf = watched<CiConf | null>(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? (j.ci as CiConf) : null), null);
   const keyFor = githubKeys(githubJwksUrl, now);
-  const inflight = new Map<string, { runKey: RunKey; agentId: string | null; subject: string | null; day: string; est: number; ciRepo: string | undefined }>(); // id → { runKey, agentId, subject, day, est, ciRepo }
   const q = {
     run: db.prepare("SELECT * FROM runs WHERE run_key = ?"),
     addRun: db.prepare("INSERT OR IGNORE INTO runs (run_key, agent_id, run_id, issue_id, rev, perpetual, at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
     add: db.prepare("INSERT OR IGNORE INTO calls (key, at, day, run_key, run_id, agent_id, issue_id, task_subject, rev, kind, component, model, input, cached, output, cost_usd, ms, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
-    spentRun: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s, COUNT(cost_usd) AS n FROM calls WHERE run_key = ?"),
+    spentRun: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE run_key = ?"),
     spentTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND task_subject = ?"),
     spentDay: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND day = ?"),
     cap: db.prepare("SELECT cap FROM caps WHERE scope = ? AND agent_id = ? AND subject = ?"),
     setCap: db.prepare("INSERT INTO caps (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (scope, agent_id, subject) DO UPDATE SET cap = excluded.cap, at = excluded.at"),
     file: db.prepare("INSERT OR IGNORE INTO filed (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?)"),
     unfile: db.prepare("DELETE FROM filed WHERE scope = ? AND agent_id = ? AND subject = ? AND cap = ?"),
-    since: db.prepare("SELECT * FROM calls WHERE at >= ? ORDER BY at LIMIT 20000"),
+    since: db.prepare("SELECT * FROM calls WHERE at >= ? AND status != 'reserved' ORDER BY at LIMIT 20000"),
+    settle: db.prepare("UPDATE calls SET key = ?, at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ?, ms = ?, status = ? WHERE key = ? AND status = 'reserved'"),
+    inflight: db.prepare("SELECT COUNT(*) AS n FROM calls WHERE status = 'reserved'"),
     ciToken: db.prepare("SELECT * FROM ci_tokens WHERE hash = ?"),
     addCiToken: db.prepare("INSERT OR IGNORE INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
     ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND substr(at, 1, 10) = ?"),
@@ -325,22 +362,57 @@ export function createGateway({ dbFile, grantsFile, settingsFile, tools, asCalle
   };
   const taskSubject = (who: { issueId: string | null; perpetual: boolean }, t: number) => (who.issueId ? (who.perpetual ? `${who.issueId}:${day(t)}` : who.issueId) : null);
 
-  /** The first cap this call would pass (settled + in flight), or undefined. */
-  function overCap(who: Caller, t: number): Over | undefined {
-    const pending = (pick: (c: { runKey: RunKey; agentId: string | null; subject: string | null; day: string }) => boolean) => [...inflight.values()].filter(pick).reduce((s, c) => s + c.est, 0);
+  /** The caps this call counts against, each with what is spent on it (settled + reserved): none for an uncapped kind. */
+  function capScopes(who: Caller, t: number): Over[] {
     const today = day(t);
-    const subject = taskSubject(who, t);
-    const scopes: [string, string, () => number][] = [
-      ["run", who.runKey, () => (q.spentRun.get(who.runKey) as Sum).s + pending((c) => c.runKey === who.runKey)],
-      ...(who.agentId && subject ? [["task", subject, () => (q.spentTask.get(who.agentId, subject) as Sum).s + pending((c) => c.agentId === who.agentId && c.subject === subject)] as [string, string, () => number]] : []),
-      ...(who.agentId ? [["day", today, () => (q.spentDay.get(who.agentId, today) as Sum).s + pending((c) => c.agentId === who.agentId && c.day === today)] as [string, string, () => number]] : []),
-    ];
-    for (const [scope, subj, spentFn] of scopes) {
-      const cap = capOf(who, scope, subj);
-      const spent = spentFn();
-      if (spent >= cap) return { scope, subject: subj, cap, spent };
+    if (who.ci) {
+      const c = ciOn(), prefix = `${who.ci.repo}#`;
+      return [
+        { scope: "repo-day", subject: who.ci.repo, cap: Number(c.repo_day_usd) > 0 ? Number(c.repo_day_usd) : 0, spent: (q.ciSpentRepo.get(today, prefix, prefix) as Sum).s },
+        { scope: "day", subject: today, cap: Number(c.day_usd) > 0 ? Number(c.day_usd) : 0, spent: (q.ciSpent.get(today) as Sum).s },
+      ];
     }
-    return undefined;
+    if (!who.capped) return [];
+    const subject = taskSubject(who, t);
+    const scopes: [string, string, number][] = [["run", who.runKey, (q.spentRun.get(who.runKey) as Sum).s]];
+    if (who.agentId && subject) scopes.push(["task", subject, (q.spentTask.get(who.agentId, subject) as Sum).s]);
+    if (who.agentId) scopes.push(["day", today, (q.spentDay.get(who.agentId, today) as Sum).s]);
+    return scopes.map(([scope, subj, spent]) => ({ scope, subject: subj, cap: capOf(who, scope, subj), spent }));
+  }
+
+  /** The prices a call is reserved and settled at: its model's, the dearest of any fallback `models`; a 403 when one has none. */
+  function priceOf(body: Record<string, unknown>): Price {
+    const ids = [body.model, ...(Array.isArray(body.models) ? body.models : [])].map(String);
+    const table = prices();
+    const missing = ids.filter((id) => !Object.hasOwn(table, id));
+    if (missing.length) throw fail(403, "not_priced", `no declared price for model ${missing.join(", ").slice(0, 200)}; the owner can add one (a module's models:)`);
+    const most = (k: keyof Price, pick = Math.max) => pick(...ids.map((id) => Number(table[id]![k]) || 0));
+    return { in: most("in"), cached_in: most("cached_in"), out: most("out"), peak: Math.max(1, most("peak")), max_output: most("max_output", Math.min) };
+  }
+
+  /**
+   * One transaction: the room the tightest cap leaves, the output tokens that buys (at most `want`), and a `reserved` ledger
+   * row holding the call's whole worst case. Synchronous, so calls in flight can never reserve past a cap together.
+   */
+  function reserve(who: Caller, t: number, key: string, model: string, inUsd: number, perOut: number, want: number): { usd: number; maxOutput: number } | { over: Over } {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const scopes = capScopes(who, t);
+      const room = Math.min(Infinity, ...scopes.map((s) => s.cap - s.spent));
+      const fits = room < inUsd ? -1 : perOut > 0 ? Math.floor((room - inUsd) / perOut) : Infinity;
+      const maxOutput = Math.min(want, fits);
+      if (maxOutput < Math.min(want, MIN_OUTPUT)) {
+        db.exec("ROLLBACK");
+        return { over: scopes.reduce((a, b) => (b.cap - b.spent < a.cap - a.spent ? b : a)) };
+      }
+      const usd = inUsd + maxOutput * perOut;
+      record(who, { key, model, costUsd: usd, status: "reserved", t, ms: null });
+      db.exec("COMMIT");
+      return { usd, maxOutput };
+    } catch (e) {
+      if (db.isTransaction) db.exec("ROLLBACK");
+      throw e;
+    }
   }
 
   /** The CI settings, when CI is on; else a 403 (settings.ci_review: off refuses every CI token at once). */
@@ -348,26 +420,6 @@ export function createGateway({ dbFile, grantsFile, settingsFile, tools, asCalle
     const c = ciConf();
     if (!c?.enabled) throw fail(403, "ci_off", "CI code review through the model gateway is off on this instance");
     return c;
-  }
-
-  /**
-   * The first CI cap this call would pass: settled + in flight + this call's own reservation, the repo's day then all CI's
-   * day; or undefined. A call may still cost more than its reservation, so a cap can be passed by at most what the calls in
-   * flight (8 per repo) cost beyond theirs.
-   */
-  function ciOverCap(who: Caller, t: number, c: CiConf, reserve: number) {
-    const today = day(t);
-    const pending = (pick: (x: { ciRepo: string | undefined }) => boolean) => [...inflight.values()].filter((x) => x.ciRepo && x.day === today && pick(x)).reduce((s, x) => s + x.est, 0);
-    const prefix = `${who.ci!.repo}#`; // a CI caller
-    const scopes: [string, number, () => number][] = [
-      ["repo-day", Number(c.repo_day_usd), () => (q.ciSpentRepo.get(today, prefix, prefix) as Sum).s + pending((x) => x.ciRepo === who.ci!.repo)],
-      ["day", Number(c.day_usd), () => (q.ciSpent.get(today) as Sum).s + pending(() => true)],
-    ];
-    for (const [scope, cap, spentFn] of scopes) {
-      const spent = spentFn();
-      if (!(cap > 0) || spent + reserve > cap) return { scope, cap: cap > 0 ? cap : 0, spent };
-    }
-    return undefined;
   }
 
   /**
@@ -444,69 +496,70 @@ export function createGateway({ dbFile, grantsFile, settingsFile, tools, asCalle
   async function model(req: IncomingMessage, res: ServerResponse, routeKind: string, path: string, ci = false) {
     const t0 = now();
     const who = await identify((!ci && (await asCaller?.(req))) || bearer(req), routeKind, ci);
-    let body: Record<string, unknown>;
-    try { body = JSON.parse(await readBody(req, ci ? CI_MAX_BODY : MAX_BODY)); } catch (e) { throw (e as GatewayError).status ? e : fail(400, "bad_request", "the body must be JSON"); }
+    let body: Record<string, unknown>, raw = "";
+    try { body = JSON.parse((raw = await readBody(req, ci ? CI_MAX_BODY : MAX_BODY))); } catch (e) { throw (e as GatewayError).status ? e : fail(400, "bad_request", "the body must be JSON"); }
     if (!body || typeof body !== "object" || typeof body.model !== "string") throw fail(400, "bad_request", "a model call needs a model");
     if (who.ci) {
-      // CI's own gates, whatever the kill switch says: the models and fields it may use, calls in flight, its day caps. A
-      // refusal is a 403 or 402 (codegenie and the workflow read those as permanent: no retry); too many in flight a 429.
+      // CI's own gates: the models and fields it may use. A refusal is a 403 or 402 (codegenie and the workflow read those as
+      // permanent: no retry).
       const c = ciOn();
       const problem = ciBodyProblem(body, Array.isArray(c.models) ? c.models : []);
       if (problem) throw fail(403, "not_allowed", problem);
-      if ([...inflight.values()].filter((x) => x.ciRepo === who.ci!.repo).length >= CI_INFLIGHT) throw fail(429, "too_many_calls", `at most ${CI_INFLIGHT} CI calls in flight per repo`);
-      const avg = q.spentRun.get(who.runKey) as SumN;
-      const over = ciOverCap(who, t0, c, Math.max(CI_RESERVE_USD, avg.n ? avg.s / avg.n : 0));
-      if (over) {
+    }
+    const price = priceOf(body);
+    const upKey = secret("openrouter_key");
+    if (!upKey) throw fail(503, "no_upstream_key", "the gateway has no OpenRouter key");
+    // Bounded output: the request's own limit, the model's, and what the tightest cap has left (reserve).
+    const field = path === "responses" ? "max_output_tokens" : "max_tokens";
+    const asked = [body[field], body.max_completion_tokens].filter((n): n is number => Number.isInteger(n) && (n as number) > 0);
+    const per = price.peak / 1e6;
+    const id = `gw:${randomUUID()}`;
+    const r = reserve(who, t0, id, body.model, Math.ceil(Buffer.byteLength(raw) / 3) * price.in * per, price.out * per, Math.min(price.max_output, ...asked));
+    if ("over" in r) {
+      const over = r.over;
+      if (who.ci) {
         record(who, { key: `cap:${who.ci.repo}:${over.scope}:${day(t0)}:${over.cap}`, model: body.model, status: "cap_reached", t: t0, ms: 0 });
         throw fail(402, "cap_reached", `spend cap reached: CI ${over.scope} $${over.spent.toFixed(2)} of $${over.cap.toFixed(2)}; the owner can raise it in settings`, { scope: over.scope, cap: over.cap, spent: over.spent });
       }
+      const filed = await fileRaise(who, over);
+      // One ledger row per run, scope and cap: a refused turn arrives several times (Codex retries a 402 five times).
+      record(who, { key: `cap:${who.runKey}:${over.scope}:${over.cap}`, model: body.model, status: "cap_reached", t: t0, ms: 0 });
+      const what = over.scope === "day" ? "agent-day" : over.scope; // no date or time: Paperclip reads one as a retry time
+      // Worded to match none of Paperclip's retry/quota patterns (no automatic re-run).
+      const next = over.scope === "run" ? "this run stops here; the next run starts with a fresh run cap" : filed ? "the owner has been asked to raise it" : "the owner must raise it";
+      throw fail(402, "cap_reached", `spend cap reached: ${what} $${over.spent.toFixed(2)} of $${over.cap.toFixed(2)}; ${next}`, { scope: over.scope, cap: over.cap, spent: over.spent });
     }
-    if (who.capped && enforcing()) {
-      const over = overCap(who, t0);
-      if (over) {
-        const filed = await fileRaise(who, over);
-        // One ledger row per run, scope and cap: a refused turn arrives several times (Codex retries a 402 five times).
-        record(who, { key: `cap:${who.runKey}:${over.scope}:${over.cap}`, model: body.model, status: "cap_reached", t: t0, ms: 0 });
-        const what = over.scope === "day" ? "agent-day" : over.scope; // no date or time: Paperclip reads one as a retry time
-        // Worded to match none of Paperclip's retry/quota patterns (no automatic re-run).
-        const next = over.scope === "run" ? "this run stops here; the next run starts with a fresh run cap" : filed ? "the owner has been asked to raise it" : "the owner must raise it";
-        const message = `spend cap reached: ${what} $${over.spent.toFixed(2)} of $${over.cap.toFixed(2)}; ${next}`;
-        throw fail(402, "cap_reached", message, { scope: over.scope, cap: over.cap, spent: over.spent });
-      }
-    }
+    body[field] = r.maxOutput;
+    if (body.max_completion_tokens !== undefined) body.max_completion_tokens = r.maxOutput;
     body.provider = { ...(body.provider && typeof body.provider === "object" ? body.provider : {}), zdr: true };
-    const key = secret("openrouter_key");
-    if (!key) throw fail(503, "no_upstream_key", "the gateway has no OpenRouter key");
-    const id = randomUUID();
-    const avg = q.spentRun.get(who.runKey) as SumN;
-    const est = Math.max(who.ci ? CI_RESERVE_USD : 0, avg.n ? avg.s / avg.n : 0);
-    inflight.set(id, { runKey: who.runKey, agentId: who.agentId, subject: taskSubject(who, t0), day: day(t0), est, ciRepo: who.ci?.repo });
+    // Settled once, however the call ends: the billed usage at max(reported, tokens x price); nothing when the upstream refused
+    // before any output (`free`: OpenRouter bills none); else the reservation (a stream cut, no usage, a restart).
+    const settle = (status: string, u?: Usage, free = false) => {
+      const floor = u ? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6 : 0;
+      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, u ? Math.max(u.costUsd ?? 0, floor) : free ? 0 : r.usd, now() - t0, status, id];
+      try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
+    };
+    let up: Response;
     try {
-      let up: Response;
-      try {
-        up = await fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
-      } catch (e) {
-        record(who, { model: body.model, status: "upstream_error", t: t0, ms: now() - t0 });
-        throw fail(502, "upstream_error", `OpenRouter unreachable (${(e as Error).message})`);
-      }
-      res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k))));
-      const tap = usageTap(String(up.headers.get("content-type") ?? "").includes("event-stream"));
-      const text = new TextDecoder();
-      // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger. If OpenRouter's
-      // stream breaks, the row is still written (upstream_aborted): the billed usage if it arrived, else this run's average call.
-      let status = "upstream_aborted";
-      try {
-        if (up.body) for await (const c of up.body) { if (!res.destroyed) res.write(c); tap.feed(text.decode(c, { stream: true })); }
-        status = up.ok ? "ok" : `upstream_${up.status}`;
-      } finally {
-        const u = tap.done();
-        // A CI call OpenRouter didn't price (ok or broken off) is billed its reservation, so it still counts against the caps.
-        record(who, { ...u, costUsd: u?.costUsd ?? (status === "upstream_aborted" || (who.ci && status === "ok") ? est : null), model: u?.model || body.model, status, t: t0, ms: now() - t0 });
-      }
-      if (!res.destroyed) res.end();
-    } finally {
-      inflight.delete(id);
+      up = await fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}` }, body: JSON.stringify(body) });
+    } catch (e) {
+      // Refused before the request left (nothing reached OpenRouter): free. Any other failure may have been billed.
+      settle("upstream_error", undefined, ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(String(((e as Error).cause as { code?: string } | undefined)?.code)));
+      throw fail(502, "upstream_error", `OpenRouter unreachable (${(e as Error).message})`);
     }
+    const sse = String(up.headers.get("content-type") ?? "").includes("event-stream");
+    const tap = usageTap(sse);
+    const text = new TextDecoder();
+    // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger.
+    let status = "upstream_aborted";
+    try {
+      res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k))));
+      if (up.body) for await (const c of up.body) { if (!res.destroyed) res.write(c); tap.feed(text.decode(c, { stream: true })); }
+      status = up.ok ? "ok" : `upstream_${up.status}`;
+    } finally {
+      settle(status, tap.done(), !up.ok && !sse && status !== "upstream_aborted"); // a definite error answer, no stream started
+    }
+    if (!res.destroyed) res.end();
   }
 
   function boardKeyed(req: IncomingMessage) {
@@ -534,7 +587,7 @@ export function createGateway({ dbFile, grantsFile, settingsFile, tools, asCalle
       out.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`);
       for (const [labels, v] of rows) out.push(`${name}${Object.keys(labels).length ? `{${Object.entries(labels).map(([k, x]) => `${k}="${esc(x)}"`).join(",")}}` : ""} ${Math.round(v * 1e4) / 1e4}`);
     };
-    const spend = db.prepare("SELECT agent_id, kind, COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status != 'cap_reached' GROUP BY agent_id, kind").all(today) as { agent_id: string | null; kind: string; s: number }[];
+    const spend = db.prepare("SELECT agent_id, kind, COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status NOT IN ('cap_reached', 'reserved') GROUP BY agent_id, kind").all(today) as { agent_id: string | null; kind: string; s: number }[];
     metric("aidenhq_gateway_spend_usd_today", "Billed model spend since 00:00 UTC, by agent key and call kind.", spend.map((r) => [{ agent: keyOf(r.agent_id), kind: r.kind }, r.s]));
     const agents = [...new Set(spend.filter((r) => r.agent_id && !SYSTEM[r.kind] && r.kind !== CI_KIND).map((r) => r.agent_id!))];
     metric("aidenhq_gateway_agent_day_spend_usd", "An agent's spend counted against its agent-day cap, since 00:00 UTC.", agents.map((id) => [{ agent: keyOf(id) }, (q.spentDay.get(id, today) as Sum).s]));
@@ -544,8 +597,7 @@ export function createGateway({ dbFile, grantsFile, settingsFile, tools, asCalle
     const ci = ciConf();
     metric("aidenhq_gateway_ci_spend_usd_today", "App CI code review spend since 00:00 UTC.", [[{}, (q.ciSpent.get(today) as Sum).s]]);
     metric("aidenhq_gateway_ci_day_cap_usd", "App CI code review's all-repos day cap (0: CI review off).", [[{}, ci?.enabled ? Number(ci.day_usd) || 0 : 0]]);
-    metric("aidenhq_gateway_enforcing_caps", "1 when spend caps refuse calls (settings.spend_caps).", [[{}, enforcing() ? 1 : 0]]);
-    metric("aidenhq_gateway_inflight", "Model calls in flight.", [[{}, inflight.size]]);
+    metric("aidenhq_gateway_inflight", "Model calls in flight.", [[{}, (q.inflight.get() as { n: number }).n]]);
     return out.join("\n") + "\n";
   }
 
@@ -553,7 +605,7 @@ export function createGateway({ dbFile, grantsFile, settingsFile, tools, asCalle
   async function handle(req: IncomingMessage, res: ServerResponse, { ci = false } = {}) {
     try {
       const path = String(req.url ?? "").split("?")[0]!;
-      if (req.method === "GET" && path === "/health") return send(res, 200, ci ? { ok: true } : { ok: true, enforcing: enforcing(), inflight: inflight.size });
+      if (req.method === "GET" && path === "/health") return send(res, 200, ci ? { ok: true } : { ok: true, inflight: (q.inflight.get() as { n: number }).n });
       if (ci) {
         if (req.method === "POST" && path === "/ci/token") return await ciToken(req, res);
         if (req.method === "POST" && path === "/api/v1/chat/completions") return await model(req, res, "agent", "chat/completions", true);

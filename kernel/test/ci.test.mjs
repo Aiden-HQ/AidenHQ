@@ -1,6 +1,6 @@
 // App CI code review end to end, against a fake GitHub (its OIDC keys) and a fake OpenRouter: a job's OIDC token traded for
 // a CI token bound to its repo and PR; the token's scope (the CI listener only, the allowed model and fields only); the
-// ledger record; the repo-day cap's refusal, which the kill switch doesn't lift; the off switch.
+// ledger record; the repo-day cap's refusal (a reservation that doesn't fit); the off switch.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -18,7 +18,9 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   const dir = mkdtempSync(join(tmpdir(), "gw-ci-"));
   const secrets = { openrouter_key: "sk-real", gateway_board_key: "gw-board", gateway_source_key: "src-key" };
   const settingsFile = join(dir, "gateway.json");
-  const settings = (ci, extra = {}) => writeFileSync(settingsFile, JSON.stringify({ ...extra, ci: { enabled: true, orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest"], repo_day_usd: 0.25, day_usd: 1, ...ci } }));
+  // A review call reserves 4096 output tokens at $25 per million: $0.1024 (and a little for its input).
+  const models = { "~deepseek/deepseek-flash-latest": { in: 0, cached_in: 0, out: 25, peak: 1, max_output: 4096 } };
+  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ models, ci: { enabled: true, orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest"], repo_day_usd: 0.22, day_usd: 1, ...ci } }));
   settings({});
 
   const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -32,12 +34,15 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
     return `${body}.${sign("RSA-SHA256", Buffer.from(body), privateKey).toString("base64url")}`;
   };
 
-  const seen = [];
+  const seen = [], held = [];
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
       seen.push({ auth: req.headers.authorization, body: JSON.parse(b) });
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end(`data: ${JSON.stringify({ id: `gen-${seen.length}`, model: "deepseek/v4", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.1 } })}\n\ndata: [DONE]\n\n`);
+      const answer = () => { res.writeHead(200, { "content-type": "text/event-stream" }); res.end(`data: ${JSON.stringify({ id: `gen-${seen.length}`, model: "deepseek/v4", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.1 } })}\n\ndata: [DONE]\n\n`); };
+      // "hold": answered once 12 held calls are in flight together.
+      if (JSON.parse(b).messages?.[0] !== "hold") return answer();
+      held.push(answer);
+      if (held.length === 12) held.splice(0).forEach((f) => f());
     });
   });
   const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, githubJwksUrl: github.url, now: () => now });
@@ -110,13 +115,13 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   const [row] = await usage();
   assert.deepEqual({ ...row, at: undefined, runKey: undefined }, { key: "gen-1", at: undefined, agentId: null, component: "ci-code-review", model: "deepseek/v4", input: 10, cached: 0, output: 2, costUsd: 0.1, runKey: undefined, runId: null, issueId: null, rev: "ab".repeat(20), kind: "ci-code-review", ms: 0, status: "ok", subject: "acme-agents/app#12" });
 
-  // Repo-day cap $0.25, each call holding $0.10 while in flight: the second call fits ($0.10 + $0.10), the third doesn't
-  // ($0.20 + $0.10), nor does a fresh token's, and the kill switch for agents' caps doesn't lift it. Another repo has its own.
+  // Repo-day cap $0.22: the second call's reservation fits ($0.10 billed + $0.10), the third can't buy its least output
+  // ($0.20 billed, $0.02 left), nor can a fresh token's. Another repo has its own. Every call carried its bounded max_tokens.
   assert.equal((await review(tok)).status, 200);
-  settings({}, { enforce_caps: false });
   const refused = await review(tok);
   assert.equal(refused.status, 402);
-  assert.match(refused.json.error.message, /^spend cap reached: CI repo-day \$0\.20 of \$0\.25;/);
+  assert.match(refused.json.error.message, /^spend cap reached: CI repo-day \$0\.20 of \$0\.22;/);
+  assert.deepEqual(seen.map((s) => s.body.max_tokens), [4096, 4096]);
   assert.equal((await review((await exchange(oidc({ ref: "refs/pull/13/merge" }))).json.token)).status, 402);
   assert.equal((await review((await exchange(oidc({ repository: "acme-agents/other" }))).json.token)).status, 200);
   assert.equal((await usage()).filter((r) => r.status === "cap_reached").length, 1);
@@ -125,8 +130,11 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   settings({ enabled: false });
   assert.equal((await exchange(oidc())).status, 403);
   assert.equal((await review(tok)).status, 403);
-  settings({ repo_day_usd: 5 });
+  settings({ repo_day_usd: 5, day_usd: 5 });
   assert.equal((await review(tok)).status, 200);
+  // No in-flight limit of its own: 12 calls of one repo in flight together all run (each holds its reservation against the caps).
+  const many = await Promise.all(Array.from({ length: 12 }, () => review(tok, { messages: ["hold"] })));
+  assert.deepEqual(many.map((r) => r.status), Array(12).fill(200));
   now += 3 * 3600_000;
   assert.equal((await review(tok)).status, 401);
 });
