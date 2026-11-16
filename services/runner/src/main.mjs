@@ -1271,9 +1271,15 @@ const mergeGithub = {
   reruns(repo, number) {
     return JSON.parse(state.get(`reruns:${repo.toLowerCase()}#${number}`) || "{}");
   },
+  /** A workflow run's { status, updatedAt } (the ghost check: a run that is over while a job of it still reads in progress). */
+  async run(repo, run) {
+    const { stdout } = await execFileP(await findRealGh(), ["api", `repos/${repo}/actions/runs/${run}`, "--jq", "{ status, updatedAt: .updated_at } | @json"], await gho(repo, READ));
+    return JSON.parse(stdout);
+  },
   /** Re-runs a workflow run's failed jobs, then records its checks (a refused re-run records nothing: the next queue may try). */
-  async rerun(repo, number, { run, checks, head }) {
-    await githubWrite(repo, `repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}, "POST", RERUN);
+  async rerun(repo, number, { run, checks, head, whole }) {
+    if (whole) await githubWrite(repo, `repos/${repo}/actions/runs/${run}/rerun`, {}, "POST", RERUN);
+    else await githubWrite(repo, `repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}, "POST", RERUN);
     const key = `reruns:${repo.toLowerCase()}#${number}`;
     state.set(key, JSON.stringify({ ...JSON.parse(state.get(key) || "{}"), ...Object.fromEntries(checks.map((c) => [c.name, { head, id: c.id }])) }));
     log("checks re-run", { repo, number, run, checks: checks.map((c) => c.name), head });
