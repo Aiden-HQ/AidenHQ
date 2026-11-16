@@ -38,7 +38,7 @@ import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, state
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, afterReview, autonomyCap, classify, dependabotCommits, highest, meritOwner, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, reviewFirstOf, routineCap, routineCapped, sensitiveTraits } from "./tiers.mjs";
-import { LUNA, SOURCE_EXCEPTIONS_FILE, UNSURE, fileContext, openRouterAsk, openRouterKey, readSourceExceptions, review } from "./review.mjs";
+import { LUNA, SOURCE_EXCEPTIONS_FILE, UNSURE, fileContext, kernelCardDiff, openRouterAsk, openRouterKey, readSourceExceptions, review } from "./review.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
@@ -2163,18 +2163,6 @@ async function readFiles(list) {
 }
 
 /**
- * The diff of a kernel record's card (deploy_app, app_run and the other module kinds), from the card: the author's commit message or
- * reason after its marker is cut off, so it never reaches the reviewer inside the DIFF fence (the reviewer is reasoning-blind).
- */
-function boardCardInput(a) {
-  const split = (marker) => {
-    const i = a.details.lastIndexOf(marker);
-    return { diff: i < 0 ? a.details : a.details.slice(0, i) };
-  };
-  return a.action === "deploy_app" ? split("\n\nCommit message (written by the app's author): ") : split("\nReason (written by the requesting agent): ");
-}
-
-/**
  * Never claimed by the runner, reviewed here all the same: a module write kind's record (a `k-` id, lean-core 2d), which the
  * kernel keeps and runs; the board lists it and forwards the verdict. Its tier comes from the kernel, its diff from its card.
  */
@@ -2223,7 +2211,7 @@ async function reviewOne(a, mode) {
       const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain);
       const veto = priorPart(prior);
       // The board's own panel flag (a deploy touching a migration or schema): two reviewers, as the board requires.
-      const reviewed = { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...boardCardInput(a) };
+      const reviewed = { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...kernelCardDiff(a) };
       // Tier 2 on its merits (the owner's veto here, or the kernel's own tier before any autonomy cap): reviewed, then the owner's.
       const merit = veto ?? (a.baseTier === 2 ? { tier: 2, rule: `${a.action}`, reason: a.reason || "the kernel's tier on its merits is 2" } : undefined);
       input = veto?.reject ? veto : autonomyCap(routineCapped(merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed, common.routineAutonomy), mode);
@@ -3896,6 +3884,14 @@ async function kernelWrites(method, path, { issue, agentId }, body) {
   return j;
 }
 
+/** The owner's own comment on the task names this exact Primer link and asks for it to be updated or published to. */
+async function ownerAskedToUpdate(issue, url) {
+  if (!url) return false;
+  const comments = await pc.comments(issue.id).catch(() => []);
+  return comments.some((c) => c.authorType === "user" && !hasMarker(c.body, RUNNER_MARKER) && String(c.body ?? "").includes(url) && UPDATE_WORDS.test(String(c.body)));
+}
+const UPDATE_WORDS = /\b(publish|update|revise|new version|add (?:a )?version|overwrite|replace|edit|put (?:it|this|the \w+) (?:on|in|into))\b/i;
+
 /**
  * After a finished run on a task that asked for Primer: file the agent's document as a primer.publish record if it changed
  * (the AI reviewer checks it against the request; the kernel publishes it once approved and posts the outcome on the task).
@@ -3906,6 +3902,7 @@ async function kernelWrites(method, path, { issue, agentId }, body) {
 async function publishToPrimer(issue, full, workspace, agentId) {
   let record = primerRecord(issue.id);
   if (!record) return "";
+  if (!agentId) return "_Couldn't file the Primer document: no Engineer is known for this run. The next run tries again._";
   const who = { issue, agentId };
   try {
     if (record.pending) {
@@ -3920,7 +3917,10 @@ async function publishToPrimer(issue, full, workspace, agentId) {
     const doc = readDocument(workspace, full.title);
     if (!doc) return `_No Primer document: the run didn't write ${PRIMER_FILES}._`;
     if (doc.hash === record.hash) return record.url ? `**Primer:** ${record.url} (unchanged)` : "";
-    const args = { title: doc.title, content: doc.content, format: doc.format, path: relative(workspace, doc.path), ...(record.documentId ? { documentId: record.documentId } : {}) };
+    // A version of a document the task didn't publish itself goes to the owner unless their own comment asks for that link
+    // to be updated (the executor raises it to Tier 2 without `own`): a link given to read is never one to overwrite.
+    const own = record.documentId && (!record.linked || (await ownerAskedToUpdate(issue, record.url)));
+    const args = { title: doc.title, content: doc.content, format: doc.format, path: relative(workspace, doc.path), ...(record.documentId ? { documentId: record.documentId } : {}), ...(own ? { own: true } : {}) };
     const r = await kernelWrites("POST", "/v1/writes", who, { kind: "primer.publish", args });
     savePrimer(issue.id, { ...record, pending: { id: r.id, hash: doc.hash } });
     log("filed for Primer", { issue: issue.identifier, approval: r.id, tier: r.tier, document: record.documentId });

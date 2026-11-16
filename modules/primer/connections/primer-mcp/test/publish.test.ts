@@ -22,6 +22,12 @@ describe("primer.publish executor", () => {
     // An agent's primer_add_version call: a version of that document.
     const v = await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "<h1>v2</h1>", format: "html", versionNote: "v2" }, requester, task: "T-1" });
     expect(v.targets).toMatchObject({ document: "01a1-doc0" });
+    // A version of a document nobody vouched for is the owner's: an agent's own `own` never counts, the runner's (job) does.
+    expect(v.raise).toMatchObject({ tier: 2, rule: "primer-version-not-own" });
+    const agent = { ...requester, kind: "run" };
+    expect((await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", own: true }, requester: agent, task: "T-1" })).raise?.tier).toBe(2);
+    const vouched = await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", own: true }, requester, task: "T-1" });
+    expect([vouched.raise, (vouched.args as any).own]).toEqual([undefined, true]);
     await ex.execute({ id: "k-0000000000000002", kind: "primer.publish", args: v.args, digest: "d", idempotency_key: "k-0000000000000002" });
     expect(calls.at(-1)).toEqual(["primer_add_version", { documentId: "01a1-doc0", content: "<h1>v2</h1>", format: "html", versionNote: "v2" }]);
   });

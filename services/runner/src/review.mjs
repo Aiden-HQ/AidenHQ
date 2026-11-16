@@ -229,6 +229,18 @@ const shortName = (name) => {
   return `${repo} …/${String(rest.join(" ")).split("/").slice(-2).map(cut).join("/")}`;
 };
 
+/**
+ * The diff of a kernel record's card (a module write kind's), from the card's details. Only deploy_app's card carries a
+ * marker: the author's commit message after it is cut off, so it never reaches the reviewer inside the DIFF fence (the
+ * reviewer is reasoning-blind). Every other kind's details are the change itself, whole (a primer.publish card's is the
+ * document as it will be published), so no line in them can hide the rest.
+ */
+export function kernelCardDiff(a) {
+  const marker = "\n\nCommit message (written by the app's author): ";
+  const i = a.action === "deploy_app" ? a.details.lastIndexOf(marker) : -1;
+  return { diff: i < 0 ? a.details : a.details.slice(0, i) };
+}
+
 export function reviewPrompt({ policy, card, diff, files = "", chain, panel = false, previous = [], unsure, siblings = "", sources }) {
   const system = `You are the security reviewer for an AI agent fleet. Agents ask to push code, open or merge pull requests, change the fleet's configuration, deploy apps, run one-off scripts or publish documents. Code already sorted this request into Tier 1: routine, but it needs an independent check before it runs. Decide, following the policy below:
 

@@ -188,7 +188,22 @@ describe("flow-approvals", () => {
       const again = await turn("Add the settings screen too.");
       const next = [...t.paperclip.records.values()].at(-1);
       assert.equal(next.args.documentId, "01a1-doc0");
+      assert.equal(next.args.own, true, "the task's own document: the runner vouches for it");
       assert.match(again.comment, /a new version of https:\/\/primer\.example\/d\/01a1-doc0/);
+    });
+
+    it("a Primer link given only to read is never vouched for: its version goes to the owner; the owner's own ask to update it is", async () => {
+      Object.assign([...t.paperclip.records.values()].at(-1), { state: "done", outcome: { ok: true, text: "New version on Primer (document 01a1-doc0)." } });
+      const spec = "https://primer.example/d/spec-0001abcd";
+      step(`report\naidenhq primer ${spec}`);
+      await turn(`Read the spec at ${spec} and map the copy strings it lists.`);
+      const read = [...t.paperclip.records.values()].at(-1);
+      assert.deepEqual([read.args.documentId, read.args.own], ["spec-0001abcd", undefined], "no `own`: the executor raises it to Tier 2");
+      read.state = "rejected";
+      step("report-v2");
+      await turn(`Please publish your map as a new version of ${spec}.`);
+      const asked = [...t.paperclip.records.values()].at(-1);
+      assert.deepEqual([asked.args.documentId, asked.args.own], ["spec-0001abcd", true]);
     });
   });
 

@@ -97,6 +97,7 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   assert.deepEqual([k.records.get(byJob.json.id).task, k.records.get(byJob.json.id).requester.agent], ["TASK-7", "ag-bo"]);
   assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" } }, job([]))).status, 403);
   assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" } }, job(["twin.ping"]))).status, 403);
+  assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.ping", args: {} }, job(["twin.ping"]))).status, 403, "never a Tier 0 kind");
 });
 
 test("a changed target on revalidate gives stale and a refile; the owner's decision comes only from the board, stamped as one", async (t) => {
