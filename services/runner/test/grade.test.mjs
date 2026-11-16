@@ -528,6 +528,26 @@ test("an attachment too large for the bundle is marked in FILES, or reported as 
   assert.deepEqual(marked, [...cutFacts].sort(), "each cut entry carries a marker, and no entry claims a cut it does not mark");
 });
 
+test("a short attachment is charged only what it sends, so later files that fit are not left out", async () => {
+  // Five small files, then one that needs the room they leave: charging each its full per-file allowance would spend the
+  // whole budget on the first three and report the rest as not sent.
+  const small = Array.from({ length: 5 }, (_, i) => Buffer.from(`note ${i}: ${"n".repeat(40)}`));
+  const last = Buffer.from("L".repeat(5000));
+  const all = [...small, last];
+  const ev = await gather(
+    { kind: "file", ref: "" },
+    deps({
+      attachments: async () => all.map((b, i) => ({ id: `f${i}`, originalFilename: `part-${i}.txt`, contentType: "text/plain", byteSize: b.length, createdAt: `2026-11-13T10:00:0${i}Z` })),
+      content: async (id) => all[Number(id.slice(1))],
+    }),
+    ["the log shows the suite green"],
+  );
+  assert.doesNotMatch(ev.facts.join("\n"), /not sent to the grader/, "every file fits, so none is left out");
+  for (let i = 0; i < all.length; i++) assert.match(ev.data.FILES, new RegExp(`=== file_${i + 1}: part-${i}\\.txt ===`));
+  assert.match(ev.data.FILES, /L{5000}/, "the last file is sent whole");
+  assert.ok(ev.data.FILES.length <= TEXT_TOTAL + 200, `the block is ${ev.data.FILES.length} characters, within the budget`);
+});
+
 test("the task's live app pages are still in the bundle beside its attachments", async () => {
   const sha = "d".repeat(40);
   const app = { name: "keeper", sha, state: "healthy", healthy: true };

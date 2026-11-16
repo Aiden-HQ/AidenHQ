@@ -16,7 +16,6 @@ export const ALREADY_APPLIED = "already_applied";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
-/** An attachment's name as its uploader set it: an agent's string, so it is data, never a fact. */
 const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
 
 /**
@@ -412,8 +411,7 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       facts.push(`${f.label}: attached, not sent to the grader (only ${MAX_IMAGES} images are sent: those the rubric names, then those the comments name, then the newest)`);
       continue;
     }
-    // A text file's heading and its cut marker are paid for out of the budget too, so the fenced block never cuts one off
-    // unmarked; a file with no room left is reported as not sent rather than fetched, and never half-sent.
+    // Heading and cut marker are paid for out of the budget too, so the block never cuts a file off unmarked.
     const head = `=== ${f.label}: ${name.slice(0, 200)} ===\n`;
     const room = isText ? Math.min(TEXT_FILE, textLeft - head.length) : 0;
     if (isText && room <= 0) {
@@ -452,11 +450,10 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       continue;
     }
     const text = buf.toString("utf8");
-    // A cut is marked in the block itself, so what is missing from a file is the marked part and nothing more.
-    const tail = text.length > room ? `\n[cut: ${text.length - room} of ${text.length} characters not shown]` : "";
-    textLeft -= head.length + room + tail.length;
-    texts.push(`${head}${text.slice(0, room)}${tail}`);
-    facts.push(`${f.label}: text, ${text.length} characters, in FILES${tail ? ` (cut to its first ${room}, the rest marked in FILES)` : ""}`);
+    const cut = text.length > room ? `\n[cut: ${text.length - room} of ${text.length} characters not shown]` : "";
+    textLeft -= head.length + Math.min(room, text.length) + cut.length;
+    texts.push(`${head}${text.slice(0, room)}${cut}`);
+    facts.push(`${f.label}: text, ${text.length} characters, in FILES${cut ? ` (cut to its first ${room}, the rest marked in FILES)` : ""}`);
   }
   return { facts, images, data: texts.length ? { FILES: texts.join("\n\n") } : {} };
 }
