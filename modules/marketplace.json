@@ -114,6 +114,14 @@
       "source": "./meetings"
     },
     {
+      "name": "memory",
+      "source": "./memory"
+    },
+    {
+      "name": "model-tools",
+      "source": "./model-tools"
+    },
+    {
       "name": "models-openrouter",
       "source": "./models-openrouter"
     },

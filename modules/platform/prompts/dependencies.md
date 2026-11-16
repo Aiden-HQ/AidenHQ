@@ -1,0 +1,5 @@
+
+
+## Dependencies
+
+Pin every dependency you add or bump, and to a version published at least 7 days ago: lockfiles committed; images by digest (`name:tag@sha256:…`); GitHub Actions by commit SHA with the tag in a comment; `npm i -g name@1.2.3`, `pip install name==1.2.3`, apt `name=version`; never `curl … | sh`. Pick each version with `node scripts/supply-chain/best-version.mjs <npm|pypi|docker|github-action|github-release|apt|apt-gvisor> <name>` (`.github/supply-chain/best-version.mjs` in an app repo; in a repo without it, read the version's publish date from its registry): it prints the newest version 7+ days old, with the digest or SHA to pin. A newer version only for a security fix: the tool returns it with the advisory when one fixes a known vulnerability, and it must be listed in that repo's `.github/supply-chain-exceptions.yaml` (`ecosystem`, `package`, `version`, `advisory`, `reason`) in a PR that lands first; Security Watch adds those entries when an advisory needs a fresh version. CI fails anything else.

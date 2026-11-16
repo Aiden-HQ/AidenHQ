@@ -83,3 +83,12 @@ routines:
       Period: {{since}} to {{until}} ({{timezone}}). Previous period's task: {{previous}}.
       Follow "D. Running a recurring task" in your instructions. Then close this task with one line saying what you did.
     concurrency: always_enqueue
+# How every crew agent works with the owner and the fleet (spec §2.1: workflow prose, not the kernel's).
+prompts:
+  - { id: how-we-work, file: prompts/how-we-work.md, order: first }
+  - { id: progress, file: prompts/progress.md, order: first }
+  - { id: replying, file: prompts/replying.md, order: first }
+  - { id: asking, file: prompts/asking.md, order: first, when: { tools: [ telegram.notify_owner ] } }
+  - { id: privacy, file: prompts/privacy.md }
+  # {{fleet_issues}}: the "Fleet issues" task where heartbeat runs note missed wake-ups (setup finds or creates it).
+  - { id: heartbeat, file: prompts/heartbeat.md, order: last, when: { fields: { heartbeat: true } } }

@@ -101,6 +101,12 @@ overrides:
 - `max_parallel` on an agent: how many of its runs go at once (Paperclip's `maxConcurrentRuns`). For a `dispatch: runner`
   agent (the Engineers, the Platform Engineer) it caps that agent's parallel runner jobs, each in its own task workspace,
   within the host's `max_concurrent` (config/runner.yaml); unset, only the host's cap applies.
+- `prompts:` in a module: handbook sections it adds to every crew (`codex_local`) agent's handbook, after the kernel's
+  Approvals: `{id, file: prompts/<id>.md, order: first|normal|last, when, unless, lane}`. The file goes in verbatim (its
+  leading blank lines included); `{{memory}}` and `{{fleet_issues}}` are filled in. `when` and `unless` test `tools`
+  (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` means set and not false,
+  anything else equal): every `when` test holds and no `unless` test. Ordered first, normal, last, then by module, then id.
+  `lane: true` adds it to the fast chat lane's prompt too.
 - Disabling a module pauses its agents and routines; nothing is deleted.
 
 ## Compile and apply

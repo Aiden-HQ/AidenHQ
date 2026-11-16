@@ -14,6 +14,8 @@ requires:
   - chief-of-staff
   - coach
   - agent-builder
+  - memory
+  - model-tools
 settings:
   owner_name:
     required: true

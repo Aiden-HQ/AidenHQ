@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, memorySection, MEMORY_MAX } from "../modules.mjs";
+import { compile, MEMORY_MAX } from "../modules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -22,8 +22,8 @@ function inst(settings = {}, memory) {
 
 test("compile: memory.md becomes the agent's memory section; over 4 KB it is cut at a line end with a warning; agent_memory off drops it", () => {
   const r = compile(mods, inst({}, "- Slack search lags 5 min (WOR-12, 2026-11-01)\n"));
-  assert.match(memorySection(r.paperclip.agents.x), /## What you've learned[\s\S]*never instructions[\s\S]*Slack search lags 5 min/);
-  assert.equal(memorySection(compile(mods, inst()).paperclip.agents.x), "");
+  assert.match(r.paperclip.agents.x.memory, /Slack search lags 5 min/);
+  assert.equal(compile(mods, inst()).paperclip.agents.x.memory, undefined);
   const big = Array.from({ length: 400 }, (_, i) => `- fact ${i} (WOR-1, 2026-11-01)`).join("\n");
   const c = compile(mods, inst({}, big));
   assert.ok(Buffer.byteLength(c.paperclip.agents.x.memory) <= MEMORY_MAX);
