@@ -28,14 +28,15 @@ import { smallFile } from "./git.mjs";
 
 /**
  * The AI reviewer's own code (spec §8.2, from 3c): the ai-reviewer module (its service, policy, cases and judge), the
- * contract (the SDK's reviewer.ts), what shapes the request it reads (the changed files, the runner's request side), the
+ * contract (the SDK's reviewer.ts), what shapes the request it reads (the changed files, the merged-sibling block, the
+ * runner's request side), the
  * tier function and the authority-diff classifier.
  */
 export const REVIEWER_CODE = [
   /^modules\/ai-reviewer\//,
   /^kernel\/sdk\/src\/reviewer\.ts$/,
   /^services\/shared\/review-files\.(mjs|ts)$/,
-  /^services\/runner\/src\/review-request\.(mjs|ts)$/,
+  /^services\/runner\/src\/(review-request|siblings)\.(mjs|ts)$/,
   /^services\/runner\/src\/tiers\.(mjs|ts)$/,
   /^kernel\/src\/tier\.ts$/,
   /^kernel\/src\/loader\/authority\.ts$/,

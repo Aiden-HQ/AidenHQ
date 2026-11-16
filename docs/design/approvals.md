@@ -33,7 +33,7 @@ agent, never to the owner.
 - **Authority-expanding goes to the panel.** A change is authority-expanding when it weakens an approval,
   authentication, sandbox or secret control, changes who can approve, widens credentials, grants, public access, data
   destinations or spending, or edits the gate's own core. Code decides most of it (`GATE_CORE` and content rules in
-  `tiers.mjs`, `panel: true`): the runner's `tiers`, `review-request`, `merges`, `apply`, `netjail`, `state`,
+  `tiers.mjs`, `panel: true`): the runner's `tiers`, `review-request`, `siblings`, `merges`, `apply`, `netjail`, `state`,
   `config`, `github-app`, `git`, `main`, and what a job can reach: `engines` (its sandbox, mounts and env), `workspace`,
   `files`, `commands` (repo access, the owner's words, private reads) and `scripts/computers.mjs`; the AI reviewer module (`modules/ai-reviewer/`: its service, policy, eval cases and
   `scripts/reviewer-eval.mjs`); `agent-auth.ts`, `scripts/modules.mjs`, `scripts/paperclip-setup.mjs` and
