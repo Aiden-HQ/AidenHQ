@@ -8,6 +8,7 @@ import { createAsserter, loadKey } from "../src/assert.ts";
 import { createBackplane } from "../src/backplane.ts";
 import { createBrake } from "../src/brake.ts";
 import { createChannels } from "../src/channels.ts";
+import { createChecks } from "../src/checks.ts";
 import { createAsCaller, createCp } from "../src/cp.ts";
 import { createIdentity } from "../src/identity.ts";
 import { createResolver } from "../src/net.ts";
@@ -23,7 +24,7 @@ export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data",
  * agents: { token: {id, name} } the control plane knows; boxes: { ahqc_token: {agentId, runId, issueId} } the launcher knows;
  * grants: the grants table's agents; connections(urls): config/kernel/connections.json from the fake servers' URLs.
  */
-export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, repos = {}, jobs: jobsApi } = {}) {
+export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, repos = {}, jobs: jobsApi, checks: checkTable } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kernel-"));
   const control = [];
   const cpServer = await serve(async (req, res) => {
@@ -73,7 +74,9 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   const boardApi = async (method, path, body) => (boardCalls.push({ method, path, body }), board(method, path, body));
   const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner, modules: modulesFile, log: logf });
   const brake = createBrake({ db: records.db, owner, on: () => grantsTable().loop_brake !== "off" });
-  const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, owner, modules: modulesFile, boardKey: () => secret("gateway_board_key"), runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, controlUrl: cpServer.url, launcherUrl: launcher.url, log: logf }) });
+  // The finish gate (checks.ts) over `checks`, config/kernel/checks.json's shape.
+  const checks = checkTable ? createChecks({ db: records.db, registry: () => checkTable, owner, secret, resolver: createResolver(), log: logf, agentKey: (id) => grants[id]?.key }) : undefined;
+  const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, owner, modules: modulesFile, boardKey: () => secret("gateway_board_key"), runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, controlUrl: cpServer.url, launcherUrl: launcher.url, checks, log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const gw = createGateway({ asCaller, dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), tools: proxy, secret });
   const bp = await serve(backplane);
