@@ -16,6 +16,9 @@ export const ALREADY_APPLIED = "already_applied";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
+/** An attachment's name as its uploader set it: an agent's string, so it is data, never a fact. */
+const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
+
 /**
  * The repository's own aggregate required check on the head (`ci-required` in the product's ci.yml): "green" when it
  * completed and passed, "red" when it ended otherwise ("not accepted"), "running" while it is queued or in progress —
@@ -283,10 +286,10 @@ export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<a
   const own = (c: any) => String(c.body ?? "").includes(RUNNER_MARKER) || (deps.assignee ? c.authorAgentId === deps.assignee : c.authorType === "agent");
   const picked = pickComments(all, own, rubric.join("\n"));
   const files = (await deps.attachments().catch(() => [])).map((f: any, i: number) => ({ ...f, label: `file_${i + 1}` }));
-  const facts = files.length ? [`${files.length} file${files.length > 1 ? "s" : ""} attached: ${files.map((f: any) => f.label).join(", ")} (their names and types, as the agent gave them, are in FILE_NAMES)`] : ["no files attached"];
+  const facts = files.length ? [`${files.length} file${files.length > 1 ? "s" : ""} attached: ${files.map((f: any) => f.label).join(", ")} (their names, types and sizes, as the agent gave them, are in FILE_NAMES)`] : ["no files attached"];
   if (all.length) facts.push(picked.fact);
   const version = comments.length || files.length ? hash([...comments.map((c: any) => c.id), ...files.map((f: any) => f.id)].join(" ")) : "";
-  const names = files.map((f: any) => `${f.label}: ${String(f.originalFilename ?? f.name ?? "").slice(0, 200)} (${String(f.contentType ?? "").slice(0, 100)})`).join("\n");
+  const names = files.map((f: any) => `${f.label}: ${nameOf(f).slice(0, 200)} (${String(f.contentType ?? "").slice(0, 100)}; ${Number(f.byteSize) || 0} bytes)`).join("\n");
   return { version, facts, files, data: { TASK_COMMENTS: picked.text, ...(files.length ? { FILE_NAMES: names } : {}) } };
 }
 
@@ -322,7 +325,6 @@ export async function otherTaskEvidence(idents: string[], deps: any, own: any[] 
   const facts: string[] = [];
   const names: string[] = [];
   const ids: string[] = [];
-  const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
   const when = (t: unknown) => (/^\d{4}-\d\d-\d\dT[\d:.]+Z?$/.test(String(t ?? "")) ? String(t) : "an unknown time");
   for (const ident of idents) {
     let t: any;
@@ -392,7 +394,6 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
   const texts: string[] = [];
   let imageBytes = 0;
   let textLeft = TEXT_TOTAL;
-  const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
   const names = (f: any, text: string) => {
     const base = nameOf(f).split("/").pop()!.toLowerCase();
     return base.length >= 3 && text.toLowerCase().includes(base);
@@ -411,8 +412,12 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       facts.push(`${f.label}: attached, not sent to the grader (only ${MAX_IMAGES} images are sent: those the rubric names, then those the comments name, then the newest)`);
       continue;
     }
-    if (isText && textLeft <= 0) {
-      facts.push(`${f.label}: not sent to the grader (the text budget of ${TEXT_TOTAL} characters was spent on other files)`);
+    // A text file's heading and its cut marker are paid for out of the budget too, so the fenced block never cuts one off
+    // unmarked; a file with no room left is reported as not sent rather than fetched, and never half-sent.
+    const head = `=== ${f.label}: ${name.slice(0, 200)} ===\n`;
+    const room = isText ? Math.min(TEXT_FILE, textLeft - head.length) : 0;
+    if (isText && room <= 0) {
+      facts.push(`${f.label}: text, ${Number(f.byteSize) || 0} bytes, not sent to the grader (the text budget of ${TEXT_TOTAL} characters was spent on other files)`);
       continue;
     }
     let buf: Buffer;
@@ -447,16 +452,14 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       continue;
     }
     const text = buf.toString("utf8");
-    const shown = text.slice(0, Math.min(TEXT_FILE, textLeft));
-    textLeft -= shown.length;
-    texts.push(`=== ${f.label}: ${name.slice(0, 200)} ===\n${shown}`);
-    facts.push(`${f.label}: text, ${text.length} characters, in FILES${shown.length < text.length ? ` (cut to its first ${shown.length})` : ""}`);
+    // A cut is marked in the block itself, so what is missing from a file is the marked part and nothing more.
+    const tail = text.length > room ? `\n[cut: ${text.length - room} of ${text.length} characters not shown]` : "";
+    textLeft -= head.length + room + tail.length;
+    texts.push(`${head}${text.slice(0, room)}${tail}`);
+    facts.push(`${f.label}: text, ${text.length} characters, in FILES${tail ? ` (cut to its first ${room}, the rest marked in FILES)` : ""}`);
   }
   return { facts, images, data: texts.length ? { FILES: texts.join("\n\n") } : {} };
 }
-
-/** Whether a rubric is about attached files (a screenshot, an image, an attachment): their contents are evidence then. */
-export const rubricNamesFiles = (rubric: unknown[]) => rubric.some((c) => /\b(attach\w*|screenshots?|images?|png|jpe?g|mockups?|files?)\b/i.test(String(c)));
 
 /**
  * Whether one branch commit is already satisfied on the target's current default branch (the duplicate-card guard): its
