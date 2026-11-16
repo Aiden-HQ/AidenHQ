@@ -28,7 +28,7 @@ export function codexCommand(spec: JobSpec, jobDir: string, base: NodeJS.Process
   const args = [...exec, "--json", "--skip-git-repo-check", "-o", join(jobDir, "last.md")];
   if (spec.sandbox.kind === "box") {
     args.push("-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"', ...model, "-c", `web_search="${search}"`, ...provider(spec.model.token_env),
-      // The box's env holds only the run's own revocable token, which its shell tools need.
+      // The box's env holds only the run's own revocable token and its read-only gh token, which its shell tools need.
       "-c", "shell_environment_policy.ignore_default_excludes=true", ...off, "-");
     return { argv: args, env: env(spec.state ? { CODEX_HOME: spec.state } : {}) };
   }

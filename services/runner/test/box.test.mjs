@@ -155,7 +155,8 @@ describe("box jobs", () => {
     // The engine module's bin, mounted read-only by the launcher, on the job dir in the launcher's out folder.
     assert.deepEqual(run.argv.slice(-2), ["/opt/aidenhq/engine/bin/engine", "/aidenhq-out/job"]);
     assert.deepEqual([run.spec.contract, run.spec.sandbox.kind, run.spec.model.base_url, run.spec.model.token_env, run.spec.mcp], ["engine@1", "box", "http://10.231.2.1:8200/api/v1", "AIDENHQ_RUN_TOKEN", []]);
-    // Nothing of the runner's env reaches the box: the client has only what Docker needs, the box only the launcher's file.
+    // Nothing of the runner's env reaches the box: the client has only what Docker needs, the box only the launcher's file
+    // (and, with a GitHub App, the job's read-only gh token: no App here).
     assert.ok(!run.clientEnv.some((k) => /^(AIDENHQ|PAPERCLIP|BOARD|GH_|GIT_|OPENROUTER)/.test(k)), run.clientEnv.join(","));
     assert.match(run.prompt, /\/workspace/);
     assert.ok(!run.prompt.includes(join(dir, "work")), "the prompt names the paths the box sees");
@@ -264,12 +265,14 @@ describe("box jobs", () => {
     mkdirSync(box.outDir);
     const path = process.env.PATH;
     process.env.PATH = `${bin}:${path}`;
+    let run;
     try {
-      const run = startAgent({ cfg, engine: { kind: "codex-openrouter", model: "m", box: true }, worktree: d, prompt: "p", logPath: join(d, "log"), ghToken: "ghs_read", job: { issueId: "x" }, box });
-      for (const end = Date.now() + 30_000; !existsSync(`${run.logPath}.exit`) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+      run = startAgent({ cfg, engine: { kind: "codex-openrouter", model: "m", box: true }, worktree: d, prompt: "p", logPath: join(d, "log"), ghToken: "ghs_read", job: { issueId: "x" }, box });
     } finally {
-      process.env.PATH = path;
+      process.env.PATH = path; // spawn has copied it
     }
+    for (const end = Date.now() + 30_000; !existsSync(`${run.logPath}.exit`) && !run.spawnError && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(existsSync(join(d, "argv")), `the fake docker ran: ${run.spawnError ?? ""} ${readFileSync(run.logPath, "utf8")}`);
     const argv = readFileSync(join(d, "argv"), "utf8").split("\n");
     assert.deepEqual(argv.slice(0, 7), ["exec", "--env-file", box.envFile, "-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"]);
     assert.ok(!argv.join(" ").includes("ghs_read"), "the value is never on the command line");

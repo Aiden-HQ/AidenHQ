@@ -457,7 +457,7 @@ const redact = (t) =>
     .replace(/:\/\/[^/\s@]+@/g, "://…@")
     .replace(/([?&](?:token|key|secret|password|sig|access_token)=)[^&\s'"]+/gi, "$1…")
     .replace(/\b([A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS)[A-Z0-9_]*)=[^\s'"]+/g, "$1=…")
-    .replace(/\b(sk-|ghp_|gho_|github_pat_|xox[abp]-|AKIA)[A-Za-z0-9_-]+/g, "$1…");
+    .replace(/\b(sk-|ghp_|gho_|ghs_|github_pat_|xox[abp]-|AKIA)[A-Za-z0-9_-]+/g, "$1…");
 const PLAN = (p) => (Array.isArray(p) ? p.slice(0, 20).map((i) => ({ text: clip(i?.step, 200), state: i?.done ? "done" : i?.doing ? "doing" : "todo" })).filter((i) => i.text) : undefined);
 const STEPS = (s) => (Array.isArray(s) ? s.slice(-30).map((x) => ({ at: typeof x?.at === "string" ? x.at.slice(0, 40) : new Date().toISOString(), kind: "tool", text: clip(redact(String(x?.text ?? "")), 200) })) : undefined);
 
