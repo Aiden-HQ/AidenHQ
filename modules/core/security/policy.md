@@ -168,10 +168,18 @@ branch it was read from, and each part of the diff names the repository and base
 <branch>`): a record covers only the change for that same repository whose base is that same branch. A record from one
 repo's base never approves a source change in another repo, and a record on one base never approves the same repo's
 change off another base. A change whose own repo and base hold no record has no exception, whatever another base holds,
-and a record naming no repo or no base covers nothing in a diff with parts. Treat a matching record as satisfying this
-paragraph: approve the source change when the diff moves that package to exactly that source, at a pinned version, and
-does nothing else. A record that names another package, another source, or is absent, is no exception: reject the
-new source as before. The record is the owner's words for this one package and source only; it never widens the rule for
+and a record naming no repo or no base covers nothing in a diff with parts. The base's name is just a name: a record on
+the base the heading names matches whether that is `main`, `release` or any other branch, and a record on the repo's other
+base still matches nothing.
+
+Treat a matching record as satisfying this paragraph. Code marks the record it matched to a source the diff adds with
+`[the diff adds this source]`: that mark is code's own reading of the diff, so that record is the exception for that
+source, and the change is approved (`in_scope`) when the diff moves that package to exactly that source, at a pinned
+version, and does nothing else. Do not reject such a change as `supply_chain` for the new source, and do not ask for an
+approval the record already is. A record that names another package, another source, or is absent, is no exception:
+reject the new source as before. Where a record is marked that way, neither the chain naming the record file nor its
+citing the approval is a gate change or a weakening: the citation only says where the owner wrote it, and the record is
+what decides it. The record is the owner's words for this one package and source only; it never widens the rule for
 anything else in the diff.
 
 ## Dependabot pin bumps (rule `product-dependabot-merge`)

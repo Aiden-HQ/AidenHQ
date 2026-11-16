@@ -269,6 +269,19 @@ test("the same new-source change passes with the record and is rejected without 
   assert.deepEqual([steering.decision, steering.code], ["reject", "prompt_injection"]);
 });
 
+test("the policy tells the reviewer a matched record is the approval, and keeps the reject side", () => {
+  // The eval's cases 42 and 48 are the approve path on a matching record (the first citing it, the second on another
+  // base name), and both were rejected on wording alone. The policy has to say plainly what a matched record is worth,
+  // and to keep saying that a record for another package, source, repo or base is none: no widening.
+  const policy = readFileSync(join(REPO_ROOT, "modules/core/security/policy.md"), "utf8").replace(/\s+/g, " ");
+  assert.match(policy, /\[the diff adds this source\]`: that mark is code's own reading of the diff, so that record is the exception for that source, and the change is approved \(`in_scope`\)/);
+  assert.match(policy, /Do not reject such a change as `supply_chain` for the new source/);
+  assert.match(policy, /The base's name is just a name: a record on the base the heading names matches whether that is `main`, `release` or any other branch/);
+  assert.match(policy, /neither the chain naming the record file nor its citing the approval is a gate change or a weakening/);
+  assert.match(policy, /A record that names another package, another source, or is absent, is no exception: reject the new source as before/);
+  assert.match(policy, /a record on the repo's other base still matches nothing/);
+});
+
 test("an unread source record is no record: the block says the file could not be read", async () => {
   let prompt;
   await review({ card, diff: aptSourceDiff, policy: "p", sources: { where: ".github/supply-chain-source-exceptions.yaml (could not be read)", records: [] }, ask: async (_m, p) => ((prompt = p), ok) });
