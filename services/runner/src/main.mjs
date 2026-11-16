@@ -1161,8 +1161,7 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
     // A failure is told once per what failed (each PR's head, status and note, and the stop's reason): the same environment
     // stop or red checks on the same head again is no news (WOR-5276 woke 15 times on them). A new head or reason is told.
     const failed = kind === "failed" ? JSON.stringify([queue.reason ?? "", queue.prs.map((p) => [p.url, p.head, p.updatedHead, p.status, p.note ?? ""])]) : "", told = failed && state.get(`merge-failure-told:${issueId}`) === failed;
-    if (failed) state.set(`merge-failure-told:${issueId}`, failed);
-    if (!told) await tellParent(full, kind, appliedNote(queue.identifier, "merge queue", { ok: queue.state === "done", text: say.join("\n\n") })).catch(() => {});
+    if (!told && (await tellParent(full, kind, appliedNote(queue.identifier, "merge queue", { ok: queue.state === "done", text: say.join("\n\n") })).catch(() => false)) && failed) state.set(`merge-failure-told:${issueId}`, failed);
   }
   // The tasks that opened these PRs close too, so they don't sit "in review" (shown as waiting for the owner).
   const mergedUrls = queue.prs.filter((p) => p.status === "merged").map((p) => p.url);
@@ -1527,11 +1526,11 @@ async function gradeOne(g) {
     // One question to the delegator, with the grader's note in it; on the task itself only when no open parent hears it (a
     // note there would wake its assignee, who has nothing left to do).
     const ask = `**${issue.identifier} needs your decision** (its grade escalated to you): ${issue.title}. Close it if you're satisfied (that accepts the work), or reopen it with what to change.`;
-    // The same escalation again in the same hour (same outcome, same criteria verdicts) is no news: told once. Another
-    // verdict, or the same one in a later hour, is told.
-    const said = JSON.stringify([v.outcome, (v.criteria ?? []).map((c) => [c.id, c.met]), Math.floor(Date.now() / 3_600_000)]), told = state.get(`escalation-told:${issue.id}`) === said;
-    state.set(`escalation-told:${issue.id}`, said);
-    if (!told && !(await tellParent(issue, "escalated", `${ask}\n\n${note}`).catch(() => false))) await pc.comment(issue.id, note);
+    // The same escalation again in the same hour (same version, outcome and criteria verdicts) is no news: told once (marked
+    // only once posted). A new version or verdict, or the same one in a later hour, is told.
+    const said = JSON.stringify([ev.version, v.outcome, (v.criteria ?? []).map((c) => [c.id, c.met]), Math.floor(Date.now() / 3_600_000)]), told = state.get(`escalation-told:${issue.id}`) === said;
+    if (!told && (await tellParent(issue, "escalated", `${ask}\n\n${note}`).catch(() => false))) state.set(`escalation-told:${issue.id}`, said);
+    else if (!told) await pc.comment(issue.id, note);
   }
 }
 

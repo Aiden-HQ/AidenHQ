@@ -263,4 +263,26 @@ describe("flow-merge-path", { concurrency: true }, () => {
     assert.equal(tip("ci/d"), d, "nothing replayed or pushed");
     assert.ok(!merged().some((e) => e.data.some((x) => /pulls\/21\/merge$/.test(x))), "not merged");
   });
+
+  scenario("a delegator hears a merge queue's failure once per head: the same red checks again are not told, a new head is", async ({ t, prs, setPrs, onGithub }) => {
+    await t.settled();
+    // A delegated sub-task (an agent made it), so its outcome goes to the parent's delegator.
+    Object.assign(t.paperclip.issues.get("alfred-part"), { createdByAgentId: "assistant", createdByUserId: null });
+    const h1 = onGithub("ci/e", { "e.txt": "e\n" }, { from: "main", message: "ci: e" });
+    prs[30] = { branch: "ci/e", files: ["e.txt"], checks: "FAILURE" };
+    setPrs();
+    const ask = (id, head) => t.paperclip.approvals.set(id, { id, issueId: "alfred-part", identifier: "PEN-3", action: "merge", args: { prs: [{ repo: "acme/app", number: 30, url: url(30), head }] }, details: "", digest: id, state: "approved" });
+    const told = () => t.paperclip.comments.get("parent").filter((c) => /Approved, but it failed\*\* \(PEN-3, approval merge queue\)/.test(c.body)).length;
+    const stops = () => t.paperclip.comments.get("alfred-part").filter((c) => /Not merged|Stopped the merges/.test(c.body)).length;
+    ask("A30000001", h1);
+    await t.waitFor("the first failure told", () => told() === 1);
+    const before = stops();
+    ask("A30000002", h1);
+    await t.waitFor("the second queue's stop on the task", () => stops() > before);
+    await t.idle(1500);
+    assert.equal(told(), 1, "the same failure on the same head is not told again");
+    const h2 = onGithub("ci/e", { "e2.txt": "e2\n" }, { message: "ci: e again" });
+    ask("A30000003", h2);
+    await t.waitFor("the new head's failure told", () => told() === 2);
+  });
 });
