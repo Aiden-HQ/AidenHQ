@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ciDrain, listedUnits, mergePaused } from "../fleet-pause.mjs";
+import { ciDrain, hasJob, listedUnits, mergePaused, runnerContainer } from "../fleet-pause.mjs";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "../fleet-pause.mjs");
 
@@ -29,16 +29,18 @@ test("list-units rows read as unit, active state and sub-state", () => {
   ]);
 });
 
-test("a drain stops idle units now and waits for one running a job", () => {
+test("a drain stops idle units now (active or not) and waits for one running a job", () => {
   const rows = listedUnits(
     [
       "aidenhq-ci-runner@1.service loaded active running", // a job is on it
+      "aidenhq-ci-runner@2.service loaded active running", // waiting for a job: active too
       "aidenhq-ci-runner@4.service loaded activating auto-restart", // between jobs
-      "aidenhq-ci-runner@5.service loaded activating start", // its job's container is starting
       "aidenhq-ci-runner@7.service loaded failed failed", // already down
     ].join("\n"),
   );
-  assert.deepEqual(ciDrain(rows), { stop: ["aidenhq-ci-runner@4.service"], wait: ["aidenhq-ci-runner@1.service", "aidenhq-ci-runner@5.service"] });
+  const tops = { "aidenhq-ci-runner-1": "runner 1 Runner.Listener\nrunner 9 Runner.Worker spawnclient", "aidenhq-ci-runner-2": "runner 1 Runner.Listener run" };
+  const working = (unit) => hasJob(tops[runnerContainer(unit)] ?? "");
+  assert.deepEqual(ciDrain(rows, working), { stop: ["aidenhq-ci-runner@2.service", "aidenhq-ci-runner@4.service"], wait: ["aidenhq-ci-runner@1.service"] });
 });
 
 /** A checkout with a data dir holding a pause record, a paperclip key file, and a fake systemctl that records its calls. */
