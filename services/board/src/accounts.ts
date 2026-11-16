@@ -109,7 +109,7 @@ export function safeNext(next: string | null | undefined): string | undefined {
 
 /**
  * The client's address a proxy names (it deletes any copy a client sends: all x-aidenhq-*): the gate on the sign-in
- * listener, the front door (Caddy) on the board's. Trusted only beside that proxy's shared secret (GATE_HEADER with
+ * listener, the front door on the board's. Trusted only beside that proxy's shared secret (GATE_HEADER with
  * gate_board_secret, EDGE_HEADER with edge_board_secret): anything else on the host's loopback could otherwise pick the
  * address a failure counts against. X-Forwarded-For and CF-Connecting-IP are never read here.
  */
@@ -178,8 +178,11 @@ const LOCKOUT = { failures: 5, accountFailures: 20, windowMs: 15 * 60_000 };
 const BAN = { failures: 20, windowMs: 15 * 60_000, forMs: 3_600_000 };
 /** Per account, every address: more than 30 failures in an hour tell the owner (once an hour); nothing is locked (D8). */
 const ALERT = { failures: 30, windowMs: 3_600_000 };
-/** At most this many sign-in lines an hour reach the owner's queue (it keeps 20, shared with monitoring alerts). */
-const NOTICES_PER_HOUR = 10;
+/**
+ * At most this many failed-sign-in alerts an hour (strangers trigger them; the owner's queue keeps 20 lines, shared with
+ * monitoring alerts). New-session notices are never capped: only someone who got in triggers one.
+ */
+const ALERTS_PER_HOUR = 5;
 /** The steps a ban refuses: signing in and claiming a link. Open sessions keep working. */
 const BAN_STEPS = new Set(["/sign-in/email", "/two-factor/verify-totp", "/reset-password"]);
 const LISTENER_HEADER = "x-aidenhq-listener";
@@ -258,14 +261,15 @@ export async function createAccounts(o: AccountsOptions) {
   /**
    * The per-address ban (memory only), separate from the lockout's maps (those are keyed by email): `${listener}|${key}`.
    * Only an address a proxy named with its secret counts: without a front door every client shares the socket's address
-   * (`tailscale serve`, Docker's port publishing), and banning that would lock the owner out with everyone else.
+   * (a tailnet proxy, Docker's port publishing), and banning that would lock the owner out with everyone else.
    */
   const addrFailures = new Map<string, number[]>();
   const bans = new Map<string, number>();
   /** Failures per existing account (any address), for the owner's alert; when each account was last alerted. */
   const accountFailures = new Map<string, { at: number; addr: string }[]>();
   const alerted = new Map<string, number>();
-  const noticesSent: number[] = [];
+  const alertsSent: number[] = [];
+  const heldBack = new Set<string>(); // accounts whose alert the cap held back since the last one went out
   /** Drops what has aged out once a map grows: its keys come from strangers (emails, addresses). */
   const prune = (now: number) => {
     const old = (t: number, win: number) => now - t >= win;
@@ -274,13 +278,26 @@ export async function createAccounts(o: AccountsOptions) {
     for (const m of [locks, bans]) if (m.size > 1000) for (const [k, t] of m) if (t <= now) m.delete(k);
     if (accountFailures.size > 1000) for (const [k, ts] of accountFailures) if (ts.every((f) => old(f.at, ALERT.windowMs))) accountFailures.delete(k);
   };
-  /** One sign-in line to the owner, within the hourly cap (a flood never evicts the owner's other alerts). */
-  const tell = (line: string) => {
+  const tell = (line: string) => (o.notify ? o.notify(line) : log.warn({ line }, "no owner channel for sign-in notices"));
+  /**
+   * A failed-sign-in alert, within the hourly cap. Past it the owner gets one line saying alerts are held back, and the
+   * next alert that goes out says for how many accounts; false when this one was held back.
+   */
+  const alert = (email: string, line: string): boolean => {
     const now = Date.now();
-    while (noticesSent.length && now - noticesSent[0]! >= 3_600_000) noticesSent.shift();
-    if (!o.notify || noticesSent.length >= NOTICES_PER_HOUR) return log.warn({ line }, "sign-in notice not sent (none configured, or the hourly cap)");
-    noticesSent.push(now);
-    o.notify(line);
+    while (alertsSent.length && now - alertsSent[0]! >= 3_600_000) alertsSent.shift();
+    if (alertsSent.length >= ALERTS_PER_HOUR) {
+      if (!heldBack.size) tell(`🛡 **Sign-in attempts on more accounts**: failed-sign-in alerts are capped at ${ALERTS_PER_HOUR} an hour, so further ones are held back. Nothing is locked; check Settings → Accounts.`);
+      heldBack.add(email);
+      log.warn({ email }, "failed-sign-in alert held back (hourly cap)");
+      return false;
+    }
+    alertsSent.push(now);
+    heldBack.delete(email);
+    const n = heldBack.size;
+    tell(n ? `${line} (Alerts for ${n} more account${n === 1 ? " was" : "s were"} held back.)` : line);
+    heldBack.clear();
+    return true;
   };
   const banKey = (ctx: { headers?: Headers }) => {
     const named = ctx.headers?.get(NAMED_HEADER);
@@ -441,16 +458,12 @@ export async function createAccounts(o: AccountsOptions) {
         if (!failed) {
           if (returned instanceof APIError) return;
           log.info({ email, step: ctx.path, listener: listenerOf(ctx) }, "sign-in step passed");
-          // A session opened (not the password step before the authenticator's, whose session goes again): an admin's new device or
-          // address tells the owner, with the time and the address (never the user agent: the client wrote it).
+          // A session opened (not the password step before the authenticator's, whose session goes again): every new admin
+          // session tells the owner, with the time and the address (never the user agent: the client wrote it), uncapped.
           const s = fresh && !enrolment && (await ctx.context.internalAdapter.findSession(fresh.session.token));
           const u = s ? (s.user as { role?: string; twoFactorEnabled?: boolean }) : undefined;
-          if (s && u?.role === "admin" && !(ctx.path === "/sign-in/email" && u.twoFactorEnabled)) {
-            const others = (await ctx.context.internalAdapter.listSessions(s.user.id)).filter((x) => x.token !== s.session.token && new Date(x.expiresAt).getTime() > now);
-            const ua = s.session.userAgent ?? "";
-            if (!others.some((x) => x.ipAddress === s.session.ipAddress && (x.userAgent ?? "") === ua))
-              tell(`🔑 **New board sign-in**: ${email} from ${ip} at ${when(now)}. Not you? Sign that session out in Settings → Accounts (${o.boardUrl}/#/settings/accounts) and run ops/setup.sh --reset.`);
-          }
+          if (s && u?.role === "admin" && !(ctx.path === "/sign-in/email" && u.twoFactorEnabled))
+            tell(`🔑 **New board sign-in**: ${email} from ${ip} at ${when(now)}. Not you? Sign that session out in Settings → Accounts (${o.boardUrl}/#/settings/accounts) and run ops/setup.sh --reset.`);
           return;
         }
         // Every address, one account (an existing one: made-up emails reach nobody): the owner hears, nothing locks (D8).
@@ -459,9 +472,9 @@ export async function createAccounts(o: AccountsOptions) {
           const recent = [...(accountFailures.get(email) ?? []).filter((f) => now - f.at < ALERT.windowMs), { at: now, addr: addressKey(ip) }].slice(-1000);
           accountFailures.set(email, recent);
           if (recent.length > ALERT.failures && now - (alerted.get(email) ?? 0) >= ALERT.windowMs) {
-            alerted.set(email, now);
             const from = new Set(recent.map((f) => f.addr)).size;
-            tell(`🛡 **Sign-in attempts**: ${recent.length} failed sign-ins for ${email} in the last hour, from ${from} address${from === 1 ? "" : "es"}. Nothing is locked; the password and authenticator still guard it. If they aren't yours, check Settings → Accounts.`);
+            // Once an hour per account, counted from when an alert about it actually went out.
+            if (alert(email, `🛡 **Sign-in attempts**: ${recent.length} failed sign-ins for ${email} in the last hour, from ${from} address${from === 1 ? "" : "es"}. Nothing is locked; the password and authenticator still guard it. If they aren't yours, check Settings → Accounts.`)) alerted.set(email, now);
             log.warn({ email, failures: recent.length, addresses: from }, "owner alerted: many failed sign-ins for one account");
           }
         }

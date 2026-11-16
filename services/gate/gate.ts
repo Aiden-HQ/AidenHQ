@@ -1,5 +1,6 @@
 // The gate (docs/design/access.md): the only door from Cloudflare Access to a shared app.
-// cloudflared → gate on 127.0.0.1:<port> → the app's 127.0.0.1:<port>. Per request: the Host names the app (unknown: 404);
+// cloudflared → gate on its unix socket (believes CF-Connecting-IP there only; 127.0.0.1:<port> for everything else) → the
+// app's 127.0.0.1:<port>. Per request: the Host names the app (unknown: 404);
 // the visitor is signed in (`login: access`: the Access token for that host's audience tag, RS256 from the team's JWKS;
 // `login: password`: the board's Better Auth session, checked on the auth listener, cached 60 s; a host with an aud still
 // needs the Access token too; `login: header-jwt`: a front door's signed ES256 token in a configured header, for that host's

@@ -84,6 +84,26 @@ describe("board sign-in behind a front door: per-address bans, owner alerts, new
     expect(notice).toMatch(new RegExp(`${OWNER} from 192\\.0\\.2\\.44 at \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC`));
   });
 
+  it("a flood of failed-sign-in alerts is capped and collapsed, and never holds back a new-session notice", async () => {
+    const owner = (await accounts.list()).find((a) => a.owner)!;
+    // Seven more admins, each guessed at 32 times (4 from each of 8 addresses, under the lockout and the ban).
+    for (let n = 0; n < 7; n++) {
+      const email = `admin${n}@example.com`;
+      await accounts.invite(owner, { email, name: email, role: "admin" });
+      for (let a = 0; a < 8; a++) for (let i = 0; i < 4; i++) expect((await guess(email, from(`100.64.${n}.${a}`))).status).toBe(401);
+    }
+    // The owner's alert (the case above) and four of these make the hourly five; then one line says the rest wait.
+    expect(lines.filter((l) => l.includes("failed sign-ins for admin"))).toHaveLength(4);
+    expect(lines.filter((l) => l.includes("Sign-in attempts on more accounts"))).toHaveLength(1);
+    const step1 = await call("/sign-in/email", { email: OWNER, password: PASSWORD }, from("192.0.2.46"));
+    expect(step1.json.twoFactorRedirect).toBe(true);
+    // A code this test hasn't spent yet (a 30 s step may have turned since the others).
+    let status = 0;
+    for (const step of [-1, 0, 1]) if ((status = (await call("/two-factor/verify-totp", { code: totp(totpURI, step) }, from("192.0.2.46"), step1.cookie)).status) === 200) break;
+    expect(status).toBe(200);
+    expect(lines.at(-1)).toContain(`New board sign-in**: ${OWNER} from 192.0.2.46`);
+  });
+
   it("ignores a named address, X-Forwarded-For and CF-Connecting-IP without the front door's secret", async () => {
     const forged = (i: number) => ({ "x-aidenhq-client-ip": `10.7.0.${i}`, "x-aidenhq-edge": "not the secret", "x-forwarded-for": `10.8.0.${i}`, "cf-connecting-ip": `10.9.0.${i}` });
     // Five failures from "five addresses" are one pair, the socket's: it locks, and only there.

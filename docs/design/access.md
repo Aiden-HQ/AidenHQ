@@ -39,8 +39,8 @@ Accounts use Better Auth inside the board process, stored in its own SQLite file
   its sign-in steps on that listener for an hour. A socket address is never banned: without a front door every client
   shares it.
 - **Owner notices.** More than 30 failures in an hour for one account, from any addresses, tell the owner once an hour;
-  nothing locks (an account-wide lock would let anyone lock the owner out). Every new admin session from a new device or
-  address tells the owner the time and address. At most 10 such lines an hour.
+  nothing locks (an account-wide lock would let anyone lock the owner out). Those alerts are capped at 5 an hour (past it,
+  one line says they are held back). Every new admin session tells the owner the time and address, never capped.
 - **Every route needs an admin session**, reads and file downloads included, on the board listeners. The internal
   listener uses bearer tokens.
 - **Every admin is an owner.** Any ready admin writes to Paperclip with the board key, so agents act on their words,
