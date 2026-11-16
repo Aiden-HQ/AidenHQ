@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { createEvalGate, judgedCases } from "../src/evalgate.ts";
-import { advance, findPrs, newQueue } from "../src/merges.mjs";
+import { advance } from "../../../modules/codehost-github/src/merge-gate.mjs";
+import { findPrs, newQueue } from "../../../modules/engineering/src/merge-queue.mjs";
 
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com" };
 const git = async (cwd, ...args) => execFileSync("git", args, { cwd, env, stdio: "pipe" }).toString().trim();
@@ -178,7 +179,7 @@ describe("the reviewer-eval gate on product merges", { concurrency: 1 }, () => {
 // Every file that shapes what the reviewer reads or decides is gate core and needs the eval's receipt (lean-core 3c).
 describe("the reviewer's own code", () => {
   it("covers the module, the contract, the request side and the files it reads, in the gate core and the receipt gate", async () => {
-    const { GATE_CORE } = await import("../src/tiers.mjs");
+    const { GATE_CORE } = await import("../../../modules/platform/src/check.mjs");
     const { touchesReviewer } = await import("../src/evalgate.ts");
     for (const f of ["modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "modules/ai-reviewer/service/src/review-files.mjs", "modules/ai-reviewer/test/reviewer-cases/01-x.json", "modules/ai-reviewer/scripts/reviewer-eval.mjs", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/shared/review-files.ts", "services/runner/src/review-request.mjs", "services/runner/src/review-request.ts", "services/runner/src/siblings.ts", "services/runner/src/tiers.mjs", "kernel/src/tier.ts", "kernel/src/loader/authority.ts"]) {
       assert.ok(touchesReviewer([f]), `receipt gate: ${f}`);

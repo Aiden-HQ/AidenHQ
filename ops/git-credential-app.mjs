@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { appClient } from "../services/runner/src/github-app.ts";
+import { appClient } from "../modules/codehost-github/src/github-app.ts";
 
 if (process.argv[2] !== "get") process.exit(0);
 const input = Object.fromEntries(

@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { DEFAULT_IDENTITY, identityEnv } from "./github-app.ts";
+import { DEFAULT_IDENTITY, identityEnv } from "../../../modules/codehost-github/src/github-app.ts";
 import { appendFileSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";

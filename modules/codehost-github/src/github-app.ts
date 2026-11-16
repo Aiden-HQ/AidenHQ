@@ -136,6 +136,13 @@ export const inOrg = (org: string | undefined, slug: string | undefined) => Bool
 const sameSlug = (a: string | undefined, b: string | undefined) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 
 /**
+ * Our own repositories (the agents org's and the product repo): the only ones the App merges in (product merges as its bot,
+ * after the reviewer or the owner). Elsewhere it only pushes and opens PRs; merges there take the host's gh login, behind
+ * that repo's own GitHub review.
+ */
+export const ownRepo = (slug: string | undefined, agentsOrg: string | undefined, productRepo: string | undefined) => inOrg(agentsOrg, slug) || sameSlug(slug, productRepo);
+
+/**
  * A push token's permissions: read-only, or Contents write. Workflows: write goes to the repositories whose pipelines we own
  * (the agents org's and the product repo's): a push that touches a workflow file is refused unless the token itself carries
  * it, whatever the App declares. Elsewhere (another org, which gates workflow files itself) Contents only.

@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, relative, sep } from "node:path";
+import { noLink, readOwn } from "../../../modules/codehost-github/src/workspace.ts";
 import type { Log } from "./types.ts";
 
 export const FILES_DIR = join(".aidenhq", "files");
@@ -13,20 +14,6 @@ const MAX_SHARED = 10 * 1024 * 1024; // Paperclip's limit for one file
 const MAX_SHARED_FILES = 20;
 const TYPES: Record<string, string> = { md: "text/markdown", html: "text/html", txt: "text/plain", csv: "text/csv", json: "application/json", yaml: "text/plain", yml: "text/plain", log: "text/plain", pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
 
-/**
- * Whether `rel` under the workspace has no symlink on the way (the parts that exist). The workspace is the agent's to write
- * (the jail's or a box's), so a link in `.aidenhq/…` could point the runner's reads and writes at any host file.
- */
-export function noLink(workspace: string, rel: string): boolean {
-  let p = workspace;
-  for (const part of rel.split(sep).filter(Boolean)) {
-    p = join(p, part);
-    const st = lstatSync(p, { throwIfNoEntry: false });
-    if (!st) return true;
-    if (st.isSymbolicLink()) return false;
-  }
-  return true;
-}
 
 /** A file name that is safe on disk: no paths, control characters or leading dots. */
 export function diskName(name: unknown): string {
@@ -114,33 +101,6 @@ export function outputs(workspace: string, primer?: { path: string; title: strin
     .map(({ rel, ...f }) => ({ ...f, type: TYPES[extname(f.name).slice(1).toLowerCase()] ?? "application/octet-stream" }));
 }
 
-/**
- * A workspace file's bytes, read safely (the workspace is the agent's): its folder reached with no link and really where it
- * should be (real path = the workspace's real path + the folder), the file opened without following a link, checked on the
- * open descriptor (a regular file of at most `max` bytes, the same inode as the checked path) and read from it. Undefined for
- * anything else.
- */
-export function readOwn(workspace: string, rel: string, max = MAX_SHARED): Buffer | undefined {
-  let fd: number | undefined;
-  try {
-    if (!rel || rel.startsWith("..") || !noLink(workspace, rel)) return undefined;
-    const real = realpathSync(workspace);
-    if (realpathSync(join(workspace, dirname(rel))) !== join(real, dirname(rel))) return undefined;
-    fd = openSync(join(real, rel), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const st = fstatSync(fd);
-    if (!st.isFile() || st.size > max) return undefined;
-    const here = lstatSync(join(real, rel));
-    if (here.ino !== st.ino || here.dev !== st.dev) return undefined;
-    const buf = Buffer.alloc(st.size);
-    let n = 0;
-    for (let r; n < st.size && (r = readSync(fd, buf, n, st.size - n, n)); n += r);
-    return buf.subarray(0, n);
-  } catch {
-    return undefined;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-}
 
 /**
  * Attach the Engineer's outputs to its task when they changed since the last run, replacing the earlier

@@ -22,3 +22,20 @@ export function repoAccess({ token, script, sh = shell(token) }: { token?: strin
     },
   };
 }
+
+/**
+ * Normalize "org/repo", "https://github.com/org/repo(.git)", "git@github.com:org/repo.git", or any
+ * of these as Paperclip stores them: Markdown links ("[url](url)"), "<url>", backslash escapes.
+ */
+export function normalizeRepo(value: unknown): { org: string; name: string; slug: string } | undefined {
+  const text = String(value ?? "")
+    .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, "$2") // [text](url) → url
+    .replace(/\\(.)/g, "$1") // \_ → _
+    .replace(/[<>`]/g, " ")
+    .trim();
+  const m =
+    /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/#?\s)]|$)/.exec(text) ??
+    /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/#?\s]|$)/.exec(text);
+  if (!m) return undefined;
+  return { org: m[1]!, name: m[2]!, slug: `${m[1]}/${m[2]}` };
+}

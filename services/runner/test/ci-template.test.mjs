@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { patchKey, patchKeyAt, treeIs } from "../src/git.mjs";
+import { patchKey, patchKeyAt, treeIs } from "../../../modules/codehost-github/src/git.mjs";
 
 const g = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
 const files = { "workflows/ci.yml": "on: push\njobs: {}\n", "dependabot.yml": "version: 2\n", "supply-chain/pins.mjs": "export {};\n" };

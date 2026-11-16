@@ -2,7 +2,7 @@
 // becomes the Platform Engineer's task once its checks have finished, and an agent's open PR that conflicts with the
 // default branch (or went red while behind it) wakes its task once per default-branch commit. Pure: the runner does the I/O.
 // None of this writes to GitHub or decides a tier: it only wakes the Platform Engineer, whose writes are carded as always.
-import { GATE_CHECK, ciState, namedChecks } from "./merges.mjs";
+import { GATE_CHECK, ciState, namedChecks } from "../../codehost-github/src/merge-gate.mjs";
 
 const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion databaseId checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
 export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!) {

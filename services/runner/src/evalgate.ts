@@ -24,7 +24,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { smallFile } from "./git.mjs";
+import { smallFile } from "../../../modules/codehost-github/src/git.mjs";
 
 /**
  * The AI reviewer's own code (spec §8.2, from 3c): the ai-reviewer module (its service, policy, cases and judge), the
@@ -47,8 +47,6 @@ const MODULE = "modules/ai-reviewer";
 const CASES = `${MODULE}/test/reviewer-cases`;
 const JUDGE = ["modules/ai-reviewer/scripts/reviewer-eval.mjs", "modules/ai-reviewer/test/case-pad.mjs"];
 const EXPECT = ["expect", "expect_code", "expect_second", "expect_flag"] as const;
-/** How long the queue waits on a head's eval (both runs) before it gives up on that PR. */
-export const EVAL_WAIT_MINUTES = 180;
 
 /**
  * The cases the judge runs, file name → text, from the base's and the PR head's case files: every base case at its base

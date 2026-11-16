@@ -32,9 +32,11 @@ agent, never to the owner.
   runner's daily cache sweep, the same schedule as its other cache work; a host lost takes them with it.
 - **Authority-expanding goes to the panel.** A change is authority-expanding when it weakens an approval,
   authentication, sandbox or secret control, changes who can approve, widens credentials, grants, public access, data
-  destinations or spending, or edits the gate's own core. Code decides most of it (`GATE_CORE` and content rules in
-  `tiers.mjs`, `panel: true`): the runner's `tiers`, `review-request`, `siblings`, `merges`, `apply`, `netjail`, `state`,
-  `config`, `github-app`, `git`, `main`, and what a job can reach: `engines` (its sandbox, mounts and env), `workspace`,
+  destinations or spending, or edits the gate's own core. Code decides most of it (`GATE_CORE` in the platform check,
+  `modules/platform/src/check.mjs`, the git rules in `modules/codehost-github/src/plan.mjs`, the module and apply rules in
+  `tiers.mjs`, `panel: true`): the runner's `tiers`, `review-request`, `siblings`, `apply`, `netjail`, `state`, `config`,
+  `main`, the code host module (`modules/codehost-github/`: the GitHub App, git, workspaces, the merge gate and the git
+  rules), the platform check, the merge queue, and what a job can reach: `engines` (its sandbox, mounts and env),
   `files`, `commands` (repo access, the owner's words, private reads) and `scripts/computers.mjs`; the AI reviewer module (`modules/ai-reviewer/`: its service, policy, eval cases and
   `scripts/reviewer-eval.mjs`); `agent-auth.ts`, `scripts/modules.mjs`, `scripts/paperclip-setup.mjs` and
   `scripts/no-shell.mjs`; the board's `approvals`, `app`, `fleet`, `accounts` and `session`; `services/computer/`; the

@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
-import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines } from "./agents.mjs";
+import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines } from "./agents.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, branchCardArgs, cardText } from "./cards.ts";
@@ -14,8 +14,8 @@ import { authorityLines, diffAll, moduleInputs } from "../../../kernel/src/loade
 import { adoptRun, cowRoot, engineState, hiding, overlayProblem, readEngines, removeLayers, gatewayApi, jailProblem, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
-import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
-import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg, jobGhToken, mergePermissions, pushPermissions } from "./github-app.ts";
+import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "../../../modules/codehost-github/src/git.mjs";
+import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg, jobGhToken, mergePermissions, ownRepo as appOwnRepo, pushPermissions } from "../../../modules/codehost-github/src/github-app.ts";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
@@ -27,17 +27,18 @@ import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.t
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.ts";
 import { createMetrics, writeMetrics } from "./metrics.ts";
-import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, retargetBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos, UserError, safeWorkspace } from "./workspace.ts";
+import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, retargetBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos, UserError, safeWorkspace } from "../../../modules/codehost-github/src/workspace.ts";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.ts";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.ts";
-import * as merges from "./merges.mjs";
+import * as merges from "../../../modules/codehost-github/src/merge-gate.mjs";
+import * as mergeQueue from "../../../modules/engineering/src/merge-queue.mjs";
 import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf } from "./siblings.ts";
-import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "./product-prs.ts";
+import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "../../../modules/engineering/src/product-prs.ts";
 import { State } from "./state.ts";
 import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, stateSection, threadEntries, threadSection, transcript } from "./thread.ts";
-import { checkSignature, record } from "./breaker.ts";
+import { checkSignature, record } from "../../../modules/engineering/src/breaker.ts";
 import YAML from "yaml";
-import { CODE_REJECTS, MAX_REJECTS, afterReview, autonomyCap, classify, dependabotCommits, highest, meritOwner, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, reviewFirstOf, routineCap, routineCapped, sensitiveTraits } from "./tiers.mjs";
+import { CODE_REJECTS, MAX_REJECTS, afterReview, autonomyCap, classify, highest, meritOwner, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, reviewFirstOf, routineCap, routineCapped, sensitiveTraits } from "./tiers.mjs";
 import { LUNA, openRouterAsk, openRouterKey } from "./models.mjs";
 import { kernelCardDiff, readCardSourceExceptions, requestReview, unreadSourceExceptions } from "./review-request.mjs";
 import { UNSURE } from "../../../kernel/sdk/src/reviewer.ts";
@@ -48,7 +49,8 @@ import { jobUsage } from "./usage.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
-import { repoAccess } from "./repos.ts";
+import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
+import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
 
 const execFileP = promisify(execFile);
 const cfg = loadConfig();
@@ -81,11 +83,10 @@ async function appFor(slug) {
   return app && repo && repoAllowed(repo, cfg.allowed_orgs) && (await app.covers(repo.slug).catch((err) => (log("github app check failed", { repo: repo.slug, err: String(err.message).slice(0, 200) }), false))) ? app : undefined;
 }
 const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, perms, extra);
-// Outside the agents org and the product repo the App only pushes and opens PRs: merges there take the host's gh login (GitHub's
-// own review gates them). Product merges (Tier 1 since 2026-11-13) go through the App, as its bot, never the owner's account.
-/** Our own repositories (the product repo, the agents org): their reviewers are us, so internal names are fine there. */
+// Outside our own repos (github-app.ts ownRepo) the App only pushes and opens PRs. Their reviewers are us, so internal names
+// are fine there too.
 const sameRepo = (a, b) => Boolean(a && b) && String(a).toLowerCase() === String(b).toLowerCase();
-const ownRepo = (slug) =>inOrg(cfg.agentsOrg, slug) || (Boolean(cfg.productRepo) && String(slug).toLowerCase() === String(cfg.productRepo).toLowerCase());
+const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, cfg.productRepo);
 const ghoMerge = async (slug, extra, perms = WRITE) => (ownRepo(slug) ? gho(slug, perms, extra) : extra);
 /** A re-run's token: only this (the App needs Actions: write; without it the re-run is refused and the check's failure stands). */
 const RERUN = { actions: "write" };
@@ -838,7 +839,7 @@ async function startMerges(issue, { prs = [], gapMinutes, strict = false, each =
     const waiting = existing.prs.filter((p) => p.status === "pending" && !prs.some((n) => n.url.toLowerCase() === p.url.toLowerCase()));
     if (waiting.length) requestAutoMerge(issue, waiting);
   }
-  const queue = each ? merges.addEach(existing, prs) : merges.startOrResume(existing, prs, { gapMinutes: gapMinutes ?? existing?.gapMinutes ?? cfg.merges?.gap_minutes ?? 15 });
+  const queue = each ? mergeQueue.addEach(existing, prs) : mergeQueue.startOrResume(existing, prs, { gapMinutes: gapMinutes ?? existing?.gapMinutes ?? cfg.merges?.gap_minutes ?? 15 });
   // Undefined both when every named PR merged and when none was named (and nothing earlier is waiting): say which.
   if (!queue) return void (await pc.comment(issue.id, prs.length ? "Nothing to merge: those PRs are merged already." : "Nothing to merge: no PR was named, and no earlier merge is waiting. Name the PRs (`aidenhq merge <PR link> …`)."));
   const engine = state.task(issue.id)?.engine;
@@ -1152,7 +1153,7 @@ async function wakeForTurnedAway(issueId, f) {
 /** A finished queue: the task's status (with `say`, unless already posted), the parent's note, and the tasks that opened its PRs. */
 async function finishMerges(issueId, queue, say, { posted = false } = {}) {
   const full = await pc.issue(issueId).catch(() => undefined);
-  let status = merges.finishedStatus(full, queue, state.branches(issueId).filter((b) => b.pr_url && !b.merged).map((b) => b.pr_url));
+  let status = finishedStatus(full, queue, state.branches(issueId).filter((b) => b.pr_url && !b.merged).map((b) => b.pr_url));
   // A graded task closes only through the grader: it stays in review until then.
   if (status === "done" && !(await mayClose(issueId, "finish_merges"))) status = "in_review";
   if (!posted) await pc.setStatus(issueId, status, say.join("\n\n"));
@@ -1176,7 +1177,7 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
     markMerged(other);
     const o = await pc.issue(other).catch(() => undefined);
     const open = state.branches(other).filter((b) => b.pr_url && !b.merged).map((b) => b.pr_url);
-    if (o?.status === "in_review" && merges.finishedStatus(o, queue, open) === "done" && (await mayClose(other, "finish_merges"))) await pc.setStatus(other, "done", `Merged by ${queue.identifier}'s merge queue.`).catch(() => {});
+    if (o?.status === "in_review" && finishedStatus(o, queue, open) === "done" && (await mayClose(other, "finish_merges"))) await pc.setStatus(other, "done", `Merged by ${queue.identifier}'s merge queue.`).catch(() => {});
   }
 }
 
@@ -1412,7 +1413,7 @@ function gradeDeps(issue) {
           ? "its merges are still running"
           : "",
     approvals: async () => (await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.id)}`)).approvals ?? [],
-    taskPrs: async () => merges.findPrs(state.branches(issue.id).map((b) => b.pr_url).filter(Boolean).join("\n")),
+    taskPrs: async () => mergeQueue.findPrs(state.branches(issue.id).map((b) => b.pr_url).filter(Boolean).join("\n")),
     // The PRs this task's own runner records tie to it when no branch row does: its merge queue for the task, the merges it was
     // asked to run, and the merge cards it filed on it. The runner's own state and the board's cards, never a comment: a
     // comment's runner marker is text any writer can copy, so it proves nothing about which task a PR belongs to.
@@ -2874,7 +2875,7 @@ async function mergeAfterPublish(issue, a, out) {
   const missing = [];
   for (const b of a.args.only) {
     const row = sameRepo(b.repo, cfg.productRepo) ? state.branches(issue.id).find((x) => sameRepo(x.repo, b.repo) && x.branch === b.branch) : undefined;
-    const pr = row?.pr_url && !row.merged ? merges.findPrs(row.pr_url)[0] : undefined;
+    const pr = row?.pr_url && !row.merged ? mergeQueue.findPrs(row.pr_url)[0] : undefined;
     if (pr) prs.push({ ...pr, head: b.sha, noReview: true });
     else missing.push(`${b.repo} \`${b.branch}\``);
   }
@@ -3366,7 +3367,7 @@ async function agentCleanup(ctx) {
 /** `aidenhq merge`: PRs for the merge queue, as an approval record; the queue starts on the user's tap. */
 async function agentMerge(ctx, args) {
   if (stopped(ctx.issue.id)) throw new UserError(stoppedText(stopped(ctx.issue.id)));
-  const prs = merges.findPrs((Array.isArray(args.prs) ? args.prs : []).join("\n"));
+  const prs = mergeQueue.findPrs((Array.isArray(args.prs) ? args.prs : []).join("\n"));
   if (!prs.length) throw new UserError("Name the pull requests as links or org/repo#number, in the order to merge them.");
   const outside = prs.filter((p) => !repoAllowed(normalizeRepo(p.repo), cfg.allowed_orgs));
   if (outside.length) throw new UserError(`Only PRs in ${cfg.allowed_orgs.join(", ")} can be merged: ${outside.map((p) => p.url).join(", ")}.`);
@@ -3411,7 +3412,7 @@ async function agentMerge(ctx, args) {
  * Engineer's line), the reason posted on each as a comment. Tier 0: no card.
  */
 async function agentClose(ctx, args) {
-  const prs = merges.findPrs((Array.isArray(args.prs) ? args.prs : []).join("\n"));
+  const prs = mergeQueue.findPrs((Array.isArray(args.prs) ? args.prs : []).join("\n"));
   if (!prs.length) throw new UserError("Name the pull requests as links or org/repo#number.");
   const reason = String(args.reason ?? "").trim();
   if (!reason) throw new UserError('Give a reason: `aidenhq close <PR link>… --reason "<one line>"`.');
@@ -4202,7 +4203,7 @@ async function publish(issue, workspace, command, signal, { only = [], text, che
   const autoMerge = ok
     ? state.branches(issue.id).filter((b) => b.pr_url && !b.merged && inOrg(cfg.agentsOrg, b.repo) && !sameRepo(b.repo, cfg.apply?.repo) && !sameRepo(b.repo, cfg.productRepo) && ordered.some((r) => sameRepo(r.repo, b.repo) && r.branch === b.branch))
     : [];
-  const prs = merges.findPrs(autoMerge.map((b) => b.pr_url).join("\n"));
+  const prs = mergeQueue.findPrs(autoMerge.map((b) => b.pr_url).join("\n"));
   if (prs.length) requestAutoMerge(issue, prs);
   const said = [...notes, ...tidyNotes.map((n) => `_${n}_`), "| Branch | Result |", "|---|---|", ...results, ...(prs.length ? ["", `_Merging requested: ${prs.map((p) => p.url).join(", ")}, each as soon as its checks are green on this head._`] : [])].join("\n");
   await pc.comment(issue.id, said);
