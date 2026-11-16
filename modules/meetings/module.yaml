@@ -9,8 +9,6 @@ agents:
     model: ~deepseek/deepseek-flash-latest # OpenRouter ids; "" = Codex default
     reasoning_effort: high
     timeout_sec: 1800
-    # Private transcripts and calendars only: no web search.
-    web_search: disabled
     connections:
       # Public web pages (web_view) and the apps' live pages (app_view): reads, like every agent.
       apps: [ web_view, app_view ]

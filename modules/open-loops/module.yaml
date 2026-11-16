@@ -40,8 +40,6 @@ agents:
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1800
-    # Its items come from private email, Slack and tasks: no web search.
-    web_search: disabled
     connections:
       # Public web pages (web_view) and the apps' live pages (app_view): reads, like every agent.
       # The shared warehouse's sources (Slack, GitHub, Jira): new rows since its cursor, and ad-hoc reads.
