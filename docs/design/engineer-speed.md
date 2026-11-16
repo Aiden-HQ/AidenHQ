@@ -116,10 +116,12 @@ There is no summary of recent PRs. A job reads the repo's own `AGENTS.md` first,
    - The case's app got a rewritten `AGENTS.md`: the route → file table, the single-test command, a one-line seeded
      preview, the dialog-test pattern to copy, and the dead files marked (separate PR on the app repo).
 4. **Design review is scoped to changed screens:**
-   - The runner's design-review task names the PR's changed UI files: plain path characters only, at most 15, with a
-     fallback to the old text when the list can't be read.
-   - The UI Reviewer maps those files to their routes through the repo's `AGENTS.md` map and `feature-map.json`,
-     screenshots those routes plus a quick look at `/`, and leaves the other pages alone. Verdict semantics are unchanged.
+   - The runner's design-review task now tells the reviewer to review only the screens the PR's changed files render.
+   - The reviewer lists the UI files from the PR itself, maps them to routes through the repo's `AGENTS.md` map and
+     `feature-map.json`, runs `ui-review --paths` on those routes, and adds a quick look at `/`. Verdict semantics are
+     unchanged.
+   - The task carries no file names. They are the PR author's text, and a runner-written instruction would make them
+     read as instructions (security review). The routes come from the repo's own map.
    - In this case the change was the shared header, so the review already covered just `/` and `/updates`. The saving
      comes on apps with many pages.
 5. **Tools in the agent computers** (`services/computer/images/agent-base/Dockerfile`):
