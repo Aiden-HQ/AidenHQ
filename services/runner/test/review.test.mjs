@@ -156,6 +156,7 @@ test("a record read from one base never covers a source change in another repo",
   const both = `### acme/app fix/a (aaaaaaaaaaaa)\n${plain}\n\n### acme/other fix/b (bbbbbbbbbbbb)\n${aptSourceDiff}`;
   assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/app", base: "main" }], both)], [], "the source added in acme/other reaches no record from acme/app's base");
   assert.deepEqual([...sourcesInDiff([{ ...record, repo: "acme/other", base: "main" }], both)], [0], "and does reach one read from acme/other's own base");
+  assert.deepEqual([...sourcesInDiff([record], both)], [], "a record tied to no repo covers no section of a headed diff");
 });
 
 test("a source change passes on its own base's record and is rejected when another base holds it", async () => {

@@ -95,10 +95,12 @@ export function diffSections(diff) {
  */
 export function sourcesInDiff(records, diff) {
   const sections = diffSections(diff);
+  // A diff of one unnamed change (no `###` heading) is the one case a record without a repo can cover. With headings, a
+  // record that names no repo is tied to no change, so it covers none: an untied record never authorizes anything.
   const bodyFor = (r) => {
-    if (!r.repo) return String(diff ?? "");
-    const own = sections.filter((s) => s.repo.toLowerCase() === String(r.repo).toLowerCase());
-    return own.map((s) => s.text).join("\n");
+    if (!sections.length) return r.repo ? "" : String(diff ?? "");
+    if (!r.repo) return "";
+    return sections.filter((s) => s.repo.toLowerCase() === String(r.repo).toLowerCase()).map((s) => s.text).join("\n");
   };
   const word = (s) => new RegExp(`(^|[^\\w.-])${String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w.-]|$)`, "i");
   return new Set(records.map((r, i) => i).filter((i) => {
