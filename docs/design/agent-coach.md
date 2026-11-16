@@ -30,7 +30,7 @@ A core agent, `coach` ("Agent Coach"), reviews other agents' outcomes and files 
      result, timeouts, scorecard trend.
   6. **Feedback:** the owner's corrections, other agents' complaints about it, failing health checks since the last
      review; whether earlier Coach fixes actually held, and whether product-bug fixes (Fleet Ops' `product-bug:<slug>`
-     tasks) held after their PR merged and the pin moved.
+     GitHub issues) held after their fix merged and the pin moved.
   7. **Instructions:** contradictions or gaps between its handbook/memory and what it actually does; rules it keeps
      breaking.
   8. **Fix and verify:** for each finding, the root cause and the cheapest durable fix (below); re-check the previous
@@ -38,8 +38,8 @@ A core agent, `coach` ("Agent Coach"), reviews other agents' outcomes and files 
 - **Outputs, through the usual tiers:** a rule in a module handbook or a shared section is a product-repo task to the
   Platform Engineer, graded on its PR (a module handbook changes in the product repo, so no apply card can deliver it);
   instance-side rules, grants and schedules are proposals to the Platform Engineer (apply card; the AI reviewer decides
-  Tier 1); product bugs as a product-repo task to the Platform Engineer (PR and merge; the AI reviewer decides unless it
-  touches gate code); app rules or checks to the app's owning agent; questions only the owner can answer go into one
+  Tier 1); product bugs as one line on Fleet issues, which Fleet Ops files upstream as a GitHub issue on the product
+  repo and upgrades the fleet once it is fixed; app rules or checks to the app's owning agent; questions only the owner can answer go into one
   weekly digest (recommendation first). Each review ends with a log line on the Coach's review log (one task, like Fleet
   issues):
   `review · <agent> · <date> · findings n · filed <ids>`, which the due list reads.

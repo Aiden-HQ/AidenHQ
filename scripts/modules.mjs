@@ -43,6 +43,7 @@ const ROLES = {
   "fleet-audit": ["core"], // read any agent's evidence (the board's coach routes) and keep a review log (tasks bridge coach_*)
   "repo-checkout": ["core", "design"], // a commit of an agents-org repo placed in its computer (services/computer/launcher.mjs POST /repo)
   "design-review": ["design"], // the design-review commit status on agents-org PRs (github-mcp commit_status_set)
+  "product-issues": ["fleet-ops"], // product bugs as issues on the product repo, as the GitHub App (github-mcp github_app_issue)
 };
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
