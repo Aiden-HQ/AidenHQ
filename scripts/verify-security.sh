@@ -202,7 +202,9 @@ for c in $containers; do
       [ "$code" = "403" ] && pass "board: forged client addresses without the front door's secret count as the socket's" || fail "board: a forged client address was believed (sixth failure answered $code, want 403)"
       # 3129: the gate's sign-in listener, loopback only.
       signin_port="$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3129/tcp")}}')"
-      if [ "$signin_port" = "null" ]; then
+      if [ "$signin_port" = "null" ] && [ -f config/gate.json ]; then
+        fail "board sign-in listener (3129) is not published but the gate needs it: keep 127.0.0.1:3129:3129 in the board ports of compose.override.yaml"
+      elif [ "$signin_port" = "null" ]; then
         pass "board: sign-in listener not published"
       else
         echo "$signin_port" | grep -q '"HostIp":"127.0.0.1"' && ! echo "$signin_port" | grep -qE '"HostIp":"(0\.0\.0\.0)?"' \
