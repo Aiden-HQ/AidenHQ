@@ -23,8 +23,10 @@ const reply = (data) => { if (json) console.log(JSON.stringify({ success: true, 
 
 const pages = process.env.STUB_PAGES ? JSON.parse(process.env.STUB_PAGES) : null;
 const textOf = (at) => pages?.[at] ?? "";
-const load = () => (existsSync(process.env.STUB_STATE ?? "") ? JSON.parse(readFileSync(process.env.STUB_STATE, "utf8")) : { hist: ["/"], i: 0, text: "", scroll: 0, details: 0 });
-const save = (st) => process.env.STUB_STATE && writeFileSync(process.env.STUB_STATE, JSON.stringify(st));
+// One state file per browser session (ui-review runs route checks in several).
+const stateFile = process.env.STUB_STATE && `${process.env.STUB_STATE}${process.env.AGENT_BROWSER_SESSION && process.env.AGENT_BROWSER_SESSION !== "default" ? `.${process.env.AGENT_BROWSER_SESSION}` : ""}`;
+const load = () => (existsSync(stateFile ?? "") ? JSON.parse(readFileSync(stateFile, "utf8")) : { hist: ["/"], i: 0, text: "", scroll: 0, details: 0 });
+const save = (st) => stateFile && writeFileSync(stateFile, JSON.stringify(st));
 const go = (st, i, render) => { st.i = i; if (render || !process.env.STUB_BROKEN) st.text = textOf(st.hist[i]); st.scroll = 0; save(st); };
 
 if (cmd === "screenshot") { mkdirSync(dirname(args[1]), { recursive: true }); writeFileSync(args[1], "stub png"); }
@@ -64,5 +66,5 @@ else if (cmd === "vitals") reply({ lcp: { startTime: 400 }, cls: { score: 0.01 }
 else if (cmd === "console") reply({ messages: [] });
 else if (cmd === "errors") console.log("");
 else if (cmd === "diff") console.log("0.00%");
-else if (["set", "wait"].includes(cmd)) { /* nothing to do */ }
+else if (["set", "wait", "close"].includes(cmd)) { /* nothing to do */ }
 else { console.error(`stub: unknown command ${cmd}`); process.exit(2); }
