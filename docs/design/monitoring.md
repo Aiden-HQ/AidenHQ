@@ -53,7 +53,10 @@ Images (pinned by digest; `scripts/supply-chain/best-version.mjs`, release dates
   `aidenhq_gateway_ci_day_cap_usd`, `aidenhq_gateway_enforcing_caps`, `aidenhq_gateway_inflight`. Labels are agent keys.
 - Runner: `aidenhq_runner_queue_depth`, `_running_jobs`, `_oldest_job_seconds`, `_job_duration_seconds` (histogram, since
   the runner started), `_merge_queues{state}`, `_merge_prs_waiting`.
-- Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`.
+- Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_fleet_draining`, `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`.
+  A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
+  that record exists: `UnitFailed` and `CiRunnersDown` (which also needs `aidenhq_fleet_draining == 0`) page on a crash, not on
+  maintenance.
 
 No secrets or ids in labels. TODO: CI time per workflow run lives in GitHub; not recorded here yet (a later small exporter
 over the Actions API, or the runner recording its CI runs).

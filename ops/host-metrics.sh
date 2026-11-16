@@ -16,6 +16,15 @@ dir="$data/monitoring/textfile"
 
 # Label values come from systemd and Docker names: keep [A-Za-z0-9_.@:/-] only.
 clean() { tr -c 'A-Za-z0-9_.@:/ \n-' '_'; }
+# A planned drain (scripts/fleet-pause.mjs) records the units it stopped in the data dir, so a stop on purpose is not read
+# as a crash: no UnitFailed (Prometheus cannot tell the two apart) and no CiRunnersDown while it lasts.
+paused_units() { # one unit name per line
+  [ -f "$data/fleet-paused.json" ] || return 0
+  tr -d '\n' < "$data/fleet-paused.json" | sed -n 's/.*"units"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' | grep -oE '"[^"]+"' | tr -d '"'
+}
+paused="$(paused_units)"
+# A unit the record names was stopped on purpose; with no record (or none listed) nothing is excused.
+is_paused() { [ -n "$paused" ] && printf '%s\n' "$paused" | grep -qxF -- "$1"; }
 write() { # name: atomic, so node-exporter never reads half a file
   local tmp="$dir/.$1.$$"
   cat > "$tmp" && mv -f "$tmp" "$dir/$1"
@@ -26,13 +35,16 @@ write() { # name: atomic, so node-exporter never reads half a file
   echo "# TYPE aidenhq_unit_active gauge"
   echo "# HELP aidenhq_unit_failed 1 when the AidenHQ systemd unit has failed."
   echo "# TYPE aidenhq_unit_failed gauge"
+  echo "# HELP aidenhq_fleet_draining 1 while a planned drain is recorded (data/fleet-paused.json): the CI runner units are stopped on purpose."
+  echo "# TYPE aidenhq_fleet_draining gauge"
+  echo "aidenhq_fleet_draining $([ -f "$data/fleet-paused.json" ] && echo 1 || echo 0)"
   for scope in user system; do
     flag=(); [ "$scope" = user ] && flag=(--user)
     systemctl "${flag[@]}" list-units --all --plain --no-legend --no-pager 'aidenhq-*' 'prune-*' 2>/dev/null \
       | awk '{print $1, $3}' | clean | while read -r unit active; do
         [ -n "$unit" ] || continue
         echo "aidenhq_unit_active{scope=\"$scope\",unit=\"$unit\"} $([ "$active" = active ] && echo 1 || echo 0)"
-        echo "aidenhq_unit_failed{scope=\"$scope\",unit=\"$unit\"} $([ "$active" = failed ] && echo 1 || echo 0)"
+        echo "aidenhq_unit_failed{scope=\"$scope\",unit=\"$unit\"} $([ "$active" = failed ] && ! is_paused "$unit" && echo 1 || echo 0)"
       done
   done
 } | write units.prom

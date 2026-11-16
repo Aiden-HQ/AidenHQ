@@ -339,5 +339,7 @@ runners some weeks after a newer release, so bump when the org's runners page wa
 
 **Scale.** One unit per concurrent job: `systemctl --user enable --now aidenhq-ci-runner@3`, or `disable --now` one to
 shrink. Every unit is up to 4 CPUs and 8 GB while it runs a job, whichever org it serves: keep the total at 2-4 on a VM of
-the size SETUP.md suggests (e.g. 2 for the product org, 1-2 for the agents org). Stop all: `systemctl --user stop 'aidenhq-ci-runner@*'` (a running job
+the size SETUP.md suggests (e.g. 2 for the product org, 1-2 for the agents org). A drain (`node scripts/fleet-pause.mjs pause`)
+stops them without cancelling a job under it, and its resume -- or an apply, or `ops/ci-runner-units.sh` on its own -- clears each
+unit's start limit before starting it, so a stopped unit never stays start-limited and failed. Stop all: `systemctl --user stop 'aidenhq-ci-runner@*'` (a running job
 is cancelled; GitHub retries nothing, so re-run it).
