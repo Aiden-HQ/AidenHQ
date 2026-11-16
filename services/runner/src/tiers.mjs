@@ -31,6 +31,8 @@ export const GATE_CORE = [
   /^kernel\/sdk\//,
   // The AI reviewer (privileged reviewer, lean-core 3c): its service, its policy, its planted cases and its eval.
   /^modules\/ai-reviewer\//,
+  // The changed files as the reviewer reads them (synced into the module; the runner imports this copy).
+  /^services\/shared\/review-files\.(mjs|ts)$/,
   // The kernel (the tool proxy, caller identity and assertions, the model gateway) and each module server's copy of the
   // SDK's caller check (scripts/sync-shared.mjs).
   /^kernel\//,
@@ -72,6 +74,7 @@ export const GATE_DIRS = [
   "services/computer/",
   "ops/",
   "modules/ai-reviewer/",
+  "services/shared/review-files.mjs",
   "modules/apps-platform/",
   "services/board/src/approvals.ts",
   "services/board/src/app.ts",

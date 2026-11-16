@@ -174,3 +174,16 @@ describe("the reviewer-eval gate on product merges", { concurrency: 1 }, () => {
     assert.deepEqual(JSON.parse(out.get("a.head.json")), { expect: "reject", diff: "y" });
   });
 });
+
+// Every file that shapes what the reviewer reads or decides is gate core and needs the eval's receipt (lean-core 3c).
+describe("the reviewer's own code", () => {
+  it("covers the module, the contract, the request side and the files it reads, in the gate core and the receipt gate", async () => {
+    const { GATE_CORE } = await import("../src/tiers.mjs");
+    const { touchesReviewer } = await import("../src/evalgate.ts");
+    for (const f of ["modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "modules/ai-reviewer/service/src/review-files.mjs", "modules/ai-reviewer/test/reviewer-cases/01-x.json", "modules/ai-reviewer/scripts/reviewer-eval.mjs", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/shared/review-files.ts", "services/runner/src/review-request.mjs", "services/runner/src/review-request.ts", "services/runner/src/tiers.mjs", "kernel/src/tier.ts", "kernel/src/loader/authority.ts"]) {
+      assert.ok(touchesReviewer([f]), `receipt gate: ${f}`);
+      assert.ok(GATE_CORE.some((g) => g.test(f)), `gate core: ${f}`);
+    }
+    assert.ok(!touchesReviewer(["services/runner/src/grade.ts", "README.md"]));
+  });
+});
