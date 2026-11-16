@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { boundedFleetStatus } from "../src/fleet.js";
-import { detectorState, stalePrs, staleSources, tick, type Incident } from "../src/fleet-ops.js";
+import { detectorState, QUIET_MS, stalePrs, staleSources, tick, type Incident } from "../src/fleet-ops.js";
 import { Store } from "../src/store.js";
 
 describe("Fleet Ops detector", () => {
@@ -72,6 +72,29 @@ describe("Fleet Ops detector", () => {
     found = [{ key: "slack", reason: "src_slack stale again" }];
     await run();
     expect(fired).toHaveLength(3); // a new incident after recovery fires again
+  });
+});
+
+describe("quiet gap", () => {
+  it("within 30 minutes of a fire only a critical incident fires; the rest wait for a later tick", async () => {
+    const store = new Store(":memory:");
+    let found: Incident[] = [{ key: "slack", reason: "src_slack stale" }];
+    const fired: { incidents: { key: string; critical?: boolean }[] }[] = [];
+    const at = (min: number) => new Date(Date.parse("2026-11-16T10:00:00Z") + min * 60_000);
+    const run = (min: number) => tick(store, { source: async () => found }, async (b) => fired.push(b as (typeof fired)[0]) > 0, at(min), QUIET_MS);
+    await run(0);
+    found = [...found, { key: "github", reason: "src_github stale" }];
+    await run(10);
+    expect(fired).toHaveLength(1); // not yet
+    found = [...found, { key: "apps", reason: "apps down", critical: true }];
+    await run(20);
+    expect(fired[1]!.incidents).toEqual([expect.objectContaining({ key: "source:github" }), expect.objectContaining({ key: "source:apps", critical: true })]);
+    found = found.slice(1);
+    await run(30);
+    await run(49);
+    expect(fired).toHaveLength(2); // the recovery waits too
+    await run(51);
+    expect(fired[2]).toMatchObject({ recovered: [{ key: "source:slack" }] });
   });
 });
 
