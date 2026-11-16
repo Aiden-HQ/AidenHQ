@@ -1,8 +1,8 @@
 {
-  "kernel": 1292,
+  "kernel": 1305,
   "sdk": 280,
   "core": 21590,
-  "trusted": 31418,
+  "trusted": 31431,
   "coupling": 352,
   "core_coupling": 3123,
   "settings": 22,

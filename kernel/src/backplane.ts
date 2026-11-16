@@ -16,6 +16,19 @@ type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Pr
 const DIRECTORY = ["key", "roles", "trial", "delegate_to", "memory_inbox", "review_log", "graded"];
 const SETTINGS = ["grading", "loop_brake"];
 
+/** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it, so the lock can't miss a route. */
+export const ROUTES = [
+  { method: "GET", path: "/healthz", auth: "none" },
+  { method: "GET", path: "/v1/jwks", auth: "none" },
+  { method: "GET", path: "/v1/whoami", auth: "bearer" },
+  { method: "GET", path: "/v1/agents", auth: "module" },
+  { method: "POST", path: "/c/:connection/mcp", auth: "bearer" },
+  { method: "DELETE", path: "/c/:connection/mcp", auth: "bearer" },
+  { method: "ANY", path: "/v1/cp/agent/*", auth: "module+assertion" },
+] as const;
+// `:name` matches [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+
 export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
@@ -25,22 +38,25 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, log =
     const [path = "", q] = String(req.url ?? "").split(/\?(.*)/s);
     const query = q ? `?${q}` : "";
     try {
-      if (req.method === "GET" && path === "/healthz") return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
-      if (req.method === "GET" && path === "/v1/jwks") return send(res, 200, asserter.jwks);
-      if (req.method === "GET" && path === "/v1/whoami") {
-        const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
-        return send(res, 200, { kind: w.kind, ...(w.agent ? { agent: w.agent } : {}), roles: w.roles, ...(w.task ? { task: w.task } : {}), ...(w.run ? { run: w.run } : {}), ...(w.module ? { module: w.module } : {}), tools: w.tools });
+      const hit = compiled.find((r) => (r.method === "ANY" || r.method === req.method) && r.re.test(path));
+      const m = hit ? hit.re.exec(path)!.slice(1) : [];
+      switch (hit && `${hit.method} ${hit.path}`) {
+        case "GET /healthz": return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
+        case "GET /v1/jwks": return send(res, 200, asserter.jwks);
+        case "GET /v1/whoami": {
+          const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
+          return send(res, 200, { kind: w.kind, ...(w.agent ? { agent: w.agent } : {}), roles: w.roles, ...(w.task ? { task: w.task } : {}), ...(w.run ? { run: w.run } : {}), ...(w.module ? { module: w.module } : {}), tools: w.tools });
+        }
+        case "GET /v1/agents": {
+          const w = await whoami(bearer(req)).catch(() => undefined);
+          if (w?.kind !== "module") throw fail(401, "unauthorized", "a module's own token is required");
+          const t = grantsFile();
+          const agents = Object.fromEntries(Object.entries(t.agents ?? {}).map(([id, g]) => [id, Object.fromEntries(DIRECTORY.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]))]));
+          return send(res, 200, { agents, settings: Object.fromEntries(SETTINGS.map((k) => [k, t[k] ?? "on"])) });
+        }
+        case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
+        case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);
       }
-      if (req.method === "GET" && path === "/v1/agents") {
-        const w = await whoami(bearer(req)).catch(() => undefined);
-        if (w?.kind !== "module") throw fail(401, "unauthorized", "a module's own token is required");
-        const t = grantsFile();
-        const agents = Object.fromEntries(Object.entries(t.agents ?? {}).map(([id, g]) => [id, Object.fromEntries(DIRECTORY.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]))]));
-        return send(res, 200, { agents, settings: Object.fromEntries(SETTINGS.map((k) => [k, t[k] ?? "on"])) });
-      }
-      const c = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(path);
-      if (c) return await proxy(req, res, c[1]!);
-      if (path.startsWith("/v1/cp/agent/")) return await cp(req, res, path.slice("/v1/cp/agent".length), query);
       send(res, 404, { error: "no such route" });
     } catch (err) {
       const e = err as Error & { status?: number; type?: string };

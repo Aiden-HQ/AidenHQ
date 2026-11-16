@@ -101,6 +101,18 @@ jobs:
           node-version: 24.x
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
+      # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.mjs): a stable entry is never
+      # removed or reshaped. The scripts suite checks the lock against the code on every run.
+      - name: Contract lock
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd scripts && npm ci --ignore-scripts)
+          # The checkout keeps no credentials: pass the read-only token for this one fetch.
+          git -c "http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags --depth=1 origin "$PR_BASE"
+          node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.mjs --check --base "$PR_BASE"
       - name: Test
         env:
           TESTS: ${{ needs.image-changes.outputs.tests }}
