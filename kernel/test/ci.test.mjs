@@ -34,12 +34,15 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
     return `${body}.${sign("RSA-SHA256", Buffer.from(body), privateKey).toString("base64url")}`;
   };
 
-  const seen = [];
+  const seen = [], held = [];
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
       seen.push({ auth: req.headers.authorization, body: JSON.parse(b) });
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end(`data: ${JSON.stringify({ id: `gen-${seen.length}`, model: "deepseek/v4", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.1 } })}\n\ndata: [DONE]\n\n`);
+      const answer = () => { res.writeHead(200, { "content-type": "text/event-stream" }); res.end(`data: ${JSON.stringify({ id: `gen-${seen.length}`, model: "deepseek/v4", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.1 } })}\n\ndata: [DONE]\n\n`); };
+      // "hold": answered once 12 held calls are in flight together.
+      if (JSON.parse(b).messages?.[0] !== "hold") return answer();
+      held.push(answer);
+      if (held.length === 12) held.splice(0).forEach((f) => f());
     });
   });
   const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, githubJwksUrl: github.url, now: () => now });
@@ -127,8 +130,11 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   settings({ enabled: false });
   assert.equal((await exchange(oidc())).status, 403);
   assert.equal((await review(tok)).status, 403);
-  settings({ repo_day_usd: 5 });
+  settings({ repo_day_usd: 5, day_usd: 5 });
   assert.equal((await review(tok)).status, 200);
+  // No in-flight limit of its own: 12 calls of one repo in flight together all run (each holds its reservation against the caps).
+  const many = await Promise.all(Array.from({ length: 12 }, () => review(tok, { messages: ["hold"] })));
+  assert.deepEqual(many.map((r) => r.status), Array(12).fill(200));
   now += 3 * 3600_000;
   assert.equal((await review(tok)).status, 401);
 });

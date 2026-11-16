@@ -80,10 +80,10 @@ const MAX_BODY = 32 * 1024 * 1024;
 const DAY_MS = 864e5;
 // The fewest output tokens a call may be cut to; below that it is refused at the cap instead.
 const MIN_OUTPUT = 1024;
-// CI: a token lives 2 h (the job's timeout is 90 min); a repo gets at most 200 a day and 8 calls in flight.
+// CI: a token lives 2 h (the job's timeout is 90 min); a repo gets at most 200 a day. Calls in flight need no limit of their
+// own: each holds its reservation against CI's caps until it settles.
 const CI_TTL_MS = 2 * 3600_000;
 const CI_TOKENS_PER_DAY = 200;
-const CI_INFLIGHT = 8;
 const CI_MAX_BODY = 8 * 1024 * 1024;
 // CI tokens a repo may be issued a minute. Only verified exchanges count (ci.ts checks the claims, then GitHub's signature,
 // about 20 microseconds), so a flood of forged or foreign tokens never uses up a real job's budget; one repo's flood of
@@ -244,7 +244,6 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     // A CI call's task_subject is `<owner>/<repo>#<pr>`.
     ciSpentRepo: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ? AND substr(task_subject, 1, length(?)) = ?"),
     ciSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ?"),
-    ciInflight: db.prepare("SELECT COUNT(*) AS n FROM calls WHERE status = 'reserved' AND kind = 'ci-code-review' AND substr(task_subject, 1, length(?)) = ?"),
   };
   const prune = () => {
     const cut = new Date(now() - 40 * DAY_MS).toISOString();
@@ -501,12 +500,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     try { body = JSON.parse((raw = await readBody(req, ci ? CI_MAX_BODY : MAX_BODY))); } catch (e) { throw (e as GatewayError).status ? e : fail(400, "bad_request", "the body must be JSON"); }
     if (!body || typeof body !== "object" || typeof body.model !== "string") throw fail(400, "bad_request", "a model call needs a model");
     if (who.ci) {
-      // CI's own gates: the models and fields it may use and calls in flight. A refusal is a 403 or 402 (codegenie and the
-      // workflow read those as permanent: no retry); too many in flight a 429.
+      // CI's own gates: the models and fields it may use. A refusal is a 403 or 402 (codegenie and the workflow read those as
+      // permanent: no retry).
       const c = ciOn();
       const problem = ciBodyProblem(body, Array.isArray(c.models) ? c.models : []);
       if (problem) throw fail(403, "not_allowed", problem);
-      if ((q.ciInflight.get(`${who.ci.repo}#`, `${who.ci.repo}#`) as { n: number }).n >= CI_INFLIGHT) throw fail(429, "too_many_calls", `at most ${CI_INFLIGHT} CI calls in flight per repo`);
     }
     const price = priceOf(body);
     const upKey = secret("openrouter_key");
@@ -534,20 +532,23 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     body[field] = r.maxOutput;
     if (body.max_completion_tokens !== undefined) body.max_completion_tokens = r.maxOutput;
     body.provider = { ...(body.provider && typeof body.provider === "object" ? body.provider : {}), zdr: true };
-    // Settled once, however the call ends: the billed usage at max(reported, tokens x price), else the reservation.
-    const settle = (status: string, u?: Usage) => {
+    // Settled once, however the call ends: the billed usage at max(reported, tokens x price); nothing when the upstream refused
+    // before any output (`free`: OpenRouter bills none); else the reservation (a stream cut, no usage, a restart).
+    const settle = (status: string, u?: Usage, free = false) => {
       const floor = u ? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6 : 0;
-      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, u ? Math.max(u.costUsd ?? 0, floor) : r.usd, now() - t0, status, id];
+      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, u ? Math.max(u.costUsd ?? 0, floor) : free ? 0 : r.usd, now() - t0, status, id];
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
     let up: Response;
     try {
       up = await fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}` }, body: JSON.stringify(body) });
     } catch (e) {
-      settle("upstream_error");
+      // Refused before the request left (nothing reached OpenRouter): free. Any other failure may have been billed.
+      settle("upstream_error", undefined, ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(String(((e as Error).cause as { code?: string } | undefined)?.code)));
       throw fail(502, "upstream_error", `OpenRouter unreachable (${(e as Error).message})`);
     }
-    const tap = usageTap(String(up.headers.get("content-type") ?? "").includes("event-stream"));
+    const sse = String(up.headers.get("content-type") ?? "").includes("event-stream");
+    const tap = usageTap(sse);
     const text = new TextDecoder();
     // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger.
     let status = "upstream_aborted";
@@ -556,7 +557,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       if (up.body) for await (const c of up.body) { if (!res.destroyed) res.write(c); tap.feed(text.decode(c, { stream: true })); }
       status = up.ok ? "ok" : `upstream_${up.status}`;
     } finally {
-      settle(status, tap.done());
+      settle(status, tap.done(), !up.ok && !sse && status !== "upstream_aborted"); // a definite error answer, no stream started
     }
     if (!res.destroyed) res.end();
   }

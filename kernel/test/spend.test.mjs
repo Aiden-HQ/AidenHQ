@@ -12,6 +12,7 @@ import { mintToken } from "../src/gateway/token.ts";
 
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const closedPort = async () => { const x = await serve(() => {}); await new Promise((r) => x.s.close(r)); return x.url; };
 // $1 per million output tokens, input free: a call asking for 10,000 output tokens reserves exactly $0.01.
 const MODELS = { models: { flat: { in: 0, cached_in: 0, out: 1, peak: 1, max_output: 10_000 }, priced: { in: 1, cached_in: 0.1, out: 2, peak: 1, max_output: 10_000 } } };
 
@@ -71,6 +72,22 @@ test("caps keep their values: at the day cap refused, a reservation past it refu
   const s = await rig(t, { dayUsd: 0.005, answer: usage(0.001) });
   assert.equal((await s.call({ model: "flat", max_tokens: 10_000, messages: [] })).status, 200);
   assert.equal(s.seen[0].max_tokens, 5000);
+});
+
+test("a definite upstream refusal before any output is released at $0; a cut stream is not", async (t) => {
+  const r = await rig(t, { answer: (body, res) => res.writeHead(429, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "rate limited" } })) });
+  assert.equal((await r.call({ model: "flat", messages: [] })).status, 429);
+  assert.deepEqual(r.rows().map((x) => [x.status, x.cost_usd]), [["upstream_429", 0]]);
+  // A connection refused before the request left: nothing reached the upstream, nothing is charged.
+  const dir = mkdtempSync(join(tmpdir(), "spend-refused-"));
+  writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: { ag: { key: "eng" } } }));
+  writeFileSync(join(dir, "gateway.json"), JSON.stringify(MODELS));
+  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: await closedPort() });
+  const front = await serve((req, res) => gw.handle(req, res));
+  t.after(() => { front.s.close(); gw.close(); });
+  const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("js", { agentId: "ag", issueId: "WOR-1" }, Date.now())}` }, body: JSON.stringify({ model: "flat", messages: [] }) });
+  assert.equal(res.status, 502);
+  assert.deepEqual(gw.db.prepare("SELECT status, cost_usd FROM calls").all().map((x) => [x.status, x.cost_usd]), [["upstream_error", 0]]);
 });
 
 test("A12: stream cut, restart mid-call, no usage, under-reported cost, unpriced model", async (t) => {
