@@ -297,12 +297,13 @@ export function reasoningLoop(reply: string) {
  * How a run ended. It finished if it exited cleanly with a reply (or NO_REPLY): opencode, for one,
  * exits 0 when it gives up early, with nothing to say. Otherwise a headline for the runner's comment.
  */
-export function runOutcome({ code, timedOut, stalled, lastMessage, timeoutMinutes, dirty, committed = false }: { code?: number | null; timedOut?: boolean; stalled?: boolean; lastMessage?: string | null; timeoutMinutes?: number; dirty?: boolean; committed?: boolean }): { finished: boolean; silent?: boolean; headline: string } {
+export function runOutcome({ code, timedOut, stalled, stopped, lastMessage, timeoutMinutes, dirty, committed = false }: { code?: number | null; timedOut?: boolean; stalled?: boolean; stopped?: string; lastMessage?: string | null; timeoutMinutes?: number; dirty?: boolean; committed?: boolean }): { finished: boolean; silent?: boolean; headline: string } {
   const reply = String(lastMessage ?? "").trim();
   const leftover = dirty ? " Its partial changes are in the workspace, uncommitted." : committed ? " What it committed is on its branches." : " Nothing was changed.";
   if (!code && !timedOut && reasoningLoop(reply)) return { finished: false, headline: `**Stopped before finishing:** the agent's last message was its own reasoning running in a loop, not a report.${leftover} Say **continue** to pick up where it stopped.` };
   const finished = !code && !timedOut && Boolean(reply);
   if (finished) return { finished, silent: reply === NO_REPLY, headline: "" };
+  if (stopped) return { finished, headline: `**Stopped:** ${stopped}.${leftover} Rethink the approach, or say **continue** to pick up where it stopped.` };
   if (stalled) return { finished, headline: `**Stalled:** the agent produced nothing for 15 minutes, so it was stopped.${leftover} Say **continue** to pick up where it stopped.` };
   if (timedOut) return { finished, headline: `**Timed out** after ${timeoutMinutes} minutes.${leftover} Say **continue** to pick up where it stopped.` };
   if (code) return { finished, headline: `**Failed** (exit code ${code}).${leftover}` };
