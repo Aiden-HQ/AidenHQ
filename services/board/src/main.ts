@@ -1,7 +1,7 @@
 import pino from "pino";
 import { createAccounts, readGate } from "./accounts.js";
 import { createApp } from "./app.js";
-import { webhookWake, type Manifest } from "./app-access.js";
+import { routineWake, webhookWake, type Manifest } from "./app-access.js";
 import { appsApi } from "./fleet.js";
 import { createSigninServer } from "./signin.js";
 import { queueOwnerLine, startDetector } from "./fleet-ops.js";
@@ -81,6 +81,8 @@ const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...
   // Each shared app's manifest at its running commit (apps-mcp), and the app-request routine's webhook (setup writes its files).
   manifest: (app) => appsApi<Manifest>(`/internal/apps/${encodeURIComponent(app)}/manifest`, undefined, { auth: true }),
   wake: webhookWake(process.env.APP_REQUEST_WEBHOOK_URL_FILE ?? "/run/secrets/app_request_webhook_url", process.env.APP_REQUEST_WEBHOOK_SECRET_FILE ?? "/run/secrets/app_request_webhook_secret", log),
+  // In-app feedback: the app's own "App feedback: <app>" routine (compiled from its registry entry), run by its title.
+  feedbackWake: routineWake(paperclip, log),
   log });
 // The runner's Engineer jobs, as it last reported them (shared by the listeners: it reports to the internal one).
 const activity: { runner?: RunnerReport } = {};

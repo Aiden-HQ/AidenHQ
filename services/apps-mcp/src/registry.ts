@@ -23,6 +23,8 @@ const AppSchema = z
     compose: z.string().default("compose.yaml").refine(plainRel, "compose must be relative, without .."),
     host: z.string().default("local"),
     owner: z.string(),
+    // The agent people's feedback in a shared app wakes (its "App feedback: <app>" routine; default: owner). scripts/modules.mjs.
+    feedback_to: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).optional(),
     description: z.string(),
     port: z.number().int().min(1024).max(65535).refine((p) => p < PREVIEW_PORTS.min || p > PREVIEW_PORTS.max, `ports ${PREVIEW_PORTS.min}-${PREVIEW_PORTS.max} are the previews'`).optional(),
     expose: z.boolean().default(true), // tailscale serve --https=<port>; false for non-HTTP apps (databases)

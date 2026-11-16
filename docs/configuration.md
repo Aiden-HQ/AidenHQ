@@ -231,6 +231,11 @@ Design: [design/access.md](design/access.md).
   with `app_requests` and answers with `app_request_reply`; the person sees the reply at `/.aidenhq/requests`. It changes
   a role (`app_role_set`) only for an open request whose requester is an admin of that app at the time; the owner's own
   chat words reach it the same way (Aiden's `app_request_from_owner`). Every change is logged on the Access page.
+- **In-app feedback:** an app that keeps its own intake (feedback, corrections) calls `notifyOwner()` (the app starter's
+  `src/lib/notify-owner.ts`) after storing a submission: a body-less `POST /.aidenhq/notify`. The board runs the app's
+  `App feedback: <app>` routine (compiled for each shared app, tier0, for the agent in its registry entry's `feedback_to`,
+  else its `owner`) with only a count: at once, then at most once per 10 minutes per app. The agent reads the new items
+  from the app's agent API.
 - **Data:** `data/board/auth.db` (`app_roles`, `app_defaults`, `app_requests`, `app_access_log`), keyed by app name and
   exported to the gate in `data/gate/accounts.json`. An app that leaves `gate.json` takes its rows with it within a
   minute. A block or demotion returns only once the gate's file has it.

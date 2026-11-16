@@ -202,6 +202,25 @@ People ask the app's maintaining agent for changes without any access to the boa
 4. The owner can ask through the chief of staff, which files a request on the owner's behalf with
    `app_request_from_owner`; the board checks the comment is the owner's own and names the app.
 
+## In-app feedback
+
+Apps that keep their own intake (Roadmap Keeper's feedback and corrections) need the agent that owns them awake within a
+minute, not at its next scheduled run, without the text leaving the app.
+
+1. After the app's server stores a submission, its page calls `notifyOwner()` (app starter `src/lib/notify-owner.ts`):
+   `POST /.aidenhq/notify` on its own host, same origin. The gate serves the path, never reads the body, and tells the board
+   only the host's app and the verified visitor; a visitor blocked on the app is refused.
+2. The board counts the notice and runs the app's `App feedback: <app>` routine through Paperclip with that count alone: the
+   first at once, then at most one run per app per 10 minutes (the minute sync fires what waited). Paperclip coalesces a run
+   into a live one.
+3. `scripts/modules.mjs` compiles that routine for each shared app: the agent is the registry's `feedback_to`, else the app's
+   `owner`; `coalesce_if_active` and autonomy `tier0`, since app users' words drive the run. Its text is fixed product text
+   naming the app.
+4. The agent reads the new items from the app (`app_api` on the app's documented intake read) as untrusted data.
+
+An app can wake only the agent its own registry entry names (the app comes from the host, the agent from the instance repo);
+any signed-in member's page can send a notice without submitting, which costs at most one empty run per app per 10 minutes.
+
 ## Security notes
 
 - Header spoofing: the gate strips every inbound identity header (a forged `X-AidenHQ-Identity` included), and apps

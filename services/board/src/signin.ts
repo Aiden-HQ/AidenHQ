@@ -122,7 +122,7 @@ export function createSigninServer(o: { accounts: Accounts; hosts: string[]; gat
       // App access and in-app requests (spec 2026-11-12-app-access-rbac-design.md): the gate, server-side, with its shared
       // secret, names who is asking (`by` / `email`, the email it signed in or verified through Access); the board checks the
       // rest (an app admin for the Access page; a member who isn't blocked for a request).
-      if (path.startsWith("/.auth/api/app-access/") || path.startsWith("/.auth/api/app-request/")) {
+      if (path.startsWith("/.auth/api/app-access/") || path.startsWith("/.auth/api/app-request/") || path === "/.auth/api/app-feedback/new") {
         if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
         if (!o.hosts.includes(String(req.headers.host ?? "").toLowerCase()) || !o.accounts.fromGate(req)) return json(res, 403, { error: "only the gate" });
         const Email = z.string().max(200);
@@ -146,6 +146,10 @@ export function createSigninServer(o: { accounts: Accounts; hosts: string[]; gat
           case "app-request/new": {
             const { email, app, text, context } = z.object({ email: Email, app: App, text: z.string().trim().min(1).max(4000), context: z.string().max(500).optional() }).strict().parse(input);
             return json(res, 200, apps.request(app, email, text, context));
+          }
+          case "app-feedback/new": {
+            const { email, app } = z.object({ email: Email, app: App }).strict().parse(input);
+            return json(res, 200, apps.notify(app, email));
           }
           case "app-request/mine": {
             const { email, app } = z.object({ email: Email, app: App }).strict().parse(input);

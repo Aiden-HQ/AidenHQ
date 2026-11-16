@@ -171,3 +171,12 @@ test("identity keys: both signers' keys made once, keys.json lists every gate*/a
   ensureIdentityKeys(dir);
   assert.equal(keys().length, 2);
 });
+
+test("in-app feedback: each shared app gets a tier0 routine for the agent its registry names, and nothing else does", () => {
+  const notes = { name: "notes", repo: "acme/notes", owner: "boss", description: "d", port: 4200 };
+  const out = compile(mods, inst({ edge }, [{ ...roadmap, owner: "app-maintainer", feedback_to: "boss" }, notes]));
+  const feedback = Object.values(out.paperclip.routines).filter((r) => r.title.startsWith("App feedback:"));
+  assert.deepEqual(feedback.map(({ title, agent, concurrency, autonomy }) => ({ title, agent, concurrency, autonomy })), [{ title: "App feedback: roadmap", agent: "boss", concurrency: "coalesce_if_active", autonomy: "tier0" }]);
+  assert.match(feedback[0].description, /\{\{count\}\}/);
+  assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, feedback_to: "nobody" }])), /app-feedback-roadmap: agent nobody is not enabled/);
+});
