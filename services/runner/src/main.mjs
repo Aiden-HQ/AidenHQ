@@ -1173,8 +1173,14 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
   }
   // The tasks that opened these PRs close too, so they don't sit "in review" (shown as waiting for the owner).
   const mergedUrls = queue.prs.filter((p) => p.status === "merged").map((p) => p.url);
+  const markMerged = (id) => {
+    for (const b of state.branches(id)) if (b.pr_url && mergedUrls.some((u) => u.toLowerCase() === String(b.pr_url).toLowerCase())) state.updateBranch(id, b.repo, b.branch, { merged: 1 });
+  };
+  // Its own task too: a merge recorded only on other tasks' rows left this one's branch reading unmerged, so a later receipt
+  // invited a `pr` for work already on the default branch.
+  markMerged(issueId);
   for (const other of state.issuesWithPrs(mergedUrls, issueId)) {
-    for (const b of state.branches(other)) if (b.pr_url && mergedUrls.some((u) => u.toLowerCase() === b.pr_url.toLowerCase())) state.updateBranch(other, b.repo, b.branch, { merged: 1 });
+    markMerged(other);
     const o = await pc.issue(other).catch(() => undefined);
     const open = state.branches(other).filter((b) => b.pr_url && !b.merged).map((b) => b.pr_url);
     if (o?.status === "in_review" && merges.finishedStatus(o, queue, open) === "done" && (await mayClose(other, "finish_merges"))) await pc.setStatus(other, "done", `Merged by ${queue.identifier}'s merge queue.`).catch(() => {});
@@ -3886,15 +3892,22 @@ function headsOf(issueId) {
 }
 
 /**
- * Whether the board already shows a task's work published, so the run-end receipt leaves it out of its `pr` invitation:
- * the task is closed, or every branch it opened a PR for has that PR merged (a merge after the run ended counts too). A
- * branch with no PR, or one whose PR is still open, is not published: its invitation stays. Only the runner's own branch
- * records are read, so this is what the board already shows, never a guess.
+ * Whether the board already shows a task's work published, so the receipt leaves it out of its `pr` invitation: the task is
+ * closed, or every branch it opened a PR for has that PR merged and every head the last run ended on is the commit that
+ * merged (a merge after that run counts; a commit made on the branch since does not). A branch with no PR, or an open one,
+ * keeps the invitation. Only the runner's own records are read: what the board already shows, never a guess.
  */
 function publishedAt(issue) {
   if (CLOSED.includes(issue.status)) return true;
   const rows = state.branches(issue.id);
-  return rows.length > 0 && rows.every((b) => b.pr_url && b.merged);
+  if (!rows.length || !rows.every((b) => b.pr_url && b.merged)) return false;
+  const mergedPrs = (mergeQueue(issue.id)?.prs ?? []).filter((p) => p.status === "merged");
+  return headsOf(issue.id).every((h) => {
+    const prs = mergedPrs.filter((p) => sameRepo(p.repo, h.repo));
+    // Its merge queue says which commit each PR merged: a head newer than that is still unpublished. A PR merged outside
+    // the queue has no record to compare with, so its branch's merged flag is what the board shows.
+    return !prs.length || prs.some((p) => p.head === h.sha || p.headOid === h.sha);
+  });
 }
 
 /**
