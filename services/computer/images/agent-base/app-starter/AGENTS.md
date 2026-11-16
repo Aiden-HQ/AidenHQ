@@ -1,7 +1,40 @@
-# Working on this app's UI
+# Working on this app
 
 This app was started from the AidenHQ app starter: Vite + React + TypeScript, Tailwind CSS 4 and shadcn/ui, themed by
-the AidenHQ design system. `README.md` says what's where. These rules keep its pages consistent and working.
+the AidenHQ design system. This file is the map an engineer reads first: which file owns which screen, how to run and
+test it, and the rules that keep its pages consistent. `README.md` has the longer tour.
+
+## Map
+
+Replace the starter's rows with the app's own as its screens arrive; a reviewer maps a PR's changed files to the routes
+it screenshots from this table.
+
+| Route or piece | Owned by |
+|---|---|
+| `/` (Projects: list, filters, detail sheet at `?item=`) | `src/pages/projects.tsx`, data in `src/hooks/use-projects.ts` and `src/lib/projects.ts` |
+| `/teams` | `src/pages/teams.tsx` |
+| Unknown paths (404) | `src/pages/not-found.tsx` |
+| Routes, shell and header | `src/App.tsx` (`ROUTES`, the shell); every route is also in `server.mjs` `PAGES` |
+| API (`/api/health`, `/api/items`) and the CSP | `server.mjs` |
+| Pages and stateful URLs the UI review visits | `feature-map.json` |
+| Theme | `src/index.css` (and a `theme.css` when re-themed) |
+
+## Run, test, lint
+
+```sh
+npm ci                            # once
+npm run lint                      # ESLint, about a second
+node --test test/app.test.mjs     # one test file
+npm test                          # every test: builds, serves and checks the pages, CSP, health and API
+npm run build && npm start        # serve dist/ and the API on PORT (8080) for a browser or ui-review
+```
+
+## Keeping this file current
+
+A change that adds, moves or removes a screen, route, shared component, API route or test command updates the Map and
+these commands in the same PR, as it does `feature-map.json`.
+
+## Rules for the UI
 
 - **A menu, not a template.** `src/components/blocks/` and `src/components/ui/` (shadcn/ui) are a library with
   variants (props such as `variant`, `size`, `side`); nothing is required, and an app's build carries only what it
