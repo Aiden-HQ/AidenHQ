@@ -101,9 +101,10 @@ t64=; if apt-cache show libasound2t64 >/dev/null 2>&1; then t64=t64; fi
 # The libraries and a font set Chrome needs headless (the browser Engineer jobs use, below), and unzip for its archive.
 apt-get -y install "libatk1.0-0$t64" "libatk-bridge2.0-0$t64" "libatspi2.0-0$t64" libxcomposite1 libxdamage1 libxfixes3 \
   libxrandr2 libgbm1 "libasound2$t64" libnss3 libxkbcommon0 "libcups2$t64" libpango-1.0-0 libcairo2 fonts-liberation unzip
-# Secret vault (ops/vault): gocryptfs, and the TPM2 libraries systemd-creds loads to seal its password.
-if [ -n "$t64" ]; then apt-get -y install gocryptfs libtss2-esys-3.0.2-0t64 libtss2-rc0t64 libtss2-mu-4.0.1-0t64
-else apt-get -y install gocryptfs libtss2-esys-3.0.2-0 libtss2-rc0 libtss2-mu0; fi
+# Secret vault (ops/vault): gocryptfs with fuse3 (fusermount and /etc/fuse.conf; gocryptfs doesn't depend on it), and the
+# TPM2 libraries systemd-creds loads to seal its password.
+if [ -n "$t64" ]; then apt-get -y install gocryptfs fuse3 libtss2-esys-3.0.2-0t64 libtss2-rc0t64 libtss2-mu-4.0.1-0t64
+else apt-get -y install gocryptfs fuse3 libtss2-esys-3.0.2-0 libtss2-rc0 libtss2-mu0; fi
 # The vault view is mounted by the AidenHQ user with allow_other so the Docker daemon can bind-mount secrets from it.
 sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
 
