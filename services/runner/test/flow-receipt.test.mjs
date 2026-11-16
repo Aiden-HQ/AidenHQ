@@ -151,6 +151,7 @@ describe("flow-receipt with a task whose PR was closed without merging", () => {
       state.finishJob(job, "done", "committed");
       state.saveBranch("part2", { repo: "acme/app", branch: "fix/closed", base: "main" });
       state.updateBranch("part2", "acme/app", "fix/closed", { pr_url: "https://github.com/acme/app/pull/7", closed: 1 });
+      state.set("heads:part2", JSON.stringify([{ repo: "acme/app", branch: "fix/closed", sha: "b".repeat(40) }]));
       state.db.close();
     },
   });

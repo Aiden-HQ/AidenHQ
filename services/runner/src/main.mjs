@@ -3893,23 +3893,24 @@ function headsOf(issueId) {
 
 /**
  * Whether the board already shows a task's work published, so the receipt leaves it out of its `pr` invitation: the task is
- * closed, or every branch it opened a PR for has that PR merged (or closed) and every head the last run ended on is the
- * commit that PR merged (a merge after that run counts; a commit made on the branch since does not). A branch with no PR,
- * or an open one, keeps the invitation. Only the runner's own records are read: what the board already shows, never a guess.
+ * closed, or every branch it opened a PR for has that PR merged or closed, and every head the last run ended on is covered
+ * by one of them (a merge after that run counts; a commit made on the branch since does not). A branch with no PR, or an
+ * open one, keeps the invitation. Only the runner's own records are read: what the board already shows, never a guess.
  */
 function publishedAt(issue) {
   if (CLOSED.includes(issue.status)) return true;
   const rows = state.branches(issue.id);
-  // Merged, or closed without merging: either way the PR for that branch is finished, and no card is owed for it.
   if (!rows.length || !rows.every((b) => (b.pr_url && b.merged) || b.closed)) return false;
   const merged = (mergeQueue(issue.id)?.prs ?? []).filter((p) => p.status === "merged");
-  // A head the last run ended on is published only once its branch's PR is merged at that same commit (a merge after the
-  // run counts; a commit made on the branch since does not). A closed PR never covers a head: the commits were not merged.
   return headsOf(issue.id).every((h) => {
     const row = rows.find((b) => sameRepo(b.repo, h.repo) && b.branch === h.branch);
-    if (!row?.merged) return false;
+    if (!row) return false;
+    // A closed PR finished its branch's work without merging it: nothing is left to open.
+    if (row.closed) return true;
+    if (!row.merged) return false;
+    // Its merge queue says which commit each PR merged, so a head newer than that still awaits publication. A PR merged
+    // outside the queue has no head on record to compare with: its branch's merged flag is what the board shows.
     const prs = merged.filter((p) => sameRepo(p.repo, h.repo));
-    // A PR merged outside the queue has no head on record to compare with: its branch's merged flag is what the board shows.
     return !prs.length || prs.some((p) => p.head === h.sha || p.headOid === h.sha);
   });
 }
