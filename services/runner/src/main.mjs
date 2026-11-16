@@ -3905,8 +3905,9 @@ function publishedAt(issue) {
   return headsOf(issue.id).every((h) => {
     const row = rows.find((b) => sameRepo(b.repo, h.repo) && b.branch === h.branch);
     if (!row) return false;
-    // A closed PR finished its branch's work without merging it: nothing is left to open.
-    if (row.closed) return true;
+    // A closed PR finished its branch's work without merging it: nothing is left to open at the head it closed at, though a
+    // commit made after the close is not covered by it.
+    if (row.closed) return row.closed_head === h.sha;
     if (!row.merged) return false;
     // Its merge queue says which commit each PR merged, so a head newer than that still awaits publication. A PR merged
     // outside the queue has no head on record to compare with: its branch's merged flag is what the board shows.
@@ -4228,11 +4229,11 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   });
   const prUrl = stdout.trim().split("\n").pop();
   if (adopted) {
-    state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0 });
+    state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });
     log("existing PR adopted", { issue: issue.identifier, url: prUrl });
     return `${pushed ? `${pushed} to the PR that was already open` : "This branch already has an open PR"}: ${prUrl}`;
   }
-  state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0 });
+  state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });
   log("draft PR opened", { issue: issue.identifier, url: prUrl });
   return `${pushed ? `${pushed}, opened` : "Opened"} draft PR ${prUrl}`;
 }
@@ -4490,7 +4491,7 @@ async function leaveFinishedPrs(issue, workspace) {
     if (pr.state === "CLOSED") {
       // Closed without merging: remembered as closed, so a receipt leaves the finished work out. `pr` still opens a new one:
       // it takes the closed row as a branch with no PR and clears the flag when it does.
-      state.updateBranch(issue.id, b.repo, b.branch, { pr_url: null, closed: 1 });
+      state.updateBranch(issue.id, b.repo, b.branch, { pr_url: null, closed: 1, closed_head: pr.headRefOid ?? null });
       notes.push(`PR #${pr.number} (\`${b.branch}\`) was closed without merging, so **pr** will open a new one.`);
       continue;
     }
