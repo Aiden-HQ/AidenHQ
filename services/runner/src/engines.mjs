@@ -463,11 +463,12 @@ const STEPS = (s) => (Array.isArray(s) ? s.slice(-30).map((x) => ({ at: typeof x
 
 /**
  * Follow a run to its end: its events (from the run's offset), its exit file, the deadline and a stop request. Resolves with
- * { code, sessionId, lastMessage, timedOut, stalled, cancelled, usage, offset }, or { detached: true, offset, sessionId }
+ * { code, sessionId, lastMessage, timedOut, stalled, stopped, cancelled, usage, offset }, or { detached: true, offset, sessionId }
  * once `detach` aborts (the runner is restarting and leaves the run to its successor, which goes on from that offset).
+ * `progress` (progress.ts) stops a run that makes none (`stopped` says why) and moves the deadline out while it waits on CI.
  * `onProgress({ said, saidAt, plan, steps })` gets the agent's latest words, task list and tool calls as they change.
  */
-export function watchAgent(run, { sessionId, deadline, stallMs = 15 * 60_000, signal, detach, channel, onProgress }) {
+export function watchAgent(run, { sessionId, deadline, stallMs = 15 * 60_000, signal, detach, channel, onProgress, progress }) {
   const { pid, logPath, jobDir } = run;
   const exitFile = `${logPath}.exit`;
   const lastMessageFile = `${logPath}.last.md`;
@@ -500,6 +501,7 @@ export function watchAgent(run, { sessionId, deadline, stallMs = 15 * 60_000, si
           usage.seen = true;
         }
         if (e.t === "progress") {
+          progress?.add(STEPS(e.steps));
           const text = clip(e.text, 600);
           if (text && text !== said) (said = text), (run.saidAt = new Date().toISOString());
           onProgress?.({ ...(said ? { said, saidAt: run.saidAt } : {}), ...(PLAN(e.plan)?.length ? { plan: PLAN(e.plan) } : {}), ...(STEPS(e.steps)?.length ? { steps: STEPS(e.steps) } : {}) });
@@ -510,6 +512,7 @@ export function watchAgent(run, { sessionId, deadline, stallMs = 15 * 60_000, si
 
     let timedOut = false;
     let stalled = false;
+    let stopped;
     let cancelled = false;
     let killed = false;
     const kill = () => {
@@ -550,16 +553,20 @@ export function watchAgent(run, { sessionId, deadline, stallMs = 15 * 60_000, si
         }
         if (lastMessage) writeFileSync(lastMessageFile, lastMessage);
         // No status: the run died without its shell, by its own stop or timeout (killed), else by hand (a failure).
-        resolve({ code: code === null && !killed ? 1 : code, sessionId: found, lastMessage, timedOut, stalled, cancelled, offset: run.offset, ...(usage.seen ? { usage: { input: usage.input, cached: usage.cached, output: usage.output, costUsd: null } } : {}) });
+        resolve({ code: code === null && !killed ? 1 : code, sessionId: found, lastMessage, timedOut, stalled, stopped, cancelled, offset: run.offset, ...(usage.seen ? { usage: { input: usage.input, cached: usage.cached, output: usage.output, costUsd: null } } : {}) });
       });
     const tick = () => {
       read();
       if (exitStatus(exitFile) || !pid || run.spawnError || !alive(pid)) return done();
-      if (!timedOut && Date.now() > deadline) {
+      if (!timedOut && Date.now() > (progress?.deadline(deadline) ?? deadline)) {
         timedOut = true;
         kill();
       }
-      if (!timedOut && Date.now() - grewAt > stallMs) {
+      if (!timedOut && (stopped = progress?.check())) {
+        timedOut = true;
+        kill();
+      }
+      if (!timedOut && !progress?.waiting && Date.now() - grewAt > stallMs) {
         timedOut = stalled = true;
         kill();
       }

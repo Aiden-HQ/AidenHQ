@@ -23,6 +23,7 @@ import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
+import { progressTracker, staleRef } from "./progress.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.ts";
@@ -3603,6 +3604,9 @@ async function startJob({ issue, instructions }) {
     const prNotes = await leaveFinishedPrs(issue, workspace);
     if (prNotes.length) instructions = `(Runner note: ${prNotes.join(" ")} Build on what is there now.)\n\n${instructions}`;
     const repos = await repoInfo(workspace, { naming: issue });
+    // A brief naming a commit or branch that isn't there is the delegator's to fix: the job never starts on it.
+    const stale = await staleRef(`${instructions}\n${full.description ?? ""}`, repos.map((r) => r.path));
+    if (stale) throw new UserError(`Not started: ${stale}. Fix the brief and send it again.`);
     state.updateTask(issue.id, { engine });
     // Grafana and Google Cloud reads for an Engineer with private reads: a one-hour gcloud token of the job's own.
     gcp = observes(engine) && !engine.box
@@ -3682,7 +3686,7 @@ async function startJob({ issue, instructions }) {
     tools.run = { pid: run.pid, jobDir: run.jobDir, eventsOffset: 0, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, observing: observes(engine), repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
     state.saveRun(jobId, tools.run);
     running.get(issue.id).pid = run.pid;
-    const watch = watchAgent(run, { sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
+    const watch = watchAgent(run, { sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id), progress: progressTracker({ start: startedAt, windowMs: (cfg.progress_minutes ?? 35) * 60_000 }) });
     launched = { issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep: box && keepBox(issue, box, helper) };
   } catch (err) {
     if (stopping) return;
@@ -4676,7 +4680,7 @@ function adoptRuns() {
           return resumeInterrupted();
         }
       }
-      const watch = watchAgent(adoptRun({ pid: run.pid, logPath: job.log_path, jobDir: run.jobDir, offset: run.eventsOffset ?? 0 }), { sessionId: run.sessionId, deadline: run.startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
+      const watch = watchAgent(adoptRun({ pid: run.pid, logPath: job.log_path, jobDir: run.jobDir, offset: run.eventsOffset ?? 0 }), { sessionId: run.sessionId, deadline: run.startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id), progress: progressTracker({ start: run.startedAt, since: Date.now(), windowMs: (cfg.progress_minutes ?? 35) * 60_000 }) });
       await finishTurn({ issue, workspace: run.workspace, engine: run.engine, jobId: job.id, logPath: job.log_path, tipsBefore: run.tipsBefore, tools, gcp, helper, watch, box: run.box, keep: run.box && keepBox(issue, run.box, helper) });
     })();
   }
