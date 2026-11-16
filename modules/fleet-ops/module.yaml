@@ -59,7 +59,12 @@ routines:
     concurrency: skip_if_active
     schedules:
       - { cron: "0 9 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
-compose: compose.yaml
+# Switches on the board's detector (added to the root compose's board service).
+board_env:
+  FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"
+  FLEET_OPS_AUTOPAUSE: "${settings.health_autopause}"
+  FLEET_OPS_WEBHOOK_URL_FILE: ${secrets.fleet_ops_webhook_url}
+  FLEET_OPS_WEBHOOK_SECRET_FILE: ${secrets.fleet_ops_webhook_secret}
 # Written by setup once the routine's webhook exists; empty until then (the detector stays off while they're empty).
 optional_secrets:
   - fleet_ops_webhook_url

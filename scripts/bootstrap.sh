@@ -65,7 +65,8 @@ gen_secret computer_progress_token  # the board → the launcher's /progress onl
 gen_secret computers_runner_key     # the runner → the launcher's job routes only (/job, /job/renew, /job/release)
 placeholder paperclip_ops_key ""
 placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.mjs (the board restarts to read it)
-placeholder google_oauth.json "{}"
+mkdir -p "$AIDENHQ_SECRETS_DIR/modules/google" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules" "$AIDENHQ_SECRETS_DIR/modules/google"
+placeholder modules/google/google_oauth.json "{}"   # the google module's own vault dir (read-write at its /state)
 placeholder github_token ""      # the user's gh token: scripts/github-auth.sh
 placeholder slack_live_app_token ""             # xapp- Socket Mode token
 placeholder slack_live_bot_token ""             # xoxb- bot token, posts DMs to OWNER_SLACK_USER_ID
@@ -77,12 +78,8 @@ placeholder apps_incident_webhook_secret ""
 placeholder app_request_webhook_url ""         # the app-request routine's webhook (the board fires it); empty = no wake
 placeholder app_request_webhook_secret ""
 find "$AIDENHQ_SECRETS_DIR" -maxdepth 1 -type f -exec chmod 0600 {} + # files only: a folder without x (apps/, identity/) can no longer be opened
-mkdir -p "$AIDENHQ_SECRETS_DIR/slack" && chmod 0700 "$AIDENHQ_SECRETS_DIR/slack"
-mkdir -p "$AIDENHQ_SECRETS_DIR/primer" && chmod 0700 "$AIDENHQ_SECRETS_DIR/primer"
-mkdir -p "$AIDENHQ_SECRETS_DIR/glean" && chmod 0700 "$AIDENHQ_SECRETS_DIR/glean"
-mkdir -p "$AIDENHQ_SECRETS_DIR/grafana" && chmod 0700 "$AIDENHQ_SECRETS_DIR/grafana"
-mkdir -p "$AIDENHQ_SECRETS_DIR/clickhouse" && chmod 0700 "$AIDENHQ_SECRETS_DIR/clickhouse"
-mkdir -p "$AIDENHQ_SECRETS_DIR/jira" && chmod 0700 "$AIDENHQ_SECRETS_DIR/jira"   # jira-mcp: the Atlassian sign-in (jira module)
+# Modules' own vault dirs (secrets.state: read-write at the service's /state): sign-ins and rotating tokens.
+for m in slack primer glean grafana clickhouse jira; do mkdir -p "$AIDENHQ_SECRETS_DIR/modules/$m" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules/$m"; done
 mkdir -p "$AIDENHQ_SECRETS_DIR/apps" && chmod 0700 "$AIDENHQ_SECRETS_DIR/apps"   # <app>.env files for apps-mcp
 # The GitHub App's key (SETUP.md step 8, optional): compose mounts the folder, and Docker can't create it inside the vault.
 mkdir -p "$AIDENHQ_SECRETS_DIR/github-app" && chmod 0700 "$AIDENHQ_SECRETS_DIR/github-app"
@@ -103,7 +100,7 @@ grep -q 'names: \[\]' "$config_dir/system.yaml" && say "edit self.names/self.ema
 
 echo "Data"
 data="${AIDENHQ_DATA_DIR:-./data}"
-mkdir -p "$data/paperclip/instances/default/companies" "$data/ops-mcp" "$data/slack-live" "$data/board" "$data/apps" "$data/apps-mcp" "$data/apps-edge/state" "$data/apps-edge/serve"   # as you, so Docker never creates them as root
+mkdir -p "$data/paperclip/instances/default/companies" "$data/modules/meetings/ops-mcp" "$data/modules/owner-channel/slack-live" "$data/board" "$data/apps" "$data/apps-mcp" "$data/apps-edge/state" "$data/apps-edge/serve"   # as you, so Docker never creates them as root
 # (the board mounts Paperclip's companies folder: made by Docker as root, Paperclip itself could no longer write its home)
 umask 022
 

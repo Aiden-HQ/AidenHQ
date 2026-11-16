@@ -36,7 +36,7 @@ test("dry run prints the plan and no secrets", () => {
     ".env: APPS_URL_BASE=https://aidenhq-alice-apps.tail1234.ts.net", // apps on their own tailnet node, never the board's name
     "with OPENROUTER_MANAGEMENT_KEY,AIDENHQ_SECRETS_DIR) node", // the key goes in through the environment
     "openrouter-key.mjs create aidenhq-alice 50",
-    "write /home/alice/.config/aidenhq/google_oauth.json",
+    "write /home/alice/.config/aidenhq/modules/google/google_oauth.json",
     "write /home/alice/aidenhq-instance/apps.yaml", // instance.yaml's heredoc ends where it should
     "ops/apply-config.sh",
     "tailscale serve --bg --https=443 http://127.0.0.1:3121",
@@ -60,5 +60,5 @@ test("dry run needs no node, and a missing OpenRouter key is 'would fail'", () =
   const file = conf(person.filter((l) => !l.startsWith("OPENROUTER")));
   const out = execFileSync("/bin/bash", [setup, "--dry-run", "--config", file], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent" } });
   assert.ok(out.includes("would fail: set OPENROUTER_MANAGEMENT_KEY"), out);
-  assert.ok(out.includes("write /home/alice/.config/aidenhq/google_oauth.json"), out);
+  assert.ok(out.includes("write /home/alice/.config/aidenhq/modules/google/google_oauth.json"), out);
 });

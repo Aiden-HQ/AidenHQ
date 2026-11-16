@@ -1,5 +1,5 @@
 // The runner's metrics for the monitoring module (docs/design/monitoring.md): Prometheus text written to node-exporter's
-// textfile directory (data/monitoring/textfile/runner.prom) every 30 seconds, never a listener. Off while that directory
+// textfile directory (data/modules/monitoring/textfile/runner.prom) every 30 seconds, never a listener. Off while that directory
 // doesn't exist (compile creates it with the module). A stale file is how the runner being down shows (the alert reads its
 // mtime); systemd's view of the unit comes from ops/host-metrics.sh.
 import { existsSync, renameSync, writeFileSync } from "node:fs";

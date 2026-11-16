@@ -100,7 +100,7 @@ export function loadConfig() {
     // Jobs' reads of connections (compile writes it from the modules' jobcaps): through the gateway's /c/<connection>/mcp.
     jobcapsFile: join(configDir, "jobcaps.json"),
     // The runner itself publishes a task's document there; jobs never get this endpoint.
-    primerPublishUrl: env.PRIMER_RUNNER_PUBLISH_URL ?? "http://127.0.0.1:3123/mcp/publish", // not runner.yaml: old copies say /mcp
+    primerPublishUrl: env.PRIMER_RUNNER_PUBLISH_URL ?? "http://primer-mcp:8084/mcp/publish", // the container, by its service name
     primerPublishTokenFile: join(secrets, "primer_mcp_publish_token"),
     gcp: {
       credentialsFile: gcpCredentials,
@@ -134,7 +134,7 @@ export function loadConfig() {
     workDir: expand(cfg.work_dir ?? "~/aidenhq-work"),
     stateDir,
     // The monitoring module's textfile directory (node-exporter reads it): the runner's metrics (metrics.ts).
-    metricsFile: join(resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data")), "monitoring", "textfile", "runner.prom"),
+    metricsFile: join(resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data")), "modules", "monitoring", "textfile", "runner.prom"),
     ghWrapperDir: join(REPO_ROOT, "services/runner/bin"),
     // agent-browser and its pinned Chrome (ops/vm/setup.sh, the browser image's build), read-only in jobs (bin/aidenhq-browse).
     browserDir: "/opt/aidenhq/browser",

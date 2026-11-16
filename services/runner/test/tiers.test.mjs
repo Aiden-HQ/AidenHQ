@@ -230,14 +230,15 @@ test("product repo: module.yaml and compose.yaml by content", () => {
   assert.equal(tierOf(c(compose("t:1"), compose("t:1", { volumes: ["/var/run/docker.sock:/var/run/docker.sock"] }))), "panel", "a new mount");
   assert.equal(tierOf(c(compose("tailscale/tailscale:v1.90.1"), compose("evil/tailscale:v1.90.1"))), "panel", "another image repository");
   assert.equal(tierOf(c(compose("t:1"), yml({ services: { tailscale: { image: "t:1", network_mode: "host" }, extra: { image: "x:1" } } }))), "panel", "a new service");
-  // A module's compose fragment gets the same rules; unread, it is the owner's.
-  const frag = "modules/glean/compose.yaml";
-  const cf = (b, h) => prod("pr", { files: [frag], texts: { [frag]: { base: b, head: h } } });
-  assert.equal(tierOf(cf(compose("g:1@sha256:aa"), compose("g:1@sha256:bb"))), 1, "a fragment's digest bump");
-  assert.equal(tierOf(cf(compose("g:1"), compose("g:1", { privileged: true }))), "panel", "a fragment turns privileged");
-  assert.equal(tierOf(cf(compose("g:1"), compose("g:1", { environment: { TOKEN: "x" } }))), "panel", "a fragment's env");
-  assert.equal(tierOf(prod("pr", { files: [frag] })), "reject", "a fragment not read");
-  assert.equal(tierOf(withText(mod({ x: agent }, { compose: "compose.yaml" }), mod({ x: agent }, { compose: "other.yaml" }))), "panel", "a module's compose path");
+  // A module's services (generated compose): an image digest or tag bump is the reviewer's; anything else (env, a join, a
+  // link, a mount, secrets) the panel's. Fields compose would honour but the loader refuses never reach a tier: compile fails.
+  const svc = (image, extra = {}) => mod({ x: agent }, { services: { run: { srv: { image, ...extra } } } });
+  assert.equal(tierOf(withText(svc("g/g:1@sha256:aa"), svc("g/g:2@sha256:bb"))), 1, "a services image digest bump");
+  assert.equal(tierOf(withText(svc("g/g:1@sha256:aa"), svc("evil/g:1@sha256:aa"))), "panel", "another image repository");
+  assert.equal(tierOf(withText(svc("g/g:1@sha256:aa"), svc("g/g:1@sha256:aa", { join: ["warehouse"] }))), "panel", "a join");
+  assert.equal(tierOf(withText(svc("g/g:1@sha256:aa"), svc("g/g:1@sha256:aa", { env: { TOKEN: "x" } }))), "panel", "a service's env");
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: agent }, { board_env: { X: "1" } }))), "panel", "board_env");
+  assert.equal(tierOf(withText(mod({ x: agent }), mod({ x: agent }, { privileged: ["host-metrics"] }))), "panel", "a privileged entry");
   assert.equal(tierOf(withText(mod({ x: agent }, { settings: { autonomy: { default: "off" } } }), mod({ x: agent }, { settings: { autonomy: { default: "full" } } }))), "panel", "a setting's default");
 });
 

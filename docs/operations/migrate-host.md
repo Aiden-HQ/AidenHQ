@@ -262,7 +262,7 @@ Rules for the pre-seed:
   ```sh
   cd ~/aidenhq && bash scripts/bootstrap.sh   # data dirs, the apps_warehouse network, host node deps; secrets exist
   node scripts/compile.mjs && docker compose pull --ignore-buildable && docker compose build && ops/computer-images.sh
-  docker pull <each image in modules/*/apps/*/compose.yaml and modules/ci/compose.yaml, by its pinned digest>
+  docker pull <each image in modules/*/apps/*/compose.yaml and each FROM in modules/**/Dockerfile, by its pinned digest>
   ```
 
   `bootstrap.sh` and `compile.mjs` write config and data folders, and create only the secrets that are missing (none,

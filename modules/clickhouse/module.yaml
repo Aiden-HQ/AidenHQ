@@ -9,14 +9,30 @@ settings:
     host: "*.clickhouse.cloud"
 # How to set it up (the board's Settings, Connections).
 setup: "Set ClickHouse Cloud's MCP server URL on the board (Settings, Connections) and approve the change, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120). Used by the runner's Engineer jobs."
-compose: compose.yaml
+secrets:
+  state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
+services:
+  run:
+    clickhouse-mcp:
+      build: ./connections/clickhouse-mcp
+      tmp: 16m
+      port: 8088
+      egress: true
+      links: [board] # the board's sign-in endpoints
+      state: /state
+      env:
+        CLICKHOUSE_MCP_URL: "${settings.clickhouse_mcp_url}"
+        CLICKHOUSE_STATE_DIR: /state
+        MCP_TOKEN_FILE: ${secrets.clickhouse_mcp_token}
+        # The board's sign-in endpoints: state, and starting or finishing a sign-in.
+        CLICKHOUSE_AUTH_TOKEN_FILE: ${secrets.clickhouse_auth_token}
 # Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries).
 # Queries run up to two minutes (clickhouse-mcp caps them), past Codex's 60-second tool timeout.
 jobcaps:
   - id: clickhouse-read
     connection: clickhouse
     private: true
-    read_url: "http://127.0.0.1:3127/mcp"
+    read_url: "http://clickhouse-mcp:8088/mcp"
     read_secret: clickhouse_mcp_token
     tool_timeout_s: 180
     tools: [ get_organizations, get_services_list, get_service_details, list_databases, list_tables, run_select_query ]

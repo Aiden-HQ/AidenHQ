@@ -27,7 +27,33 @@ connections:
       read: [ searchJiraIssuesUsingJql, getJiraIssue, listJiraIssueChangelogs, listJiraIssueComments, listJiraProjects, getJiraProjectVersions, getJiraProjectVersionRelatedWork, listJiraBoards, getJiraBoardConfig, listJiraBoardSprints, lookupJiraAccountId, searchConfluence, getConfluenceContent ]
       # Defined for later; nobody is granted them by default.
       write: [ addOrEditJiraIssueComment, createJiraIssue ]
-compose: compose.yaml
+secrets:
+  state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
+services:
+  run:
+    jira-mcp:
+      build: ./connections/jira-mcp
+      tmp: 16m
+      egress: true
+      links: [board, sources] # the board's sign-in endpoints; the warehouse (shared sources)
+      state: /state
+      env:
+        JIRA_URL: "${settings.jira_url}"
+        ATLASSIAN_MCP_URL: "${settings.atlassian_mcp_url}"
+        JIRA_STATE_DIR: /state
+        HISTORY_PROJECTS: "${settings.history_projects}"
+        HISTORY_DAYS: "${settings.history_days}"
+        MCP_TOKEN_FILE: ${secrets.jira_service_key}
+        # The board's sign-in endpoints: state, and starting or finishing a sign-in.
+        JIRA_AUTH_TOKEN_FILE: ${secrets.jira_auth_token}
+        # Shared sources (src_jira): its warehouse login.
+        WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_jira_password}
+        # Confluence page summaries (src_jira.confluence_pages) through the model gateway with the source writers' key.
+        OPENROUTER_KEY_FILE: ${secrets.gateway_source_key}
+        OPENROUTER_BASE_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}/api/v1"
+# The board's Connect/Reconnect for Jira: its sign-in token, only while this module is on.
+board_env:
+  JIRA_AUTH_TOKEN_FILE: ${secrets.jira_auth_token}
 # The kernel's bearer for jira-mcp, and the board's for its sign-in endpoints: compile creates them (random) when missing.
 generated_secrets:
   - jira_service_key

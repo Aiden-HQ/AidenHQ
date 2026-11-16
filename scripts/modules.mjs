@@ -8,6 +8,7 @@ import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.mjs";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
+import { generateCompose, ownSecrets } from "../kernel/src/loader/services.ts";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
@@ -81,6 +82,53 @@ export function codexMcpBlock(mcpServers = {}) {
 
 const readYaml = (path) => YAML.parse(readFileSync(path, "utf8")) ?? {};
 const fail = (msg) => { throw new Error(msg); };
+
+/**
+ * What each module still reaches of the root stack until its kernel route lands (kernel/src/loader/services.ts `Legacy`).
+ * Closed: each list may only shrink (scripts/test/modules.test.mjs pins them). `until` is the unit that removes the entry.
+ * links: root services a module's services share a network with (board: sign-ins, connection health, internal API,
+ * metrics, the lane; paperclip:
+ * owner chat, webhooks; one network per pair), or root networks (backplane: the kernel's listener for services without
+ * egress, which can't route to it from an internal network; sources: the warehouse).
+ */
+export const LEGACY_LINKS = {
+  "owner-channel": { until: "2f", to: ["board", "paperclip", "sources"] },
+  monitoring: { until: "4c", to: ["board"] },
+  tasks: { until: "3e", to: ["backplane"] },
+  meetings: { until: "4c", to: ["backplane", "sources"] },
+  google: { until: "3g", to: ["board", "sources"] },
+  jira: { until: "3g", to: ["board", "sources"] },
+  glean: { until: "3g", to: ["board"] },
+  grafana: { until: "3g", to: ["board"] },
+  clickhouse: { until: "3g", to: ["board"] },
+  github: { until: "3g", to: ["board", "sources"] },
+  primer: { until: "3g", to: ["board"] },
+  slack: { until: "3g", to: ["board"] },
+  security: { until: "4c", to: ["paperclip", "sources"] },
+};
+/** Root secrets (the root compose's) a module's services may mount, until the same units. Closed; may only shrink. */
+export const LEGACY_SECRETS = {
+  "owner-channel": ["paperclip_board_key", "board_internal_token", "owner_decide_key"],
+  tasks: ["board_internal_token"],
+  google: ["google_auth_token", "gateway_source_key"],
+  jira: ["gateway_source_key"],
+  glean: ["glean_auth_token"],
+  grafana: ["grafana_auth_token"],
+  clickhouse: ["clickhouse_auth_token"],
+  github: ["github_token", "github_app"],
+};
+/** Host variables (the host's .env, never instance.yaml: they decide whose words count and where links point). Closed. */
+export const LEGACY_HOST_ENV = {
+  "owner-channel": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL", "OWNER_COMMAND_CHANNEL", "AIDENHQ_GATEWAY_URL"],
+  google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"],
+  jira: ["AIDENHQ_GATEWAY_URL"],
+  tasks: ["AIDENHQ_GATEWAY_URL"],
+  github: ["GITHUB_COMMENT_ORGS"],
+  slack: ["SLACK_CLIENT_ID"],
+};
+/** Networks the ops shell makes (fixed bridge, subnet and host rule: ops/units/aidenhq-ci-net.service). */
+export const OPS_NETWORKS = { ci: "aidenhq-ci" };
+const legacyOf = (name) => ({ links: LEGACY_LINKS[name]?.to, secrets: LEGACY_SECRETS[name], secretPaths: { github_app: "github-app" }, hostEnv: LEGACY_HOST_ENV[name], opsNetwork: OPS_NETWORKS[name] });
 
 /** Fleet default spend caps in USD (owner decision, wave 1): per run, per task, per agent per UTC day. */
 export const CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
@@ -167,7 +215,8 @@ const JOBCAP_FIELDS = ["id", "connection", "tools", "prompt", "tool_timeout_s", 
 /**
  * A module's `jobcaps:` (spec §3.1): what a runner job may read of a connection, through the kernel's
  * /c/<connection>/mcp with its own token (kernel/src/proxy.ts). `tools`: a list, or `read` for the module's connection
- * of that name's read tools. `read_url` (a host-loopback MCP endpoint) and `read_secret` (the vault file the gateway forwards
+ * of that name's read tools. `read_url` (one of the module's own services' MCP endpoint, http://<service>:<port>/…, which the
+ * kernel resolves to the container's address) and `read_secret` (the vault file the kernel forwards
  * as the bearer) bridge to today's read endpoints. `private: true`: private data, so only an Engineer with private_reads (no
  * web search) may hold it. Returns config/jobcaps.json's entries, by id.
  */
@@ -182,7 +231,7 @@ export function jobcapEntries(name, def) {
     if (!Array.isArray(tools) || !tools.length || tools.some((t) => typeof t !== "string" || !t)) fail(`${where}: tools must list its tools (or be read)`);
     const writes = writeTools(def.connections?.[j.connection]).filter((t) => tools.includes(t));
     if (writes.length) fail(`${where}: a jobcap reads only; ${writes.join(", ")} ${writes.length === 1 ? "is a write" : "are writes"}`);
-    if (!/^http:\/\/127\.0\.0\.1:\d{2,5}\/[\w/.-]*$/.test(j.read_url ?? "")) fail(`${where}: read_url must be an http://127.0.0.1:<port>/ endpoint`);
+    if (!/^http:\/\/[a-z][a-z0-9-]*:\d{2,5}\/[\w/.-]*$/.test(j.read_url ?? "")) fail(`${where}: read_url must be an http://<its service>:<port>/ endpoint`);
     if (!/^[a-z0-9_]+_mcp(_read)?_token$/.test(j.read_secret ?? "")) fail(`${where}: read_secret must name a <service>_mcp_token or <service>_mcp_read_token`);
     if (j.tool_timeout_s != null && !(Number.isInteger(j.tool_timeout_s) && j.tool_timeout_s > 0 && j.tool_timeout_s <= 600)) fail(`${where}: tool_timeout_s is 1-600`);
     if (j.private != null && typeof j.private !== "boolean") fail(`${where}: private is true or false`);
@@ -295,24 +344,6 @@ function substitute(value, settings, compose = false) {
   return value;
 }
 
-/** A path in a module's compose fragment: ./x or ../x become absolute from the module root; everything else stays. */
-const rootPath = (root, p) => (typeof p === "string" && /^\.\.?\//.test(p) ? resolve(root, p) : p);
-
-function rewriteService(root, svc) {
-  const s = { ...svc };
-  if (typeof s.build === "string") s.build = rootPath(root, s.build);
-  else if (s.build?.context) s.build = { ...s.build, context: rootPath(root, s.build.context) };
-  if (s.extends?.file) s.extends = { ...s.extends, file: rootPath(root, s.extends.file) };
-  if (s.env_file) s.env_file = [].concat(s.env_file).map((f) => rootPath(root, f));
-  if (s.volumes) {
-    s.volumes = s.volumes.map((v) => {
-      if (typeof v === "string") { const [src, ...rest] = v.split(":"); return [rootPath(root, src), ...rest].join(":"); }
-      return v.type === "bind" ? { ...v, source: rootPath(root, v.source) } : v;
-    });
-  }
-  return s;
-}
-
 const isolationOf = (v, where, allowed = PROFILES) => {
   const p = v ?? "trusted";
   if (!allowed.includes(p)) fail(`${where}: isolation must be one of ${allowed.join(", ")} (got ${p})`);
@@ -320,9 +351,8 @@ const isolationOf = (v, where, allowed = PROFILES) => {
 };
 
 /**
- * A module's compose service; two modules (or a module and the edge) may both extend the same service (e.g. each adds a
- * secret, an env var, a mount or a network to the board): their environment maps and secrets, volumes and networks lists merge. Anything else
- * declared twice, or one env var set two ways, fails.
+ * Additions to a root compose service (modules' board_env and legacy links, the edge's): environment maps and secrets,
+ * volumes and networks lists merge. Anything else declared twice, or one env var set two ways, fails.
  */
 function mergeService(services, key, svc) {
   const prev = services[key];
@@ -399,6 +429,12 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a) => a.name);
   const compose = { services: {}, secrets: {}, volumes: {}, networks: {} };
+  // The root compose (the product's own services, networks and secrets): what modules may reach only through LEGACY_*.
+  const base = existsSync(join(productDir, "compose.yaml")) ? readYaml(join(productDir, "compose.yaml")) : {};
+  const serviceModule = {};
+  const secretOwner = {};
+  const networkModule = {};
+  const dataDirs = [];
   const labelNames = new Set();
   const routineTitles = new Set();
   const jobcaps = {};
@@ -408,9 +444,10 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     const { root } = all.get(name);
     const def = substitute(all.get(name).def, settings);
     const isolation = isolationOf(def.isolation, `module ${name}`);
-    if (isolation === "untrusted" && (Object.keys(def.connections ?? {}).length || def.compose)) fail(`untrusted module ${name} may not declare connections or compose services`);
+    if (isolation === "untrusted" && (Object.keys(def.connections ?? {}).length || def.services || def.board_env)) fail(`untrusted module ${name} may not declare connections or services`);
+    if (def.compose != null) fail(`module ${name}: compose fragments are gone; declare services: (kernel/schemas/services.json)`);
     for (const l of def.labels ?? []) { if (labelNames.has(l.name)) fail(`duplicate label: ${l.name}`); labelNames.add(l.name); paperclip.labels.push(l); }
-    for (const [id, j] of Object.entries(jobcapEntries(name, def))) { if (jobcaps[id]) fail(`duplicate jobcap: ${id}`); jobcaps[id] = j; }
+    for (const [id, j] of Object.entries(jobcapEntries(name, def))) { if (jobcaps[id]) fail(`duplicate jobcap: ${id}`); jobcaps[id] = { ...j, module: name }; }
     for (const [kind, e] of Object.entries(engineEntries(name, def, root, productDir))) { if (engines[kind]) fail(`two modules declare engine kind ${kind}: ${engines[kind].module} and ${name}`); engines[kind] = e; }
     for (const [k, c] of Object.entries(def.connections ?? {})) {
       if (!Array.isArray(c.tools?.read) || !Array.isArray(c.tools?.write)) fail(`connection ${k}: tools.read and tools.write must list its tools`);
@@ -447,16 +484,45 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       if (instanceApps.includes(app.name)) fail(`app ${app.name} is already in the instance apps.yaml; rename that app before enabling ${name}`);
       apps.push({ ...rest, path: relative(productDir, join(root, app.path)), ...(untrusted ? { untrusted: true } : {}), module: name, ...(revision ? { pin: revision } : {}) });
     }
-    if (def.compose) {
-      const frag = substitute(readYaml(join(root, def.compose)), settings, true);
-      for (const [k, s] of Object.entries(frag.services ?? {})) mergeService(compose.services, k, rewriteService(root, s));
-      for (const kind of ["secrets", "volumes", "networks"]) {
-        for (const [k, v] of Object.entries(frag[kind] ?? {})) {
-          if (k in compose[kind] && JSON.stringify(compose[kind][k]) !== JSON.stringify(v)) fail(`conflicting compose ${kind.slice(0, -1)}: ${k}`);
-          compose[kind][k] = v;
-        }
-      }
+    // A secret is one module's own: two modules claiming one name would let either mount the other's.
+    for (const sec of ownSecrets(def)) {
+      if (secretOwner[sec] && secretOwner[sec] !== name) fail(`modules ${secretOwner[sec]} and ${name} both declare the secret ${sec}`);
+      secretOwner[sec] = name;
     }
+    // Its compose services, generated from `services:` (no module compose); settings substituted as compose text (no $).
+    const raw = all.get(name).def;
+    const gen = generateCompose(name, { ...def, services: substitute(raw.services, settings, true), board_env: substitute(raw.board_env, settings, true) }, { root, local: true, rootServices: Object.keys(base.services ?? {}), rootNetworks: Object.keys(base.networks ?? {}), rootSecrets: Object.keys(base.secrets ?? {}), legacy: legacyOf(name) });
+    for (const [k, s] of Object.entries(gen.services)) {
+      if (k in (base.services ?? {})) fail(`module ${name}: its service ${k} has a root service's name`);
+      put(compose.services, k, s, "compose service");
+      serviceModule[k] = { module: name, alias: Object.values(s.networks).flatMap((n) => n.aliases ?? [])[0] ?? k };
+    }
+    for (const [k, v] of Object.entries(gen.roots)) mergeService(compose.services, k, v);
+    for (const [k, v] of Object.entries(gen.secrets)) {
+      if (k in compose.secrets && JSON.stringify(compose.secrets[k]) !== JSON.stringify(v)) fail(`conflicting compose secret: ${k}`);
+      compose.secrets[k] = v;
+    }
+    // A network is one module's: a module named like another's link network (glean-board) can't define it and share it.
+    for (const [k, v] of Object.entries(gen.networks)) {
+      if (networkModule[k] || Object.values(compose.networks).some((n) => n.name === v.name)) fail(`module ${name}: its network ${v.name} is already ${networkModule[k] ?? "another module"}'s`);
+      networkModule[k] = name;
+      compose.networks[k] = v;
+    }
+    dataDirs.push(...gen.dataDirs);
+  }
+  // A join reaches only the joined module's own network, which that module defined (not a module named like another's
+  // link network, and never a module with no services).
+  for (const [k, v] of Object.entries(serviceModule)) {
+    for (const j of String(compose.services[k].labels?.["aidenhq.join"] ?? "").split(",").filter(Boolean)) {
+      if (networkModule[`mod-${j}`] !== j) fail(`module ${v.module}: ${k} joins ${j}, which defines no network of its own`);
+    }
+  }
+  // Networks get fixed subnets (Docker's default pools run out); two with one subnet fail here, never at compose up.
+  const subnets = {};
+  for (const [k, n] of Object.entries(compose.networks)) {
+    const sub = n.ipam?.config?.[0]?.subnet;
+    if (sub && subnets[sub]) fail(`networks ${subnets[sub]} and ${k} hash to the same subnet ${sub}: rename one module`);
+    if (sub) subnets[sub] = k;
   }
 
   // Shared access: the gate and cloudflared, only when the instance sets `edge` (scripts/edge.mjs).
@@ -465,8 +531,17 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     for (const [k, svc] of Object.entries(edge.compose.services)) mergeService(compose.services, k, svc);
     Object.assign(compose.secrets, edge.compose.secrets);
   }
+  // A module service's names (its key, and the name it declared, which the kernel resolves by label) are its alone: never
+  // another module's or a root service's, or a URL could reach the wrong module with this one's key.
+  const claimed = {};
+  for (const [k, v] of Object.entries(serviceModule)) {
+    for (const n of new Set([k, v.alias])) {
+      if (claimed[n] || (n !== k && (n in compose.services || n in (base.services ?? {})))) fail(`module ${v.module}: the service name ${n} is already ${claimed[n] ? `module ${claimed[n]}'s` : "a root service's"}`);
+      claimed[n] = v.module;
+    }
+  }
+  for (const k of Object.keys(compose.services)) if (!serviceModule[k] && claimed[k]) fail(`module ${claimed[k]}: the service name ${k} is a root service's`);
   // One host port, one owner: the product's compose, the modules', the gate, the board's auth listener and the apps.
-  const base = existsSync(join(productDir, "compose.yaml")) ? readYaml(join(productDir, "compose.yaml")) : {};
   checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "board"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
 
   instanceAgents(instanceDir, settings, paperclip, routineTitles);
@@ -636,14 +711,22 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   // Each connection's service learns its module (the caller assertion's audience) and where the kernel is (its keys). It
   // never gets the grants table. A connection served from the root compose (apps-mcp) is wired the same way there, by hand.
   const owners = {};
+  // A module's service by the name its URLs use (its key, or the old name it keeps as an alias), in that module only.
+  const serviceOf = (module, host) => Object.entries(serviceModule).find(([k, v]) => v.module === module && (k === host || v.alias === host))?.[0];
   for (const [name, c] of Object.entries(paperclip.mcp_servers)) {
     const host = c.url && new URL(c.url).hostname;
-    const svc = host && compose.services[host];
-    if (!svc) continue;
-    if (owners[host]) fail(`connections ${owners[host]} and ${name} share the service ${host}`);
-    owners[host] = name;
-    if (Array.isArray(svc.environment)) fail(`compose service ${host}: environment must be a map`);
+    // Served from the root compose (apps-mcp, wired there by hand), or by a module that runs no services here.
+    if (host in (base.services ?? {}) || !Object.values(serviceModule).some((v) => v.module === c.module)) continue;
+    const key = serviceOf(c.module, host) ?? fail(`connection ${name}: ${host} isn't one of module ${c.module}'s services`);
+    const svc = compose.services[key];
+    if (owners[key]) fail(`connections ${owners[key]} and ${name} share the service ${key}`);
+    owners[key] = name;
     svc.environment = { PAPERCLIP_URL: "http://paperclip:3100", ...svc.environment, AIDENHQ_MODULE: c.module, AIDENHQ_KERNEL_URL: `\${AIDENHQ_KERNEL_URL:-${KERNEL_URL}}` };
+  }
+  // A jobcap reads only its own module's service.
+  for (const [id, j] of Object.entries(jobcaps)) {
+    if (!serviceOf(j.module, new URL(j.url).hostname)) fail(`jobcap ${id}: ${new URL(j.url).hostname} isn't one of module ${j.module}'s services`);
+    delete j.module;
   }
   // The kernel's connection table (config/kernel/connections.json): where each connection is and with which key.
   const connections = Object.fromEntries(Object.entries(paperclip.mcp_servers).map(([k, c]) => [k, {
@@ -664,11 +747,6 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const optionalSecrets = enabled.flatMap((name) => all.get(name).def.optional_secrets ?? []);
   // Host-only tokens a module needs: created random when missing (compile.mjs).
   const generatedSecrets = enabled.flatMap((name) => all.get(name).def.generated_secrets ?? []);
-  // Directories under the data dir an enabled module's services bind (compile creates them before compose, as the user).
-  const dataDirs = enabled.flatMap((name) => (all.get(name).def.data_dirs ?? []).map((d) => {
-    if (typeof d !== "string" || !/^[a-z0-9][a-z0-9_/-]*$/.test(d) || d.includes("..")) fail(`module ${name}: data_dirs entries are relative paths (a-z, 0-9, _, -, /)`);
-    return d;
-  }));
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
   // A runner agent's engine (after the overrides that may set it, and its image) is one an enabled module provides.
   for (const [key, a] of Object.entries(paperclip.agents)) if (a.dispatch === "runner" && a.engine && !engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);

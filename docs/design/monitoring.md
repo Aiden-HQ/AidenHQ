@@ -9,20 +9,22 @@ two critical ones also tell the owner.
 
 | Piece | Where | Reached at |
 |---|---|---|
-| Prometheus (30 days, `monitoring_retention`) | compose, `monitoring` + `monitoring-board` | not published |
-| node-exporter (as nobody; host `/`, `/proc`, `/sys` read-only; textfiles) | compose, `monitoring` | not published |
-| cAdvisor (cgroup CPU, memory, disk IO; no Docker socket) | compose, `monitoring` | not published |
-| Alertmanager | compose, `monitoring` + `monitoring-board` | not published |
-| Grafana (no anonymous access, admin password in the vault) | compose, `monitoring` + `egress` | `127.0.0.1:3131`, tailnet via `tailscale serve` |
-| mcp-grafana (read tools only, Viewer token from the vault) | compose, `monitoring` + `grafana-local` | `mcp-grafana:8000`, grafana-mcp only |
+| Prometheus (30 days, `monitoring_retention`) | `aidenhq-mod-monitoring` + `-board` | not published |
+| node-exporter (as nobody; host `/`, `/proc`, `/sys` read-only; textfiles) | `aidenhq-mod-monitoring` | not published |
+| cAdvisor (cgroup CPU, memory, disk IO; no Docker socket) | `aidenhq-mod-monitoring` | not published |
+| Alertmanager | `aidenhq-mod-monitoring` + `-board` | not published |
+| Grafana (no anonymous access, admin password in the vault) | `aidenhq-mod-monitoring` + `-egress` | `127.0.0.1:3131`, tailnet via `tailscale serve` |
+| mcp-grafana (read tools only, Viewer token from the vault) | `aidenhq-mod-monitoring` + `aidenhq-mod-grafana` (join) | `mcp-grafana:8000`, grafana-mcp only |
 | Board `/internal/metrics`, `/internal/alerts` | board's internal listener | `board:3122`, monitoring token only |
-| Gateway metrics | `data/monitoring/textfile/gateway.prom`, every 30 s | node-exporter's textfile collector |
-| Runner metrics | `data/monitoring/textfile/runner.prom`, every 30 s | the same |
+| Gateway metrics | `data/modules/monitoring/textfile/gateway.prom`, every 30 s | node-exporter's textfile collector |
+| Runner metrics | `data/modules/monitoring/textfile/runner.prom`, every 30 s | the same |
 | Unit and container states | `ops/host-metrics.sh` (user timer `aidenhq-host-metrics`, every 30 s) | the same |
 
-Networks: `monitoring` (the module's services), `monitoring-board` (Prometheus and Alertmanager to the board's internal
-listener, and the board), `grafana-local` (mcp-grafana and grafana-mcp only); all internal, none of the module's services on
-the backplane. Alertmanager's API (silences), Prometheus and mcp-grafana take no auth of their own, so these networks are
+Networks (generated from `services:` in `modules/monitoring/module.yaml`): `aidenhq-mod-monitoring` (the module's services),
+`aidenhq-mod-monitoring-board` (Prometheus and Alertmanager to the board's internal listener, and the board), the grafana
+module's `aidenhq-mod-grafana` (mcp-grafana joins it to meet grafana-mcp: monitoring requires grafana); all internal, none of
+the module's services on the backplane. node-exporter and cAdvisor's read-only host mounts are the module's one privileged
+entry, `host-metrics`. Alertmanager's API (silences), Prometheus and mcp-grafana take no auth of their own, so these networks are
 their boundary; `scripts/verify-security.sh` checks it.
 
 The host processes (runner, gateway) and the systemd/container states are textfiles, not listeners: no new port on the host, no new privilege

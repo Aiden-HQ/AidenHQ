@@ -19,8 +19,8 @@ never in this file.
 
 ## Layout
 
-- `modules/<name>/`: `module.yaml`, plus `agents/<key>/AGENTS.md` handbooks, `connections/<svc>/` MCP servers,
-  `apps/<app>/` and `compose.yaml`. `modules/core` is always installed.
+- `modules/<name>/`: `module.yaml` (its containers under `services:`; compile generates their compose), plus
+  `agents/<key>/AGENTS.md` handbooks, `connections/<svc>/` MCP servers and `apps/<app>/`. `modules/core` is always installed.
 - `kernel/`: the `aidenhq-kernel` host service (the model gateway and the tool proxy in front of every connection: grants,
   caller assertions, fencing) and the module SDK (`kernel/sdk`).
 - `services/`: `board` (owner UI and approvals), `runner` (host coding jobs and git gates), `apps-mcp`,

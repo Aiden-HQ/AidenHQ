@@ -9,4 +9,11 @@ agents:
   x: { adapter: codex_local, model: m1, connections: { tasks: [t], "glean?": [search], bconn: read, aconn: write } }
 routines:
   r: { title: R, agent: x, description: "Today is {{date}}; mail ${settings.owner_email}" }
-compose: compose.yaml
+generated_secrets: [a_mcp_token]
+services:
+  data: true
+  run:
+    a-mcp:
+      image: example.com/acme/a-mcp:1.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      data: ["a:/data"]
+      secrets: [a_mcp_token]

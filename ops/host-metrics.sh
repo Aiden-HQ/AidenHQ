@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The monitoring module's host metrics (docs/design/monitoring.md), as node-exporter textfiles in data/monitoring/textfile:
+# The monitoring module's host metrics (docs/design/monitoring.md), as node-exporter textfiles in data/modules/monitoring/textfile:
 #   units.prom       AidenHQ's systemd units, user (runner, gateway, CI runners, computers) and system (aidenhq-ci-net, ...):
 #                    active and failed. No privileges: `systemctl [--user] list-units` reads them as the owner's user.
 #   containers.prom  every compose container and computer box: running, restart count, health, and its cgroup id, so cAdvisor's per-cgroup
@@ -11,7 +11,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ -f "$repo/.env" ] && { set -a; . "$repo/.env"; set +a; }
 data="${AIDENHQ_DATA_DIR:-data}"
 case "$data" in /*) ;; *) data="$repo/$data" ;; esac
-dir="$data/monitoring/textfile"
+dir="$data/modules/monitoring/textfile"
 [ -d "$dir" ] || exit 0
 
 # Label values come from systemd and Docker names: keep [A-Za-z0-9_.@:/-] only.

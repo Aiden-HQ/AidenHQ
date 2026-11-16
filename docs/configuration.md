@@ -5,8 +5,8 @@ Configuration has two sources: **modules** in the product repo (`modules/<name>/
 
 ## Modules
 
-A module is a folder with a `module.yaml` and any of `agents/<key>/AGENTS.md`, `connections/<svc>/`, `apps/<app>/` and
-`compose.yaml`. `modules/core` (agents, tasks and apps connections, the board's roles) is always installed and requires
+A module is a folder with a `module.yaml` and any of `agents/<key>/AGENTS.md`, `connections/<svc>/` and `apps/<app>/`. It
+ships no compose file: compile generates its services from `services:`. `modules/core` (agents, tasks and apps connections, the board's roles) is always installed and requires
 `owner-channel`.
 
 `module.yaml` fields:
@@ -20,7 +20,10 @@ A module is a folder with a `module.yaml` and any of `agents/<key>/AGENTS.md`, `
 | `routines` | Scheduled or webhook-triggered runs for an agent: `title`, `agent`, `description`, `concurrency`, `schedules`, `status`, and `model` (see below). |
 | `connections` | MCP servers: `url` (or `command`/`args`), `bearer_token_env_var`, `guide` (shown to agents), `setup` (how to set it up, shown on the board's Settings, Connections), and `tools: { read: [...], write: [...], destructive: [...] }` (`destructive`, optional: tools that delete; compile refuses a tool named like delete, trash, remove or purge under `read` or `write`). |
 | `apps` | Apps for `apps-mcp`: `name`, `owner`, `port`, `stateful`, `expose`, `caps`, `secrets`, `repo`, `path`. |
-| `compose` | A compose file for the module's services, merged into `compose.modules.yaml`. |
+| `services` | Its containers (spec §5.11, `kernel/schemas/services.json`; any other field fails compile): `run: { <svc>: { image (by digest) or build (a folder in the module), command, entrypoint, env, secrets, port, ui_port (127.0.0.1 only), tmp, user, read_only, data, state, egress, links, join, on_demand, cpus, memory, pids } }` and `data: true`. Each becomes `<module>-<svc>` (the old name stays a network alias) with all capabilities dropped, `no-new-privileges`, a read-only root, the module's own network `aidenhq-mod-<module>` (internal) and, with `egress`, its own egress network. `data` mounts folders of `data/modules/<module>/`; `state` the module's own vault dir (`secrets.state: true`); `env` reads `${secrets.<own>}` (its file path). `join` names a module it `requires`; `links` (root services and networks) come only from the closed lists in `scripts/modules.mjs`. |
+| `secrets` | `provided` (secrets the module owns but doesn't generate) and `state: true` (its vault dir `modules/<module>/`, read-write). A secret is one module's; a root secret only through the legacy list. |
+| `board_env` | Environment (and its `${secrets.x}`) added to the root board service, until the board is a module. |
+| `privileged` | Entries of the closed list (spec §5.6); `host-metrics` allows `host_mounts` (read-only `/`, `/sys`, `/proc`). |
 | `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
 | `generated_secrets` | Secret files compile creates randomly when missing. |
 

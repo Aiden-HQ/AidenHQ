@@ -1,6 +1,0 @@
-services:
-  board:
-    environment: { A: "1" }
-    secrets: [ s1 ]
-secrets:
-  s1: { file: /s/s1 }

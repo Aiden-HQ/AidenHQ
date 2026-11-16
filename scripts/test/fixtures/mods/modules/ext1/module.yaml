@@ -1,3 +1,4 @@
 name: ext1
 description: extends the board
-compose: compose.yaml
+generated_secrets: [s1]
+board_env: { A: "1", S1_FILE: "${secrets.s1}" }

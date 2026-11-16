@@ -93,13 +93,13 @@
     "id": "H4",
     "attack": "Hostile module manifest: bind mount, cap_add, network_mode: host, another module's network, a socket",
     "unit": "2b",
-    "test": null
+    "test": "kernel/test/services.test.mjs"
   },
   {
     "id": "H5",
     "attack": "Hostile module reads another module's secrets or data dir",
     "unit": "2b",
-    "test": null
+    "test": "kernel/test/services.test.mjs"
   },
   {
     "id": "H6",

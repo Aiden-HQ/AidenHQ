@@ -106,7 +106,7 @@ setInterval(ciCheck, 60_000);
 
 // The monitoring module's metrics (lib.ts metricsText): a node-exporter textfile every 30 seconds, written only while the
 // module's directory exists. A file, not a route: nothing new listens, and a stale file shows the gateway is down.
-const textfile = path.join(dataDir, "monitoring", "textfile");
+const textfile = path.join(dataDir, "modules", "monitoring", "textfile");
 setInterval(() => {
   if (!existsSync(textfile)) return;
   try {

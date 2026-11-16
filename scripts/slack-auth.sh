@@ -7,7 +7,7 @@ cd "$repo"
 env_file="${AIDENHQ_ENV_FILE:-.env}"
 set -a; . "$env_file"; set +a
 : "${SLACK_CLIENT_ID:?set SLACK_CLIENT_ID in .env}"
-dir="$AIDENHQ_SECRETS_DIR/slack"
+dir="$AIDENHQ_SECRETS_DIR/modules/slack"
 mkdir -p "$dir" && chmod 0700 "$dir"
 node modules/slack/connections/slack-mcp/src/auth.ts "$SLACK_CLIENT_ID" "$dir/token.json" "${SLACK_CALLBACK_PORT:-3118}"
 docker compose up -d --force-recreate slack-mcp

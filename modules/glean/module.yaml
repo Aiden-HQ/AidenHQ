@@ -18,7 +18,24 @@ connections:
       write: []
 # Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries).
 jobcaps:
-  - { id: glean-read, connection: glean, tools: read, private: true, read_url: "http://127.0.0.1:3126/mcp/read", read_secret: glean_mcp_read_token }
-compose: compose.yaml
+  - { id: glean-read, connection: glean, tools: read, private: true, read_url: "http://glean-mcp:8085/mcp/read", read_secret: glean_mcp_read_token }
+secrets:
+  state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
+services:
+  run:
+    glean-mcp:
+      build: ./connections/glean-mcp
+      tmp: 16m
+      port: 8085
+      egress: true
+      links: [board] # the board's sign-in endpoints
+      state: /state
+      env:
+        GLEAN_MCP_URL: "${settings.glean_mcp_url}"
+        GLEAN_STATE_DIR: /state
+        MCP_TOKEN_FILE: ${secrets.glean_service_key}
+        MCP_READ_TOKEN_FILE: ${secrets.glean_mcp_read_token}
+        # The board's sign-in endpoints: state, and starting or finishing a sign-in.
+        GLEAN_AUTH_TOKEN_FILE: ${secrets.glean_auth_token}
 generated_secrets:
   - glean_service_key

@@ -1,6 +1,0 @@
-# core module: the owner's email (his board account), merged into the root compose's board service. Port 3129 is in the
-# root compose; config/gate.json and data/gate come with settings.edge (scripts/edge.mjs).
-services:
-  board:
-    environment:
-      BOARD_OWNER_EMAIL: "${settings.owner_email}"

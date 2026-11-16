@@ -20,7 +20,70 @@ settings:
   telegram_fyi:
     default: send
     values: [ send, mute ]
-compose: compose.yaml
+services:
+  data: true
+  run:
+    slack-live-mcp:
+      build: ./connections/slack-live-mcp
+      tmp: 16m
+      egress: true
+      links: [board, paperclip, sources] # approvals and the lane (board); the owner chat bridge (Paperclip); src_slack
+      data: ["slack-live:/data"]
+      env:
+        SLACK_LIVE_DB: /data/slack-live.sqlite
+        OWNER_NAME: "${settings.owner_name}"
+        OWNER_TIMEZONE: "${settings.timezone}"
+        OWNER_COMPANY: "${settings.company_name}"
+        # Host-controlled (.env), never instance.yaml: this identity decides whose Slack words count and who gets paged.
+        OWNER_SLACK_USER_ID: "${OWNER_SLACK_USER_ID:-}"
+        IGNORE_CHANNELS: "${SLACK_LIVE_IGNORE_CHANNELS:-}"
+        # Channels agents may post to (slack_post), from the instance.
+        SLACK_POST_CHANNELS: "${settings.slack_post_channels}"
+        # notify_owner kind fyi on Telegram: send, or mute (they still land on the chat).
+        TELEGRAM_FYI: "${settings.telegram_fyi}"
+        URGENT_COOLDOWN_MIN: "60"
+        MCP_BEARER_TOKEN_FILE: ${secrets.slack_live_service_key}
+        SLACK_APP_TOKEN_FILE: ${secrets.slack_live_app_token}
+        SLACK_BOT_TOKEN_FILE: ${secrets.slack_live_bot_token}
+        TRIAGE_WEBHOOK_URL_FILE: ${secrets.slack_live_triage_webhook_url}
+        TRIAGE_WEBHOOK_SECRET_FILE: ${secrets.slack_live_triage_webhook_secret}
+        TELEGRAM_NOTIFY_BOT_TOKEN_FILE: ${secrets.telegram_notify_bot_token}
+        TELEGRAM_OWNER_CHAT_ID: "${TELEGRAM_OWNER_CHAT_ID:-}"
+        # Host-controlled link target for task IDs in Telegram messages, e.g. https://<paperclip>/WOR/issues/{id}.
+        TELEGRAM_TASK_URL: "${TELEGRAM_TASK_URL:-}"
+        # Inbound chat bridge: comments on the daily "Chat with <owner>" issue, authored as the owner (board key).
+        PAPERCLIP_URL: http://paperclip:3100
+        PAPERCLIP_BOARD_KEY_FILE: ${secrets.paperclip_board_key}
+        OWNER_COMMAND_CHANNEL: "${OWNER_COMMAND_CHANNEL:-}"
+        # Voice notes are transcribed on this host (audio never leaves it).
+        WHISPER_URL: http://whisper:9000
+        # Approvals: pending cards from the board's internal API; decisions proven with the decide key.
+        BOARD_INTERNAL_URL: http://board:3122
+        BOARD_INTERNAL_TOKEN_FILE: ${secrets.board_internal_token}
+        OWNER_DECIDE_KEY_FILE: ${secrets.owner_decide_key}
+        # Shared sources (src_slack): its warehouse login, and the owner's user token (xoxp, history scopes) for the gap sync.
+        WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_slack_password}
+        SLACK_USER_TOKEN_FILE: ${secrets.slack_live_user_token}
+        # The fast chat lane (src/lane): its config, its model credential's secret (capped agent calls only) and the gateway.
+        LANE_CONFIG_FILE: ${secrets.lane_config}
+        LANE_DB: /data/lane.sqlite
+        GATEWAY_LANE_SECRET_FILE: ${secrets.gateway_lane_secret}
+        AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
+    # Local speech-to-text for Telegram voice notes (faster-whisper, CPU). The model downloads once into the data dir.
+    # Built here from upstream v1.10.0 on patched bases (see whisper/Dockerfile), not pulled from the upstream tag.
+    whisper:
+      build: ./whisper
+      user: image # root in the container owns its model dir, so cap_drop ALL is enough
+      read_only: false
+      egress: true
+      data: ["whisper:/data/whisper"]
+      env:
+        ASR_ENGINE: faster_whisper
+        ASR_MODEL: small
+        ASR_MODEL_PATH: /data/whisper
+        MODEL_IDLE_TIMEOUT: "300" # unload the model after 5 idle minutes (it holds ~1.5 GB); reloads on the next note
+      memory: 2g
+      cpus: 2
 # Channels the owner may not use: created empty when missing, so compose starts; an empty token means "not configured".
 optional_secrets:
   - telegram_notify_bot_token
