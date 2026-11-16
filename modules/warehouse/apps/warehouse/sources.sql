@@ -64,10 +64,12 @@ CREATE TABLE IF NOT EXISTS src_meta.ingest_run (
   started_at timestamptz NOT NULL,
   finished_at timestamptz NOT NULL DEFAULT now(),
   rows integer NOT NULL DEFAULT 0,
-  error text
+  error text,
+  commit text
 );
+ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS commit text;
 CREATE INDEX IF NOT EXISTS ingest_run_source ON src_meta.ingest_run (source, finished_at DESC);
-COMMENT ON TABLE src_meta.ingest_run IS 'One row per ingest pass of a source writer: source (slack, github, jira, meetings, docs, security, app-auditor), scope (what it covered), rows written with a difference, error when it failed.';
+COMMENT ON TABLE src_meta.ingest_run IS 'One row per ingest pass of a source writer: source (slack, github, jira, meetings, docs, security, app-auditor), scope (what it covered), rows written with a difference, error when it failed, commit for a repo target (the checkout''s git HEAD, so the row says which tree the pass read).';
 GRANT INSERT ON src_meta.ingest_run TO writers;
 GRANT USAGE ON SEQUENCE src_meta.ingest_run_id_seq TO writers;
 GRANT SELECT ON src_meta.ingest_run TO agents_open;

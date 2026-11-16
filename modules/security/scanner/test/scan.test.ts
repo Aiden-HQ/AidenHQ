@@ -5,18 +5,18 @@ import type { SourceStore } from "../src/source-store.js";
 // The writer against an in-memory store that keys rows like Postgres would (the SQL itself follows the other writers).
 function fakeStore() {
   const rows = new Map<string, Record<string, any>>();
-  const runs: { scope: string; error: string | null }[] = [];
+  const runs: { scope: string; error: string | null; commit: string | null }[] = [];
   const scopes = new Map<string, { baselined: boolean; cursor: string | null; syncedAt: number }>();
   const key = (r: Record<string, any>) => [r.target, r.package, r.version, r.vuln_id].join("|");
   const store = {
     migrate: async () => undefined,
-    run: async (_source: string, scope: string, fn: () => Promise<number>) => {
+    run: async (_source: string, scope: string, fn: () => Promise<number>, meta: { commit?: string | null } = {}) => {
       try {
         const n = await fn();
-        runs.push({ scope, error: null });
+        runs.push({ scope, error: null, commit: meta.commit ?? null });
         return n;
       } catch (err) {
-        runs.push({ scope, error: String((err as Error).message) });
+        runs.push({ scope, error: String((err as Error).message), commit: meta.commit ?? null });
         throw err;
       }
     },
@@ -54,8 +54,12 @@ it("src_security: one row per finding key across passes and paths, gone findings
     "image.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] },
   };
   let now = Date.parse("2026-11-11T00:00:00Z");
+  const head = "1".repeat(40);
+  const inst = "2".repeat(40);
+  const logs: Record<string, unknown>[] = [];
   const batch = (): Batch => ({ finishedAt: new Date(now - 3_600_000), targets: [
-    { target: "repo:product", file: "repo.json" },
+    { target: "repo:product", file: "repo.json", commit: head },
+    { target: "repo:instance", file: "repo.json", commit: inst },
     { target: "image:aidenhq/board:local", file: "image.json" },
     { target: "app:broken", file: "broken.json" }, // grype chokes on it
     { target: "host", error: "syft exited 1" }, // the host couldn't inventory it
@@ -65,22 +69,27 @@ it("src_security: one row per finding key across passes and paths, gone findings
     readBatch: async () => batch(),
     grype: async (f: string) => { if (!(f in sboms)) throw new Error("unable to decode sbom"); return sboms[f]; },
     now: () => now,
+    log: (msg: string, extra: Record<string, unknown>) => logs.push({ msg, ...extra }),
   };
 
-  expect(await scanPass(store, deps)).toBe(2);
-  expect(rows.size).toBe(2); // lodash at two paths is one finding
+  expect(await scanPass(store, deps)).toBe(3);
+  expect(rows.size).toBe(3); // lodash at two paths is one finding, per repo target
   const lodash = rows.get("repo:product|lodash|4.17.20|CVE-2021-23337")!;
   expect(lodash).toMatchObject({ present: true, severity: "high", fixed_version: "1.2.4", fix_state: "fixed", cvss: 7.5, aliases: ["GHSA-xxxx-yyyy-zzzz"], locations: ["/a/package-lock.json", "/b/package-lock.json"], target_kind: "repo", tool: "grype" });
   expect(lodash.finding_id).toMatch(/^[0-9a-f]{16}$/);
   expect(lodash.last_seen).toEqual(new Date(now));
   expect(runs.filter((r) => r.error).map((r) => r.scope).sort()).toEqual(["app:broken", "host"]);
+  // Every repo pass records the checkout's commit, in the target's ingest_run row and in the scanner's log.
+  expect(runs.find((r) => r.scope === "repo:product")?.commit).toBe(head);
+  expect(runs.find((r) => r.scope === "repo:instance")?.commit).toBe(inst);
+  expect(logs.find((l) => l.msg === "sbom batch")?.targets).toEqual(expect.arrayContaining([{ target: "repo:product", commit: head }, { target: "repo:instance", commit: inst }]));
 
   // A day later: the same findings write nothing (no re-delivery), last_seen still moves; the openssl image is gone.
   now += 86_400_000;
   sboms["repo.json"] = { matches: [match("lodash", "4.17.20", "CVE-2021-23337", "/a/package-lock.json")] };
   delete sboms["image.json"];
   const second = await scanPass(store, { ...deps, readBatch: async () => ({ ...batch(), targets: batch().targets.filter((t) => !t.target.startsWith("image:")) }) });
-  expect(second).toBe(2); // lodash's locations changed (one path fewer) + openssl resolved
+  expect(second).toBe(3); // lodash's locations changed on both repo targets (one path fewer) + openssl resolved
   expect(rows.get("repo:product|lodash|4.17.20|CVE-2021-23337")!.last_seen).toEqual(new Date(now));
   expect(rows.get("image:aidenhq/board:local|openssl|3.0.1|CVE-2024-0001")).toMatchObject({ present: false, resolved_at: new Date(now) });
 

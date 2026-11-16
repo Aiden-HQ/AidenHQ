@@ -117,7 +117,7 @@ async function resolveGone(store: SourceStore, target: string, tool: string, kee
 /** The host's SBOM batch (ops/security-sbom.sh): each target's SBOM file, or the reason the host couldn't make one. */
 export interface Batch {
   finishedAt: Date | null; // null: no batch yet
-  targets: { target: string; file?: string; error?: string }[];
+  targets: { target: string; file?: string; error?: string; commit?: string }[]; // commit: the checkout's git HEAD
 }
 
 export interface PassDeps {
@@ -127,6 +127,7 @@ export interface PassDeps {
   now?: () => number;
   deadlineMs?: number; // the pass stops starting targets after this long (the rest go first next time)
   staleMs?: number; // a batch older than this is reported and resolves nothing
+  log?: (msg: string, extra: Record<string, unknown>) => void;
 }
 
 /** A target that can't be scanned this pass, for a reason a retry won't fix: recorded, skipped, never fails the pass. */
@@ -138,6 +139,7 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
   await store.migrate(DDL);
   await d.dbUpdate(); // offline or a broken DB download: transient, the whole pass fails and runs again later
   const batch = await d.readBatch();
+  d.log?.("sbom batch", { finishedAt: batch.finishedAt?.toISOString() ?? null, targets: batch.targets.map((t) => ({ target: t.target, commit: t.commit ?? null })) });
   const staleMs = d.staleMs ?? 3 * 86_400_000;
   const fresh = !!batch.finishedAt && start - batch.finishedAt.getTime() < staleMs;
   if (!fresh) {
@@ -159,7 +161,7 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
           throw new Skip(`grype on ${t.target}: ${String((err as Error).message ?? err).slice(0, 300)}`);
         }
         return syncTarget(store, t.target, "grype", rows, new Date(now()));
-      });
+      }, { commit: t.commit });
       await store.saveScope(t.target, new Date(now()).toISOString(), true);
     } catch (err) {
       if (!(err instanceof Skip)) throw err;

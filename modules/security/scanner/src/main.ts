@@ -36,8 +36,8 @@ async function readBatch(): Promise<Batch> {
     return { finishedAt: null, targets: [] };
   }
   const targets = text.split("\n").filter(Boolean).map((line) => {
-    const [target = "", f = "", error = ""] = line.split("\t");
-    return { target, ...(f && f !== "-" ? { file: join(SBOM, f) } : {}), ...(error ? { error } : {}) };
+    const [target = "", f = "", error = "", commit = ""] = line.split("\t");
+    return { target, ...(f && f !== "-" ? { file: join(SBOM, f) } : {}), ...(error ? { error } : {}), ...(commit ? { commit } : {}) };
   }).filter((t) => t.target);
   return { finishedAt: statSync(index).mtime, targets };
 }
@@ -86,6 +86,7 @@ async function pass(store: SourceStore): Promise<void> {
       dbUpdate: async () => void (await run("grype", ["db", "update"], { env: GRYPE_ENV, timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024 })),
       readBatch,
       grype,
+      log,
     }),
   );
   const clientId = file("AUDITOR_CF_ID_FILE");

@@ -19,7 +19,7 @@ Shared Postgres for curated fleet data. Compose: `compose.yaml`. Roles: `init/01
   first sync: not a recent change). Field changes after the baseline go to `src_<source>.change`. Long text is capped at
   4 KB with a `<field>_truncated` flag and the row's url; meeting notes are kept whole (200 KB cap), other long documents
   only as metadata + a cheap summary + the link.
-- `src_meta`: `ingest_run` (one row per ingest pass: source, scope, rows, error), `cursor` (each consumer agent's
+- `src_meta`: `ingest_run` (one row per ingest pass: source, scope, rows, error, and commit for a repo target), `cursor` (each consumer agent's
   position per view, written by apps-mcp), `seq`, and people: `person`, `person_identity` (source user ids linked to a
   person, proposed by apps-mcp on an exact email match only; approval is the owner's) and the view `people_identities`.
 - `app_<app>`: data owned by an app.
