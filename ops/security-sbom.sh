@@ -7,9 +7,10 @@
 #   repo:instance   the instance checkout
 #   app:<name>      each app's deployed source (data/apps/.platform/<name>/src, what apps-mcp checked out)
 # It runs here, not in the scanner, because these need the Docker socket and the host's root filesystem, which the
-# long-running scanner never gets. Output: <data>/modules/security/sbom/current/targets.tsv (target, file, error) and one
-# syft-json per target; the scanner (read-only mount) matches a new batch within the hour. One target failing is a line
-# with its error, never the batch.
+# long-running scanner never gets. Output: <data>/modules/security/sbom/current/targets.tsv (target, file, error, commit)
+# and one syft-json per target; the scanner (read-only mount) matches a new batch within the hour. commit is the checkout's
+# git HEAD for repo:product and repo:instance, so a pass says which tree it read. One target failing is a line with its
+# error, never the batch.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 set -a; [ -f .env ] && . ./.env; set +a
@@ -26,9 +27,9 @@ user="$(id -u):$(id -g)"
 sock_gid="$(stat -c %g /var/run/docker.sock)"
 n=0
 
-# scan <target> [docker mount args...] -- <syft source> [syft args...]
+# scan <target> <commit> [docker mount args...] -- <syft source> [syft args...]
 scan() {
-  local target="$1"; shift
+  local target="$1" commit="$2"; shift 2
   local mounts=()
   while [ "$1" != "--" ]; do mounts+=("$1"); shift; done
   shift
@@ -39,28 +40,28 @@ scan() {
   if err="$(timeout 1800 docker run --rm --network none --user "$user" --group-add "$sock_gid" -e SYFT_CHECK_FOR_APP_UPDATE=false \
       -e TMPDIR=/work -e XDG_CACHE_HOME=/work -v "$work:/work" -v "$next:/out" "${mounts[@]}" \
       "$SYFT" scan "$@" --source-name "$target" -o "syft-json=/out/$f" 2>&1 >/dev/null)"; then
-    printf '%s\t%s\t\n' "$target" "$f" >> "$next/targets.tsv"
+    printf '%s\t%s\t\t%s\n' "$target" "$f" "$commit" >> "$next/targets.tsv"
   else
-    printf '%s\t-\t%s\n' "$target" "$(printf '%s' "${err:-failed}" | tr '\t\n' '  ' | tail -c 300)" >> "$next/targets.tsv"
+    printf '%s\t-\t%s\t%s\n' "$target" "$(printf '%s' "${err:-failed}" | tr '\t\n' '  ' | tail -c 300)" "$commit" >> "$next/targets.tsv"
   fi
   rm -rf "${work:?}"/*
 }
 
 inst="${AIDENHQ_INSTANCE_DIR:-}"
-scan host -v /:/host:ro -- dir:/host \
+scan host "" -v /:/host:ro -- dir:/host \
   --exclude './proc/**' --exclude './sys/**' --exclude './dev/**' --exclude './run/**' --exclude './tmp/**' \
   --exclude './var/lib/docker/**' --exclude './var/lib/containerd/**' --exclude "./${PWD#/}/**" --exclude "./${out#/}/**" \
   ${inst:+--exclude "./${inst#/}/**"} --exclude './home/*/.cache/**' --exclude '**/node_modules/**'
 # By each container's configured image name: after a rebuild a running container's image is untagged, and syft can't
 # resolve a bare image id (it tries to pull it). The name points at the current build of the same service.
 for img in $(docker ps -q | xargs -r docker inspect -f '{{.Config.Image}}' | sort -u | grep -v '^anchore/syft'); do
-  scan "image:$img" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:$img"
+  scan "image:$img" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:$img"
 done
-scan repo:product -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'
-if [ -n "$inst" ]; then scan repo:instance -v "$inst:/src:ro" -- dir:/src --exclude './.git/**' --exclude '**/node_modules/**'; fi
+scan repo:product "$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)" -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'
+if [ -n "$inst" ]; then scan repo:instance "$(git -C "$inst" rev-parse HEAD 2>/dev/null || true)" -v "$inst:/src:ro" -- dir:/src --exclude './.git/**' --exclude '**/node_modules/**'; fi
 for src in "$PWD"/data/apps/.platform/*/src; do
   [ -d "$src" ] || continue
-  scan "app:$(basename "$(dirname "$src")")" -v "$src:/src:ro" -- dir:/src --exclude '**/node_modules/**'
+  scan "app:$(basename "$(dirname "$src")")" "" -v "$src:/src:ro" -- dir:/src --exclude '**/node_modules/**'
 done
 
 # Swap the finished batch in (the scanner reads current/; a scan mid-swap skips a target until next time).

@@ -214,8 +214,11 @@ export class SourceStore {
     return "changed";
   }
 
-  /** One ingest pass: records src_meta.ingest_run (rows = rows written with a difference) and rethrows a failure. */
-  async run(source: string, scope: string, fn: () => Promise<number>): Promise<number> {
+  /**
+   * One ingest pass: records src_meta.ingest_run (rows = rows written with a difference) and rethrows a failure.
+   * `commit` is the git HEAD a repo target was read at, when the pass covers a checkout.
+   */
+  async run(source: string, scope: string, fn: () => Promise<number>, meta: { commit?: string | null } = {}): Promise<number> {
     const started = new Date();
     let rows = 0;
     let error: string | null = null;
@@ -227,7 +230,7 @@ export class SourceStore {
       throw err;
     } finally {
       await this.pool
-        .query(`INSERT INTO src_meta.ingest_run (source, scope, started_at, rows, error) VALUES ($1, $2, $3, $4, $5)`, [source, scope, started, rows, error])
+        .query(`INSERT INTO src_meta.ingest_run (source, scope, started_at, rows, error, commit) VALUES ($1, $2, $3, $4, $5, $6)`, [source, scope, started, rows, error, meta.commit || null])
         .catch(() => undefined);
     }
   }

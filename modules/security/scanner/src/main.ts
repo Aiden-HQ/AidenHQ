@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import YAML from "yaml";
 import { auditorClient, auditorPass } from "./auditor.js";
-import { DDL, scanPass, type Batch } from "./scan.js";
+import { DDL, parseTargets, scanPass, type Batch } from "./scan.js";
 import { SourceStore } from "./source-store.js";
 
 const run = promisify(execFile);
@@ -35,11 +35,7 @@ async function readBatch(): Promise<Batch> {
   } catch {
     return { finishedAt: null, targets: [] };
   }
-  const targets = text.split("\n").filter(Boolean).map((line) => {
-    const [target = "", f = "", error = ""] = line.split("\t");
-    return { target, ...(f && f !== "-" ? { file: join(SBOM, f) } : {}), ...(error ? { error } : {}) };
-  }).filter((t) => t.target);
-  return { finishedAt: statSync(index).mtime, targets };
+  return { finishedAt: statSync(index).mtime, targets: parseTargets(text, SBOM) };
 }
 
 async function grype(sbomFile: string): Promise<unknown> {
@@ -86,6 +82,7 @@ async function pass(store: SourceStore): Promise<void> {
       dbUpdate: async () => void (await run("grype", ["db", "update"], { env: GRYPE_ENV, timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024 })),
       readBatch,
       grype,
+      log,
     }),
   );
   const clientId = file("AUDITOR_CF_ID_FILE");

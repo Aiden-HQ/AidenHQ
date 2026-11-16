@@ -27,7 +27,7 @@ A scanner (code, no model) inventories the host, images, repos and apps daily, m
 
 - `src_security.findings`: one row per (target, package, version, vuln_id). `target` is `host`, `image:<ref>`, `repo:product`, `repo:instance` or `app:<name>`. `tool` is `grype` (a known CVE or GHSA) or `app-auditor` (AppSec's App Auditor vibe audit of an app repo). `severity` is the database's; `fixed_version`, `fix_state` (`fixed`, `not-fixed`, `wont-fix`, `unknown`); `finding_id` is a short stable id; `present = false` means the latest scan no longer finds it (`resolved_at`). `verdict`, `verdict_reason`, `verdict_by`, `verdict_at` hold a review recorded with `finding_verdict`; null means not reviewed, or the finding changed since.
 - `src_security.changes`: one row per changed field of a finding seen before. Columns: `seq`, `entity` (always `finding`), `entity_id` (`<target>/<package>/<version>/<vuln_id>`), `scope` (the target), `field` (`severity`, `fixed_version`, `fix_state` or `present`), `old_value`, `new_value`, `url`, `observed_at`, `baseline` (always false here). Unlike `findings`, it has no `target` or `vulnerability_id` column: filter by `scope` or `entity_id`, or join on `entity_id`.
-- `src_meta.ingest_run` with `source in ('security', 'app-auditor')`: one row per target per pass; `error` says why a target couldn't be scanned, scope `sbom-batch` that the host inventory is stale or missing.
+- `src_meta.ingest_run` with `source in ('security', 'app-auditor')`: one row per target per pass; `error` says why a target couldn't be scanned, `commit` is the git HEAD a `repo:product` or `repo:instance` target was read at, scope `sbom-batch` that the host inventory is stale or missing.
 
 ## Each run (routine "Security scan triage")
 

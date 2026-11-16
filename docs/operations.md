@@ -266,16 +266,17 @@ exact email match only).
 `src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
 filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
 runs pinned syft over the host packages, every running image, the product and instance checkouts and each app's deployed
-source, into `data/security/sbom/current/`. The scanner matches a new batch within the hour (or daily anyway) and fires
-Security Watch's webhook when anything changed. On demand: `ops/security-sbom.sh`, then
-`docker compose exec security-scanner node dist/src/main.js once`.
+source, into `data/modules/security/sbom/current/`; `targets.tsv` records the checkout's git HEAD for `repo:product` and
+`repo:instance`, and the scanner copies it to each target's `src_meta.ingest_run` row. The scanner matches a new batch
+within the hour (or daily anyway) and fires Security Watch's webhook when anything changed. On demand:
+`ops/security-sbom.sh`, then `docker compose exec security-scanner node dist/src/main.js once`.
 
 To enable, before adding `security` to the instance's modules:
 
 ```sh
 cp ops/units/aidenhq-security-sbom.service ops/units/aidenhq-security-sbom.timer ~/.config/systemd/user/
 systemctl --user daemon-reload && systemctl --user enable --now aidenhq-security-sbom.timer
-systemctl --user start aidenhq-security-sbom   # first batch; also creates data/security/sbom as you (not root)
+systemctl --user start aidenhq-security-sbom   # first batch; also creates data/modules/security/sbom as you (not root)
 ```
 
 After the apply, `ops/warehouse-sources.sh` creates `src_security` (apply runs it). A stale batch shows as an
