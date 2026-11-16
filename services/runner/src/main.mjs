@@ -39,7 +39,7 @@ import { authorize } from "./authorize.mjs";
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, afterReview, autonomyCap, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
-import { LUNA, UNSURE, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
+import { LUNA, SOURCE_EXCEPTIONS_FILE, UNSURE, fileContext, openRouterAsk, openRouterKey, readSourceExceptions, review } from "./review.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";

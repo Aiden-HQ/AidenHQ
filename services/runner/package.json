@@ -16,7 +16,7 @@
     "eval:intake": "node --disable-warning=ExperimentalWarning eval/intake.mjs",
     "eval:authorize": "node --disable-warning=ExperimentalWarning eval/authorize.mjs",
     "eval:busy": "node --disable-warning=ExperimentalWarning eval/busy.mjs",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p . && ! (tsc -p . --checkJs | grep \"error TS2304\")"
   },
   "dependencies": {
     "yaml": "^2.9.1"
