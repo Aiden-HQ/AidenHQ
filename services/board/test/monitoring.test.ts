@@ -7,12 +7,30 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
-import { tick } from "../src/fleet-ops.js";
+import { checks, detectorState, tick } from "../src/fleet-ops.js";
 import { alertIncidents } from "../src/monitoring.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
+
+afterEach(() => vi.unstubAllGlobals());
+
+/** Alertmanager's GET /api/v2/alerts: the alerts it holds active, as its own API returns them. */
+const alertmanager = (alerts: { fingerprint: string; alertname?: string; severity?: string; summary?: string; n?: string; silenced?: boolean }[]) =>
+  vi.stubGlobal("fetch", async (url: string) => {
+    expect(String(url)).toBe("http://alertmanager:9093/api/v2/alerts");
+    return new Response(JSON.stringify(alerts.map((a) => ({
+      fingerprint: a.fingerprint,
+      labels: { alertname: a.alertname ?? "ApplyFailed", severity: a.severity ?? "critical", ...(a.n ? { n: a.n } : {}) },
+      annotations: { summary: a.summary ?? `apply generation ${a.n ?? "?"} failed` },
+      startsAt: "2026-11-16T11:46:45.252Z",
+      endsAt: "0001-01-01T00:00:00Z",
+      status: { state: "active", silencedBy: a.silenced ? ["s1"] : [], inhibitedBy: [] },
+      receivers: [{ name: "board" }],
+      updatedAt: "2026-11-16T12:16:40Z",
+    }))), { status: 200 });
+  });
 
 const MON = "m".repeat(64);
 const INTERNAL = "i".repeat(64);
@@ -51,7 +69,7 @@ describe("monitoring routes", () => {
       expect((await call(port, "POST", "/internal/fleet/status", MON, {})).status).toBe(401);
 
       const fired: { incidents: { key: string; reason: string }[]; recovered: { key: string }[] }[] = [];
-      const detect = () => tick(store, { alert: async () => alertIncidents(store) }, async (b) => (fired.push(b as never), true));
+      const detect = () => tick(store, { alert: () => alertIncidents(store) }, async (b) => (fired.push(b as never), true));
 
       expect((await call(port, "POST", "/internal/alerts", MON, alert("firing"))).status).toBe(200);
       await call(port, "POST", "/internal/alerts", MON, alert("firing")); // Alertmanager repeats: no second owner line
@@ -82,7 +100,7 @@ describe("monitoring routes", () => {
       expect(lines).toHaveLength(1);
       expect(lines[0]).toMatch(/^🚨 \*\*Monitoring: [a-z0-9_-]+\*\* \(critical\): a critical alert fired\. Fleet Ops is on it\.$/);
       expect(lines[0]).not.toMatch(/evil|@channel|\]\(|ignore/);
-      const reason = alertIncidents(store).find((i) => i.key === "ff00")!.reason;
+      const reason = (await alertIncidents(store)).find((i) => i.key === "ff00")!.reason;
       expect(reason).toContain("\n````\n" + hostile + "\n````");
       expect(reason.split("\n")[0]).not.toMatch(/evil|@|\[/);
 
@@ -93,5 +111,77 @@ describe("monitoring routes", () => {
     } finally {
       app.close();
     }
+  });
+});
+
+describe("alert recovery", () => {
+  const gen11 = { fingerprint: "73b151ac172a81a1", n: "11", summary: "apply generation 11 refused: the staged compile failed" };
+  const gen12 = { fingerprint: "c0ffee1234567890", n: "12", severity: "warning" };
+  const detect = (store: Store) => {
+    const fired: { incidents: { key: string }[]; recovered: { key: string }[] }[] = [];
+    const run = () => tick(store, { alert: checks({} as never, store).alert! }, async (b) => (fired.push(b as never), true));
+    return { fired, run };
+  };
+
+  it("recovers an alert whose whole label set vanished after a later generation was emitted", async () => {
+    const store = new Store(":memory:");
+    // The webhook took gen 11 firing; then the board restarted on that failed apply and never heard its resolve. Generation
+    // 11's series is gone now (12+ export under their own labels), so Alertmanager holds nothing for it.
+    alertmanager([gen11]);
+    const { fired, run } = detect(store);
+    await run();
+    expect(Object.keys(detectorState(store).open)).toEqual(["alert:73b151ac172a81a1"]);
+
+    alertmanager([]);
+    await run();
+    expect(detectorState(store).open).toEqual({});
+    expect(fired.at(-1)!.recovered.map((r) => r.key)).toEqual(["alert:73b151ac172a81a1"]);
+  });
+
+  it("keeps an alert key open while Alertmanager still holds a firing sample for it", async () => {
+    const store = new Store(":memory:");
+    alertmanager([gen11, gen12]);
+    const { fired, run } = detect(store);
+    await run();
+    // Generation 11's labels are gone, generation 12's are still firing: only 11 recovers.
+    alertmanager([gen12]);
+    await run();
+    expect(Object.keys(detectorState(store).open)).toEqual(["alert:c0ffee1234567890"]);
+    expect(fired.at(-1)!.recovered.map((r) => r.key)).toEqual(["alert:73b151ac172a81a1"]);
+    const said = fired.length;
+    await run();
+    expect(fired).toHaveLength(said); // still firing: no second recovery, nothing new to say
+    expect(detectorState(store).open["alert:c0ffee1234567890"]).toBeDefined();
+  });
+
+  it("recovers a plain firing-then-zero transition, and keeps the key open when Alertmanager can't be asked", async () => {
+    const store = new Store(":memory:");
+    alertmanager([gen12]);
+    const { fired, run } = detect(store);
+    await run();
+    expect(Object.keys(detectorState(store).open)).toEqual(["alert:c0ffee1234567890"]);
+
+    // Alertmanager unreachable: unknown is not recovered.
+    vi.stubGlobal("fetch", async () => { throw new Error("connect ECONNREFUSED"); });
+    await run();
+    expect(detectorState(store).open["alert:c0ffee1234567890"]).toBeDefined();
+
+    // The metric goes back to 0 and the rule stops firing: nothing active, the key recovers.
+    alertmanager([]);
+    await run();
+    expect(detectorState(store).open).toEqual({});
+    expect(fired.at(-1)!.recovered.map((r) => r.key)).toEqual(["alert:c0ffee1234567890"]);
+  });
+
+  it("keeps an alert open when it is silenced while still firing", async () => {
+    const store = new Store(":memory:");
+    alertmanager([gen12]);
+    const { fired, run } = detect(store);
+    await run();
+    // Silencing stops notifications, not the alert: still active, so still open and not recovered.
+    alertmanager([{ ...gen12, silenced: true }]);
+    await run();
+    expect(detectorState(store).open["alert:c0ffee1234567890"]).toBeDefined();
+    expect(fired.flatMap((f) => f.recovered)).toEqual([]);
   });
 });
