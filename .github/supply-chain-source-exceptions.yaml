@@ -1,0 +1,10 @@
+# Owner-approved exceptions to the new-source rule (CONTRIBUTING.md, "Supply chain"): a package moved to a registry, URL or
+# git source the policy otherwise rejects, approved by the owner for that one package and source. The owner's review of a
+# change to this file is the approval, and the AI reviewer reads this file from the base branch, so an entry lands in its
+# own PR before the change that uses it. A change can never record its own approval here.
+#
+# One record per line, in this flow style (other YAML shapes are not read):
+#   - { ecosystem: apt, package: gh, from: "Debian sid main", to: "https://cli.github.com/packages stable main", version: 2.104.0, approved_by: owner, reference: "where the owner said so", reason: "why the source has to change" }
+# ecosystem: apt, npm, pypi, docker, github-action or github-release. `from` and `version` are optional; `to` and `package`
+# are what the reviewer matches a diff's added source and package against, and `approved_by` must say `owner`.
+source_exceptions: []
