@@ -82,11 +82,17 @@ async function adminOn(t, dir, now) {
   return { url, decided, notices };
 }
 
-async function signIn(b, step = 0) {
+/**
+ * Password, then a code this accounts file hasn't spent (`spent`, one set per file): a code is single use, and a 30 s step
+ * may turn between two sign-ins, so a fixed step offset can land on a code already used.
+ */
+async function signIn(b, spent = new Set()) {
   const pw = await b("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
   assert.equal(pw.status, 303, pw.html);
   assert.match(pw.headers.location, /^\/auth\/totp/);
-  const code = await b("POST", "/auth/totp", { code: totp(OWNER.b32, step) });
+  const fresh = [0, 1, -1].map((s) => totp(OWNER.b32, s)).find((c) => !spent.has(c));
+  spent.add(fresh);
+  const code = await b("POST", "/auth/totp", { code: fresh });
   assert.equal(code.status, 303, code.html);
   return code;
 }
@@ -217,13 +223,14 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
   assert.match(notices.join("\n"), /Sign-in held.*owner@example\.com/);
   // The owner over the tailnet (tailscale serve, from loopback, with the login it passes on) is not held by any of it.
   const tailnet = (login) => browser(url, HOST, false, { "tailscale-user-login": login });
-  await signIn(tailnet("owner@example.com"), 0);
+  const spent = new Set();
+  await signIn(tailnet("owner@example.com"), spent);
 
   // A burst across 100 emails at once: at most 30 checks a minute run (the unidentified global cap; 4 at a time), the rest
   // wait (429), and the owner over the tailnet signs in meanwhile.
   const [burst] = await Promise.all([
     Promise.all(Array.from({ length: 100 }, (_, i) => b("POST", "/auth/sign-in", { email: `guess-${i}@example.com`, password: "wrong-password" }))),
-    signIn(tailnet("owner@example.com"), 1),
+    signIn(tailnet("owner@example.com"), spent),
   ]);
   const checked = burst.filter((r) => r.status === 401).length;
   assert.ok(checked <= 34, `${checked} password checks`); // 30 failures a minute, plus at most 4 already in flight
@@ -236,14 +243,14 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
   const locked = await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
   assert.equal(locked.status, 401);
   assert.match(locked.html, /too many failed sign-ins/);
-  await signIn(named("198.51.100.6"), -1);
+  await signIn(named("198.51.100.6"), spent);
 
   // Signed in (on a fresh copy: TOTP steps above are spent), the pages a session reaches refuse frames too.
   const fresh = boardData();
   moveAccounts(fresh);
   const other = await adminOn(t, fresh);
   const o = browser(other.url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.5", "x-aidenhq-edge": "edge-secret" });
-  await signIn(o, 1);
+  await signIn(o);
   for (const path of ["/approvals", "/approvals/A0000aaaa", "/auth/password"]) {
     const r = await o("GET", path);
     assert.equal(r.status, 200, path);
@@ -268,7 +275,7 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
   }
   assert.deepEqual(statuses, [...Array(20).fill(401), ...Array(5).fill(429)]);
   tclock += 61_000;
-  await signIn(as("owner@example.com"), 0);
+  await signIn(as("owner@example.com"));
 });
 
 test("wrong codes back off per account, whatever the peer: 100 from the tailnet reach the one-minute wait, and the owner's code works a minute after", async (t) => {

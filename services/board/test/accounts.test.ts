@@ -47,7 +47,7 @@ describe("board accounts", () => {
       await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
       base[k] = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
     }
-  }, 30_000);
+  });
   afterAll(() => {
     for (const s of [lan, internal, signin]) s.close();
     admin.close();
