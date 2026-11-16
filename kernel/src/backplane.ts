@@ -21,6 +21,8 @@
 //   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
 //                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts)
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (loader/advisories.ts)
+//   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
+//                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
@@ -70,6 +72,10 @@ export const ROUTES = [
   { method: "DELETE", path: "/v1/jobs/:job", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/input", auth: "module" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
+  { method: "POST", path: "/v1/auth/:op", auth: "board" },
+  { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
+  { method: "POST", path: "/v1/apps/:op", auth: "module" },
+  { method: "POST", path: "/v1/operator/:op", auth: "operator-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
@@ -83,7 +89,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, advisories = () => [], log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, advisories = () => [], accounts, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** 3c: the reviewer slot, and the key its requester (the runner) asks with. */
@@ -94,6 +100,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   jobs?: Jobs;
   /** 4e: the open marketplace advisories. */
   advisories?: () => unknown[];
+  /** 3g: the accounts' routes (auth-api.ts). */
+  accounts?: (req: IncomingMessage, res: ServerResponse, group: string, op: string) => Promise<void>;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -170,6 +178,10 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             return send(res, 200, { posted: true });
           }
         }
+      }
+      if (hit && /^\/v1\/(auth|accounts|apps|operator)\/:op$/.test(hit.path)) {
+        if (!accounts) throw fail(503, "unavailable", "accounts are off");
+        return await accounts(req, res, hit.path.split("/")[2]!, m[0]!);
       }
       if (hit && hit.path.startsWith("/v1/jobs")) {
         const w = await moduleOf(req);

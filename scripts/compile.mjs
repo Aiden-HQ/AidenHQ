@@ -101,7 +101,7 @@ writeFileSync(join(cfgOut, "exposure"), `${out.exposure}\n`);
 writeFileSync(join(cfgOut, "module-data.json"), JSON.stringify(out.dataModules, null, 2) + "\n");
 if (out.edge) {
   if (out.edge.cloudflared) try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die(e.message); }
-  // The board's account map for the gate: the board rewrites it on every account change. It starts
+  // The kernel's account map for the gate: the kernel rewrites it on every account change. It starts
   // empty so compose can bind it (a missing bind source becomes a directory); the gate refuses everyone it can't read.
   const accounts = join(resolve(repo, env("AIDENHQ_DATA_DIR") ?? "./data"), "gate", "accounts.json");
   if (!stage && existsSync(accounts) && !statSync(accounts).isFile()) die(`${accounts} is not a file (remove it and apply again)`);

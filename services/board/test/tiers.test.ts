@@ -81,7 +81,6 @@ describe("tiered approvals", () => {
     expect((await decide({ id: d.id, decision: "approve" }, "account:acct-1")).json).toMatchObject({ state: "approved", decidedBy: "account:acct-1" });
     expect((await decide({ id: d.id, decision: "approve" }, "account:../x")).status).toBe(400);
     expect((await decide({ id: c.id, decision: "approve" }, "owner:telegram", REVIEWER)).status).toBe(403); // the reviewer key never decides
-    expect((await call("GET", "/internal/owner/reset-links", undefined, { "x-gateway-key": REVIEWER })).status).toBe(403);
   });
 
   it("the reviewer decides only a pending Tier 1 record with its digest; Tier 1 never pings the owner", async () => {

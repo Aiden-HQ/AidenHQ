@@ -5,7 +5,7 @@
 // Off (nothing generated) unless `edge` is set. `node scripts/edge.mjs check [file]` is apply's refusal of any ingress
 // rule whose target isn't the gate.
 // settings.app_login (docs/design/access.md, App login modes): `access` (default) = every gate host needs
-// its Access application and the Access token; `password` = the gate signs people in through the board's auth listener
+// its Access application and the Access token; `password` = the gate signs people in through the kernel's sign-in listener
 // (AUTH_URL) and Access becomes optional per host (a host with an `aud` still needs it: password never removes Access).
 // In password mode sign-in lives only on the my-apps host; each app host gets its own host-only session cookie through a
 // one-time handoff code (services/gate/gate.ts), and the gate strips auth cookies before any app.
@@ -30,9 +30,9 @@ export const GATE_URL = `http://127.0.0.1:${GATE_PORT}`;
 export const GATE_SOCKET = "/run/gate/gate.sock";
 export const GATE_SOCKET_URL = `unix:${GATE_SOCKET}`;
 const SOCKET_MOUNT = `\${AIDENHQ_DATA_DIR:-./data}/gate/socket:${dirname(GATE_SOCKET)}`;
-export const AUTH_PORT = 3129; // the board's auth listener: sign-in (password mode) and app access (both modes); apps-mcp reserves it too
+export const AUTH_PORT = 3129; // the kernel's sign-in listener: sign-in (password mode) and app access (both modes); apps-mcp reserves it too
 export const AUTH_URL = `http://127.0.0.1:${AUTH_PORT}`;
-export const ACCOUNTS_FILE = "/accounts/accounts.json"; // the board's account map (email, role, disabled), mounted read-only
+export const ACCOUNTS_FILE = "/accounts/accounts.json"; // the kernel's account map (email, role, disabled), mounted read-only
 export const AUTH_SECRET_FILE = "/secrets/auth_listener"; // gate_board_secret in the gate: X-AidenHQ-Gate to 3129 (sign-in, app access)
 export const LOGINS = ["access", "password", "header-jwt"];
 export const IDENTITY_KEY_FILE = "/secrets/identity_key"; // the vault's identity/gate.pem in the gate: it mints app identity tokens
@@ -83,7 +83,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
     if (/^pr-\d+\./.test(s.host)) fail(`app ${a.name}: share.host ${s.host}: pr-<n>.<host> hosts are previews'`);
     if (!Number.isInteger(a.port)) fail(`app ${a.name}: share.host needs a port`);
     if (a.port === GATE_PORT) fail(`app ${a.name}: port ${GATE_PORT} is the gate's`);
-    if (a.port === AUTH_PORT) fail(`app ${a.name}: port ${AUTH_PORT} is the board's auth listener`);
+    if (a.port === AUTH_PORT) fail(`app ${a.name}: port ${AUTH_PORT} is the kernel's sign-in listener`);
     if ((s.groups ?? []).length) fail(`app ${a.name}: share.groups come in phase 2`);
     for (const k of ["viewers", "admins"]) if (s[k] !== undefined) fail(`app ${a.name}: share.${k} is gone: app admins are named on the board (Accounts, App admins) and set roles on the app's Access page`);
     const def = s.default_role;
@@ -151,13 +151,13 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
     services: {
       // Host networking: it listens on 127.0.0.1:<GATE_PORT> and reaches the apps' loopback ports. No secrets, no sockets.
       // Its signing key (vault identity/gate.pem, read-only; compile creates it) and nothing else of the identity dir.
-      // The board's account map is the one file of data/ it sees (never data/board: no sessions, hashes or TOTP secrets).
+      // The kernel's account map is the one file of data/ it sees (never data/kernel: no sessions, hashes or TOTP secrets).
       gate: {
         ...hardening, build: "./services/gate", image: "aidenhq/gate:local", network_mode: "host", environment: { GATE_CONFIG: "/config/gate.json" },
         volumes: [
           "./config/gate.json:/config/gate.json:ro", `\${AIDENHQ_DATA_DIR:-./data}/gate/accounts.json:${ACCOUNTS_FILE}:ro`,
           `\${AIDENHQ_SECRETS_DIR}/identity/gate.pem:${IDENTITY_KEY_FILE}:ro`,
-          // Its proof to the board's auth listener (core's generated gate_board_secret): sign-in and app access.
+          // Its proof to the kernel's sign-in listener (core's generated gate_board_secret): sign-in and app access.
           `\${AIDENHQ_SECRETS_DIR}/gate_board_secret:${AUTH_SECRET_FILE}:ro`,
           // Which previews run (apps-mcp writes it; a directory, so its atomic replace is seen).
           ...(previews ? [`\${AIDENHQ_DATA_DIR:-./data}/previews:${dirname(PREVIEWS_FILE)}:ro`] : []),
@@ -165,9 +165,6 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
           ...(front ? [] : [SOCKET_MOUNT]),
         ],
       },
-      // The board reads the gate's config (the sign-in host, app hosts, login mode) and writes data/gate/accounts.json.
-      // Only with edge: without it neither file exists, and a bind of a missing source would become a directory.
-      board: { volumes: ["./config/gate.json:/config/gate.json:ro", "${AIDENHQ_DATA_DIR:-./data}/gate:/data/gate"] },
       // Outbound only; locally managed, so its ingress is this file and the dashboard can't change it.
       // The label carries the ingress's hash: compose recreates cloudflared exactly when its config changes (it reads it once).
       ...(front ? {} : { cloudflared: { ...hardening, labels: { "aidenhq.ingress-sha256": createHash("sha256").update(JSON.stringify(cloudflared)).digest("hex") }, image: CLOUDFLARED_IMAGE, network_mode: "host", command: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run"], volumes: ["./config/cloudflared.yml:/etc/cloudflared/config.yml:ro", SOCKET_MOUNT], secrets: ["cloudflared_credentials"], depends_on: ["gate"] } }),
@@ -216,7 +213,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "c
 
 /**
  * Fails when two services claim one host port. `composes`: compose files ({ services }); `claims`: [port, who] the platform
- * holds outside compose (the host-networked gate, the board's auth listener, apps on loopback). The same `who` may repeat.
+ * holds outside compose (the host-networked gate, the kernel's sign-in listener, apps on loopback). The same `who` may repeat.
  */
 export function checkPorts(composes, claims = []) {
   const owner = new Map();

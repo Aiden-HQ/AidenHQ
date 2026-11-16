@@ -10,7 +10,7 @@ import type { App } from "./registry.js";
 // A shared app (share.host) has one door, the gate: never a tailnet route.
 export const exposes = (app: App): app is App & { port: number } => !!app.port && app.expose && !app.share?.host;
 export const GATE_PORT = 3130; // the gate (services/gate) on the host's loopback; scripts/modules.mjs uses the same
-const RESERVED = new Set([443, 3100, 3120, 3121, 3122, 3129, GATE_PORT, 8090, 8443]); // core services (3129: the board's auth listener), the gate, and the board's tailnet ports
+const RESERVED = new Set([443, 3100, 3120, 3121, 3122, 3129, GATE_PORT, 8090, 8443]); // core services (3129: the kernel's sign-in listener), the gate, and the board's tailnet ports
 export const EDGE_CONTAINER = "aidenhq-apps-edge"; // compose.yaml container_name
 
 export function checkPort(app: App): void {

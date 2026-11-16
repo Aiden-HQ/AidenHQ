@@ -33,6 +33,7 @@ import { createServer, request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import type { Duplex } from "node:stream";
+import { signinPage } from "./signin-pages.ts";
 
 /**
  * Trust brands: a value of a branded type comes only from the place that checked it (an inline `as` at that site and nowhere
@@ -75,7 +76,7 @@ export interface AccountState { accounts: Map<string, Account>; apps: Record<str
 interface Signer { key: KeyObject; kid: string }
 export interface IdentityClaims { iss: string; aud: string; sub: string; kind: string; email: VerifiedEmail; name?: string; role: string; idp?: string; iat: number; exp: number }
 type KeyLookup = (kid: string) => Promise<KeyObject | undefined>;
-/** The board's answer for an app's Access page (services/board/src/app-access.ts). */
+/** The board's answer for an app's Access page (kernel/src/app-access.ts). */
 export interface AccessPageData {
   app: string;
   host: string;
@@ -115,7 +116,7 @@ const JWKS_HARD_MAX_MS = 2 * JWKS_MAX_AGE_MS; // past this without a good refres
 const JWKS_REFETCH_MS = 30_000; // an unknown kid refetches at most this often
 const LEEWAY_S = 60; // nbf only; exp is strict
 const STRIP = /^(x-aidenhq-|tailscale-|cf-access-)/; // cf-access-jwt-assertion, -authenticated-user-email, -client-id…
-const AUTH_PATH = "/.auth/"; // sign-in pages and Better Auth's endpoints, served by the board's auth listener
+const AUTH_PATH = "/.auth/"; // sign-in pages (the gate's own, signin-pages.ts) and Better Auth's endpoints (the kernel's sign-in listener)
 // The only auth paths the gate passes on, and only on the sign-in host (my_apps): the pages (GET) and the endpoints that
 // sign in, finish TOTP, set a password from a link and sign out (POST). Never get-session, list-sessions, change-*, token.
 const AUTH_PAGES = new Set(["/.auth/sign-in", "/.auth/two-factor", "/.auth/set-password"]);
@@ -639,7 +640,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
 
   const plain = (res: ServerResponse, status: number, msg: string, headers: OutgoingHttpHeaders = {}) => void res.writeHead(status, { "content-type": "text/plain", "cache-control": "no-store", ...headers }).end(`${msg}\n`);
   /**
-   * POST JSON to the board's auth listener → { status, body }. The cookie is a browser's on an https host: the board reads
+   * POST JSON to the kernel's sign-in listener → { status, body }. The cookie is a browser's on an https host: the board reads
    * the __Host- names only with x-forwarded-proto https.
    */
   const board = async (cfg: GateConfig, path: string, body: Record<string, unknown>, cookie?: string): Promise<{ status: number; body: BoardReply | null }> => {
@@ -819,6 +820,9 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     if (a.handoff) return handoff(req, res, a.query);
     if (a.signOut) return signOut(req, res);
     if (a.auth && a.path.startsWith(`${AUTH_PATH}api/sign-out`)) sessions.clear(); // the my-apps sign-out ends cached answers too
+    // The sign-in pages are the gate's own; only their steps (/.auth/api/*) go on to the kernel.
+    const pg = a.auth && (req.method === "GET" || req.method === "HEAD") ? signinPage(a.path) : undefined;
+    if (pg) return void res.writeHead(pg.status, pg.headers).end(req.method === "HEAD" ? undefined : pg.body);
     if (a.mine && a.access) return access(req, res, a.email);
     if (a.mine) return void res.writeHead(200, PAGE).end(req.method === "HEAD" ? undefined : myAppsPage(a.email, appsFor(config(), a.roleOf)));
     if (a.request) return inAppRequest(req, res, a);

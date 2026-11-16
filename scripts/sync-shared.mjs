@@ -6,7 +6,6 @@
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
 //   services/shared/review-files.mjs  the changed files as the reviewer reads them, in the reviewer module's service
 //   services/shared/source-store.ts  the shared-sources writer side, in every source writer
-//   kernel/src/auth-rules.ts          accounts' Better Auth options and sign-in rules, in the board (its 3129 listener)
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
 //   modules/core/design-system/      the design system, in the app starter and the agent computers
@@ -50,9 +49,6 @@ export const SHARED = {
     "modules/google/connections/google-workspace-mcp/src/source-store.ts",
     "modules/security/scanner/src/source-store.ts",
   ],
-  // Accounts (lean-core 3a): the kernel owns the Better Auth options; the board's gate-facing sign-in listener runs the same ones on
-  // the same file until 3g.
-  "kernel/src/auth-rules.ts": ["services/board/src/auth-rules.ts"],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
   // App identity (docs/design/app-identity.md): the middleware every app copies, from the app template.

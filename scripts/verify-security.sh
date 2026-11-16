@@ -165,9 +165,10 @@ for c in $containers; do
       # 3120 is the kernel's admin listener now (sign-in and approvals, lean-core 3a): the board never publishes it.
       [ "$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3120/tcp")}}')" = "null" ] \
         && pass "board: 3120 not published (the kernel's admin listener)" || fail "board publishes 3120 (a compose.override.yaml port?): the kernel's admin listener needs it"
-      # Of the kernel's data the board mounts the accounts alone (data/kernel/auth), never kernel.db or the caller key.
-      ksrc="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' | grep -E '/kernel(/|$)' | tr '\n' ' ')"
-      [ -z "$(echo "$ksrc" | tr ' ' '\n' | grep -v '^$' | grep -vE '/kernel/auth$')" ] && pass "board: of the kernel's data, only data/kernel/auth (${ksrc:-none})" || fail "board mounts more of the kernel's data than its accounts: $ksrc"
+      # Nothing of the kernel's data (lean 3g): not the accounts (only the kernel opens data/kernel/auth), kernel.db or the caller
+      # key, and not the gate's account map (the kernel writes it).
+      ksrc="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' | grep -E '/kernel(/|$)|/gate(/|$)' | tr '\n' ' ')"
+      [ -z "$ksrc" ] && pass "board: mounts nothing of the kernel's data or the gate's (accounts are the kernel's alone)" || fail "board mounts the kernel's or the gate's data: $ksrc"
       # 3121, the browser listener, is loopback: the front door (tailscale serve, Caddy, the tunnel) reaches it there, and
       # it trusts X-Forwarded-Proto from whoever does. The one exception is a LAN VM in local mode with no public firewall
       # (AIDENHQ_PUBLIC_IF=none), whose phones use it over the LAN; it must still refuse a read without a session.
@@ -194,16 +195,12 @@ for c in $containers; do
       [ "$code" = "401" ] && pass "board: writes only for a signed-in admin" || fail "board took a write from a bare host process ($code)"
       code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $bh" http://127.0.0.1:3121/api/board)"
       [ "$code" = "401" ] && pass "board: reads need a session" || fail "board answered a read without a session ($code)"
-      # 3129: the gate's sign-in listener, loopback only.
-      signin_port="$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3129/tcp")}}')"
-      if [ "$signin_port" = "null" ] && [ -f config/gate.json ]; then
-        fail "board sign-in listener (3129) is not published but the gate needs it: keep 127.0.0.1:3129:3129 in the board ports of compose.override.yaml"
-      elif [ "$signin_port" = "null" ]; then
-        pass "board: sign-in listener not published"
-      else
-        echo "$signin_port" | grep -q '"HostIp":"127.0.0.1"' && ! echo "$signin_port" | grep -qE '"HostIp":"(0\.0\.0\.0)?"' \
-          && pass "board: sign-in listener published on 127.0.0.1 only" || fail "board sign-in listener is not loopback-only: $signin_port"
-      fi
+      # 3129 is the kernel's sign-in listener now (lean 3g): the board never publishes it.
+      [ "$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3129/tcp")}}')" = "null" ] \
+        && pass "board: 3129 not published (the kernel's sign-in listener)" || fail "board publishes 3129 (a compose.override.yaml port?): the kernel's sign-in listener needs it"
+      # Its session is its own cookie, handed off by the kernel: the kernel's session cookie is no board session.
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $bh" -H 'Cookie: better-auth.session_token=forged.x; aidenhq-board=forged' http://127.0.0.1:3121/api/board)"
+      [ "$code" = "401" ] && pass "board: a kernel cookie or a made-up board cookie is no session" || fail "board answered a read for a forged session cookie ($code)"
       code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example:3121' http://127.0.0.1:3121/api/board)"
       [ "$code" = "403" ] && pass "board: refuses unknown Host headers" || fail "board answered an unknown Host ($code)"
       # 3122: internal API for the tasks bridge and the runner, loopback only, bearer token.
@@ -240,7 +237,6 @@ POST /internal/approvals {}
 POST /internal/issues/X-1/schedule {"clear":true}
 POST /internal/recurring/runs/00000000-0000-0000-0000-000000000000/2000-01-01T00:00 {}
 POST /internal/owner/approvals/decide {"id":"A00000000","digest":"x","decision":"approve","by":"owner:telegram","via":"telegram"}
-GET /internal/owner/reset-links
 GET /internal/successor/X-1
 PROBES
           [ -z "$opened" ] && pass "board: the internal token alone claims, reports, reads and changes nothing" || fail "board: the internal token alone was not refused by caller:$opened"
@@ -249,7 +245,7 @@ PROBES
       fi
       ;;
     *gate*)
-      # The gate sees the board's account map and nothing else of data/ (never data/board or the accounts in data/kernel/auth:
+      # The gate sees the kernel's account map and nothing else of data/ (never data/board or the accounts in data/kernel/auth:
       # sessions, hashes, TOTP).
       echo "$mounts" | tr ';' '\n' | grep -q '|/accounts/accounts.json|false' && ! echo "$mounts" | grep -qE '/board|/kernel' \
         && pass "gate: only accounts.json (read-only) and the tunnel socket from data/" || fail "gate: unexpected data mounts: $mounts"
@@ -529,7 +525,21 @@ fi
 # with most modules any more, so an unreachable endpoint fails here rather than passing).
 kpid="$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)"
 kbinds="$(ss -Hltnp 2>/dev/null | awk -v k="pid=${kpid:-none}," 'index($0, k) {print $4}' | grep -v ':8201$' | sort -u | tr '\n' ' ')"
-[ "$(echo $kbinds)" = "10.231.0.1:3130 127.0.0.1:3120" ] && pass "kernel: the proxy listens on 10.231.0.1:3130 and the admin pages on 127.0.0.1:3120 only" || fail "kernel: listens on ${kbinds:-nothing} (want 10.231.0.1:3130 and 127.0.0.1:3120 only, plus 8201)"
+[ "$(echo $kbinds)" = "10.231.0.1:3130 127.0.0.1:3120 127.0.0.1:3129" ] && pass "kernel: the proxy listens on 10.231.0.1:3130, the admin pages on 127.0.0.1:3120 and the gate's sign-in listener on 127.0.0.1:3129 only" || fail "kernel: listens on ${kbinds:-nothing} (want 10.231.0.1:3130, 127.0.0.1:3120 and 127.0.0.1:3129 only, plus 8201)"
+# The sign-in listener (lean 3g, from the board): no page, no admin route; app access only with the gate's secret; a write
+# without its own Origin is refused; an unknown Host too.
+ks="http://127.0.0.1:3129"
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3129' "$ks/approvals")"
+[ "$code" = "404" ] && pass "kernel sign-in listener: serves no admin route" || fail "kernel sign-in listener: answered /approvals ($code)"
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3129' -H 'content-type: application/json' -H 'x-aidenhq-gate: forged' "$ks/.auth/api/app-access/page" -d '{"by":"a@example.com","app":"crm"}')"
+[ "$code" = "403" ] && pass "kernel sign-in listener: app access only with the gate's secret" || fail "kernel sign-in listener: app access without the gate's secret ($code)"
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3129' -H 'content-type: application/json' "$ks/.auth/api/sign-in/email" -d '{"email":"x@example.invalid","password":"x"}')"
+[ "$code" = "403" ] && pass "kernel sign-in listener: a sign-in without its Origin is refused" || fail "kernel sign-in listener: took a sign-in without an Origin ($code)"
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: evil.example:3129' "$ks/.auth/api/get-session")"
+[ "$code" = "403" ] && pass "kernel sign-in listener: refuses unknown Host headers" || fail "kernel sign-in listener: answered an unknown Host ($code)"
+# The handoff to a module UI goes only to an installed module's origin (no open redirect), and only for a signed-in admin.
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3120' "http://127.0.0.1:3120/auth/handoff?to=https%3A%2F%2Fevil.example&state=0123456789abcdef0123")"
+[ "$code" = "303" ] && pass "kernel admin: the handoff sends a signed-out browser to sign in first" || fail "kernel admin: /auth/handoff answered $code without a session"
 # The admin listener (lean-core 3a): every page refuses a frame, a form from another origin and a decision without a session;
 # an unknown Host is refused. A client-named address without the front door's secret is ignored (and X-Forwarded-For,
 # CF-Connecting-IP always): attempts "from six addresses" are one unidentified peer's, which gets two free failures and then

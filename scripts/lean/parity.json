@@ -180,7 +180,8 @@
     "n": 20,
     "workflow": "Shared apps sign-in (gate, 3129)",
     "today": [
-      "services/gate/test/gate.test.mjs"
+      "services/gate/test/gate.test.mjs",
+      "kernel/test/gate-seam.test.mjs"
     ],
     "next": "apps-platform + /auth/handoff"
   },

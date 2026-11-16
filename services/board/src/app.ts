@@ -14,10 +14,9 @@ import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunCo
 import { RecurringSchema, RunStateSchema, ScheduleSchema, changeRecurring, claimDue, recurringView, scheduleMove } from "./automation.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, RUNNER_MARKER, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
-import { AccountError, forwardedProto, type Accounts, type AccountSession, type Role } from "./accounts.js";
-import { AccessError, assertNamesApp } from "./app-access.js";
+import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, appsToken, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { detectorState, kickDetector, staleSources, takeOwnerLines } from "./fleet-ops.js";
 import { AlertsSchema, metricsText, receiveAlerts } from "./monitoring.js";
 import { ARGS, BOARD_ACTIONS, KERNEL_ID, REVIEWER_MODELS, RaiseCapSchema, autonomy, card, digestText, kernelRecords, raiseCapRequest, shown, type Approval, type RaiseCap, type RunnerAction } from "./approvals.js";
@@ -105,10 +104,10 @@ export interface AppOptions {
    */
   operatorKey?: string;
   /**
-   * Board accounts (docs/design/access.md): every route on "lan" needs an admin session with TOTP. Required there (or the
-   * `session` stub); "internal" uses it for setup and resets.
+   * Board sign-in (kernel-auth.ts, docs/design/access.md): every route on "lan" needs a ready admin's board session, handed off
+   * by the kernel. Required there (or the `session` stub).
    */
-  accounts?: Accounts;
+  accounts?: KernelAuth;
 }
 
 /** What the board and the owner-channel show: the shown state; the executor's args stay server-side. */
@@ -240,7 +239,7 @@ export function createApp(opts: AppOptions): Server {
   /** Display names of the accounts other than the owner: what they wrote or decided carries a "by <name>" label. */
   async function bylines(): Promise<Map<string, string>> {
     if (!opts.accounts) return new Map();
-    return new Map((await opts.accounts.list()).filter((a) => !a.owner).map((a) => [a.id, a.name || a.email]));
+    return new Map((await opts.accounts.names()).filter((a) => !a.owner).map((a) => [a.id, a.name || a.email]));
   }
   /** The signed-in admin's name when that admin is not the owner (what the lane labels "by <name>"). */
   async function laneByline(_req: IncomingMessage): Promise<string | undefined> {
@@ -329,7 +328,6 @@ export function createApp(opts: AppOptions): Server {
   /** The operator's key (ops/setup.sh), on the internal listener only; it never decides or opens a session. */
   function requireOperator(req: IncomingMessage, what: string) {
     if (!opts.operatorKey || !keyMatches(req.headers["x-operator-key"], opts.operatorKey)) throw new HttpError(403, `only the operator ${what}`);
-    if (!opts.accounts) throw new HttpError(409, "no board accounts here");
   }
   /** The kernel (gateway_board_key): every channel reaches the owner's cards, decisions and notices only through it. */
   const kernelKeyed = (req: IncomingMessage) => Boolean(opts.gatewayKey && keyMatches(req.headers["x-gateway-key"], opts.gatewayKey));
@@ -1022,12 +1020,11 @@ export function createApp(opts: AppOptions): Server {
           for (const chat of chats) comment ??= (await pc.comments(chat.id)).find((c) => c.id === comment_id);
           if (!comment) throw new Refused("refused: that comment is not on your open `chat` task");
           const words = relayableWords(comment, ctx.me);
-          const owner = opts.accounts && (await opts.accounts.list()).find((a) => a.owner);
-          if (!owner) throw new Refused("refused: the owner has no account");
+          if (!opts.accounts) throw new Refused("refused: the board has no kernel to file it with");
           const key = `app-request:${comment_id}`;
           if (store.meta(key)) throw new Refused("refused: that message was already filed as a request");
-          assertNamesApp(words, app, opts.accounts!.apps.view(app).host);
-          const r = opts.accounts!.apps.ownerRequest(app, owner.email, words);
+          // The kernel checks the words name the app and files them as the owner's request.
+          const r = await opts.accounts.ownerRequest(app, words).catch((e: AccountError) => { throw new Refused(e.message); });
           store.setMeta(key, r.id);
           log.info({ app, request: r.id }, "owner's app request filed");
           return { request_id: r.id, app, note: `Pass ${r.id} to ${app}'s agent; it acts on it with app_role_set.` };
@@ -1398,25 +1395,6 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // Account reset links for the owner's Telegram: only the kernel collects them (for the owner's channel), once.
-      method: "GET",
-      path: /^\/internal\/owner\/reset-links$/,
-      handle: async (_m, _b, _u, req) => {
-        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel collects reset links");
-        return { links: opts.accounts?.takeResetLinks() ?? [] };
-      },
-    },
-    {
-      // ops/setup.sh (operator key): the owner's account and its one-time link, only while no owner exists.
-      method: "POST",
-      path: /^\/internal\/accounts\/setup$/,
-      handle: async (_m, body, _u, req) => {
-        requireOperator(req, "sets up the owner");
-        const { email, name } = parse(z.object({ email: z.string().email().max(200), name: z.string().max(100).default("") }).strict(), body);
-        return opts.accounts!.setup(email, name);
-      },
-    },
-    {
       // ops/setup.sh's welcome chat (operator key): a new chat, written as the owner.
       method: "POST",
       path: /^\/internal\/owner\/welcome$/,
@@ -1424,16 +1402,6 @@ export function createApp(opts: AppOptions): Server {
         requireOperator(req, "posts the welcome chat");
         const chats = routes.find((r) => r.method === "POST" && r.path.test("/api/chats"))!;
         return perRequest.run({ session: OPERATOR }, () => chats.handle(m, body, u, req));
-      },
-    },
-    {
-      // ops/setup.sh --reset <email> (operator key): the link goes to the owner's Telegram, never back to the caller.
-      method: "POST",
-      path: /^\/internal\/accounts\/reset$/,
-      handle: async (_m, body, _u, req) => {
-        requireOperator(req, "resets an account");
-        await opts.accounts!.reset(parse(z.object({ email: z.string().email().max(200) }).strict(), body).email);
-        return { ok: true, sent: "the link goes to the owner's Telegram" };
       },
     },
     {
@@ -2132,35 +2100,6 @@ export function createApp(opts: AppOptions): Server {
     }
   }
 
-  // apps-mcp's tools for in-app requests and roles (docs/design/access.md, In-app requests and roles), with the apps token.
-  // apps-mcp checked the calling agent may (the app's owner, or the app-requests role) and names it in `agent`.
-  const fromApps: typeof routes = [];
-  const AppName = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/);
-  const appAccess = () => {
-    if (!opts.accounts) throw new HttpError(503, "board accounts are off");
-    return opts.accounts.apps;
-  };
-  fromApps.push(
-    { method: "POST", path: /^\/internal\/apps\/requests$/, handle: async (_m, body) => ({ requests: appAccess().open(parse(z.object({ app: AppName }).strict(), body).app) }) },
-    {
-      method: "POST",
-      path: /^\/internal\/apps\/requests\/reply$/,
-      handle: async (_m, body) => {
-        const b = parse(z.object({ app: AppName, id: z.string().max(40), status: z.enum(["done", "declined", "answered"]), reply: z.string().min(1).max(1000) }).strict(), body);
-        return appAccess().reply(b.app, b.id, b.status, b.reply);
-      },
-    },
-    { method: "POST", path: /^\/internal\/apps\/roles$/, handle: async (_m, body) => appAccess().view(parse(z.object({ app: AppName }).strict(), body).app) },
-    {
-      method: "POST",
-      path: /^\/internal\/apps\/role-set$/,
-      handle: async (_m, body) => {
-        const b = parse(z.object({ app: AppName, agent: z.string().min(1).max(100), request_id: z.string().max(40), email: z.string().max(200), role: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/).nullable() }).strict(), body);
-        return appAccess().agentAssign(b.agent, b.app, b.request_id, b.email, b.role);
-      },
-    },
-  );
-
   async function handleInternal(req: IncomingMessage, res: ServerResponse, url: URL, internal: typeof routes) {
     const route = internal.find((r) => r.method === req.method && r.path.test(url.pathname));
     if (!route) throw new HttpError(404, "not found");
@@ -2168,52 +2107,50 @@ export function createApp(opts: AppOptions): Server {
     send(res, 200, JSON.stringify(await route.handle(url.pathname.match(route.path)!, body, url, req)), "application/json");
   }
 
-  /** Account administration on the board: any admin, and never the owner's account (accounts.ts refuses). */
+  /** Account administration on the board: any admin, and never the owner's account. The kernel acts as that admin's session. */
   const RoleSchema = z.enum(["admin", "user"]);
   const accountRoutes: { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession) => Promise<unknown> }[] = [
-    { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => ({ accounts: await opts.accounts!.list(), me: who.account.id }) },
+    { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => opts.accounts!.call("list", who) },
     // Your own signed-in browsers.
-    { method: "GET", path: /^\/api\/accounts\/sessions$/, handle: async (_m, _b, who) => ({ sessions: await opts.accounts!.sessionsOf(who.account.id, who.session.id) }) },
-    { method: "POST", path: /^\/api\/accounts\/sessions\/([\w-]{1,64})\/revoke$/, handle: async (m, _b, who) => opts.accounts!.revokeSession(who.account.id, m[1]!) },
+    { method: "GET", path: /^\/api\/accounts\/sessions$/, handle: async (_m, _b, who) => opts.accounts!.call("sessions", who) },
+    { method: "POST", path: /^\/api\/accounts\/sessions\/([\w-]{1,64})\/revoke$/, handle: async (m, _b, who) => opts.accounts!.call("revoke_session", who, { id: m[1]! }) },
     {
       method: "POST",
       path: /^\/api\/accounts$/,
-      handle: async (_m, body, who) => {
-        const input = parse(z.object({ email: z.string().email().max(200), name: z.string().max(100).default(""), role: RoleSchema }).strict(), body);
-        return opts.accounts!.invite(who.account, input);
-      },
+      handle: async (_m, body, who) => opts.accounts!.call("invite", who, parse(z.object({ email: z.string().email().max(200), name: z.string().max(100).default(""), role: RoleSchema }).strict(), body)),
     },
-    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/role$/, handle: async (m, body, who) => opts.accounts!.setRole(who.account, m[1]!, parse(z.object({ role: RoleSchema }).strict(), body).role as Role) },
-    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/(disable|enable)$/, handle: async (m, _b, who) => opts.accounts!.setDisabled(who.account, m[1]!, m[2] === "disable") },
-    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/link$/, handle: async (m, _b, who) => opts.accounts!.newLink(who.account, m[1]!) },
+    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/role$/, handle: async (m, body, who) => opts.accounts!.call("role", who, { id: m[1]!, role: parse(z.object({ role: RoleSchema }).strict(), body).role }) },
+    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/(disable|enable)$/, handle: async (m, _b, who) => opts.accounts!.call(m[2]!, who, { id: m[1]! }) },
+    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/link$/, handle: async (m, _b, who) => opts.accounts!.call("link", who, { id: m[1]! }) },
     // App admins (docs/design/access.md, Per-app roles): every shared app, its admins and default; name or remove one.
-    { method: "GET", path: /^\/api\/app-admins$/, handle: async () => ({ apps: opts.accounts!.apps.adminsByApp() }) },
+    { method: "GET", path: /^\/api\/app-admins$/, handle: async (_m, _b, who) => opts.accounts!.call("app_admins", who) },
     {
       method: "POST",
       path: /^\/api\/app-admins\/([a-z][a-z0-9-]{1,30})$/,
-      handle: async (m, body, who) => {
-        const { email, admin } = parse(z.object({ email: z.string().max(200), admin: z.boolean() }).strict(), body);
-        return opts.accounts!.apps.assign(who.account.email, m[1]!, email, admin ? "admin" : null);
-      },
+      handle: async (m, body, who) => opts.accounts!.call("app_admin_set", who, { app: m[1]!, ...parse(z.object({ email: z.string().max(200), admin: z.boolean() }).strict(), body) }),
     },
   ];
 
   /**
-   * The session gate for every API route on "lan" (reads and file downloads included). Open: /api/session only; signing in,
-   * claiming a link and enrolling happen on the kernel's admin listener (`adminUrl`). Returns true when it answered the
-   * request, else the session the board routes run under.
+   * The session gate for every API route on "lan" (reads and file downloads included). Open: /api/session and /api/sign-out;
+   * signing in, claiming a link and enrolling happen on the kernel's admin listener (`adminUrl`), and the board's own session
+   * comes from the kernel's handoff (/auth/start). Returns true when it answered the request, else the session the board
+   * routes run under.
    */
   async function accountGate(req: IncomingMessage, res: ServerResponse, url: URL): Promise<true | BoardSession> {
     const accounts = opts.accounts!;
     const path = url.pathname;
+    if (path === "/api/sign-out" && req.method === "POST") {
+      await accounts.signOut(req, res, SECURITY_HEADERS);
+      return true;
+    }
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      send(res, 200, JSON.stringify({ mode, account, needsTotp: Boolean(who && who.account.role === "admin" && !who.ready), googleConnect: googleViaBoard, adminUrl: opts.adminUrl ?? null }), "application/json");
+      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
     if (!who) throw new HttpError(401, "sign in");
-    if (!who.ready) throw new HttpError(403, who.account.role === "admin" ? "totp" : "this account has no board access");
     const a = accountRoutes.find((r) => r.method === req.method && r.path.test(path));
     if (a) {
       const body = req.method === "GET" ? undefined : await readJson(req);
@@ -2381,12 +2318,11 @@ export function createApp(opts: AppOptions): Server {
           kickDetector();
           return send(res, 200, JSON.stringify(r), "application/json");
         }
-        // /internal/apps/ takes only the apps token; everything else only the board's internal token.
-        const apps = url.pathname.startsWith("/internal/apps/");
-        const token = apps ? appsToken() : opts.internalToken;
+        // Only the board's internal token.
+        const token = opts.internalToken;
         if (!token || !bearerMatches(req.headers.authorization, token)) throw new HttpError(401, "unauthorized");
         if (!String(req.headers.host ?? "") || !opts.allowedHosts.includes(String(req.headers.host).toLowerCase())) throw new HttpError(403, "unknown host");
-        await handleInternal(req, res, url, apps ? fromApps : internal);
+        await handleInternal(req, res, url, internal);
       } catch (err) {
         const status = statusOf(err);
         if (status >= 500 || status === 401) log[status === 401 ? "warn" : "error"]({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "internal request failed");
@@ -2401,6 +2337,9 @@ export function createApp(opts: AppOptions): Server {
     }
     try {
       if (url.pathname.startsWith("/api/")) await handleApi(req, res, url);
+      // The kernel's handoff (kernel-auth.ts): the board's own session, on its own origin.
+      else if (url.pathname === "/auth/start" && req.method === "GET" && opts.accounts) opts.accounts.start(req, res);
+      else if (url.pathname === "/auth/handoff" && req.method === "GET" && opts.accounts) await opts.accounts.finish(req, res, url);
       else if (isConnect(url.pathname) && !(await adminSignedIn(req))) throw new HttpError(403, "sign in as an admin to connect accounts");
       else if (url.pathname.startsWith("/google/") && req.method === "GET") await handleGoogle(req, res, url);
       else if (signInFor(url.pathname) && req.method === "GET") await handleSignIn(req, res, url, signInFor(url.pathname)!);
@@ -2417,7 +2356,7 @@ export function createApp(opts: AppOptions): Server {
 /** ops/setup.sh's welcome chat (the operator's key): written as the owner, and never an approver. */
 const OPERATOR: BoardSession = { accountId: "operator", role: "admin" };
 
-const statusOf = (err: unknown) => (err instanceof HttpError || err instanceof AccountError || err instanceof AccessError ? err.status : err instanceof BadRequest ? 400 : err instanceof PaperclipError ? (err.status === 404 ? 404 : 502) : 500);
+const statusOf = (err: unknown) => (err instanceof HttpError || err instanceof AccountError ? err.status : err instanceof BadRequest ? 400 : err instanceof PaperclipError ? (err.status === 404 ? 404 : 502) : 500);
 
 function keyMatches(header: string | string[] | undefined, key: string): boolean {
   const given = Buffer.from(typeof header === "string" ? header : "");
