@@ -174,10 +174,12 @@ The 20 minutes went to an import-order bug, not a missing browser API.
   - The dialog test then installed jsdom globals, but Node's module cache already held the no-op effect.
   - Every portalled piece (Dialog, Sheet, Select, Popover) rendered nothing, with no error.
 - **What the probes showed:**
-  - Every probe that installed jsdom before importing anything passed.
-  - Every probe that booted `createApp` first failed.
+  - Probes that rendered a server page before installing jsdom failed.
+  - Probes that installed jsdom first passed, including ones that started the server but rendered no page before it.
   - The job ended by moving the dialog test into its own file, so it got its own process. That fixed it without anyone
     naming the cause.
+- **A 20-line repro confirms the mechanism:** import `radix-ui` before `globalThis.document` exists and an open Dialog
+  renders 0 `[role=dialog]`; import it after, and it renders 1.
 - **Two smaller issues on the way:**
   - `fetch` rejects a relative `referrer` outside a browser (a real fix in the component).
   - The hand-copied jsdom globals left Node's `Response` beside jsdom's.

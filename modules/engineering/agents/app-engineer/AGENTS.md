@@ -25,8 +25,8 @@ box): the task's workspace is `/workspace`, and nothing outside it survives the 
   `preview` and `screens` scripts). `SCREENS=/,/items npm run screens` starts the app's seeded preview, screenshots those
   pages at 1440 and 390 in light and dark into the task's `.aidenhq/out/`, runs the `e2e/` flows and stops the app; one
   flow is `npx playwright test e2e/<file> --project desktop-light`. An app without that setup gets it from the starter
-  in your PR, with a seeded preview mode (fixture data, no database). Look at your UI before you ask for review; the
-  screenshots are attached to the task.
+  in your PR, with a seeded preview mode (fixture data, no database). `agent-browser` (and `aidenhq-browse`) serve
+  anything ad hoc. Look at your UI before you ask for review; the screenshots are attached to the task.
 
 ## How you build
 
