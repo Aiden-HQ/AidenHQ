@@ -1,6 +1,6 @@
 // End to end (see flow-harness.mjs): a UI PR's design review, and the review task the runner files for each head. Owner,
 // 2026-11-13: when the head moved on, the earlier head's task sat in the owner's queue after its verdict had been posted.
-import { describe, it } from "node:test";
+import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,9 +8,11 @@ import { flow } from "./flow-harness.mjs";
 import { State } from "../src/state.ts";
 
 describe("flow-design-review", () => {
+  // The reviewer is an agent of the company (it holds the role, and the runner files to one it can still dispatch to).
   const t = flow({
     env: { AIDENHQ_PRODUCT_REPO: "acme/aidenhq", AIDENHQ_GITHUB_AGENTS_ORG: "acme" },
     runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n",
+    computers: ["designer-1"],
   });
   const reviews = () => t.paperclip.created.filter((c) => c.title === "Design review: acme/app#9");
   const head = (task) => /@([0-9a-f]{40}) -->/.exec(String(task.description))?.[1];
@@ -235,6 +237,103 @@ describe("flow-design-review: a head that is gone when its check would go pendin
     assert.equal(t.paperclip.runs.length, 0, "no run started for it");
     // The task the filing left behind is closed as superseded, not left for a reviewer to pick up.
     for (const task of reviews()) assert.equal(t.paperclip.issues.get(task.id).status, "cancelled", "its task closes as superseded");
+  });
+
+  it("never errors or asks for a repository along the way", () => t.noErrors());
+});
+
+describe("flow-design-review: the board files the task to a reviewer it can still run", () => {
+  // A fleet whose grants table still names an agent that is gone, ahead of the one holding the role now: the role is
+  // resolved against the company's live agents, so the task goes to the agent that can run it, never to a row that falls
+  // back to the owner (a task assigned to the owner is never dispatched: no verdict, and the PR waits on design-review).
+  const t = flow({
+    env: { AIDENHQ_PRODUCT_REPO: "acme/aidenhq", AIDENHQ_GITHUB_AGENTS_ORG: "acme" },
+    runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n",
+    computers: ["designer-1"],
+    ownerFallback: true,
+  });
+  const reviews = (n = 22) => t.paperclip.created.filter((c) => c.title === `Design review: acme/app#${n}`);
+  const runsOf = (task) => t.paperclip.runs.filter((r) => r.issueId === task.id && r.agentId === "designer-1");
+  const wakesOf = (task) => t.paperclip.wakes.filter((w) => w.issueId === task.id && w.agentId === "designer-1");
+  const starts = (task) => t.paperclip.comments.get(task.id).filter((c) => /^Start now:/.test(String(c.body)));
+  const pending = (n) => t.fakeLog().filter((e) => e.kind === "status" && e.data.number === n && e.data.status.context === "design-review").map((e) => e.data.status);
+  const restart = async () => {
+    const exited = new Promise((r) => t.runner.once("exit", r));
+    t.runner.kill("SIGTERM");
+    await exited;
+    t.startRunner();
+  };
+  const uiHead = async (number) => {
+    t.step("ui\naidenhq push acme/app feat/ui");
+    await t.turn("Restyle the page and push it.");
+    assert.equal(t.toolRuns().at(-1).code, 0, t.toolRuns().at(-1).out);
+    const state = new State(join(t.dir, "state"));
+    state.updateBranch("part", "acme/app", "feat/ui", { pr_url: `https://github.com/acme/app/pull/${number}` });
+    state.db.close();
+    writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ [number]: { branch: "feat/ui", files: ["web/app.css"], checks: "SUCCESS" } }));
+    t.step("ui-more\naidenhq push acme/app feat/ui");
+    await t.turn("Tweak it and push.");
+    assert.equal(t.toolRuns().at(-1).code, 0, t.toolRuns().at(-1).out);
+  };
+  // The queue asked for the head once already: forget that (the runner's asked row and its per-PR flag), so the next poll
+  // files the same head's task again, as a restart or a re-read of the queue would.
+  const askAgain = () => {
+    const state = new State(join(t.dir, "state"));
+    const queue = JSON.parse(state.get("merges:part"));
+    for (const p of queue.prs) delete p.reviewAsked;
+    state.set("merges:part", JSON.stringify(queue));
+    state.db.prepare("DELETE FROM meta WHERE key LIKE 'asked:design-review:%'").run();
+    state.db.close();
+  };
+
+  before(async () => {
+    await t.settled();
+    const exited = new Promise((r) => t.runner.once("exit", r));
+    t.runner.kill("SIGTERM");
+    await exited;
+    mkdirSync(join(t.dir, "config/grants"), { recursive: true });
+    // The removed agent first: the table keeps ids of agents that no longer exist.
+    writeFileSync(join(t.dir, "config/grants/grants.json"), JSON.stringify({ autonomy: "tier0", agents: { "gone-1": { key: "ui-reviewer-old", roles: ["design-review"] }, "designer-1": { key: "ui-reviewer", roles: ["design-review"] } } }));
+    writeFileSync(join(t.dir, "secrets/reviewer_key"), `${"r".repeat(64)}\n`, { mode: 0o600 });
+    t.startRunner();
+  });
+
+  it("files it to the live agent holding the role, not the stale id that would fall back to the owner", async () => {
+    await uiHead(22);
+    await t.waitFor("the review task and its run", () => reviews().length === 1 && runsOf(reviews()[0]).length === 1);
+    const task = reviews()[0];
+    const filed = t.paperclip.issues.get(task.id);
+    assert.equal(task.assigneeAgentId, "designer-1", "the live reviewer, though the table names a removed agent first");
+    assert.equal(filed.assigneeAgentId, "designer-1");
+    assert.equal(filed.assigneeUserId, null, "the owner is never the row's assignee");
+    assert.equal(filed.status, "in_progress", "its wake started the run");
+    assert.deepEqual(runsOf(task).map((r) => r.agentId), ["designer-1"]);
+    assert.equal(pending(22).length, 1, "the head is marked waiting once");
+  });
+
+  it("does not wake a task an earlier attempt left behind: the same key returns it and nothing is started", async () => {
+    const task = reviews(22)[0];
+    const [wakes, comments, runs] = [wakesOf(task).length, starts(task).length, runsOf(task).length];
+    askAgain();
+    await restart();
+    // The queue asks for the same head again: one more POST, answered with the task it already had.
+    await t.waitFor("the head asked for again", () => t.paperclip.filings.length === 2);
+    await t.idle(1500);
+    assert.equal(t.paperclip.created.length, 1, "the board answered from its key: no second task");
+    assert.equal(starts(task).length, comments, "no second `Start now`: it would reach a run that has ended");
+    assert.equal(wakesOf(task).length, wakes, "nobody woken again on that task");
+    assert.equal(runsOf(task).length, runs, "and no new run");
+    assert.equal(pending(22).length, 1, "and no second pending status");
+  });
+
+  it("still files and wakes a new head's task", async () => {
+    t.step("ui-next\naidenhq push acme/app feat/ui");
+    await t.turn("One more tweak, then push.");
+    assert.equal(t.toolRuns().at(-1).code, 0, t.toolRuns().at(-1).out);
+    await t.waitFor("the new head's task and its run", () => reviews(22).length === 2 && runsOf(reviews(22)[1]).length === 1);
+    const task = reviews(22)[1];
+    assert.equal(t.paperclip.issues.get(task.id).assigneeAgentId, "designer-1");
+    assert.equal(wakesOf(task).length, 1, "the new head is woken");
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
