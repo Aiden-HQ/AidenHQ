@@ -42,7 +42,7 @@ settings:
     values: ["on", "off"]
   # Models a CI review may call: OpenRouter ids as the code-review job names them (vars.CODEGENIE_MODEL, default below).
   ci_review_models:
-    default: ["~deepseek/deepseek-flash-latest"]
+    default: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest"] # codegenie's, the quick reviewer's
   # CI review spend caps, USD per UTC day: each repo's, and all repos' together. Past one, reviews fail until the next day.
   ci_review_repo_day_usd:
     default: 5
