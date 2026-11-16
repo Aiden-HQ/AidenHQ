@@ -156,18 +156,20 @@ Reject a bump that also adds a dependency the chain did not name, adds or change
 new registry, URL or git source, or moves a different package than the one asked for. Reject one that does not reach
 the version or fix the chain asked for, and say what is missing.
 
-A new registry, URL or git source is not always wrong: the owner may approve one, narrowly, for one package and one source
-(an image where the distro's package is too old for a security fix, say). That approval is recorded as data, in the base
-of the change, in `.github/supply-chain-source-exceptions.yaml`: one flow-style record per line under
-`source_exceptions:`, naming the `package`, the `to` source it moves to (and `from` when it has one), the `version` when it
-is a version bump too, `approved_by: owner`, and a `reference` to where the owner said so. Code reads that file from the
-base branch, never from the change under review, and a change to the file is the owner's own tap in every repo
+A new registry, URL or git source is not always wrong: the owner may approve one, narrowly, for one package and one
+source (an image where the distro's package is too old for a security fix, say). That approval is recorded as data, in
+the base of the change, in `.github/supply-chain-source-exceptions.yaml`: one flow-style record per line under
+`source_exceptions:`, naming the `package`, the `to` source it moves to (and `from` when it has one), the `version` when
+it is a version bump too, `approved_by: owner`, and a `reference` to where the owner said so. Code reads that file from
+the base branch, never from the change under review, and a change to the file is the owner's own tap in every repo
 (`owner-approval-record`, never the reviewer's): so an agent's PR can neither record its own approval nor edit one, and
-what you are shown as `APPROVED_SOURCE_EXCEPTIONS` is the owner's. Treat a matching record as satisfying this paragraph:
-approve the source change when the diff moves that package to exactly that source, at a pinned version, and does nothing
-else. A record that names another package, another source, or is absent, is no exception: reject the new source as before.
-The record is the owner's words for this one package and source only; it never widens the rule for anything else in the
-diff.
+what you are shown as `APPROVED_SOURCE_EXCEPTIONS` is the owner's. Each record is labelled with the repository and base
+it was read from and covers only that repository's own change: a record from one repo's base never approves a source
+change in another, and a change whose own base holds no record has no exception. Treat a matching record as satisfying
+this paragraph: approve the source change when the diff moves that package to exactly that source, at a pinned version,
+and does nothing else. A record that names another package, another source, or is absent, is no exception: reject the
+new source as before. The record is the owner's words for this one package and source only; it never widens the rule for
+anything else in the diff.
 
 ## Dependabot pin bumps (rule `product-dependabot-merge`)
 
