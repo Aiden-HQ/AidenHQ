@@ -33,13 +33,13 @@
     "id": "A6",
     "attack": "Approve over the board origin: board JavaScript posts to /approvals/* or frames a decide page",
     "unit": "3a",
-    "test": null
+    "test": "kernel/test/accounts.test.mjs"
   },
   {
     "id": "A7",
     "attack": "Clickjack: a module frames /owner/confirm or any decide page",
     "unit": "3a",
-    "test": null
+    "test": "kernel/test/accounts.test.mjs"
   },
   {
     "id": "A8",

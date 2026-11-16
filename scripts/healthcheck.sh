@@ -102,7 +102,7 @@ if echo "$g_health" | grep -q '"ok":true'; then
     accounts="$(curl -s -m 10 -H "Authorization: Bearer $atoken" "$(svc google-workspace-mcp 8081)/auth/status" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{for(const a of JSON.parse(d).accounts)console.log(a.email+' '+a.state)}catch(e){console.log('? '+e.message)}})" 2>/dev/null)"
     while read -r email state; do
       [ -n "$email" ] || continue
-      check "google sign-in $email" sh -c "[ '$state' = ok ] || { echo '$state: reconnect it from the board (http://127.0.0.1:3120) or run scripts/google-auth.sh --email $email'; exit 1; }"
+      check "google sign-in $email" sh -c "[ '$state' = ok ] || { echo '$state: reconnect it from the board (http://127.0.0.1:3121) or run scripts/google-auth.sh --email $email'; exit 1; }"
     done <<< "$accounts"
   fi
 else
@@ -182,7 +182,9 @@ else
   printf '  skip  github (not connected: %s)\n' "$(echo "$gh_health" | cut -c1-80)"
 fi
 
-check "board (127.0.0.1:3120)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3120/healthz | grep -q ok && curl -fsS --max-time 10 http://127.0.0.1:3120/api/session | grep -q "\"mode\":\"local\""' # reads need a sign-in
+check "board (127.0.0.1:3121)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3121/healthz | grep -q ok' # reads need a sign-in
+# The kernel's admin listener (sign-in and approvals): signed out, a page sends you to sign in.
+check "kernel admin (127.0.0.1:3120)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3120/healthz | grep -q ok && curl -fsS --max-time 10 -H "Host: 127.0.0.1:3120" http://127.0.0.1:3120/auth/sign-in | grep -q "Sign in"'
 
 # The gate (shared apps; config/gate.json exists only with settings.edge) signs people in and notifies agents through the
 # board's loopback listener on 3129. Any HTTP answer counts; a refused connection means the board's port is not published

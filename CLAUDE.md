@@ -76,9 +76,11 @@ on the PR's exact head and merges only on a 100% receipt (`services/runner/src/e
 - **Source writers:** one bad item never fails a pass (skip only permanent errors, rethrow transient ones); passes
   are time-bounded. Probe a vendor MCP's real tool shapes live before trusting guessed params
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
-- **Inbound:** board port 3120 is loopback-only but every host process shares that loopback (Engineer jobs, Tailscale
-  serve), so every route on 3120 and 3121 needs a signed-in admin (board accounts: Better Auth, password + TOTP,
-  `data/board/auth.db`; no SSO, sign-in beyond that is Cloudflare Access). Every admin is an owner: writes with the
+- **Inbound:** the kernel's admin listener (3120: sign-in, approval pages) and the board (3121) are loopback-only but every
+  host process shares that loopback (Engineer jobs, Tailscale serve), so every route on 3120 and 3121 needs a signed-in
+  admin (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
+  also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages or
+  by channel token. Every admin is an owner: writes with the
   board key, taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
   `authored`). `board_operator_key` (ops/setup.sh) only makes the owner's setup link, posts the welcome chat and resets
   an account. Users get apps only; each app's admins manage its access on the my-apps host's `/access` (never a

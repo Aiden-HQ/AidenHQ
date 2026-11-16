@@ -99,8 +99,8 @@ main() {
   # Entered through the hand-over of a script that predates generations: the instance had already moved, so the commit that
   # ran before is the newest one pinning `before`.
   if [ -n "${AIDENHQ_APPLY_BEFORE:-}" ] && [ -z "${AIDENHQ_APPLY_INST_BEFORE:-}" ]; then inst_before="$(instancePinning "$before")"; fi
-  # Host-side Node deps (the compiler/setup and the runner) follow the product's lockfiles.
-  for d in scripts services/runner; do
+  # Host-side Node deps (the compiler/setup, the runner and the kernel) follow the product's lockfiles.
+  for d in scripts services/runner kernel; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
   lap npm
@@ -265,7 +265,7 @@ applyGeneration() {
   done <<< "$plan"
   git -C "$inst" checkout --quiet --detach "$instance"
   git checkout --quiet --detach "$product"
-  for d in scripts services/runner; do
+  for d in scripts services/runner kernel; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
   local m; m="$(genAppend "$product" "$instance" pending "" "${AIDENHQ_REVERT_OF:-}" "$gen")"
@@ -308,7 +308,7 @@ instancePinning() {
 # A refusal before the switch: both checkouts back where the running generation has them, with the host's Node deps.
 restoreCheckouts() {
   git checkout --quiet --detach "$before"
-  for d in scripts services/runner; do
+  for d in scripts services/runner kernel; do
     git diff --quiet "$before" "$product" -- "$d/package-lock.json" || npm ci --prefix "$d" --silent || true
   done
   if [ -n "${inst_before:-}" ] && [ "$(git -C "$inst" rev-parse HEAD)" != "$inst_before" ]; then git -C "$inst" checkout --quiet --detach "$inst_before"; fi
@@ -371,6 +371,14 @@ switchOver() {
   if [ -e "$old" ]; then
     systemctl --user disable --now aidenhq-gateway 2>/dev/null || true
     rm -f "$old" && systemctl --user daemon-reload && echo "gateway unit removed (the kernel replaces it)"
+  fi
+  # The accounts move into the kernel (lean-core 3a), once, with the board stopped so nothing writes the file mid-move; compose
+  # brings the board back on the new mount. An older product (a revert) has no kernel/src/auth-move.ts and moves nothing.
+  local data="${AIDENHQ_DATA_DIR:-$PWD/data}"
+  if [ -f kernel/src/auth-move.ts ] && [ -f "$data/board/auth.db" ] && [ ! -f "$data/kernel/auth/auth.db" ]; then
+    docker compose stop board >/dev/null 2>&1 || true
+    local moved; moved="$(node kernel/src/auth-move.ts "$data")"
+    echo "accounts: $moved (data/board/auth.db -> data/kernel/auth/)"
   fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-kernel \

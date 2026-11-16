@@ -13,7 +13,7 @@ import { classifyModules, diffAll } from "../../../kernel/src/loader/authority.t
  * approval path (tiers, the reviewer, its policy and its eval cases, the owner's-words check, the merge queue's writes,
  * apply), the state classify() trusts and the runner's GitHub writes (main, state, config, github-app, host git on agent
  * clones), the job jail, who an agent is and what it may call (the kernel's identity and tool proxy, the modules' caller check, the compiler's grants, setup), the board's
- * approval records, decision routes, tier rules and sign-in, the sandboxes, the kernel (its model gateway: key and spend caps), host
+ * approval records, decision routes, tier rules and sign-in (the kernel's admin pages from 3a), the sandboxes, the kernel (its model gateway: key and spend caps), host
  * privileges, the security checks, and the product's CI (the checks a merge waits on). A file stays here when it moves from
  * `.mjs` to `.ts` (the TypeScript conversion), so each name matches either extension.
  */
@@ -52,6 +52,8 @@ export const GATE_CORE = [
   /^services\/board\/src\/app\.ts$/,
   /^services\/board\/src\/fleet\.ts$/,
   /^services\/board\/src\/accounts\.ts$/,
+  // The accounts' Better Auth options and sign-in rules (synced from kernel/src/auth-rules.ts): the board's 3129 listener runs them.
+  /^services\/board\/src\/auth-rules\.ts$/,
   /^services\/board\/src\/session\.ts$/,
   /^services\/computer\//,
   /^ops\//,
@@ -78,6 +80,7 @@ export const GATE_DIRS = [
   "services/board/src/app.ts",
   "services/board/src/fleet.ts",
   "services/board/src/accounts.ts",
+  "services/board/src/auth-rules.ts",
   "services/board/src/session.ts",
 ];
 /** Runner files deliberately outside the core. Adding one here is a gate-core change. */

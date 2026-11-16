@@ -6,11 +6,13 @@
 //   model or tool call is made.
 // - The backplane listener (10.231.0.1:3130, backplane.ts): the tool proxy in front of every connection, caller identity
 //   and assertions, the control plane as the calling agent, and the records of every write (writes.ts, kernel.db).
+// - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
 import http from "node:http";
 import { existsSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configDir, dataDir, env, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
+import { createAdmin } from "./admin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
 import { createBackplane } from "./backplane.ts";
 import { createBrake } from "./brake.ts";
@@ -68,6 +70,16 @@ const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "
 const channels = createChannels({ db: records.db, writes, board: boardApi, owner: ownerApi, modules: modulesFile, log });
 const brake = createBrake({ db: records.db, owner: ownerApi, on: () => grantsTable().loop_brake !== "off" });
 const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
+// The admin listener's accounts (data/kernel/auth/auth.db). Not moved yet (the board still holds them): the listener refuses
+// while every other part of the kernel serves.
+const adminUrl = env("AIDENHQ_ADMIN_URL", "");
+// The front door's name with and without its port (proxies differ in the Host they pass on).
+const adminHosts = [...env("AIDENHQ_ADMIN_HOSTS", "localhost:3120,127.0.0.1:3120").split(","), ...(adminUrl ? [new URL(adminUrl).host, new URL(adminUrl).hostname] : [])].map((h) => h.trim().toLowerCase()).filter(Boolean);
+const accounts = await import("./accounts.ts").then((a) => a.openAccounts({ dataDir, hosts: adminHosts, origins: adminUrl ? [new URL(adminUrl).origin] : [], edgeSecret: () => secret("edge_board_secret"), notify: (line) => channels.ownerLine(line), log: { info: (o, m) => log(m, o as never), warn: (o, m) => log(m, o as never), error: (o, m) => log(m, o as never) } }))
+  .catch((e: Error) => (log("accounts off", { err: e.message }), undefined));
+const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", env("BOARD_LAN_URL", "") ? new URL(env("BOARD_LAN_URL", "")).origin : "").split(",").map((o) => o.trim()).filter(Boolean);
+const admin = accounts && createAdmin({ accounts, cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origin: () => (adminUrl ? new URL(adminUrl).origin : ""), frameOrigins: () => boardOrigins, log });
+
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
 setTimeout(() => void writes.reconcile().then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })), 60_000).unref();
@@ -108,6 +120,9 @@ function listen(addr: string, ci = false, handler: http.RequestListener = (req, 
 for (const addr of env("AIDENHQ_GATEWAY_LISTEN", "127.0.0.1:8201,10.231.0.1:8201").split(",").map((s) => s.trim()).filter(Boolean)) listen(addr);
 // The backplane listener: containers on the backplane reach it (Codex in the control plane, modules); jobs never do.
 listen(env("AIDENHQ_KERNEL_BACKPLANE", "10.231.0.1:3130"), false, backplane);
+
+// The admin listener: loopback only; the front door reaches it there.
+listen(env("AIDENHQ_KERNEL_ADMIN", "127.0.0.1:3120"), false, admin ?? ((_req, res) => void res.writeHead(503, { "content-type": "text/plain" }).end("accounts are off: see the kernel's log")));
 
 // The CI listener, on the CI runners' bridge address (modules/ci; ops/units/aidenhq-ci-net.service lets that bridge reach this
 // port only): CI routes and CI tokens only (lib.ts). Bound once config/gateway.json turns CI on (checked every minute, so

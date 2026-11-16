@@ -122,7 +122,7 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
 ## Backups
 
 `scripts/backup.sh [output-dir] [--plain]` writes a directory `aidenhq-<timestamp>/` of `.tar.gz` parts (`.tar` with
-`--plain`), each streamed straight to its file, with the whole data directory (Paperclip, the board with its accounts and `auth.secret`, the gateway ledger, apps-mcp, ops-mcp,
+`--plain`), each streamed straight to its file, with the whole data directory (Paperclip, the board, the accounts and their `auth.secret` (`data/kernel/auth`), the gateway ledger, apps-mcp, ops-mcp,
 slack-live, the apps node's state), the runner's state dir, every `app-*` volume with its labels, the YAML config and
 the instance repo as a git bundle. Every SQLite database is also copied online through SQLite's backup API, and
 restore puts that copy over the file copy. Files are read through a container, so no sudo is needed. While Paperclip

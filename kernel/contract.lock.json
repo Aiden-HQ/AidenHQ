@@ -1,6 +1,90 @@
 {
   "version": 1,
   "entries": {
+    "admin route GET /": {
+      "state": "experimental",
+      "fp": "auth=admin"
+    },
+    "admin route GET /approvals": {
+      "state": "experimental",
+      "fp": "auth=admin"
+    },
+    "admin route GET /approvals/:id": {
+      "state": "experimental",
+      "fp": "auth=admin"
+    },
+    "admin route GET /auth/enrol": {
+      "state": "experimental",
+      "fp": "auth=session"
+    },
+    "admin route GET /auth/password": {
+      "state": "experimental",
+      "fp": "auth=admin"
+    },
+    "admin route GET /auth/set-password": {
+      "state": "experimental",
+      "fp": "auth=none"
+    },
+    "admin route GET /auth/sign-in": {
+      "state": "experimental",
+      "fp": "auth=none"
+    },
+    "admin route GET /auth/totp": {
+      "state": "experimental",
+      "fp": "auth=none"
+    },
+    "admin route GET /healthz": {
+      "state": "experimental",
+      "fp": "auth=none"
+    },
+    "admin route GET /owner/confirm": {
+      "state": "experimental",
+      "fp": "auth=admin"
+    },
+    "admin route GET /owner/message": {
+      "state": "experimental",
+      "fp": "auth=admin"
+    },
+    "admin route POST /approvals/:id/decide": {
+      "state": "experimental",
+      "fp": "auth=admin+csrf"
+    },
+    "admin route POST /approvals/batch": {
+      "state": "experimental",
+      "fp": "auth=admin+csrf"
+    },
+    "admin route POST /auth/enrol": {
+      "state": "experimental",
+      "fp": "auth=session+csrf"
+    },
+    "admin route POST /auth/password": {
+      "state": "experimental",
+      "fp": "auth=admin+csrf"
+    },
+    "admin route POST /auth/set-password": {
+      "state": "experimental",
+      "fp": "auth=origin"
+    },
+    "admin route POST /auth/sign-in": {
+      "state": "experimental",
+      "fp": "auth=origin"
+    },
+    "admin route POST /auth/sign-out": {
+      "state": "experimental",
+      "fp": "auth=origin"
+    },
+    "admin route POST /auth/totp": {
+      "state": "experimental",
+      "fp": "auth=origin"
+    },
+    "admin route POST /owner/confirm": {
+      "state": "experimental",
+      "fp": "auth=admin+csrf"
+    },
+    "admin route POST /owner/message": {
+      "state": "experimental",
+      "fp": "auth=admin+csrf"
+    },
     "manifest key agents": {
       "state": "experimental",
       "fp": ""

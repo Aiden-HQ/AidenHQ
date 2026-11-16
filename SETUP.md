@@ -186,7 +186,8 @@ shell doesn't have it yet (setup restarts your systemd user manager itself, so t
 | Instance repo | `git -C ~/aidenhq-instance log --oneline -1 && grep '^product:' ~/aidenhq-instance/instance.yaml` | `instance for <name>`, and a 40-character sha |
 | OpenRouter key | the setup output line `OpenRouter key ok (...)` (setup stops before the apply if OpenRouter rejects the key); re-check with `AIDENHQ_SECRETS_DIR=~/.config/aidenhq node ~/aidenhq/scripts/openrouter-key.mjs check` | `OpenRouter key ok`, with your remaining limit |
 | Paperclip | `curl -s http://127.0.0.1:3100/api/health` | contains `"status":"ok"` and `"bootstrapStatus":"ready"` |
-| Board | `curl -s http://127.0.0.1:3120/healthz` | `ok` |
+| Board | `curl -s http://127.0.0.1:3121/healthz` | `ok` |
+| Sign-in and approvals (the kernel) | `curl -s http://127.0.0.1:3120/healthz` | `ok` |
 | Containers | `cd ~/aidenhq && docker compose ps --format '{{.Service}} {{.State}}'` | every service `running` |
 | Kernel (model gateway), runner and agent computers | `systemctl --user is-active aidenhq-kernel aidenhq-runner aidenhq-computers` | `active` three times |
 
@@ -385,7 +386,7 @@ scripts/verify-security.sh
 ```
 
 **Check, healthcheck:** these lines must be `ok`: `paperclip http`, `paperclip bootstrap (account claimed)`,
-`board (127.0.0.1:3120)`, `runner active`, plus the lines of every account you connected in step 7. Lines for things
+`board (127.0.0.1:3121)`, `kernel admin (127.0.0.1:3120)`, `runner active`, plus the lines of every account you connected in step 7. Lines for things
 you didn't set up print `skip` and are listed on a `Skipped (not configured)` line at the end. What counts as set up
 is read from the install: the `meetings` module (`config/modules.json`) enables the `ops-mcp` and watcher webhook
 checks, the runner's default engine being `codex` enables the ChatGPT login check, and a Claude engine token enables
