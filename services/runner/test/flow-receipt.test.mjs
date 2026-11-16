@@ -62,14 +62,15 @@ describe("flow-receipt without a card", () => {
   it("never errors or asks for a repository along the way", () => t.noErrors());
 });
 
-describe("flow-receipt with a task whose PR already merged", () => {
-  // PEN-4 is a second Engineer sub-task on the same parent: its run ended with a commit awaiting publication, and its PR
-  // merged since (the run-end receipt is posted after that, when the last sibling finishes). Nothing is left to publish.
-  // Only PEN-2, which the run below commits to and no card covers, may be invited.
+describe("flow-receipt with a task whose PR merged at the head its run ended on", () => {
+  // PEN-4 is a second Engineer sub-task on the same parent: its run ended on a commit, the PR opened for it merged at exactly
+  // that commit (the run-end receipt is posted after that, when the last sibling finishes), and the queue records its head.
+  // Nothing is left to publish. Only PEN-2, which the run below commits to and no card covers, may be invited.
   const merged = {
     issue: { id: "part2", identifier: "PEN-4", title: "Drop Legacy from infra", status: "in_review", parentId: "parent", assigneeAgentId: "engineer-codex", assigneeUserId: null, createdByUserId: null, createdByAgentId: "assistant", labels: [], description: "" },
     comments: [],
   };
+  const head = "b".repeat(40);
   const t = flow({
     parent: { createdByUserId: null, createdByAgentId: "assistant", assigneeUserId: "user-1" },
     part: { createdByUserId: null, createdByAgentId: "assistant", description: "Drop Legacy support in acme/app" },
@@ -81,6 +82,9 @@ describe("flow-receipt with a task whose PR already merged", () => {
       state.finishJob(job, "done", "committed");
       state.saveBranch("part2", { repo: "acme/app", branch: "fix/merged", base: "main" });
       state.updateBranch("part2", "acme/app", "fix/merged", { pr_url: "https://github.com/acme/app/pull/7", merged: 1 });
+      // The head the run ended on, and the merge queue's record that the PR merged at it.
+      state.set("heads:part2", JSON.stringify([{ repo: "acme/app", branch: "fix/merged", sha: head }]));
+      state.set("merges:part2", JSON.stringify({ state: "done", identifier: "PEN-4", prs: [{ repo: "acme/app", number: 7, url: "https://github.com/acme/app/pull/7", status: "merged", head, sha: "c".repeat(40) }] }));
       state.db.close();
     },
   });
@@ -93,6 +97,40 @@ describe("flow-receipt with a task whose PR already merged", () => {
     assert.match(receipt, /Reply \*\*pr\*\* here to open the PRs of PEN-2, or \*\*pr\*\* on a single task for just that one\./);
     assert.doesNotMatch(receipt, /open all their PRs/);
     assert.doesNotMatch(receipt, /Already requested/);
+  });
+
+  it("never errors or asks for a repository along the way", () => t.noErrors());
+});
+
+describe("flow-receipt with a task whose PR merged but no head is on record", () => {
+  // PEN-4's branch row says its PR merged, but the runner kept no head its run ended on and the queue no head it merged:
+  // nothing ties the merge to the committed work, so the receipt keeps the invitation rather than hide a branch unproven.
+  const unproven = {
+    issue: { id: "part2", identifier: "PEN-4", title: "Drop Legacy from infra", status: "in_review", parentId: "parent", assigneeAgentId: "engineer-codex", assigneeUserId: null, createdByUserId: null, createdByAgentId: "assistant", labels: [], description: "" },
+    comments: [],
+  };
+  const t = flow({
+    parent: { createdByUserId: null, createdByAgentId: "assistant", assigneeUserId: "user-1" },
+    part: { createdByUserId: null, createdByAgentId: "assistant", description: "Drop Legacy support in acme/app" },
+    siblings: [unproven],
+    step: "commit",
+    setup: ({ dir }) => {
+      const state = new State(join(dir, "state"));
+      const job = state.startJob("part2", "claude", join(dir, "PEN-4.log"));
+      state.finishJob(job, "done", "committed");
+      state.saveBranch("part2", { repo: "acme/app", branch: "fix/merged", base: "main" });
+      state.updateBranch("part2", "acme/app", "fix/merged", { pr_url: "https://github.com/acme/app/pull/7", merged: 1 });
+      state.set("merges:part2", JSON.stringify({ state: "done", identifier: "PEN-4", prs: [{ repo: "acme/app", number: 7, url: "https://github.com/acme/app/pull/7", status: "merged" }] }));
+      state.db.close();
+    },
+  });
+
+  it("still invites pr for it", async () => {
+    await t.waitFor("the run-end receipt", () => Boolean(receiptOf(t)));
+    const receipt = receiptOf(t);
+    assert.match(receipt, /Reply \*\*pr\*\* here to open all their PRs, or \*\*pr\*\* on a single task for just that one\./);
+    assert.doesNotMatch(receipt, /open the PRs of PEN-2/);
+    assert.doesNotMatch(receipt, /No further \*\*pr\*\* reply/);
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
