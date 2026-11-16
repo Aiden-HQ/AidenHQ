@@ -462,10 +462,10 @@ switchOver() {
   # start limit cleared before its start (ops/ci-runner-units.sh).
   ops/ci-runner-units.sh "${AIDENHQ_DATA_DIR:-$PWD/data}"
   lap units
-  # Apply-time rebuilds leave dangling images and build cache behind: drop what is older than 48 hours. Images a container
-  # uses and volumes are never touched.
+  # Apply-time rebuilds leave images nothing runs any more (content-tagged, so not dangling) and build cache behind: drop
+  # what is older than 48 hours. Images a container uses and volumes are never touched.
   docker builder prune -f --filter until=48h >/dev/null 2>&1 || true
-  docker image prune -f >/dev/null 2>&1 || true
+  docker image prune -af --filter until=48h >/dev/null 2>&1 || true
   lap prune
   echo "$product" > "$applied"
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"

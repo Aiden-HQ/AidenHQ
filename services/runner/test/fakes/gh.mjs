@@ -5,7 +5,7 @@
 // reads as merged after). `checks`: SUCCESS, FAILURE or PENDING (still running); `author`: "dependabot" for Dependabot's;
 // `mergeable`: CONFLICTING for a conflict with main; `base`: the base branch (main when unset), stacked on another PR's branch.
 // `checks` may also be NONE (no checks on the head yet); `title` and `body` are the PR's own text, as GitHub returns it. Also
-// the default branch, a branch's PRs, a retarget, and an update of a PR's head with its base (a merge commit).
+// the default branch, a branch's PRs, a retarget, a close, a comment, and an update of a PR's head with its base (a merge commit).
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -71,7 +71,7 @@ const commits = (p) => ({ nodes: [{ commit: { parents: { nodes: [] }, signature:
 
 if (field("query")?.includes("pullRequests(states: OPEN")) {
   const nodes = Object.entries(prs)
-    .filter(([, p]) => !p.merged)
+    .filter(([, p]) => !p.merged && !p.closed)
     .map(([number, p]) => ({
       number: Number(number), url: `https://github.com/acme/app/pull/${number}`, isDraft: false, mergeable: p.mergeable ?? "MERGEABLE", isCrossRepository: false,
       headRefName: p.branch, headRefOid: tip(p.branch), author: p.author === "dependabot" ? { __typename: "Bot", login: "dependabot" } : { __typename: "User", login: "test" }, commits: commits(p),
@@ -120,12 +120,24 @@ if (statusRoute) {
   console.log("{}");
   process.exit(0);
 }
+// A comment on a PR's conversation: logged.
+if (args.includes("POST") && args.some((a) => /^repos\/acme\/app\/issues\/\d+\/comments$/.test(a))) {
+  log("gh", args);
+  console.log("{}");
+  process.exit(0);
+}
 const route = args.find((a) => a.startsWith("repos/acme/app/pulls/"));
 const number = route ? route.split("/")[4] : field("number");
 const p = prs[number];
 if (!p) process.exit(1);
 
-if (args.includes("PATCH") && field("base")) {
+if (args.includes("PATCH") && field("state") === "closed") {
+  // A close: logged, and the PR leaves the open list.
+  log("gh", args);
+  p.closed = true;
+  writeFileSync(fixture, JSON.stringify(prs));
+  console.log("{}");
+} else if (args.includes("PATCH") && field("base")) {
   // A retarget: the PR's base branch changes.
   log("gh", args);
   p.base = field("base");

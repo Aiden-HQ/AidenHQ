@@ -32,6 +32,17 @@ function appJwt(appId: string, key: string): string {
   return `${body}.${createSign("RSA-SHA256").update(body).sign(key, "base64url")}`;
 }
 
+/**
+ * Where product issues go: only the configured product repo (no tool input names a repo), and only for a caller holding the
+ * product-issues role (Fleet Ops), whatever its grant says.
+ */
+export function productTarget(roles: readonly string[] | undefined, configured: string): [string, string] {
+  if (!roles?.includes("product-issues")) throw new Error("product issues need the product-issues role");
+  const m = configured.trim().match(/^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/);
+  if (!m) throw new Error("no product repo is configured (setting product_repo)");
+  return [m[1]!, m[2]!];
+}
+
 export class Projects {
   private cache = new Map<string, { token: string; expires: number; user: boolean; projects: boolean }>();
   private repoTokens = new Map<string, { token: string | undefined; expires: number }>();
@@ -71,6 +82,59 @@ export class Projects {
     const r = await this.api("POST", `${API}/repos/${org}/${repo}/statuses/${sha}`, { authorization: `Bearer ${t.body.token}` }, status);
     if (r.status !== 201) throw new Error(`GitHub refused the status (${r.status} ${r.body?.message ?? ""})`.trim());
     return { repo: `${org}/${repo}`, number, sha, context: r.body.context, state: r.body.state };
+  }
+
+  /** A one-off App token for one repo and these permissions, once the installation there grants them. */
+  private async narrowed(owner: string, repo: string, permissions: Record<string, "read" | "write">): Promise<{ authorization: string }> {
+    if (!NAME.test(owner) || !NAME.test(repo)) throw new Error("the product repo isn't owner/repo");
+    const jwt = this.jwt();
+    const inst = await this.api("GET", `${API}/repos/${owner}/${repo}/installation`, { authorization: jwt });
+    if (inst.status !== 200) throw new Error(`the AidenHQ GitHub App isn't installed on ${owner}/${repo} (GitHub said ${inst.status})`);
+    if (inst.body.permissions?.issues !== "write") throw new Error(`the GitHub App can't write issues on ${owner}/${repo} yet: the operator gives it Issues: Read and write, and accepts that on the installation`);
+    const t = await this.api("POST", `${API}/app/installations/${inst.body.id}/access_tokens`, { authorization: jwt }, { repositories: [repo], permissions });
+    if (t.status !== 201) throw new Error(`couldn't get a GitHub App token for ${owner}/${repo} (GitHub said ${t.status} ${t.body?.message ?? ""})`.trim());
+    return { authorization: `Bearer ${t.body.token}` };
+  }
+
+  /** The repo's issues whose body carries the fingerprint (GitHub search is fuzzy: each hit is checked). */
+  private async byFingerprint(owner: string, repo: string, auth: { authorization: string }, fingerprint: string, open: boolean) {
+    const q = `repo:${owner}/${repo} is:issue${open ? " is:open" : ""} in:body "${fingerprint}"`;
+    const r = await this.api("GET", `${API}/search/issues?q=${encodeURIComponent(q)}&per_page=20`, auth);
+    if (r.status !== 200) throw new Error(`GitHub search failed (${r.status} ${r.body?.message ?? ""})`.trim());
+    return ((r.body.items ?? []) as { number: number; html_url: string; state: string; state_reason?: string | null; body?: string | null }[]).filter((i) => String(i.body ?? "").includes(fingerprint));
+  }
+
+  /**
+   * A product-bug report as the App (the fleet's own identity, never the owner's), deduped by its fingerprint: the issue that
+   * carries it (an open one first, else the latest closed one: a verification, or a recurrence after a fix) gets the body as a
+   * comment; only a fingerprint seen nowhere opens a new issue, the fingerprint on its last line.
+   */
+  async reportIssue(owner: string, repo: string, input: { fingerprint: string; title: string; body: string }) {
+    const auth = await this.narrowed(owner, repo, { issues: "write" });
+    const all = await this.byFingerprint(owner, repo, auth, input.fingerprint, false);
+    const hit = all.find((i) => i.state === "open") ?? all.sort((a, b) => b.number - a.number)[0];
+    const r = hit
+      ? await this.api("POST", `${API}/repos/${owner}/${repo}/issues/${hit.number}/comments`, auth, { body: input.body })
+      : await this.api("POST", `${API}/repos/${owner}/${repo}/issues`, auth, { title: input.title, body: `${input.body}\n\n${input.fingerprint}` });
+    if (r.status !== 201) throw new Error(`GitHub refused it (${r.status} ${r.body?.message ?? ""})`.trim());
+    return { deduplicated: Boolean(hit), number: hit?.number ?? (r.body.number as number), state: hit?.state ?? "open", url: r.body.html_url as string };
+  }
+
+  /** Each fingerprint's issues with their state; a closed one names the commit that closed it (`fixed_in`), when a commit did. */
+  async issueStatus(owner: string, repo: string, fingerprints: string[]) {
+    const auth = await this.narrowed(owner, repo, { issues: "read" });
+    const out = [];
+    for (const fingerprint of fingerprints) {
+      for (const i of await this.byFingerprint(owner, repo, auth, fingerprint, false)) {
+        let fixed_in: string | undefined;
+        if (i.state === "closed") {
+          const ev = await this.api("GET", `${API}/repos/${owner}/${repo}/issues/${i.number}/events?per_page=100`, auth);
+          fixed_in = ((ev.body ?? []) as { event: string; commit_id?: string | null }[]).filter((e) => e.event === "closed").at(-1)?.commit_id ?? undefined;
+        }
+        out.push({ fingerprint, number: i.number, url: i.html_url, state: i.state, state_reason: i.state_reason ?? null, ...(fixed_in ? { fixed_in } : {}) });
+      }
+    }
+    return out;
   }
 
   /** Whether `org` is a user account, and whether the App may read its Projects boards. */

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The 7-day rule for npm (wave 3 item 17): every package-lock.json entry a change adds or alters, transitive ones
-// included, must have been published at least 7 days ago, unless it is an owner-approved security fix listed in
+// included, must have been published at least 7 days ago, unless it is an owner-approved security fix, or an owner-approved expiring exception, listed in
 // .github/supply-chain-exceptions.yaml, read from the base ref. Unchanged entries are never checked. Any lookup error fails: never pass on error.
 // No dependencies (a byte-identical copy runs in app repos' CI, from the app CI template); everything else is pins.mjs's.
 // Usage: node scripts/supply-chain/npm-age.mjs <base-ref> <head-ref>   (GITHUB_TOKEN for the advisory lookups)
@@ -96,6 +96,10 @@ export function cmp(a, b) {
   return x.pre < y.pre ? -1 : 1;
 }
 
+// An owner-approved exception (`owner: approved`) needs no advisory: it holds for its exact package@version only while
+// now < expires, and expires is at most 14 days from now, so it cannot be left open-ended.
+const ownerHolds = (ex, now) => ex.owner === "approved" && now < Date.parse(ex.expires) && Date.parse(ex.expires) - now <= 14 * 86400000;
+
 // Does this exception hold up? The advisory must exist, name the package, and be patched at or below the version.
 async function exceptionHolds(ex, getJson) {
   const adv = await getJson(`https://api.github.com/advisories/${encodeURIComponent(ex.advisory)}`);
@@ -128,8 +132,11 @@ export async function check({ changes, exceptions = [], getJson, now = Date.now(
       const age = now - Date.parse(published);
       if (age >= MIN_AGE_MS) continue;
       const days = (age / 86400000).toFixed(1);
-      const ex = exceptions.find((e) => e.package === name && e.version === version);
+      const exs = exceptions.filter((e) => e.package === name && e.version === version);
+      const ex = exs.find((e) => !e.owner) || exs[0];
+      if (exs.some((e) => ownerHolds(e, now))) continue;
       if (!ex) problems.push(`${id} was published ${days} days ago (under 7): wait, or add a reviewed security exception`);
+      else if (ex.owner) problems.push(`${id}: the owner-approved exception is expired, or expires more than 14 days from now`);
       else if (!(await exceptionHolds(ex, getJson))) problems.push(`${id}: exception ${ex.advisory} does not name this package with a patched version at or below it`);
     } catch (e) {
       problems.push(`${id}: lookup failed: ${e.message}`);

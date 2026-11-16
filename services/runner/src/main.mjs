@@ -23,6 +23,7 @@ import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
+import { progressTracker, staleRef } from "./progress.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.ts";
@@ -385,7 +386,7 @@ const trialNoTap = (issue, grants) => trialNoTapBy(issue, grants, runnerMade(iss
 /**
  * Once a minute, one read of the product repo's open PRs (product-prs.ts). A Dependabot PR whose checks have finished
  * gets one Platform Engineer task; a runner-made Dependabot task closes once its PR is merged or closed; an agent's PR
- * that conflicts with the default branch (or went red while behind it) wakes its task once per default-branch commit.
+ * that conflicts with the default branch (or went red while behind it) wakes its task, at most once per half hour.
  */
 async function watchProductPrs() {
   const repo = cfg.productRepo;
@@ -415,7 +416,8 @@ async function watchProductPrs() {
   const bot = app ? (await botIdentity()).name.replace(/\[bot\]$/, "") : undefined;
   for (const pr of open) {
     if (isDependabot(pr) || pr.isCrossRepository !== false) continue;
-    const key = `rebase-ping:${pr.url.toLowerCase()}:${main.oid}`;
+    const url = pr.url.toLowerCase();
+    const key = `rebase-ping:${url}:${main.oid}`;
     const conflict = pr.mergeable === "CONFLICTING";
     const red = conflict ? [] : redChecks(pr);
     if (!conflict && (!red.length || pr.mergeable !== "MERGEABLE")) continue;
@@ -423,13 +425,21 @@ async function watchProductPrs() {
     if (!conflict && state.get(`environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`)) continue;
     // Only an agent's own PR: one a task here opened, authored by the App's bot where there is one.
     // The task whose branch is this PR's head: a reused PR number (a recreated repository) belongs to nobody here.
-    const issueId = state.issuesWithPrs([pr.url], "").filter((id) => state.branches(id).some((b) => b.branch === pr.headRefName && !b.merged)).at(-1);
+    const [issueId, ...older] = state.issuesWithPrs([pr.url], "").filter((id) => state.branches(id).some((b) => b.branch === pr.headRefName && !b.merged)).reverse();
     if (!issueId || (bot && pr.author?.login !== bot)) continue;
     // A red check whose job never started (GitHub refused it: billing, no runner) is the environment's: it is re-run at this
     // same head once and then said once, and it never asks for a rebase or a new head.
     const env = conflict ? [] : await merges.environmentFailure(mergeGithub, repo, pr).catch((err) => (log("check classification failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 200) }), []));
     const want = prAttention(pr, main.rollup, env);
     if (!want) continue;
+    // Only a task that can still publish is asked or told. A comment on a finished task reopens it (Paperclip), so a done
+    // task's PR is left alone and a cancelled task's PR (no other task on its branch) is closed once, with the reason on the PR.
+    const issue = await pc.issue(issueId);
+    if (issue.status === "cancelled" && !older.length && !state.get(`abandoned:${url}`)) {
+      state.set(`abandoned:${url}`, new Date().toISOString());
+      log("abandoned PR", { pr: pr.url, issue: issue.identifier, closed: (await merges.closePrs([{ repo, number: pr.number, url: pr.url }], `Closed by the runner: ${issue.identifier}, the task this PR was for, is cancelled.`, mergeGithub))[0] });
+    }
+    if (["done", "cancelled"].includes(issue.status)) continue;
     if (want.do === "environment") {
       const r = await merges.environmentRetry(mergeGithub, repo, pr.number, pr, pr.url, want.checks);
       const seen = `environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`;
@@ -440,16 +450,17 @@ async function watchProductPrs() {
       await pc.comment(issueId, r.stop);
       continue;
     }
-    if (state.get(key)) continue;
-    if (want.why === "red") {
-      const behind = Number((await execFileP(await findRealGh(), ["api", `repos/${repo}/compare/${main.oid}...${pr.headRefOid}`, "--jq", ".behind_by"], await gho(repo, READ))).stdout.trim());
-      if (!(behind > 0)) {
-        state.set(key, new Date().toISOString()); // red on its own: the merge queue reports that
-        continue;
-      }
+    // One ask per PR per half hour, and none while its task runs: main moves every few minutes, and each ask is a run.
+    if (state.get(key) || running.has(issueId) || Date.now() - Date.parse(state.get(`rebase-asked:${url}`) ?? "") < 30 * 60_000) continue;
+    if (want.why === "red" && !(Number((await execFileP(await findRealGh(), ["api", `repos/${repo}/compare/${main.oid}...${pr.headRefOid}`, "--jq", ".behind_by"], await gho(repo, READ))).stdout.trim()) > 0)) {
+      state.set(key, new Date().toISOString()); // red on its own: the merge queue reports that
+      continue;
     }
     state.set(key, new Date().toISOString());
-    await wakeForRebase(issueId, pr, want.why, main);
+    // Parked (the AI reviewer's rejections ran out): its publish is refused, so a rebase is a run for nothing.
+    if (priorDecisions((await commonTierState(issue, "pr")).records, "pr").rejects >= MAX_REJECTS) continue;
+    state.set(`rebase-asked:${url}`, new Date().toISOString());
+    await wakeForRebase(issue, pr, want.why, main);
   }
 }
 
@@ -465,7 +476,8 @@ const OWN_FOLDER = { executionWorkspacePreference: "agent_default", executionWor
 const designReviewer = (live) => Object.entries(readGrants()?.agents ?? {}).find(([id, a]) => (!live || live.has(id)) && (a?.roles ?? []).includes("design-review"))?.[0];
 
 /**
- * The design reviewer's task for one UI PR head (owner, 2026-11-13), from both merge paths: a Tier 0 merge that waits on the
+ * The design reviewer's task for one UI PR head (owner, 2026-11-13), from the moment the runner opens it (publishBranch) and from
+ * both merge paths: a Tier 0 merge that waits on the
  * review (`waits`), and a merge card the owner approved, whose queue doesn't wait (the tap is the owner's own review) but whose
  * PR still gets its review. An event, so the review starts now rather than at the next heartbeat. Once per head (runner state,
  * whichever path asked first); fixed text only (the reviewer reads the PR's changed files itself: file names are the PR author's text). A later head of the same PR (the fix) is a re-review (owner, 2026-11-14: no long
@@ -606,22 +618,13 @@ async function fileDependabotTask(repo, pr, pe) {
  * Wake the task that opened a PR now conflicting with (or red behind) the default branch: rebase and publish once. Only an
  * active task: a done or cancelled one is never reopened from here (someone closed it on purpose); it gets one note per PR.
  */
-async function wakeForRebase(issueId, pr, why, main) {
-  const issue = await pc.issue(issueId);
+async function wakeForRebase(issue, pr, why, main) {
   const what = why === "conflict"
     ? `${pr.url} now conflicts with \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`).`
     : `${pr.url}'s checks failed (\`gh pr checks ${pr.url}\` names them) while it is behind \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`, green): perhaps only because \`${main.name}\` moved.`;
-  if (["done", "cancelled"].includes(issue.status)) {
-    const once = `rebase-note:${pr.url.toLowerCase()}`;
-    if (!state.get(once)) {
-      state.set(once, new Date().toISOString());
-      await pc.comment(issueId, `${what} This task is ${issue.status}, so nobody was woken: reopen it, or close the PR.`);
-    }
-    return;
-  }
-  if (stopped(issueId)) return;
+  if (stopped(issue.id)) return;
   if (await rebaseInCode(issue, pr, why).catch((err) => (log("rebase in code failed", { issue: issue.identifier, pr: pr.url, err: String(err.message ?? err).slice(0, 300) }), false))) return;
-  await pc.comment(issueId, `${what} Asking for one rebase onto \`${main.name}\` and one publish.`);
+  await pc.comment(issue.id, `${what} Asking for one rebase onto \`${main.name}\` and one publish.`);
   log("rebase requested", { issue: issue.identifier, pr: pr.url, why, main: main.oid });
   await dispatch({ issue, instructions: `(From the runner, not ${cfg.selfName}'s words.) ${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq pr\`, without \`--title\` or \`--body-file\` (the PR keeps its own, and a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.` });
 }
@@ -3601,6 +3604,9 @@ async function startJob({ issue, instructions }) {
     const prNotes = await leaveFinishedPrs(issue, workspace);
     if (prNotes.length) instructions = `(Runner note: ${prNotes.join(" ")} Build on what is there now.)\n\n${instructions}`;
     const repos = await repoInfo(workspace, { naming: issue });
+    // A brief naming a commit or branch that isn't there is the delegator's to fix: the job never starts on it.
+    const stale = await staleRef(`${instructions}\n${full.description ?? ""}`, repos.map((r) => r.path));
+    if (stale) throw new UserError(`Not started: ${stale}. Fix the brief and send it again.`);
     state.updateTask(issue.id, { engine });
     // Grafana and Google Cloud reads for an Engineer with private reads: a one-hour gcloud token of the job's own.
     gcp = observes(engine) && !engine.box
@@ -3680,7 +3686,7 @@ async function startJob({ issue, instructions }) {
     tools.run = { pid: run.pid, jobDir: run.jobDir, eventsOffset: 0, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, observing: observes(engine), repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
     state.saveRun(jobId, tools.run);
     running.get(issue.id).pid = run.pid;
-    const watch = watchAgent(run, { sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
+    const watch = watchAgent(run, { sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id), progress: progressTracker({ start: startedAt, windowMs: (cfg.progress_minutes ?? 35) * 60_000 }) });
     launched = { issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep: box && keepBox(issue, box, helper) };
   } catch (err) {
     if (stopping) return;
@@ -4307,6 +4313,10 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   }
   state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });
   log("draft PR opened", { issue: issue.identifier, url: prUrl });
+  // An agents-org PR that changes UI files gets its design review now, beside CI, rather than once its merge is queued:
+  // the review was the slowest step on that path, and it started minutes after the PR opened (roadmap-keeper#202: 4
+  // minutes). Once per head: the queue's own ask for this head then files nothing more.
+  if (inAgentsOrg(r.repo) && designReviewer()) await (async () => merges.touchesUi((await git(r.path, "-c", "core.quotePath=false", "diff", "--name-only", `${from}...${r.branch}`)).split("\n")) && fileDesignReviewTask({ repo: r.repo, number: Number(prUrl.split("/").pop()), url: prUrl, head: pin ?? (await git(r.path, "rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`)) }))().catch((err) => log("design review task failed", { pr: prUrl, err: String(err.message ?? err).slice(0, 300) }));
   return `${pushed ? `${pushed}, opened` : "Opened"} draft PR ${prUrl}`;
 }
 
@@ -4670,7 +4680,7 @@ function adoptRuns() {
           return resumeInterrupted();
         }
       }
-      const watch = watchAgent(adoptRun({ pid: run.pid, logPath: job.log_path, jobDir: run.jobDir, offset: run.eventsOffset ?? 0 }), { sessionId: run.sessionId, deadline: run.startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
+      const watch = watchAgent(adoptRun({ pid: run.pid, logPath: job.log_path, jobDir: run.jobDir, offset: run.eventsOffset ?? 0 }), { sessionId: run.sessionId, deadline: run.startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id), progress: progressTracker({ start: run.startedAt, since: Date.now(), windowMs: (cfg.progress_minutes ?? 35) * 60_000 }) });
       await finishTurn({ issue, workspace: run.workspace, engine: run.engine, jobId: job.id, logPath: job.log_path, tipsBefore: run.tipsBefore, tools, gcp, helper, watch, box: run.box, keep: run.box && keepBox(issue, run.box, helper) });
     })();
   }

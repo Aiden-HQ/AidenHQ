@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -246,7 +246,7 @@ test("an unset warehouse password fails before any docker call", async () => {
   assert.equal(r.calls.trim(), "", `docker was never called:\n${r.calls}`);
 });
 
-test("a dump is created exclusively, 0600 in a 0700 directory, and older dumps keep their bytes", async () => {
+test("a dump is created exclusively and 0600 in a 0700 directory, and the dump before it is kept", async () => {
   const f = fixture({ containers, services });
   mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
   writeFileSync(join(f.dir, "secrets/apps/warehouse/POSTGRES_PASSWORD"), "pw");
@@ -255,19 +255,57 @@ test("a dump is created exclusively, 0600 in a 0700 directory, and older dumps k
   const dumps = join(f.dir, "data/dumps");
   mkdirSync(dumps, { recursive: true });
   writeFileSync(join(dumps, "warehouse.dump"), "older bytes");
-  writeFileSync(join(dumps, "warehouse-1.dump"), "older bytes 1");
+  const older = new Date(Date.now() - 60_000);
+  utimesSync(join(dumps, "warehouse.dump"), older, older);
   // The fake docker writes a payload to stdout for `run`, which becomes the new dump's content.
   writeFileSync(join(f.dir, "dump.out"), "fresh dump");
   const r = await apply(f);
   assert.equal(r.status, 0, r.out);
   assert.equal(readFileSync(join(dumps, "warehouse.dump"), "utf8"), "older bytes", "the taken name is never truncated");
-  assert.equal(readFileSync(join(dumps, "warehouse-1.dump"), "utf8"), "older bytes 1");
-  const fresh = join(dumps, "warehouse-2.dump");
+  const fresh = join(dumps, "warehouse-1.dump");
   assert.ok(existsSync(fresh), `a distinct new dump was made: ${readdirSync(dumps)}`);
   assert.equal(readFileSync(fresh, "utf8"), "fresh dump");
   assert.equal(statSync(fresh).mode & 0o777, 0o600, "the new dump is 0600");
   assert.equal(statSync(dumps).mode & 0o777, 0o700, "the dumps directory is 0700");
-  for (const f2 of ["warehouse.dump", "warehouse-1.dump"]) assert.equal(statSync(join(dumps, f2)).mode & 0o777, 0o600, `${f2} is tightened to 0600`);
+  assert.equal(statSync(join(dumps, "warehouse.dump")).mode & 0o777, 0o600, "the older dump is tightened to 0600");
+});
+
+test("only the two newest dumps are kept, however many earlier applies left", async () => {
+  const f = fixture({ containers, services });
+  mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
+  writeFileSync(join(f.dir, "secrets/apps/warehouse/POSTGRES_PASSWORD"), "pw");
+  writeFileSync(join(f.dir, "running-app-warehouse-postgres-1"), "true\n");
+  const dumps = join(f.dir, "data/dumps");
+  mkdirSync(dumps, { recursive: true });
+  // Five applies' worth of full copies, one minute apart, as the leak left them.
+  for (let i = 0; i < 5; i++) {
+    const name = i === 0 ? "warehouse.dump" : `warehouse-${i}.dump`;
+    writeFileSync(join(dumps, name), `older bytes ${i}`);
+    const at = new Date(Date.now() - (5 - i) * 60_000);
+    utimesSync(join(dumps, name), at, at);
+  }
+  writeFileSync(join(f.dir, "dump.out"), "fresh dump");
+  const r = await apply(f);
+  assert.equal(r.status, 0, r.out);
+  // The new dump is the newest; the one before it (warehouse-4) is the second newest and stays.
+  assert.deepEqual(readdirSync(dumps).sort(), ["warehouse-4.dump", "warehouse-5.dump"], "the two newest dumps are the only ones left");
+  assert.equal(readFileSync(join(dumps, "warehouse-5.dump"), "utf8"), "fresh dump");
+  assert.equal(readFileSync(join(dumps, "warehouse-4.dump"), "utf8"), "older bytes 4");
+});
+
+test("a dump that fails is not kept and prunes nothing, so the apply stops before the recreate", async () => {
+  const f = fixture({ containers, services, dump: 1 });
+  mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
+  writeFileSync(join(f.dir, "secrets/apps/warehouse/POSTGRES_PASSWORD"), "pw");
+  writeFileSync(join(f.dir, "running-app-warehouse-postgres-1"), "true\n");
+  const dumps = join(f.dir, "data/dumps");
+  mkdirSync(dumps, { recursive: true });
+  for (let i = 0; i < 3; i++) writeFileSync(join(dumps, `warehouse-${i}.dump`), `older bytes ${i}`);
+  const r = await apply(f);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /the warehouse dump failed/);
+  assert.deepEqual(readdirSync(dumps).sort(), ["warehouse-0.dump", "warehouse-1.dump", "warehouse-2.dump"], "the earlier dumps are untouched");
+  assert.equal(recreates(r).length, 0, "nothing is recreated without a dump");
 });
 
 test("a service whose mounted secret content changed since it started is recreated", async () => {

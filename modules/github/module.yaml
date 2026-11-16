@@ -1,5 +1,10 @@
 name: github
 description: "GitHub issues and pull requests: read, and comment when asked."
+settings:
+  # owner/repo of the AidenHQ product this instance runs (the warehouse module requires it): where Fleet Ops reports product
+  # bugs. Unset (null) leaves github_app_issue refusing.
+  product_repo:
+    default: null
 connections:
   github:
     setup: "Run `gh auth login`, then `scripts/github-auth.sh` on the host. Repo writes go through the runner's GitHub App (`node ops/github-app-setup.mjs`)."
@@ -10,6 +15,10 @@ connections:
       read: [ github_whoami, github_project_read, github_issue_read, github_search_issues ]
       # commit_status_set: the design-review check on agents-org PRs, as the GitHub App; it also needs the design-review role.
       write: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_rerun_failed, commit_status_set ]
+      # github_app_issue and github_app_issue_status: product bugs on settings.product_repo only, as the GitHub App, and only
+      # for the product-issues role (Fleet Ops). Tagged destructive so neither `github: read` nor `github: write` includes
+      # them: an agent gets them only by naming them.
+      destructive: [ github_app_issue, github_app_issue_status ]
 services:
   run:
     github-mcp:
@@ -22,6 +31,8 @@ services:
         GITHUB_COMMENT_ORGS: "${GITHUB_COMMENT_ORGS:-}"
         # commit_status_set (the design-review check) writes only here, as the GitHub App.
         GITHUB_AGENTS_ORG: "${settings.agents_org}"
+        # Product bugs (github_app_issue) go only to this repo.
+        GITHUB_PRODUCT_REPO: "${settings.product_repo}"
         MCP_TOKEN_FILE: ${secrets.github_service_key}
         # Shared sources (src_github): the orgs it syncs (github_orgs plus the agents org) and its warehouse login.
         GITHUB_SYNC_ORGS: "${settings.github_sync_orgs}"

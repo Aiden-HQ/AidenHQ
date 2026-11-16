@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { Projects } from "../src/projects.js";
+import { Projects, productTarget } from "../src/projects.js";
 
 it("design-review status: only on the PR's current head, with a token narrowed to statuses and PR reads", async () => {
   const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
@@ -28,6 +28,52 @@ it("design-review status: only on the PR's current head, with a token narrowed t
   expect(await p.commitStatus("org", "app", 4, head, status)).toMatchObject({ number: 4, sha: head, state: "success" });
   expect(calls.find((c) => c.url.endsWith("access_tokens"))!.body).toEqual({ repositories: ["app"], permissions: { statuses: "write", pull_requests: "read" } });
   expect(calls.at(-1)!.url).toBe(`https://api.github.com/repos/org/app/statuses/${head}`);
+});
+
+it("product issues: only the product-issues role, only the configured product repo", () => {
+  expect(() => productTarget(["fleet-read"], "acme/product")).toThrow(/product-issues role/);
+  expect(() => productTarget(undefined, "acme/product")).toThrow(/product-issues role/);
+  expect(() => productTarget(["product-issues"], "")).toThrow(/no product repo/);
+  expect(productTarget(["product-issues"], "acme/product")).toEqual(["acme", "product"]);
+});
+
+it("a product issue as the App: Issues: write required, a narrowed token, deduped by fingerprint, status names the fixing commit", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
+  writeFileSync(join(dir, "app_id"), "123\n");
+  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
+  let issues = "read";
+  const filed: { number: number; state: string; body: string }[] = [];
+  const calls: { method: string; url: string; body?: any }[] = [];
+  const fetchFn = (async (url: string, init: RequestInit) => {
+    const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ method: init.method!, url, body });
+    const json = (status: number, b: unknown) => ({ status, json: async () => b });
+    if (url.endsWith("/repos/acme/product/installation")) return json(200, { id: 9, permissions: { issues } });
+    if (url.endsWith("/app/installations/9/access_tokens")) return json(201, { token: "ghs_i" });
+    if (url.includes("/search/issues")) {
+      const q = decodeURIComponent(url.split("q=")[1]!.split("&")[0]!);
+      // Search is fuzzy: a near-miss fingerprint comes back too, and must not count.
+      return json(200, { items: [...filed.filter((i) => !q.includes("is:open") || i.state === "open"), { number: 3, state: "open", body: "product-bug:runner-other", html_url: "u3" }].map((i) => ({ html_url: `u${i.number}`, ...i })) });
+    }
+    if (url.endsWith("/repos/acme/product/issues") && init.method === "POST") return filed.push({ number: 12, state: "open", body: body.body }), json(201, { number: 12, html_url: "u12" });
+    if (url.endsWith("/issues/12/comments")) return json(201, { id: 77, html_url: "u12#c77" });
+    if (url.includes("/issues/12/events")) return json(200, [{ event: "referenced", commit_id: "a".repeat(40) }, { event: "closed", commit_id: "c".repeat(40) }]);
+    return json(404, {});
+  }) as unknown as typeof fetch;
+  const p = new Projects(dir, fetchFn);
+  const report = { fingerprint: "product-bug:runner-rebase-asks", title: "runner: rebase asks on cancelled tasks", body: "WOR-1, WOR-2" };
+  await expect(p.reportIssue("acme", "product", report)).rejects.toThrow(/Issues: Read and write/);
+  issues = "write";
+  expect(await p.reportIssue("acme", "product", report)).toEqual({ deduplicated: false, number: 12, state: "open", url: "u12" });
+  expect(filed[0]!.body).toBe("WOR-1, WOR-2\n\nproduct-bug:runner-rebase-asks");
+  expect(calls.find((c) => c.url.endsWith("access_tokens"))!.body).toEqual({ repositories: ["product"], permissions: { issues: "write" } });
+  expect(await p.reportIssue("acme", "product", { ...report, body: "WOR-3" })).toEqual({ deduplicated: true, number: 12, state: "open", url: "u12#c77" });
+  expect(filed).toHaveLength(1);
+  filed[0]!.state = "closed";
+  expect(await p.issueStatus("acme", "product", [report.fingerprint])).toEqual([{ fingerprint: report.fingerprint, number: 12, url: "u12", state: "closed", state_reason: null, fixed_in: "c".repeat(40) }]);
+  // The verification after the fix lands on the closed issue, never a new one.
+  expect(await p.reportIssue("acme", "product", { ...report, body: "verified live at abc" })).toMatchObject({ deduplicated: true, number: 12, state: "closed" });
+  expect(filed).toHaveLength(1);
 });
 
 it("mints a read-only narrowed token and flattens project items", async () => {

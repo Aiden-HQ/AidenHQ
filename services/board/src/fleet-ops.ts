@@ -67,8 +67,9 @@ export function qualityFindings(apps: QualityRow[], openKeys: string[]): Inciden
 const STUCK_DEFAULT_MS = 180 * MIN; // a run with no known timeout, running this long
 const FAILS = 3; // an agent's last finished runs, all failed
 
-export interface Incident { key: string; reason: string }
-interface Open { reason: string; at: string; fired: boolean; told?: boolean }
+/** `critical`: an outage or a critical alert, which wakes Fleet Ops at once; the rest wait for the next quiet-gap fire. */
+export interface Incident { key: string; reason: string; critical?: boolean }
+interface Open { reason: string; at: string; fired: boolean; told?: boolean; critical?: boolean }
 interface State { open: Record<string, Open>; recovered: { key: string; reason: string; at: string; fired: boolean }[] }
 
 /** What is open and what recovered lately (fleet_status shows it to Fleet Ops). */
@@ -86,18 +87,22 @@ export function detectorState(store: Pick<Store, "meta">): State {
 /** A check group: its incidents, or undefined when it couldn't be checked (its open incidents stay open). */
 type Check = () => Promise<Incident[] | undefined>;
 
+/** The detector's last fire, and the gap before a fire with nothing critical in it (60 check runs a day, most one line, cost $3/day). */
+export const QUIET_MS = 30 * MIN;
+
 /**
  * One tick: run the checks, open what newly tripped, close what recovered, and fire once for whatever is new (incidents and
- * recovery notes together). Marked fired only when the webhook took it; otherwise the next tick tries again.
+ * recovery notes together). Marked fired only when the webhook took it; otherwise the next tick tries again. Within `quietMs`
+ * of the last fire only a new critical incident fires; the rest wait (still unfired) for a later tick.
  */
-export async function tick(store: Pick<Store, "meta" | "setMeta">, checks: Record<string, Check>, fire: (body: unknown) => Promise<boolean>, now = new Date()): Promise<void> {
+export async function tick(store: Pick<Store, "meta" | "setMeta">, checks: Record<string, Check>, fire: (body: unknown) => Promise<boolean>, now = new Date(), quietMs = 0): Promise<void> {
   const s = detectorState(store);
   const at = now.toISOString();
   for (const [group, check] of Object.entries(checks)) {
     const found = await check().catch(() => undefined);
     if (!found) continue;
-    const tripped = new Map(found.map((i) => [`${group}:${i.key}`, i.reason]));
-    for (const [key, reason] of tripped) if (!s.open[key]) s.open[key] = { reason, at, fired: false };
+    const tripped = new Map(found.map((i) => [`${group}:${i.key}`, i]));
+    for (const [key, i] of tripped) if (!s.open[key]) s.open[key] = { reason: i.reason, at, fired: false, ...(i.critical ? { critical: true } : {}) };
     for (const [key, o] of Object.entries(s.open)) {
       if (!key.startsWith(`${group}:`) || tripped.has(key)) continue;
       delete s.open[key];
@@ -112,11 +117,13 @@ export async function tick(store: Pick<Store, "meta" | "setMeta">, checks: Recor
     for (const o of unheard) o.told = true;
     queueOwnerLine(store, "🩺 **Fleet Ops is unreachable**: its health flags have not reached it for a day. Ask Aiden to check the Fleet Ops routine.");
   }
-  const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, reason: o.reason, since: o.at }));
+  const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, reason: o.reason, since: o.at, ...(o.critical ? { critical: true } : {}) }));
   const recovered = s.recovered.filter((r) => !r.fired).map(({ key, reason, at }) => ({ key, reason, recovered_at: at }));
-  if ((incidents.length || recovered.length) && (await fire({ incidents, recovered }).catch(() => false))) {
+  const due = incidents.some((i) => i.critical) || !(Date.parse(at) - Date.parse(store.meta("fleet_ops_last_fire") ?? "") < quietMs);
+  if ((incidents.length || recovered.length) && due && (await fire({ incidents, recovered }).catch(() => false))) {
     for (const i of incidents) s.open[i.key]!.fired = true;
     for (const r of s.recovered) r.fired = true;
+    store.setMeta("fleet_ops_last_fire", at);
   }
   s.recovered = s.recovered.slice(-20);
   store.setMeta(STATE_KEY, JSON.stringify(s));
@@ -272,7 +279,7 @@ export function checks(pc: Paperclip, store: Pick<Store, "grades" | "meta" | "se
       // Unreachable: throws, so this group is "not checked" (its open incidents stay open); `service` reports the outage.
       const apps = await appsApi<{ name: string; incident?: { opened_at: string; kind: string; detail: string } }[]>("/internal/status");
       appsOkAt = t;
-      return apps.filter((a) => a.incident && age(a.incident.opened_at, t) > DOWN_MS).map((a) => ({ key: a.name, reason: `app ${a.name} unhealthy for ${mins(age(a.incident!.opened_at, t))} (${a.incident!.kind}); the app-incident loop hasn't fixed it` }));
+      return apps.filter((a) => a.incident && age(a.incident.opened_at, t) > DOWN_MS).map((a) => ({ key: a.name, critical: true, reason: `app ${a.name} unhealthy for ${mins(age(a.incident!.opened_at, t))} (${a.incident!.kind}); the app-incident loop hasn't fixed it` }));
     },
     // Apps' quality checks: findings for the app's owner (Fleet Ops routes them), separate from the `app` availability group.
     async quality() {
@@ -282,7 +289,7 @@ export function checks(pc: Paperclip, store: Pick<Store, "grades" | "meta" | "se
     },
     async service() {
       const down = now() - appsOkAt;
-      return down > DOWN_MS ? [{ key: "apps-mcp", reason: `apps-mcp (the apps platform) not answering for ${mins(down)}` }] : [];
+      return down > DOWN_MS ? [{ key: "apps-mcp", critical: true, reason: `apps-mcp (the apps platform) not answering for ${mins(down)}` }] : [];
     },
     async source() {
       const t = now();
@@ -342,7 +349,7 @@ export function startDetector(pc: Paperclip, store: Store, log: { info(o: object
         const b = body as { incidents: { key: string }[]; recovered: { key: string }[] };
         log.info({ ok, incidents: b.incidents.map((i) => i.key), recovered: b.recovered.map((r) => r.key) }, "fleet-ops webhook");
         return ok;
-      });
+      }, new Date(), QUIET_MS);
       store.events.emit("fleet"); // open boards refresh the fleet's health (events.ts)
     } catch (err) {
       log.warn({ err: String(err) }, "fleet-ops detector failed");

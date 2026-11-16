@@ -67,7 +67,7 @@ export function appsExecutor(p: Platform): Executor {
           const a = p.find(String(args?.name ?? ""));
           const method = String(args?.method ?? "") as Method;
           if (!METHODS.includes(method)) throw new Error(`method must be one of ${METHODS.join(", ")}`);
-          authorize(a, c.key, String(args?.path ?? ""));
+          authorize(a, c.key, String(args?.path ?? ""), method);
           const out = { name: a.name, caller: c.key, method, path: String(args.path), ...(args.body !== undefined ? { body: args.body } : {}) };
           return { args: out, card: { details: `${method} ${out.path}${args.body !== undefined ? `\nbody (written by the requesting agent): ${JSON.stringify(args.body).slice(0, 2000)}` : ""}` } };
         }

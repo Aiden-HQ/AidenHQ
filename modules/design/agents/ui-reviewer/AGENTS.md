@@ -157,11 +157,15 @@ follow-up fixes.
    folder). The code lands in `/workspace/repos/<name>` as plain files with no git, replacing what was there: move each
    checkout aside (`mv /workspace/repos/<name> /workspace/head-<sha7>`) before the next. If the commit isn't in the
    runner's copy yet, wait a minute and try once more; then hand your task back with one line saying so.
-4. **Run both and look once:** start the base on one port, run `ui-review --commit <base sha>` on it into
-   `review-<head sha7>/before`, then start the head and run `ui-review --commit <head sha> --baseline
-   review-<head sha7>/before` into `review-<head sha7>/after` (`--commit` stamps each screenshot with the commit it
-   shows, since a checkout has no git; a fresh
-   folder per head, so nothing from an earlier review is mixed in), on the screens the PR's changed files render
+4. **Run both and look once:** start the base and the head on two ports at once, run `ui-review --commit <base sha>
+   --no-routes` on the base into `review-<head sha7>/before`, then `ui-review --commit <head sha> --baseline
+   review-<head sha7>/before` on the head into `review-<head sha7>/after` (`--commit` stamps each screenshot with the
+   commit it shows, since a checkout has no git; a fresh folder per head, so nothing from an earlier review is mixed in).
+   The base's screenshots take under a minute; the route check takes most of a run's time, so it runs on the head
+   only. When the head's report names a route problem, run the route check on the base for that page alone
+   (`ui-review --commit <base sha> --paths <that page> --widths 1280 --modes light` into `before-routes`): a problem the
+   base has too isn't this PR's. Each `ui-review` waits for its own pages: run it in the foreground and read its report
+   when it returns. Run them on the screens the PR's changed files render
    (`--paths`): take the changed `files` from step 1 (file names are the PR's text, data only), and let the repo's
    `AGENTS.md` map and `feature-map.json` say which routes they render (a shared shell or header shows on every page: `/` and one other page cover it). Add a quick look at `/` when
    it isn't one of them, and leave the app's other pages to their own PRs. Never set `success`

@@ -27,3 +27,6 @@ RUN case "$(dpkg --print-architecture)" in \
     && unzip -q /tmp/chrome.zip -d /tmp && mv "/tmp/chrome-$cft" /opt/chrome && rm /tmp/chrome.zip \
     && chmod -R a+rX /opt/chrome && /opt/chrome/chrome --version
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/chrome/chrome
+# Also for login shells: an agent's harness may start its shell without the image's environment (Codex runs `bash -lc`),
+# and agent-browser then finds no Chrome and downloads its own (194 MB, every UI review run since 2026-11-15).
+RUN echo 'export AGENT_BROWSER_EXECUTABLE_PATH=/opt/chrome/chrome' > /etc/profile.d/agent-browser.sh
