@@ -15,6 +15,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const entry = join(here, "../../ops/apply-config.sh");
 const work = join(here, "../../ops/apply-config-work.sh");
 const lockLib = join(here, "../../ops/lib/apply-lock.sh");
+const genLib = join(here, "../../ops/lib/generations.sh");
 
 /** A checkout with the apply's scripts, a data dir, and a fake docker that records its calls. */
 function checkout() {
@@ -23,6 +24,7 @@ function checkout() {
   copyFileSync(entry, join(dir, "ops/apply-config.sh"));
   copyFileSync(work, join(dir, "ops/apply-config-work.sh"));
   copyFileSync(lockLib, join(dir, "ops/lib/apply-lock.sh"));
+  copyFileSync(genLib, join(dir, "ops/lib/generations.sh"));
   for (const f of ["ops/apply-config.sh", "ops/apply-config-work.sh"]) chmodSync(join(dir, f), 0o755);
   writeFileSync(join(dir, "bin/docker"), "#!/usr/bin/env bash\nprintf 'docker %s\\n' \"$*\" >> \"$DOCKER_LOG\"\nexit 0\n");
   chmodSync(join(dir, "bin/docker"), 0o755);

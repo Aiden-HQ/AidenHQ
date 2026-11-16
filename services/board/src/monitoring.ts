@@ -43,6 +43,7 @@ const slug = (v: unknown, max: number) => String(v ?? "").toLowerCase().replace(
 const OWNER_SENTENCE: Record<string, string> = {
   disknearlyfull: "a disk on the host is nearly full",
   coreservicedown: "a core service has been down for over 5 minutes",
+  applyfailed: "an apply failed validation or its health check, so the host is on the last known good; the reason and log are in Fleet Ops",
 };
 
 /** Alertmanager's webhook body: firing alerts are kept (or updated), resolved ones dropped. */

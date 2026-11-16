@@ -2,6 +2,8 @@
 # The monitoring module's host metrics (docs/design/monitoring.md), as node-exporter textfiles in data/modules/monitoring/textfile:
 #   units.prom       AidenHQ's systemd units, user (runner, gateway, CI runners, computers) and system (aidenhq-ci-net, ...):
 #                    active and failed. No privileges: `systemctl [--user] list-units` reads them as the owner's user.
+#   generations.prom the newest apply generation (ops/lib/generations.sh): 1 when it failed its health check (and was
+#                    auto-reverted) or was refused at validation, with its reason and log; the ApplyFailed alert reads it.
 #   containers.prom  every compose container and computer box: running, restart count, health, and its cgroup id, so cAdvisor's per-cgroup
 #                    usage gets a name (cAdvisor has no Docker socket: only apps-mcp holds one).
 # Run every 30 seconds by the user timer aidenhq-host-metrics (apply-config installs it while the module is on). Nothing is
@@ -66,3 +68,18 @@ ids="$({ docker ps -aq --filter label=com.docker.compose.project; docker ps -aq 
       echo "aidenhq_container_unhealthy{$l} $([ "$health" = unhealthy ] && echo 1 || echo 0)"
     done
 } | write containers.prom
+
+# The newest finished apply (not an auto-revert's own line, not one still running). Rewritten every run, like the others.
+gens="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/generations.jsonl"
+{
+  echo "# HELP aidenhq_apply_failed 1 when the newest apply failed its health check (reverted to the last known good) or was refused at validation."
+  echo "# TYPE aidenhq_apply_failed gauge"
+  last="$( { [ -f "$gens" ] && grep -v '"revert_of"' "$gens" | grep -v '"health":"pending"' | tail -1; } || true)"
+  if [ -n "$last" ]; then
+    field() { { sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p; s/.*\"$1\":\([0-9][0-9]*\).*/\1/p" <<< "$last"; } | head -1 | clean | cut -c1-200; }
+    health="$(field health)"
+    echo "aidenhq_apply_failed{n=\"$(field n)\",health=\"$health\",reason=\"$(field reason)\",log=\"$(field log)\"} $([ "$health" = failed ] || [ "$health" = refused ] && echo 1 || echo 0)"
+  else
+    echo "aidenhq_apply_failed 0"
+  fi
+} | write generations.prom

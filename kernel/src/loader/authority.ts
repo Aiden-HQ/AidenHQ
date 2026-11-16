@@ -1,0 +1,274 @@
+// The authority diff (spec §5.7): what a module change hands out that it did not before, read from its manifest and its
+// code diff, never from its own description. Every module change goes to the AI reviewer first; a change marked `owner`
+// (new authority) then goes to the owner too, with the reviewer's verdict on the card. Pure: callers read the manifests.
+//
+// Lines are built from code-chosen words and ids cleaned to [\w.:@/-], never from manifest prose, because they are shown on
+// the owner's card and in the apply log.
+import { ownSecrets } from "./services.ts";
+
+type Dict = Record<string, unknown>;
+export type ModuleDef = Dict;
+export type Change = { what: string; owner: boolean };
+export type ModuleDiff = { module: string; changes: Change[]; code: boolean };
+export type ModuleInput = { base?: ModuleDef; head?: ModuleDef; codeChanged: boolean; textChanged?: boolean; replacing?: { name: string; def: ModuleDef } };
+
+const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
+const map = (v: unknown): Dict => (isMap(v) ? v : {});
+const list = (v: unknown): unknown[] => (v == null ? [] : Array.isArray(v) ? v : [v]);
+const eq = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const keys = (...ds: unknown[]) => [...new Set(ds.flatMap((d) => Object.keys(map(d))))];
+/** An id as shown: printable, short, no spaces. */
+export const id = (v: unknown) => String(v).replace(/[^\w.:@/~-]/g, "_").slice(0, 80) || "_";
+const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name ?? x.id : x)).filter((x) => !list(b).map((y) => (isMap(y) ? y.name ?? y.id : y)).includes(x));
+
+/** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
+const PLAIN = new Set(["name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "settings", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
+/** Checked below, field by field. */
+const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces"]);
+/** Agent fields that hand out nothing (model and engine choice, scheduling, presentation). Others are new authority. */
+const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "models", "reasoning_effort", "timeout_sec", "heartbeat", "persona", "graded", "brief", "engine", "dispatch", "image", "web_search", "delegate_to", "jobcaps", "builder", "description", "name", "title", "trial"]);
+/** Service fields that change what runs or how much, not what it may reach (the code diff and the panel judge those). */
+const SERVICE_PLAIN = new Set(["image", "build", "command", "entrypoint", "env", "secrets", "port", "healthcheck", "cpus", "memory", "pids", "tmp", "on_demand"]);
+const ISOLATION_RANK: Record<string, number> = { untrusted: 0, "code-exec": 1, trusted: 2 };
+
+/**
+ * A grant is wider when it newly reaches tools it did not: a new connection, read → write or a list, a list with new names,
+ * or write → a list naming a tool outside the read and write tags (fail closed when the tags aren't known).
+ */
+function widerGrant(was: unknown, now: unknown, tags?: Dict): boolean {
+  if (eq(was, now)) return false;
+  if (was == null) return true;
+  if (now === "read") return false;
+  if (was === "write") return Array.isArray(now) && (!tags || now.some((t) => ![...list(tags.read), ...list(tags.write)].includes(t)));
+  if (Array.isArray(was) && Array.isArray(now)) return now.some((t) => !was.includes(t));
+  return true;
+}
+
+/** Tools a connection grant reaches that are tagged write or destructive (fail closed: unknown tags count as writes). */
+function writesOf(grant: unknown, tags: Dict | undefined): string[] {
+  if (grant === "read") return [];
+  if (grant === "write") return ["write"];
+  if (!Array.isArray(grant)) return grant == null ? [] : [String(grant)];
+  if (!tags) return grant.map(String);
+  const w = [...list(tags.write), ...list(tags.destructive)];
+  return grant.filter((t) => w.includes(t)).map(String);
+}
+
+/** A's namespaced ids renamed into B's (spec A24): `a.kind`, `a-jobcap`, `a_secret` read as B's, so equal authority is no change. */
+export function renamed(def: ModuleDef, from: string, to: string): ModuleDef {
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let text = JSON.stringify(def);
+  for (const [a, b] of [[from, to], [from.replace(/-/g, "_"), to.replace(/-/g, "_")]] as const) text = text.replace(new RegExp(`(?<![\\w-])${esc(a)}(?=[._-]|")`, "g"), b);
+  return JSON.parse(text);
+}
+
+/**
+ * What `head` hands out that `base` did not. `base` undefined: an install (diffed against nothing); `head` undefined: a
+ * remove. `replacing`: B replaces A in this change, so B is diffed against A's def renamed into B's namespace.
+ */
+export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing?: { name: string; def: ModuleDef }): ModuleDiff {
+  const changes: Change[] = [];
+  const owner = (what: string) => changes.push({ what, owner: true });
+  const review = (what: string) => changes.push({ what, owner: false });
+  if (replacing && head) {
+    base = renamed(replacing.def, replacing.name, name);
+    review(`replaces ${id(replacing.name)}`);
+  }
+  if (!head) {
+    const enforces = [list(base?.checks).length && "a check", map(map(base?.providers)).reviewer && "a reviewer", map(map(base?.providers)).executor && "an executor"].filter(Boolean);
+    if (enforces.length) owner(`removed, and it declares ${enforces.join(", ")}`);
+    else review("removed");
+    return { module: name, changes, code: false };
+  }
+  const b = base ?? {};
+  if (!base && !replacing) review("installed");
+
+  for (const k of keys(b, head)) {
+    if (PLAIN.has(k) || CHECKED.has(k) || eq(b[k], head[k])) continue;
+    owner(`unrecognised key ${id(k)}`);
+  }
+
+  // Write kinds: a new kind or a lowered floor is the owner's; other changes to a kind are the reviewer's.
+  const [bw, hw] = [map(b.writes), map(head.writes)];
+  for (const k of keys(hw)) {
+    if (!(k in bw)) owner(`adds write kind ${id(k)}`);
+    else if (Number(map(hw[k]).floor ?? 1) < Number(map(bw[k]).floor ?? 1)) owner(`lowers the floor of write kind ${id(k)}`);
+    else if (!eq(bw[k], hw[k])) review(`changes write kind ${id(k)}`);
+  }
+  for (const p of added(b.privileged, head.privileged)) owner(`adds privileged ${id(p)}`);
+
+  // Secrets: every name it may mount (generated, optional, provided, connection service keys, jobcap read secrets).
+  for (const s of ownSecrets(head).filter((x) => !ownSecrets(b).includes(x))) owner(`adds secret ${id(s)}`);
+  if (map(head.secrets).state === true && map(b.secrets).state !== true) owner("gets its own vault dir read-write (secrets.state)");
+
+  const [br, hr] = [map(b.roles), map(head.roles)];
+  for (const r of added(br.declares, hr.declares)) owner(`declares role ${id(r)}`);
+  for (const r of added(br.requests, hr.requests)) owner(`requests role ${id(r)}`);
+
+  const [bc, hc] = [map(b.connections), map(head.connections)];
+  for (const c of keys(hc)) {
+    const [was, now] = [map(bc[c]), map(hc[c])];
+    if (!(c in bc)) review(`adds connection ${id(c)}`);
+    const tools = (x: Dict, ...tags: string[]) => tags.flatMap((t) => list(map(x.tools)[t]).map(String));
+    for (const t of tools(now, "write", "destructive").filter((t) => !tools(was, "write", "destructive").includes(t))) owner(`connection ${id(c)}: adds write tool ${id(t)}`);
+    for (const t of tools(now, "read").filter((t) => !tools(was, "read", "write", "destructive").includes(t))) review(`connection ${id(c)}: adds read tool ${id(t)}`);
+    // A retag widens every grant that names its tag: a write tool tagged read reaches `read` grants, a destructive one tagged
+    // write reaches `write` grants. Any tag change of an existing tool is the owner's.
+    const tagOf = (x: Dict, t: string) => ["destructive", "write", "read"].find((g) => tools(x, g).includes(t));
+    for (const t of tools(was, "read", "write", "destructive")) {
+      const [from, to] = [tagOf(was, t), tagOf(now, t)];
+      if (to && from !== to) owner(`connection ${id(c)}: retags ${id(t)} from ${from} to ${to}`);
+    }
+    if (now.returns === "trusted" && was.returns !== "trusted") owner(`connection ${id(c)}: returns trusted (no fencing)`);
+    if (now.model_as_caller === true && was.model_as_caller !== true) owner(`connection ${id(c)}: model_as_caller`);
+    if (c in bc && keys(was, now).some((f) => !["tools", "returns", "model_as_caller", "guide", "setup"].includes(f) && !eq(was[f], now[f]))) review(`connection ${id(c)}: changes its endpoint or settings`);
+  }
+
+  // Services: what they may reach (network, mounts, user, a published port, another module's network) is the owner's.
+  const [bs, hs] = [map(b.services), map(head.services)];
+  const [brun, hrun] = [map(bs.run), map(hs.run)];
+  for (const s of keys(hrun)) {
+    const [was, now] = [map(brun[s]), map(hrun[s])];
+    const at = `service ${id(s)}`;
+    if (!(s in brun)) review(`adds ${at}`);
+    if (now.user === "image" && was.user !== "image") owner(`${at}: runs as the image's user`);
+    if (now.read_only === false && was.read_only !== false) owner(`${at}: writable root filesystem`);
+    if (now.egress === true && was.egress !== true) owner(`${at}: outbound network`);
+    if (now.ui_port != null && !eq(now.ui_port, was.ui_port)) owner(`${at}: publishes ui_port ${id(now.ui_port)}`);
+    if (now.state != null && !eq(now.state, was.state)) owner(`${at}: mounts its vault dir`);
+    for (const j of added(was.join, now.join)) owner(`${at}: joins ${id(j)}'s network`);
+    for (const l of added(was.links, now.links)) owner(`${at}: links ${id(l)}`);
+    for (const m of added(was.host_mounts, now.host_mounts)) owner(`${at}: host mount ${id(String(m).split(":")[0])}`);
+    for (const d of added(was.data, now.data)) (String(d).endsWith(":ro") ? review : owner)(`${at}: data ${id(String(d).split(":")[0])}${String(d).endsWith(":ro") ? " read-only" : " read-write"}`);
+    for (const f of keys(was, now)) {
+      if (eq(was[f], now[f]) || SERVICE_PLAIN.has(f) || ["user", "read_only", "egress", "ui_port", "state", "join", "links", "host_mounts", "data"].includes(f)) continue;
+      owner(`${at}: unrecognised field ${id(f)}`);
+    }
+    if (s in brun && keys(was, now).some((f) => SERVICE_PLAIN.has(f) && !eq(was[f], now[f]))) review(`${at}: changes its image, command, env or limits`);
+  }
+  if (hs.data === true && bs.data !== true) review("gets a data dir");
+  const [bg, hg] = [map(bs.grants), map(hs.grants)];
+  for (const c of keys(hg)) if (widerGrant(bg[c], hg[c])) owner(`services.grants: writes or reads more of ${id(c)}`);
+  const share = (x: Dict) => list(map(x.workspaces).share_with).concat(list(map(map(x.services).workspaces).share_with));
+  for (const m of added(share(b), share(head))) owner(`shares its workspace with ${id(m)}`);
+  const usd = (x: Dict) => Number(map(map(x.services).models).day_usd ?? 0);
+  if (usd(head) > usd(b)) owner(`model spend up to ${id(usd(head))} USD a day`);
+  for (const k of keys(hs).filter((k) => !["run", "data", "grants", "workspaces", "models"].includes(k) && !eq(bs[k], hs[k]))) owner(`services: unrecognised key ${id(k)}`);
+
+  if (!eq(b.board_env, head.board_env)) owner("changes the board's environment (board_env)");
+  const iso = (x: unknown) => ISOLATION_RANK[String(x ?? "trusted")] ?? 3;
+  if (iso(head.isolation) > iso(b.isolation)) owner(`isolation ${id(head.isolation ?? "trusted")}`);
+
+  // Engines: secrets handed to the job as env, and home folders it writes.
+  const engines = (x: Dict) => new Map(list(map(x.providers).engine).map((e) => [String(map(e).kind), map(e)]));
+  const [be, he] = [engines(b), engines(head)];
+  for (const [kind, e] of he) {
+    const was = be.get(kind) ?? {};
+    for (const s of keys(e.secret_env).filter((k) => !(k in map(was.secret_env)))) owner(`engine ${id(kind)}: secret ${id(s)} as env`);
+    for (const r of added(was.rw, e.rw)) owner(`engine ${id(kind)}: writes ${id(r)}`);
+    if (!be.has(kind)) review(`adds engine ${id(kind)}`);
+  }
+  for (const k of keys(map(head.providers)).filter((k) => k !== "engine" && !(k in map(b.providers)))) review(`provides ${id(k)}`);
+
+  // Agents: a write or destructive grant, a role, an isolation toward trusted, or an unknown field is the owner's.
+  // A grant is judged by the highest tag a tool has on either side: a tool that was a write still counts as one when retagged.
+  const tags = (c: string) => {
+    const [x, y] = [map(map(bc[c.replace(/\?$/, "")]).tools), map(map(hc[c.replace(/\?$/, "")]).tools)];
+    const destructive = [...list(x.destructive), ...list(y.destructive)];
+    const write = [...list(x.write), ...list(y.write)].filter((t) => !destructive.includes(t));
+    return { read: [...list(x.read), ...list(y.read)].filter((t) => !write.includes(t) && !destructive.includes(t)), write, destructive };
+  };
+  const known = (c: string) => isMap(hc[c.replace(/\?$/, "")]) || isMap(bc[c.replace(/\?$/, "")]);
+  const [ba, ha] = [map(b.agents), map(head.agents)];
+  for (const key of keys(ha)) {
+    const [was, now] = [map(ba[key]), map(ha[key])];
+    const at = `agent ${id(key)}`;
+    if (!(key in ba)) review(`adds ${at}`);
+    const [wg, ng] = [map(was.connections), map(now.connections)];
+    for (const c of keys(ng)) {
+      const t = known(c) ? tags(c) : undefined;
+      if (!widerGrant(wg[c], ng[c], t)) continue;
+      const w = writesOf(ng[c], t).filter((x) => !writesOf(wg[c], t).includes(x) && !(wg[c] === "write" && x === "write"));
+      (w.length ? owner : review)(`${at}: ${w.length ? "write grant on" : "reads"} ${id(c)}${w.length && w[0] !== "write" ? ` (${w.map(id).join(", ")})` : ""}`);
+    }
+    for (const r of added(was.roles, now.roles)) owner(`${at}: role ${id(r)}`);
+    const eff = (a: Dict, m: Dict) => a.isolation ?? m.isolation;
+    if (iso(eff(now, head)) > iso(key in ba ? eff(was, b) : head.isolation)) owner(`${at}: isolation ${id(eff(now, head) ?? "trusted")}`);
+    const caps = (x: Dict) => Number(map(x.caps).day_usd ?? 0);
+    if (caps(now) > caps(was)) owner(`${at}: day_usd up to ${id(caps(now))}`);
+    for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "caps"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
+  }
+  // Routines: a routine's autonomy (its cap on approvals) is the owner's, as everywhere.
+  const [bro, hro] = [map(b.routines), map(head.routines)];
+  for (const r of keys(hro)) if (!eq(map(bro[r]).autonomy, map(hro[r]).autonomy)) owner(`routine ${id(r)}: autonomy`);
+
+  if (base) for (const k of [...PLAIN].filter((k) => !eq(b[k], head[k]) && k !== "name")) review(`changes ${id(k)}`);
+  if (codeChanged) review("code changes");
+  if (!changes.length) review("text only");
+  return { module: name, changes, code: codeChanged };
+}
+
+export type Classified = { tier: 1 | 2; panel: boolean; rule: "module-authority" | "module-config"; reason: string; reviewFirst: boolean };
+
+/** The tier of a set of module changes: AI review always, first; the owner after it when any change is new authority. */
+export function classifyModules(diffs: ModuleDiff[]): Classified {
+  const owners = diffs.flatMap((d) => d.changes.filter((c) => c.owner).map((c) => `${d.module}: ${c.what}`));
+  const panel = diffs.some((d) => d.code);
+  const all = owners.length ? owners : diffs.map((d) => `${d.module}: ${d.changes.map((c) => c.what).join(", ")}`);
+  const reason = `${owners.length ? "new module authority" : "module changes without new authority"}: ${all.slice(0, 8).join("; ")}${all.length > 8 ? `; and ${all.length - 8} more` : ""}`;
+  return owners.length ? { tier: 2, panel, rule: "module-authority", reason, reviewFirst: true } : { tier: 1, panel, rule: "module-config", reason, reviewFirst: false };
+}
+
+/** One line per change, as the apply log and the card show it: `<module>: <change> (owner|review)`. */
+export const authorityLines = (diffs: ModuleDiff[]) => diffs.flatMap((d) => d.changes.map((c) => `${d.module}: ${c.what} (${c.owner ? "owner" : "review"})`));
+
+/** A module entry in instance.yaml `modules:` (`name`, `name@marketplace` or `{ id }`), as a module name. */
+export const moduleName = (m: unknown) => String(isMap(m) ? m.id : m).split("@")[0]!;
+
+/**
+ * Enabled modules: `always` (the default module), the instance's `modules:` and every `requires` they name, closed over. A
+ * virtual name (one some module `provides`) never enables a module: the provider is listed itself (spec §5.7.1).
+ */
+export function enabledModules(instance: Dict, defs: Record<string, ModuleDef>, always: string[] = []): string[] {
+  const virtual = new Set(Object.values(defs).flatMap((d) => list(d.provides).map(String)));
+  const out = new Set<string>();
+  const visit = (n: string) => {
+    if (out.has(n) || !defs[n]) return;
+    out.add(n);
+    for (const r of list(defs[n]!.requires).map(String)) if (!virtual.has(r)) visit(r);
+  };
+  for (const n of [...always, ...list(instance.modules).map(moduleName)]) visit(n);
+  return [...out].sort();
+}
+
+/**
+ * The module side of an apply: for each module enabled before or after, or whose folder changed, its def on each side it is
+ * enabled on and whether code (anything but module.yaml and Markdown) changed. `replacing` is set only when this very change
+ * removes A from the instance's list and adds B, and B `replaces` A (spec §5.7.1); otherwise B is diffed against nothing.
+ */
+export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, ModuleDef>; headDefs: Record<string, ModuleDef>; changed: string[]; always?: string[] }): Record<string, ModuleInput> {
+  const before = new Set(enabledModules(a.baseInstance, a.baseDefs, a.always));
+  const after = new Set(enabledModules(a.headInstance, a.headDefs, a.always));
+  const files = (m: string) => a.changed.filter((f) => f.startsWith(`modules/${m}/`));
+  const listedBefore = new Set(list(a.baseInstance.modules).map(moduleName));
+  const listedAfter = new Set(list(a.headInstance.modules).map(moduleName));
+  const out: Record<string, ModuleInput> = {};
+  for (const m of [...new Set([...before, ...after])].sort()) {
+    const fs = files(m);
+    const base = before.has(m) ? a.baseDefs[m] : undefined;
+    const head = after.has(m) ? a.headDefs[m] : undefined;
+    if (!fs.length && before.has(m) === after.has(m) && eq(base, head)) continue;
+    const input: ModuleInput = { base, head, codeChanged: Boolean(head) && fs.some((f) => f !== `modules/${m}/module.yaml` && !f.endsWith(".md")), textChanged: fs.length > 0 };
+    if (!base && head) {
+      const from = list(head.replaces).map(String).filter((r) => listedBefore.has(r) && !listedAfter.has(r) && before.has(r) && !after.has(r) && a.baseDefs[r]);
+      if (from.length === 1) input.replacing = { name: from[0]!, def: a.baseDefs[from[0]!]! };
+    }
+    out[m] = input;
+  }
+  // A replaced module is not also removed on its own: its authority is B's diff.
+  for (const i of Object.values(out)) if (i.replacing && out[i.replacing.name]) delete out[i.replacing.name];
+  return out;
+}
+
+/** The authority diff of every module input. */
+export const diffAll = (inputs: Record<string, ModuleInput>) => Object.entries(inputs).map(([m, i]) => authorityDiff(m, i.base, i.head, i.codeChanged, i.replacing));

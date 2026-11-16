@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# The same engine as engine-echo: only the manifest differs (it provides and replaces).
+exec "$(dirname "$0")/../../engine-echo/bin/engine" "$@"
