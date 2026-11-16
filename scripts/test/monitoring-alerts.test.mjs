@@ -1,6 +1,6 @@
 // modules/monitoring/prometheus/rules.yml against fixtures: a 16-unit snapshot raises nothing, absent or stale unit data
 // raises only the exporter alert, and a unit that stops reporting is named. The expressions are evaluated, not restated:
-// a small PromQL subset (vectors, absent/max/sum/count/count_over_time, arithmetic, comparisons, and/or/unless with on()).
+// a small PromQL subset (vectors, absent/sum/count/count_over_time/last_over_time, subtraction, comparisons, and/or/unless with on()).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -225,8 +225,10 @@ function firing(points, now = NOW) {
 const point = (metric, labels, value, t = NOW) => ({ metric, labels, value, t });
 const snapshot = (units, { active = 1, failed = 0, mtime = NOW - 20, draining = 0 } = {}) => [
   point("aidenhq_fleet_draining", {}, draining),
-  point("node_textfile_mtime_seconds", { file: "units.prom" }, mtime),
-  point("node_textfile_mtime_seconds", { file: "containers.prom" }, mtime),
+  // node-exporter labels this with the path it read (the module mounts the textfile dir at /textfile), not the bare name.
+  point("node_textfile_mtime_seconds", { file: "/textfile/units.prom" }, mtime),
+  point("node_textfile_mtime_seconds", { file: "/textfile/runner.prom" }, mtime),
+  point("node_textfile_mtime_seconds", { file: "/textfile/containers.prom" }, mtime),
   ...units.flatMap((unit) => [
     point("aidenhq_unit_active", { scope: "user", unit }, active),
     point("aidenhq_unit_failed", { scope: "user", unit }, failed),
@@ -243,7 +245,8 @@ test("the exporter alert exists, warns, and has a for: window", () => {
 test("the unit alerts are in the rules file and gated on the exporter's freshness", () => {
   assert.deepEqual(underTest.map((r) => r.alert).sort(), [...UNIT_RULES].sort());
   for (const name of ["UnitFailed", "CiRunnersDown", "CiRunnerUnitMissing"]) {
-    assert.match(rules.find((r) => r.alert === name).expr, /node_textfile_mtime_seconds\{file="units\.prom"\}/, name);
+    // node-exporter labels the mtime with the path it read: a matcher on the bare name never matches.
+    assert.ok(rules.find((r) => r.alert === name).expr.includes('node_textfile_mtime_seconds{file=~".*/units\\\\.prom"}'), name);
   }
 });
 
@@ -259,8 +262,8 @@ test("an absent series raises only the exporter alert", () => {
 test("a writer that runs but reads no unit raises only the exporter alert", () => {
   const points = [
     point("aidenhq_fleet_draining", {}, 0),
-    point("node_textfile_mtime_seconds", { file: "units.prom" }, NOW - 5),
-    point("node_textfile_mtime_seconds", { file: "containers.prom" }, NOW - 5),
+    point("node_textfile_mtime_seconds", { file: "/textfile/units.prom" }, NOW - 5),
+    point("node_textfile_mtime_seconds", { file: "/textfile/containers.prom" }, NOW - 5),
   ];
   assert.deepEqual(firing(points).map((a) => a.alert), ["HostMetricsExporterStale"]);
 });
