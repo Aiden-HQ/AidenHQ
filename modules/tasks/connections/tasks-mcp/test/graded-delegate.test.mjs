@@ -1,12 +1,12 @@
-// Graded done through the task tools: task_delegate files the rubric with the board (a graded assignee must name its
+// Graded done through the task tools: task_delegate files the rubric with the grading module (a graded assignee must name its
 // deliverable; the ref is one strict token, so it can't forge a hidden marker in the description), and task_finish on a
-// held task keeps the result as a comment and leaves the status to the grader.
+// task the kernel's finish gate holds keeps the result as a comment and leaves the status to the grader.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.mjs";
 
-async function call(name, args, { gate = { pass: true }, boardDown = false, assignee = "cos", grading = "on", feedback } = {}) {
-  const seen = { created: [], filed: [], patches: [], comments: [], gates: [] };
+async function call(name, args, { finish, gradingDown = false, assignee = "cos", grading = "on", feedback } = {}) {
+  const seen = { created: [], filed: [], patches: [], comments: [] };
   const handler = (req, res) => {
     let body = "";
     req.on("data", (d) => (body += d));
@@ -14,21 +14,22 @@ async function call(name, args, { gate = { pass: true }, boardDown = false, assi
       const url = req.url ?? "";
       const send = (x, code = 200) => ((res.statusCode = code), res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
       const json = body ? JSON.parse(body) : {};
-      // The board: its internal token, and the caller assertion for whose call it is.
-      const as = req.headers.authorization === "Bearer board-token" && req.headers["x-aidenhq-caller"] ? "caller" : "nobody";
-      if (url === "/internal/grades") return (seen.filed.push({ ...json, as }), send({ created: true, state: "open" }));
-      if (/\/internal\/grades\/.+\/gate$/.test(url)) return (seen.gates.push({ ...json, as }), send(gate));
+      // The grading module: the caller assertion says whose call it is.
+      const as = req.headers["x-aidenhq-caller"] ? "caller" : "nobody";
+      if (url === "/grades") return (seen.filed.push({ ...json, as }), send({ created: true, state: "open" }));
       if (url === "/api/agents/me") return send({ id: "cos", name: "Aiden" });
       if (url.endsWith("/agents")) return send([{ id: "eng", name: "Engineer", metadata: { setupKey: "aidenhq:engineer-openrouter", persona: { name: "Linus" } }, status: "idle", runtimeConfig: { heartbeat: { wakeOnDemand: false, enabled: false } } }]);
       if (req.method === "POST" && url.endsWith("/issues")) return (seen.created.push(json), send({ id: "new", identifier: "WOR-9", title: "t", status: "todo" }));
       if (req.method === "POST" && url.endsWith("/comments")) return (seen.comments.push(json.body), send({ id: "c1" }));
+      // The kernel's finish gate on a move to done: held (202, nothing forwarded) or a failed check (503).
+      if (req.method === "PATCH" && json.status === "done" && finish) return (seen.patches.push(json), send(finish.body, finish.status));
       if (req.method === "PATCH") return (seen.patches.push(json), send({ id: "cur", identifier: "WOR-5", status: json.status }));
       if (url.startsWith("/api/issues/")) return send({ id: "cur", identifier: "WOR-5", title: "t", status: "in_progress", assigneeAgentId: assignee, parentId: null });
       send([]);
     });
   };
   const agents = { cos: { key: "chief-of-staff", roles: [], ...(feedback ? { feedback_for: feedback } : {}) }, eng: { key: "engineer-openrouter", roles: [], graded: true } };
-  const board = boardDown ? (req) => req.socket.destroy() : handler;
+  const board = gradingDown ? (req) => req.socket.destroy() : handler;
   const r = await bridge({ handler, board, agents, settings: { grading }, agent: "cos", task: "cur" }).call(name, args);
   return { r, text: r.result?.content?.[0]?.text ?? "", ...seen };
 }
@@ -97,22 +98,25 @@ test("a deliverable ref is one strict token: no forged markers", async () => {
 });
 
 test("task_finish on a held task posts the result as a comment and leaves the status to the grader", async () => {
-  const held = await call("task_finish", { comment: "Merged acme/app#12." }, { gate: { pass: false, state: "pending", label: "grading" } });
-  assert.equal(held.r.result?.isError, undefined, held.text);
-  assert.deepEqual(held.gates, [{ via: "task_finish", as: "caller" }]);
-  assert.deepEqual(held.patches, []);
-  assert.deepEqual(held.comments, ["Merged acme/app#12."]);
-  assert.match(held.text, /Held for grading/);
+  for (const tool of ["task_finish", "task_set_status"]) {
+    const args = tool === "task_finish" ? { comment: "Merged acme/app#12." } : { issue: "WOR-5", status: "done", comment: "Merged acme/app#12." };
+    const held = await call(tool, args, { finish: { status: 202, body: { held: { state: "pending", reason: "The grader checks this task against its rubric." } } } });
+    assert.equal(held.r.result?.isError, undefined, held.text);
+    // One move to done, which the kernel held (it forwards nothing); the result goes on as a comment.
+    assert.deepEqual(held.patches.map((p) => p.status), ["done"]);
+    assert.deepEqual(held.comments, ["Merged acme/app#12."]);
+    assert.match(held.text, /Held for grading/);
+  }
   const free = await call("task_finish", { comment: "Done." });
   assert.equal(free.patches[0].status, "done");
+  assert.deepEqual(free.comments, []);
 });
 
-test("the board unreachable: an ungraded assignee's close goes ahead, a graded one's doesn't", async () => {
-  const plain = await call("task_finish", { comment: "Done." }, { boardDown: true });
-  assert.equal(plain.patches[0]?.status, "done", plain.text);
-  const graded = await call("task_finish", { comment: "Done." }, { boardDown: true, assignee: "eng" });
-  assert.equal(graded.r.result?.isError, true);
-  assert.deepEqual(graded.patches, []);
+test("a finish check that fails refuses the close: an error, and no comment", async () => {
+  const down = await call("task_finish", { comment: "Done." }, { finish: { status: 503, body: { error: { message: "the finish check grading.finish failed" } } } });
+  assert.equal(down.r.result?.isError, true);
+  assert.match(down.text, /503/);
+  assert.deepEqual(down.comments, []);
 });
 
 test("task_create handing work to a graded agent is graded as a delegation is; grading off files and requires nothing", async () => {
