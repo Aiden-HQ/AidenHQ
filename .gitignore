@@ -33,6 +33,7 @@ config/gateway.json
 config/jobcaps.json
 config/gate.json
 config/cloudflared.yml
+config/module-data.json
 
 # Personal, untracked notes for coding agents
 CLAUDE.local.md

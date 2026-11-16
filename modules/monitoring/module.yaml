@@ -109,3 +109,4 @@ generated_secrets:
 # through grafana-mcp (the token alone, `glsa_...`, of a Viewer service account; docs/design/monitoring.md, Agents).
 optional_secrets:
   - grafana_service_account_token
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

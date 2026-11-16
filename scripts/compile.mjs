@@ -9,6 +9,7 @@
 //   config/engines.json        → the runner: each engine kind's module, bin and data (modules' providers.engine)
 //   config/jobcaps.json        → the kernel (job tokens on /c/<connection>/mcp) and the runner: what jobs may read (modules' jobcaps:)
 //   config/kernel/connections.json → the kernel's tool proxy: each connection's endpoint, service key secret, module and tool tags
+//   config/module-data.json    → the apply (ops/lib/generations.sh): each data module's data_version and services digest
 //   config/gate.json, config/cloudflared.yml → the gate and the tunnel (shared access; only with settings.edge, scripts/edge.mjs)
 // Staging (`--stage`, or AIDENHQ_COMPILE_STAGE=1; ops/apply-config-work.sh validates a generation with it before anything
 // restarts): the same files go to config.next/ and compose.modules.next.yaml, and nothing else on the host is touched (no
@@ -23,6 +24,7 @@ import { computersConfig } from "./computers.mjs";
 import { checkIngress } from "./edge.mjs";
 import { ensureIdentityKeys } from "./identity.mjs";
 import { checkOn, report, staticCheck } from "./agent-check.mjs";
+import { checkDataVersion } from "../kernel/src/loader/data-version.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dotenv = {};
@@ -71,6 +73,9 @@ if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"),
 // apply-config.sh: the apply that brings this in still runs the old script, which then runs this compile.
 const dataDir = resolve(repo, env("AIDENHQ_DATA_DIR") ?? "data");
 if (!stage) for (const d of ["apps-edge/state", "apps-edge/serve", "previews", ...out.dataDirs]) mkdirSync(join(dataDir, d), { recursive: true });
+// Code never starts on data newer than it (spec §6.4.1): staged, only checked (the apply snapshots the data after this); for
+// real, each data module's marker is set to its data_version before compose starts it.
+try { for (const [m, d] of Object.entries(out.dataModules)) checkDataVersion(m, d.data_version, join(dataDir, "modules", m), !stage); } catch (e) { die(e.message); }
 // The security scanner's copy of the app registry (its data dir, read-only there): no module mounts the instance checkout.
 if (!stage && out.compose.services["security-scanner"]) writeFileSync(join(dataDir, "modules/security/registry/apps.yaml"), existsSync(join(instanceDir, "apps.yaml")) ? readFileSync(join(instanceDir, "apps.yaml")) : "apps: []\n");
 
@@ -87,6 +92,7 @@ writeFileSync(join(cfgOut, "jobcaps.json"), JSON.stringify(out.jobcaps, null, 2)
 mkdirSync(join(cfgOut, "kernel"), { recursive: true });
 writeFileSync(join(cfgOut, "kernel/connections.json"), JSON.stringify(out.connections, null, 2) + "\n");
 writeFileSync(join(cfgOut, "engines.json"), JSON.stringify(out.engines, null, 2) + "\n");
+writeFileSync(join(cfgOut, "module-data.json"), JSON.stringify(out.dataModules, null, 2) + "\n");
 if (out.edge) {
   if (out.edge.cloudflared) try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die(e.message); }
   // The board's account map for the gate: the board rewrites it on every account change. It starts

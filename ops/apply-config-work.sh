@@ -6,13 +6,15 @@
 #  1. bring the instance repo ($AIDENHQ_INSTANCE_DIR) to main, or exactly <instance sha>;
 #  2. check out the product at the commit instance.yaml pins (`product:`);
 #  3. as one generation (spec §5.7.2, ops/lib/generations.sh): validate everything before anything restarts (a staged
-#     compile into config.next/, compose config, the authority diff, image builds, a health baseline); switch (compile,
-#     recreate the compose services that moved, rerun the Paperclip setup); check health; on a failed check, re-apply the
+#     compile into config.next/, compose config, the authority diff, image builds, a health baseline); snapshot the data
+#     dirs of the modules it touches, their containers stopped (spec §6.4.1); switch (compile, recreate the compose
+#     services that moved, rerun the Paperclip setup); check health; on a failed check, put the snapshot back, re-apply the
 #     last known good generation once (--generation) and alert. A failed pair is held off until main moves (or --retry).
 # Run it through the entry point (which also checks out the product first, so a product that changed this file takes
 # effect in the same apply):
 #   ops/apply-config.sh [<instance commit sha>] [--retry]      a normal apply; --retry only from the owner's shell
-#   ops/apply-config.sh --generation <n>                       re-apply generation n (the auto-revert runs this)
+#   ops/apply-config.sh --generation <n>                       re-apply generation n with the module data it needs (the
+#                                                              auto-revert and ops/rollback.sh run this)
 set -euo pipefail
 
 main() {
@@ -120,23 +122,27 @@ main() {
   # 1. Validate the whole generation before anything restarts (a product that predates staging compiles in place, as before).
   if grep -q AIDENHQ_COMPILE_STAGE scripts/compile.mjs; then
     staged=1
-    if ! validate; then
-      genMark "$n" refused "$why" "$log"
-      restoreCheckouts
-      rm -f "$prev_config"
-      echo "refusing: $why; nothing was switched or restarted (generation $n refused)" >&2
-      exit 1
-    fi
+    validate || refuseGeneration
   fi
   lap validate
+  # 2. Snapshot the data of the modules this apply touches (spec §6.4.1), their containers stopped; no room = refused, and
+  # what it stopped is started again.
+  if [ "$staged" = 1 ]; then
+    local touched
+    touched="$(genTouched "$before" "$product")" || { why="the modules this apply touches could not be worked out"; refuseGeneration; }
+    # shellcheck disable=SC2086 # module names, one word each
+    genSnapshot "$n" $touched || { why="the module data snapshot was refused"; refuseGeneration; }
+    lap snapshot
+  fi
 
-  # 2. Switch, in a subshell with errexit of its own: a failing step ends the switch and goes to the health verdict.
+  # 3. Switch, in a subshell with errexit of its own: a failing step ends the switch and goes to the health verdict.
   local rc=0
   set +e
   ( set -e; switchOver )
   rc=$?
   set -e
-  # 3. Health.
+  [ ! -f config/module-data.json ] || genJs versions "$n" config/module-data.json
+  # 4. Health.
   if [ "$rc" -ne 0 ]; then why="the switch failed (exit $rc)"
   elif health "$baseline" "$prev_config"; then
     genMark "$n" good
@@ -146,7 +152,8 @@ main() {
     return 0
   else why="$HEALTH_WHY"; fi
   rm -f "$prev_config"
-  # 4. Auto-revert, once: the last known good, re-applied by a child in --generation mode (it never reverts).
+  # 5. Auto-revert, once: this apply's whole snapshot put back, then the last known good re-applied by a child in
+  # --generation mode (it never reverts). Data first, so the older code never starts on data it doesn't know.
   genMark "$n" failed "$why" "$log"
   echo "generation $n failed: $why"
   local lkg; lkg="$(genLkg)"
@@ -154,6 +161,12 @@ main() {
     echo "apply alert: generation $n failed ($why) and there is no last known good to revert to; log $log"
     return 1
   fi
+  local snap t; snap="$(genGet "$n" snapshot)"
+  for t in ${snap:+"$snap"/*.tar}; do
+    [ -f "$t" ] || continue
+    if genRestore "$(basename "$t" .tar)" "$t"; then echo "auto-revert: $(basename "$t" .tar)'s data is back to $(genGet "$n" snapshot_at)"
+    else echo "apply alert: putting $(basename "$t" .tar)'s data back from $t failed; log $log"; fi
+  done
   echo "auto-revert: re-applying generation $lkg (product $(genGet "$lkg" product | cut -c1-12), instance $(genGet "$lkg" instance | cut -c1-12))"
   local rrc=0
   AIDENHQ_APPLY_BEFORE="$product" AIDENHQ_REVERT_OF="$n" AIDENHQ_HEALTH_BASELINE="$baseline" bash ops/apply-config-work.sh --generation "$lkg" || rrc=$?
@@ -165,9 +178,11 @@ main() {
   return 1
 }
 
-# --generation <n>: re-apply a recorded generation (the auto-revert). Product and instance are checked out detached at its
-# shas (the instance's origin/main is not moved), both must be on their origin/main, and the tree is applied in place with
-# today's steps: no staging and no authority diff, since it may predate both. Never hands over, never reverts.
+# --generation <n>: re-apply a recorded generation (the auto-revert, ops/rollback.sh). Product and instance are checked out
+# detached at its shas (the instance's origin/main is not moved), both must be on their origin/main, and the tree is applied
+# in place with today's steps: no staging and no authority diff, since it may predate both. Never hands over, never reverts.
+# A rollback (not the auto-revert, which has put its snapshot back already) first restores each module whose data is newer
+# than generation n declared, from the earliest snapshot after n, and refuses when that snapshot was pruned (spec §6.4.1).
 applyGeneration() {
   local product instance
   product="$(genGet "$gen" product)"; instance="$(genGet "$gen" instance)"
@@ -177,6 +192,13 @@ applyGeneration() {
   # Restarts are keyed on what changed since `before`: the failed generation's product, so its kernel and runner come back.
   local before="${AIDENHQ_APPLY_BEFORE:-$(git rev-parse HEAD)}"
   local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
+  local plan="" mod k at tar
+  if [ -z "${AIDENHQ_REVERT_OF:-}" ]; then plan="$(genJs plan "$gen" "$(genDataDir)")" || exit 1; fi
+  while read -r mod k at tar; do
+    [ -n "$mod" ] || continue
+    genRestore "$mod" "$tar" || { echo "refusing: putting $mod's data back from $tar failed" >&2; exit 1; }
+    echo "rollback: $mod's data is back to $at (the snapshot before generation $k)"
+  done <<< "$plan"
   git -C "$inst" checkout --quiet --detach "$instance"
   git checkout --quiet --detach "$product"
   for d in scripts services/runner; do
@@ -190,6 +212,7 @@ applyGeneration() {
   ( set -e; switchOver )
   rc=$?
   set -e
+  [ ! -f config/module-data.json ] || genJs versions "$m" config/module-data.json
   local ok=0
   if [ "$rc" -ne 0 ]; then HEALTH_WHY="the switch failed (exit $rc)"; elif health "${AIDENHQ_HEALTH_BASELINE:-}" "$prev_config"; then ok=1; fi
   rm -f "$prev_config"
@@ -197,6 +220,15 @@ applyGeneration() {
   genMark "$m" failed "$HEALTH_WHY"
   echo "generation $m failed: $HEALTH_WHY"
   return 1
+}
+
+# A refusal before the switch (validation or the snapshot): the generation is marked refused, both checkouts go back.
+refuseGeneration() {
+  genMark "$n" refused "$why" "$log"
+  restoreCheckouts
+  rm -f "$prev_config"
+  echo "refusing: $why; nothing was switched or restarted (generation $n refused)" >&2
+  exit 1
 }
 
 # The newest instance commit on main whose instance.yaml pins this product (or nothing).
@@ -248,7 +280,7 @@ validate() {
 }
 
 # The generated files: the staged copy must be exactly what the real compile wrote.
-GENERATED=(paperclip.yaml apps.modules.yaml modules.json computers.json gateway.json jobcaps.json kernel/connections.json engines.json gate.json cloudflared.yml)
+GENERATED=(paperclip.yaml apps.modules.yaml modules.json computers.json gateway.json jobcaps.json kernel/connections.json engines.json gate.json cloudflared.yml module-data.json)
 sameAsStaged() {
   local f
   cmp -s compose.modules.next.yaml compose.modules.yaml || { echo "compose.modules.yaml differs from the validated one" >&2; return 1; }
@@ -259,6 +291,7 @@ sameAsStaged() {
 
 # Step 3: the real compile, then today's steps. Runs in a subshell with errexit (main and applyGeneration).
 switchOver() {
+  rm -f config/module-data.json # an older product's compile writes none: no stale data versions on its generation
   node scripts/compile.mjs
   if [ "$staged" = 1 ]; then sameAsStaged; rm -rf config.next compose.modules.next.yaml; fi
   # Shared access: the tunnel may only point at the gate (never the board, Paperclip or an app port directly).

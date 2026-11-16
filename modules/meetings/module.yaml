@@ -67,3 +67,4 @@ services:
 generated_secrets:
   - ops_service_key
   - warehouse_src_meetings_password
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

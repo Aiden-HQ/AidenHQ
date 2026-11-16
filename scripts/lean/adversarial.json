@@ -72,6 +72,12 @@
     "test": null
   },
   {
+    "id": "A15",
+    "attack": "Older module code started on data whose .data_version is newer (a rollback or revert without the snapshot)",
+    "unit": "2c+",
+    "test": "kernel/test/data-version.test.mjs"
+  },
+  {
     "id": "H1",
     "attack": "Hostile job: symlink in the workspace pointing outside it",
     "unit": "1a",
