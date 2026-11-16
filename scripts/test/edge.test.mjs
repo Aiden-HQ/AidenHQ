@@ -173,8 +173,8 @@ test("identity keys: both signers' keys made once, keys.json lists every gate*/a
 });
 
 test("in-app feedback: only feedback_to gets a tier0 routine, and its agent can't read private sources or send", () => {
-  const withAgent = (connections) => {
-    const dir = inst({ edge }, [{ ...roadmap, owner: "boss", feedback_to: "feedback" }, { ...roadmap, name: "notes", port: 4200, share: { ...roadmap.share, host: "notes.acme.com", aud: "aud-notes-0001" } }]);
+  const withAgent = (connections, notesApi) => {
+    const dir = inst({ edge }, [{ ...roadmap, owner: "boss", feedback_to: "feedback" }, { ...roadmap, name: "notes", port: 4200, share: { ...roadmap.share, host: "notes.acme.com", aud: "aud-notes-0001" }, ...(notesApi ? { api: notesApi } : {}) }]);
     mkdirSync(join(dir, "agents", "feedback"));
     writeFileSync(join(dir, "agents", "feedback", "agent.yaml"), YAML.stringify({ name: "Feedback", description: "Reads one app's feedback.", model: "m", budget: 1, connections }));
     writeFileSync(join(dir, "agents", "feedback", "AGENTS.md"), "# Feedback\n");
@@ -186,7 +186,10 @@ test("in-app feedback: only feedback_to gets a tier0 routine, and its agent can'
   assert.match(feedback[0].description, /\{\{count\}\}.*as data/s);
   const granted = out.paperclip.agents.feedback.enabled_tools;
   assert.ok(Object.keys(granted).every((c) => ["apps", "paperclip_tasks"].includes(c)), JSON.stringify(granted));
-  // Any other connection (a private read such as Slack or Drive, an outbound send) or a write beyond its task tools fails.
-  assert.throws(() => compile(mods, withAgent({ tasks: ["t"] })), /may use only apps, paperclip_tasks, not tasks/);
+  assert.deepEqual(out.paperclip.agents.feedback.feedback_for, ["roadmap"]);
+  // Any tool beyond its allowlist fails, a read included (a private read such as Slack or Drive, the warehouse, an outbound send).
+  assert.throws(() => compile(mods, withAgent({ tasks: ["t"] })), /may hold only apps: app_api, app_view; .* not tasks\.t$/);
+  // Another app's API is out of its reach (apps-mcp also refuses it any other app at call time: services/apps-mcp api.test.ts).
+  assert.throws(() => compile(mods, withAgent({}, { callers: [{ agent: "feedback", paths: ["/api"] }], paths: ["/api"] })), /may call no other app's API \(notes\)/);
   assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, feedback_to: "nobody" }])), /feedback_to names nobody/);
 });

@@ -43,7 +43,8 @@ const AppSchema = z
     // prefixes; apps-mcp signs each call's X-AidenHQ-Identity (identity.ts; docs/design/app-identity.md).
     api: z.object({
       token: z.never({ error: "api.token is gone: app_api signs each call's identity (docs/design/app-identity.md); remove it and its secret" }).optional(),
-      callers: z.array(z.string().min(1)).min(1),
+      // A caller is an agent key (the app's paths) or {agent, paths}: that agent only under its own narrower prefixes.
+      callers: z.array(z.union([z.string().min(1), z.object({ agent: z.string().min(1), paths: z.array(z.string().regex(/^\/[A-Za-z0-9._~\/-]*$/, "paths are plain absolute path prefixes")).min(1) }).strict()])).min(1),
       paths: z.array(z.string().regex(/^\/[A-Za-z0-9._~\/-]*$/, "paths are plain absolute path prefixes")).min(1),
     }).strict().optional(),
     // Shared access (docs/design/access.md): people (not agents) who reach the app through

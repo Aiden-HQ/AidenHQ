@@ -216,11 +216,16 @@ run, without the text leaving the app and without giving app users' words a priv
    coalesces a run into a live one.
 3. `scripts/modules.mjs` compiles that routine for a shared app whose registry entry sets `feedback_to`: `coalesce_if_active`,
    autonomy `tier0` (any Tier 1 write goes to the owner), fixed product text that fences the items as people's suggestions.
-4. Grants are per agent, not per routine, so the run gets a narrow agent: compile refuses a `feedback_to` agent with any
-   connection but `apps` and `paperclip_tasks`, or a write beyond `app_api` and its task tools (`task_delegate` hands a code
-   fix to an Engineer, through CI and every review). No private reads, no outbound sends, no handbook, grant or schedule
-   requests. The app may narrow it further on its own API by the caller's identity (Roadmap Keeper allows it intake reads
-   and decisions only).
+4. Grants are per agent, not per routine, so the run gets a narrow agent, enforced in code at every layer:
+   - compile allows the `feedback_to` agent exactly `apps: app_api, app_view` and its task tools (`task_current`, `task_get`,
+     `task_comments`, `task_list`, `task_comment`, `task_finish`, `task_set_status`, `task_delegate`, the automatic
+     `memory_note`): any other tool, a read included, fails, and so does that agent in another app's `api.callers`;
+   - apps-mcp refuses it any app but the ones that name it, with any tool (`feedbackOnly`), and an app may give it narrower
+     API paths than its other callers (`api.callers: [{agent, paths}]`);
+   - what it delegates or comments for others starts with `(From app feedback, untrusted: …)` (tasks-mcp, from the grants
+     table's `feedback_for`); the runner then shows the task to the Engineer as a person's suggestion, as untrusted input,
+     never as the agent's or the owner's request, and the AI reviewer sees the mark in the request chain;
+   - the app may scope that identity on its own API (Roadmap Keeper: intake reads and one decision endpoint only).
 
 An app can wake only the agent its own registry entry names (the app comes from the host, the agent from the instance repo);
 any signed-in member's page can send a notice without submitting, which costs at most one empty run per app per 10 minutes.

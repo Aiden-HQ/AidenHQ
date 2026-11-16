@@ -178,7 +178,7 @@ export function chatBlock(key, c, tools) {
 export function grantEntry(key, a, routines = {}) {
   const ids = [a.model, ...(a.models ?? []), ...Object.values(routines).filter((r) => r.agent === key).map((r) => r.model)];
   const models = [...new Set(ids.filter((m) => typeof m === "string" && m.trim()).map((m) => m.replace(/^openrouter\//, "")))];
-  return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}) };
+  return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}) };
 }
 
 const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "adapter", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "rw", "ro", "gcloud", "secret_env", "crew"];
@@ -897,20 +897,19 @@ function heartbeatRoutines(paperclip, settings, agentOverrides, routineTitles) {
 /**
  * In-app feedback (docs/design/access.md): a shared app whose registry entry names `feedback_to` gets "App feedback: <app>",
  * which the board runs when the app's page says people sent something (the gate's POST /.aidenhq/notify; no text travels).
- * App users' words drive the run, so it is tier0 and its agent is a narrow one: only the apps and tasks connections, and
- * no write beyond the app's own API and its task tools (task_delegate hands code fixes to an Engineer, through every gate).
+ * App users' words drive the run, so it is tier0 and its agent is a narrow one: exactly the tools below (task_delegate hands
+ * code fixes to an Engineer, through every gate), no other app's API, and apps-mcp keeps it to the apps that name it.
  */
-const FEEDBACK_CONNECTIONS = ["apps", "paperclip_tasks"];
-const FEEDBACK_WRITES = ["app_api", "task_comment", "task_finish", "task_set_status", "task_handoff", "task_delegate", "memory_note"]; // memory_note: every agent's, the Librarian curates
+const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_set_status", "task_delegate", "memory_note"] };
 function appFeedbackRoutines(paperclip, appDefs, routineTitles) {
   for (const a of appDefs) {
     if (!a?.share?.host || !a.feedback_to) continue;
-    const tools = paperclip.agents[a.feedback_to]?.enabled_tools ?? fail(`app ${a.name}: feedback_to names ${a.feedback_to}, which is not an enabled agent`);
-    for (const [conn, list] of Object.entries(tools)) {
-      if (!FEEDBACK_CONNECTIONS.includes(conn)) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may use only ${FEEDBACK_CONNECTIONS.join(", ")}, not ${conn}`);
-      const extra = list.filter((t) => writeTools(paperclip.mcp_servers[conn]).includes(t) && !FEEDBACK_WRITES.includes(t));
-      if (extra.length) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may not hold ${extra.join(", ")}`);
-    }
+    const agent = paperclip.agents[a.feedback_to] ?? fail(`app ${a.name}: feedback_to names ${a.feedback_to}, which is not an enabled agent`);
+    const extra = Object.entries(agent.enabled_tools).flatMap(([c, list]) => list.filter((t) => !FEEDBACK_TOOLS[c]?.includes(t)).map((t) => `${c}.${t}`));
+    if (extra.length) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may hold only ${Object.entries(FEEDBACK_TOOLS).map(([c, l]) => `${c}: ${l.join(", ")}`).join("; ")}, not ${extra.join(", ")}`);
+    const elsewhere = appDefs.find((b) => b !== a && (b?.api?.callers ?? []).some((c) => (c?.agent ?? c) === a.feedback_to));
+    if (elsewhere) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may call no other app's API (${elsewhere.name})`);
+    agent.feedback_for = [...(agent.feedback_for ?? []), a.name]; // tasks-mcp marks what it delegates as from app feedback
     const title = `App feedback: ${a.name}`;
     if (routineTitles.has(title)) fail(`duplicate routine title: ${title}`);
     routineTitles.add(title);
