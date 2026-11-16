@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
-# One AidenHQ for one person, on a fresh Ubuntu VM. Run from the product checkout at ~<user>/aidenhq:
+# One AidenHQ for one person, on a fresh Ubuntu or Debian host (ops/vm/setup.sh lists the releases). Run from the product
+# checkout, wherever it is (the user units find it through ~/.config/aidenhq-checkout.env):
 #   sudo ops/setup.sh --config person.env              set up (or finish, or repair: every step is idempotent)
+#   sudo OWNER_EMAIL=<email> ops/setup.sh --unattended [--no-tailscale]
+#                                                      the same with no config file and no questions (the installer's
+#                                                      handover): defaults for everything, no model key yet, and a last
+#                                                      line AIDENHQ_SETUP_URL=<the owner's one-time link>. Tailscale: a
+#                                                      host already on the tailnet, TS_AUTHKEY (--config), or its sign-in
+#                                                      link on the terminal; --no-tailscale skips it and prints the SSH
+#                                                      tunnel to the board on loopback instead (AIDENHQ_SSH_TUNNEL=...).
 #   sudo ops/setup.sh --config person.env --restore backups/aidenhq-….tar.gz
 #                                                      a new VM from a backup (scripts/backup.sh)
 #   sudo ops/setup.sh --config person.env --link       only the owner's one-time setup link, while no owner account exists
@@ -15,28 +23,35 @@
 # TS_APPS_AUTHKEY (the apps' own tailnet node: a reusable, tagged, pre-authorized key; docs/setup.md),
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
 # (with --restore: the old VM's paperclip_owner_password; otherwise one is generated), GITHUB_AGENTS_ORG (the GitHub
-# org for agent-built repos, which must exist and be owned by you; SETUP.md step 8). An unquoted value ends at ' #'.
+# org for agent-built repos, which must exist and be owned by you; SETUP.md step 8), MAX_CONCURRENT and TIMEOUT_MINUTES
+# (the runner's jobs at once and minutes per job, into config/runner.yaml), CI_RUNNERS (CI runner units, started once
+# the GitHub App and the ci module are set up). An unquoted value ends at ' #'.
+# The settings that aren't secrets may come from the environment instead (the file wins): AIDENHQ_USER, OWNER_NAME,
+# OWNER_EMAIL, TIMEZONE, COMPANY_NAME, MODULES, BOARD_HOST, GITHUB_AGENTS_ORG, MAX_CONCURRENT, TIMEOUT_MINUTES, CI_RUNNERS.
 # What it makes: see SETUP.md. It holds secrets: delete person.env when setup is done.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DRY=0 CONFIG="" RESTORE="" LINK_ONLY=0 RESET=""
+DRY=0 CONFIG="" RESTORE="" LINK_ONLY=0 RESET="" UNATTENDED=0 NO_TS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1; shift ;;
+    --unattended) UNATTENDED=1; shift ;;
+    --no-tailscale) NO_TS=1; shift ;;
     --config) CONFIG="$2"; shift 2 ;;
     --restore) RESTORE="$2"; shift 2 ;;
     --link) LINK_ONLY=1; shift ;;
     --reset) RESET="${2:-}"; shift 2 ;;
-    *) echo "usage: ops/setup.sh --config person.env [--dry-run] [--restore <backup.tar.gz>] [--link] [--reset <email>]" >&2; exit 2 ;;
+    *) echo "usage: ops/setup.sh (--config person.env | --unattended [--config person.env]) [--no-tailscale] [--dry-run] [--restore <backup.tar.gz>] [--link] [--reset <email>]" >&2; exit 2 ;;
   esac
 done
 
 say() { printf '• %s\n' "$*"; }
 die() { printf 'setup: %s\n' "$*" >&2; exit 1; }
-[ -f "$CONFIG" ] || die "--config <file> is required (see the header of this script)"
+if [ -n "$CONFIG" ]; then [ -f "$CONFIG" ] || die "no config file $CONFIG"
+elif [ "$UNATTENDED" = 0 ]; then die "--config <file> is required, or --unattended (see the header of this script)"; fi
 # The file is data, not a script: KEY=value lines only (no command runs from it).
-while IFS= read -r line || [ -n "$line" ]; do
+[ -z "$CONFIG" ] || while IFS= read -r line || [ -n "$line" ]; do
   [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
   [[ "$line" =~ ^[[:space:]]*([A-Z][A-Z0-9_]*)=(.*)$ ]] || die "$CONFIG: not KEY=value: ${line%%=*}"
   k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"; v="${v#"${v%%[![:space:]]*}"}"   # leading blanks
@@ -44,13 +59,39 @@ while IFS= read -r line || [ -n "$line" ]; do
   else v="${v%%[[:space:]]#*}"; v="${v%"${v##*[![:space:]]}"}"; fi   # unquoted: drop ' # comment', trim
   printf -v "CFG_$k" '%s' "$v"
 done < "$CONFIG"
-cfg() { local n="CFG_$1"; printf '%s' "${!n:-${2:-}}"; }
+# A setting from the file, else (only the ones that aren't secrets) from the environment, else the default.
+ENV_KEYS=" AIDENHQ_USER OWNER_NAME OWNER_EMAIL TIMEZONE COMPANY_NAME MODULES BOARD_HOST GITHUB_AGENTS_ORG MAX_CONCURRENT TIMEOUT_MINUTES CI_RUNNERS "
+cfg() {
+  local n="CFG_$1"
+  if [ -n "${!n:-}" ]; then printf '%s' "${!n}"
+  elif [[ "$ENV_KEYS" == *" $1 "* ]] && [ -n "${!1:-}" ]; then printf '%s' "${!1}"
+  else printf '%s' "${2:-}"; fi
+}
 
 U="$(cfg AIDENHQ_USER "${SUDO_USER:-$(id -un)}")"
-H="/home/$U"
-OWNER_NAME="$(cfg OWNER_NAME)"; OWNER_EMAIL="$(cfg OWNER_EMAIL)"; TIMEZONE="$(cfg TIMEZONE)"
-[ -n "$OWNER_NAME" ] && [ -n "$OWNER_EMAIL" ] && [ -n "$TIMEZONE" ] || die "OWNER_NAME, OWNER_EMAIL and TIMEZONE are required"
 [[ "$U" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "AIDENHQ_USER must be a plain user name"
+# The user's home, wherever it is (a dry run for a user this host doesn't have shows /home/<user>).
+H="$(getent passwd "$U" 2>/dev/null | cut -d: -f6 || true)"
+if [ -z "$H" ]; then [ "$DRY" = 1 ] || die "no user $U on this host (create it, or set AIDENHQ_USER)"; H="/home/$U"; fi
+[[ "$REPO" =~ ^/[A-Za-z0-9._/+-]+$ ]] || die "the checkout's path ($REPO) may hold only letters, digits and . _ / + -"
+host_tz() { local tz; tz="$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)"; [[ "$tz" =~ ^[A-Za-z0-9_+/-]+$ ]] && echo "$tz" || echo UTC; }
+OWNER_EMAIL="$(cfg OWNER_EMAIL)"
+if [ "$UNATTENDED" = 1 ]; then
+  # Unattended: the owner's name defaults to the user's, the timezone to the host's. The owner's account is made for
+  # their email, so it is still needed until the first-run page asks for it.
+  OWNER_NAME="$(cfg OWNER_NAME "$U")"; TIMEZONE="$(cfg TIMEZONE "$(host_tz)")"
+  [ -n "$OWNER_EMAIL" ] || die "--unattended needs OWNER_EMAIL (in the environment): the owner's account is made for it"
+else
+  OWNER_NAME="$(cfg OWNER_NAME)"; TIMEZONE="$(cfg TIMEZONE)"
+  [ -n "$OWNER_NAME" ] && [ -n "$OWNER_EMAIL" ] && [ -n "$TIMEZONE" ] || die "OWNER_NAME, OWNER_EMAIL and TIMEZONE are required"
+fi
+[[ "$OWNER_EMAIL" =~ ^[^[:space:][:cntrl:]@]+@[^[:space:][:cntrl:]@]+\.[^[:space:][:cntrl:]@]+$ ]] || die "OWNER_EMAIL doesn't look like an email address"
+# Sizing (config/runner.yaml, CI runner units): whole numbers in a sane range, or unset (left as they are).
+MAX_CONCURRENT="$(cfg MAX_CONCURRENT)"; TIMEOUT_MINUTES="$(cfg TIMEOUT_MINUTES)"; CI_RUNNERS="$(cfg CI_RUNNERS)"
+in_range() { [ -z "$2" ] || { [[ "$2" =~ ^(0|[1-9][0-9]{0,3})$ ]] && [ "$2" -ge "$3" ] && [ "$2" -le "$4" ]; } || die "$1 must be a whole number from $3 to $4"; }
+in_range MAX_CONCURRENT "$MAX_CONCURRENT" 1 64
+in_range TIMEOUT_MINUTES "$TIMEOUT_MINUTES" 5 1440
+in_range CI_RUNNERS "$CI_RUNNERS" 0 32
 AGENTS_ORG="$(cfg GITHUB_AGENTS_ORG)"
 [[ -z "$AGENTS_ORG" || "$AGENTS_ORG" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "GITHUB_AGENTS_ORG must be a GitHub organization name"
 COMPANY="$(cfg COMPANY_NAME work)"; MODULES="$(cfg MODULES google)"; LIMIT="$(cfg OPENROUTER_LIMIT_USD 50)"
@@ -60,8 +101,6 @@ if [ "$DRY" = 1 ]; then
   say "DRY RUN: nothing is changed; each line shows a step that would run"
 else
   [ "$(id -u)" = 0 ] || die "run with sudo"
-  id "$U" >/dev/null 2>&1 || die "no user $U on this VM (create it, or set AIDENHQ_USER)"
-  [ "$REPO" = "$H/aidenhq" ] || die "the product checkout must be at $H/aidenhq (the runner's unit expects it); it is at $REPO"
 fi
 
 # Every change goes through one of these: in a dry run they print and do nothing. Values that are secrets are passed
@@ -96,8 +135,14 @@ board() { # METHOD PATH [JSON]: the board's own (loopback) listener, with the op
 
 # The board's address on the tailnet: the link, Google's redirect and the apps all hang off it.
 BOARD_HOST="$(cfg BOARD_HOST)"
-if [ -z "$BOARD_HOST" ] && command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
+if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ] && command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
   BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
+fi
+# Unattended, joining the tailnet needs TS_AUTHKEY or a terminal for Tailscale's sign-in link: decided now, before
+# anything changes. Without Tailscale the board stays on loopback, reached through an SSH tunnel (never a public port).
+has_tty() { (: </dev/tty) 2>/dev/null; }
+if [ "$UNATTENDED" = 1 ] && [ "$DRY" = 0 ] && [ "$NO_TS" = 0 ] && [ -z "$BOARD_HOST" ] && [ -z "$(cfg TS_AUTHKEY)" ] && ! has_tty; then
+  die "this host isn't on the tailnet and there's no terminal for Tailscale's sign-in: set TS_AUTHKEY (--config), or pass --no-tailscale for the SSH-tunnel route"
 fi
 
 # The owner's way in: the one-time setup link for OWNER_EMAIL (it sets a password; the board then asks for an
@@ -105,8 +150,13 @@ fi
 owner_link() {
   if [ "$DRY" = 1 ]; then echo "  + board: the owner's one-time setup link"; return 0; fi
   for _ in $(seq 60); do curl -fsS -o /dev/null http://127.0.0.1:3120/healthz 2>/dev/null && break; sleep 2; done
-  board POST /api/accounts/setup "{\"email\":$(json "$OWNER_EMAIL"),\"name\":$(json "$OWNER_NAME")}" 2>/dev/null | jq -r .url \
-    || echo "(the owner's account already exists; a new link goes to the owner's Telegram: sudo ops/setup.sh --config $CONFIG --reset $OWNER_EMAIL)"
+  local url
+  url="$(board POST /api/accounts/setup "{\"email\":$(json "$OWNER_EMAIL"),\"name\":$(json "$OWNER_NAME")}" 2>/dev/null | jq -r .url || true)"
+  if [[ "$url" =~ ^https?://[^[:space:]]+$ ]]; then
+    echo "$url"
+    # The installer reads this line (the last one wins).
+    [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SETUP_URL=$url"
+  else echo "(the owner's account already exists; a new link goes to the owner's Telegram: sudo ops/setup.sh ${CONFIG:+--config $CONFIG }--reset $OWNER_EMAIL)"; fi
 }
 
 if [ "$LINK_ONLY" = 1 ]; then
@@ -128,7 +178,7 @@ fi
 
 # ---------------------------------------------------------------- 1. the machine (root)
 say "System packages, Docker, gVisor, Tailscale"
-run env AIDENHQ_USER="$U" bash "$REPO/ops/vm/setup.sh"
+run env AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" bash "$REPO/ops/vm/setup.sh"
 # The runner's engines on the host: Codex (the primary engine, codex-openrouter) and opencode (the fallback) (engines.mjs).
 command -v codex >/dev/null || run npm install -g --silent @openai/codex@0.166.0
 command -v opencode >/dev/null || run npm install -g --silent opencode-ai@1.19.5
@@ -141,7 +191,7 @@ if [ "$DRY" = 0 ]; then
     systemctl restart "user@$(id -u "$U").service"
   fi
 fi
-if [ -z "$BOARD_HOST" ]; then
+if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ]; then
   TS_AUTHKEY="$(cfg TS_AUTHKEY)"
   if [ "$DRY" = 1 ]; then BOARD_HOST="<this-vm>.<tailnet>.ts.net"
     if [ -n "$TS_AUTHKEY" ]; then echo "  + tailscale up (with TS_AUTHKEY)"
@@ -153,9 +203,18 @@ if [ -z "$BOARD_HOST" ]; then
     tailscale up --auth-key="file:$keyfile" --hostname="aidenhq-$U"
     rm -f "$keyfile"
     BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
-  else die "this VM isn't on the tailnet: set TS_AUTHKEY in $CONFIG, or run 'sudo tailscale up', then run setup again"; fi
+  elif [ "$UNATTENDED" = 1 ] && tailscale status >/dev/null 2>&1; then
+    BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
+  elif [ "$UNATTENDED" = 1 ] && has_tty; then
+    # The sign-in link goes to the terminal itself: an installer reading this script's output shows only its steps.
+    say "Tailscale: open the link it prints to add this server to your tailnet (it waits)"
+    tailscale up --hostname="aidenhq-$U" </dev/tty >/dev/tty 2>&1 || die "tailscale up failed"
+    BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
+  else die "this VM isn't on the tailnet: set TS_AUTHKEY in ${CONFIG:-a --config file}, or run 'sudo tailscale up', then run setup again"; fi
 fi
-say "Board address: https://$BOARD_HOST"
+# The board's URL for links: its tailnet name over https, or (no Tailscale) loopback, reached through an SSH tunnel.
+if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://127.0.0.1:3121"; fi
+say "Board address: $BOARD_URL"
 # The machine step installs node; everything after it needs it.
 [ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
 
@@ -185,12 +244,14 @@ set_env AIDENHQ_INSTANCE_REMOTE "$REMOTE"        # apps-mcp mounts it (compose.y
 set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry commits here, not to GitHub
 set_env VAULT_FOLDERS ""
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
-set_env BOARD_LAN_HOSTS "$BOARD_HOST"
-set_env BOARD_LAN_URL "https://$BOARD_HOST"
+set_env BOARD_LAN_HOSTS "${BOARD_HOST:-127.0.0.1:3121,localhost:3121}"
+set_env BOARD_LAN_URL "$BOARD_URL"
 # Apps get their own tailnet node and name (compose.yaml apps-edge), never the board's: browsers send a name's cookies
-# to every port of it.
-set_env APPS_TS_HOSTNAME "aidenhq-$U-apps"
-set_env APPS_URL_BASE "https://aidenhq-$U-apps.${BOARD_HOST#*.}"
+# to every port of it. Without Tailscale there is no apps node yet.
+if [ -n "$BOARD_HOST" ]; then
+  set_env APPS_TS_HOSTNAME "aidenhq-$U-apps"
+  set_env APPS_URL_BASE "https://aidenhq-$U-apps.${BOARD_HOST#*.}"
+fi
 set_env BOARD_GOOGLE_CONNECT 1                   # Connect Google from the board (the company's Web-app client)
 grep -q '^WORK_COMPANY_ID=.' "$ENVF" 2>/dev/null || set_env WORK_COMPANY_ID pending   # known after Paperclip's setup
 if [ ! -f "$REPO/config/runner.yaml" ]; then
@@ -198,6 +259,18 @@ if [ ! -f "$REPO/config/runner.yaml" ]; then
   { sed -e 's/^allowed_orgs: .*/allowed_orgs: [local]/' -e 's#^  repo: your-org/aidenhq-instance#  repo: local/aidenhq-instance#' "$REPO/config/runner.example.yaml"
     printf '\nrepo_sources:\n  local/aidenhq-instance: %s\n' "$REMOTE"; } | write_user_file "$REPO/config/runner.yaml" 644
 fi
+# The runner's size, when given: a top-level `key: n` in config/runner.yaml (a running runner restarts gracefully below).
+RUNNER_RESIZED=0
+runner_set() { # key value
+  [ -n "$2" ] || return 0
+  if [ "$DRY" = 1 ]; then echo "  + config/runner.yaml: $1: $2"; return 0; fi
+  grep -qx "$1: $2" "$REPO/config/runner.yaml" && return 0
+  as_user K="$1" V="$2" F="$REPO/config/runner.yaml" sh -c 'umask 022; { if grep -q "^$K:" "$F"; then sed "s/^$K:.*/$K: $V/" "$F"; else cat "$F"; echo "$K: $V"; fi; } > "$F.tmp" && mv -f "$F.tmp" "$F"'
+  RUNNER_RESIZED=1
+}
+runner_set max_concurrent "$MAX_CONCURRENT"
+runner_set timeout_minutes "$TIMEOUT_MINUTES"
+[ -z "$CI_RUNNERS" ] || set_env AIDENHQ_CI_RUNNERS "$CI_RUNNERS"   # kept for reruns: the units start once the App exists
 
 # apps-mcp mounts a deploy key for GitHub instance repos; this one is local, so the file is only there (empty), as the
 # user, so Docker doesn't create a root-owned directory in its place.
@@ -256,11 +329,14 @@ if [ -z "$(read_secret openrouter_key)" ]; then
   elif [ -n "$(cfg OPENROUTER_MANAGEMENT_KEY)" ]; then
     say "OpenRouter key: a new one for $U, limit \$$LIMIT a month"
     as_user OPENROUTER_MANAGEMENT_KEY="$(cfg OPENROUTER_MANAGEMENT_KEY)" AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.mjs" create "aidenhq-$U" "$LIMIT"
+  elif [ "$UNATTENDED" = 1 ]; then say "Model key: none yet (agents can't run until one is added; see the end)"
   elif [ "$DRY" = 1 ]; then echo "  ! would fail: set OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_KEY) in $CONFIG"
   else die "set OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_KEY) in $CONFIG"; fi
 fi
 # Fail now on a rejected key, not after an apply that waits minutes per agent. (A dry run only says what it would check.)
+HAS_KEY=1
 if [ "$DRY" = 1 ]; then echo "  + check the OpenRouter key against openrouter.ai (GET /api/v1/key); stop if it is rejected"
+elif [ -z "$(read_secret openrouter_key)" ]; then HAS_KEY=0
 else as_user AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.mjs" check || die "the OpenRouter key was rejected (see above)"; fi
 if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && ! grep -q '"client_id"' "$SECRETS/modules/google/google_oauth.json" 2>/dev/null; then
   say "Google: the company OAuth app behind Connect"
@@ -298,14 +374,31 @@ else
   # The board reads its Paperclip key and company at start: both exist only now.
   as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --force-recreate board"
 fi
-run tailscale serve --bg --https=443 http://127.0.0.1:3121
+[ -z "$BOARD_HOST" ] || run tailscale serve --bg --https=443 http://127.0.0.1:3121
 say "Runner, model gateway and run pruning (user units)"
 as_user mkdir -p "$H/.config/systemd/user"
+# Where the units find this checkout (their default is ~/aidenhq).
+printf 'AIDENHQ_DIR=%s\n' "$REPO" | write_user_file "$H/.config/aidenhq-checkout.env" 644
 as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-kernel.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$H/.config/systemd/user/"
 as_user systemctl --user daemon-reload
 # aidenhq-computers: the agent-computer launcher (services/computer); idle until an agent has an image.
 # aidenhq-kernel: every model and tool call (kernel/src); the only holder of the OpenRouter key and the connections' keys.
+# A new size reaches a runner that was already running: it exits once nothing is half done (jobs keep running).
+runner_up=0; [ "$DRY" = 1 ] || ! as_user systemctl --user is-active --quiet aidenhq-runner || runner_up=1
 as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer
+if [ "$RUNNER_RESIZED" = 1 ] && [ "$runner_up" = 1 ]; then as_user systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner || true; fi
+# CI runners (modules/ci): AIDENHQ_CI_RUNNERS units, once the GitHub App exists and the instance has the ci module (each
+# unit mints its token from the App); until then a rerun of setup starts them.
+ci_n="$(sed -n 's/^AIDENHQ_CI_RUNNERS=\([0-9]*\)$/\1/p' "$ENVF" 2>/dev/null | tail -1 || true)"; ci_n="${CI_RUNNERS:-${ci_n:-0}}"
+if [ "$ci_n" -gt 0 ]; then
+  if [ "$DRY" = 1 ]; then echo "  + CI runners: aidenhq-ci-runner@1..$ci_n, once the GitHub App and the ci module are set up"
+  elif [ -n "$(read_secret github-app/app_id)" ] && grep -Eq '^modules:.*[[ ,]ci[],]' "$INST/instance.yaml"; then
+    say "CI runners: $ci_n"
+    as_user cp "$REPO/ops/units/aidenhq-ci-runner@.service" "$H/.config/systemd/user/"
+    as_user systemctl --user daemon-reload
+    for i in $(seq "$ci_n"); do as_user systemctl --user enable --now "aidenhq-ci-runner@$i"; done
+  else say "CI runners: $ci_n once the GitHub App (ops/github-app-setup.mjs) and the ci module are set up; then run setup again"; fi
+fi
 
 # ---------------------------------------------------------------- 8. the first ten minutes
 marker="$REPO/data/board/welcome-sent"
@@ -314,6 +407,7 @@ elif [ ! -e "$marker" ]; then
   say "Aiden's welcome chat"
   text="Welcome"$'\n\n'"[setup] $OWNER_NAME's AidenHQ is new. Start the first chat with a new owner (your handbook)."
   if [ "$DRY" = 1 ]; then echo "  + board: new chat to Aiden, \"Welcome\""
+  elif [ "$HAS_KEY" = 0 ]; then say "Aiden's welcome waits for the model key (a rerun of setup with it sends it)"
   else
     for _ in $(seq 60); do curl -fsS -o /dev/null http://127.0.0.1:3120/healthz 2>/dev/null && break; sleep 2; done
     board POST /api/chats "{\"text\":$(json "$text")}" >/dev/null
@@ -322,10 +416,21 @@ elif [ ! -e "$marker" ]; then
 fi
 
 echo
-echo "Done. Send $OWNER_NAME this link (their laptop must be on the tailnet; one use; a new one: --reset $OWNER_EMAIL):"
+if [ "$HAS_KEY" = 0 ]; then
+  echo "No model key yet: put OPENROUTER_KEY=<key> in a root-only file and run: sudo OWNER_EMAIL=$OWNER_EMAIL ops/setup.sh --unattended --config <that file>$( [ "$NO_TS" = 1 ] && echo ' --no-tailscale')"
+fi
+if [ -n "$BOARD_HOST" ]; then
+  echo "Done. Send $OWNER_NAME this link (their laptop must be on the tailnet; one use; a new one: --reset $OWNER_EMAIL):"
+else
+  tunnel="ssh -N -L 3121:127.0.0.1:3121 $U@$(hostname -f 2>/dev/null || hostname)"
+  echo "Done. The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first:"
+  echo "  $tunnel"
+  [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
+  echo "then open this link there (one use; a new one: --reset $OWNER_EMAIL):"
+fi
 owner_link
 echo
 echo "Once, in the company's Google OAuth app (Web application), add the redirect URI:"
-echo "  https://$BOARD_HOST/google/callback"
+echo "  $BOARD_URL/google/callback"
 if [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
-echo "Delete $CONFIG: it holds the OpenRouter management key."
+[ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."

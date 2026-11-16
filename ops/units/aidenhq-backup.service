@@ -2,8 +2,11 @@
 Description=AidenHQ off-host backup (ops/backup-offsite.sh)
 
 [Service]
+# The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
+Environment=AIDENHQ_DIR=%h/aidenhq
+EnvironmentFile=-%h/.config/aidenhq-checkout.env
 Type=oneshot
-ExecStart=%h/aidenhq/ops/backup-offsite.sh
+ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/backup-offsite.sh
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Nice=10
 IOSchedulingClass=idle

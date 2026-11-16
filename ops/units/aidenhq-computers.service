@@ -3,11 +3,14 @@ Description=AidenHQ computer launcher (services/computer/launcher.mjs)
 After=network-online.target
 
 [Service]
+# The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
+Environment=AIDENHQ_DIR=%h/aidenhq
+EnvironmentFile=-%h/.config/aidenhq-checkout.env
 # The secret vault must be mounted (ops/vault), and the computers network up (aidenhq-computer-net, a system unit): its gateway
 # address is where the launcher listens. Restart= retries until both are.
 ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
 ExecStartPre=/usr/bin/docker network inspect aidenhq-computers
-ExecStart=/usr/bin/env node %h/aidenhq/services/computer/launcher.mjs
+ExecStart=/usr/bin/env node ${AIDENHQ_DIR}/services/computer/launcher.mjs
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=15
