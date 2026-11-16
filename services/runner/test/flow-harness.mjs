@@ -10,6 +10,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { State } from "../src/state.ts";
+import { mintToken } from "../../../kernel/src/gateway/token.ts";
+import { REQUEST_FIELDS } from "../../../kernel/sdk/src/reviewer.ts";
+import { reviewWith } from "../../../modules/ai-reviewer/service/src/server.mjs";
 import { readLog } from "./fakes/lib.mjs";
 import { registry } from "./fakes/engines.mjs";
 
@@ -35,7 +38,7 @@ const gitEnv = {
 };
 
 /** A Paperclip with one parent task (the user's) and one part of it for Ada. */
-export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0, onIssueCreated, ownerFallback = false }) {
+export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0, onIssueCreated, ownerFallback = false, config, secrets }) {
   const gradeLog = [];
   const graderCalls = [];
   const graderAnswers = [];
@@ -105,6 +108,19 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       const id = `k-${String(records.size + 1).padStart(16, "0")}`;
       records.set(id, { id, ...JSON.parse(body), bearer: String(req.headers.authorization ?? "").replace(/^Bearer /, ""), tier: 1, state: "review", outcome: null });
       return send({ id, tier: 1, state: "review" });
+    }
+    // The kernel's reviewer slot (reviewer@1): the real reviewer module, asked as the kernel asks it, with a reviewer token
+    // for the model gateway the flow configured (config/runner.yaml `gateway.url`), and only the runner's reviewer key.
+    if (path === "/v1/reviews" && req.method === "POST") {
+      if (req.headers.authorization !== `Bearer ${readFileSync(join(secrets, "reviewer_key"), "utf8").trim()}`) return send({ error: { message: "the runner's reviewer key is required" } }, 401);
+      const gateway = /gateway:\n {2}url: (\S+)/.exec(readFileSync(join(config, "runner.yaml"), "utf8"))?.[1];
+      if (!gateway) return send({ error: { message: "no gateway" } }, 502);
+      const { request } = JSON.parse(body);
+      const picked = Object.fromEntries(REQUEST_FIELDS.filter((k) => request[k] !== undefined).map((k) => [k, request[k]]));
+      let marked = false;
+      const modelToken = mintToken(readFileSync(join(secrets, "gateway_job_secret"), "utf8").trim(), { kind: "reviewer", component: request.component ?? "AI reviewer", ttlMs: 3600_000 });
+      const v = await reviewWith(`${gateway}/api/v1/chat/completions`)(picked, { modelToken, onPanel: async () => void (marked = true) }).catch((e) => ({ error: e.message }));
+      return v.error ? send({ error: { message: v.error } }, 502) : send({ ...v, ...(marked ? { panel_marked: true } : {}) });
     }
     const record = req.method === "GET" && /^\/v1\/writes\/(k-[0-9a-f]{16})$/.exec(path)?.[1];
     if (record) return records.has(record) ? send(records.get(record)) : send({ error: { message: "no record" } }, 404);
@@ -400,7 +416,7 @@ ${runnerYaml}`,
     Object.assign(part, partOver);
     // Agents in a computer (`image:` in the module): Paperclip runs them, and a task they get must have a folder of its own.
     const inComputers = computers.map((id) => ({ id, name: id, status: "idle", adapterType: "codex_local", adapterConfig: {}, defaultEnvironmentId: "env-computer", metadata: { setupKey: `aidenhq:${id}` } }));
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated, ownerFallback });
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated, ownerFallback, config, secrets });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 

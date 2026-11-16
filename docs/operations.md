@@ -192,7 +192,7 @@ Design: [design/approvals.md](design/approvals.md).
 
 The instance setting `autonomy` (`off` | `tier0` | `full`; docs/configuration.md) decides who approves. Code tiers each
 write from verified state (`services/runner/src/tiers.mjs`): Tier 0 runs at once with an audit row on the board, Tier 1
-goes to the AI reviewer (`services/runner/src/review.mjs`, policy `modules/core/security/policy.md`), Tier 2 to the
+goes to the AI reviewer (the `modules/ai-reviewer` module, policy `modules/ai-reviewer/service/security/policy.md`), Tier 2 to the
 owner (Telegram card). Every record shows its tier, reason and `decided_by` on the board; a digest of what was decided
 without the owner reaches Telegram once a day from 21:00.
 
@@ -233,7 +233,7 @@ without the owner reaches Telegram once a day from 21:00.
 - Before `autonomy: full`, run the planted eval on the host and require 100%:
 
 ```sh
-cd ~/aidenhq && OPENROUTER_API_KEY="$(cat ~/.config/aidenhq/openrouter_key)" node services/runner/scripts/reviewer-eval.mjs
+cd ~/aidenhq && OPENROUTER_API_KEY="$(cat ~/.config/aidenhq/openrouter_eval_key)" node modules/ai-reviewer/scripts/reviewer-eval.mjs
 ```
 
 - Pause: set `autonomy: off` and apply (a settings change: the AI reviewer and a second reviewer decide it; or edit the

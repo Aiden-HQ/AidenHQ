@@ -3,6 +3,8 @@
 
 /** A module's `providers.executor` (spec §3.3.2): its write kinds' executor endpoint and the secret the kernel calls it with. */
 export interface ExecutorDecl { contract: "executor@1"; url: string; auth: string }
+/** A module's `providers.reviewer` (spec §3.3.3; reviewer.ts): its review endpoint and the secret the kernel calls it with. */
+export interface ReviewerDecl { contract: "reviewer@1"; url: string; auth: string }
 
 export interface Caller { agent: string; roles: string[]; task?: string; run?: string; job?: string; module?: string }
 export interface CardText { sentence: string; changes: string; reads: string; cost: string; tier: 0 | 1 | 2; panel: boolean;

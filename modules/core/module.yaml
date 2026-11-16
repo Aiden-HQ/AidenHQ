@@ -6,6 +6,7 @@ requires:
   - tasks
   - engine-codex
   - apps-platform
+  - ai-reviewer
 settings:
   owner_name:
     required: true

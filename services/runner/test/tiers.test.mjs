@@ -172,7 +172,7 @@ test("product repo: branch push, PR and merge are Tier 1 for the Platform Engine
   assert.equal(tierOf(prod("push", { branch: "main" })), "reject", "the default branch");
   assert.equal(tierOf(prod("push", {}, { requester: { platform: false } })), "reject", "another agent's push stays the owner's");
   assert.equal(tierOf(prod("pr", { files: ["services/board/src/tasks.ts", "package-lock.json", "services/runner/src/prompt.mjs"] })), 1, "general code is not gate code");
-  for (const g of ["services/runner/src/tiers.mjs", "modules/core/security/policy.md", "scripts/no-shell.mjs", "services/computer/launcher.mjs", "services/computer/plugin/worker.js", "services/computer/images/engineer/Dockerfile", "services/runner/src/main.mjs", "services/runner/src/engines.mjs", "services/runner/src/state.mjs", "services/runner/src/config.mjs", "services/runner/src/github-app.mjs", "scripts/paperclip-setup.mjs", "scripts/modules.mjs", "kernel/src/gateway/lib.ts", "kernel/src/proxy.ts", "scripts/verify-security.sh", "scripts/supply-chain/npm-age.mjs", ".github/workflows/ci.yml", "services/board/src/approvals.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/bin/engine", "kernel/sdk/src/engine-io.ts"])
+  for (const g of ["services/runner/src/tiers.mjs", "modules/ai-reviewer/service/security/policy.md", "scripts/no-shell.mjs", "services/computer/launcher.mjs", "services/computer/plugin/worker.js", "services/computer/images/engineer/Dockerfile", "services/runner/src/main.mjs", "services/runner/src/engines.mjs", "services/runner/src/state.mjs", "services/runner/src/config.mjs", "services/runner/src/github-app.mjs", "scripts/paperclip-setup.mjs", "scripts/modules.mjs", "kernel/src/gateway/lib.ts", "kernel/src/proxy.ts", "scripts/verify-security.sh", "scripts/supply-chain/npm-age.mjs", ".github/workflows/ci.yml", "services/board/src/approvals.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/bin/engine", "kernel/sdk/src/engine-io.ts"])
     assert.equal(tierOf(prod("pr", { files: ["package.json", g] })), "panel", g);
   assert.equal(tierOf(prod("pr", { files: ["modules/fleet-ops/agents/fleet-ops/AGENTS.md"] })), 1, "a role holder's handbook");
   assert.equal(tierOf(prod("pr", { files: ["modules/slack/agents/slack-scout/AGENTS.md"] })), 1, "a handbook of an agent without a role");
@@ -183,7 +183,7 @@ test("product repo: branch push, PR and merge are Tier 1 for the Platform Engine
   assert.equal(tierOf(pm({ checks: [] })), "reject", "no checks");
   assert.equal(tierOf(pm({ headMatches: false })), "reject", "head moved");
   assert.equal(tierOf(pm({ ownHead: false })), 1, "a fork's or someone else's head");
-  assert.equal(tierOf(pm({ files: ["package.json", "services/runner/src/review.mjs"] })), "panel", "gate code");
+  assert.equal(tierOf(pm({ files: ["package.json", "modules/ai-reviewer/service/src/review.mjs"] })), "panel", "gate code");
   assert.equal(tierOf(pm({}, { requester: { platform: false } })), "reject", "another agent's merge");
 });
 
@@ -206,15 +206,15 @@ test("the owner-approval records are the owner's tap, so no PR records its own s
 });
 
 test("product repo: a bump that quietly edits a gate file is the owner's", () => {
-  const files = ["services/whisper/requirements.txt", "services/runner/package-lock.json", "services/runner/src/review.mjs"];
+  const files = ["services/whisper/requirements.txt", "services/runner/package-lock.json", "modules/ai-reviewer/service/src/review.mjs"];
   const t = prod("pr", { files });
   assert.equal(tierOf(t), "panel");
   assert.equal(t.rule, "gate-core");
   assert.match(t.reason, /review\.mjs/);
   // The gate's own core and anything that can bypass it: the panel.
-  for (const f of ["services/runner/src/git.mjs", "services/runner/src/agents.mjs", "services/runner/src/engines.mjs", "services/runner/src/workspace.mjs", "services/runner/src/files.mjs", "scripts/computers.mjs", "services/runner/test/reviewer-cases/01-x.json", "services/runner/scripts/reviewer-eval.mjs", "services/board/src/fleet.ts"]) assert.equal(tierOf(prod("pr", { files: [f] })), "panel", f);
+  for (const f of ["services/runner/src/git.mjs", "services/runner/src/agents.mjs", "services/runner/src/engines.mjs", "services/runner/src/workspace.mjs", "services/runner/src/files.mjs", "scripts/computers.mjs", "modules/ai-reviewer/test/reviewer-cases/01-x.json", "modules/ai-reviewer/scripts/reviewer-eval.mjs", "services/runner/src/review-request.mjs", "services/board/src/fleet.ts"]) assert.equal(tierOf(prod("pr", { files: [f] })), "panel", f);
   // The TypeScript conversion renames files in place: a gate file keeps its tier as .ts.
-  for (const f of ["services/runner/src/tiers.ts", "services/runner/src/review.ts", "services/runner/src/main.ts", "services/runner/src/config.ts", "services/runner/src/agents.ts", "services/runner/src/apply.ts", "services/runner/src/netjail.ts", "services/runner/src/state.ts", "services/runner/src/github-app.ts", "services/runner/src/workspace.ts", "services/runner/src/files.ts", "scripts/computers.ts", "scripts/paperclip-setup.ts", "services/runner/scripts/reviewer-eval.ts"]) assert.equal(tierOf(prod("pr", { files: [f] })), "panel", f);
+  for (const f of ["services/runner/src/tiers.ts", "services/runner/src/review-request.ts", "services/runner/src/main.ts", "services/runner/src/config.ts", "services/runner/src/agents.ts", "services/runner/src/apply.ts", "services/runner/src/netjail.ts", "services/runner/src/state.ts", "services/runner/src/github-app.ts", "services/runner/src/workspace.ts", "services/runner/src/files.ts", "scripts/computers.ts", "scripts/paperclip-setup.ts", "modules/ai-reviewer/scripts/reviewer-eval.ts"]) assert.equal(tierOf(prod("pr", { files: [f] })), "panel", f);
   assert.equal(tierOf(prod("pr", { files: ["services/runner/src/prompt.ts"] })), 1, "general code is not gate code as .ts either");
   // Primer publishing is the primer.publish record now: the runner's primer.ts only reads the document, general code.
   assert.notEqual(prod("pr", { files: ["services/runner/src/primer.ts"] }).rule, "product-gate");
@@ -304,7 +304,7 @@ test("product repo: Dependabot pin-only merges are Tier 1, anything else Tier 2"
   assert.equal(tierOf(one("services/runner/package-lock.json", lock("2.8.0"), lock("2.8.1", { hasInstallScript: true }))), 1, "a new install script");
   assert.equal(tierOf(one("services/runner/package-lock.json", lock("2.8.0"), "{not json")), 1, "unparseable");
   assert.equal(tierOf(one("compose.yaml", texts["compose.yaml"].base, YAML.stringify({ services: { t: { image: "tailscale/tailscale:v2.0.0" } } }))), 1, "a compose image's major jump");
-  assert.equal(tierOf(one("services/runner/src/review.mjs", "a", "b")), "panel", "gate code that isn't a pin");
+  assert.equal(tierOf(one("modules/ai-reviewer/service/src/review.mjs", "a", "b")), "panel", "gate code that isn't a pin");
   assert.equal(tierOf(one("docs/x.md", "a", "b")), 1, "any other file");
   assert.equal(tierOf(dm({ texts: {} })), "reject", "files not read");
   // Which PRs count as Dependabot's (the runner reads the commits from the API): only Dependabot's GitHub-signed commits.

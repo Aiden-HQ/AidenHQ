@@ -3,17 +3,16 @@
 // decides, and if it is unsure too the card goes back to the agent with both notes, never to the owner (owner,
 // 2026-11-15). An authority-expanding card (code's `panel`, or the reviewer's own `second_review` flag) also gets a second,
 // independent reviewer on another model family, blind to the first's verdict: both must approve, and a split goes to the
-// owner (owner, 2026-11-14). It reads the policy (modules/core/security/policy.md: the product's, never the instance's), the card, the exact
+// owner (owner, 2026-11-14). It reads the policy (security/policy.md beside this file: the product's, never the instance's), the card, the exact
 // diff, the full text of the changed files at the reviewed commit (chosen by code, so it sees the context) and the request chain; everything an agent or a stranger wrote is fenced as data. It can only escalate: the tier
 // was set by code (tiers.mjs) and the board takes its verdict only on a pending Tier 1 record with the same digest.
 // A plain OpenRouter call (ZDR), not `codex exec`: the diff is attacker-written, so the model gets no harness and no tools.
 // Reasoning-blind: it never sees the requesting agent's own account of the change (PR text, commit message, a run's
 // reason), so the agent can't argue its case to the judge. reviewer-eval scored the same (29/29) without it, on fewer tokens.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { REPO_ROOT } from "./config.mjs";
-import { readExceptions } from "../../../scripts/supply-chain/best-version.mjs";
+import { MAX_FILES } from "./review-files.mjs";
 
 // GPT Luna at medium, then DeepSeek Flash at high (the owner's pick, 2026-11-13; the reviewer eval scores it). The second
 // reviewer: GLM Flash at high (the owner's checker model), else whichever family is left.
@@ -26,17 +25,13 @@ export const EFFORT = { [LUNA]: "medium", [DEEPSEEK]: "high", [GLM]: "high" };
 export const MAX_TOKENS = 100_000;
 /** Larger diffs aren't reviewed: the card goes to the owner ("too large to review"). */
 export const MAX_DIFF = 150_000;
-/** The changed files' full text the reviewer gets for context; files past the budget are named, not sent. */
-export const MAX_FILES = 200_000;
 /** A delegated chain (the task and its parent's request) is long text: whole up to this, never cut mid-sentence by a tighter cap. */
 const MAX_CHAIN = 24_000;
 /** The merged-sibling block (siblings.mjs builds it within this budget); it is a short table, never the diff's context. */
 export const MAX_SIBLINGS = 2_000;
-/** The owner-approved source exceptions: read from the base branch, never from the change under review. */
-export const SOURCE_EXCEPTIONS_FILE = ".github/supply-chain-source-exceptions.yaml";
 /** The records block's budget: a handful of one-line records, never the diff's context. */
 export const MAX_SOURCES = 4_000;
-export const POLICY_FILE = join(REPO_ROOT, "modules/core/security/policy.md");
+export const POLICY_FILE = join(import.meta.dirname, "../security/policy.md");
 
 /**
  * Reason codes (services/shared/reason-codes.ts REVIEW_CODES; scripts/test/reason-codes.test.mjs keeps them in step): the
@@ -61,29 +56,6 @@ export const REVIEW_SCHEMA = {
 
 export const readPolicy = (file = POLICY_FILE) => readFileSync(file, "utf8");
 export const policyVersion = (policy) => createHash("sha256").update(policy).digest("hex").slice(0, 12);
-
-/**
- * The owner-approved source records: the same flow style, one per line, the version exceptions use (best-version.mjs reads
- * the file), kept only when one says `approved_by: owner` and names a package and the source it moves to. Anything else is
- * not an approval, and code never guesses one; an absent file is no records.
- */
-export const readSourceExceptions = (text) =>
-  readExceptions(text).filter((e) => String(e.approved_by ?? "").trim().toLowerCase() === "owner" && e.package && e.to);
-
-/** The contents-API path of that file at a base commit: built beside the name it reads, so the ref is always the base reviewed. */
-export const sourceExceptionsUrl = (repo, base) => `repos/${repo}/contents/${encodeURIComponent(SOURCE_EXCEPTIONS_FILE)}?ref=${encodeURIComponent(base)}`;
-
-/** A whole card's read that failed: the reviewer is told so, and gets no records rather than a guessed one. */
-export const unreadSourceExceptions = () => ({ where: `${SOURCE_EXCEPTIONS_FILE} (could not be read)`, records: [] });
-
-/** A card's source records, read from its bases by `read(repo, url)`: each keeps its repo and base, so it covers only that repo's
- * own change off that base. A base code could not name, or a file it could not read, is no records, so no record ever passes a
- * new source unread; `where` names only the bases read, so a card with none reads as no exception, not as a failed read. */
-export async function readCardSourceExceptions(bases, read) {
-  const known = bases.filter((b) => b.base);
-  const rows = await Promise.all(known.map((b) => read(b.repo, sourceExceptionsUrl(b.repo, b.base)).catch(() => "").then((text) => readSourceExceptions(text).map((r) => ({ ...r, repo: b.repo, base: b.base })))));
-  return { where: known.map((b) => `${b.repo} ${b.base} ${SOURCE_EXCEPTIONS_FILE}`).join("; "), records: rows.flat() };
-}
 
 /**
  * A combined diff's parts, one per `### <repo> <branch> ... base <branch>` or `### <PR url> base <branch>` heading the
@@ -165,101 +137,6 @@ const fence = (name, text, max, middle = false) => {
   else body = body.slice(0, max);
   return `<<<${name}\n${body || "(none)"}\n${name}>>>`;
 };
-
-/** Inert media: named to the reviewer with type and size, never escalated for being unseen. */
-const MEDIA = /\.(png|jpe?g|gif|webp|avif|bmp|ico|tiff?|heic|woff2?|ttf|otf|eot|mp3|wav|ogg|oga|flac|aac|m4a|mp4|m4v|mov|webm|avi|mkv|pdf)$/i;
-/** Executables and opaque containers: always escalated, whatever their content looks like. */
-const OPAQUE = /\.(so|dylib|dll|exe|bin|wasm|jar|war|class|node|o|a|pyc|zip|tar|gz|tgz|bz2|xz|zst|7z|rar|whl|deb|rpm|dmg|apk)$/i;
-/** An ELF or PE header (files arrive as UTF-8 text, so only headers that survive decoding are checked). */
-const EXECUTABLE = /^(\x7fELF|MZ)/;
-
-/**
- * The changed files at the reviewed commit: [{ name, text }] in order → { text, leftOut, oversized }. Each file is sent
- * whole or named (inert media: images, fonts, audio, video, PDFs, with type and size). leftOut names only what genuinely
- * cannot be read — an executable or opaque binary, or a file never read (text null, past the read cap) — and review()
- * sends the card back to the agent for those, naming each file with its size, the limit and the next step. A plain text
- * file that doesn't fit goes into oversized instead: it is named to the model with its own size and the limit, its change
- * is in the DIFF, and the verdict says it was judged from the diff. Deleted files are text undefined, skipped.
- *
- * The text returned never exceeds MAX_FILES, so the FILES fence sends it whole: 300 files with paths near git's limit cost
- * more in notes than the budget, so those names are shortened, and anything still over is counted in one closing line
- * rather than left to the fence to cut off (which would drop the last files' notes and their changes silently).
- */
-export function fileContext(files) {
-  const entries = files.filter((f) => f.text !== undefined).map((f) => ({ f, kind: classify(f) }));
-  // Every file is accounted for by its note, and the notes are reserved before any text. One line per file is what does
-  // that, but 300 files with long paths cost more than the budget on their own, so then the names are shortened.
-  let notes = entries.map(({ f, kind }) => noteOf(f, kind, f.name));
-  const cost = (lines) => lines.reduce((n, x) => n + x.length + 2, 0);
-  if (cost(notes) > MAX_FILES) notes = entries.map(({ f, kind }) => noteOf(f, kind, shortName(f.name)));
-  let left = MAX_FILES - cost(notes);
-  const oversized = [];
-  const shown = new Set();
-  for (const [i, { f, kind }] of entries.entries()) {
-    if (kind !== "text") continue;
-    const extra = `#### ${f.name}\n${f.text}`.length - notes[i].length;
-    if (extra > left) {
-      oversized.push(`${f.name} (${f.text.length} characters)`);
-      continue;
-    }
-    left -= extra;
-    shown.add(f);
-  }
-  // Room for the closing line, so what is emitted plus that line still fits the budget. Anything the notes and text
-  // cannot cover — only reachable when even shortened names overflow — is counted there, never dropped by the fence.
-  const reserve = 200;
-  const out = [];
-  let used = 0;
-  let omitted = 0;
-  for (const [i, { f }] of entries.entries()) {
-    const line = shown.has(f) ? `#### ${f.name}\n${f.text}` : notes[i];
-    if (used + line.length + 2 > MAX_FILES - reserve) {
-      omitted++;
-      continue;
-    }
-    used += line.length + 2;
-    out.push(line);
-  }
-  if (omitted) out.push(`(${out.length} of ${entries.length} changed files are named above; ${omitted} more ${omitted === 1 ? "is" : "are"} not named, over the ${MAX_FILES}-character budget for changed files, and every change is in the DIFF)`);
-  // Named with what it is and its size, not the same phrase per file: a card can have many, and every one is named.
-  const leftOut = entries.filter(({ kind }) => kind === "binary" || kind === "unreadable").map(({ f, kind }) => `${f.name} (${kind === "binary" ? `binary, ${Buffer.byteLength(f.text)} bytes` : "not read, size unknown"})`);
-  return { text: out.join("\n\n"), leftOut, oversized };
-}
-
-/** What a changed file is, from its name and its own bytes alone. */
-function classify(f) {
-  if (f.text === null) return "unreadable";
-  if (OPAQUE.test(f.name) || EXECUTABLE.test(f.text) || (f.text.includes("\u0000") && !MEDIA.test(f.name))) return "binary";
-  return MEDIA.test(f.name) ? "media" : "text";
-}
-
-/** The note that stands in for a file the reviewer isn't shown in full, from the file's own name and size. */
-function noteOf(f, kind, name = f.name) {
-  if (kind === "unreadable") return `(${name}: not read, past the read cap; its content is not available)`;
-  if (kind === "binary") return `(${name}: executable or opaque binary, not shown)`;
-  if (kind === "media") return `(${name}: binary, not shown; ${f.name.match(MEDIA)[1].toLowerCase()} file, about ${Math.ceil(Buffer.byteLength(f.text) / 1024)} KB)`;
-  const why = f.text.length > MAX_FILES ? "larger on its own than the" : "over what is left of the";
-  return `(${name}: ${f.text.length}-character text file, ${why} ${MAX_FILES}-character budget for changed files; not shown in full, its change is in the DIFF)`;
-}
-
-/** A file name short enough to keep every note affordable: the repo, then the last two path segments, each cut if long. */
-const shortName = (name) => {
-  const [repo, ...rest] = String(name).split(" ");
-  const cut = (part) => (part.length > 40 ? `${part.slice(0, 37)}…` : part);
-  return `${repo} …/${String(rest.join(" ")).split("/").slice(-2).map(cut).join("/")}`;
-};
-
-/**
- * The diff of a kernel record's card (a module write kind's), from the card's details. Only deploy_app's card carries a
- * marker: the author's commit message after it is cut off, so it never reaches the reviewer inside the DIFF fence (the
- * reviewer is reasoning-blind). Every other kind's details are the change itself, whole (a primer.publish card's is the
- * document as it will be published), so no line in them can hide the rest.
- */
-export function kernelCardDiff(a) {
-  const marker = "\n\nCommit message (written by the app's author): ";
-  const i = a.action === "deploy_app" ? a.details.lastIndexOf(marker) : -1;
-  return { diff: i < 0 ? a.details : a.details.slice(0, i) };
-}
 
 export function reviewPrompt({ policy, card, diff, files = "", chain, panel = false, previous = [], unsure, siblings = "", sources }) {
   const system = `You are the security reviewer for an AI agent fleet. Agents ask to push code, open or merge pull requests, change the fleet's configuration, deploy apps, run one-off scripts or publish documents. Code already sorted this request into Tier 1: routine, but it needs an independent check before it runs. Decide, following the policy below:
@@ -344,8 +221,8 @@ function verdictOf(raw) {
 }
 
 /**
- * OpenRouter chat completions with a strict JSON schema (the reviewer's unless given; the grader passes its own), ZDR providers only, no tools. Resolves { content, refusal, usage }.
- * The runner passes the model gateway's url and its own reviewer/grader token; reviewer-eval calls OpenRouter with the key.
+ * OpenRouter chat completions with the reviewer's strict JSON schema, ZDR providers only, no tools. Resolves { content, refusal, usage }.
+ * The service passes the model gateway's url and the review's reviewer token (server.mjs); reviewer-eval calls OpenRouter with the key.
  */
 export function openRouterAsk(key, { timeoutMs = 600_000, fetchFn = fetch, schema = REVIEW_SCHEMA, url = "https://openrouter.ai/api/v1/chat/completions" } = {}) {
   return async (model, { system, user }) => {
@@ -368,13 +245,6 @@ export function openRouterAsk(key, { timeoutMs = 600_000, fetchFn = fetch, schem
     const msg = json?.choices?.[0]?.message ?? {};
     return { content: msg.content ?? "", refusal: msg.refusal ?? null, usage: json?.usage };
   };
-}
-
-/** The runner's OpenRouter key (the same file its OpenRouter engine uses), or OPENROUTER_API_KEY. */
-export function openRouterKey(cfg) {
-  if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY.trim();
-  if (cfg?.openrouterKeyFile && existsSync(cfg.openrouterKeyFile)) return readFileSync(cfg.openrouterKeyFile, "utf8").trim();
-  return "";
 }
 
 /**

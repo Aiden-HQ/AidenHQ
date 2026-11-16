@@ -126,6 +126,10 @@
       "state": "experimental",
       "fp": ""
     },
+    "provider reviewer@1": {
+      "state": "experimental",
+      "fp": ""
+    },
     "route ANY /v1/cp/agent/*": {
       "state": "experimental",
       "fp": "auth=module+assertion"
@@ -197,6 +201,14 @@
     "route POST /v1/channel/stop": {
       "state": "experimental",
       "fp": "auth=module"
+    },
+    "route POST /v1/reviews": {
+      "state": "experimental",
+      "fp": "auth=reviewer-key"
+    },
+    "route POST /v1/reviews/:review": {
+      "state": "experimental",
+      "fp": "auth=review-token"
     },
     "route POST /v1/wake": {
       "state": "experimental",

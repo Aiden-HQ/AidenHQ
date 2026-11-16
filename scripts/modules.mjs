@@ -783,7 +783,8 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings) };
+  const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), ...(reviewer ? { reviewer } : {}) };
   return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
@@ -815,6 +816,23 @@ export function kernelModuleTable(defs, settings = {}) {
     if (Object.keys(e).length) out[name] = e;
   }
   return out;
+}
+
+/**
+ * The reviewer slot (spec §3.3, reviewer@1): the instance's `reviewer.primary`, else the only enabled module with a reviewer
+ * provider; two without a binding is an error. Its `url` and `auth` (one of its own secrets) are what the kernel calls.
+ * One in-tree reviewer runs its own panel, so `reviewer.panel` names nothing the kernel calls yet.
+ */
+export function reviewerSlot(defs, binding = {}) {
+  const all = Object.entries(defs).filter(([, d]) => d.providers?.reviewer);
+  const name = binding?.primary ?? (all.length > 1 ? fail(`modules ${all.map(([n]) => n).join(", ")} all provide a reviewer: name one as the instance's reviewer.primary`) : all[0]?.[0]);
+  if (!name) return undefined;
+  const def = defs[name];
+  const p = def?.providers?.reviewer;
+  if (!p || typeof p !== "object" || !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(p.url ?? "")) fail(`module ${name}: providers.reviewer.url must be http://<service>:<port>/<path>`);
+  if (!ownSecrets(def).includes(p.auth)) fail(`module ${name}: providers.reviewer.auth must name one of its own secrets`);
+  if (![def.privileged ?? []].flat().includes("reviewer")) fail(`module ${name}: a reviewer (providers.reviewer) needs privileged: [reviewer]`);
+  return { module: name, url: p.url, auth_secret: p.auth };
 }
 
 const CARD_FIELDS = ["sentence", "changes", "reads", "cost", "details"];

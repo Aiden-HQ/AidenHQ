@@ -1,0 +1,21 @@
+// The AI reviewer module's service (reviewer@1, aidenhq-sdk/reviewer.ts): the kernel sends each review here with this
+// module's key; the verdict goes back to the kernel with the review's own token. Model calls go through the gateway with
+// the reviewer token the kernel minted for that review; the model gets no tools.
+import http from "node:http";
+import { readFileSync } from "node:fs";
+import { serveReviewer } from "./aidenhq-sdk/reviewer.ts";
+import { openRouterAsk, review } from "./review.mjs";
+
+const gateway = process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201";
+const log = (msg, f = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(f));
+
+/** One request through the reviewer, with the review's model token: the reviewer's own defaults for anything not sent. */
+export const reviewWith = (url) => (request, { modelToken, onPanel }) => review({ ...request, ask: openRouterAsk(modelToken, { url }), onPanel });
+
+if (import.meta.main) {
+  const handle = serveReviewer(reviewWith(`${gateway}/api/v1/chat/completions`), { key: readFileSync(process.env.REVIEWER_KEY_FILE, "utf8").trim(), log });
+  http.createServer(async (req, res) => {
+    if (req.url === "/healthz") return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
+    if (!(await handle(req, res))) res.writeHead(404, { "content-type": "application/json" }).end('{"error":"no such route"}');
+  }).listen(Number(process.env.PORT ?? 8095), () => log("listening", { port: Number(process.env.PORT ?? 8095) }));
+}

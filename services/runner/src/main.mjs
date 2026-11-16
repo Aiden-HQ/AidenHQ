@@ -38,7 +38,10 @@ import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, state
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, afterReview, autonomyCap, classify, dependabotCommits, highest, meritOwner, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, reviewFirstOf, routineCap, routineCapped, sensitiveTraits } from "./tiers.mjs";
-import { LUNA, UNSURE, fileContext, kernelCardDiff, openRouterAsk, openRouterKey, readCardSourceExceptions, review, unreadSourceExceptions } from "./review.mjs";
+import { LUNA, openRouterAsk, openRouterKey } from "./models.mjs";
+import { kernelCardDiff, readCardSourceExceptions, requestReview, unreadSourceExceptions } from "./review-request.mjs";
+import { UNSURE } from "../../../kernel/sdk/src/reviewer.ts";
+import { fileContext } from "../../shared/review-files.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
@@ -254,11 +257,6 @@ if (boardApi) pc.posted = (issueId, commentId) => void boardApi.post("/internal/
 function reportUsage(record) {
   if (!boardApi || !record) return;
   boardApi.post("/internal/usage", record, runnerKey()).catch((err) => log("usage report failed", { err: String(err.message ?? err).slice(0, 200) }));
-}
-
-/** The reviewer's model calls, through the model gateway with the runner's reviewer token (the gateway bills them, uncapped). */
-function reviewerAsk(component = "AI reviewer") {
-  return openRouterAsk(modelToken(cfg, { kind: "reviewer", component, ttlMs: 3600_000 }), { url: `${gatewayApi(cfg)}/chat/completions` });
 }
 
 // ------------------------------------------------------------------ activity for the board's Agents view
@@ -2105,7 +2103,7 @@ async function recordAuto(issue, action, args, diff, t, outcome) {
 /**
  * The current tier of a recorded request (just before running a reviewer-approved one, and before reviewing): from the
  * same verified state as when it was filed. { tier, reason, rule, diff?, files? }. The agent's PR text is not part of it:
- * the reviewer is reasoning-blind (review.mjs).
+ * the reviewer is reasoning-blind (modules/ai-reviewer).
  */
 async function currentTier(issue, a, { withDiff = false, bases } = {}) {
   if (a.action === "push" || a.action === "pr") {
@@ -2181,7 +2179,7 @@ async function readFiles(list) {
 const kernelRecord = (a) => /^k-[0-9a-f]{16}$/.test(a.id);
 const reviewing = new Set();
 /**
- * Every poll: each pending Tier 1 card gets one reviewer call (src/review.mjs). The tier is recomputed first (a card filed
+ * Every poll: each pending Tier 1 card gets one review by the reviewer module (askReviewer, through the kernel). The tier is recomputed first (a card filed
  * through the board's internal token, or one whose state changed, goes to the owner). In tier0 the verdict is only a note:
  * the card is escalated with it, so the owner decides. With autonomy off every card is review-first (autonomyCap): an
  * approve goes on to the owner with the verdict, a reject is final. A reject's reason is posted on the task.
@@ -2295,8 +2293,8 @@ async function reviewOne(a, mode) {
  * (agentReview) make this same call, so the check sees exactly the prompt, policy and models the card will.
  * `a`: { action, target, sentence, panel? }; `input`: currentTier()'s result with the diff.
  */
-function askReviewer(issue, a, input, chain, { onPanel, component, siblings, sources } = {}) {
-  return review({
+async function askReviewer(issue, a, input, chain, { onPanel, component = "AI reviewer", siblings, sources } = {}) {
+  const request = {
     card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
     diff: input.diff,
     files: input.files,
@@ -2304,13 +2302,29 @@ function askReviewer(issue, a, input, chain, { onPanel, component, siblings, sou
     siblings,
     sources,
     requesterModel: state.task(issue.id)?.engine?.model ?? "",
-    ask: reviewerAsk(component),
     // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
     panel: Boolean(input.panel || a.panel),
     previous: [...(input.previous ?? []), ...checkFindings(issue.id, a.action)],
     relift: input.relift,
-    ...(onPanel ? { onPanel } : {}),
-  });
+    component,
+  };
+  let v;
+  try {
+    v = await requestReview({ kernelUrl: cfg.kernelUrl, key: runnerKey()["x-reviewer-key"] ?? "" }, request);
+  } catch (err) {
+    // The reviewer module unreachable, failing or slow: a failed review, retried later (never a decision).
+    return { decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA };
+  }
+  const { panel_marked: marked, ...verdict } = v;
+  // The first reviewer called it authority-expanding: recorded on the card before the verdict counts, so a retry can't drop it.
+  if (marked && onPanel) {
+    try {
+      await onPanel();
+    } catch (err) {
+      return { ...verdict, decision: "escalate", code: "reviewer_failed", reason: `couldn't record that it needs a second reviewer (${String(err.message ?? err).slice(0, 160)})` };
+    }
+  }
+  return verdict;
 }
 
 /**

@@ -6,6 +6,10 @@
   "description": "Official AidenHQ modules",
   "plugins": [
     {
+      "name": "ai-reviewer",
+      "source": "./ai-reviewer"
+    },
+    {
       "name": "apps-platform",
       "source": "./apps-platform"
     },

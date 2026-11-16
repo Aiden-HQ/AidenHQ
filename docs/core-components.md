@@ -42,8 +42,8 @@ agents choosing whom to hand work to. Agents never edit a handbook; changes flow
    land without a tap, a graduated agent's goes to the AI reviewer, and a role-holding agent's (Aiden, the Architect, the
    Platform Engineer, any agent with roles) is the owner's tap. A product PR is merged by the owner.
 
-The AI reviewer has its own loop: every false reject becomes a planted case in `services/runner/test/reviewer-cases/`,
-and `node services/runner/scripts/reviewer-eval.mjs` must stay at 100%.
+The AI reviewer has its own loop: every false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`,
+and `node modules/ai-reviewer/scripts/reviewer-eval.mjs` must stay at 100%.
 
 Gaps: corrections are not yet turned into replayable eval cases for agents (only the reviewer has an eval set), and
 instance additions that prove general have no automatic path back into the module handbooks (the Architect proposes a
