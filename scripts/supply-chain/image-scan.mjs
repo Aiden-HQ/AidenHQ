@@ -231,7 +231,9 @@ function covers(paths, glob) {
  *   "RUN <text>"  every way the path can reach the final image passes a stage built on the image with a RUN command (or
  *                 one of its && parts, with no ;, | or & in it) whose leading words are <text>'s, word for word, and
  *                 one of whose arguments is <text>'s last word exactly (`rm -rf /a /b` holds for "RUN rm -rf /b", not
- *                 for "RUN rm -rf /b-old"); a last word ending in @ takes an exact version (npm@ holds for npm@11.21.2).
+ *                 for "RUN rm -rf /b-old"); a last word ending in @ takes an exact version and only the exact form
+ *                 `<leading words> <pkg>@<version>`, no other flag or argument (npm@ holds for `npm install -g npm@11.21.2`,
+ *                 not for `npm install -g --registry=… npm@11.21.2` or `npm install -g npm@11.21.2 other`).
  */
 export function meets(e, use) {
   if (use.mounted) return false;
@@ -242,7 +244,8 @@ export function meets(e, use) {
   const replaced = (runs) => runs.some((s) => {
     if (!PLAIN_PART.test(s)) return false;
     const t = s.trim().split(/\s+/);
-    return !/[;|&]/.test(s) && lead.every((w, i) => t[i] === w) && t.slice(lead.length).some(isArg);
+    if (/[;|&]/.test(s) || !lead.every((w, i) => t[i] === w)) return false;
+    return arg.endsWith("@") ? t.length === lead.length + 1 && isArg(t[lead.length]) : t.slice(lead.length).some(isArg);
   });
   return (!use.final || replaced(use.finalRuns)) && use.copies.every((c) => !covers(c.paths, e.path) || replaced(c.runs));
 }

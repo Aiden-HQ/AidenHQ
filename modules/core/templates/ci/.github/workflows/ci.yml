@@ -13,8 +13,9 @@
 # files, AGENTS.md, and paths naming auth, security, tokens, sessions or permissions) plus the app's own `.github/code-review-critical`: one glob per
 # line (bash pattern: `*` also matches `/`, so `src/server/db/*` covers everything under it), `#` comments allowed. That
 # file is read from the default branch, never the PR, so a PR can't drop its own critical paths (and editing it is itself
-# critical: it is under .github/). package-lock.json (any depth) is left out of the changed-line count and never makes a
-# PR critical: npm-age.mjs in the supply-chain job validates every entry it changes. Other lockfiles (npm-shrinkwrap.json,
+# critical: it is under .github/). package-lock.json (any depth) is left out of the changed-line count (npm-age.mjs in
+# the supply-chain job validates every entry it changes), but a change that adds a package, changes one's version or source,
+# or adds an install script makes the PR critical, and the reviewer gets a summary of it. Other lockfiles (npm-shrinkwrap.json,
 # pnpm-lock.yaml, yarn.lock, Cargo.lock, ...) have no supply-chain check, so they count and stay critical. The small-change
 # skip counts added plus deleted lines (a deletion can remove a guard).
 name: ci
@@ -236,6 +237,23 @@ jobs:
           # tests job's Evidence step allows there (code-review.mjs OUT_TYPES), so code under .aidenhq/out/ is reviewed.
           nolock=(':(exclude,glob)**/package-lock.json')
           for t in png jpg jpeg webp gif json txt; do nolock+=(":(exclude,glob).aidenhq/out/**/*.$t"); done
+          # The reviewer's scripts and rules: the base commit's. A base without them (an old or stacked base) gets the default
+          # branch's, never a skip; only when the default branch has none either (the one PR that brings the reviewer in) is
+          # the PR not reviewed, like the PR that first adds CI.
+          # Chosen first: its code-review.mjs also summarises the PR's package-lock.json changes (below).
+          rv=.github
+          if [ ! -f .github/code-review.mjs ]; then
+            if ! git cat-file -e "origin/$DEFAULT_BRANCH:.github/code-review.mjs" 2>/dev/null; then
+              echo "::notice::The default branch has no .github/code-review.mjs yet: this PR brings the reviewer in, so it is not reviewed."
+              echo "CODE_REVIEW_SKIPPED=1" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            rv="$RUNNER_TEMP/reviewer"; mkdir -p "$rv"
+            for f in code-review.mjs review-tools.mjs code-review-rules.md; do
+              git show "origin/$DEFAULT_BRANCH:.github/$f" > "$rv/$f" 2>/dev/null || rm -f "$rv/$f"
+            done
+            echo "::notice::The base commit has no reviewer: the default branch's reviews it."
+          fi
           unreadable=""
           stat=$(git diff --numstat "$from...$HEAD_SHA" -- . "${nolock[@]}") || { stat=""; unreadable=1; }
           # Added plus deleted lines (the small-change skip below). A binary file has no lines a reviewer reads: 20 (so never
@@ -267,6 +285,14 @@ jobs:
             critical="(a diff that can't be listed)"
           fi
           [ -z "$critical" ] && [ -n "$binary" ] && critical="$binary (binary)"
+          # package-lock.json is out of the line count, but a change that adds a package, changes one's version or source, or
+          # adds an install script is critical (never a tiny skip); the reviewer gets the same summary (code-review.mjs).
+          if [ -z "$critical" ] && git diff --quiet "$from...$HEAD_SHA" -- ':(glob)**/package-lock.json'; then :
+          elif [ -z "$critical" ]; then
+            node "$rv/code-review.mjs" --lockfiles "$from" "$HEAD_SHA" > "$RUNNER_TEMP/lockfiles.txt"; lc=$?
+            [ -s "$RUNNER_TEMP/lockfiles.txt" ] && { echo "package-lock.json changes:"; cat "$RUNNER_TEMP/lockfiles.txt"; }
+            case "$lc" in 0) ;; 3) critical="package-lock.json (packages added or changed)" ;; *) critical="(a package-lock.json that can't be read)" ;; esac
+          fi
           [ -n "$unreadable" ] && critical="(a diff that can't be read)"
           depth=light
           [ -n "$critical" ] && depth=normal
@@ -280,22 +306,6 @@ jobs:
             exit 0
           fi
           echo "Changed lines: $lines, review depth: $depth${critical:+ (touches $critical)}"
-          # The reviewer's scripts and rules: the base commit's. A base without them (an old or stacked base) gets the default
-          # branch's, never a skip; only when the default branch has none either (the one PR that brings the reviewer in) is
-          # the PR not reviewed, like the PR that first adds CI.
-          rv=.github
-          if [ ! -f .github/code-review.mjs ]; then
-            if ! git cat-file -e "origin/$DEFAULT_BRANCH:.github/code-review.mjs" 2>/dev/null; then
-              echo "::notice::The default branch has no .github/code-review.mjs yet: this PR brings the reviewer in, so it is not reviewed."
-              echo "CODE_REVIEW_SKIPPED=1" >> "$GITHUB_ENV"
-              exit 0
-            fi
-            rv="$RUNNER_TEMP/reviewer"; mkdir -p "$rv"
-            for f in code-review.mjs review-tools.mjs code-review-rules.md; do
-              git show "origin/$DEFAULT_BRANCH:.github/$f" > "$rv/$f" 2>/dev/null || rm -f "$rv/$f"
-            done
-            echo "::notice::The base commit has no reviewer: the default branch's reviews it."
-          fi
           gave_up() { # $1: cause. No review, permanent: the gate fails the check.
             echo "::error::$1"
             printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=%s\n' "$1" >> "$GITHUB_ENV"
@@ -336,7 +346,8 @@ jobs:
               REVIEW_MINUTES="$1" node "$rv/code-review.mjs" "$from" "$HEAD_SHA" > "$RUNNER_TEMP/review.json"
             code=$?
           }
-          # No verdict is never a pass: the gate fails it. One retry after a provider error or timeout, when time is left.
+          # No verdict is never a pass: the gate fails it. One retry after a provider error or timeout (exit 1), when time is
+          # left; never after an answer that isn't a review (exit 3: the PR's content can cause it).
           review 40
           attempts=1
           # Past the review target (2,000 counted lines) one attempt only: no verdict there is the gate's "stopped short"
@@ -354,6 +365,7 @@ jobs:
           case "$code" in
             0) echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV" ;;
             2) printf 'CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=the model gateway refused the review\n' >> "$GITHUB_ENV" ;;
+            3) printf "CODEGENIE_FAILURE=unparsable\nCODEGENIE_CAUSE=the reviewer's answer isn't a review\n" >> "$GITHUB_ENV" ;;
             # The cause goes into a PR comment: a fixed class only; the detail is in this log (code-review.mjs's stderr).
             *) printf 'CODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=no review output\n' >> "$GITHUB_ENV" ;;
           esac
