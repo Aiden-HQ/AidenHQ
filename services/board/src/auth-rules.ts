@@ -166,6 +166,8 @@ export function tailnetPeer(req: Pick<IncomingMessage, "headers" | "socket">, li
   if (peer !== "127.0.0.1" && peer !== "::1") return "";
   return String(req.headers["tailscale-user-login"] ?? "").trim() ? "tailnet" : "";
 }
+/** Wrong codes per account in 15 minutes before each next one waits (TOTP back-off). */
+const TOTP_FREE = 5;
 /** Failures a minute from the tailnet peer (rate limit only: it is never locked or banned). */
 const TAILNET_PER_MINUTE = 20;
 /** At most this many failed-sign-in alerts an hour; new-session notices are never capped (only someone who got in triggers one). */
@@ -215,6 +217,11 @@ export function authCore(o: AuthCoreOptions) {
    */
   const tailnetBusy = new Map<string, number>();
   let tailnetFails: number[] = [];
+  /**
+   * Wrong codes per account, whatever the peer: past 5 in 15 minutes the next code check waits (1 s, doubling, at most a
+   * minute). About one guess a minute, even with the password on the owner's tailnet; never more than a minute's wait.
+   */
+  const totpBackoff = new Map<string, { fails: number[]; next: number }>();
   /** Unnamed failures across every email, the last minute. */
   let unnamedFails: number[] = [];
   const forget = (email: string) => {
@@ -234,31 +241,39 @@ export function authCore(o: AuthCoreOptions) {
   };
   const hold = (n: number) => (n > UNNAMED.free ? Math.min(UNNAMED.maxMs, 1000 * 4 ** (n - UNNAMED.free - 1)) : 0);
   /** Takes a check slot (refused with 429 when none is free) and returns what gives it back. */
-  const refuseIfLocked = async (email: string, ctx: { headers?: Headers }): Promise<(() => void) | undefined> => {
+  const held = (until: number, now: number) =>
+    new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": String(Math.ceil((until - now) / 1000)) });
+  /**
+   * Every check the step must pass before any hashing (the lock, the account's code back-off, the peer's limits), then a
+   * check slot taken for the tailnet or an unidentified peer; returns what gives the slot back. 429s carry the wrong-password
+   * words: a stranger learns nothing about the account from waiting.
+   */
+  const refuseIfLocked = async (email: string, ctx: { headers?: Headers }, code: boolean): Promise<(() => void) | undefined> => {
     const now = clock();
     const listener = listenerOf(ctx);
+    const pair = isNamed(ctx) && (locks.get(lockKey(email, listener, ipOf(ctx))) ?? 0) > now;
+    const account = listener === "signin" && (locks.get(lockKey(email, "signin", "*")) ?? 0) > now;
+    if (pair || account) throw new APIError("FORBIDDEN", { message: "too many failed sign-ins: try again in 15 minutes, or ask the owner for a new link" });
+    const t = code ? totpBackoff.get(email) : undefined;
+    if (t && t.next > now) throw held(t.next, now);
     if (ipOf(ctx) === "tailnet") {
-      tailnetFails = tailnetFails.filter((t) => now - t < 60_000);
-      const busy = [...tailnetBusy.values()].filter((t) => t > now).length;
+      tailnetFails = tailnetFails.filter((x) => now - x < 60_000);
+      const busy = [...tailnetBusy.values()].filter((x) => x > now).length;
       const until = Math.max((tailnetBusy.get(email) ?? 0) > now || busy >= UNNAMED.inFlight ? now + 2000 : 0, tailnetFails.length >= TAILNET_PER_MINUTE ? tailnetFails[0]! + 60_000 : 0);
-      if (until > now) throw new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": String(Math.ceil((until - now) / 1000)) });
+      if (until > now) throw held(until, now);
       tailnetBusy.set(email, now + UNNAMED.busyMs);
       return () => void tailnetBusy.delete(email);
     }
     if (!isNamed(ctx)) {
       const u = unnamedOf(email, ctx);
-      unnamedFails = unnamedFails.filter((t) => now - t < 60_000);
+      unnamedFails = unnamedFails.filter((x) => now - x < 60_000);
       const busy = [...unnamed.values()].filter((x) => x.busy > now).length;
       const until = Math.max(u.fails.length >= UNNAMED.ceiling ? u.fails[0]! + UNNAMED.hourMs : 0, u.next, u.busy > now ? now + 2000 : 0,
         busy >= UNNAMED.inFlight ? now + 2000 : 0, unnamedFails.length >= UNNAMED.perMinute ? unnamedFails[0]! + 60_000 : 0);
-      // The same words as a wrong password: a stranger learns nothing about the account from waiting.
-      if (until > now) throw new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": String(Math.ceil((until - now) / 1000)) });
+      if (until > now) throw held(until, now);
       u.busy = now + UNNAMED.busyMs; // taken before the hash: concurrent attempts are refused, not all checked at once
       return () => void (u.busy = 0);
     }
-    const pair = isNamed(ctx) && (locks.get(lockKey(email, listener, ipOf(ctx))) ?? 0) > now;
-    const account = listener === "signin" && (locks.get(lockKey(email, "signin", "*")) ?? 0) > now;
-    if (pair || account) { throw new APIError("FORBIDDEN", { message: "too many failed sign-ins: try again in 15 minutes, or ask the owner for a new link" }); }
     return undefined;
   };
 
@@ -276,6 +291,7 @@ export function authCore(o: AuthCoreOptions) {
       if (m.size > 1000) for (const [k, ts] of m) if (ts.every((t) => old(t, win))) m.delete(k);
     for (const m of [locks, bans]) if (m.size > 1000) for (const [k, t] of m) if (t <= now) m.delete(k);
     if (accountFailures.size > 1000) for (const [k, ts] of accountFailures) if (ts.every((f) => old(f.at, ALERT.windowMs))) accountFailures.delete(k);
+    if (totpBackoff.size > 1000) for (const [k, t] of totpBackoff) if (t.next <= now && t.fails.every((x) => old(x, LOCKOUT.windowMs))) totpBackoff.delete(k);
     if (tailnetBusy.size > 1000) for (const [k, t] of tailnetBusy) if (t <= now) tailnetBusy.delete(k);
     if (unnamed.size > 1000) for (const [k, u] of unnamed) if (u.busy <= now && u.next <= now && u.fails.every((t) => old(t, UNNAMED.hourMs))) unnamed.delete(k);
   };
@@ -347,15 +363,15 @@ export function authCore(o: AuthCoreOptions) {
       ipAddress: { ipAddressHeaders: [PEER_HEADER] },
     },
     // A global ceiling per address (behind the front door everyone shares one); the per-account lockout is ours.
+    // Better Auth's limits run on the real clock, so a test that sets its own clock (o.now) turns them off to reach the ones here.
     rateLimit: {
-      enabled: true,
+      enabled: !o.now,
       window: 60,
       max: 200,
       storage: "memory",
       customRules: {
-        // The tailnet peer has its own per-minute limit (TAILNET_PER_MINUTE), on this module's clock.
-        "/sign-in/email": (req) => (req.headers.get(PEER_HEADER) === "tailnet" ? false : { window: 60, max: 20 }),
-        "/two-factor/verify-totp": (req) => (req.headers.get(PEER_HEADER) === "tailnet" ? false : { window: 60, max: 20 }),
+        "/sign-in/email": { window: 60, max: 20 },
+        "/two-factor/verify-totp": { window: 60, max: 20 },
         "/two-factor/enable": { window: 60, max: 10 },
         "/reset-password": { window: 60, max: 20 },
       },
@@ -375,7 +391,7 @@ export function authCore(o: AuthCoreOptions) {
         try {
           if (ctx.path === "/sign-in/email") {
             const email = String((ctx.body as { email?: unknown })?.email ?? "").toLowerCase();
-            held = await refuseIfLocked(email, ctx);
+            held = await refuseIfLocked(email, ctx, false);
             const found = (await ctx.context.internalAdapter.findUserByEmail(email))?.user as { role?: string; twoFactorEnabled?: boolean } | undefined;
             if (listener === "admin" && found && found.role !== "admin") throw new APIError("FORBIDDEN", { message: "this account has no admin access" });
             if (listener === "signin" && found?.role === "admin" && !found.twoFactorEnabled) throw new APIError("FORBIDDEN", { message: "set up your authenticator on the admin sign-in page first" });
@@ -385,7 +401,7 @@ export function authCore(o: AuthCoreOptions) {
             if (body?.trustDevice) throw new APIError("BAD_REQUEST", { message: "trusted devices are off: every sign-in asks for a code" });
             const userId = await pendingUser(ctx);
             const pendingEmail = userId ? (await ctx.context.internalAdapter.findUserById(userId))?.email : undefined;
-            if (pendingEmail) held = await refuseIfLocked(pendingEmail.toLowerCase(), ctx);
+            if (pendingEmail) held = await refuseIfLocked(pendingEmail.toLowerCase(), ctx, true);
             if (userId) {
               // Better Auth accepts a code for its whole ±1 step window, more than once: a code is spent once, on any listener.
               const now = Date.now();
@@ -437,6 +453,15 @@ export function authCore(o: AuthCoreOptions) {
           u.busy = 0;
           if (!failed) u.next = 0; // the right password: the code step follows at once
         } else if (ipOf(ctx) === "tailnet") tailnetBusy.delete(email);
+        if (ctx.path === "/two-factor/verify-totp") {
+          if (!failed) totpBackoff.delete(email);
+          else {
+            const t = totpBackoff.get(email) ?? { fails: [], next: 0 };
+            t.fails = [...t.fails.filter((x) => now - x < LOCKOUT.windowMs), now].slice(-50);
+            if (t.fails.length >= TOTP_FREE) t.next = now + Math.min(60_000, 1000 * 2 ** (t.fails.length - TOTP_FREE));
+            totpBackoff.set(email, t);
+          }
+        }
         if (!failed) {
           if (returned instanceof APIError) return;
           log.info({ email, step: ctx.path, listener: listenerOf(ctx) }, "sign-in step passed");

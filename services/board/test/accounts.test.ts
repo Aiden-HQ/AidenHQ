@@ -298,6 +298,9 @@ describe("board accounts", () => {
     // Five different wrong codes (a repeated one would stop at the replay guard, before Better Auth counts it).
     const wrong = (i: number) => String((Number(totp(annUri)) + 100_000 * (i + 1)) % 1_000_000).padStart(6, "0");
     for (let i = 0; i < 5; i++) expect((await s.call("POST", "/.auth/api/two-factor/verify-totp", { code: wrong(i) }, from(`10.0.1.${i}`))).status).toBe(401);
+    // Five wrong codes for the account: the next one waits (429, from any address); after the wait, the challenge is spent.
+    expect((await s.call("POST", "/.auth/api/two-factor/verify-totp", { code: totp(annUri, 1) }, from("10.0.2.1"))).status).toBe(429);
+    await new Promise((r) => setTimeout(r, 1100));
     expect((await s.call("POST", "/.auth/api/two-factor/verify-totp", { code: totp(annUri, 1) }, from("10.0.2.1"))).status).toBe(400);
 
     // 20 wrong passwords spread over 20 addresses pause the whole account; the right password from a 21st is refused.

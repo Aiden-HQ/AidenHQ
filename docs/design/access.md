@@ -71,14 +71,17 @@ gate-facing sign-in listener (3129), app access and account administration open 
   varied or forged login makes no new bucket. That header is read only on the admin listener `tailscale serve` targets
   (3120, behind `--https=8444`), only from the host's loopback and never beside the front door's header (Caddy's path,
   which strips it); the gate's listener (3129) never reads it. The tailnet peer is rate-limited only, never locked or banned:
-  one check in flight per email, 4 in all, and 20 failures a minute, past which it waits out the minute. **Accepted risk:**
+  one check in flight per email, 4 in all, 20 failures a minute (past which it waits out the minute) and Better Auth's
+  20-a-minute limit on the sign-in steps. **Accepted risk:**
   the tailnet is the owner's own (the owner's devices and invited members), so one member slowing another is acceptable.
   For an address the front door names, 5 failed sign-ins in 15 minutes pause that (email, listener, address) for 15
   minutes, and Better Auth's per-address rate limits apply; open sessions are unaffected. An unidentified
   peer gets hard limits instead: per email, one check in flight, two free failures and then a stepped hold (1 s, x4, at
   most 5 minutes; 429 at once, Retry-After, the wrong-password words, no hashing), and after 10 failures in an hour no
   unidentified sign-in for that email until the hour is up (the owner hears once); across every email, at most 4 checks in
-  flight and 30 failures a minute. Unidentified failures never hold a named peer. **Why the tailnet header is safe to read:** only host processes reach that loopback listener. Engineer jobs are
+  flight and 30 failures a minute. Unidentified failures never hold a named peer. **Codes, per account, whatever the
+  peer:** past 5 wrong codes in 15 minutes the next code check waits (1 s, doubling, at most a minute; 429 at once), about
+  one guess a minute even for someone with the password on the owner's tailnet, and never more than a minute's wait. **Why the tailnet header is safe to read:** only host processes reach that loopback listener. Engineer jobs are
   network-jailed (verify-security's job-network probe finds every host address and port refused), and host processes are
   already trusted; a forged header only changes which limits apply, never who is signed in. A 20-failure account-wide
   ceiling applies only on the gate-facing listener.

@@ -219,15 +219,15 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
   const tailnet = (login) => browser(url, HOST, false, { "tailscale-user-login": login });
   await signIn(tailnet("owner@example.com"), 0);
 
-  // A burst across many emails at once: at most a handful of password checks run (the unidentified in-flight cap), and the
-  // owner over the tailnet signs in meanwhile.
+  // A burst across 100 emails at once: at most 30 checks a minute run (the unidentified global cap; 4 at a time), the rest
+  // wait (429), and the owner over the tailnet signs in meanwhile.
   const [burst] = await Promise.all([
-    Promise.all(Array.from({ length: 50 }, (_, i) => b("POST", "/auth/sign-in", { email: `guess-${i}@example.com`, password: "wrong-password" }))),
+    Promise.all(Array.from({ length: 100 }, (_, i) => b("POST", "/auth/sign-in", { email: `guess-${i}@example.com`, password: "wrong-password" }))),
     signIn(tailnet("owner@example.com"), 1),
   ]);
   const checked = burst.filter((r) => r.status === 401).length;
-  assert.ok(checked <= 4, `${checked} password checks`);
-  assert.equal(burst.filter((r) => r.status === 429).length, 50 - checked);
+  assert.ok(checked <= 34, `${checked} password checks`); // 30 failures a minute, plus at most 4 already in flight
+  assert.equal(burst.filter((r) => r.status === 429).length, 100 - checked);
 
   // An address the front door names (with its secret) is locked after five failures; the owner, from another, isn't.
   const named = (ip) => browser(url, HOST, false, { "x-aidenhq-client-ip": ip, "x-aidenhq-edge": "edge-secret" });
@@ -269,4 +269,35 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
   assert.deepEqual(statuses, [...Array(20).fill(401), ...Array(5).fill(429)]);
   tclock += 61_000;
   await signIn(as("owner@example.com"), 0);
+});
+
+test("wrong codes back off per account, whatever the peer: 100 from the tailnet reach the one-minute wait, and the owner's code works a minute after", async (t) => {
+  // Every sign-in step keeps a rate limit (never `false`), the tailnet's included.
+  const { authCore, openAuthDb } = await import("../src/auth-rules.ts");
+  const rules = authCore({ db: openAuthDb(":memory:"), secret: "s".repeat(43), hosts: [HOST], linkTtlMs: 1000, log: silent }).options.rateLimit;
+  assert.equal(rules.enabled, true);
+  for (const p of ["/sign-in/email", "/two-factor/verify-totp"]) assert.deepEqual(rules.customRules[p], { window: 60, max: 20 });
+
+  const dir = boardData();
+  moveAccounts(dir);
+  let clock = Date.now();
+  const { url } = await adminOn(t, dir, () => clock);
+  const b = browser(url, HOST, false, { "tailscale-user-login": "owner@example.com" });
+  const challenge = async () => assert.equal((await b("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw })).status, 303);
+  const wrong = (i) => String((Number(totp(OWNER.b32)) + 1000 + i * 7) % 1_000_000).padStart(6, "0");
+  let last;
+  for (let i = 0; i < 100; i++) {
+    if (i % 4 === 0) await challenge(); // Better Auth retires a challenge after a few wrong codes
+    clock += 61_000; // past any wait, and the tailnet's per-minute window
+    last = await b("POST", "/auth/totp", { code: wrong(i) });
+    assert.equal(last.status, 401, `wrong code ${i + 1}`);
+  }
+  // Right after a failure, the next code waits the full minute (429 at once, nothing checked).
+  const waiting = await b("POST", "/auth/totp", { code: wrong(100) });
+  assert.equal(waiting.status, 429);
+  assert.equal(waiting.headers["retry-after"], "60");
+  // The attack stops: a minute later the owner's code gets in.
+  clock += 60_000;
+  await challenge();
+  assert.equal((await b("POST", "/auth/totp", { code: totp(OWNER.b32) })).status, 303);
 });
