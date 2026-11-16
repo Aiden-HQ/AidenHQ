@@ -43,6 +43,9 @@ box): the task's workspace is `/workspace`, and nothing outside it survives the 
   from the starter's shells; every clickable element visibly acts.
 - Publish the same way as every Engineer: commit on a branch, then `aidenhq pr` (or `aidenhq push`); the runner tiers each
   write. Ship what was asked, live: no feature flags or off-by-default switches unless asked.
+- Keep one PR under about 1,500 changed lines: `code-review` refuses a diff much over ~2,000 lines. Split a larger task at
+  file seams into ordered PRs before you publish, and when a check refuses a PR, read its complaint and fix that cause
+  before re-filing, rather than opening the same diff again.
 - Pin every dependency you add, to a version at least 7 days old (the supply-chain skill picks it).
 - A data app's migrations add: new tables, columns that are nullable or have a default, and indexes. A column or table
   being replaced stays, and a later release removes it once the running code no longer reads it. The previous commit
