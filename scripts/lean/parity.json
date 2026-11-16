@@ -30,8 +30,7 @@
     "n": 4,
     "workflow": "Card approve/reject on the kernel's approval page",
     "today": [
-      "kernel/test/accounts.test.mjs",
-      "services/board/test/card-contract.test.ts"
+      "kernel/test/accounts.test.mjs"
     ],
     "next": "kernel page tests (unit 3a)"
   },

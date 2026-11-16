@@ -276,7 +276,7 @@
     },
     "route GET /v1/writes": {
       "state": "experimental",
-      "fp": "auth=board"
+      "fp": "auth=board|runner"
     },
     "route GET /v1/writes/:id": {
       "state": "experimental",
@@ -346,17 +346,17 @@
       "state": "experimental",
       "fp": "auth=bearer"
     },
+    "route POST /v1/writes/:id/claim": {
+      "state": "experimental",
+      "fp": "auth=runner"
+    },
     "route POST /v1/writes/:id/outcome": {
       "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/writes/:id/panel": {
-      "state": "experimental",
-      "fp": "auth=board"
+      "fp": "auth=module|runner"
     },
     "route POST /v1/writes/:id/review": {
       "state": "experimental",
-      "fp": "auth=board"
+      "fp": "auth=runner"
     },
     "schema advisories.json": {
       "state": "experimental",

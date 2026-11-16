@@ -274,7 +274,6 @@ export interface Approval {
   outcome: "applied" | "failed" | null;
   outcomeText: string | null;
   createdAt: string;
-  expiresAt: string;
   replaced: boolean;
 }
 

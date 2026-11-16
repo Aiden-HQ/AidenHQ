@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 const usage = "usage: decide <card id> approve|reject [--stale]";
 export function parseArgs(argv) {
   const [id, decision, ...rest] = argv;
-  if (!id || !/^(A[0-9a-f]{8}|k-[0-9a-f]{16})$/.test(id) || !["approve", "reject"].includes(decision ?? "")) throw new Error(usage);
+  if (!id || !/^k-[0-9a-f]{16}$/.test(id) || !["approve", "reject"].includes(decision ?? "")) throw new Error(usage);
   const stale = rest.includes("--stale");
   if (rest.some((r) => r !== "--stale")) throw new Error(usage);
   if (stale && decision !== "reject") throw new Error("--stale is only for a reject");

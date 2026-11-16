@@ -1,6 +1,6 @@
 import { RUNNER_MARKER, hasMarker } from "./agents.mjs";
 import { fence } from "./thread.ts";
-import { CODE_REJECTS } from "./tiers.mjs";
+import { CODE_REJECTS } from "../../../kernel/src/tier.ts";
 
 /**
  * The owner's reply on a task after the AI reviewer rejected something is new context: that rejection stops blocking a new

@@ -6,17 +6,20 @@
 //   GET  /v1/agents            (module token) every agent's key, roles and the fields setup records for it, never its tools
 //   POST /c/<connection>/mcp   (run or module token) the tool proxy (proxy.ts)
 //   ANY  /v1/cp/agent/<path>   (module token + caller assertion) cp.ts
-//   POST /v1/writes            (run, module, or job token naming the kind) request a write (writes.ts); GET /v1/writes/:id its record (own only)
-//   POST /v1/writes/:id/outcome (the kind's executor module) the outcome of an execute
-//   GET  /v1/writes, POST /v1/writes/:id/{review,panel}  (the board's key, 2d until 3a) the list of records and the
-//                              reviewer's verdicts the board forwards (the owner decides by channel token, channels.ts)
+//   POST /v1/writes            (run, module, or job token naming the kind) request a write (writes.ts); with the runner's key, one
+//                              of its kinds (or kernel.apply) with its plan; GET /v1/writes/:id its record (own only; the board
+//                              and the runner: any)
+//   POST /v1/writes/:id/outcome (the kind's executor module, or the runner for its kinds) the outcome of an execute
+//   GET  /v1/writes            (the board's or the runner's key) records by state or task
+//   POST /v1/writes/:id/claim  (the runner's key) an approved record of its kinds, claimed once
+//   POST /v1/writes/:id/review (the runner's key) a record's review: its tier input and what the reviewer reads (writes.ts)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop}, GET /v1/channel/notices  (a speaks-as-owner
 //                              channel's token) cards with decision tokens, a token spent, the owner's words, notices (channels.ts)
 //   POST /v1/channel/outbox, GET /v1/channel/outbox  (a channel) a message for the owner handed to another channel; drained by it
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
 //   POST /v1/brake/notify      (a channel) may an agent message the owner about a task again (brake.ts)
 //   POST /v1/wake              (a module with role kernel.wake) a labelled wake notice on a task, which wakes its agent
-//   POST /v1/reviews           (the runner's reviewer key) one review by the bound reviewer module → its verdict (reviews.ts)
+//   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 //   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
 //                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts)
@@ -50,11 +53,11 @@ export const ROUTES = [
   { method: "DELETE", path: "/c/:connection/mcp", auth: "bearer" },
   { method: "ANY", path: "/v1/cp/agent/*", auth: "module+assertion" },
   { method: "POST", path: "/v1/writes", auth: "bearer" },
-  { method: "GET", path: "/v1/writes", auth: "board" },
+  { method: "GET", path: "/v1/writes", auth: "board|runner" },
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
-  { method: "POST", path: "/v1/writes/:id/outcome", auth: "module" },
-  { method: "POST", path: "/v1/writes/:id/review", auth: "board" },
-  { method: "POST", path: "/v1/writes/:id/panel", auth: "board" },
+  { method: "POST", path: "/v1/writes/:id/outcome", auth: "module|runner" },
+  { method: "POST", path: "/v1/writes/:id/claim", auth: "runner" },
+  { method: "POST", path: "/v1/writes/:id/review", auth: "runner" },
   { method: "GET", path: "/v1/channel/cards", auth: "module" },
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
   { method: "POST", path: "/v1/channel/owner-message", auth: "module" },
@@ -79,8 +82,9 @@ export const ROUTES = [
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
-/** The record lists the board reads (`?state=`). */
-const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], recent: ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"] };
+/** The record lists the board and the runner read (`?state=`). */
+const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
+const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved"], recent: ALL, finished: ["done", "failed", "unknown"] };
 
 async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   const chunks: Buffer[] = [];
@@ -89,11 +93,12 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, advisories = () => [], accounts, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, advisories = () => [], accounts, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
-  /** 3c: the reviewer slot, and the key its requester (the runner) asks with. */
-  reviews?: Reviews; reviewerKey?: () => string;
+  /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
+   * and the one its checks before filing ask with (reviewer_key, which the board holds too), each its own secret. */
+  reviews?: Reviews; runnerKey?: () => string; reviewerKey?: () => string;
   /** 2f: channel tokens and owner messages, the notify brake, and the control plane as the owner (reads, wake notices). */
   channels?: Channels; brake?: Brake; owner?: Api; modules?: () => ModulesFile;
   /** 3e: jobs in the sandbox. */
@@ -113,9 +118,10 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   const cos = () => Object.entries(grantsFile().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0];
   const keyIs = (req: IncomingMessage, key: string) => { const a = Buffer.from(bearer(req)), b = Buffer.from(key); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
   const isBoard = (req: IncomingMessage) => keyIs(req, boardKey());
-  const board = (req: IncomingMessage) => { if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); };
+  const isRunner = (req: IncomingMessage) => keyIs(req, runnerKey());
+  const runner = (req: IncomingMessage) => { if (!isRunner(req)) throw fail(401, "unauthorized", "the runner's key is required"); };
+  const reviewer = (req: IncomingMessage) => { if (!keyIs(req, reviewerKey())) throw fail(401, "unauthorized", "the runner's reviewer key is required"); };
   const record = (id: string) => records?.get(id) ?? (() => { throw fail(404, "not_found", `no record ${id}`); })();
-  const decided = (r: unknown) => { if (typeof r === "string") throw fail(409, "conflict", r); return r; };
   const send = (res: ServerResponse, status: number, body: unknown): void => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   const bearer = (req: IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -140,7 +146,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         }
         case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);
-        case "GET /v1/advisories": board(req); return send(res, 200, { advisories: advisories() });
+        case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
       }
       if (hit && /^\/v1\/(channel|cp\/read|brake|wake)/.test(hit.path)) {
         const w = await moduleOf(req);
@@ -211,7 +217,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         if (!reviews) throw fail(503, "unavailable", "reviews are off");
         // A review request carries the whole diff: one past the reviewer's limit is still sent, so its verdict can say how large.
         if (hit.path === "/v1/reviews") {
-          if (!keyIs(req, reviewerKey())) throw fail(401, "unauthorized", "the runner's reviewer key is required");
+          reviewer(req);
           const b = await json(req, 64_000_000);
           if (!b.request || typeof b.request !== "object") throw fail(400, "bad_request", "send {request}");
           return send(res, 200, await reviews.request(b.request));
@@ -225,21 +231,31 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         const id = m[0] ?? "";
         switch (`${hit.method} ${hit.path}`) {
           case "POST /v1/writes": {
+            if (isRunner(req)) {
+              const b = await json(req, 8_000_000);
+              const r = writes.fileRunner({ kind: String(b.kind ?? ""), task: String(b.task ?? ""), ...(typeof b.identifier === "string" ? { identifier: b.identifier.slice(0, 40) } : {}), args: b.args, plan: b.plan ?? {} });
+              return send(res, 200, r);
+            }
             const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
             const b = await json(req);
             const r = await writes.request(w, { kind: String(b.kind ?? ""), args: b.args, ...(typeof b.task === "string" ? { task: b.task } : {}), ...(b.evidence !== undefined ? { evidence: b.evidence } : {}) });
             return send(res, 200, { id: r.id, tier: r.tier, state: r.state });
           }
           case "GET /v1/writes": {
-            board(req);
+            const asRunner = isRunner(req);
+            if (!asRunner && !isBoard(req)) throw fail(401, "unauthorized", "the board's or the runner's key is required");
             const p = new URLSearchParams(q ?? "");
             const list = LISTS[p.get("state") ?? ""];
             if (!list) throw fail(400, "bad_request", `state=${Object.keys(LISTS).join(", ")}`);
-            // The reviewed ones only: every Tier 0 write is a record too, and would crowd the cards out.
-            return send(res, 200, { records: records.list(list, 100, { reviewed: true, ...(p.get("task") ? { task: p.get("task")! } : {}) }) });
+            const task = p.get("task") || undefined;
+            // The reviewed ones only (every Tier 0 write is a record too, and would crowd the cards out); the runner's
+            // approved list is its own kinds, and its review list says which wait out a failed review's backoff.
+            const rows = records.list(list, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: true, ...(task ? { task } : {}) });
+            const shown = asRunner && list === LISTS.approved ? rows.filter((r) => writes.isRunnerKind(r.kind)) : rows;
+            return send(res, 200, { records: shown.map((r) => ({ ...r, state: records.shownState(r), ...(writes.retryAt(r.id) ? { retry_at: writes.retryAt(r.id) } : {}) })) });
           }
           case "GET /v1/writes/:id": {
-            if (isBoard(req)) return send(res, 200, record(id));
+            if (isBoard(req) || isRunner(req)) return send(res, 200, record(id));
             const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
             const r = record(id);
             const own = w.kind === "module" ? w.module === r.requester.module && r.requester.kind === "module" : Boolean(w.agent) && w.agent === r.requester.agent;
@@ -247,24 +263,23 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: r.outcome });
           }
           case "POST /v1/writes/:id/outcome": {
-            const w = await whoami(bearer(req)).catch(() => undefined);
             const r = record(id);
-            if (w?.kind !== "module" || r.kind === CONN_TOOL || w.module !== r.executor.module) throw fail(403, "forbidden", "only the kind's executor reports its outcome");
+            if (isRunner(req) ? !writes.isRunnerKind(r.kind) : await whoami(bearer(req)).then((w) => w.kind !== "module" || r.kind === CONN_TOOL || w.module !== r.executor.module, () => true)) throw fail(403, "forbidden", "only the kind's executor reports its outcome");
             const b = await json(req);
             if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 200_000))) throw fail(409, "conflict", `this record is ${record(id).state}`);
             return send(res, 200, { ok: true });
           }
-          case "POST /v1/writes/:id/review": {
-            board(req);
-            const b = await json(req);
-            if (!["approve", "reject", "escalate"].includes(b.decision)) throw fail(400, "bad_request", "decision is approve, reject or escalate");
-            return send(res, 200, decided(writes.review(id, { digest: String(b.digest ?? ""), decision: b.decision, reason: String(b.reason ?? ""), model: String(b.model ?? ""), ...(b.second ? { second: String(b.second) } : {}), ...(b.code ? { code: String(b.code) } : {}) })));
+          case "POST /v1/writes/:id/claim": {
+            runner(req);
+            const r = writes.claim(id);
+            if (!r) throw fail(409, "conflict", `this record is ${records.shownState(record(id))}`);
+            return send(res, 200, r);
           }
-          case "POST /v1/writes/:id/panel": {
-            board(req);
-            const b = await json(req);
-            if (!records.markPanel(id, String(b.digest ?? ""))) throw fail(409, "conflict", "no record in review with that digest");
-            return send(res, 200, record(id));
+          case "POST /v1/writes/:id/review": {
+            runner(req);
+            const b = await json(req, 64_000_000);
+            if (!b.input || typeof b.input !== "object" || typeof b.input.tier !== "number") throw fail(400, "bad_request", "send {input: {tier, …}, request}");
+            return send(res, 200, await writes.review(id, { input: b.input, request: b.request && typeof b.request === "object" ? b.request : {} }));
           }
         }
       }

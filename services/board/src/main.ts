@@ -11,6 +11,7 @@ import { pullUsage } from "./costs.js";
 import { McpAuth } from "./mcpauth.js";
 import { GoogleAuth } from "./google.js";
 import { Paperclip } from "./paperclip.js";
+import { kernelRecords } from "./records.js";
 import { weekdayOf } from "./recurrence.js";
 import { Store, localDate } from "./store.js";
 import { startWake } from "./wake.js";
@@ -23,6 +24,8 @@ const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
 const store = new Store(cfg.dbPath);
 const paperclip = new Paperclip(cfg.paperclipUrl, cfg.companyId, cfg.boardKey);
+// The kernel keeps every approval record; the board reads them with the gateway_board_key.
+const records = kernelRecords(cfg.gateway && { url: (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, ""), token: cfg.gateway.token }, log);
 
 /** Every minute: Tomorrow → Today at the start of a workday, then any scheduled moves that are due, on top. */
 function rollover() {
@@ -64,9 +67,9 @@ startDetector(paperclip, store, log);
 const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: (line) => queueOwnerLine(store, line) }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
 setInterval(appWatch, 2 * 60_000).unref();
 // Event wake-ups for heartbeat agents (wake.ts): on unless the instance setting wake_ups is off.
-startWake(paperclip, store, log);
+startWake(paperclip, store, records, log);
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
-startRollover(paperclip, store, log);
+startRollover(paperclip, store, records, log);
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent
 // computers' included (the launcher forwards their calls there).
 pullUsage(cfg.gateway, store, log, 60_000, "gateway_usage_pulled_at");
@@ -85,8 +88,8 @@ const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway
 // The runner's Engineer jobs, as it last reported them (shared by the listeners: it reports to the internal one).
 const activity: { runner?: RunnerReport } = {};
 // Open boards hear what agents change in their chats (watch.ts): one look at Paperclip every 2s while any board listens.
-startWatch({ pc: paperclip, events: store.events, log, runner: () => activity.runner, session: liveActivity(cfg.sessions) });
-const common = { adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway, kernel: { url: kernelUrl, token: cfg.gateway.token }, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
+startWatch({ pc: paperclip, events: store.events, records, log, runner: () => activity.runner, session: liveActivity(cfg.sessions) });
+const common = { adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway, records, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
 // The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));

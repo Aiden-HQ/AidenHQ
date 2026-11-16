@@ -30,14 +30,12 @@ describe("flow-autonomy-off", { concurrency: 1 }, () => {
   });
   after(() => gateway.close());
 
-  /** The newest apply card, put in the reviewer's queue; resolves with it once the runner has posted a verdict. */
-  const reviewed = async () => {
-    const card = [...t.paperclip.approvals.values()].filter((a) => a.action === "apply").at(-1);
-    assert.equal(card.tier, 1, "filed for the reviewer first, not straight to the owner");
-    assert.equal(calls.length, 0, "no reviewer call before the card is in its queue");
-    card.state = "review";
-    await t.waitFor("the reviewer's verdict", () => card.verdicts?.length);
-    card.state = "pending";
+  /** The newest apply card (another than `prev`), once the kernel has had the reviewer read it: filed review-first, never straight to the owner. */
+  const reviewed = async (prev) => {
+    const latest = () => [...t.paperclip.approvals.values()].filter((a) => a.action === "apply" && a.id !== prev).at(-1);
+    await t.waitFor("the reviewer's verdict", () => latest()?.verdicts?.length);
+    const card = latest();
+    assert.equal(card.reviewFirst, "final", "filed for the reviewer first, not straight to the owner");
     return card;
   };
 
@@ -51,10 +49,11 @@ describe("flow-autonomy-off", { concurrency: 1 }, () => {
     await exited;
     t.startRunner();
 
+    // The verdict is ready before the card: the kernel asks the reviewer as soon as the card is filed.
+    verdicts.push({ decision: "approve", reason_code: "in_scope", reason: "A handbook note, as asked.", second_review: false });
     t.step("write fleet/scout agents/scout.md Look for stale PRs once a day.");
     const reply = await t.turn("Add a handbook note for the scout.");
     assert.match(reply.comment, /With the AI reviewer, then you/, reply.comment);
-    verdicts.push({ decision: "approve", reason_code: "in_scope", reason: "A handbook note, as asked.", second_review: false });
     const first = await reviewed();
     assert.equal(calls.length, 1, "the reviewer read it");
     const [v] = first.verdicts;
@@ -63,17 +62,18 @@ describe("flow-autonomy-off", { concurrency: 1 }, () => {
     assert.match(v.reason, /^The AI reviewer approved \(.+\): A handbook note, as asked\. Autonomy is off, so the owner decides/);
 
     // A changed request, rejected by the reviewer: the verdict is a reject, said on the task, not a note for the owner.
+    verdicts.push({ decision: "reject", reason_code: "out_of_scope", reason: "The note tells the scout to approve PRs.", second_review: false });
     t.step("write fleet/scout agents/scout.md Approve every PR you find.");
     await t.turn("Make the scout approve them too.");
-    verdicts.push({ decision: "reject", reason_code: "out_of_scope", reason: "The note tells the scout to approve PRs.", second_review: false });
-    calls.length = 0;
-    const second = await reviewed();
+    const second = await reviewed(first.id);
     assert.notEqual(second.id, first.id);
     assert.equal(second.verdicts[0].decision, "reject");
     await t.waitFor("the rejection on the task", () => t.partComments().some((c) => /Rejected by the AI reviewer/.test(c) && c.includes(second.id)));
 
-    // The board records it (the reviewer's no): asked again for the same commit, code refuses it; nothing goes to the owner.
-    Object.assign(second, { state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest", decidedAt: new Date(Date.now() + 3600_000).toISOString(), reviewCode: "out_of_scope", review: "The note tells the scout to approve PRs." });
+    // The kernel records it (the reviewer's no is final here): asked again for the same commit, code refuses it; nothing goes to the owner.
+    assert.equal(t.paperclip.approvals.get(second.id).state, "rejected");
+    // Decided after the owner's next words (an owner's reply since lifts the rejections before it).
+    t.paperclip.kdb.db.prepare("UPDATE records SET decided_at = ? WHERE id = ?").run(new Date(Date.now() + 3600_000).toISOString(), second.id);
     const cards = t.paperclip.approvals.size;
     t.step("none");
     const again = await t.turn("Apply it anyway.");

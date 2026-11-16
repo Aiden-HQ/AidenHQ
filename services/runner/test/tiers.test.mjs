@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import YAML from "yaml";
-import { afterReview, classify, dependabotCommits, newGrants, priorDecisions, rejectedSince, routineCap } from "../src/tiers.mjs";
+import { classify, dependabotCommits, newGrants } from "../src/tiers.mjs";
+import { afterReview, priorDecisions, rejectedSince, routineCap } from "../../../kernel/src/tier.ts";
 import { moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { origins } from "../src/paperclip.ts";
 
@@ -172,7 +173,7 @@ test("product repo: branch push, PR and merge are Tier 1 for the Platform Engine
   assert.equal(tierOf(prod("push", { branch: "main" })), "reject", "the default branch");
   assert.equal(tierOf(prod("push", {}, { requester: { platform: false } })), "reject", "another agent's push stays the owner's");
   assert.equal(tierOf(prod("pr", { files: ["services/board/src/tasks.ts", "package-lock.json", "services/runner/src/prompt.mjs"] })), 1, "general code is not gate code");
-  for (const g of ["services/runner/src/tiers.mjs", "modules/ai-reviewer/service/security/policy.md", "scripts/no-shell.mjs", "services/computer/launcher.mjs", "services/computer/plugin/worker.js", "services/computer/images/engineer/Dockerfile", "services/runner/src/main.mjs", "services/runner/src/engines.mjs", "services/runner/src/state.mjs", "services/runner/src/config.mjs", "services/runner/src/github-app.mjs", "scripts/paperclip-setup.mjs", "scripts/modules.mjs", "kernel/src/gateway/lib.ts", "kernel/src/proxy.ts", "scripts/verify-security.sh", "scripts/supply-chain/npm-age.mjs", ".github/workflows/ci.yml", "services/board/src/approvals.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/bin/engine", "kernel/sdk/src/engine-io.ts"])
+  for (const g of ["services/runner/src/tiers.mjs", "modules/ai-reviewer/service/security/policy.md", "scripts/no-shell.mjs", "services/computer/launcher.mjs", "services/computer/plugin/worker.js", "services/computer/images/engineer/Dockerfile", "services/runner/src/main.mjs", "services/runner/src/engines.mjs", "services/runner/src/state.mjs", "services/runner/src/config.mjs", "services/runner/src/github-app.mjs", "scripts/paperclip-setup.mjs", "scripts/modules.mjs", "kernel/src/gateway/lib.ts", "kernel/src/proxy.ts", "scripts/verify-security.sh", "scripts/supply-chain/npm-age.mjs", ".github/workflows/ci.yml", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/bin/engine", "kernel/sdk/src/engine-io.ts"])
     assert.equal(tierOf(prod("pr", { files: ["package.json", g] })), "panel", g);
   assert.equal(tierOf(prod("pr", { files: ["modules/fleet-ops/agents/fleet-ops/AGENTS.md"] })), 1, "a role holder's handbook");
   assert.equal(tierOf(prod("pr", { files: ["modules/slack/agents/slack-scout/AGENTS.md"] })), 1, "a handbook of an agent without a role");

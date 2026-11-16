@@ -27,7 +27,7 @@ describe("flow-approvals", () => {
       const reply = await turn("Rebase it on main, then start merging them as I listed.");
       const [push, merge] = toolRuns().slice(-2);
       assert.equal(push.code, 0, push.out);
-      assert.match(push.out, /Dana's approval \(A\d+\)/);
+      assert.match(push.out, /Dana's approval \(k-[0-9a-f]{16}\)/);
       assert.match(merge.out, /Dana's approval[\s\S]*#1 merge one at a time/);
       rmSync(join(t.dir, "github-prs.json")); // the card is filed: GitHub fails again from here, as the rest of this file expects
       assert.equal(githubTip(), before, "nothing pushed before the tap");

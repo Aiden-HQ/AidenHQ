@@ -2,7 +2,8 @@
 // module with a fresh review token and a reviewer model token, and the module's verdict comes back on POST /v1/reviews/:id
 // with that token, which burns on use. Reviews live in memory only: a kernel restart drops them, the requester's call fails,
 // and its retry is a new review with a new token, so a token from before the restart opens nothing.
-// Until 3b the runner is every review's requester (git cards and kernel records alike); the records stay where they are.
+// A record's review is the kernel's (writes.ts review: the runner gathers what the reviewer reads); POST /v1/reviews is the
+// runner's check before it files (`aidenhq review`), the same dispatch with nothing recorded.
 import http from "node:http";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Resolver } from "./net.ts";
@@ -50,6 +51,8 @@ export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 
         await dispatch(s, { id, token, model_token: modelToken(component), request });
         const a = await answer;
         if (a.error !== undefined) throw fail(502, "review_failed", `${s.module}: ${a.error}`);
+        const v = a.verdict as { decision?: unknown; reason?: unknown; model?: unknown };
+        if (!["approve", "reject", "escalate"].includes(String(v?.decision)) || typeof v.reason !== "string" || typeof v.model !== "string") throw fail(502, "review_failed", `${s.module}'s verdict is malformed`);
         log("review", { id, module: s.module });
         return a.verdict;
       } finally {

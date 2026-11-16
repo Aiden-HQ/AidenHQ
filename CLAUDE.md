@@ -55,11 +55,11 @@ The app starter (`modules/core/templates/app/`) is Vite + shadcn: `npm ci && npm
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
 the reviewer eval's case loader).
 
-The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the runner asks it through the kernel). Its exit test,
+The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks it for each record's review). Its exit test,
 `node modules/ai-reviewer/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and must stay at 100%. It
 applies to changes to the module (its service, policy `service/security/`, cases `test/reviewer-cases/`, judge),
-`kernel/sdk/src/reviewer.ts`, the tier function (`services/runner/src/tiers.mjs`, `kernel/src/tier.ts`) or the
-authority-diff classifier (`kernel/src/loader/authority.ts`); the runner's merge queue runs it on the PR's exact head
+`kernel/sdk/src/reviewer.ts`, the tier function and write lifecycle (`services/runner/src/tiers.mjs`, `cards.ts`,
+`review-request.mjs`, `kernel/src/{tier,writes,records,reviews,kinds}.ts`) or the authority-diff classifier (`kernel/src/loader/authority.ts`); the runner's merge queue runs it on the PR's exact head
 and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 
 ## Conventions
@@ -70,7 +70,8 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 - **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model. Gate
   only real risk (writes, spend, auth and security boundaries, the sandbox, untrusted text); set a default at its
   source, never re-enforce it downstream.
-  Writes are approval records tiered in code (`services/runner/src/tiers.mjs`): Tier 0 runs, Tier 1 the AI reviewer
+  Writes are kernel records tiered in code (`kernel/src/tier.ts`, the runner's `tiers.mjs` proposing for its kinds, the
+  kernel enforcing floors, owner authority and vetoes itself): Tier 0 runs, Tier 1 the AI reviewer
   decides, Tier 2 the owner; setting `autonomy`. Every reviewer false reject becomes a planted case in
   `modules/ai-reviewer/test/reviewer-cases/`.
 - **Cross-agent behaviour goes in `scripts/paperclip-setup.mjs` sections** (approvals, replying, delegating, web),
@@ -93,8 +94,8 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
   `kernel/src/sandbox.ts`). Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
-- **Approval card args are a contract:** the runner builds them (`services/runner/src/cards.ts`) and the board validates
-  them strictly (`services/board/src/approvals.ts` ARGS). A new field goes in both; `card-contract.test.ts` must pass.
+- **Approval records live in the kernel** (`kernel/src/records.ts`, `kinds.ts`): the runner files its plan and card args, the
+  kernel validates them strictly and decides who decides. The board keeps no approval store and only reads them.
 - **Supply chain:** unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version
   published less than 7 days ago. Pin every dependency exactly (images by digest, actions by SHA, apt `pkg=version`,
   global installs at a version, no `curl | sh`); pick versions with `scripts/supply-chain/best-version.mjs`, and state the

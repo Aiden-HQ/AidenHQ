@@ -211,11 +211,13 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, boardUrl, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }: {
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string; tools?: (req: IncomingMessage, res: ServerResponse, connection: string, o: { jobs: boolean }) => Promise<void>;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
-  boardUrl?: string; launcherUrl?: string; githubJwksUrl?: string; log?: Log; now?: () => number;
+  launcherUrl?: string; githubJwksUrl?: string; log?: Log; now?: () => number;
+  /** Files a kernel.raise_cap record (writes.ts fileNative): the owner's, after the AI reviewer. */
+  fileRaiseCap?: (b: { task: string; scope: string; agentId: string; subject: string; cap: number; spent: number }) => Promise<void>;
 }) {
   const { db, moved } = openLedger(dbFile, legacyDbFile);
   if (moved) log("ledger rows moved into kernel.db", { rows: moved });
@@ -453,20 +455,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     send(res, 200, { token, expires_at: exp, review: c.review ?? null });
   }
 
-  /** One raise_cap per scope, subject and cap value, filed on the board with the gateway's key (needs the run's task). */
+  /** One raise_cap per scope, subject and cap value, filed as a kernel.raise_cap record (needs the run's task). */
   async function fileRaise(who: Caller, over: Over): Promise<boolean> {
     // A run cap is on the credential's hash: the next run has a new one, so a raised run cap would never be used.
-    if (over.scope === "run" || !who.agentId || !who.issueId || !boardUrl) return false;
+    if (over.scope === "run" || !who.agentId || !who.issueId || !fileRaiseCap) return false;
     const args = [over.scope, who.agentId, over.subject, over.cap];
     if (!q.file.run(...args, new Date(now()).toISOString()).changes) return true;
     try {
-      const res = await fetch(new URL("/internal/approvals/raise-cap", boardUrl), {
-        method: "POST",
-        headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" },
-        body: JSON.stringify({ issue: who.issueId, scope: over.scope, agentId: who.agentId, subject: over.subject, cap: over.cap, spent: Math.round(over.spent * 1e4) / 1e4 }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!res.ok) throw new Error(`the board answered ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+      await fileRaiseCap({ task: who.issueId, scope: over.scope, agentId: who.agentId, subject: over.subject, cap: over.cap, spent: Math.round(over.spent * 1e4) / 1e4 });
       log("raise_cap filed", { scope: over.scope, agent: who.agentId, subject: over.subject, cap: over.cap });
       return true;
     } catch (e) {
@@ -642,5 +638,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     }
   }
 
-  return { handle, db, metricsText, ciEnabled: () => Boolean(ciConf()?.enabled), close: () => { clearInterval(pruner); db.close(); } };
+  /** An approved raise_cap: the cap for that scope and subject becomes `cap`. */
+  const setCap = (scope: string, agentId: string, subject: string, cap: number) => {
+    q.setCap.run(scope, agentId, subject, cap, new Date(now()).toISOString());
+    log("cap set", { scope, agent: agentId, subject, cap });
+  };
+  return { handle, db, metricsText, setCap, ciEnabled: () => Boolean(ciConf()?.enabled), close: () => { clearInterval(pruner); db.close(); } };
 }

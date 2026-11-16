@@ -7,9 +7,9 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFi
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { openAccounts } from "../src/accounts.ts";
 import { createAdmin } from "../src/admin.ts";
+import { openRecords } from "../src/records.ts";
 import { authSecret, tailnetPeer } from "../src/auth-rules.ts";
 import { accountsFile, moveAccounts } from "../src/auth-move.ts";
 import { createChannels } from "../src/channels.ts";
@@ -63,23 +63,21 @@ function browser(url, host = HOST, https = false, extra = {}) {
   };
 }
 
-/** The kernel's admin listener over accounts in `dir`, with one card of the board's and one kernel record pending. */
+/** The kernel's admin listener over accounts in `dir`, with two records waiting for the owner: the runner's push and a module's. */
 async function adminOn(t, dir, now) {
   const notices = [];
   const accounts = await openAccounts({ dataDir: dir, hosts: [HOST, FRONT], origins: [`https://${FRONT}`], edgeSecret: () => "edge-secret", notify: (l) => notices.push(l), log: silent, ...(now ? { now } : {}) });
   const decided = [];
-  const card = (a) => ({ identifier: "WOR-7", action: "push", tier: 2, sentence: "Push the fix.", changes: "c", reads: "r", cost: "0", requestedBy: "ada", ...a });
-  const board = async (method, path, body) => {
-    if (path === "/internal/approvals?state=pending") return { status: 200, json: { approvals: [card({ id: "A0000aaaa", digest: "d-board" }), card({ id: "k-0000000000000001", digest: "d-kernel", action: "acme.deploy" })] } };
-    if (path === "/internal/approvals?state=finished") return { status: 200, json: { approvals: [] } };
-    if (method === "POST" && path === "/internal/owner/approvals/decide") { decided.push(body); return { status: 200, json: { identifier: "WOR-7", sentence: "Push the fix.", state: "approved" } }; }
-    return { status: 404, json: {} };
-  };
-  const writes = { decide: (id, b) => (decided.push({ id, ...b }), { task: "WOR-7", card: { sentence: "Deploy." }, state: "approved" }) };
-  const channels = createChannels({ db: new DatabaseSync(":memory:"), writes, board, owner: async () => ({ status: 200, json: {} }), modules: () => ({}) });
+  const records = openRecords(join(dir, "kernel.db"));
+  const card = { sentence: "Push the fix.", changes: "c", reads: "r", cost: "0", details: "" };
+  const file = (kind, module) => records.file({ kind, module, args: { kind }, targets: {}, executor: { module }, policy: "p", tier: 2, panel: false, card, requester: { agent: "", key: "ada", name: "ada", roles: [], kind: "run" }, task: "t-7", identifier: "WOR-7", state: "owner" });
+  const push = file("runner.push", "runner");
+  const deploy = file("acme.deploy", "acme");
+  const writes = { decide: (id, b) => (decided.push({ id, ...b }), { task: "t-7", identifier: "WOR-7", card: { sentence: "Deploy." }, state: "approved" }) };
+  const channels = createChannels({ db: records.db, records, writes, board: async () => ({ status: 404, json: {} }), owner: async () => ({ status: 200, json: {} }), modules: () => ({}) });
   const { s, url } = await serve(createAdmin({ accounts, cards: channels, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST, FRONT], origins: () => [`http://${HOST}`, `https://${FRONT}`], frameOrigins: () => ["https://board.example.com"] }));
   t.after(() => { s.close(); accounts.close(); });
-  return { url, decided, notices };
+  return { url, decided, notices, push, deploy };
 }
 
 /**
@@ -130,33 +128,33 @@ test("move keeps the account and TOTP; a missing source refuses to start", async
 test("a card is decided on the kernel page, stamped with the admin's account; the board's origin and a page without the token can't", async (t) => {
   const dir = boardData();
   moveAccounts(dir);
-  const { url, decided } = await adminOn(t, dir);
+  const { url, decided, push, deploy } = await adminOn(t, dir);
   const b = browser(url);
   await signIn(b);
-  const page = await b("GET", "/approvals/A0000aaaa");
+  const page = await b("GET", `/approvals/${push.id}`);
   assert.equal(page.status, 200);
   assert.ok(page.csrf);
   // A6: the board's JavaScript on the same host (another port: cookies ignore ports) posting here, and a forged form.
-  assert.equal((await b("POST", "/approvals/A0000aaaa/decide", { digest: "d-board", decision: "approve", csrf: page.csrf }, "http://localhost:3121")).status, 403);
-  assert.equal((await b("POST", "/approvals/A0000aaaa/decide", { digest: "d-board", decision: "approve", csrf: page.csrf }, "")).status, 403);
-  assert.equal((await b("POST", "/approvals/A0000aaaa/decide", { digest: "d-board", decision: "approve" })).status, 403);
+  assert.equal((await b("POST", `/approvals/${push.id}/decide`, { digest: push.digest, decision: "approve", csrf: page.csrf }, "http://localhost:3121")).status, 403);
+  assert.equal((await b("POST", `/approvals/${push.id}/decide`, { digest: push.digest, decision: "approve", csrf: page.csrf }, "")).status, 403);
+  assert.equal((await b("POST", `/approvals/${push.id}/decide`, { digest: push.digest, decision: "approve" })).status, 403);
   assert.equal(decided.length, 0);
 
-  const ok = await b("POST", "/approvals/A0000aaaa/decide", { digest: "d-board", decision: "approve", csrf: page.csrf });
+  const ok = await b("POST", `/approvals/${push.id}/decide`, { digest: push.digest, decision: "approve", csrf: page.csrf });
   assert.equal(ok.status, 200, ok.html);
   assert.equal(decided.length, 1);
-  assert.equal(decided[0].id, "A0000aaaa");
-  assert.equal(decided[0].digest, "d-board");
+  assert.equal(decided[0].id, push.id);
+  assert.equal(decided[0].digest, push.digest);
   assert.match(decided[0].by, /^account:[\w-]+$/);
   assert.equal(decided[0].via, "web");
   // Several at once: each against the digest the owner saw; the kernel's record through the records.
-  const batch = await b("POST", "/approvals/batch", { item: "k-0000000000000001:d-kernel", decision: "reject", csrf: page.csrf });
+  const batch = await b("POST", "/approvals/batch", { item: `${deploy.id}:${deploy.digest}`, decision: "reject", csrf: page.csrf });
   assert.equal(batch.status, 200, batch.html);
-  assert.deepEqual(decided[1], { id: "k-0000000000000001", digest: "d-kernel", decision: "reject", by: decided[0].by, via: "web" });
+  assert.deepEqual(decided[1], { id: deploy.id, digest: deploy.digest, decision: "reject", by: decided[0].by, via: "web" });
 
   // Signed out, a user's account and an unknown host never decide.
   const stranger = browser(url);
-  assert.equal((await stranger("POST", "/approvals/A0000aaaa/decide", { digest: "d-board", decision: "approve" })).status, 401);
+  assert.equal((await stranger("POST", `/approvals/${push.id}/decide`, { digest: push.digest, decision: "approve" })).status, 401);
   const user = await stranger("POST", "/auth/sign-in", { email: "user@example.com", password: "x".repeat(12) });
   assert.equal(user.status, 401);
   assert.match(user.html, /no admin access/);
@@ -251,7 +249,7 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
   const other = await adminOn(t, fresh);
   const o = browser(other.url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.5", "x-aidenhq-edge": "edge-secret" });
   await signIn(o);
-  for (const path of ["/approvals", "/approvals/A0000aaaa", "/auth/password"]) {
+  for (const path of ["/approvals", `/approvals/${other.push.id}`, "/auth/password"]) {
     const r = await o("GET", path);
     assert.equal(r.status, 200, path);
     assert.match(csp(r), /frame-ancestors 'none'/, path);

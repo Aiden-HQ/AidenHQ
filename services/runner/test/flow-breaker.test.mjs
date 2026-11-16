@@ -25,16 +25,15 @@ describe("flow-breaker", { concurrency: 1 }, () => {
   });
   after(() => gateway.close());
 
-  /** The newest card goes to the reviewer; once it has answered, the board records the rejection. */
+  /** The newest card, once the kernel has had the reviewer read it and recorded the rejection. */
   const reviewed = async () => {
     const card = [...t.paperclip.approvals.values()].at(-1);
     assert.ok(card.args.only.every((b) => b.patch), "the card carries each change's content key");
-    const n = calls.length;
-    card.state = "review";
-    await t.waitFor("the reviewer's verdict", () => calls.length > n && t.output.includes(`"approval":"${card.id}","issue":"PEN-2","action":"pr","decision":"reject"`));
+    await t.waitFor("the reviewer's verdict", () => t.output.includes(`"approval":"${card.id}","issue":"PEN-2","action":"pr","decision":"reject"`));
+    assert.ok(calls.length > 0, "the reviewer read it");
     // Dated after the next turn's comment: an owner reply after a rejection answers it (answered.ts); nobody has here.
-    Object.assign(card, { state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest", decidedAt: new Date(Date.now() + 3600_000).toISOString(), reviewCode: "out_of_scope", review: "second.txt isn't part of the request." });
-    return card;
+    t.paperclip.kdb.db.prepare("UPDATE records SET decided_at = ? WHERE id = ?").run(new Date(Date.now() + 3600_000).toISOString(), card.id);
+    return t.paperclip.approvals.get(card.id);
   };
   const notices = () => t.paperclip.comments.get("parent").map((c) => c.body).filter((c) => /Stopped: the same failure twice/.test(c)); // an outcome: on the parent
 

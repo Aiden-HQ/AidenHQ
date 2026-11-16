@@ -249,7 +249,7 @@ jobs:
           grep -qE '^(\.github/|services/shared/)' <<< "$changed" && all=1
           packages=$(cat <<'PACKAGES'
           scripts|npm test|*
-          services/runner|(its own job)|services/runner services/computer kernel services/shared modules scripts kernel/sdk fixtures services/board/src/approvals.ts services/board/src/app.ts services/board/src/fleet.ts services/board/src/kernel-auth.ts services/board/src/session.ts
+          services/runner|(its own job)|services/runner services/computer kernel services/shared modules scripts kernel/sdk fixtures services/board/src/app.ts services/board/src/fleet.ts services/board/src/kernel-auth.ts services/board/src/session.ts
           services/runner#flows|(its own jobs)|services/runner services/shared modules/engine-codex modules/engine-claude modules/engine-opencode modules/ai-reviewer kernel/sdk kernel/src kernel/test/fixtures kernel/package-lock.json fixtures/engine-echo|services/runner/src/prompt.ts modules/engine-codex/codex-home/AGENTS.md
           kernel/sdk|(cd ../../services/runner && npm ci) && npm test|kernel/sdk fixtures/engine-echo modules/engine-codex modules/engine-claude modules/engine-opencode
           services/computer|node --test test/*.test.mjs|services/computer services/runner/src services/runner/bin modules/core/design-system modules/design

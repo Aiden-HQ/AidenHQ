@@ -76,7 +76,9 @@ export function loadConfig() {
     boardTokenFile: join(secrets, "board_internal_token"),
     // The runner's own key to the board: files Tier 1, records Tier 0 runs, posts the reviewer's verdicts. Never a job's.
     reviewerKeyFile: join(secrets, "reviewer_key"),
-    // The product repo (owner/name): AIDENHQ_PRODUCT_REPO, else this checkout's origin. Tiering treats it apart.
+    runnerWritesKeyFile: join(secrets, "runner_writes_key"),
+    // The product repo (owner/name): AIDENHQ_PRODUCT_REPO (setup records it; the kernel reads only that), else this
+    // checkout's origin. Tiering treats it apart.
     productRepo: env.AIDENHQ_PRODUCT_REPO || productRepoOf(REPO_ROOT),
     /** GitHub token that adds deploy keys (src/repos.ts); optional, never in an agent's sandbox. */
     githubAdminTokenFile: join(secrets, "github_admin_token"),

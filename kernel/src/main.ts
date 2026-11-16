@@ -12,7 +12,7 @@
 // - The sign-in listener (127.0.0.1:3129, signin.ts): the gate's half of shared apps' sign-in (Better Auth's steps, handoffs,
 //   app access). The kernel is the only process that opens the accounts file (lean 3g).
 import http from "node:http";
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configDir, dataDir, env, repo, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
@@ -34,6 +34,7 @@ import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
+import { KERNEL_KINDS, raiseCapCard } from "./kinds.ts";
 import { createJobs, dispatchesFrom } from "./jobs.ts";
 import { jailProblem, overlayProblem } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
@@ -64,32 +65,51 @@ const whoami = createIdentity({
 const asserter = createAsserter(loadKey(path.join(dataDir, "kernel", "caller-key.pem")));
 const resolver = createResolver({ project: env("COMPOSE_PROJECT_NAME", "aidenhq") });
 // A record's task: still open, and the notices on it (written with the board key, as the board's approval notices are).
+const issueOf = async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok ? ((await r.json()) as { id: string; identifier?: string; status?: string; parentId?: string | null }) : undefined; };
 const onTask = {
-  open: async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok && !["done", "cancelled"].includes(String(((await r.json()) as { status?: string }).status)); },
+  open: async (task: string) => { const i = await issueOf(task); return Boolean(i) && !["done", "cancelled"].includes(String(i!.status)); },
+  parent: async (task: string) => (await issueOf(task))?.parentId ?? undefined,
   notify: async (task: string, body: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}/comments`, { method: "POST", body: JSON.stringify({ body }) }); if (!r.ok) log("notice failed", { task, status: r.status }); },
 };
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
-const registry = watched(path.join(configDir, "kernel", "writes.json"), (j) => j as Record<string, Kind>, {});
+// The modules' kinds (compile) and the kernel's own and the runner's (kinds.ts).
+const moduleKinds = watched(path.join(configDir, "kernel", "writes.json"), (j) => j as Record<string, Kind>, {});
+const registry = () => ({ ...moduleKinds(), ...KERNEL_KINDS });
 let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => ({ ok: false, text: "the proxy isn't up" });
-const writes = createWrites({ records, registry, connections, secret, resolver, onTask, log, replay: (r) => replay(r as never), autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never });
+// The product and instance repositories (owner/name), as setup recorded them in .env: runner kinds touching them get the
+// kernel's own floors and refusals (kinds.ts runnerFacts), whatever the runner's plan says. Either unknown: every runner
+// kind is the owner's after the reviewer (fails closed).
+// The agents org, as the runner reads it: AIDENHQ_GITHUB_AGENTS_ORG, else the instance's github_agents_org or aidenhq-<instance_name>.
+const instanceSettings = (() => { try { return readFileSync(path.join(env("AIDENHQ_INSTANCE_DIR", "").replace(/^~(?=\/)/, process.env.HOME ?? ""), "instance.yaml"), "utf8"); } catch { return ""; } })();
+const setting = (k: string) => new RegExp(`^\\s+${k}:\\s*["']?([\\w.-]+)`, "m").exec(instanceSettings)?.[1];
+const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || setting("github_agents_org") || (setting("instance_name") ? `aidenhq-${setting("instance_name")}` : undefined);
+const repos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined, agentsOrg };
+log(repos.product && repos.instance ? "runner kinds' repositories" : "runner kinds: AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set, so every runner write is the owner's", repos);
+// The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
+const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
+let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
+const writes = createWrites({
+  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos: () => repos,
+  autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
+  // An approved raise_cap: the gateway's cap for that scope and subject becomes the card's doubled cap.
+  native: { "kernel.raise_cap": async (r) => ({ ok: true, text: await raiseCap(r.args as never) }) },
+});
 const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, log });
 replay = proxy.replay as never;
 // JSON both ways: the control plane as the owner (only the kernel holds the board key), and the board's internal listener with
-// the kernel's key (gateway_board_key; the runner's cards stay there until 3b).
+// the kernel's key (gateway_board_key: successors and the owner's notices).
 const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api => async (method, p, body) => {
   const r = await call(p, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
   return { status: r.status, json: await r.json().catch(() => ({})) };
 };
 const ownerApi = asApi(cpApi);
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
-const channels = createChannels({ db: records.db, writes, board: boardApi, owner: ownerApi, modules: modulesFile, resetLinks: () => accounts?.takeResetLinks() ?? [], log });
+const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, modules: modulesFile, resetLinks: () => accounts?.takeResetLinks() ?? [], log });
 // Marketplace advisories (loader/advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
 const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main") });
 setInterval(() => void advisories.tick(), 10 * 60_000).unref();
 setTimeout(() => void advisories.tick(), 30_000).unref();
 const brake = createBrake({ db: records.db, owner: ownerApi, on: () => grantsTable().loop_brake !== "off" });
-// The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
-const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 // Jobs: the sandbox as configured here. Without a network jail that works, jobs would share the host's network (every loopback
 // service): loudly, so scripts/verify-security.sh and the journal both say so. Build caches without overlay support are shared.
 const sandbox = sandboxConfig(env);
@@ -116,7 +136,7 @@ const jobs = createJobs({
 jobs.adopt();
 // A restart: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved.
 for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
-const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), operatorKey: () => secret("board_operator_key") }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
+const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), operatorKey: () => secret("board_operator_key") }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
@@ -178,10 +198,21 @@ const gw = createGateway({
   secret,
   upstream: env("AIDENHQ_GATEWAY_UPSTREAM", "https://openrouter.ai/api/v1"),
   paperclipUrl: controlUrl,
-  boardUrl: env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122"),
+  // The numbers are the gateway's ledger; the task's identifier and the agent's name are looked up here.
+  fileRaiseCap: async ({ task, ...r }) => {
+    const [issue, agent] = await Promise.all([issueOf(task), cpApi(`/api/agents/${encodeURIComponent(r.agentId)}`).then((x) => (x.ok ? (x.json() as Promise<{ name?: string }>) : {}))]);
+    if (!issue) throw new Error(`no task ${task}`);
+    const args = { ...r, to: Math.round(r.cap * 200) / 100 };
+    writes.fileNative("kernel.raise_cap", { task: issue.id, identifier: issue.identifier, args, card: raiseCapCard(args, String((agent as { name?: string }).name ?? ""), issue.identifier ?? issue.id), reason: `a ${r.scope} spend cap is the owner's to raise`, rule: "raise-cap" });
+  },
   launcherUrl,
   log,
 });
+
+raiseCap = async (r) => {
+  gw.setCap(r.scope, r.agentId, r.subject, r.to);
+  return `Raised the ${r.scope} spend cap from $${r.cap.toFixed(2)} to $${r.to.toFixed(2)} ($${r.spent.toFixed(2)} spent). Carry on where the cap stopped you.`;
+};
 
 // host:port pairs. Each binds on its own: the backplane address exists only once compose is up, so a failed bind is retried
 // (backoff up to a minute) while the others keep serving.

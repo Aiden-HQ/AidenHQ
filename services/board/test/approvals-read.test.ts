@@ -1,11 +1,12 @@
-// The board's Approvals list is read-only: its own cards and the kernel's records (GET /v1/writes, the board's key), each
-// decided on the kernel's approval page.
+// The board's Approvals list is read-only: the kernel's records (GET /v1/writes, the board's key), each decided on the
+// kernel's approval page.
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
+import { kernelRecords } from "../src/records.js";
 import { Store } from "../src/store.js";
 
 const KEY = "k".repeat(48);
@@ -22,7 +23,7 @@ const kernel = createServer((req, res) => {
 let app: ReturnType<typeof createApp>;
 beforeAll(async () => {
   await new Promise<void>((r) => kernel.listen(0, "127.0.0.1", r));
-  app = createApp({ paperclip: { issue: async () => ({ id: "issue-3", identifier: "WOR-3" }) } as unknown as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3121"], staticDir: "/nonexistent", timezone: "UTC", mode: "lan", session: () => ({ accountId: "owner", role: "admin" as const }), kernel: { url: `http://127.0.0.1:${(kernel.address() as AddressInfo).port}`, token: KEY } });
+  app = createApp({ paperclip: { issue: async () => ({ id: "issue-3", identifier: "WOR-3" }) } as unknown as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3121"], staticDir: "/nonexistent", timezone: "UTC", mode: "lan", session: () => ({ accountId: "owner", role: "admin" as const }), records: kernelRecords({ url: `http://127.0.0.1:${(kernel.address() as AddressInfo).port}`, token: KEY }) });
   await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
 });
 afterAll(() => (app.close(), kernel.close()));
@@ -36,6 +37,6 @@ it("shows the kernel's records read from /v1/writes", async () => {
     }).on("error", reject).end();
   });
   expect(json.error).toBeUndefined();
-  expect(seen).toEqual([`Bearer ${KEY} /v1/writes?state=recent`]);
+  expect(seen).toEqual([`Bearer ${KEY} /v1/writes?state=recent&limit=100`]);
   expect(json.approvals).toEqual([expect.objectContaining({ id: record.id, action: "deploy_app", state: "pending", tier: 2, sentence: "Deploy crm", digest: record.digest })]);
 });

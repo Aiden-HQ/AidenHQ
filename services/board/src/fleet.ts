@@ -5,6 +5,7 @@ import type { IncomingMessage } from "node:http";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { grantsTable, type Grant } from "./grants.js";
 import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./paperclip.js";
+import type { Records } from "./records.js";
 import type { Store } from "./store.js";
 
 export class Refused extends Error {}
@@ -159,7 +160,7 @@ interface CostRow {
 }
 
 /** fleet_status, plus what is running now (with age) and the open approval cards (tier, state, age). */
-export async function fleetStatus(pc: Paperclip, store: Pick<Store, "approvals">) {
+export async function fleetStatus(pc: Paperclip, records: Pick<Records, "list">) {
   const co = `/api/companies/${pc.companyId}`;
   const [agents, runs, open, routines] = await Promise.all([
     pc.request<Agent[]>("GET", `${co}/agents`),
@@ -176,7 +177,7 @@ export async function fleetStatus(pc: Paperclip, store: Pick<Store, "approvals">
   const newest = (xs: (string | null | undefined)[]) => xs.filter((x): x is string => Boolean(x)).sort().at(-1) ?? null;
   const minutesSince = (t: string) => Math.round((Date.now() - Date.parse(t)) / 60_000);
   // Pending cards, and approved ones not yet applied (an applier that hasn't claimed or finished them).
-  const cards = store.approvals.list(100).filter((a) => (a.state === "pending" && a.expiresAt > new Date().toISOString()) || (["approved", "used"].includes(a.state) && !a.outcome));
+  const cards = (await records.list("recent", { limit: 100 })).filter((a) => a.state === "pending" || (["approved", "used"].includes(a.state) && !a.outcome));
   return {
     runs: runs.filter((r) => ["running", "queued"].includes(r.status)).map((r) => ({ agent: who.get(r.agentId) ?? r.agentId, status: r.status, startedAt: r.startedAt ?? r.createdAt, ageMinutes: minutesSince(r.startedAt ?? r.createdAt) })),
     approvals: cards.map((a) => ({ id: a.id, task: a.identifier, action: a.action, target: a.target, tier: a.tier, state: a.state, requestedBy: a.requestedBy, ageMinutes: minutesSince(a.createdAt) })),
@@ -241,7 +242,7 @@ export async function fleetCosts(pc: Paperclip, days?: number) {
   return { days: n, note: "OpenRouter usage is unpriced (costCents 0): use tokens and runs.", usage: perDay.flat() };
 }
 
-export async function fleetControl(pc: Paperclip, caller: Agent, a: z.infer<typeof ControlSchema>, store: Pick<Store, "meta" | "setMeta" | "delMeta" | "approvals">) {
+export async function fleetControl(pc: Paperclip, caller: Agent, a: z.infer<typeof ControlSchema>, store: Pick<Store, "meta" | "setMeta" | "delMeta">) {
   const commentId = await assertOwnerWords(pc, caller, a.action, a.target, a.quote, a.task);
   // Once per message, like the relay: reserved before acting, released if the action fails.
   const key = `controlled:${commentId}`;

@@ -228,15 +228,9 @@ for c in $containers; do
             # A caller refusal, not the Host guard or a 404: the route was reached and asked who is calling.
             echo "$body" | grep -qE '"error":"(only |missing agent credential|missing caller assertion)' || opened="$opened $m $p;"
           done <<'PROBES'
-POST /internal/approvals/A00000000/claim {}
-POST /internal/approvals/A00000000/outcome {"nonce":"00000000000000000000000000000000","ok":true,"text":"x"}
-GET /internal/approvals?state=pending
-GET /internal/approvals?state=approved
 GET /internal/approvals?issue=X-1
-POST /internal/approvals {}
 POST /internal/issues/X-1/schedule {"clear":true}
 POST /internal/recurring/runs/00000000-0000-0000-0000-000000000000/2000-01-01T00:00 {}
-POST /internal/owner/approvals/decide {"id":"A00000000","digest":"x","decision":"approve","by":"owner:telegram","via":"telegram"}
 GET /internal/successor/X-1
 PROBES
           [ -z "$opened" ] && pass "board: the internal token alone claims, reports, reads and changes nothing" || fail "board: the internal token alone was not refused by caller:$opened"
@@ -764,33 +758,33 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
 # reviewer's own flag can only add the second reviewer, a reviewer-approved card that is panel now is never run on one
 # reviewer's yes (a stateful deploy touching a migration: apps-mcp's plan raises the panel, the kernel's record keeps it and
 # takes a reviewer's approve only with a second reviewer's), and a CI template copy is Tier 0 only when its .github tree is the deployed product's template tree.
-rreview="modules/ai-reviewer/service/src/review.mjs"; bapprovals="services/board/src/approvals.ts"
-[ "$(grep -oE 'T\(2, "[a-z-]+"' "$rtiers" | sort -u | tr '\n' ' ')" = 'T(2, "autonomy-off" T(2, "owner-approval-record" T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
-  && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review-request","siblings","merges","evalgate","apply","state","config","github-app","git","main","engines","workspace","files","agents"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["approvals","app","fleet","kernel-auth","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts", "kernel/src/sandbox.ts", "kernel/src/netjail.ts", "kernel/src/jobs.ts", "kernel/src/accounts.ts", "kernel/src/auth-rules.ts", "kernel/src/signin.ts", "kernel/src/progress.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/assert.ts", "kernel/src/cp.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "services/apps-mcp/src/aidenhq-sdk/caller.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/tier.ts", "kernel/sdk/src/executor.ts", "services/apps-mcp/src/executor.ts", "services/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/apps-platform/module.yaml", "modules/primer/module.yaml", "modules/primer/connections/primer-mcp/src/publish.ts", "modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "kernel/src/reviews.ts", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/runner/src/review-request.mjs", "services/runner/src/siblings.ts"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
+rreview="modules/ai-reviewer/service/src/review.mjs"
+[ "$(grep -ohE 'T\(2, "[a-z-]+"' "$rtiers" kernel/src/tier.ts | sort -u | tr '\n' ' ')" = 'T(2, "autonomy-off" T(2, "owner-approval-record" T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
+  && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review-request","siblings","cards","merges","evalgate","apply","state","config","github-app","git","main","engines","workspace","files","agents"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["app","fleet","kernel-auth","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts", "kernel/src/sandbox.ts", "kernel/src/netjail.ts", "kernel/src/jobs.ts", "kernel/src/accounts.ts", "kernel/src/auth-rules.ts", "kernel/src/signin.ts", "kernel/src/progress.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/assert.ts", "kernel/src/cp.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "services/apps-mcp/src/aidenhq-sdk/caller.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/tier.ts", "kernel/src/kinds.ts", "kernel/sdk/src/executor.ts", "services/apps-mcp/src/executor.ts", "services/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/apps-platform/module.yaml", "modules/primer/module.yaml", "modules/primer/connections/primer-mcp/src/publish.ts", "modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "kernel/src/reviews.ts", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/runner/src/review-request.mjs", "services/runner/src/siblings.ts"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
+  && node --input-type=module -e 'const { touchesReviewer } = await import(process.argv[1]); const must = ["kernel/src/tier.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "services/runner/src/cards.ts", "services/runner/src/review-request.mjs", "services/runner/src/tiers.mjs"]; const miss = must.filter((f) => !touchesReviewer([f])); if (miss.length) { console.error("not reviewer code: " + miss.join(" ")); process.exit(1); }' "$repo/services/runner/src/evalgate.ts" \
   && grep -qF '  /^modules\/ai-reviewer\//,' "$rtiers" \
   && true && grep -qF '/(^|\/)\.github\//,' "$rtiers" \
   && grep -qF 'if (GATE_CORE.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rtiers" \
   && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rtiers" \
-  && grep -qF 'const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);' "$rtiers" \
+  && grep -qF 'const rank = (p: Part) => p.tier * 2 + (p.panel ? 1 : 0);' kernel/src/tier.ts \
   && grep -qF '  const second = v.second_review !== false;' "$rreview" \
   && grep -qF '  if (v1.decision !== "approve" || !(panel || flagged)) return v1;' "$rreview" \
   && grep -qF '  if (v2.decision === "approve") return { decision: "approve"' "$rreview" \
-  && grep -qF 'if (a.panel && v.decision === "approve" && !v.second) return { ok: false' "$bapprovals" \
-  && grep -qF 'if (v.second !== undefined && v.second === v.model) return { ok: false' "$bapprovals" \
-  && grep -qF 'const veto = req.tier === 1 && this.ownerVetoed(req.issueId, req.action, req.digest, req.args);' "$bapprovals" \
-  && grep -qF 'const reviewFirst = tier === 1 ? (veto ? "owner" : (req.reviewFirst ?? null)) : null;' "$bapprovals" \
-  && grep -qF 'if (v.decision === "approve" && a.reviewFirst) return { ok: false' "$bapprovals" \
-  && grep -qF 'if (v.decision === "reject" && a.reviewFirst === "owner" && !["stale_head", "refused_by_code"].includes(v.code ?? "")) return { ok: false' "$bapprovals" \
   && grep -qF '  return routineCapped(meritOwner(onMerits(action, s)), s.routineAutonomy);' "$rtiers" \
-  && grep -qF 'const to: State = decision === "reject" ? (stale ? "stale" : r.merit === 2 ? "owner" : "rejected")' kernel/src/records.ts \
-  && [ "$(grep -cE 'await requestReview\(' "$rmain")" = 1 ] && ! grep -rqE 'from "[./]*modules/ai-reviewer/' services/runner/src && awk '/^async function askReviewer\(/,/^}/' "$rmain" | grep -F '    panel: Boolean(input.panel || a.panel),' >/dev/null && grep -qF 'const panelMissing = (t.panel || claimed.panel) && !claimed.decidedBy.includes("+");' "$rmain" \
-  && grep -qF 'UPDATE approvals SET panel = 1 WHERE id = ? AND digest = ?' "$bapprovals" && ! grep -q 'SET panel = 0' "$bapprovals" \
+  && grep -qF 'if (f.ownerRequired) { tier = 2; reviewFirst = reviewFirst === "owner" ? "owner" : "final"; }' kernel/src/writes.ts \
+  && grep -qF 'const veto = records.vetoed(task, kind, { digest, content: f.content });' kernel/src/writes.ts \
+  && grep -qF 'let tier = Math.max(proposed, carried ? 0 : k.floor, carried ? 0 : f.floor) as Tier;' kernel/src/writes.ts \
+  && grep -qF 'const unknown = !product || !instance;' kernel/src/kinds.ts && grep -qF 'const ours = Boolean(org) && touched.every((r) => r!.split("/")[0] === org && r !== product && r !== instance);' kernel/src/kinds.ts && grep -qF '"kernel.apply": { module: "kernel", floor: 1,' kernel/src/kinds.ts \
+  && grep -qF 'let v = codeVerdict(input, model) ?? afterReview(input, await ask(r, b.request ?? {}, model));' kernel/src/writes.ts && grep -qF 'const post = shadowed(v, autonomy());' kernel/src/writes.ts \
+  && [ "$(grep -cE 'await requestReview\(|requestReview\(\{' "$rmain")" = 1 ] && ! grep -rqE 'from "[./]*modules/ai-reviewer/' services/runner/src && awk '/^export function reviewRequest\(/,/^}/' services/runner/src/review-request.mjs | grep -F '    panel: Boolean(input.panel || a.panel),' >/dev/null && grep -qF 'const panelMissing = (t.panel || claimed.panel) && !claimed.decidedBy.includes("+");' "$rmain" \
+  && grep -qF 'if (v.decision === "approve" && (r.review_first || r.tier === 2' kernel/src/records.ts \
+  && grep -qF 'if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return' kernel/src/records.ts \
   && grep -qF 'const migration = touchesMigrations(com.diff);' services/apps-mcp/src/executor.ts && grep -qF 'raise: { tier: 1, panel: migration, rule:' services/apps-mcp/src/executor.ts \
-  && grep -qF 'return { tier, merit, panel: panel || raise?.panel === true' kernel/src/tier.ts && grep -qF 'if (r.panel && decision === "approve" && !by.includes("+")) return' kernel/src/records.ts \
+  && grep -qF 'return { tier, merit, panel: panel || raise?.panel === true' kernel/src/tier.ts && grep -qF 'if (r.panel && v.decision === "approve" && !v.by.includes("+")) return' kernel/src/records.ts \
   && grep -qF '"HEAD:modules/core/templates/ci/.github"' "$rmain" && grep -qF 'return treeIs(path, sha, ".github", want);' "$rmain" && grep -qF 'return Boolean(want) && got === want;' services/runner/src/git.mjs \
   && grep -qF 'if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir"' "$rtiers" \
-  && pass "runner and board: the owner decides only vetoes, panel splits, autonomy caps and spend caps, each after the AI reviewer; the gate's core goes to two reviewers of different families, checked by the runner and the board; a CI template copy is Tier 0 only by tree identity with the deployed product ($rtiers, $rreview, $bapprovals)" \
-  || fail "runner or board: who decides a write changed (tiers.mjs Tier 2 rules, the gate core list, the panel, or the board's panel check)"
+  && pass "runner and board: the owner decides only vetoes, panel splits, autonomy caps and spend caps, each after the AI reviewer; the gate's core goes to two reviewers of different families, checked by the runner and the kernel; a CI template copy is Tier 0 only by tree identity with the deployed product ($rtiers, $rreview)" \
+  || fail "runner or board: who decides a write changed (tiers.mjs Tier 2 rules, the gate core list, the panel, or the kernel's panel check)"
 # Tool-only agents get no shell: setup (gate code too) must run the gate's check on every Codex agent without image:.
 grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-setup.mjs \
   && [ "$(grep -c 'assertNoShell(' scripts/paperclip-setup.mjs)" = 1 ] \

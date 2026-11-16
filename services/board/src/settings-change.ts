@@ -3,7 +3,7 @@
 // Platform Engineer. Its commit becomes the fleet apply card, tiered by the runner's code; nothing here applies anything.
 import { stringify as yamlStringify } from "yaml";
 import { z } from "zod";
-import type { Approval } from "./approvals.js";
+import type { Approval } from "./records.js";
 import { HEARTBEAT_HOURS, HEARTBEAT_TOOLS, type Compiled } from "./settings.js";
 import { EFFORTS, compiledEngine } from "./board.js";
 import { urlSettingProblem } from "./url-setting.js";
@@ -150,7 +150,7 @@ export function stageOf(status: string, cards: Pick<Approval, "action" | "state"
     if (a.outcome === "applied") return { stage: "applied", approval: a.id };
     if (a.outcome === "failed") return { stage: "failed", approval: a.id, ...(a.outcomeText ? { detail: a.outcomeText.slice(-300) } : {}) };
     if (a.state === "pending") return { stage: "waiting", tier: a.tier, approval: a.id };
-    if (a.state === "approved" || a.state === "used" || a.state === "auto") return { stage: "applying", approval: a.id };
+    if (a.state === "approved" || a.state === "used") return { stage: "applying", approval: a.id };
     if (a.state === "rejected" || a.state === "stale" || a.state === "expired") return { stage: "rejected", approval: a.id };
   }
   return status === "done" || status === "cancelled" ? { stage: "closed" } : { stage: "working" };

@@ -4,11 +4,11 @@
 // against the card's current digest, decides it, stamps who and where from the channel (never from the body), and burns
 // every token of the card. That is the whole kernel rule: which cards a channel shows, and which it lets the owner decide,
 // is the channel's own setting. Owner messages are posted to the control plane by the kernel, the only holder of the board
-// key, with the channel's label set here. Until 3b the board still keeps the runner's cards: the kernel reads and decides
-// those over the board's internal listener with the key only the two of them hold (gateway_board_key).
+// key, with the channel's label set here. Every card is a kernel record (records.ts), the runner's git and apply writes too.
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { fail } from "./proxy.ts";
+import { actionOf, type Records } from "./records.ts";
 import type { Writes } from "./writes.ts";
 
 /** config/kernel/modules.json (compile): modules with kernel roles, a privileged entry, a token of their own or a channel. */
@@ -19,7 +19,6 @@ type Log = (msg: string, f?: Record<string, unknown>) => void;
 type OwnerWords = { text?: unknown; voice?: unknown; forward?: unknown; task?: unknown; agent?: unknown; note?: unknown };
 
 const KERNEL_ID = /^k-[0-9a-f]{16}$/;
-const BOARD_ID = /^A[0-9a-f]{8}$/;
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : "");
 /** A channel's short name: channel-telegram → telegram. Its label on owner messages and its `via` on decisions. */
@@ -42,9 +41,9 @@ export const neutral = (v: string) => v.replace(/<!/g, "‹!").replace(/-->/g, "
 /** May this module speak as the owner (a channel)? */
 export const isChannel = (m: ModuleInfo | undefined) => Boolean(m?.channel && m.privileged?.includes("speaks-as-owner"));
 
-export function createChannels({ db, writes, board, owner, modules, resetLinks = () => [], log = () => {}, now = Date.now }: {
-  db: DatabaseSync; writes: Writes;
-  /** The board's internal listener with the kernel's key (the runner's cards, successors, the owner's notices). */
+export function createChannels({ db, records, writes, board, owner, modules, resetLinks = () => [], log = () => {}, now = Date.now }: {
+  db: DatabaseSync; records: Records; writes: Writes;
+  /** The board's internal listener with the kernel's key (successors, the owner's notices). */
   board: Api;
   /** The control plane as the owner (the board key, held only by the kernel). */
   owner: Api;
@@ -75,27 +74,22 @@ export function createChannels({ db, writes, board, owner, modules, resetLinks =
     return tokens;
   };
 
-  /** The owner's pending cards (with a digest) and recent outcomes: the board's (the runner's, until 3b) and the kernel's records. */
+  /** The owner's pending cards (the records waiting for them) and recent outcomes, as the channels and the pages show them. */
   const ownerCards = async () => {
-    const pending = ((await ok(board("GET", "/internal/approvals?state=pending"), "the board's cards")).approvals ?? []) as Record<string, any>[];
-    const finished = ((await ok(board("GET", "/internal/approvals?state=finished"), "the board's outcomes")).approvals ?? []) as Record<string, any>[];
-    return { live: pending.filter((a) => (KERNEL_ID.test(a.id) || BOARD_ID.test(a.id)) && typeof a.digest === "string" && a.digest), finished };
+    const view = (r: ReturnType<Records["list"]>[number]) => ({
+      id: r.id, identifier: r.identifier ?? r.task, action: actionOf(r.kind), tier: r.state === "review" ? 1 : r.tier, panel: r.panel, digest: r.digest, sentence: r.card.sentence, changes: r.card.changes,
+      reads: r.card.reads, cost: r.card.cost, details: r.card.details, target: r.card.target ?? "", requestedBy: r.requester.name || r.requester.key || r.requester.module || "", replaced: Boolean(r.replaced),
+      reason: r.card.reason ?? "", review: r.review, state: r.state, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
+      decidedBy: r.decided_by, createdAt: r.created_at,
+    });
+    return { live: records.list(["owner"], 200).reverse().map(view), finished: records.list(["done", "failed", "unknown"], 50, { reviewed: true }).map(view) };
   };
-  /**
-   * One decision on a card, bound to the digest the owner saw: the kernel's records here, the board's over its internal route.
-   * Throws 409 when the card was decided, changed or replaced meanwhile, 502 when the board didn't answer (worth a retry).
-   */
+  /** One decision on a card, bound to the digest the owner saw. Throws 409 when the card was decided, changed or replaced meanwhile. */
   const decideCard = async (id: string, digest: string, decision: "approve" | "reject", by: string, via: string): Promise<{ identifier: string; sentence: string; state: string }> => {
-    if (KERNEL_ID.test(id)) {
-      const r = writes.decide(id, { digest, decision, by, via });
-      if (typeof r === "string") throw fail(409, "conflict", r);
-      return { identifier: r.task, sentence: r.card.sentence, state: r.state };
-    }
-    if (!BOARD_ID.test(id)) throw fail(404, "not_found", `no card ${id.slice(0, 40)}`);
-    const r = await board("POST", "/internal/owner/approvals/decide", { id, digest, decision, by, via }).catch((e: Error) => ({ status: 502, json: { error: e.message } }));
-    if (r.status >= 500) throw fail(502, "upstream", `the board didn't answer; try again (${String(r.json?.error ?? r.status).slice(0, 200)})`);
-    if (r.status !== 200) throw fail(409, "conflict", String(r.json?.error ?? `the board said ${r.status}`).slice(0, 300));
-    return { identifier: String(r.json.identifier ?? ""), sentence: String(r.json.sentence ?? ""), state: String(r.json.state ?? "") };
+    if (!KERNEL_ID.test(id)) throw fail(404, "not_found", `no card ${id.slice(0, 40)}`);
+    const r = writes.decide(id, { digest, decision, by, via });
+    if (typeof r === "string") throw fail(409, "conflict", r);
+    return { identifier: r.identifier ?? r.task, sentence: r.card.sentence, state: r.state };
   };
 
   /**
@@ -160,6 +154,29 @@ export function createChannels({ db, writes, board, owner, modules, resetLinks =
       kv.set(key, String(issue.id));
     }
     return { task: await post(issue) };
+  };
+
+  /**
+   * The daily digest: once a day from 21:00 in the owner's timezone, what was the owner's to decide (Tier 2) in the last
+   * 24 hours and how each stands; null otherwise, or when there were none. Agent-named targets and the reviewer's note are
+   * untrusted: printable, links removed, markdown escaped, and labelled as reported.
+   */
+  const dailyDigest = (): string | null => {
+    const t = new Date(now());
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: modules().owner?.timezone || "UTC", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(t).map((p) => [p.type, p.value]));
+    const day = `${parts.year}-${parts.month}-${parts.day}`;
+    if (Number(parts.hour) < 21 || kv.get("approvals_digest_day") === day) return null;
+    kv.set("approvals_digest_day", day);
+    const plain = (v: string, max: number) => v.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, max).replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "[link removed]").replace(/[\\`*_[\]()~>#|<!]/g, "\\$&");
+    const status = (r: ReturnType<Records["list"]>[number]) => {
+      const st = records.shownState(r);
+      if (st === "review" || st === "owner") return "still waiting for you";
+      if (st === "approved" || st === "claimed") return "approved, running";
+      return st === "done" ? "approved, applied" : st === "failed" ? "approved, failed" : st === "unknown" ? "approved, no outcome reported" : st === "cancelled" && r.decided_by ? "expired" : st;
+    };
+    const yours = records.since(new Date(t.getTime() - 86_400_000).toISOString()).filter((r) => r.tier === 2 && r.state !== "review" && !r.decided_by?.startsWith("reviewer:")).map((r) => `• ${r.identifier ?? r.task} ${actionOf(r.kind)} · target (as reported): ${plain(r.card.target ?? r.card.sentence, 80)} · ${status(r)}${r.review ? ` · reviewer's note: ${plain(r.review, 200)}` : ""}`);
+    if (!yours.length) return null;
+    return [`🧾 **Approvals digest** (last 24h): ${yours.length} ${yours.length === 1 ? "card was" : "cards were"} yours to decide`, ...yours.slice(0, 20)].join("\n");
   };
 
   return {
@@ -255,13 +272,14 @@ export function createChannels({ db, writes, board, owner, modules, resetLinks =
       return { messages: rows.sort((x, y) => x.id - y.id).map((r) => ({ from: r.from_channel, text: r.text })) };
     },
 
-    /** The owner's one-line notices, account reset links and the daily digest, each handed over once (by the board). */
+    /** The owner's one-line notices and account reset links (the board's), and the daily digest of their cards: each handed over once. */
     async notices(module: string) {
       channelOf(module);
       // Each is handed over once: one failing call never drops what the others already took.
-      const [lines, digest] = (await Promise.allSettled([board("GET", "/internal/owner/grades"), board("GET", "/internal/owner/approvals/digest")]))
+      const [lines] = (await Promise.allSettled([board("GET", "/internal/owner/grades")]))
         .map((r) => (r.status === "fulfilled" && r.value.status === 200 ? r.value.json : {}));
       const links = resetLinks();
+      const digest = { text: dailyDigest() };
       const own = (db.prepare("DELETE FROM owner_lines WHERE id IN (SELECT id FROM owner_lines ORDER BY id LIMIT 20) RETURNING id, text").all() as { id: number; text: string }[]).sort((x, y) => x.id - y.id).map((r) => r.text);
       return { lines: [...own, ...(Array.isArray(lines!.lines) ? lines!.lines.map(String) : [])], links, digest: typeof digest!.text === "string" ? digest!.text : null };
     },
