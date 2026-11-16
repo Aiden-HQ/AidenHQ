@@ -100,7 +100,7 @@ main() {
   # ran before is the newest one pinning `before`.
   if [ -n "${AIDENHQ_APPLY_BEFORE:-}" ] && [ -z "${AIDENHQ_APPLY_INST_BEFORE:-}" ]; then inst_before="$(instancePinning "$before")"; fi
   # Host-side Node deps (the compiler/setup and the runner) follow the product's lockfiles.
-  for d in scripts services/runner; do
+  for d in scripts services/runner kernel; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
   lap npm
@@ -265,7 +265,7 @@ applyGeneration() {
   done <<< "$plan"
   git -C "$inst" checkout --quiet --detach "$instance"
   git checkout --quiet --detach "$product"
-  for d in scripts services/runner; do
+  for d in scripts services/runner kernel; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
   local m; m="$(genAppend "$product" "$instance" pending "" "${AIDENHQ_REVERT_OF:-}" "$gen")"
@@ -308,7 +308,7 @@ instancePinning() {
 # A refusal before the switch: both checkouts back where the running generation has them, with the host's Node deps.
 restoreCheckouts() {
   git checkout --quiet --detach "$before"
-  for d in scripts services/runner; do
+  for d in scripts services/runner kernel; do
     git diff --quiet "$before" "$product" -- "$d/package-lock.json" || npm ci --prefix "$d" --silent || true
   done
   if [ -n "${inst_before:-}" ] && [ "$(git -C "$inst" rev-parse HEAD)" != "$inst_before" ]; then git -C "$inst" checkout --quiet --detach "$inst_before"; fi
@@ -403,7 +403,7 @@ switchOver() {
   # The runner is running this script: restart it only after the apply in flight has reported back. SIGUSR2 to its main
   # process only: it takes no new jobs, leaves the agents' runs going (the new runner adopts them and reports their
   # turns), exits as soon as nothing is half done (a reply being posted, a publish, this apply) and systemd starts it again.
-  if [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/runner kernel/sdk ops/units/aidenhq-runner.service; then
+  if [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/runner kernel/sdk kernel/src/sandbox.ts kernel/src/jobs.ts ops/units/aidenhq-runner.service; then
     systemd-run --user --quiet --on-active=30 systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner && echo "runner code changed: restart once idle, from 30s"
   fi
   # The computer launcher holds live run tokens in memory: restart it only when its code changed (running computers get new tokens next run).

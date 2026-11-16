@@ -3,6 +3,9 @@
 
 label: engineer
 poll_seconds: 20
+# The loopback port of the agents' `aidenhq` commands: the only host port besides the kernel's 8201 a job's jail opens (the
+# kernel refuses a job whose helper is anywhere else).
+helper_port: 3140
 # Comments written up to this long before the runner first sees a task still count.
 first_seen_lookback_minutes: 30
 

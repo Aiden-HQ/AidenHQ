@@ -1,10 +1,11 @@
 // End to end (see flow-harness.mjs): a job that stops making progress is stopped and says so; one waiting on CI is not; a
-// brief naming a commit that isn't there never starts. The window is 0.03 minutes here (progress_minutes).
+// brief naming a commit that isn't there never starts. The window is 0.05 minutes here (progress_minutes): three seconds, so a
+// job the kernel starts under a loaded test run has its engine going inside it.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { flow } from "./flow-harness.mjs";
 
-const runnerYaml = "progress_minutes: 0.03\n";
+const runnerYaml = "progress_minutes: 0.05\n";
 
 describe("flow-progress", { concurrency: true }, () => {
   describe("a job that keeps reading and never edits", () => {
@@ -19,7 +20,7 @@ describe("flow-progress", { concurrency: true }, () => {
     const t = flow({ runnerYaml, step: "none\nemit Bash sleep 60\nhold" });
     it("is not stopped for the wait, and finishes when it is done", async () => {
       await t.waitFor("the job to start", () => t.claudeRuns().length > 0);
-      await t.idle(3000); // five windows
+      await t.idle(6000); // two windows
       assert.equal(t.reviews().length, 0, "still running");
       t.release();
       await t.waitFor("the reply", () => t.reviews().length > 0);

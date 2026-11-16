@@ -206,6 +206,19 @@ test("disabling open-loops removes its agents, routines and labels only", () => 
   assert.ok(!r.paperclip.labels.some((l) => l.name === "waiting-on"));
   assert.ok(r.paperclip.mcp_servers.telegram && r.paperclip.mcp_servers.chat_lane, "the Telegram channel and the chat lane stay: core requires them");
 });
+// Lean-core 3e: the runner starts jobs through the kernel as engineering, with its own generated token, for every engine-run
+// agent (core's Platform Engineer included); engineering needs any engine, which core's engine-codex provides.
+test("engineering is the job dispatcher: its token, and every dispatch: runner agent in dispatches", () => {
+  const dir = inst(["meetings", "engineering", "warehouse", "github", "glean", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", product_repo: "acme/aidenhq", owner_email: "o@x" });
+  const r = compile(repo, dir);
+  const e = r.kernelModules.modules.engineering;
+  assert.deepEqual([e.roles, e.token], [["kernel.jobs"], "engineering_token"]);
+  assert.ok(r.generatedSecrets.includes("engineering_token"));
+  const runAgents = Object.entries(r.paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
+  assert.ok(runAgents.includes("fleet-engineer") && runAgents.includes("engineer-openrouter"), runAgents.join(","));
+  assert.deepEqual(e.dispatches, runAgents);
+  for (const [n, m] of Object.entries(r.kernelModules.modules)) if (n !== "engineering") assert.equal(m.dispatches, undefined, n);
+});
 test("Slack Scout's read grant has no draft tool", () => {
   const dir = inst(["open-loops", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "e@x" });
   const r = compile(repo, dir);

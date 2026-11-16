@@ -15,7 +15,7 @@ export async function jobAdvise(ctx: any, brief: unknown, { cfg, save = (_ctx: a
   ctx.advised ??= { advisor: ctx.run.advised ?? 0 };
   ctx.advisor ??= modelTools({
     gatewayUrl: gatewayUrl(cfg), fetchFn, used: ctx.advised,
-    key: jobToken(cfg, { agentId: ctx.agentId, issueId: ctx.issue.id, at: ctx.run.startedAt, jobcaps: ctx.run.jobcaps, observing: ctx.run.observing }),
+    key: jobToken(cfg, { agentId: ctx.agentId, issueId: ctx.issue.id, at: ctx.run.startedAt, jobcaps: ctx.run.jobcaps, observing: ctx.run.observing }) as any,
   }).advisor_ask;
   const b = String(brief ?? "").trim();
   try {
