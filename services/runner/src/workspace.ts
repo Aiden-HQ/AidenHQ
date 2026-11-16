@@ -303,6 +303,7 @@ async function findBranchesNow(path: string, { base, manifest, slug, known }: { 
     for (const r of bases) {
       if (r === branch) continue; // its own pushed copy is not its base
       const n = await count(tip, r);
+      if (!n && known.includes(r) && remoteTip.get(r) !== tip) continue; // a task branch stacked on this one is its child
       if (!best || n < best.n) best = { base: r, n };
     }
     const own = best ? best.n : Number(await git(path, "rev-list", "--count", tip));
@@ -418,9 +419,11 @@ export async function branchChanges(path: string, { branch, base, taskBranches =
 async function branchChangesNow(path: string, { branch, base, taskBranches = [] }: { branch: string; base: string; taskBranches?: string[] }) {
   const from = (await baseRef(path, { branch, base, taskBranches })) || EMPTY_TREE;
   const stop: string[] = from === EMPTY_TREE ? [] : [from];
-  const unpublished = (await git(path, "log", "--reverse", "--format=%h %s", branch, "--not", "--remotes=origin", ...stop)).split("\n").filter(Boolean);
+  // Once pushed, what isn't published is what its own pushed copy lacks: a branch stacked on it and pushed first carries its
+  // commits to the remote, but not to its own PR (which then opened at a stale head).
+  const ownTip = await remoteTip(path, branch), unpublished = (await git(path, "log", "--reverse", "--format=%h %s", branch, "--not", ...(ownTip ? [ownTip] : ["--remotes=origin"]), ...stop)).split("\n").filter(Boolean);
   const stat = await git(path, "diff", "--shortstat", from === EMPTY_TREE ? EMPTY_TREE : `${from}...${branch}`, ...(from === EMPTY_TREE ? [branch] : [])).catch(() => "");
-  return { unpublished, stat, onGitHub: Boolean(await remoteTip(path, branch)) };
+  return { unpublished, stat, onGitHub: Boolean(ownTip) };
 }
 
 /** Full messages of the commits on `branch` since `from` (oldest first), for PR descriptions and checks. */

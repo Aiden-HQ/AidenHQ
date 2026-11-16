@@ -806,6 +806,26 @@ describe("task workspaces", async () => {
     assert.deepEqual(again.find((b) => b.branch === "feat/a-more"), { branch: "feat/a-more", base: "feat/a", purpose: "both", tip: again.find((b) => b.branch === "feat/a-more").tip });
   });
 
+  it("a parent whose stacked child was pushed first keeps its base and its own unpublished commit (roadmap-keeper #184)", async () => {
+    const { path, commit, remote } = await setup();
+    const push = async (b) => (await git(path, "push", "-q", "-f", remote, b), await git(path, "fetch", "-q", "origin"));
+    await git(path, "switch", "-q", "-c", "feat/a");
+    await commit(path, "feat: a", "a.txt");
+    await push("feat/a");
+    await git(path, "switch", "-q", "-c", "feat/b");
+    await commit(path, "feat: b", "b.txt");
+    await git(path, "switch", "-q", "feat/a");
+    await commit(path, "fix: a again", "a2.txt");
+    await git(path, "switch", "-q", "feat/b");
+    await git(path, "rebase", "-q", "feat/a");
+    await push("feat/b"); // GitHub now has feat/a's new commit, but only on feat/b
+    const known = ["feat/a", "feat/b"];
+    const found = await findBranches(path, { base: "main", known });
+    assert.deepEqual(found.map((b) => [b.branch, b.base]), [["feat/a", "main"], ["feat/b", "feat/a"]]);
+    const a = await branchChanges(path, { branch: "feat/a", base: "main", taskBranches: known });
+    assert.deepEqual(a.unpublished.map((l) => l.replace(/^\w+ /, "")), ["fix: a again"]);
+  });
+
   it("bases a branch made from a long-lived line (v2) on it, not on the default branch (PEN-1375)", async () => {
     const { path, commit, seed } = await setup();
     // GitHub has a v2 line with its own history, including someone's commit that mentions Codex.
