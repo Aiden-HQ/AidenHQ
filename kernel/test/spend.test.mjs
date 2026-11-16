@@ -1,4 +1,4 @@
-// Spend (spec §5.12) end to end against a fake OpenRouter: reservations in one transaction (A11), settlement and fail
+// Spend (spec §5.12) end to end against a fake upstream: reservations in one transaction (A11), settlement and fail
 // closed (A12), and the ledger's move from the old data/gateway/usage.db into kernel.db, with the caps it carries.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -15,7 +15,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // $1 per million output tokens, input free: a call asking for 10,000 output tokens reserves exactly $0.01.
 const MODELS = { models: { flat: { in: 0, cached_in: 0, out: 1, peak: 1, max_output: 10_000 }, priced: { in: 1, cached_in: 0.1, out: 2, peak: 1, max_output: 10_000 } } };
 
-/** A gateway on `dir`'s kernel.db with one job agent `ag` (day cap `dayUsd`), and an upstream `answer(body, res)`. */
+/** A gateway on `dir`'s kernel.db with one job agent `ag` (day cap `dayUsd`), and an upstream `answer(body, res)`. Every secret is "js". */
 async function rig(t, { dayUsd = 30, answer, dir = mkdtempSync(join(tmpdir(), "spend-")), legacy } = {}) {
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: { ag: { key: "eng", caps: { run_usd: 30, task_usd: 30, day_usd: dayUsd } } } }));
   writeFileSync(join(dir, "gateway.json"), JSON.stringify(MODELS));
@@ -23,7 +23,7 @@ async function rig(t, { dayUsd = 30, answer, dir = mkdtempSync(join(tmpdir(), "s
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { const body = JSON.parse(b); seen.push(body); answer(body, res, seen.length); });
   });
-  const open = () => createGateway({ dbFile: join(dir, "kernel.db"), legacyDbFile: legacy, grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk", gateway_job_secret: "js", gateway_board_key: "gb" })[n] ?? "", upstream: upstream.url, now: () => Date.parse("2026-11-16T10:00:00Z") });
+  const open = () => createGateway({ dbFile: join(dir, "kernel.db"), legacyDbFile: legacy, grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, now: () => Date.parse("2026-11-16T10:00:00Z") });
   const gw = open();
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.close(); front.s.close(); try { gw.close(); } catch {} });
@@ -50,7 +50,7 @@ test("A11: 20 parallel calls with budget for 3: exactly 3 reserved and run, the 
   const out = await Promise.all(calls);
   assert.deepEqual(out.map((c) => c.status).sort(), [...Array(3).fill(200), ...Array(17).fill(402)]);
   for (const c of out.filter((c) => c.status === 402)) assert.match(c.json.error.message, /^spend cap reached: agent-day \$0\.03 of \$0\.03;/);
-  // Settled at what OpenRouter billed ($0.002 each): the day has room again, and the next call runs.
+  // Settled at what the upstream billed ($0.002 each): the day has room again, and the next call runs.
   assert.deepEqual(r.rows().filter((x) => x.status === "ok").map((x) => x.cost_usd), [0.002, 0.002, 0.002]);
   assert.equal((await r.call({ model: "flat", max_tokens: 10_000, messages: [] })).status, 200);
 });
@@ -132,13 +132,12 @@ test("ledger move: the old usage.db's rows land once in kernel.db, repeatably, a
   const back = new DatabaseSync(legacy);
   back.prepare("INSERT INTO calls (key, at, day, run_key, agent_id, issue_id, task_subject, kind, component, model, cost_usd, status) VALUES ('gen-late', '2026-11-16T09:30:00Z', '2026-11-16', 'run-x', 'ag', 'WOR-9', 'WOR-9', 'agent', 'agent', 'm', 0.004, 'ok')").run();
   back.close();
-  // The gateway on kernel.db: the agent's day ($0.054 moved) is past its $0.05 cap, so it is refused; the owner's raise and
-  // the CI token's replay guard came along.
+  // The gateway on kernel.db: the agent's day ($0.054 moved) is past its $0.05 cap, so it is refused; the owner's raise came
+  // along (and the token replay guard: the 52 rows above).
   const r = await rig(t, { dir, legacy, dayUsd: 0.05, answer: usage(0.001) });
   assert.deepEqual({ ...totals(r.gw.db) }, { n: 51, s: 0.054 });
   const refused = await r.call({ model: "flat", messages: [] }, "WOR-10");
   assert.equal(refused.status, 402);
   assert.match(refused.json.error.message, /^spend cap reached: agent-day \$0\.05 of \$0\.05;/);
   assert.equal(r.gw.db.prepare("SELECT cap FROM caps WHERE agent_id = 'ag'").get().cap, 0.2);
-  assert.equal(r.gw.db.prepare("SELECT COUNT(*) AS n FROM ci_tokens").get().n, 1);
 });

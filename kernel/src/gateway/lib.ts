@@ -216,7 +216,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const { db, moved } = openLedger(dbFile, legacyDbFile);
   if (moved) log("ledger rows moved into kernel.db", { rows: moved });
   // A reservation a restart left open is settled at its reserved amount (fail closed).
-  db.prepare("UPDATE calls SET status = 'unsettled' WHERE status = 'reserved'").run();
+  db.prepare("UPDATE calls SET status = 'unsettled', at = ? WHERE status = 'reserved'").run(new Date(now()).toISOString());
   const grants = watched(grantsFile, (j) => (j.agents ?? {}) as Grants, {});
   const prices = watched(settingsFile, (j) => (j.models && typeof j.models === "object" ? (j.models as Record<string, Price>) : {}), {});
   // CI code review (compile writes it from the ci module's settings): { enabled, orgs, models, repo_day_usd, day_usd } or null.
@@ -545,12 +545,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       settle("upstream_error");
       throw fail(502, "upstream_error", `OpenRouter unreachable (${(e as Error).message})`);
     }
-    res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k))));
     const tap = usageTap(String(up.headers.get("content-type") ?? "").includes("event-stream"));
     const text = new TextDecoder();
     // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger.
     let status = "upstream_aborted";
     try {
+      res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k))));
       if (up.body) for await (const c of up.body) { if (!res.destroyed) res.write(c); tap.feed(text.decode(c, { stream: true })); }
       status = up.ok ? "ok" : `upstream_${up.status}`;
     } finally {
@@ -584,7 +584,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       out.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`);
       for (const [labels, v] of rows) out.push(`${name}${Object.keys(labels).length ? `{${Object.entries(labels).map(([k, x]) => `${k}="${esc(x)}"`).join(",")}}` : ""} ${Math.round(v * 1e4) / 1e4}`);
     };
-    const spend = db.prepare("SELECT agent_id, kind, COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status != 'cap_reached' GROUP BY agent_id, kind").all(today) as { agent_id: string | null; kind: string; s: number }[];
+    const spend = db.prepare("SELECT agent_id, kind, COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status NOT IN ('cap_reached', 'reserved') GROUP BY agent_id, kind").all(today) as { agent_id: string | null; kind: string; s: number }[];
     metric("aidenhq_gateway_spend_usd_today", "Billed model spend since 00:00 UTC, by agent key and call kind.", spend.map((r) => [{ agent: keyOf(r.agent_id), kind: r.kind }, r.s]));
     const agents = [...new Set(spend.filter((r) => r.agent_id && !SYSTEM[r.kind] && r.kind !== CI_KIND).map((r) => r.agent_id!))];
     metric("aidenhq_gateway_agent_day_spend_usd", "An agent's spend counted against its agent-day cap, since 00:00 UTC.", agents.map((id) => [{ agent: keyOf(id) }, (q.spentDay.get(id, today) as Sum).s]));

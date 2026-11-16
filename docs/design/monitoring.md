@@ -53,7 +53,7 @@ Images (pinned by digest; `scripts/supply-chain/best-version.mjs`, release dates
   `aidenhq_board_cards_pending{tier}`, `aidenhq_board_fleet_incidents_open`, `aidenhq_board_alerts_firing`.
 - Gateway: `aidenhq_gateway_spend_usd_today{agent,kind}`, `aidenhq_gateway_agent_day_spend_usd{agent}` and
   `_agent_day_cap_usd{agent}`, `aidenhq_gateway_cap_refusals_today{agent,kind}`, `aidenhq_gateway_ci_spend_usd_today`,
-  `aidenhq_gateway_ci_day_cap_usd`, `aidenhq_gateway_enforcing_caps`, `aidenhq_gateway_inflight`. Labels are agent keys.
+  `aidenhq_gateway_ci_day_cap_usd`, `aidenhq_gateway_inflight`. Labels are agent keys.
 - Runner: `aidenhq_runner_queue_depth`, `_running_jobs`, `_oldest_job_seconds`, `_job_duration_seconds` (histogram, since
   the runner started), `_merge_queues{state}`, `_merge_prs_waiting`.
 - Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_fleet_draining`, `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`.

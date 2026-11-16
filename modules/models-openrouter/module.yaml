@@ -5,7 +5,8 @@ description: "The OpenRouter models the gateway may call, with their prices. A m
 # little under): a call is settled at max(what OpenRouter reported, tokens x these prices), so these only catch an under-report
 # or a missing one and never inflate a normal call. peak: the most a call can cost, as a multiple of these prices (the ledger's
 # p99 cost/floor ratio, 2026-11-16); a reservation is (estimated input x in + max_output x out) x peak. max_output: the most
-# output tokens (reasoning included) a call may ask for. Every model an agent, routine or CI review names must be here
+# output tokens (reasoning included) a call may ask for, within what most of the model's ZDR providers take (OpenRouter
+# routes around one that takes less). Every model an agent, routine or CI review names must be here
 # (compile), and the runner's own (reviewer, grader, intake, advisor, fan-out) too.
 models:
   - { id: "~deepseek/deepseek-flash-latest", in: 0.04, cached_in: 0.0008, out: 0.16, peak: 8, max_output: 131072 }
@@ -13,9 +14,9 @@ models:
   - { id: "deepseek/deepseek-v4-pro", in: 0.9, cached_in: 0.25, out: 1.5, peak: 4, max_output: 131072 }
   - { id: "~openai/gpt-luna-latest", in: 0.1, cached_in: 0.01, out: 0.5, peak: 2, max_output: 128000 }
   - { id: "~openai/gpt-sol-latest", in: 2, cached_in: 0.1, out: 10, peak: 2, max_output: 65536 }
-  - { id: "~z-ai/glm-flash-latest", in: 0.0399, cached_in: 0.03, out: 0.0784, peak: 6, max_output: 131072 }
-  - { id: "z-ai/glm-5.3-flash", in: 0.0399, cached_in: 0.03, out: 0.0784, peak: 6, max_output: 131072 }
-  - { id: "z-ai/glm-5.3", in: 0.0699, cached_in: 0.0689, out: 1.4, peak: 12, max_output: 131072 }
+  - { id: "~z-ai/glm-flash-latest", in: 0.0399, cached_in: 0.03, out: 0.0784, peak: 6, max_output: 128000 }
+  - { id: "z-ai/glm-5.3-flash", in: 0.0399, cached_in: 0.03, out: 0.0784, peak: 6, max_output: 128000 }
+  - { id: "z-ai/glm-5.3", in: 0.0699, cached_in: 0.0689, out: 1.4, peak: 12, max_output: 128000 }
   - { id: "moonshotai/kimi-k3.1-pro", in: 0.2403, cached_in: 0.2, out: 8.4023, peak: 8, max_output: 131072 }
   - { id: "moonshotai/kimi-k3", in: 0.192, cached_in: 0.182, out: 16, peak: 4, max_output: 131072 }
   - { id: "qwen/qwen3-coder-next", in: 0.12, cached_in: 0.07, out: 0.8, peak: 4, max_output: 131072 }
