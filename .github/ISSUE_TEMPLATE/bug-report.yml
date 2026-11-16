@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in AidenHQ does not work as documented.
+title: "fix(<module>): <what is wrong>"
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search first for the fingerprint token (and the error text); add a comment to an existing issue instead of filing a duplicate.
+        Remove names, emails, hostnames, IPs, ids and tokens from everything below.
+  - type: input
+    id: version
+    attributes:
+      label: Product version
+      description: "A release tag or the product sha from `instance.yaml` (`product:`)."
+      placeholder: "0123abc or v1.2.3"
+    validations:
+      required: true
+  - type: input
+    id: module
+    attributes:
+      label: Module and version
+      description: "The module the problem is in (`core`, `board`, ...) and its version or sha; `kernel` if it is the kernel."
+      placeholder: "board@0123abc"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Numbered steps from a clean state, with expected and actual behaviour.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Log lines, error text, failing test output, a task or approval id (scrubbed). Fenced, trimmed to the relevant lines.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: origin
+    attributes:
+      label: Origin
+      description: "Where this was filed from: `instance=<instance_name> agent=<agent_key>` for an AidenHQ agent, or `human`."
+      placeholder: "instance=acme agent=platform-engineer"
+    validations:
+      required: true
+  - type: input
+    id: fingerprint
+    attributes:
+      label: Fingerprint
+      description: "Dedupe token: `aidenhq-fp:` plus the first 16 hex characters of sha256 of `<module>|<normalised symptom>` (CONTRIBUTING.md). Agents also append it as a hidden `<!-- aidenhq-fingerprint: ... -->` line."
+      placeholder: "aidenhq-fp:0123456789abcdef"
+    validations:
+      required: true

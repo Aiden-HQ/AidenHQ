@@ -1,0 +1,61 @@
+name: Feature request
+description: A capability that would make creating, running or managing agents and apps easier for any owner.
+title: "feat(<module>): <capability>"
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search first for the fingerprint token and for similar requests; comment on an existing issue instead of filing a duplicate.
+        Remove names, emails, hostnames, IPs, ids and tokens from everything below.
+  - type: input
+    id: version
+    attributes:
+      label: Product version
+      description: "A release tag or the product sha from `instance.yaml` (`product:`)."
+    validations:
+      required: true
+  - type: input
+    id: module
+    attributes:
+      label: Module and version
+      description: "The module this belongs in, and its version or sha; `kernel` or `new module` where that fits."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Current behaviour
+      description: What happens today and the steps that show the gap.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal and why
+      description: The outcome wanted and why it helps owners in general, not one workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: How often the need came up, what it cost, links to the tasks or runs (scrubbed).
+    validations:
+      required: true
+  - type: input
+    id: origin
+    attributes:
+      label: Origin
+      description: "Where this was filed from: `instance=<instance_name> agent=<agent_key>` for an AidenHQ agent, or `human`."
+      placeholder: "instance=acme agent=platform-engineer"
+    validations:
+      required: true
+  - type: input
+    id: fingerprint
+    attributes:
+      label: Fingerprint
+      description: "Dedupe token: `aidenhq-fp:` plus the first 16 hex characters of sha256 of `<module>|<normalised symptom>` (CONTRIBUTING.md). Agents also append it as a hidden `<!-- aidenhq-fingerprint: ... -->` line."
+      placeholder: "aidenhq-fp:0123456789abcdef"
+    validations:
+      required: true
