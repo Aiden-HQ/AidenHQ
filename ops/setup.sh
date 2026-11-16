@@ -150,13 +150,18 @@ fi
 owner_link() {
   if [ "$DRY" = 1 ]; then echo "  + board: the owner's one-time setup link"; return 0; fi
   for _ in $(seq 60); do curl -fsS -o /dev/null http://127.0.0.1:3120/healthz 2>/dev/null && break; sleep 2; done
-  local url
-  url="$(board POST /api/accounts/setup "{\"email\":$(json "$OWNER_EMAIL"),\"name\":$(json "$OWNER_NAME")}" 2>/dev/null | jq -r .url || true)"
-  if [[ "$url" =~ ^https?://[^[:space:]]+$ ]]; then
+  local resp code url
+  # The status too: only 409 (the owner already exists) is a quiet answer; any other failure stops setup.
+  resp="$(printf 'x-operator-key: %s\n' "$(read_secret board_operator_key)" | curl -sS -X POST http://127.0.0.1:3120/api/accounts/setup \
+    -H 'host: localhost:3120' -H 'content-type: application/json' -H 'x-aidenhq-board: 1' -H @- -w '\n%{http_code}' \
+    --data "{\"email\":$(json "$OWNER_EMAIL"),\"name\":$(json "$OWNER_NAME")}" 2>/dev/null || true)"
+  code="${resp##*$'\n'}"; url="$(printf '%s' "${resp%$'\n'*}" | jq -r '.url // empty' 2>/dev/null || true)"
+  if [ "$code" = 200 ] && [[ "$url" =~ ^https?://[^[:space:]]+$ ]]; then
     echo "$url"
     # The installer reads this line (the last one wins).
     [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SETUP_URL=$url"
-  else echo "(the owner's account already exists; a new link goes to the owner's Telegram: sudo ops/setup.sh ${CONFIG:+--config $CONFIG }--reset $OWNER_EMAIL)"; fi
+  elif [ "$code" = 409 ]; then echo "(the owner's account already exists; a new link goes to the owner's Telegram: sudo ops/setup.sh ${CONFIG:+--config $CONFIG }--reset $OWNER_EMAIL)"
+  else die "the board gave no setup link for $OWNER_EMAIL (HTTP ${code:-none}; is it up? docker compose ps board)"; fi
 }
 
 if [ "$LINK_ONLY" = 1 ]; then
