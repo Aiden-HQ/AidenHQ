@@ -56,6 +56,8 @@ export const WRITES = [
   { method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ },
   // A workflow run whose red jobs all ended on an infrastructure failure: its failed jobs re-run once (infraRetry).
   { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun-failed-jobs$/ },
+  // A workflow run over for 10 minutes with a check still pending (a ghost job): the whole run re-runs once (ghostRetry).
+  { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun$/ },
   // The head is waiting for its design review: written where the runner files and wakes that review.
   { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/statuses\/[0-9a-f]{7,40}$/ },
 ];
@@ -419,21 +421,47 @@ async function retryInfra(github, repo, number, pr) {
   if (!r) return undefined;
   if (r.wait === "running") return { key: "running" };
   if (r.wait) return { key: "rerun", limit: RERUN_SHOWS_MINUTES };
+  return rerunChecks(github, repo, number, pr.headRefOid, r.rerun);
+}
+
+/** Re-runs the failed jobs of each check's workflow run (the whole run for a ghost), one call per run; undefined when refused (no permission). */
+async function rerunChecks(github, repo, number, head, nodes, key = "rerun") {
   const runs = new Map();
-  for (const n of r.rerun) {
+  for (const n of nodes) {
     const run = n.checkSuite.workflowRun.databaseId;
     runs.set(run, [...(runs.get(run) ?? []), { name: n.name, id: n.databaseId }]);
   }
   for (const [run, checks] of runs) {
     try {
-      await github.rerun(repo, number, { run, checks, head: pr.headRefOid });
+      await github.rerun(repo, number, { run, checks, head, whole: key === "ghost" });
     } catch {
       return undefined;
     }
   }
-  return { key: "rerun", limit: RERUN_SHOWS_MINUTES };
+  return { key, limit: RERUN_SHOWS_MINUTES };
 }
-const RERUN_WAIT = { rerun: "a check that failed for infrastructure reasons is being re-run once", running: "checks are running (one that failed for infrastructure reasons is re-run once they're done)" };
+
+/** Minutes a workflow run may be over before a check of it still pending is a ghost job (never settles by itself). */
+const GHOST_MINUTES = 10;
+/**
+ * Pending checks of the head whose workflow run (`github.run`: { status, updatedAt }) has been over for GHOST_MINUTES
+ * (Aiden-HQ/AidenHQ#141, roadmap-keeper#214): the run is re-run once per check per head, by a whole-run re-run (a ghost job isn't failed, so the failed-jobs re-run skips it). A ghost never
+ * counts as passed; if the re-run doesn't clear it, the stuck limit reports it. Undefined when no check is one.
+ */
+export async function ghostRetry(github, repo, number, pr, now) {
+  const head = pr.headRefOid;
+  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+  const reruns = (await github.reruns(repo, number)) ?? {};
+  const ghosts = [];
+  for (const n of rollup?.contexts?.pageInfo?.hasNextPage ? [] : rollup?.contexts?.nodes ?? []) {
+    const run = n.checkSuite?.workflowRun?.databaseId;
+    if (advisory(n) || n.__typename !== "CheckRun" || n.status === "COMPLETED" || !n.databaseId || !run || reruns[n.name]?.head === head) continue;
+    const r = await github.run(repo, run).catch(() => undefined);
+    if (r?.status === "completed" && now - Date.parse(r.updatedAt) > GHOST_MINUTES * 60_000) ghosts.push(n);
+  }
+  return ghosts.length ? rerunChecks(github, repo, number, head, ghosts, "ghost") : undefined;
+}
+const RERUN_WAIT = { rerun: "a check that failed for infrastructure reasons is being re-run once", ghost: "a check is pending although its workflow run is over, so the run is being re-run once", running: "checks are running (one that failed for infrastructure reasons is re-run once they're done)" };
 
 /**
  * The named checks in a status rollup, advisory ones left out, each { name, ok, pending } (tiering and reviewer-approved merges need at least one,
@@ -740,6 +768,12 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     }
     if (d.do === "stop") return stop(d.why);
     if (d.do === "wait") {
+      const ghost = d.key === "checks" ? await ghostRetry(github, next.repo, next.number, pr, t) : undefined;
+      if (ghost) {
+        const r = waitOn(next, pr, `pr:${next.number}:${pr.headRefOid}:ghost`, `#${next.number}: ${RERUN_WAIT.ghost}`, ghost.limit);
+        if (r !== "next") return r;
+        continue;
+      }
       const r = waitOn(next, pr, `pr:${next.number}:${pr.headRefOid}:${d.key ?? d.why}`, d.why, d.limit);
       if (r !== "next") return r;
       continue;
@@ -940,7 +974,9 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
           }
         }
       } else if (d.do === "wait") {
-        wait(`${pr.headRefOid}:${d.key ?? d.why}`, d.why, d.limit, d.again);
+        const ghost = d.key === "checks" ? await ghostRetry(github, p.repo, p.number, pr, t) : undefined;
+        if (ghost) wait(`${pr.headRefOid}:ghost`, RERUN_WAIT.ghost, ghost.limit);
+        else wait(`${pr.headRefOid}:${d.key ?? d.why}`, d.why, d.limit, d.again);
       }
       else if (d.do === "ready") {
         await github.markReady(pr.id, p.repo);
