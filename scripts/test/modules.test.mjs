@@ -209,6 +209,19 @@ test("disabling open-loops removes its agents, routines and labels only", () => 
   assert.ok(!r.paperclip.labels.some((l) => l.name === "waiting-on"));
   assert.ok(r.paperclip.mcp_servers.telegram && r.paperclip.mcp_servers.chat_lane, "the Telegram channel and the chat lane stay: core requires them");
 });
+// Lean-core 3h: graded done is the grading module, always installed: its finish check for the kernel, its own token, the
+// board's read key and the tasks module on its network; nothing of the control plane's.
+test("the grading module: its finish check, its token, the board's key, tasks on its network", () => {
+  const r = compile(repo, inst([], { timezone: "UTC", owner_name: "Sam", owner_email: "o@x" }));
+  assert.deepEqual(r.checks["grading.finish"], { module: "grading", at: "task.finish", url: "http://grading:8096/check/finish", auth_secret: "grading_check_key", label: "grading" });
+  assert.equal(r.kernelModules.modules.grading.token, "grading_token");
+  assert.deepEqual(r.kernelModules.modules.grading.roles, ["kernel.cp-read"]);
+  const g = r.compose.services["grading-grading"];
+  assert.ok(g && !g.ports && !JSON.stringify(g).includes("paperclip_board_key"), "no published port, no control-plane key");
+  assert.equal(r.compose.services.board.environment.GRADING_URL, "http://grading:8096");
+  assert.ok(r.compose.services.board.secrets.includes("grading_board_key"));
+  assert.ok(Object.keys(r.compose.services["tasks-mcp"].networks).includes("mod-grading"));
+});
 // Lean-core 3e: the runner starts jobs through the kernel as engineering, with its own generated token, for every engine-run
 // agent (core's Platform Engineer included); engineering needs any engine, which core's engine-codex provides.
 test("engineering is the job dispatcher: its token, and every dispatch: runner agent in dispatches", () => {
