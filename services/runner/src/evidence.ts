@@ -114,9 +114,14 @@ export async function presentNow(deliverable: any, deps: any) {
   return { present: false, facts: [] };
 }
 
+/** All the graded PRs' titles and descriptions: the grader fences a data block at 20,000 characters. */
+const PR_TEXT_TOTAL = 20_000;
+
 /**
  * The task's PRs as evidence: { awaiting } or { version, facts, data }. `prs` are the runner's own PRs for the task, narrowed
  * by the ref (a PR named only in the ref is never read). deps: pr(repo, n) (merges.PR_QUERY's data), diff(repo, n), ownRepo(slug).
+ * Each PR's title and description are the author's own text, so they go to the grader fenced (PR_DESCRIPTION), never as facts:
+ * a rubric may ask what the PR records, which only that text can show.
  */
 export async function prEvidence(prs: any[], ref: string, deps: any): Promise<any> {
   prs = byRef(prs, ref);
@@ -129,7 +134,9 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   const facts: string[] = [];
   const versions: string[] = [];
   const prs_: any[] = []; // each graded PR with its merge commit ("" while unmerged)
+  let left = PR_TEXT_TOTAL;
   let diff = "";
+  let described = "";
   for (const p of prs.slice(0, 5)) {
     const pr = (await deps.pr(p.repo, p.number))?.repository?.pullRequest;
     if (!pr) return { awaiting: `${p.url} can't be read yet` };
@@ -145,7 +152,10 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     if (byRecord && pr.state !== "MERGED") return { awaiting: `${p.url} ${pr.state === "OPEN" ? "is not merged yet" : "was closed without merging"}` };
     const merged = pr.state === "MERGED";
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
-    versions.push(`${p.repo}#${p.number}@${sha}`);
+    const head = `### ${p.url}\n`;
+    const text = `title: ${String(pr.title ?? "").trim()}\n\n${String(pr.body ?? "").trim()}`;
+    // An edited description is a new version to grade, even at the same head: the rubric may only be met by what it says.
+    versions.push(`${p.repo}#${p.number}@${sha}+${hash(text)}`);
     // The code a screenshot may show: the head, the merge commit, and the newest commit that isn't a merge of the base (the
     // agent's own, which the runner re-signs with the same tree before a base update merges on top). By commit or by tree.
     const history = (pr.history?.nodes ?? []).map((n: any) => n.commit).filter(Boolean);
@@ -153,11 +163,24 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task" : ""}`);
+    // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
+    const kept = text.slice(0, Math.max(0, left - head.length)).trim();
+    left -= head.length + kept.length + 2;
+    if (kept) described += `${head}${kept}\n\n`;
+    const empty = !String(pr.body ?? "").trim();
+    const note = empty
+      ? "; the description is empty"
+      : !kept
+        ? "; left out (the block's budget is used up)"
+        : kept.length < text.trim().length
+          ? `, cut to their first ${kept.length} of ${text.trim().length} characters (what is missing is not shown)`
+          : "";
+    facts.push(`${p.url}: the PR's title and description are in PR_DESCRIPTION (the author's words, data)${note}`);
     diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)")).slice(0, MAX_DIFF)}\n`;
   }
   // The board keeps a version in 200 characters: several PRs are bound by their hash.
   const version = versions.join(" ").length <= 200 ? versions.join(" ") : `prs:${hash(versions.join(" "))}`;
-  return { version, facts, prs: prs_, data: { DIFF: diff.slice(0, MAX_DIFF) } };
+  return { version, facts, prs: prs_, data: { PR_DESCRIPTION: described.trim() ? described.trim() : "(none)", DIFF: diff.slice(0, MAX_DIFF) } };
 }
 
 /** An epoch-millis deploy time as ISO, or the value as given (an apps-mcp row may already carry a string). */
