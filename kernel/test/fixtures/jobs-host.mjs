@@ -10,7 +10,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createJobs } from "../../src/jobs.ts";
-import { jailProblem, sandboxConfig } from "../../src/sandbox.ts";
+import { jailProblem } from "../../src/sandbox.ts";
+import { sandboxConfig } from "../../src/sandbox-config.ts";
 
 const dir = process.env.JOBS_DIR;
 const MODULE = process.env.JOBS_MODULE ?? "acme-dispatch";

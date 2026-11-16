@@ -26,7 +26,8 @@ import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
 import { createJobs } from "./jobs.ts";
-import { jailProblem, overlayProblem, sandboxConfig } from "./sandbox.ts";
+import { jailProblem, overlayProblem } from "./sandbox.ts";
+import { sandboxConfig } from "./sandbox-config.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));

@@ -26,7 +26,7 @@ import type { Asserter } from "./assert.ts";
 import type { Brake } from "./brake.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Whoami } from "./identity.ts";
-import { JobError, type Jobs } from "./jobs.ts";
+import type { Jobs } from "./jobs.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
@@ -185,7 +185,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             }
           }
         } catch (e) {
-          if (e instanceof JobError) throw fail(e.status, e.code, e.message);
+          const j = e as { name?: string; status?: number; code?: string; message: string };
+          if (j.name === "JobError") throw fail(j.status!, j.code!, j.message);
           throw e;
         }
       }

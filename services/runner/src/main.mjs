@@ -12,7 +12,8 @@ import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, owne
 import { applyCardArgs, branchCardArgs, cardText } from "./cards.ts";
 import { authorityLines, diffAll, moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
-import { hiding, jailProblem, sandboxConfig } from "../../../kernel/src/sandbox.ts";
+import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
+import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";
 import { runAlive } from "../../../kernel/src/jobs.ts";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";

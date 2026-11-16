@@ -418,14 +418,15 @@ grep -q '\*\*Read only:\*\* describe, list, get, read and get-iam-policy command
 grep -q '^export function layout(cfg' kernel/src/sandbox.ts && ! grep -q '"--dev-bind", "/", "/"' kernel/src/sandbox.ts && grep -q '"--tmpfs", "/tmp", "--tmpfs", home' kernel/src/sandbox.ts \
   && grep -q '"--unshare-pid", "--unshare-ipc",' kernel/src/sandbox.ts && grep -q '"--proc", "/proc"' kernel/src/sandbox.ts \
   && pass "kernel: jobs see an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "runner: jobs bind the host's whole filesystem again"
-grep -q 'join(homedir(), ".config/gh")' kernel/src/sandbox.ts && grep -q 'const ENV_NAMES = new Set(\["AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "GH_TOKEN", "AIDENHQ_GH_AUTH", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"\]);' kernel/src/jobs.ts && grep -q '...(gh ? \["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"\] : \[\])' kernel/src/sandbox.ts \
+grep -q 'join(homedir(), ".config/gh")' kernel/src/sandbox-config.ts && grep -q 'const ENV_NAMES = new Set(\["AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "GH_TOKEN", "AIDENHQ_GH_AUTH", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"\]);' kernel/src/jobs.ts && grep -q '...(gh ? \["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"\] : \[\])' kernel/src/sandbox.ts \
   && grep -q 'permissions: READ, fresh: true' services/runner/src/github-app.ts && node --input-type=module -e 'import { READ } from "./services/runner/src/github-app.ts"; process.exit(Object.values(READ).every((v) => v === "read") ? 0 : 1)' \
   && pass "runner: jobs can't read the user's gh sign-in; their gh (host and box) reads with a read-only App token for the task's repos" || fail "runner: the user's gh sign-in isn't hidden from jobs, or their gh token changed (or gained a write permission)"
 # Live, under the jobs' own mask (kernel/src/sandbox.ts hiding, from the kernel's sandbox config): the host user is in the docker group
 # (root on the host) and is tailscaled's operator; the data dir holds the board's and Paperclip's sessions.
 if job_probe="$(node --input-type=module -e '
   import { spawnSync } from "node:child_process";
-  import { sandboxConfig } from "./kernel/src/sandbox.ts";
+  import { hiding } from "./kernel/src/sandbox.ts";
+  import { sandboxConfig } from "./kernel/src/sandbox-config.ts";
   const cfg = sandboxConfig();
   const run = (cmd) => { const [c, ...a] = hiding(cfg, ["sh", "-c", cmd]); return spawnSync(c, a, { encoding: "utf8", timeout: 20000 }); };
   const leaks = [];
@@ -457,7 +458,8 @@ fi
 # any other; the Internet and the allowed ports must work, so a broken jail can't pass as "blocked".
 if net_probe="$(node --input-type=module -e '
   import { spawn, spawnSync } from "node:child_process";
-  import { hiding, jailProblem, loopbackPorts, sandboxConfig } from "./kernel/src/sandbox.ts";
+  import { hiding, jailProblem, loopbackPorts } from "./kernel/src/sandbox.ts";
+  import { sandboxConfig } from "./kernel/src/sandbox-config.ts";
   const cfg = sandboxConfig();
   const gatewayUrl = (c) => c.gatewayUrl;
   const problem = jailProblem(cfg);

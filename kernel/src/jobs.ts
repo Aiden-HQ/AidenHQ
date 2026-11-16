@@ -44,7 +44,7 @@ export interface JobView {
 export class JobError extends Error {
   status: number;
   code: string;
-  constructor(status: number, code: string, message: string) { super(message); this.status = status; this.code = code; }
+  constructor(status: number, code: string, message: string) { super(message); this.name = "JobError"; this.status = status; this.code = code; }
 }
 
 // The names a dispatcher may set in a job's env. Everything else the kernel sets (sandbox.ts and `base` below); nothing of the
