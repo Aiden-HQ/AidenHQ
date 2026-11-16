@@ -128,7 +128,12 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   }
   const facts = [...(ev?.facts ?? w.facts), ...files.facts, ...docs.facts, ...other.facts];
   const data = { ...(ev?.data ?? w.data), ...w.data, ...files.data, ...docs.data, ...other.data };
-  if (ev) return { version: docs.version ? `${ev.version.slice(0, 130)}+${docs.version}` : ev.version, facts, data, images: files.images };
+  if (ev) {
+    // Attachments and task documents are evidence for a deliverable too, so they ride with its version: a new file or
+    // document revision is graded afresh. Comments do not: a merged PR's code is what its version names.
+    const extra = [w.filesVersion, docs.version].filter(Boolean);
+    return { version: extra.length ? `${ev.version.slice(0, 130)}+${extra.join("+")}` : ev.version, facts, data, images: files.images };
+  }
   if (!w.version && !docs.version) return { awaiting: "nothing posted on the task yet", missing: true };
   // Files and documents landing on the named task make a new version too.
   const v = docs.version ? `${w.version.slice(0, 130)}+${docs.version}` : w.version;

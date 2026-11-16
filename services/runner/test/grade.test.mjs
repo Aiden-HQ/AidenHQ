@@ -538,6 +538,21 @@ test("an attachment or a document cannot close its fence in the grader's prompt,
   assert.equal((prompt.match(/^(?:<<<[A-Z_0-9]+|[A-Z_0-9]+>>>)$/gm) ?? []).length, 2 * blocks, "no data line is a bare marker");
 });
 
+test("a new attachment or document regrades the deliverable; a new comment does not", async () => {
+  const file = (id) => ({ id, originalFilename: `${id}.log`, contentType: "text/plain", byteSize: 4, createdAt: "2026-11-14T10:00:00Z" });
+  const merged = { kind: "pr", ref };
+  const run = (over) => gather(merged, deps({ pr: async () => pr({ state: "MERGED" }), attachments: async () => [file("f1")], content: async () => Buffer.from("pass"), documents: async () => [], ...over }), ["the log passes"]);
+  const base = await run({});
+  assert.match(base.version, /^acme\/app#7@m{40}\+[0-9a-f]{16}$/);
+  // The same code, a new attachment: a new version, so the grader reads it.
+  assert.notEqual((await run({ attachments: async () => [file("f1"), file("f2")] })).version, base.version);
+  // The same files, a new comment: the version stands, so a merged PR is not regraded for a comment.
+  assert.equal((await run({ comments: async () => [{ id: "c9", body: "Thanks, one more note.", authorType: "user", createdAt: "2026-11-14T11:00:00Z" }] })).version, base.version);
+  // A new document revision too.
+  const doc = (rev) => [{ id: "d1", key: "evidence", title: "Evidence", format: "markdown", body: "the probe passed", latestRevisionId: rev, latestRevisionNumber: rev === "r1" ? 1 : 2 }];
+  assert.notEqual((await run({ documents: async () => doc("r2") })).version, (await run({ documents: async () => doc("r1") })).version);
+});
+
 test("fence characters in a text are escaped inside its budget: nothing the facts call sent is cut silently", async () => {
   // Brackets everywhere, like a captured HTML page: escaping doubles most of them. The escaped block must still fit its own
   // limit, so the cut is marked where it happens rather than the prompt's outer cap trimming it with nothing said.

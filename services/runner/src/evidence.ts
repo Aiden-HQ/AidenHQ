@@ -252,7 +252,8 @@ export function pickComments(all: any[], own: (c: any) => boolean, rubric = "") 
  * pickComments) and its files: the evidence for file and report, context for the rest. The task's agent is deps.assignee
  * (its own comments) or the runner posting an Engineer's (its marker). File names and types are the agents' own strings: the
  * trusted facts call each file by a code-made label (file_1, file_2, ... in the attachments' order) and its name and type go
- * in the fenced FILE_NAMES block, as data. The version stays the newest comments' and the files' ids.
+ * in the fenced FILE_NAMES block, as data. The version stays the newest comments' and the files' ids; `filesVersion` is the
+ * attachments' ids alone, so the grader can regrade a deliverable when its files change without a comment doing so.
  */
 export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<any> {
   const all = (await deps.comments()).filter((c: any) => !String(c.body ?? "").includes(GRADER_MARKER));
@@ -266,7 +267,8 @@ export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<a
   // Every attachment has a line, whatever its name's length: the prompt promises FILE_NAMES names them all, and its block has
   // the room for one short line each (the prompt fences a block at 20,000 and a task has far fewer files than that).
   const names = files.map((f: any) => `${f.label}: ${String(f.originalFilename ?? f.name ?? "").slice(0, 120)} (${String(f.contentType ?? "").slice(0, 60)}; ${Number(f.byteSize) || 0} bytes)`).join("\n");
-  return { version, facts, files, data: { TASK_COMMENTS: picked.text, ...(files.length ? { FILE_NAMES: names } : {}) } };
+  const filesVersion = files.length ? hash(files.map((f: any) => f.id).join(" ")) : "";
+  return { version, filesVersion, facts, files, data: { TASK_COMMENTS: picked.text, ...(files.length ? { FILE_NAMES: names } : {}) } };
 }
 
 const MAX_OTHER_TASKS = 3;
