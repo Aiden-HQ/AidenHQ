@@ -19,11 +19,17 @@ secrets="$(expand "${AIDENHQ_SECRETS_DIR:-$HOME/.config/aidenhq}")"
 mountpoint -q "$secrets" || [ ! -e "$HOME/.local/share/aidenhq/vault.enc" ] || { echo "the secret vault isn't mounted at $secrets" >&2; exit 1; }
 [ -s "$secrets/restic_password" ] || { echo "no restic_password in $secrets" >&2; exit 1; }
 
-ver=0.19.1 sum=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
+# sha256s from the release's SHA256SUMS.
+ver=0.19.1
+case "$(uname -m)" in
+  x86_64) arch=amd64 sum=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c ;;
+  aarch64 | arm64) arch=arm64 sum=a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465 ;;
+  *) echo "restic has no pinned build for $(uname -m)" >&2; exit 1 ;;
+esac
 restic="$HOME/.local/share/aidenhq/restic-$ver"
 if [ ! -x "$restic" ]; then
   mkdir -p "$(dirname "$restic")"
-  curl -fsSLo "$restic.bz2" https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2
+  curl -fsSLo "$restic.bz2" https://github.com/restic/restic/releases/download/v$ver/restic_${ver}_linux_$arch.bz2
   echo "$sum  $restic.bz2" | sha256sum -c - >/dev/null
   bunzip2 -f "$restic.bz2" && chmod 0755 "$restic"
 fi

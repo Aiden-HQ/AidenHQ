@@ -15,7 +15,7 @@ import { adoptRun, cowRoot, engineState, overlayProblem, readEngines, removeLaye
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
-import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg, mergePermissions, pushPermissions } from "./github-app.ts";
+import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg, jobGhToken, mergePermissions, pushPermissions } from "./github-app.ts";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
@@ -89,19 +89,6 @@ const ghoMerge = async (slug, extra, perms = WRITE) => (ownRepo(slug) ? gho(slug
 const RERUN = { actions: "write" };
 /** The design review's pending status needs Commit statuses: write (the App's merge token has them read-only). */
 const STATUS = { ...WRITE, statuses: "write" };
-/**
- * The job's gh token: the App's, read-only (READ), narrowed to the task's repos it covers in the first such repo's org
- * (one token, one org), and fresh so it lasts the run. Undefined when it covers none: the job's gh then has no GitHub
- * access at all, never the user's own sign-in (hidden from jobs).
- */
-async function jobGhToken(repos) {
-  const covered = [];
-  for (const r of repos) if (await appFor(r.slug)) covered.push(r.slug.split("/"));
-  if (!covered.length) return undefined;
-  const org = covered[0][0];
-  const names = covered.filter(([o]) => o.toLowerCase() === org.toLowerCase()).map(([, name]) => name);
-  return app.token(org, { repositories: names, permissions: READ, fresh: true });
-}
 /** Commit identity for agents and landed commits: the App's bot, else "AidenHQ agent"; never the owner's. */
 const botIdentity = async () => (app ? await app.identity().catch((err) => (log("github app identity failed", { err: String(err.message).slice(0, 200) }), DEFAULT_IDENTITY)) : DEFAULT_IDENTITY);
 if (app) {
@@ -3650,7 +3637,7 @@ async function startJob({ issue, instructions }) {
       : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, observe, thread, stand, team: crewNames(engineers), brief, build });
     const tipsBefore = await branchTips(workspace);
     const identity = await botIdentity();
-    const ghToken = engine.box ? undefined : await jobGhToken(repos).catch((err) => (log("no gh token for the job", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), undefined));
+    const ghToken = await jobGhToken(app, repos.map((r) => r.slug), appFor).catch((err) => (log("no gh token for the job", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), undefined));
     // A box job: its box first (the task's last one confirmed gone), bound to this task and to the helper token it will use.
     const helperToken = randomBytes(24).toString("hex");
     if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity, engine });

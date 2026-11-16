@@ -257,7 +257,7 @@ export function jobFolder(given, root, name) {
 export const JOB_HOME = "/workspace/.aidenhq/home";
 const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-/** Every name a job box's env may hold: the run's revocable capabilities and plain settings. Nothing of the runner's own env. */
+/** Every name a job box's env file may hold: the run's revocable capabilities and plain settings. Nothing of the runner's own env (the runner adds only the job's read-only gh token, by docker exec -e). */
 export const JOB_ENV_NAMES = [
   "AIDENHQ_RUN_TOKEN", "AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "AIDENHQ_MCP_B64", "HOME", "CODEX_HOME", "PATH",
   "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_TERMINAL_PROMPT",

@@ -5,7 +5,7 @@ import { createVerify, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_IDENTITY, WRITE, identityEnv, appClient, appSlugOf, appJwt, appRemoteUrl, ghOptions, mergePermissions, pushPermissions, withGitToken } from "../src/github-app.ts";
+import { DEFAULT_IDENTITY, READ, WRITE, identityEnv, appClient, jobGhToken, appSlugOf, appJwt, appRemoteUrl, ghOptions, mergePermissions, pushPermissions, withGitToken } from "../src/github-app.ts";
 import { git, setGitAuth } from "../src/git.mjs";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -52,6 +52,22 @@ describe("GitHub App", () => {
     assert.equal(mints.length, 2);
     assert.deepEqual(mints[0].body, { repositories: ["x"], permissions: WRITE });
     assert.equal(calls.filter((c) => c.path.startsWith("/app/installations?")).length, 1);
+  });
+
+  it("a job's gh token (host or box) asks only for read permissions, narrowed to the task's covered repos in one org", async () => {
+    const { app, calls } = fakeGitHub();
+    const covered = async (slug) => slug !== "aidenhq-demo/uncovered";
+    const token = await jobGhToken(app, ["aidenhq-demo/x", "aidenhq-demo/uncovered", "Acme/selected", "aidenhq-demo/y"], covered);
+    const mints = calls.filter((c) => c.path.endsWith("/access_tokens"));
+    assert.equal(mints.length, 1);
+    assert.equal(mints[0].path, "/app/installations/42/access_tokens");
+    assert.deepEqual(mints[0].body, { repositories: ["x", "y"], permissions: READ });
+    assert.ok(Object.values(mints[0].body.permissions).every((v) => v === "read"), "no write permission of any kind");
+    assert.equal(token, "ghs_1");
+    calls.length = 0;
+    assert.equal(await jobGhToken(app, ["someone/else"], async () => false), undefined, "a task with no covered repo gets none");
+    assert.equal(await jobGhToken(undefined, ["aidenhq-demo/x"], covered), undefined, "nor without an App");
+    assert.equal(calls.filter((c) => c.path.endsWith("/access_tokens")).length, 0, "and nothing is minted");
   });
 
   it("a push asks for Workflows: write on the agents org and the product repo, Contents only elsewhere", () => {
