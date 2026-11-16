@@ -13,6 +13,7 @@ import { createApp } from "../src/app.js";
 import { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 import { adminListener } from "./admin.js";
+import { card, fakeRecords } from "./fake-records.js";
 import { totp } from "./totp.js";
 
 const CO = "00000000-0000-4000-8000-000000000001";
@@ -62,6 +63,7 @@ const fakeFetch = (async (url: URL, init: RequestInit = {}) => {
 describe("every admin writes as the owner, with their name on it", () => {
   const log = pino({ level: "silent" });
   const store = new Store(":memory:");
+  const records = fakeRecords();
   const PASSWORD = "correct horse battery staple";
   let app: ReturnType<typeof createApp>;
   let port = 0;
@@ -71,7 +73,7 @@ describe("every admin writes as the owner, with their name on it", () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), "admins-")), "auth.db");
     accounts = await createAccounts({ dbPath, hosts: ["localhost:3121"], adminUrl: "http://localhost:3120", log });
     kernel = await adminListener(dbPath, ["localhost:3120"]);
-    app = createApp({ paperclip: new Paperclip("http://paperclip", CO, KEY, fakeFetch), store, log, staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan" });
+    app = createApp({ paperclip: new Paperclip("http://paperclip", CO, KEY, fakeFetch), store, records, log, staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan" });
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
     port = (app.address() as AddressInfo).port;
   });
@@ -135,19 +137,12 @@ describe("every admin writes as the owner, with their name on it", () => {
     expect(writes.at(-1)).toMatchObject({ key: KEY, method: "PATCH", body: { title: "Pricing page" } });
 
     // A typed "approve WOR-1" is only a message now: cards are decided on the kernel's approval page, which stamps the admin
-    // (account:<id>) through the internal route. The board names who decided; the owner's own decisions carry no label.
-    let n = 0;
-    const card = () => store.approvals.request({ issueId: issues[0]!.id, identifier: "WOR-1", action: "apply", target: "x", digest: String(++n).padEnd(40, "c"), args: {}, sentence: "s", reads: "", changes: "c", cost: "", details: "", requestedBy: "r" }).id;
-    const first = card();
+    // (account:<id>). The board names who decided; the owner's own decisions carry no label.
+    records.cards.push(card({ id: "A1", issueId: issues[0]!.id, identifier: "WOR-1" }), card({ id: "A2", state: "rejected", decidedBy: `account:${annId}` }), card({ id: "A3", state: "rejected", decidedBy: `account:${setup.account.id}` }));
     const typed = await ann("POST", "/api/issues/WOR-1/comments", { body: "approve WOR-1" });
     expect(typed.json.approval).toBeUndefined();
-    expect(store.approvals.get(first)!.state).toBe("pending");
-    const second = card();
-    store.approvals.decide(second, "reject", `account:${annId}`);
-    const third = card();
-    store.approvals.decide(third, "reject", `account:${setup.account.id}`);
     const listed = (await me("GET", "/api/approvals")).json.approvals;
-    expect(listed.find((a: { id: string }) => a.id === second)).toMatchObject({ state: "rejected", decidedByName: "Ann" });
-    expect(listed.find((a: { id: string }) => a.id === third).decidedByName).toBeUndefined();
+    expect(listed.find((a: { id: string }) => a.id === "A2")).toMatchObject({ state: "rejected", decidedByName: "Ann" });
+    expect(listed.find((a: { id: string }) => a.id === "A3").decidedByName).toBeUndefined();
   });
 });

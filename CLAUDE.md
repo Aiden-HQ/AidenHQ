@@ -93,8 +93,8 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
   `services/runner/src/config.mjs`). Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
-- **Approval card args are a contract:** the runner builds them (`services/runner/src/cards.ts`) and the board validates
-  them strictly (`services/board/src/approvals.ts` ARGS). A new field goes in both; `card-contract.test.ts` must pass.
+- **Approval records live in the kernel** (`kernel/src/records.ts`, `kinds.ts`): the runner files its plan and card args, the
+  kernel validates them strictly and decides who decides. The board keeps no approval store and only reads them.
 - **Supply chain:** unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version
   published less than 7 days ago. Pin every dependency exactly (images by digest, actions by SHA, apt `pkg=version`,
   global installs at a version, no `curl | sh`); pick versions with `scripts/supply-chain/best-version.mjs`, and state the

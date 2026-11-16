@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { fleetSummary, scorecard, type Facts } from "../src/fleet-stats.js";
-import type { Approval } from "../src/approvals.js";
+import type { Approval } from "../src/records.js";
 import type { Grade } from "../src/grades.js";
 import type { Issue } from "../src/paperclip.js";
 
 const NOW = Date.parse("2026-11-13T12:00:00Z");
 const ago = (days: number) => new Date(NOW - days * 864e5).toISOString();
 const issue = (id: string, agent: string, days: number, status = "done") => ({ id, identifier: `WOR-${id}`, title: `t${id}`, status, assigneeAgentId: agent, completedAt: ago(days), updatedAt: ago(days) }) as unknown as Issue;
-const card = (o: Partial<Approval>) => ({ id: "a", identifier: "WOR-1", action: "apply", target: "x", state: "approved", tier: 2, requesterId: "A", createdAt: ago(1), expiresAt: ago(-5), outcome: null, outcomeText: null, usedAt: null, ...o }) as unknown as Approval;
+const card = (o: Partial<Approval>) => ({ id: "a", identifier: "WOR-1", action: "apply", target: "x", state: "approved", tier: 2, requesterId: "A", createdAt: ago(1), outcome: null, outcomeText: null, usedAt: null, ...o }) as unknown as Approval;
 
 const facts: Facts = {
   closed: [issue("1", "A", 1), issue("2", "A", 2), issue("3", "A", 3), issue("4", "A", 9), issue("5", "B", 1), issue("6", "A", 1, "cancelled")],

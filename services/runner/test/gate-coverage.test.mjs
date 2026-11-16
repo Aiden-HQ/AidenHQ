@@ -17,9 +17,9 @@ test("a moved gate file fails", () => {
   assert.ok(problems.some((p) => p.startsWith("dead entry: ^services\\/runner\\/src\\/netjail")));
 });
 
-test("a renamed board approvals file fails", () => {
-  const problems = coverageProblems(moved("services/board/src/approvals.ts", "services/board/src/records.ts"));
-  assert.ok(problems.includes("dead entry: ^services\\/board\\/src\\/approvals\\.ts$"));
+test("a renamed board gate file fails", () => {
+  const problems = coverageProblems(moved("services/board/src/fleet.ts", "services/board/src/fleets.ts"));
+  assert.ok(problems.includes("dead entry: ^services\\/board\\/src\\/fleet\\.ts$"));
 });
 
 // origin/main's GATE_CORE before the split (tiers.mjs at a9f2ae66).

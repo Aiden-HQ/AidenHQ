@@ -7,6 +7,7 @@ import type { RunnerReport } from "./activity.js";
 import type { SessionActivity } from "./codex-activity.js";
 import { liveUpdatesOn, type Events } from "./events.js";
 import type { Issue, LiveRun, Paperclip } from "./paperclip.js";
+import type { Records } from "./records.js";
 
 const TICK_MS = 2_000;
 /** Each look reaches back this far past the newest change seen, so a write that commits late isn't missed. */
@@ -41,6 +42,8 @@ const isChat = (i: Issue, labelId?: string) => Boolean(i.labels?.some((l) => l.n
 export function startWatch(o: {
   pc: Paperclip;
   events: Events;
+  /** The kernel's records: a card filed, decided or finished announces `approvals`. */
+  records?: Pick<Records, "list">;
   log: Logger;
   runner?: () => RunnerReport | undefined;
   session?: (agentId: string, startedAt: string | null) => Promise<SessionActivity | null>;
@@ -49,6 +52,7 @@ export function startWatch(o: {
   let state: Watched | null = null;
   let busy = false;
   let failing = false;
+  let cards: string | undefined;
 
   /** The chat a task belongs to: itself, or the chat it was handed out from. */
   const chatOf = (s: Watched, id: string) => {
@@ -88,7 +92,7 @@ export function startWatch(o: {
 
   async function tick() {
     // Nobody listening (or the setting off): forget, and start fresh with the next board.
-    if (!o.events.open || !liveUpdatesOn()) return void (state = null);
+    if (!o.events.open || !liveUpdatesOn()) return void ((state = null), (cards = undefined));
     if (busy) return;
     busy = true;
     try {
@@ -131,6 +135,11 @@ export function startWatch(o: {
           const chat = chatOf(s, id);
           if (chat && chat !== id && !chats.has(chat)) o.events.emit("progress", chat);
         }
+      }
+      if (o.records) {
+        const now = (await o.records.list("recent", { limit: 100 })).map((a) => `${a.id}|${a.state}|${a.outcome ?? ""}`).join();
+        if (cards !== undefined && now !== cards) o.events.emit("approvals");
+        cards = now;
       }
       if (failing) o.log.info("live watch back");
       failing = false;

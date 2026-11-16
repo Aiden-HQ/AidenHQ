@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { continuedIn } from "../src/chats.js";
 import { latest, rolloverTick } from "../src/rollover.js";
 import { Store } from "../src/store.js";
+import { fakeRecords } from "./fake-records.js";
 
 const t0 = Date.parse("2026-11-15T08:00:00Z");
 type T = { id: string; identifier: string; title: string; description: string | null; status: string; priority: string; assigneeAgentId: string | null; assigneeUserId: string | null; parentId?: string | null; labelIds?: string[]; createdByAgentId?: string | null; createdByUserId?: string | null; updatedAt: string };
@@ -50,7 +51,7 @@ function fake() {
   return { pc, tasks, comments, runs, put, say };
 }
 
-const deps = (f: ReturnType<typeof fake>, store: Store) => ({ pc: f.pc as never, store, log: { info() {}, warn() {} } });
+const deps = (f: ReturnType<typeof fake>, store: Store) => ({ pc: f.pc as never, store, records: fakeRecords(), log: { info() {}, warn() {} } });
 
 describe("task rollover", () => {
   it("moves a chat nearing the input limit to a successor: its open sub-tasks follow, the old one is parked, messages to it go on", async () => {

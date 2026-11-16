@@ -1,8 +1,10 @@
 // Chats: a chat is a Paperclip task labelled `chat`; a message is a comment. Pure helpers: the state a
 // person sees on each chat, and which agent a new message goes to.
-import { parseReply } from "./approvals.js";
 import { RUNNER_MARKER, displayText as strip, hasMarker as has } from "./board.js";
 import type { Agent, Comment, Issue, LiveRun, PastRun } from "./paperclip.js";
+
+/** A label that reads like an approval ("approve WOR-184"): agents may not offer one; only a card or the owner's own words decide. */
+const readsAsApproval = (text: string) => /^\s*(apply|approve|reject)\b/i.test(text);
 
 /**
  * "idle": open, nothing running and nothing asked of the owner (no chip on screen). "in review": work an agent handed to
@@ -116,7 +118,7 @@ export function replyActions(body: string): string[] | undefined {
     const list = JSON.parse(m[1]!) as unknown;
     // Agents write these labels: one that reads like an approval ("approve WOR-184") is dropped. Only the owner's card or
     // his own typed words approve.
-    return Array.isArray(list) ? list.filter((x): x is string => typeof x === "string" && !parseReply(x)).slice(0, 4) : undefined;
+    return Array.isArray(list) ? list.filter((x): x is string => typeof x === "string" && !readsAsApproval(x)).slice(0, 4) : undefined;
   } catch {
     return undefined;
   }
@@ -135,7 +137,7 @@ export function replyQuestions(body: string): Question[] | undefined {
     const str = (x: unknown): x is string => typeof x === "string" && x.length > 0;
     const out = list.slice(0, 4).flatMap((q): Question[] => {
       if (!q || !str(q.question) || !Array.isArray(q.options)) return [];
-      const options = (q.options as unknown[]).filter((o): o is string => str(o) && !parseReply(o)).slice(0, 5);
+      const options = (q.options as unknown[]).filter((o): o is string => str(o) && !readsAsApproval(o)).slice(0, 5);
       return options.length ? [{ question: q.question, options, ...(q.multi === true ? { multi: true } : {}) }] : [];
     });
     return out.length ? out : undefined;

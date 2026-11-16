@@ -6,6 +6,7 @@ import { createApp } from "../src/app.js";
 import { chatAgentMarker } from "../src/chats.js";
 import type { Comment, Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
+import { card, fakeRecords } from "./fake-records.js";
 
 const chatLabel = { id: "33333333-3333-3333-3333-333333333333", name: "chat", color: "#0ea5e9" };
 const base = { priority: "medium", assigneeUserId: null, assigneeAdapterOverrides: null, createdAt: "2026-11-10T10:00:00.000Z", updatedAt: "2026-11-10T10:05:00.000Z" };
@@ -41,8 +42,8 @@ const pc = {
 describe("chat routes", () => {
   const store = new Store(":memory:");
   store.markSeen(chat.id, "2026-11-10T09:00:00.000Z"); // last opened before the reply
-  store.approvals.request({ issueId: child.id, identifier: child.identifier, action: "apply", target: "x", digest: "d".repeat(40), args: {}, sentence: "Move the brief to 08:45 on weekdays.", reads: "", changes: "schedule", cost: "", details: "", requestedBy: "Fleet Engineer" });
-  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
+  const records = fakeRecords([card({ id: "A1", issueId: child.id, identifier: child.identifier, sentence: "Move the brief to 08:45 on weekdays.", requestedBy: "Fleet Engineer" })]);
+  const app = createApp({ paperclip: pc, store, records, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));

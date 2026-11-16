@@ -6,6 +6,7 @@ import { createApp } from "../src/app.js";
 import type { Issue, LiveRun, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 import { startWatch } from "../src/watch.js";
+import { card, fakeRecords } from "./fake-records.js";
 
 const label = { id: "33333333-3333-3333-3333-333333333333", name: "chat", color: "#0ea5e9" };
 const at = (s: number) => new Date(Date.now() + s * 1000).toISOString();
@@ -25,7 +26,8 @@ const pc = {
 const store = new Store(":memory:");
 const log = pino({ level: "silent" });
 const app = createApp({ paperclip: pc, store, log, allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
-const stop = startWatch({ pc, events: store.events, log, everyMs: 20 });
+const records = fakeRecords();
+const stop = startWatch({ pc, events: store.events, records, log, everyMs: 20 });
 let port = 0;
 beforeAll(async () => {
   await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -53,6 +55,9 @@ it("tells open boards what agents change: each task by its id, and the chat it b
   await until(`event: tasks\ndata: {"issue":"${kid.id}"}`);
   live = [{ ...live[0]!, lastOutputSeq: 2 }];
   await until(`event: progress\ndata: {"issue":"${chat.id}"}`);
+  // A card the kernel files is announced as `approvals`.
+  records.cards.push(card({ id: "A9" }));
+  await until("event: approvals");
   req.destroy();
   const frames = (name: string) => text.match(new RegExp(`event: ${name}\\ndata: .*`, "g"));
   expect(frames("chat")).toEqual(Array(2).fill(`event: chat\ndata: {"issue":"${chat.id}"}`));

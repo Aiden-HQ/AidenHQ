@@ -1,7 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Approvals } from "./approvals.js";
 import { Events } from "./events.js";
 import { Grades } from "./grades.js";
 import type { Rule } from "./recurrence.js";
@@ -190,11 +189,9 @@ const toRun = (r: RunRow): RecurringRun => ({
 /** Bucket and rank per Paperclip issue, read markers, the rollover date, scheduled moves and recurring tasks. */
 export class Store {
   private db: DatabaseSync;
-  /** Approval records. */
-  readonly approvals: Approvals;
   /** Graded-done rubrics and state. */
   readonly grades: Grades;
-  /** Live board updates: approvals and grades announce their changes here (events.ts). */
+  /** Live board updates: grades announce their changes here (events.ts). */
   readonly events = new Events();
 
   constructor(path: string) {
@@ -232,7 +229,6 @@ export class Store {
     for (const [c, type] of [["run_key", "TEXT"], ["run_id", "TEXT"], ["issue_id", "TEXT"], ["rev", "TEXT"], ["kind", "TEXT"], ["ms", "INTEGER"], ["status", "TEXT"], ["subject", "TEXT"]]) if (!usageColumns.includes(c!)) this.db.exec(`ALTER TABLE usage ADD COLUMN ${c} ${type}`);
     this.db.exec("CREATE INDEX IF NOT EXISTS usage_run ON usage (run_key); CREATE INDEX IF NOT EXISTS usage_issue ON usage (issue_id); CREATE INDEX IF NOT EXISTS usage_at_cost ON usage (at, cost_usd)");
     if (!this.meta("installed_at")) this.setMeta("installed_at", new Date().toISOString());
-    this.approvals = new Approvals(this.db, this.events);
     this.grades = new Grades(this.db, this.events);
   }
 

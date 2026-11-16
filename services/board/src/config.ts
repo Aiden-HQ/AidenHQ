@@ -17,11 +17,11 @@ export interface Config {
   paperclipUrl: string;
   companyId: string;
   boardKey: string;
-  /** The runner's reviewer key (reviewer_key): Tier 1 verdicts. None: the reviewer can't decide. */
+  /** The runner's key (reviewer_key): its routes (grades, usage, jobs). None: they refuse. */
   reviewerKey?: string;
   /** The operator's key (board_operator_key): ops/setup.sh's owner setup link, welcome chat and account resets, nothing else. */
   operatorKey?: string;
-  /** The model gateway (kernel/src/gateway): its billed ledger is pulled from `url`; `token` (gateway_board_key) both ways (it files raise_cap). */
+  /** The model gateway (kernel/src/gateway): its billed ledger is pulled from `url`; `token` (gateway_board_key) both ways (the kernel's records). */
   gateway?: { url: string; token: string };
   timezone: string;
   workdays: Weekday[];

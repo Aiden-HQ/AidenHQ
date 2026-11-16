@@ -9,6 +9,7 @@
  *                           detector incidents and firing alerts.
  */
 import { z } from "zod";
+import type { Approval, Records } from "./records.js";
 import type { Store } from "./store.js";
 import { detectorState, queueOwnerLine, type Incident } from "./fleet-ops.js";
 
@@ -79,9 +80,14 @@ export async function alertIncidents(store: Pick<Store, "meta" | "setMeta">): Pr
 }
 
 /** Prometheus text exposition (version 0.0.4). */
-export function metricsText(store: Pick<Store, "meta" | "approvals">, now = Date.now()): string {
-  const day = new Date(now).toISOString().slice(0, 10);
-  const s = store.approvals.stats(`${day}T00:00:00`, now);
+export async function metricsText(store: Pick<Store, "meta">, records: Pick<Records, "list">, now = Date.now()): Promise<string> {
+  const since = `${new Date(now).toISOString().slice(0, 10)}T00:00:00`;
+  const cards = await records.list("recent", { limit: 1000 });
+  const count = (xs: Approval[], by: (a: Approval) => Record<string, string | number>): [Record<string, string | number>, number][] => {
+    const n = new Map<string, [Record<string, string | number>, number]>();
+    for (const a of xs) n.set(JSON.stringify(by(a)), [by(a), (n.get(JSON.stringify(by(a)))?.[1] ?? 0) + 1]);
+    return [...n.values()];
+  };
   const out: string[] = [];
   const metric = (name: string, help: string, type: "gauge" | "counter", rows: [Record<string, string | number>, number][]) => {
     out.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`);
@@ -90,9 +96,9 @@ export function metricsText(store: Pick<Store, "meta" | "approvals">, now = Date
       out.push(`${name}${l ? `{${l}}` : ""} ${v}`);
     }
   };
-  metric("aidenhq_board_cards_created_today", "Approval cards created since 00:00 UTC, by tier.", "gauge", s.created.map((r) => [{ tier: r.tier }, r.n]));
-  metric("aidenhq_board_cards_decided_today", "Approval cards decided since 00:00 UTC, by tier and outcome state.", "gauge", s.decided.map((r) => [{ tier: r.tier, state: r.state }, r.n]));
-  metric("aidenhq_board_cards_pending", "Approval cards waiting for a decision, by tier.", "gauge", [1, 2].map((t) => [{ tier: t }, s.pending.find((r) => r.tier === t)?.n ?? 0]));
+  metric("aidenhq_board_cards_created_today", "Approval cards created since 00:00 UTC, by tier.", "gauge", count(cards.filter((a) => a.createdAt >= since), (a) => ({ tier: a.tier })));
+  metric("aidenhq_board_cards_decided_today", "Approval cards decided since 00:00 UTC, by tier and outcome state.", "gauge", count(cards.filter((a) => (a.decidedAt ?? "") >= since), (a) => ({ tier: a.tier, state: a.state })));
+  metric("aidenhq_board_cards_pending", "Approval cards waiting for a decision, by tier.", "gauge", [1, 2].map((t) => [{ tier: t }, cards.filter((a) => a.state === "pending" && a.tier === t).length]));
   metric("aidenhq_board_fleet_incidents_open", "Fleet Ops detector incidents open.", "gauge", [[{}, Object.keys(detectorState(store).open).length]]);
   metric("aidenhq_board_alerts_firing", "Monitoring alerts firing, as the board last heard from Alertmanager.", "gauge", [[{}, Object.keys(firing(store)).length]]);
   return out.join("\n") + "\n";
