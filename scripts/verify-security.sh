@@ -232,8 +232,9 @@ PROBES
         && pass "gate: only accounts.json from data/, read-only" || fail "gate: unexpected data mounts: $mounts"
       # PR previews (settings.edge.previews): apps-mcp's list of running previews, read-only.
       ! echo "$mounts" | grep -q '|/previews|true' && pass "gate: the previews list, if any, is read-only" || fail "gate: /previews is writable: $mounts"
-      # Host networking: its port is whatever it binds. Only cloudflared (on the host) may reach it, so CF-Connecting-IP,
-      # which the gate passes to the sign-in listener as the visitor's address, can't come from anyone else.
+      # Host networking: its port is whatever it binds. Anything on the host's loopback reaches it, so the gate ignores
+      # CF-Connecting-IP there; only its unix socket (data/gate/socket, mounted by the gate and cloudflared alone) names the
+      # visitor's address to the sign-in listener. cloudflared's ingress targets that socket (edge.mjs check).
       # The kernel's backplane listener shares the port number on its own address (checked below): exactly that bind, by the
       # kernel's own process, is not the gate's; every other bind on 3130 is, and must be loopback.
       kpid="$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)"

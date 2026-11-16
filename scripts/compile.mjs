@@ -103,6 +103,8 @@ if (out.edge) {
     mkdirSync(dirname(accounts), { recursive: true, mode: 0o755 });
     writeFileSync(accounts, JSON.stringify({ accounts: [] }) + "\n", { mode: 0o644 });
   }
+  // cloudflared's socket directory (the gate and cloudflared mount it), made here so it is the owner's and not root's.
+  if (!stage && out.edge.cloudflared) mkdirSync(join(dirname(accounts), "socket"), { recursive: true, mode: 0o700 });
   // The gate's signing key is made with the other identity keys above, before compose binds it.
   if (!secretsDir) die("AIDENHQ_SECRETS_DIR is needed with settings.edge (the tunnel credentials and the gate's signing key)");
   const creds = join(secretsDir, "cloudflared_credentials.json");

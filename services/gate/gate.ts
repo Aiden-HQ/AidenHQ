@@ -61,6 +61,8 @@ export interface GateConfig {
   identity?: { header: string; issuer: string; jwks_url: string; auth_method?: string };
   /** A second listener (a tailnet address the front door reaches) beside 127.0.0.1:port; same handler. */
   front?: { address: string; port: number };
+  /** cloudflared's own way in: a unix socket only it and the gate mount. Only requests over it name the visitor (CF-Connecting-IP). */
+  socket?: string;
   my_apps: { host: string; aud?: string };
   identity_key_file: string;
   hosts: Record<string, HostSite>;
@@ -263,10 +265,12 @@ export function upstreamHeaders(req: IncomingMessage, token: IdentityToken, { up
 }
 
 /**
- * The visitor's address: Cloudflare's CF-Connecting-IP only (its edge always overwrites it, and only cloudflared reaches
- * the gate on 127.0.0.1). Absent or not an IP: "" (no header; the board counts the gate's socket address instead).
+ * The visitor's address: Cloudflare's CF-Connecting-IP (its edge always overwrites it), and only on the listener cloudflared
+ * alone reaches (`socket`, `fromTunnel`): anything on the host's loopback reaches 127.0.0.1:<port> and could name any address
+ * there. Elsewhere, absent or not an IP: "" (no header; the board counts the gate's socket address and bans nothing).
  */
-export function clientIp(req: IncomingMessage) {
+export function clientIp(req: IncomingMessage, fromTunnel: boolean) {
+  if (!fromTunnel) return "";
   const v = String(req.headers["cf-connecting-ip"] ?? "").trim().replace(/^::ffff:/, "");
   return isIP(v) ? v : "";
 }
@@ -280,11 +284,11 @@ const boardSecret = (cfg: GateConfig) => {
  * Sign-in traffic for the auth listener: no identity headers or Access token (STRIP drops any x-aidenhq-* a client sent),
  * only Better Auth's cookies, our forwarding, the visitor's address (failures count against it) and the board's secret.
  */
-export function authHeaders(req: IncomingMessage, secret = ""): OutgoingHttpHeaders {
+export function authHeaders(req: IncomingMessage, secret = "", fromTunnel = false): OutgoingHttpHeaders {
   const h: IncomingHttpHeaders = {};
   for (const [k, v] of Object.entries(req.headers)) if (!STRIP.test(k) && !HOP.includes(k) && !k.startsWith("x-forwarded-") && k !== "cookie" && k !== "accept-encoding") h[k] = v;
   const c = authCookies(req);
-  const ip = clientIp(req);
+  const ip = clientIp(req, fromTunnel);
   return { ...h, ...(c ? { cookie: c } : {}), "x-forwarded-host": hostOf(req), "x-forwarded-proto": "https", ...(ip ? { "x-aidenhq-client-ip": ip } : {}), ...(secret ? { "x-aidenhq-gate": secret } : {}) };
 }
 
@@ -375,8 +379,9 @@ export function previewSites(): (cfg: GateConfig, host: string) => Site | undefi
  * identity_key_file: the gate's Ed25519 signing key (vault identity/gate.pem, mounted read-only): it mints each app's token.
  * auth_secret_file: the board's (gate_board_secret), sent as X-AidenHQ-Gate to the auth listener in password mode.
  * accounts_file: the board's account map and app roles (mounted read-only), re-read when its content changes.
+ * fromTunnel: this server listens on cloudflared's socket (main.ts), so CF-Connecting-IP names the visitor.
  */
-export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)) }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log }): Server {
+export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)), fromTunnel = false }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log; fromTunnel?: boolean }): Server {
   const keysets = new Map<string, KeyLookup>(); // certs_url → key lookup (one in practice)
   const keyFor = (url: string) => keysets.get(url) ?? keysets.set(url, jwks(url, fetchImpl, now)).get(url)!;
   const signers = new Map<string, () => Signer>(); // identity_key_file → its key (one in practice)
@@ -802,7 +807,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     let target: { host: string; port: number; headers: OutgoingHttpHeaders };
     if (a.auth) {
       const u = new URL(config().auth_url);
-      target = { host: u.hostname, port: Number(u.port) || 80, headers: authHeaders(req, boardSecret(config())) };
+      target = { host: u.hostname, port: Number(u.port) || 80, headers: authHeaders(req, boardSecret(config()), fromTunnel) };
     } else if (a.site) target = { host: "127.0.0.1", port: a.site.port, headers: upstreamHeaders(req, a.token, { strip: config().identity?.header }) };
     else return void res.writeHead(a.status, { "content-type": "text/plain", ...(a.location ? { location: a.location, "cache-control": "no-store" } : {}), ...(a.cookie ? { "set-cookie": a.cookie } : {}) }).end(`${a.msg}\n`);
     const up = httpRequest({ ...target, method: req.method, path: a.auth ? a.path : req.url });
