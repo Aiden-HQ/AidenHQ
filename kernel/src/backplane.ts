@@ -43,7 +43,7 @@ export const ROUTES = [
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board reads (`?state=`). */
-const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], recent: ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"] };
+const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], recent: ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"] };
 
 async function json(req: IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];
@@ -98,9 +98,11 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           }
           case "GET /v1/writes": {
             board(req);
-            const list = LISTS[new URLSearchParams(q ?? "").get("state") ?? ""];
+            const p = new URLSearchParams(q ?? "");
+            const list = LISTS[p.get("state") ?? ""];
             if (!list) throw fail(400, "bad_request", `state=${Object.keys(LISTS).join(", ")}`);
-            return send(res, 200, { records: records.list(list, 100) });
+            // The reviewed ones only: every Tier 0 write is a record too, and would crowd the cards out.
+            return send(res, 200, { records: records.list(list, 100, { reviewed: true, ...(p.get("task") ? { task: p.get("task")! } : {}) }) });
           }
           case "GET /v1/writes/:id": {
             if (isBoard(req)) return send(res, 200, record(id));
@@ -115,7 +117,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             const r = record(id);
             if (w?.kind !== "module" || r.kind === CONN_TOOL || w.module !== r.executor.module) throw fail(403, "forbidden", "only the kind's executor reports its outcome");
             const b = await json(req);
-            if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 4000))) throw fail(409, "conflict", `this record is ${record(id).state}`);
+            if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 200_000))) throw fail(409, "conflict", `this record is ${record(id).state}`);
             return send(res, 200, { ok: true });
           }
           case "POST /v1/writes/:id/decide": {

@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export type State = "review" | "owner" | "approved" | "claimed" | "done" | "failed" | "rejected" | "stale" | "cancelled" | "unknown";
 export type Requester = { agent: string; key: string; name: string; roles: string[]; kind: string; task?: string; run?: string; module?: string };
-export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string };
+export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string };
 export type Rec = {
   id: string; kind: string; module: string; args: unknown; targets: Record<string, unknown>; executor: { module: string; url?: string }; policy: string;
   digest: string; tier: 0 | 1 | 2; panel: boolean; card: Card; requester: Requester; task: string; state: State;
@@ -68,17 +68,21 @@ export function openRecords(file: string) {
       event("approval.filed", { record: id, kind: r.kind, tier: r.tier, panel: r.panel, requester: r.requester.key || r.requester.module || "", task: r.task });
       return get(id)!;
     },
-    list(states: State[], limit = 100): Rec[] {
-      return (db.prepare(`SELECT * FROM records WHERE state IN (${states.map(() => "?").join(",")}) ORDER BY created_at DESC LIMIT ?`).all(...states, limit) as any[]).map((r) => row(r)!);
+    /** Newest first; `reviewed`: only records that went to the reviewer (Tier 1 and 2), `task`: only that task's. */
+    list(states: State[], limit = 100, { reviewed = false, task }: { reviewed?: boolean; task?: string } = {}): Rec[] {
+      return (db.prepare(`SELECT * FROM records WHERE state IN (${states.map(() => "?").join(",")})${reviewed ? " AND tier > 0" : ""}${task ? " AND task = ?" : ""} ORDER BY created_at DESC LIMIT ?`)
+        .all(...states, ...(task ? [task] : []), limit) as any[]).map((r) => row(r)!);
     },
+    /** The open record of this content on this task, if there is one (a repeated request returns it, never a second card). */
+    open: (task: string, kind: string, digest: string) => row(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') LIMIT 1").get(task, kind, digest)),
     /** Records of these modules' kinds in these states (a reconcile before the modules are removed). */
     ofModules(modules: string[], states: State[]): Rec[] {
       if (!modules.length) return [];
       return (db.prepare(`SELECT * FROM records WHERE module IN (${modules.map(() => "?").join(",")}) AND state IN (${states.map(() => "?").join(",")})`).all(...modules, ...states) as any[]).map((r) => row(r)!);
     },
     /** The owner's latest decision of this kind on this task was a no (the reviewer's, a stale close's and the code's never count). */
-    vetoed(task: string, kind: string): boolean {
-      const r = db.prepare("SELECT state FROM records WHERE task = ? AND kind = ? AND decided_by IS NOT NULL AND decided_by NOT LIKE 'reviewer:%' AND decided_by NOT LIKE 'stale:%' AND decided_by NOT LIKE 'kernel%' AND state IN ('approved','claimed','done','failed','unknown','rejected') ORDER BY updated_at DESC, rowid DESC LIMIT 1").get(task, kind) as { state: string } | undefined;
+    vetoed(task: string, kind: string, tool?: string): boolean {
+      const r = db.prepare(`SELECT state FROM records WHERE task = ? AND kind = ?${tool ? " AND json_extract(args, '$.connection') || '.' || json_extract(args, '$.tool') = ?" : ""} AND decided_by IS NOT NULL AND decided_by NOT LIKE 'reviewer:%' AND decided_by NOT LIKE 'stale:%' AND decided_by NOT LIKE 'kernel%' AND state IN ('approved','claimed','done','failed','unknown','rejected') ORDER BY updated_at DESC, rowid DESC LIMIT 1`).get(task, kind, ...(tool ? [tool] : [])) as { state: string } | undefined;
       return r?.state === "rejected";
     },
     /** The reviewer's verdict on a record in review, bound to its digest. */

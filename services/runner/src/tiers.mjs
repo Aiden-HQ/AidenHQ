@@ -33,8 +33,11 @@ export const GATE_CORE = [
   // SDK's caller check (scripts/sync-shared.mjs).
   /^kernel\//,
   /(^|\/)aidenhq-sdk\/caller\.ts$/,
-  // The apps platform's write kinds (their floors, cards and the tools routed into them) and its executor's declaration.
+  // The apps platform's write kinds (their floors, cards and the tools routed into them), its executor (which raises a
+  // stateful deploy to the reviewer and checks who may change an app) and each module's copy of the SDK's executor side.
   /^modules\/apps-platform\//,
+  /^services\/apps-mcp\/src\/executor\.ts$/,
+  /(^|\/)aidenhq-sdk\/executor\.ts$/,
   /^scripts\/modules\.(mjs|ts)$/,
   /^scripts\/paperclip-setup\.(mjs|ts)$/,
   /^scripts\/no-shell\.(mjs|ts)$/,

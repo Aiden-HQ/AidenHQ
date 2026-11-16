@@ -1,11 +1,11 @@
 {
   "name": "@aidenhq/sdk",
   "version": "0.1.0",
-  "description": "Contract types, engine IO and the contract kit for AidenHQ modules.",
+  "description": "Contract types, engine IO, the executor side of write kinds and the contract kit for AidenHQ modules.",
   "license": "MIT",
   "type": "module",
   "engines": { "node": ">=24" },
   "bin": { "aidenhq-module-test": "bin/aidenhq-module-test.ts" },
-  "exports": { "./types": "./src/types.ts", "./engine-io": "./src/engine-io.ts", "./kit": "./src/kit.ts" },
+  "exports": { "./types": "./src/types.ts", "./engine-io": "./src/engine-io.ts", "./kit": "./src/kit.ts", "./executor": "./src/executor.ts" },
   "scripts": { "test": "NODE_PATH=../../services/runner/node_modules node --test test/*.test.mjs ../../modules/engine-*/test/*.test.mjs" }
 }

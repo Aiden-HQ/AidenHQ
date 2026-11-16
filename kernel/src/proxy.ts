@@ -256,6 +256,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
             });
             } catch (e) {
               // Fail closed: an answer the kernel can't read strictly reaches the caller as an error naming no upstream text.
+              done(false, `${connection}'s answer isn't well-formed JSON-RPC`);
               const err = JSON.stringify({ jsonrpc: "2.0", id: reqId, error: { code: -32603, message: `${connection}: ${(e as Error).message}` } });
               res.writeHead(502, { "content-type": "application/json", "content-length": Buffer.byteLength(err) }).end(err);
               return resolve();

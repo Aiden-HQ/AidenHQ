@@ -262,8 +262,15 @@ export function createApp(opts: AppOptions): Server {
   // Module write kinds' records live in the kernel (lean-core 2d): listed with the board's cards, and every decision or
   // verdict on a k- id is forwarded there; the kernel keeps them, runs them and tells their task.
   const kernel = kernelRecords(opts.kernel);
-  const kernelList = async (state: "review" | "owner" | "recent") => (kernel.enabled ? kernel.list(state).catch((err) => (log.warn({ err: String(err) }, "kernel records unavailable"), [] as Approval[])) : []);
-  const fromKernel = <T>(p: Promise<T>) => p.catch((e: Error & { status?: number }) => { throw new HttpError(e.status && e.status < 500 ? (e.status === 404 ? 404 : 409) : 502, e.message); });
+  // A record names its task by id: shown by its identifier, as the board's cards are.
+  const identifiers = new Map<string, string>();
+  async function named<T extends Approval>(a: T): Promise<T> {
+    const id = identifiers.get(a.issueId) ?? (await pc.issue(a.issueId).then((i) => i.identifier, () => undefined));
+    if (id) identifiers.set(a.issueId, id);
+    return id ? { ...a, identifier: id } : a;
+  }
+  const kernelList = async (state: "review" | "owner" | "recent", task?: string) => (kernel.enabled ? Promise.all((await kernel.list(state, task).catch((err) => (log.warn({ err: String(err) }, "kernel records unavailable"), [] as Approval[]))).map(named)) : []);
+  const fromKernel = <T extends Approval>(p: Promise<T>) => p.then(named, (e: Error & { status?: number }) => { throw new HttpError(e.status && e.status < 500 ? (e.status === 404 ? 404 : 409) : 502, e.message); });
   async function kernelDecided(id: string, decision: "approve" | "reject", by: string, via: string) {
     const a = await fromKernel(kernel.decide(id, decision, by, via));
     log.info({ approval: id, task: a.identifier, action: a.action, state: a.state, via: by }, "approval decided");
@@ -1174,7 +1181,9 @@ export function createApp(opts: AppOptions): Server {
         if (issue) {
           if (!runnerKeyed(req)) await requireAgentTool(req, "task_approvals");
           // The runner gets the args too: earlier decisions count by content and target, and a product PR card carries its merge.
-          return { approvals: store.approvals.on(issue).map((a) => (runnerKeyed(req) ? { ...approvalView(a), args: a.args } : approvalView(a))) };
+          const task = kernel.enabled ? await pc.issue(issue).then((i) => i.id, () => undefined) : undefined;
+          const all = [...(await (task ? kernelList("recent", task) : [])), ...store.approvals.on(issue)];
+          return { approvals: all.map((a) => (runnerKeyed(req) ? { ...approvalView(a), args: a.args } : approvalView(a))) };
         }
         // pending and finished: the owner channel's (or the watcher's); review and approved: the runner's.
         if (state === "pending" || state === "finished") {

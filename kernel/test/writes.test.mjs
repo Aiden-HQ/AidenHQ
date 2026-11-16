@@ -93,6 +93,8 @@ test("the executor sees nothing before approval; approved, it runs once and the 
 test("a changed target on revalidate gives stale and a refile; the owner's decision comes only from the board, stamped as one", async (t) => {
   const { k, fx, tool, pending } = await twin(t);
   const p = await pending(await tool("post_note", { note: "a" }));
+  // The same request again while it is open is that record, never a second card.
+  assert.equal((await pending(await tool("post_note", { note: "a" }))).approval, p.approval);
   const rec = k.records.get(p.approval);
   // The reviewer escalates: the owner decides (Tier 2), never with a reviewer's or the code's stamp.
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/review`, { digest: rec.digest, decision: "escalate", reason: "owner's", model: "~acme/model-a" })).json.state, "owner");
@@ -159,6 +161,13 @@ test("a destructive tool with no kind is conn.tool at Tier 1: replayed once, as 
   assert.equal(JSON.parse(s.raw).params.arguments.id, 7);
   const caller = await verifyCaller({ headers: { "x-aidenhq-caller": s.caller } }, k.jwks, "twin");
   assert.deepEqual([caller.agent, caller.key, caller.task, caller.tool], ["ag-ada", "ada", "TASK-1", "twin.note_drop"]);
+  // The owner's no on that tool makes it theirs on the task; the task's other writes stay Tier 0.
+  const q = await pending(await tool("note_drop", { id: 8 }));
+  const qr = k.records.get(q.approval);
+  await k.v1("POST", `/v1/writes/${q.approval}/review`, { digest: qr.digest, decision: "escalate", reason: "r", model: "~acme/model-a" });
+  await k.v1("POST", `/v1/writes/${q.approval}/decide`, { digest: qr.digest, decision: "reject", by: "owner:chat", via: "chat" });
+  assert.equal((await pending(await tool("note_drop", { id: 9 }))).tier, 2);
+  assert.match(await text(await tool("note_write", { text: "y" })), /note_write done/);
 });
 
 test("a replace with a claimed record reconciles it before A stops: its executor's status settles it, open ones are cancelled", async (t) => {

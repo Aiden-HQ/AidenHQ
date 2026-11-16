@@ -728,7 +728,7 @@ export class Approvals {
 export type KernelRecord = {
   id: string; kind: string; args: unknown; digest: string; tier: Tier; panel: boolean; task: string; state: string; review: string | null;
   decided_by: string | null; outcome: { ok: boolean; text: string } | null; created_at: string; updated_at: string;
-  card: { sentence: string; changes: string; reads: string; cost: string; details: string }; requester: { agent: string; key: string; name: string };
+  card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string }; requester: { agent: string; key: string; name: string };
 };
 export const KERNEL_ID = /^k-[0-9a-f]{16}$/;
 /** The two ported kinds keep their card names, so the reviewer reads them as it always has. */
@@ -739,7 +739,8 @@ export function recordApproval(r: KernelRecord): Approval {
   const decided = r.decided_by ? r.updated_at : null;
   return {
     id: r.id, issueId: r.task, identifier: r.task, action: (LEGACY[r.kind] ?? r.kind) as Action, target: String((r.args as { name?: unknown })?.name ?? r.kind), digest: r.digest, args: r.args,
-    ...r.card, requestedBy: r.requester.name || r.requester.key, tier: r.state === "review" ? 1 : r.state === "owner" ? 2 : r.tier, panel: r.panel, reason: "", requesterId: r.requester.agent || null,
+    sentence: r.card.sentence, changes: r.card.changes, reads: r.card.reads, cost: r.card.cost, details: r.card.details, requestedBy: r.requester.name || r.requester.key,
+    tier: r.state === "review" ? 1 : r.state === "owner" ? 2 : r.tier, panel: r.panel, reason: r.card.reason ?? "", requesterId: r.requester.agent || null,
     baseTier: r.tier, review: r.review, reasonCode: null, reviewCode: null, state: KERNEL_STATE[r.state] ?? "expired", decidedBy: r.decided_by, decidedAt: decided,
     usedAt: ["claimed", "done", "failed", "unknown"].includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null,
     outcomeText: r.outcome?.text ?? null, createdAt: r.created_at, expiresAt: "9999-12-31T00:00:00.000Z", replaced: false,
@@ -757,7 +758,7 @@ export function kernelRecords(k: { url: string; token: string } | undefined) {
   };
   return {
     enabled: Boolean(k),
-    list: async (state: "review" | "owner" | "recent") => (await call<{ records: KernelRecord[] }>("GET", `/v1/writes?state=${state}`)).records.map(recordApproval),
+    list: async (state: "review" | "owner" | "recent", task?: string) => (await call<{ records: KernelRecord[] }>("GET", `/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}`)).records.map(recordApproval),
     get: async (id: string) => recordApproval(await call<KernelRecord>("GET", `/v1/writes/${id}`)),
     decide: async (id: string, decision: "approve" | "reject", by: string, via: string) => {
       const digest = (await call<KernelRecord>("GET", `/v1/writes/${id}`)).digest; // a record never changes after filing
