@@ -52,9 +52,8 @@ export const GATE_CORE = [
   /^scripts\/no-shell\.(mjs|ts)$/,
   /^services\/board\/src\/app\.ts$/,
   /^services\/board\/src\/fleet\.ts$/,
-  /^services\/board\/src\/accounts\.ts$/,
-  // The accounts' Better Auth options and sign-in rules (synced from kernel/src/auth-rules.ts): the board's 3129 listener runs them.
-  /^services\/board\/src\/auth-rules\.ts$/,
+  // The board's sign-in: its own session, handed off and checked by the kernel (3g); the board opens no accounts file.
+  /^services\/board\/src\/kernel-auth\.ts$/,
   /^services\/board\/src\/session\.ts$/,
   /^services\/computer\//,
   /^ops\//,
@@ -80,8 +79,7 @@ export const GATE_DIRS = [
   "modules/apps-platform/",
   "services/board/src/app.ts",
   "services/board/src/fleet.ts",
-  "services/board/src/accounts.ts",
-  "services/board/src/auth-rules.ts",
+  "services/board/src/kernel-auth.ts",
   "services/board/src/session.ts",
 ];
 /** Runner files deliberately outside the core. Adding one here is a gate-core change. */

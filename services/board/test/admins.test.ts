@@ -1,20 +1,17 @@
 // Every admin is an owner (owner decision 2026-11-12): any signed-in admin writes with the board key, in the owner's chats
 // too (their decisions are taken on the kernel's approval page, stamped there). The board records which account wrote what and shows "by <name>"
-// on what an admin other than the owner wrote or decided. Real Paperclip client over a fake fetch, real board accounts.
-import { mkdtempSync } from "node:fs";
+// on what an admin other than the owner wrote or decided. Real Paperclip client over a fake fetch; the kernel's accounts routes
+// stood in for (kernel.ts): each admin holds a board session the kernel handed off.
 import { request } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createAccounts } from "../src/accounts.js";
 import { createApp } from "../src/app.js";
+import { createKernelAuth } from "../src/kernel-auth.js";
 import { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
-import { adminListener } from "./admin.js";
 import { card, fakeRecords } from "./fake-records.js";
-import { totp } from "./totp.js";
+import { BOARD_KEY, fakeKernel, type FakeAccount } from "./kernel.js";
 
 const CO = "00000000-0000-4000-8000-000000000001";
 const KEY = "owner-board-key";
@@ -64,15 +61,12 @@ describe("every admin writes as the owner, with their name on it", () => {
   const log = pino({ level: "silent" });
   const store = new Store(":memory:");
   const records = fakeRecords();
-  const PASSWORD = "correct horse battery staple";
   let app: ReturnType<typeof createApp>;
   let port = 0;
-  let accounts: Awaited<ReturnType<typeof createAccounts>>;
-  let kernel: Awaited<ReturnType<typeof adminListener>>;
+  let kernel: Awaited<ReturnType<typeof fakeKernel>>;
   beforeAll(async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), "admins-")), "auth.db");
-    accounts = await createAccounts({ dbPath, hosts: ["localhost:3121"], adminUrl: "http://localhost:3120", log });
-    kernel = await adminListener(dbPath, ["localhost:3120"]);
+    kernel = await fakeKernel();
+    const accounts = createKernelAuth({ kernel: { url: kernel.url, token: BOARD_KEY }, adminUrl: "http://localhost:3120" });
     app = createApp({ paperclip: new Paperclip("http://paperclip", CO, KEY, fakeFetch), store, records, log, staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan" });
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
     port = (app.address() as AddressInfo).port;
@@ -80,46 +74,29 @@ describe("every admin writes as the owner, with their name on it", () => {
   afterAll(() => {
     app.close();
     kernel.close();
-    accounts.close();
   });
 
-  /** A browser: signs in on the kernel's admin listener (/api/auth/*), uses the board (3121) with the same session cookie. */
-  function browser() {
-    let cookie = "";
+  /** A browser holding a ready admin's board session (the kernel handed it off). */
+  function admin(account: FakeAccount) {
+    const cookie = `aidenhq-board=${kernel.session(account)}`;
     return (method: string, path: string, body?: unknown) =>
       new Promise<{ status: number; json: any }>((resolve, reject) => {
-        const auth = path.startsWith("/api/auth/");
-        const host = auth ? "localhost:3120" : "localhost:3121";
-        const headers: Record<string, string> = { host, ...(cookie ? { cookie } : {}), ...(method !== "GET" ? { "content-type": "application/json", "x-aidenhq-board": "1", origin: `http://${host}` } : {}) };
-        const req = request({ host: "127.0.0.1", port: auth ? Number(new URL(kernel.base).port) : port, method, path, headers }, (res) => {
+        const headers: Record<string, string> = { host: "localhost:3121", cookie, ...(method !== "GET" ? { "content-type": "application/json", "x-aidenhq-board": "1", origin: "http://localhost:3121" } : {}) };
+        const req = request({ host: "127.0.0.1", port, method, path, headers }, (res) => {
           let text = "";
           res.on("data", (c) => (text += c));
-          res.on("end", () => {
-            const set = (res.headers["set-cookie"] ?? []).map((c) => c.split(";")[0]!).find((c) => c.startsWith("better-auth.session_token="));
-            if (set) cookie = set;
-            resolve({ status: res.statusCode!, json: text ? JSON.parse(text) : undefined });
-          });
+          res.on("end", () => resolve({ status: res.statusCode!, json: text ? JSON.parse(text) : undefined }));
         });
         req.on("error", reject);
         req.end(body === undefined ? (method === "GET" ? undefined : "{}") : JSON.stringify(body));
       });
   }
-  /** A ready admin: claims the link, signs in, enrols an authenticator. */
-  async function admin(url: string, email: string) {
-    const b = browser();
-    expect((await b("POST", "/api/auth/reset-password", { token: url.split("token=").pop(), newPassword: PASSWORD })).status).toBe(200);
-    expect((await b("POST", "/api/auth/sign-in/email", { email, password: PASSWORD })).status).toBe(200);
-    const { totpURI } = (await b("POST", "/api/auth/two-factor/enable", { password: PASSWORD })).json;
-    expect((await b("POST", "/api/auth/two-factor/verify-totp", { code: totp(totpURI) })).status).toBe(200);
-    return b;
-  }
 
   it("another admin's comment goes in with the board key, in the owner's chat too, labelled with their name", async () => {
-    const setup = await accounts.setup("owner@example.com", "Owner");
-    const me = await admin(setup.url, "owner@example.com");
-    const invite = await me("POST", "/api/accounts", { email: "ann@example.com", name: "Ann", role: "admin" });
-    const ann = await admin(invite.json.url, "ann@example.com");
-    const annId = invite.json.account.id;
+    const owner = { id: "u-owner", email: "owner@example.com", name: "Owner", role: "admin" as const, owner: true };
+    const me = admin(owner);
+    const ann = admin({ id: "u-ann", email: "ann@example.com", name: "Ann", role: "admin", owner: false });
+    const annId = "u-ann";
 
     expect((await me("POST", "/api/issues/WOR-1/comments", { body: "Looks good" })).status).toBe(200);
     expect((await ann("POST", "/api/issues/WOR-1/comments", { body: "Ship it Friday" })).status).toBe(200);
@@ -138,7 +115,7 @@ describe("every admin writes as the owner, with their name on it", () => {
 
     // A typed "approve WOR-1" is only a message now: cards are decided on the kernel's approval page, which stamps the admin
     // (account:<id>). The board names who decided; the owner's own decisions carry no label.
-    records.cards.push(card({ id: "A1", issueId: issues[0]!.id, identifier: "WOR-1" }), card({ id: "A2", state: "rejected", decidedBy: `account:${annId}` }), card({ id: "A3", state: "rejected", decidedBy: `account:${setup.account.id}` }));
+    records.cards.push(card({ id: "A1", issueId: issues[0]!.id, identifier: "WOR-1" }), card({ id: "A2", state: "rejected", decidedBy: `account:${annId}` }), card({ id: "A3", state: "rejected", decidedBy: `account:${owner.id}` }));
     const typed = await ann("POST", "/api/issues/WOR-1/comments", { body: "approve WOR-1" });
     expect(typed.json.approval).toBeUndefined();
     const listed = (await me("GET", "/api/approvals")).json.approvals;

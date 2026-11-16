@@ -9,12 +9,18 @@
 // - Jobs (jobs.ts, sandbox.ts): engine runs in the sandbox, detached, so a restart (KillMode=process) leaves them running;
 //   this process adopts them at start and stops following them (offsets saved) on SIGTERM, SIGINT or SIGUSR2.
 // - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
+// - The sign-in listener (127.0.0.1:3129, signin.ts): the gate's half of shared apps' sign-in (Better Auth's steps, handoffs,
+//   app access). The kernel is the only process that opens the accounts file (lean 3g).
 import http from "node:http";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configDir, dataDir, env, repo, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin } from "./admin.ts";
+import { createAuthApi } from "./auth-api.ts";
+import { readGate } from "./accounts.ts";
+import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
+import { createSignin } from "./signin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
 import { createBackplane } from "./backplane.ts";
 import { createBrake } from "./brake.ts";
@@ -98,7 +104,7 @@ const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api =
 };
 const ownerApi = asApi(cpApi);
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
-const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, modules: modulesFile, log });
+const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, modules: modulesFile, resetLinks: () => accounts?.takeResetLinks() ?? [], log });
 // Marketplace advisories (loader/advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
 const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main") });
 setInterval(() => void advisories.tick(), 10 * 60_000).unref();
@@ -130,7 +136,7 @@ const jobs = createJobs({
 jobs.adopt();
 // A restart: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved.
 for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
-const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
+const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), operatorKey: () => secret("board_operator_key") }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
@@ -140,10 +146,43 @@ const boardUrl = urlOf(env("BOARD_LAN_URL", ""));
 const loopback = env("AIDENHQ_ADMIN_HOSTS", "localhost:3120,127.0.0.1:3120").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
 const adminHosts = [...loopback, ...(adminUrl ? [adminUrl.host, adminUrl.hostname] : [])];
 const adminOrigins = [...loopback.map((h) => `http://${h}`), ...(adminUrl ? [adminUrl.origin] : [])];
-const accounts = await import("./accounts.ts").then((a) => a.openAccounts({ dataDir, hosts: adminHosts, origins: adminUrl ? [adminUrl.origin] : [], edgeSecret: () => secret("edge_board_secret"), notify: (line) => channels.ownerLine(line), log: { info: (o, m) => log(m, o as never), warn: (o, m) => log(m, o as never), error: (o, m) => log(m, o as never) } }))
+// The sign-in listener's own Host names (the gate calls it at 127.0.0.1:3129), and shared apps' config (scripts/edge.mjs).
+const signinHosts = env("AIDENHQ_SIGNIN_HOSTS", "127.0.0.1:3129,localhost:3129").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+const gateFile = path.join(configDir, "gate.json");
+const gateInfo = () => readGate(gateFile);
+const accountLog = { info: (o: object, m: string) => log(m, o as never), warn: (o: object, m: string) => log(m, o as never), error: (o: object, m: string) => log(m, o as never) };
+// apps-mcp's internal API (the apps-platform module's service), with its internal token: a shared app's manifest.
+const manifest = async (app: string): Promise<Manifest> => {
+  const t = await resolver.resolve(`${env("AIDENHQ_APPS_INTERNAL_URL", "http://apps-mcp:8090")}/internal/apps/${encodeURIComponent(app)}/manifest`);
+  const r = await fetch(`http://${t.host}:${t.port}${t.path}`, { headers: { authorization: `Bearer ${secret("apps_internal_token")}` }, signal: AbortSignal.timeout(15_000) });
+  if (!r.ok) throw new Error(`apps-mcp answered ${r.status}`);
+  return (await r.json()) as Manifest;
+};
+const ttl = Number(env("AIDENHQ_LINK_TTL_HOURS", ""));
+const accounts = await import("./accounts.ts").then((a) => a.openAccounts({
+  dataDir, hosts: [...adminHosts, ...signinHosts], origins: adminUrl ? [adminUrl.origin] : [], ...(adminUrl ? { adminUrl: adminUrl.origin } : {}),
+  edgeSecret: () => secret("edge_board_secret"), gateSecret: () => secret("gate_board_secret"), gate: gateInfo,
+  // The gate's account map (compile makes it with settings.edge); without shared apps (no config/gate.json) there's no gate to tell.
+  gateAccountsFile: path.join(dataDir, "gate", "accounts.json"),
+  ...(ttl > 0 ? { linkTtlHours: ttl } : {}), // settings.owner_email (compile writes it to config/kernel/modules.json): the only email setup makes the owner's account.
+  ownerEmail: () => modulesFile().owner?.email,
+  notify: (line) => channels.ownerLine(line), manifest,
+  wake: webhookWake(path.join(env("AIDENHQ_SECRETS_DIR", ""), "app_request_webhook_url"), path.join(env("AIDENHQ_SECRETS_DIR", ""), "app_request_webhook_secret"), accountLog, controlUrl),
+  feedbackWake: routineWake(ownerApi, accountLog),
+  log: accountLog,
+}))
   .catch((e: Error) => (log("accounts off", { err: e.message }), undefined));
-const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", boardUrl?.origin ?? "").split(",").map((o) => o.trim()).filter(Boolean);
-const admin = accounts && createAdmin({ accounts, cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+if (accounts) {
+  // Apps come and go with applies (config/gate.json): a removed app's rows leave the gate's map within a minute; manifests
+  // refresh, undelivered request wakes and a failed write retry on the same beat.
+  void accounts.syncGate();
+  setInterval(() => void accounts.syncGate(), 60_000).unref();
+}
+// The board's origins: its front door (BOARD_LAN_URL) and its loopback addresses (the SSH tunnel, local mode).
+const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://127.0.0.1:3121", "http://localhost:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
+// The board's origins are the module UI origins a session may be handed to (/auth/handoff).
+const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
+const admin = accounts && createAdmin({ accounts, uiOrigins, cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
@@ -200,6 +239,9 @@ listen(env("AIDENHQ_KERNEL_BACKPLANE", "10.231.0.1:3130"), false, backplane);
 
 // The admin listener: loopback only; the front door reaches it there.
 listen(env("AIDENHQ_KERNEL_ADMIN", "127.0.0.1:3120"), false, admin ?? ((_req, res) => void res.writeHead(503, { "content-type": "text/plain" }).end("accounts are off: see the kernel's log")));
+
+// The sign-in listener: loopback only; the gate (host network) reaches it there with its secret.
+listen(env("AIDENHQ_KERNEL_SIGNIN", "127.0.0.1:3129"), false, accounts ? createSignin({ accounts, hosts: signinHosts, gate: gateInfo, log: accountLog }) : ((_req, res) => void res.writeHead(503, { "content-type": "text/plain" }).end("accounts are off: see the kernel's log")));
 
 // The CI listener, on the CI runners' bridge address (modules/ci; ops/units/aidenhq-ci-net.service lets that bridge reach this
 // port only): CI routes and CI tokens only (lib.ts). Bound once config/gateway.json turns CI on (checked every minute, so

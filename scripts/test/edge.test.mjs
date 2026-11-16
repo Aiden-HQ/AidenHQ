@@ -110,7 +110,8 @@ test("app_login: access needs an aud everywhere; password signs in through the b
   // The gate's proof to the auth listener (both modes), and the board's view of the gate's files (edge only).
   assert.equal(pw.edge.gate.auth_secret_file, "/secrets/auth_listener");
   assert.ok(pw.compose.services.gate.volumes.includes("${AIDENHQ_SECRETS_DIR}/gate_board_secret:/secrets/auth_listener:ro"));
-  assert.deepEqual(pw.compose.services.board.volumes, ["./config/gate.json:/config/gate.json:ro", "${AIDENHQ_DATA_DIR:-./data}/gate:/data/gate"]);
+  // The board reads none of it any more: the kernel holds the accounts and writes data/gate/accounts.json (lean 3g).
+  assert.equal(pw.compose.services.board, undefined);
   assert.ok(compile(mods, inst({ edge }, [roadmap])).compose.services.gate.volumes.some((v) => v.includes("gate_board_secret")));
   assert.deepEqual(pw.edge.cloudflared.ingress.slice(0, 2), [{ hostname: "roadmap.acme.com", service: GATE_SOCKET_URL }, { hostname: "apps.acme.com", service: GATE_SOCKET_URL }]);
   checkIngress(pw.edge.cloudflared, { login: "password" });
@@ -145,7 +146,7 @@ test("previews: *.<host> per shared app after the exact hosts, behind that app's
 });
 
 test("two services can't claim one host port", () => {
-  assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, port: 3129 }])), /3129 is the board's auth listener/);
+  assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, port: 3129 }])), /3129 is the kernel's sign-in listener/);
   const app = (name) => ({ name, repo: `acme/${name}`, owner: "a", description: "d", port: 4300 });
   assert.throws(() => compile(mods, inst({}, [app("a"), app("b")])), /port 4300 is claimed by both app a and app b/);
   assert.throws(() => checkPorts([{ services: { primer: { ports: ["127.0.0.1:3129:8084"] } } }], [[3129, "board"]]), /3129 is claimed by both board and primer/);

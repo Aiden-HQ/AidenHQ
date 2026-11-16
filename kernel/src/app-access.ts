@@ -1,11 +1,10 @@
 // App access (docs/design/access.md): per-app roles by email, each app's default,
-// the change log, and in-app requests, in the accounts DB (data/board/auth.db). Keyed by app name: an app that leaves
+// the change log, and in-app requests, in the accounts DB (data/kernel/auth/auth.db; lean 3g: the kernel is its one opener). Keyed by app name: an app that leaves
 // gate.json takes every row with it. The gate enforces only `blocked`; the app decides what other roles may do.
 import { createHmac, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { Logger } from "pino";
-import type { Routine } from "./paperclip.js";
+import type { Log } from "./auth-rules.ts";
 
 export const CORE_ROLES = ["blocked", "member", "admin"] as const;
 /** A custom role's name (the manifest's charset); core names are reserved. */
@@ -44,12 +43,14 @@ export interface AppAccessDeps {
   wake?: (app: string, count: number) => Promise<boolean>;
   /** Runs the app's "App feedback: <app>" routine (its registry's agent) with the count; true once it went through. */
   feedbackWake?: (app: string, count: number) => Promise<boolean>;
-  log: Logger;
+  log: Log;
 }
 
 export class AccessError extends Error {
-  constructor(readonly status: number, message: string) {
+  readonly status: number;
+  constructor(status: number, message: string) {
     super(message);
+    this.status = status;
   }
 }
 
@@ -367,10 +368,12 @@ export function assertNamesApp(words: string, app: string, host: string): void {
 }
 
 /** The app-request routine's webhook (signed like apps-mcp's incident webhook); without its files, wakes are off. */
-export function webhookWake(urlFile: string, secretFile: string, log: Logger) {
+export function webhookWake(urlFile: string, secretFile: string, log: Log, controlUrl?: string) {
   const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8").trim() : "");
   return async (app: string, count: number): Promise<boolean> => {
-    const [url, secret] = [read(urlFile), read(secretFile)];
+    const [saved, secret] = [read(urlFile), read(secretFile)];
+    // Saved before 3g for a caller inside the compose network (http://paperclip:3100/…): the kernel calls from the host.
+    const url = saved && controlUrl && new URL(saved).host === "paperclip:3100" ? new URL(new URL(saved).pathname, controlUrl).toString() : saved;
     if (!url || !secret) return true; // not wired: nothing to retry
     const ts = String(Math.floor(Date.now() / 1000));
     const body = JSON.stringify({ app, count });
@@ -384,13 +387,22 @@ export function webhookWake(urlFile: string, secretFile: string, log: Logger) {
 /**
  * Runs the app's "App feedback: <app>" routine (scripts/modules.mjs makes one per shared app, for the agent its registry
  * names) with only the count: the run is tier0 by its routine, whatever started it. No active routine (not applied yet, or
- * paused): nothing to retry. A run coalesced into a live one (409) went through.
+ * paused): nothing to retry. A run coalesced into a live one (409) went through. `cp`: the control plane as the owner.
  */
-export function routineWake(pc: { routines(): Promise<Routine[]>; request(method: string, path: string, body: unknown): Promise<unknown> }, log: Logger) {
+export function routineWake(cp: (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>, log: Log) {
   return async (app: string, count: number): Promise<boolean> => {
-    const r = (await pc.routines()).find((x) => x.title === `App feedback: ${app}` && x.status === "active");
-    if (r) await pc.request("POST", `/api/routines/${r.id}/run`, { source: "api", variables: { count: String(count) } }).catch((err) => { if (err.status !== 409) throw err; });
-    log.info({ app, count, routine: r?.id ?? null }, "app feedback wake");
+    const companies = await cp("GET", "/api/companies");
+    let found: { id: string } | undefined;
+    for (const c of Array.isArray(companies.json) ? companies.json : []) {
+      const r = await cp("GET", `/api/companies/${encodeURIComponent(String(c.id))}/routines`);
+      found = (Array.isArray(r.json) ? r.json : []).find((x: { title?: string; status?: string }) => x.title === `App feedback: ${app}` && x.status === "active");
+      if (found) break;
+    }
+    if (found) {
+      const run = await cp("POST", `/api/routines/${encodeURIComponent(found.id)}/run`, { source: "api", variables: { count: String(count) } });
+      if (run.status >= 300 && run.status !== 409) throw new Error(`routine run answered ${run.status}`);
+    }
+    log.info({ app, count, routine: found?.id ?? null }, "app feedback wake");
     return true;
   };
 }

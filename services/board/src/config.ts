@@ -52,11 +52,8 @@ export interface Config {
   jira?: { url: string; token: string };
   /** Where Paperclip keeps its Codex session logs (read-only mount), and the computer launcher for agents in their own computers. */
   sessions?: { dir?: string; launcher?: { url: string; token: string } };
-  /**
-   * Board accounts: Better Auth in the kernel's auth.db (mounted), and the gate-facing sign-in listener (3129) at
-   * `signin.hosts` (loopback; the gate calls it). `gateFile`: config/gate.json (the sign-in host, app hosts, login mode); `gateAccountsFile`: data/gate/accounts.json, which the board writes.
-   */
-  accounts: { dbPath: string; adminUrl: string; gateFile: string; gateAccountsFile?: string; gateSecret?: string; linkTtlHours?: number; ownerEmail?: string; signin: { port: number; hosts: string[] } };
+  /** The kernel's admin listener at its front door (AIDENHQ_ADMIN_URL): sign-in, the handoff to the board, admin links. */
+  accounts: { adminUrl: string };
 }
 
 /** A key file's value, at least 32 characters, else undefined (not configured). */
@@ -93,22 +90,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 }
 
 function accountsConfig(env: NodeJS.ProcessEnv): Config["accounts"] {
-  // The kernel's accounts file (data/kernel/auth, mounted here): the board's 3129 listener and account admin use it until 3g.
-  const dbPath = env.BOARD_AUTH_DB ?? "/data/auth/auth.db";
-  const signinPort = Number(env.BOARD_SIGNIN_PORT ?? 3129);
-  // Admin links open on the kernel's admin listener (its sign-in pages), at its front door's address.
-  const adminUrl = (env.AIDENHQ_ADMIN_URL || "http://127.0.0.1:3120").replace(/\/+$/, "");
-  const gateFile = env.BOARD_GATE_CONFIG ?? "/config/gate.json";
-  // Written only where its directory is mounted (with settings.edge); without shared apps there's no gate to tell.
-  const accountsFile = env.BOARD_GATE_ACCOUNTS ?? "/data/gate/accounts.json";
-  const gateAccountsFile = existsSync(dirname(accountsFile)) ? accountsFile : undefined;
-  // The gate's shared secret (gate_board_secret): a sign-in request carrying it may name the client's address.
-  const gateSecret = keyFile(env.BOARD_GATE_SECRET_FILE ?? "/run/secrets/gate_board_secret");
-  // Setup, invite and reset links' lifetime in hours (default 72; the exposure setting makes it 24 when public, D9).
-  const linkTtlHours = Number(env.BOARD_LINK_TTL_HOURS) > 0 ? Number(env.BOARD_LINK_TTL_HOURS) : undefined;
-  // settings.owner_email: the only email setup makes the owner's account (the gate makes the same email admin of every app).
-  const ownerEmail = env.BOARD_OWNER_EMAIL?.trim().toLowerCase() || undefined;
-  return { dbPath, adminUrl, gateFile, gateAccountsFile, gateSecret, linkTtlHours, ownerEmail, signin: { port: signinPort, hosts: hostList(env.BOARD_SIGNIN_HOSTS ?? `localhost:${signinPort},127.0.0.1:${signinPort}`) } };
+  return { adminUrl: (env.AIDENHQ_ADMIN_URL || "http://127.0.0.1:3120").replace(/\/+$/, "") };
 }
 
 function sessionsConfig(env: NodeJS.ProcessEnv): Config["sessions"] {

@@ -186,11 +186,10 @@ check "board (127.0.0.1:3121)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:31
 # The kernel's admin listener (sign-in and approvals): signed out, a page sends you to sign in.
 check "kernel admin (127.0.0.1:3120)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3120/healthz | grep -q ok && curl -fsS --max-time 10 -H "Host: 127.0.0.1:3120" http://127.0.0.1:3120/auth/sign-in | grep -q "Sign in"'
 
-# The gate (shared apps; config/gate.json exists only with settings.edge) signs people in and notifies agents through the
-# board's loopback listener on 3129. Any HTTP answer counts; a refused connection means the board's port is not published
-# (a host-only compose.override.yaml that replaces the board's ports: without 127.0.0.1:3129:3129).
+# The gate (shared apps; config/gate.json exists only with settings.edge) signs people in and reaches app access through the
+# kernel's sign-in listener on 127.0.0.1:3129 (lean 3g): it answers /healthz.
 if [ -f config/gate.json ]; then
-  check "board sign-in listener for the gate (127.0.0.1:3129)" sh -c 'curl -s -o /dev/null --max-time 5 http://127.0.0.1:3129/ || { echo "nothing answers on 127.0.0.1:3129: the gate cannot sign anyone in or reach the board; check that compose.override.yaml keeps 127.0.0.1:3129:3129 in the board ports"; exit 1; }'
+  check "kernel sign-in listener for the gate (127.0.0.1:3129)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3129/healthz | grep -q ok || { echo "nothing answers on 127.0.0.1:3129: the gate cannot sign anyone in; check the kernel (systemctl --user status aidenhq-kernel)"; exit 1; }'
 fi
 
 # The runner, and what its jobs need, seen with the runner's own PATH:

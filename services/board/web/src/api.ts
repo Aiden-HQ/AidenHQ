@@ -35,8 +35,6 @@ export class SignInRequired extends Error {
 export interface Session {
   mode: "lan";
   account?: { id: string; email: string; name: string; role: "admin" | "user"; owner: boolean } | null;
-  /** Signed in as an admin who hasn't set up an authenticator yet. */
-  needsTotp?: boolean;
   /** Google's Connect works from this address (the board's https address). */
   googleConnect?: boolean;
   /** The kernel's admin listener: sign-in, your password, and the approval page every card is decided on. */
@@ -89,6 +87,8 @@ export const admin = { url: "" };
 
 export const api = {
   session: () => call<Session>("GET", "/api/session").then((s) => ((admin.url = s.adminUrl ?? ""), s)),
+  /** The board's own session ends (the kernel's sign-in stays; sign out there too from Password). */
+  signOut: () => call<{ ok: boolean }>("POST", "/api/sign-out", {}),
   board: () => call<Board>("GET", "/api/board"),
   chats: () => call<{ chats: ChatRow[]; agents: ChatAgent[] }>("GET", "/api/chats"),
   /** `peek`: a prefetch, which leaves the chat unread. */
