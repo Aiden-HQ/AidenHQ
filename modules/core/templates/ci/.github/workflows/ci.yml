@@ -249,7 +249,7 @@ jobs:
           depth=light
           [ -n "$critical" ] && depth=normal
           case ",$PR_LABELS," in *,deep-review,*) depth=deep ;; esac
-          printf 'REVIEW_DEPTH=%s\nREVIEW_CRITICAL=%s\n' "$depth" "$(printf '%s' "$critical" | tr -d '\r\n')" >> "$GITHUB_ENV"
+          printf 'REVIEW_DEPTH=%s\nREVIEW_CRITICAL=%s\nREVIEW_COUNTED_LINES=%s\n' "$depth" "$(printf '%s' "$critical" | tr -d '\r\n')" "$lines" >> "$GITHUB_ENV"
           # A large diff spends codegenie's per-packet call budget before it finishes ("LLM provider call budget
           # exhausted"), which fails the check without a single finding: scale the budget with the diff's size.
           boost=1

@@ -212,6 +212,9 @@ test("no verdict: a budget stop retries with double the budget, a provider error
   const run = (...responses) => runAt(head, ...responses);
   const budget = run(`echo "llm_call_failed: LLM provider call budget exhausted" >&2; exit 1`, ok);
   assert.deepEqual([budget.boosts, budget.slept, budget.CODEGENIE_EXIT, budget.CODEGENIE_FAILURE], [["1", "2"], false, "0", "ok"]);
+  // The gate's oversized decision needs the counted total (added plus deleted, package-lock.json excluded): the Review
+  // step hands it the same number it printed and boosted on, so a 2,150-line diff is past the 2,000-line target.
+  assert.deepEqual([budget.REVIEW_COUNTED_LINES, runAt(bigHead, ok).REVIEW_COUNTED_LINES], ["50", "2150"]);
   const transient = run(`echo "llm_call_failed: LLM provider call failed" >&2; echo "502 Bad Gateway" >&2; exit 1`, ok);
   assert.deepEqual([transient.boosts, transient.slept, transient.CODEGENIE_EXIT], [["1", "1"], true, "0"]);
   const permanent = run(`echo "llm_call_failed: LLM provider authentication failed" >&2; exit 1`);
@@ -248,9 +251,15 @@ test("no verdict: a budget stop retries with double the budget, a provider error
   const schema = `echo '${review([], { health: { status: "failed", diagnostics: [{ code: "llm_schema_invalid", reason: "model submit payload failed schema validation after repair" }] } })}'; exit 1`;
   const big = runAt(bigHead, schema, ok);
   assert.deepEqual([big.boosts, big.slept, big.CODEGENIE_FAILURE, big.CODEGENIE_ATTEMPTS, big.CODEGENIE_CAUSE], [["2"], false, "too-large", "1", "schema (llm_schema_invalid)"]);
-  const said = verdict(Number(big.CODEGENIE_EXIT), big.stdout, "abcdef123", { failure: big.CODEGENIE_FAILURE, cause: big.CODEGENIE_CAUSE, attempts: big.CODEGENIE_ATTEMPTS });
-  assert.equal(said.block, true);
-  assert.match(said.body, /^<!-- ci:code-review -->\n\*\*Diff too large for one review on `abcdef1`\*\* \(codegenie exit 1: schema \(llm_schema_invalid\)\)\. Diff too large for one review: split the PR or review by part/);
+  // Under the target it is still the failed check, with its own headline; past it (this diff is 2,150 counted lines) it is
+  // the decision instead, which names the count and never says "failed"/"incomplete" (the runner would re-run that).
+  const opts = { failure: big.CODEGENIE_FAILURE, cause: big.CODEGENIE_CAUSE, attempts: big.CODEGENIE_ATTEMPTS };
+  const small = verdict(Number(big.CODEGENIE_EXIT), big.stdout, "abcdef123", { ...opts, lines: "1500" });
+  assert.equal(small.block, true);
+  assert.match(small.body, /^<!-- ci:code-review -->\n\*\*Diff too large for one review on `abcdef1`\*\* \(codegenie exit 1: schema \(llm_schema_invalid\)\)\. Diff too large for one review: split it into stacked PRs/);
+  const said = verdict(Number(big.CODEGENIE_EXIT), big.stdout, "abcdef123", { ...opts, lines: "2150" });
+  assert.equal(said.block, false);
+  assert.match(said.body, /Code review stopped short on `abcdef1`\*\* \(2,150 counted changed lines: too large for one review/);
   assert.doesNotMatch(said.body, /\*\*Code review (failed|incomplete) on/);
   // The same after a budget stop's boosted retry (the order #161 met them in): two runs, no third.
   const after = run(`echo "llm_call_failed: LLM provider call budget exhausted" >&2; exit 1`, schema, ok);
@@ -261,6 +270,8 @@ test("a review that never came out says what to do next: split the PR after a bu
   const budget = verdict(1, "", "abcdef123", { failure: "budget", attempts: "2" });
   assert.equal(budget.block, true);
   assert.match(budget.body, /\*\*Code review failed on `abcdef1`\*\* \(codegenie exit 1, 2 attempts\)\. .*Split it into stacked PRs/);
+  // The split is in counted lines (package-lock.json excluded), so it is followable when the lockfile alone is past it.
+  assert.match(budget.body, /at most 2,000 counted changed lines each \(package-lock\.json doesn't count\)/);
   assert.match(verdict(1, "", "abcdef123", { failure: "transient", attempts: "2" }).body, /Re-run the check/);
   assert.match(verdict(2, "", "abcdef123", { failure: "permanent" }).body, /fix the cause and re-run/);
   const named = verdict(1, review([], { health: { status: "failed", diagnostics: [{ reason: "The underlying cause was not captured." }] } }), "abcdef123", { failure: "transient", cause: "llm_call_failed: LLM provider call failed: HTTP 502" });
@@ -268,6 +279,58 @@ test("a review that never came out says what to do next: split the PR after a bu
   const incomplete = verdict(0, review([], { coverage: { unavailable: true, reasons: ["budget exhausted"] } }), "abcdef123", { failure: "budget", attempts: "2" });
   assert.equal(incomplete.block, true);
   assert.match(incomplete.body, /\*\*Code review incomplete on `abcdef1`\.\*\*.*stacked PRs/);
+});
+
+// A diff past the review target never gets a verdict at any budget (roadmap-keeper#131: 13,788 changed lines, two attempts
+// stopped for budget): it decides on what it read, names the count and the part it didn't, and still blocks on a finding.
+test("an oversized diff past the review budget decides: findings still block, otherwise it passes naming the counted lines", () => {
+  const stopped = { failure: "budget", attempts: "2", lines: "10467", cause: "budget (llm_call_failed, budget_exhausted)" };
+  const high = verdict(1, review([finding("high", "Unescaped path")]), "abcdef123", stopped);
+  assert.equal(high.block, true);
+  assert.match(high.body, /\*\*Code review stopped short on `abcdef1`\*\* \(10,467 counted changed lines: review budget exhausted, budget \(llm_call_failed, budget_exhausted\), codegenie exit 1, 2 attempts\)/);
+  assert.match(high.body, /\*\*Code review: 1 blocking finding on `abcdef1`\.\*\*/);
+  assert.match(high.body, /Unescaped path/);
+  assert.match(high.body, /did not read the rest of the diff/);
+  // Findings that came out before the stop are read even when the review JSON is unusable or exit is 0 with no coverage.
+  const partialJson = verdict(1, review([finding("critical", "SQL injection")], { coverage: { unavailable: true, reasons: ["budget stopped"] } }), "", stopped);
+  assert.equal(partialJson.block, true);
+  assert.match(partialJson.body, /SQL injection/);
+  // Nothing blocking in what it read: a named non-blocking outcome, not a failed check, and a comment worth posting.
+  const medium = verdict(1, review([finding("medium", "Slow loop")]), "abcdef123", stopped);
+  assert.deepEqual([medium.block, medium.quiet], [false, false]);
+  assert.match(medium.body, /10,467 counted changed lines/);
+  assert.match(medium.body, /Nothing high or critical in the part it read, so this check passes/);
+  assert.match(medium.body, /Slow loop/);
+  assert.match(medium.body, /at most 2,000 counted changed lines each \(package-lock\.json doesn't count\)/);
+  // No review at all: still a decision, saying nothing was read.
+  const none = verdict(1, "", "", stopped);
+  assert.deepEqual([none.block, none.quiet], [false, false]);
+  assert.match(none.body, /No review came out, so nothing of it was read/);
+  // too-large ends at once (no retry) and takes the same path; a schema-invalid diff under the target still blocks.
+  assert.equal(verdict(1, "", "", { failure: "too-large", lines: "3001" }).block, false);
+  assert.equal(verdict(1, "", "", { failure: "too-large", lines: "2000" }).block, true);
+  // Only a budget stop on an oversized diff decides this way: a provider failure at the same size is still a failure.
+  assert.equal(verdict(1, "", "", { failure: "transient", lines: "10467" }).block, true);
+  // A diff that fits the target is unchanged: a budget stop there is still the failed check, to retry.
+  assert.equal(verdict(1, "", "", { failure: "budget", lines: "1999" }).block, true);
+  // The comment never claims the whole PR was read when it wasn't.
+  assert.doesNotMatch(medium.body, /Reviewed the whole PR/);
+});
+
+// The gate as the Verdict step runs it: the counted total comes from the Review step's REVIEW_COUNTED_LINES, and a
+// stopped-short pass exits 0 (so the check is green). It records nothing: the next push must review the whole PR again,
+// or the part this review never read would never be read at all.
+test("the gate run on an oversized diff past its budget exits 0 and names the count, but is no baseline for a delta", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ci-gate-run-"));
+  writeFileSync(join(dir, "review.json"), "");
+  writeFileSync(join(dir, "env"), "");
+  const env = testEnv({
+    CODEGENIE_FAILURE: "budget", CODEGENIE_CAUSE: "budget (llm_call_failed, budget_exhausted)", CODEGENIE_ATTEMPTS: "2",
+    CODEGENIE_EXIT: "1", REVIEW_COUNTED_LINES: "10467", HEAD_SHA: "a".repeat(40), GITHUB_ENV: join(dir, "env"),
+  });
+  const out = execFileSync("node", [new URL("../../modules/core/templates/ci/.github/codegenie-gate.mjs", import.meta.url).pathname, join(dir, "review.json"), "1"], { env, stdio: "pipe" }).toString();
+  assert.match(out, /Code review stopped short on `aaaaaaa`\*\* \(10,467 counted changed lines/);
+  assert.doesNotMatch(readFileSync(join(dir, "env"), "utf8"), /CODE_REVIEW_DONE|CODE_REVIEW_PARTIAL/);
 });
 
 // codegenie-prior.mjs on a scratch repo, with GitHub's records of this workflow faked.

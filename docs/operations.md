@@ -295,7 +295,10 @@ launcher; a new image applies from the next acquire) and
 
 App repos' CI (`modules/core/templates/ci`: jobs `tests` and `code-review`; `code-review` skips codegenie and passes on a
 change under 20 added plus deleted lines with no sensitive path; `package-lock.json`, which the supply-chain job validates, is not counted and never makes a path sensitive, while other lockfiles are and do; a head whose patch is unchanged since a green review of the same branch and base ref, on a base that only moved forward, reuses that verdict) runs on our own GitHub Actions runners,
-`runs-on: [self-hosted, aidenhq]`, registered to the agents org. The product repo's CI (`.github/workflows/`) runs on
+`runs-on: [self-hosted, aidenhq]`, registered to the agents org. A diff past the review target of 2,000 counted changed
+lines whose review stops for budget or size is decided, not failed: the findings it did report still block, and otherwise
+the check passes naming the count, the reason and the part it didn't read, with the split in counted lines. The product
+repo's CI (`.github/workflows/`) runs on
 the same kind of runner, registered to the product repo's org (below). Each `aidenhq-ci-runner@<n>` user unit (agents
 org) or `aidenhq-ci-runner@<org>-<n>` unit (another org the App is installed on) runs
 `ops/ci-runner.sh`: it mints a one-hour registration token on the host from the GitHub App
