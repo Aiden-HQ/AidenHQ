@@ -183,7 +183,10 @@ fi
 
 # ---------------------------------------------------------------- 1. the machine (root)
 say "System packages, Docker, gVisor, Tailscale"
-run env AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" bash "$REPO/ops/vm/setup.sh"
+# The exposure mode this setup builds (settings.exposure, written into a new instance.yaml): the tailnet, or without
+# Tailscale an SSH tunnel to loopback. The machine step opens the host firewall for it (ops/vm/public-fw.sh).
+EXPOSURE=tailscale; [ "$NO_TS" = 0 ] || EXPOSURE=local
+run env AIDENHQ_EXPOSURE="$EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" bash "$REPO/ops/vm/setup.sh"
 # The runner's engines on the host: Codex (the primary engine, codex-openrouter) and opencode (the fallback) (engines.mjs).
 command -v codex >/dev/null || run npm install -g --silent @openai/codex@0.166.0
 command -v opencode >/dev/null || run npm install -g --silent opencode-ai@1.19.5
@@ -313,6 +316,7 @@ settings:
   timezone: $(json "$TIMEZONE")
   company_name: $(json "$COMPANY")
   channels: [web]
+  exposure: $EXPOSURE
 ${AGENTS_ORG:+  github_agents_org: $AGENTS_ORG}
 EOF
   echo "apps: []" | write_user_file "$INST/apps.yaml" 644

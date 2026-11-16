@@ -2,18 +2,45 @@
 
 Two surfaces, two audiences. The **board** (owner UI and approvals) is for admins only. **Shared apps** built by agents
 can also be opened by other people in a browser, through one small gate. Nothing else is exposed: Paperclip and the
-board are never reachable through the gate, and the host keeps zero inbound ports.
+board are never reachable through the gate, and the host opens only SSH plus what its exposure mode needs.
 
 ## Overview
 
 ```
 browser -> Cloudflare Access (optional per login mode) -> Tunnel -> cloudflared (outbound only)
         -> gate (127.0.0.1) -> the app on 127.0.0.1:<port>
-admins  -> board listeners (loopback and the tailnet address) -> Better Auth session on every route
+admins  -> the exposure mode's front door -> board listener (127.0.0.1) -> Better Auth session on every route
 ```
 
 Sharing is optional. An instance without the `edge` setting stays tailnet-only. An app is shared when its entry in the
 instance `apps.yaml` has `share.host`; modules cannot declare `share`, and changing it is a Tier 2 approval.
+
+## Exposure modes
+
+How admins reach the board is one core setting, `settings.exposure` in `instance.yaml` (unset: `tailscale`, as every
+install made before it). It also decides what the host firewall (`ops/vm/public-fw.sh`, our own nft table on the public
+interface, input and forward) lets in. Everything else on that interface is dropped, and 80 is closed in every mode.
+
+| Mode | Front door | Open on the public interface |
+|---|---|---|
+| `public` | Caddy on 443 with a Let's Encrypt certificate (unit U2) | tcp 22, 443 |
+| `tailscale` | `tailscale serve` to 127.0.0.1:3121 | tcp 22, udp 41641 |
+| `cloudflare` | cloudflared (outbound only) behind Cloudflare Access | tcp 22 |
+| `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |
+
+- **Board listeners stay loopback** (3120, 3121, 3122, 3129). The front door reaches 3121 on loopback. The one
+  exception: a LAN-only VM in `local` mode with `AIDENHQ_PUBLIC_IF=none` may publish 3121 on the LAN.
+- **443 opens only once a Caddy front door is compiled** (a `caddy` service in `compose.modules.yaml`). Until then
+  `public` keeps the firewall at `local`, and setup says so. An active ufw gets `allow 443/tcp` in that case, and only
+  then.
+- **Applying a mode.** Compile writes it to `config/exposure`. The firewall changes when `sudo bash ops/vm/setup.sh`
+  runs again; it writes the mode beside `PUBLIC_IF` in `/etc/default/aidenhq-public-fw`, and the boot-time unit
+  reapplies it. An unknown mode there gets SSH only.
+- **The check.** `scripts/verify-security.sh` compares the live table with the mode (as root, or with passwordless sudo)
+  and fails on a wildcard 443 listener outside public mode.
+
+The full design, including the switch from public to Tailscale or Cloudflare, is
+[minimal-core-install.md](minimal-core-install.md).
 
 ## Accounts and board sign-in
 

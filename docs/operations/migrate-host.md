@@ -119,7 +119,8 @@ Everything else is Tailscale-only. `ops/vm/setup.sh` (step 3.2) sets up the publ
   - essential ICMP and IPv6 neighbour discovery;
   - DHCP replies;
   - SSH (22);
-  - Tailscale's direct connections (UDP 41641).
+  - what `settings.exposure` needs: Tailscale's direct connections (UDP 41641) in `tailscale` mode, the default
+    ([access](../design/access.md#exposure-modes)).
 
   It drops everything else, on the forward hook as well. Docker-published ports are DNATed and forwarded, so an
   input-only drop would leave every `0.0.0.0:<port>` mapping open. The rule matches only the public interface:
