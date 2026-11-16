@@ -2086,7 +2086,7 @@ async function recordAuto(issue, action, args, diff, t, outcome) {
  * same verified state as when it was filed. { tier, reason, rule, diff?, files? }. The agent's PR text is not part of it:
  * the reviewer is reasoning-blind (review.mjs).
  */
-async function currentTier(issue, a, { withDiff = false } = {}) {
+async function currentTier(issue, a, { withDiff = false, bases } = {}) {
   if (a.action === "push" || a.action === "pr") {
     const task = state.task(issue.id);
     const workspace = await prepareWorkspace(issue, task, { clone: false });
@@ -2100,18 +2100,22 @@ async function currentTier(issue, a, { withDiff = false } = {}) {
     }
     const t = await tierFor(issue, a.action, { branches }, a.args.merge ? ["merge"] : []);
     if (!withDiff) return t;
-    const diffs = await Promise.all(branches.map(async (b) => `### ${b.repo} ${b.branch} (${b.sha.slice(0, 12)})\n${b.base ? await git(b.path, "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", b.base, b.sha).catch(() => "") : "(no base to diff against)"}`));
+    // Each section names the base branch its records are read from (the same read the records block is built from), so the
+    // reviewer can tie a record to exactly the change it was approved for.
+    const read = bases ?? (await cardBases({ branches: a.args.only }));
+    const diffs = await Promise.all(branches.map(async (b, i) => `### ${b.repo} ${b.branch} (${b.sha.slice(0, 12)})${read[i]?.base ? ` base ${read[i].base}` : ""}\n${b.base ? await git(b.path, "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", b.base, b.sha).catch(() => "") : "(no base to diff against)"}`));
     const files = branches.flatMap((b) => (b.files ?? []).map((f) => ({ name: `${b.repo} ${f}`, read: () => git(b.path, "show", `${b.sha}:${f}`) })));
-    return { ...t, diff: diffs.join("\n\n"), files: await readFiles(files) };
+    return { ...t, diff: diffs.join("\n\n"), files: await readFiles(files), bases: read };
   }
   if (a.action === "merge") {
     const prs = await mergeTierState(a.args.prs);
     const t = await tierFor(issue, "merge", { prs });
     if (!withDiff) return t;
-    const diffs = await Promise.all(a.args.prs.map(async (p) => `### ${p.url}\n${(await execFileP(await findRealGh(), ["pr", "diff", p.url], await gho(p.repo, READ, { maxBuffer: 32 * 1024 * 1024 })).catch(() => ({ stdout: "" }))).stdout}`));
+    const read = bases ?? (await cardBases({ prs: a.args.prs }));
+    const diffs = await Promise.all(prs.map(async (p, i) => `### ${p.url}${read[i]?.base ? ` base ${read[i].base}` : ""}\n${(await execFileP(await findRealGh(), ["pr", "diff", p.url], await gho(p.repo, READ, { maxBuffer: 32 * 1024 * 1024 })).catch(() => ({ stdout: "" }))).stdout}`));
     const gh = await findRealGh();
     const files = prs.flatMap((p, i) => (p.files ?? []).map((f) => ({ name: `${p.repo} ${f}`, read: async () => (await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", `repos/${p.repo}/contents/${f.split("/").map(encodeURIComponent).join("/")}?ref=${a.args.prs[i].head}`], await gho(p.repo, READ, { maxBuffer: 16 * 1024 * 1024 }))).stdout })));
-    return { ...t, diff: diffs.join("\n\n"), files: await readFiles(files) };
+    return { ...t, diff: diffs.join("\n\n"), files: await readFiles(files), bases: read };
   }
   if (a.action === "apply") {
     const workspace = await prepareWorkspace(issue, state.task(issue.id), { clone: false });
@@ -2228,8 +2232,7 @@ async function reviewOne(a, mode) {
         : // New module authority (reviewFirst): the reviewer first; its approve goes on to the owner, its reject is final.
           afterReview(input, await askReviewer(issue, a, input, chain, {
             onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()),
-            siblings: await cardSiblings(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }),
-            ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only })),
+            ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)),
           }));
   // A failed call or check is friction, not a decision: it stays with the reviewer and is tried again later (1, 2, 4… minutes);
   // after REVIEW_TRIES it goes back to the agent, never to the owner.
@@ -2514,8 +2517,8 @@ async function cardSiblings(issue, bases) {
  * What the reviewer reads from the base, never from the branch under review: the task's merged siblings and the owner's
  * recorded source approvals. Read once, so both the card's review and the pre-filing check see the same two blocks.
  */
-async function cardContext(issue, target) {
-  const bases = await cardBases(target);
+async function cardContext(issue, target, known) {
+  const bases = known ?? (await cardBases(target));
   return { siblings: await cardSiblings(issue, bases), sources: await cardSources(bases) };
 }
 
@@ -3150,7 +3153,7 @@ async function agentReview(ctx, args) {
         const entry = { action: command, target: card.target, at: new Date().toISOString(), decision: "pending", code: "" };
         state.set(checksKey(ctx.issue.id), JSON.stringify([...checksOf(ctx.issue.id), entry]));
         const chain = await prRequest(await pc.issue(ctx.issue.id)).catch(() => "");
-        const context = await cardContext(ctx.issue, { branches: branches.map((x) => ({ repo: x.repo, branch: x.branch })) });
+        const context = await cardContext(ctx.issue, { branches: branches.map((x) => ({ repo: x.repo, branch: x.branch })) }, input.bases);
         const v = await askReviewer(ctx.issue, card, input, chain, { component: "AI reviewer check", ...context });
         log("review checked", { issue: ctx.issue.identifier, action: command, decision: v.decision, code: v.code, model: v.model, second: v.second, used: n + 1, target: card.target.slice(0, 300) });
         // No verdict (the call failed): the check doesn't count. Otherwise it is kept with its finding.

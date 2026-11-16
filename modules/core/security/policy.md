@@ -164,10 +164,13 @@ it is a version bump too, `approved_by: owner`, and a `reference` to where the o
 the base branch, never from the change under review, and a change to the file is the owner's own tap in every repo
 (`owner-approval-record`, never the reviewer's): so an agent's PR can neither record its own approval nor edit one, and
 what you are shown as `APPROVED_SOURCE_EXCEPTIONS` is the owner's. Each record is labelled with the repository and base
-it was read from and covers only that repository's own change: a record from one repo's base never approves a source
-change in another, and a change whose own base holds no record has no exception. Treat a matching record as satisfying
-this paragraph: approve the source change when the diff moves that package to exactly that source, at a pinned version,
-and does nothing else. A record that names another package, another source, or is absent, is no exception: reject the
+branch it was read from, and each part of the diff names the repository and base it is for (`### <repo> <branch> … base
+<branch>`): a record covers only the change for that same repository whose base is that same branch. A record from one
+repo's base never approves a source change in another repo, and a record on one base never approves the same repo's
+change off another base. A change whose own repo and base hold no record has no exception, whatever another base holds,
+and a record naming no repo or no base covers nothing in a diff with parts. Treat a matching record as satisfying this
+paragraph: approve the source change when the diff moves that package to exactly that source, at a pinned version, and
+does nothing else. A record that names another package, another source, or is absent, is no exception: reject the
 new source as before. The record is the owner's words for this one package and source only; it never widens the rule for
 anything else in the diff.
 
