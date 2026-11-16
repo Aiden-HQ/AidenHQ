@@ -6,7 +6,8 @@
 #  1. bring the instance repo ($AIDENHQ_INSTANCE_DIR) to main, or exactly <instance sha>;
 #  2. check out the product at the commit instance.yaml pins (`product:`);
 #  3. as one generation (spec §5.7.2, ops/lib/generations.sh): validate everything before anything restarts (a staged
-#     compile into config.next/, compose config, the authority diff, image builds, a health baseline); snapshot the data
+#     compile into config.next/, compose config, the authority diff, image builds, a health baseline); settle the records of
+#     the modules it removes (kernel/src/reconcile.ts); snapshot the data
 #     dirs of the modules it touches, their containers stopped (spec §6.4.1); switch (compile, recreate the compose
 #     services that moved, rerun the Paperclip setup); check health; on a failed check, put the snapshot back, re-apply the
 #     last known good generation once (--generation) and alert. A failed pair is held off until main moves (or --retry).
@@ -125,6 +126,12 @@ main() {
     validate || refuseGeneration
   fi
   lap validate
+  # Before anything stops: the claimed records of the modules this apply removes or replaces are settled through their
+  # executors' status while they still run, and their open records cancelled (spec §5.7.1 step 4; kernel/src/reconcile.ts).
+  if [ "$staged" = 1 ] && [ -f kernel/src/reconcile.ts ]; then
+    node kernel/src/reconcile.ts config/modules.json config.next/modules.json || { why="the records of the modules it removes could not be reconciled"; refuseGeneration; }
+    lap reconcile
+  fi
   # 2. Snapshot the data of the modules this apply touches (spec §6.4.1), their containers stopped; no room = refused, and
   # what it stopped is started again.
   if [ "$staged" = 1 ]; then
@@ -280,7 +287,7 @@ validate() {
 }
 
 # The generated files: the staged copy must be exactly what the real compile wrote.
-GENERATED=(paperclip.yaml apps.modules.yaml modules.json computers.json gateway.json jobcaps.json kernel/connections.json engines.json gate.json cloudflared.yml module-data.json)
+GENERATED=(paperclip.yaml apps.modules.yaml modules.json computers.json gateway.json jobcaps.json kernel/connections.json kernel/writes.json engines.json gate.json cloudflared.yml module-data.json)
 sameAsStaged() {
   local f
   cmp -s compose.modules.next.yaml compose.modules.yaml || { echo "compose.modules.yaml differs from the validated one" >&2; return 1; }

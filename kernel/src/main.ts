@@ -5,11 +5,11 @@
 //   jobs' tool calls (their jobcaps) come in on 8201 too, the one port their jail reaches. Fails closed: if it is down, no
 //   model or tool call is made.
 // - The backplane listener (10.231.0.1:3130, backplane.ts): the tool proxy in front of every connection, caller identity
-//   and assertions, and the control plane as the calling agent.
+//   and assertions, the control plane as the calling agent, and the records of every write (writes.ts, kernel.db).
 import http from "node:http";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { configDir, dataDir, env, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
 import { createAsserter, loadKey } from "./assert.ts";
 import { createBackplane } from "./backplane.ts";
@@ -17,23 +17,9 @@ import { createAsCaller, createCp } from "./cp.ts";
 import { createIdentity, type Connection, type Grant, type Jobcap } from "./identity.ts";
 import { createResolver } from "./net.ts";
 import { createProxy } from "./proxy.ts";
+import { openRecords } from "./records.ts";
+import { createWrites, type Kind } from "./writes.ts";
 
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const dotenv: Record<string, string> = {};
-if (existsSync(path.join(repo, ".env"))) {
-  for (const line of readFileSync(path.join(repo, ".env"), "utf8").split("\n")) {
-    const m = /^\s*([A-Z0-9_]+)=(.*)$/.exec(line);
-    if (m) dotenv[m[1]!] = m[2]!.replace(/^["']|["']$/g, "");
-  }
-}
-function env(k: string): string | undefined;
-function env(k: string, d: string): string;
-function env(k: string, d?: string) { return process.env[k] ?? dotenv[k] ?? d; }
-const secretsDir = env("AIDENHQ_SECRETS_DIR");
-if (!secretsDir) throw new Error("AIDENHQ_SECRETS_DIR is not set (.env)");
-const configDir = path.resolve(repo, env("AIDENHQ_CONFIG_DIR", "config"));
-const dataDir = path.resolve(repo, env("AIDENHQ_DATA_DIR", "data"));
-const secret = (n: string) => { try { return readFileSync(path.join(secretsDir, n), "utf8").trim(); } catch { return ""; } };
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
 
 const controlUrl = env("PAPERCLIP_URL", "http://127.0.0.1:3100");
@@ -41,9 +27,10 @@ const launcherUrl = env("AIDENHQ_LAUNCHER_URL", "http://10.231.0.1:8199"); // na
 const grantsFile = path.join(configDir, "grants", "grants.json");
 const grantsTable = watched(grantsFile, (j) => j as { agents?: Record<string, Grant> } & Record<string, unknown>, {});
 const connections = watched(path.join(configDir, "kernel", "connections.json"), (j) => j as Record<string, Connection>, {});
-// The task a control-plane run is on: its run record, read with the board key (only the kernel holds it).
+// The control plane with the board key (only the kernel holds it): the task a run is on (its run record), and a record's task.
+const cpApi = (p: string, init: RequestInit = {}) => fetch(new URL(p, controlUrl), { ...init, headers: { authorization: `Bearer ${secret("paperclip_board_key")}`, "content-type": "application/json" }, signal: AbortSignal.timeout(15_000) });
 async function runTask(runId: string): Promise<string | undefined> {
-  const res = await fetch(new URL(`/api/heartbeat-runs/${encodeURIComponent(runId)}`, controlUrl), { headers: { authorization: `Bearer ${secret("paperclip_board_key")}` }, signal: AbortSignal.timeout(15_000) });
+  const res = await cpApi(`/api/heartbeat-runs/${encodeURIComponent(runId)}`);
   if (!res.ok) return undefined;
   const r = (await res.json()) as { issueId?: string; contextSnapshot?: { issueId?: string } };
   return r.issueId ?? r.contextSnapshot?.issueId ?? undefined;
@@ -55,8 +42,21 @@ const whoami = createIdentity({
 });
 const asserter = createAsserter(loadKey(path.join(dataDir, "kernel", "caller-key.pem")));
 const resolver = createResolver({ project: env("COMPOSE_PROJECT_NAME", "aidenhq") });
-const proxy = createProxy({ whoami, connections, asserter, resolver, secret, log });
-const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
+// A record's task: still open, and the notices on it (written with the board key, as the board's approval notices are).
+const onTask = {
+  open: async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok && !["done", "cancelled"].includes(String(((await r.json()) as { status?: string }).status)); },
+  notify: async (task: string, body: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}/comments`, { method: "POST", body: JSON.stringify({ body }) }); if (!r.ok) log("notice failed", { task, status: r.status }); },
+};
+const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
+const registry = watched(path.join(configDir, "kernel", "writes.json"), (j) => j as Record<string, Kind>, {});
+let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => ({ ok: false, text: "the proxy isn't up" });
+const writes = createWrites({ records, registry, connections, secret, resolver, onTask, log, replay: (r) => replay(r as never), autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never });
+const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, log });
+replay = proxy.replay as never;
+const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, boardKey: () => secret("gateway_board_key"), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
+// Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
+// still be starting at boot, so once, a minute in.
+setTimeout(() => void writes.reconcile().then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })), 60_000).unref();
 
 const gw = createGateway({
   dbFile: path.join(dataDir, "gateway", "usage.db"),

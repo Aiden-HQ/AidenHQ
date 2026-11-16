@@ -4,6 +4,7 @@ requires:
   - owner-channel
   - tasks
   - engine-codex
+  - apps-platform
 settings:
   owner_name:
     required: true
@@ -330,19 +331,6 @@ routines:
 # Connections: every tool tagged read (changes nothing), write, or destructive (deletes: delete, trash, remove, purge;
 # compile refuses such a name under read or write). Agents grant `read`, `write` (never destructive) or a tool list, the only
 # way to grant a destructive tool (compile resolves them); every call crosses the kernel's proxy, which checks the grants.
-connections:
-  apps:
-    setup: "Built in (apps-mcp). If it is down, run `docker compose up -d apps-mcp` on the host, then read `docker compose logs apps-mcp`."
-    url: http://apps-mcp:8090/mcp
-    auth: apps_service_key
-    tool_timeout_sec: 600 # deploys are synchronous
-    tools:
-      # warehouse_query, source_new, source_ack: the shared warehouse's sources (services/apps-mcp/src/sources.ts).
-      # source_ack only moves the caller's own cursor. finding_verdict needs the security-verdict role (Security Watch).
-      read: [ app_list, app_status, app_logs, app_view, app_check, web_view, warehouse_query, source_new, app_requests, app_roles ]
-      write: [ app_deploy, app_restart, app_rollback, app_create, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
-      # Granted only by name (the `write` shorthand never includes it): it stops an app and drops its registry entry.
-      destructive: [ app_remove ]
 # The apps' tailnet node's join key (compose.yaml apps-edge; docs/setup.md): created empty, the owner fills it once.
 optional_secrets:
   - tailscale_apps_authkey
@@ -352,8 +340,6 @@ optional_secrets:
 # The computer plugin's key to the launcher (services/computer): compile creates it when missing.
 generated_secrets:
   - computer_launcher_token
-  # The kernel's key to apps-mcp's /mcp (agents' calls arrive only through the kernel's proxy).
-  - apps_service_key
   # The board's internal API: the runner, the kernel, the tasks module and the owner channel (rotated by deleting it).
   - board_internal_token
   # The gate's proof to the board's sign-in listener (3129): the board trusts the gate's client-IP header only beside it.

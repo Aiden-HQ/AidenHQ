@@ -2,6 +2,7 @@
 // Copies shared code into the services that use it. Each service is its own Docker build context, so it holds a
 // byte-identical copy; scripts/test/shared.test.mjs fails when one drifts.
 //   kernel/sdk/src/{caller,fence}.ts the caller assertion check and the fence, in every module server (src/aidenhq-sdk/)
+//   kernel/sdk/src/executor.ts       the executor side of write kinds, in each module server with an executor
 //   services/shared/source-store.ts  the shared-sources writer side, in every source writer
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
@@ -30,6 +31,8 @@ export const SHARED = {
     "modules/slack/connections/slack-mcp/src",
     "modules/tasks/connections/tasks-mcp/src",
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
+  // The executor side of write kinds (executor@1), in each module server that declares an executor.
+  "kernel/sdk/src/executor.ts": ["services/apps-mcp/src/aidenhq-sdk/executor.ts"],
   "services/shared/source-store.ts": [
     "modules/owner-channel/connections/slack-live-mcp/src/source-store.ts",
     "modules/github/connections/github-mcp/src/source-store.ts",

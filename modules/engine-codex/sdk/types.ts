@@ -1,6 +1,9 @@
 // The public contract types (spec §3.3.1). engine@1 minor additions are marked "minor": optional for engines, always
 // written by the runner.
 
+/** A module's `providers.executor` (spec §3.3.2): its write kinds' executor endpoint and the secret the kernel calls it with. */
+export interface ExecutorDecl { contract: "executor@1"; url: string; auth: string }
+
 export interface Caller { agent: string; roles: string[]; task?: string; run?: string; job?: string; module?: string }
 export interface CardText { sentence: string; changes: string; reads: string; cost: string; tier: 0 | 1 | 2; panel: boolean;
                             kind: string; digest: string; requester: string; task: string }

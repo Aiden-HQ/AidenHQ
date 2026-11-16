@@ -450,6 +450,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const routineTitles = new Set();
   const jobcaps = {};
   const engines = {};
+  const writes = {};
 
   for (const name of enabled) {
     const { root } = all.get(name);
@@ -472,6 +473,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       if (c.model_as_caller != null && typeof c.model_as_caller !== "boolean") fail(`connection ${k}: model_as_caller is true or false`);
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
+    Object.assign(writes, writeKinds(name, def, root, instance.writes ?? {}, writes));
     for (const [key, a] of Object.entries(def.agents ?? {})) {
       const file = join(root, "agents", key, "AGENTS.md");
       if (!existsSync(file)) fail(`agent ${key}: missing ${relative(productDir, file)}`);
@@ -771,7 +773,51 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+}
+
+const CARD_FIELDS = ["sentence", "changes", "reads", "cost", "details"];
+/**
+ * A module's write kinds (spec §5.2; kernel/schemas/writes.json), compiled for the kernel (config/kernel/writes.json) under
+ * `<module>.<kind>`: the floor (raised by the instance's `writes.<kind>.floor`, never lowered), the panel flag, the card
+ * templates, the args schema, its executor (`providers.executor`) and the tools routed into it (`connection.tool`): write or
+ * destructive tools of the module's own connections, each in at most one kind.
+ */
+export function writeKinds(name, def, root, instanceWrites = {}, taken = {}) {
+  const out = {};
+  const entries = Object.entries(def.writes ?? {});
+  if (!entries.length) return out;
+  const ex = def.providers?.executor;
+  if (!ex || typeof ex !== "object" || !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(ex.url ?? "")) fail(`module ${name}: write kinds need providers.executor.url (http://<service>:<port>/<path>)`);
+  if (!ownSecrets(def).includes(ex.auth)) fail(`module ${name}: providers.executor.auth must name one of its own secrets`);
+  const used = new Set(Object.values(taken).flatMap((k) => k.tools));
+  for (const [k, w] of entries) {
+    const id = `${name}.${k}`;
+    if (!/^[a-z][a-z0-9_]{0,40}$/.test(k)) fail(`write kind ${id}: the name is lowercase letters, digits and _`);
+    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "card", "tools"].includes(f));
+    if (extra.length) fail(`write kind ${id}: unknown field ${extra.join(", ")} (kernel/schemas/writes.json)`);
+    if (![0, 1, 2].includes(w.floor)) fail(`write kind ${id}: floor is 0, 1 or 2`);
+    if (w.panel != null && typeof w.panel !== "boolean") fail(`write kind ${id}: panel is true or false`);
+    const card = w.card ?? {};
+    if (typeof card !== "object" || Object.entries(card).some(([f, v]) => !CARD_FIELDS.includes(f) || typeof v !== "string")) fail(`write kind ${id}: card has only ${CARD_FIELDS.join(", ")}, each a template string`);
+    const tools = (w.tools ?? []).map((t) => {
+      const c = Object.entries(def.connections ?? {}).find(([, c]) => [...(c.tools?.write ?? []), ...(c.tools?.destructive ?? [])].includes(t));
+      if (!c) fail(`write kind ${id}: ${t} is no write or destructive tool of ${name}'s connections`);
+      const ct = `${c[0]}.${t}`;
+      if (used.has(ct)) fail(`write kind ${id}: ${ct} is already routed into another kind`);
+      used.add(ct);
+      return ct;
+    });
+    let args;
+    if (w.args != null) {
+      const file = join(root, String(w.args));
+      if (!/^schemas\/[\w.-]+\.json$/.test(String(w.args)) || !existsSync(file)) fail(`write kind ${id}: args names a schema file in the module (schemas/<kind>.json)`);
+      args = JSON.parse(readFileSync(file, "utf8"));
+    }
+    const floor = Math.max(w.floor, Number(instanceWrites[id]?.floor ?? 0));
+    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth } };
+  }
+  return out;
 }
 
 /**

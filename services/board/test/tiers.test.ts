@@ -8,7 +8,6 @@ import { join } from "node:path";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { touchesMigrations } from "../src/approvals.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
@@ -200,12 +199,5 @@ describe("tiered approvals", () => {
     expect((await call("POST", `/internal/approvals/${a.id}/claim`, {}, { "x-reviewer-key": REVIEWER })).status).toBe(409);
   });
 
-  it("a deploy that touches a migration or schema file is the owner's, whatever the SQL says (fail closed)", () => {
-    const d = (file: string, line: string) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -0,0 +1 @@\n+${line}\n`;
-    expect(touchesMigrations(d("migrations/005.sql", "CREATE TABLE t (id int);"))).toBe(true);
-    expect(touchesMigrations(d("db/schema.prisma", "model X {}"))).toBe(true);
-    expect(touchesMigrations(d("src/app.ts", "// migrations later"))).toBe(false);
-    // A hunk line can't pose as a file header.
-    expect(touchesMigrations(d("src/app.ts", "+++ b/migrations/1.sql"))).toBe(false);
-  });
+
 });

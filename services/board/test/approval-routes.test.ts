@@ -167,49 +167,40 @@ describe("approval routes", () => {
   });
 });
 
-describe("app_run cards", () => {
+describe("module write kinds' records (kept by the kernel)", () => {
   const store = new Store(":memory:");
-  const internal = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, decideKey: DECIDE_KEY }));
-  const post = (path: string, body: unknown, token: string, headers: Record<string, string> = {}) => internal("POST", path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${token}`, ...headers });
-  const SHA = "0123456789abcdef0123456789abcdef01234567";
-  const run = { agent_id: "fe", task: "WOR-184", name: "roadmap-keeper", script: "seed:backfill", service: "app", sha: SHA, command: "node dist/scripts/seed-backfill.js", reason: "fill the\u202e new columns" };
-  beforeAll(() => void (process.env.APPS_INTERNAL_TOKEN_FILE = `${import.meta.dirname}/fixtures/apps_token`));
+  const KEY = "g".repeat(48);
+  const rec = { id: "k-0123456789abcdef", kind: "apps-platform.run", args: { name: "roadmap-keeper", script: "seed:backfill", service: "app", sha: "0".repeat(40) }, digest: "d".repeat(64), tier: 1, panel: false, task: "WOR-184", state: "review", review: null, decided_by: null, outcome: null, created_at: "2026-11-16T00:00:00.000Z", updated_at: "2026-11-16T00:00:00.000Z", card: { sentence: "Run `npm run seed:backfill` once in app roadmap-keeper.", changes: "c", reads: "r", cost: "", details: "Reason (written by the requesting agent): x" }, requester: { agent: "fe", key: "app-maintainer", name: "DevOps" } };
+  const kernel: { method: string; url: string; auth: string; body?: any }[] = [];
+  const internal = listen(createApp({ paperclip: pc, store, log, allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, decideKey: DECIDE_KEY, reviewerKey: RUNNER_KEY, kernel: { url: "http://kernel.test", token: KEY } }));
+  const call = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => internal(method, path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...headers });
+  beforeAll(() => vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+    const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    kernel.push({ method: init.method ?? "GET", url, auth: String((init.headers as Record<string, string>).authorization), body });
+    if (url.endsWith("/decide")) return new Response(JSON.stringify({ ...rec, state: "approved", decided_by: body.by }));
+    if (url.endsWith("/review")) return new Response(JSON.stringify({ ...rec, state: "owner", tier: 2, review: body.reason }));
+    if (url.includes("/v1/writes?state=")) return new Response(JSON.stringify({ records: url.endsWith("review") ? [rec] : url.endsWith("owner") ? [{ ...rec, state: "owner", tier: 2 }] : [] }));
+    return new Response(JSON.stringify({ ...rec, state: "owner", tier: 2 }));
+  }));
   afterAll(() => vi.unstubAllGlobals());
 
-  it("apps-mcp files it with the apps token only, on its agent's own task; the board writes the card", async () => {
-    expect((await post("/internal/apps/run-request", run, TOKEN)).status).toBe(401); // the board token (agents can reach it) can't
-    expect((await post("/internal/approvals", { issue: "WOR-184", action: "app_run", args: {} }, "apps-token")).status).toBe(401);
-    expect((await post("/internal/apps/run-request", { ...run, agent_id: "someone-else" }, "apps-token")).status).toBe(403);
-    expect((await post("/internal/apps/run-request", { ...run, script: "x; id" }, "apps-token")).status).toBe(400);
-    // The command is shown whole or refused: never shortened or cleaned, so the card can't differ from what runs.
-    expect((await post("/internal/apps/run-request", { ...run, command: `node a.js ${"x".repeat(500)}` }, "apps-token")).status).toBe(400);
-    expect((await post("/internal/apps/run-request", { ...run, command: "node a.js\u202e && evil" }, "apps-token")).status).toBe(400);
-    expect((await post("/internal/apps/run-request", { ...run, command: "node a.js\nrm -rf /" }, "apps-token")).status).toBe(400);
-    expect(store.approvals.pending(Date.now(), 1)).toHaveLength(0);
-    const filed = await post("/internal/apps/run-request", run, "apps-token");
-    expect(filed.status).toBe(200);
-    const a = store.approvals.get(filed.json.approval)!;
-    expect(a).toMatchObject({ action: "app_run", target: "roadmap-keeper", requestedBy: "Fleet Engineer", args: { name: "roadmap-keeper", script: "seed:backfill", service: "app", sha: SHA } });
-    expect(a.sentence).toBe("Run `npm run seed:backfill` once in app roadmap-keeper.");
-    expect(a.details).toContain("Script (from the app's package.json): node dist/scripts/seed-backfill.js");
-    expect(a.details).toContain("Reason (written by the requesting agent): fill the new columns");
-  });
-
-  it("runs once on the owner's tap; the fenced output tail lands on the card and the task", async () => {
-    // Autonomy off: the reviewer reads it first and may only send it on to the owner.
-    const filed = store.approvals.pending(Date.now(), 1)[0]!;
-    const id = filed.id;
-    expect(store.approvals.review(id, { digest: filed.digest, decision: "escalate", reason: "The AI reviewer approved: fine.", model: "~openai/gpt-luna-latest" }).ok).toBe(true);
-    const calls: { url: string; body: any }[] = [];
-    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
-      calls.push({ url, body: JSON.parse(String(init.body)) });
-      return new Response(JSON.stringify({ ok: true, timed_out: false, output: "seeded 3 rows ```" }));
-    });
-    expect((await post("/internal/owner/approvals/decide", { id, decision: "approve", via: "telegram" }, TOKEN, { "x-owner-key": DECIDE_KEY })).status).toBe(200);
-    await vi.waitFor(() => expect(store.approvals.get(id)!.outcome).toBe("applied"));
-    expect(calls).toEqual([{ url: "http://apps-mcp:8090/internal/run", body: { name: "roadmap-keeper", script: "seed:backfill", service: "app", sha: SHA, approval: id } }]);
-    expect(store.approvals.get(id)!.outcomeText).toContain("Ran `npm run seed:backfill` in app roadmap-keeper at 01234567.");
-    await vi.waitFor(() => expect(posted.at(-1)!.body).toContain("````\nseeded 3 rows ```\n````"));
+  it("lists them with the board's cards, under the kinds' card names, and forwards each verdict and decision by digest", async () => {
+    // The reviewer's queue (the runner) and the owner's (the owner channel) carry them, the ported kinds under their old names.
+    const queue = (await call("GET", "/internal/approvals?state=review", undefined, { "x-reviewer-key": RUNNER_KEY })).json.approvals;
+    expect(queue).toEqual([expect.objectContaining({ id: rec.id, action: "app_run", tier: 1, state: "pending", digest: rec.digest, args: rec.args, identifier: "WOR-184" })]);
+    expect((await call("GET", "/internal/approvals?state=pending", undefined, { "x-owner-key": DECIDE_KEY })).json.approvals).toEqual([expect.objectContaining({ id: rec.id, tier: 2 })]);
+    // The reviewer's verdict goes to the kernel with the board's key; autonomy off still refuses an approve here first.
+    const verdict = { digest: rec.digest, decision: "escalate", reason: "fine", model: "~openai/gpt-luna-latest" };
+    expect((await call("POST", `/internal/approvals/${rec.id}/review`, { ...verdict, decision: "approve" }, { "x-reviewer-key": RUNNER_KEY })).status).toBe(409);
+    expect((await call("POST", `/internal/approvals/${rec.id}/review`, verdict, { "x-reviewer-key": RUNNER_KEY })).json).toMatchObject({ id: rec.id, tier: 2 });
+    expect(kernel.at(-1)).toEqual({ method: "POST", url: `http://kernel.test/v1/writes/${rec.id}/review`, auth: `Bearer ${KEY}`, body: verdict });
+    // The owner's tap in Telegram: stamped by the board from its key, the digest read from the kernel's record.
+    expect((await call("POST", "/internal/owner/approvals/decide", { id: rec.id, decision: "approve", via: "telegram" })).status).toBe(403);
+    const r = await call("POST", "/internal/owner/approvals/decide", { id: rec.id, decision: "approve", via: "telegram" }, { "x-owner-key": DECIDE_KEY });
+    expect(r.json).toMatchObject({ id: rec.id, state: "approved", decidedBy: "owner:telegram" });
+    expect(kernel.at(-1)).toEqual({ method: "POST", url: `http://kernel.test/v1/writes/${rec.id}/decide`, auth: `Bearer ${KEY}`, body: { digest: rec.digest, decision: "approve", by: "owner:telegram", via: "telegram" } });
+    // A batch never takes them (each is the kernel's, decided on its own).
+    expect((await call("POST", "/internal/owner/approvals/batch", { items: [{ id: rec.id, digest: rec.digest }] }, { "x-owner-key": DECIDE_KEY })).status).toBe(400);
   });
 });
 

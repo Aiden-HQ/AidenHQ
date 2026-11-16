@@ -288,3 +288,19 @@ test("only a touched data module is snapshotted: its code, not its handbook text
   assert.match(await apply("2", { "modules/acme/AGENTS.md": "# acme\n" }), /generation 3 snapshot: no module data touched/);
   assert.match(await apply("3", { "modules/acme/server.mjs": "export {};\n" }), /generation 4 snapshot: acme /);
 });
+
+test("a replace with a claimed record reconciles it before A stops: the records step runs before the snapshot stops anything", async () => {
+  const w = world();
+  mkdirSync(w.d("prod/data/modules/acme/state"), { recursive: true });
+  assert.equal((await w.run()).status, 0);
+  mkdirSync(w.d("pw/kernel/src"), { recursive: true });
+  mkdirSync(w.d("pw/modules/acme"), { recursive: true });
+  const reconcile = `import fs from "node:fs"; fs.appendFileSync(process.env.CALLS, "reconcile " + process.argv.slice(2).join(" ") + "\\n");\n`;
+  w.commitInstance(w.commitProduct("2", { "kernel/src/reconcile.ts": reconcile, "modules/acme/server.mjs": "export {};\n" }));
+  const before = w.calls().length;
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  const after = w.calls().slice(before);
+  assert.match(after, /^reconcile config\/modules\.json config\.next\/modules\.json$/m);
+  assert.ok(after.indexOf("reconcile") < after.indexOf("aidenhq.module=acme"), after);
+});

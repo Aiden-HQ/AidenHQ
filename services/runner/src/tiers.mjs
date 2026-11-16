@@ -33,6 +33,8 @@ export const GATE_CORE = [
   // SDK's caller check (scripts/sync-shared.mjs).
   /^kernel\//,
   /(^|\/)aidenhq-sdk\/caller\.ts$/,
+  // The apps platform's write kinds (their floors, cards and the tools routed into them) and its executor's declaration.
+  /^modules\/apps-platform\//,
   /^scripts\/modules\.(mjs|ts)$/,
   /^scripts\/paperclip-setup\.(mjs|ts)$/,
   /^scripts\/no-shell\.(mjs|ts)$/,
@@ -61,6 +63,7 @@ export const GATE_DIRS = [
   "services/computer/",
   "ops/",
   "modules/core/security/",
+  "modules/apps-platform/",
   "services/board/src/approvals.ts",
   "services/board/src/app.ts",
   "services/board/src/fleet.ts",
