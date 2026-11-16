@@ -176,12 +176,15 @@ describe("board accounts", () => {
     expect((await owner.call("POST", `/api/accounts/${me}/disable`)).status).toBe(403);
   });
 
-  it("blocks sign-ins on the 6th try after 5 wrong passwords, keeps open sessions; a reset link still works", async () => {
+  it("slows (never blocks) the 6th try after 5 wrong passwords from a shared peer, keeps open sessions; a reset link still works", async () => {
     const b = browser("admin");
     const open = browser("admin");
     expect((await open.call("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: PASSWORD })).status).toBe(200);
     for (let i = 0; i < 5; i++) expect((await b.call("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: "wrong password!!" })).status).toBe(401);
-    expect((await b.call("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: PASSWORD })).status).toBe(403);
+    // Every client behind the front door shares this peer: the right password still gets in, after a backoff.
+    const t0 = Date.now();
+    expect((await b.call("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: PASSWORD })).status).toBe(200);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(900);
     // Failing on purpose signs nobody out.
     expect((await open.on("lan").call("GET", "/api/session")).json.account?.email).toBe("ann@example.com");
     await accounts.reset("ann@example.com");

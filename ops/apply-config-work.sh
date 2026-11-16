@@ -314,6 +314,12 @@ restoreCheckouts() {
   if [ -n "${inst_before:-}" ] && [ "$(git -C "$inst" rev-parse HEAD)" != "$inst_before" ]; then git -C "$inst" checkout --quiet --detach "$inst_before"; fi
 }
 
+# The board stopped, or the apply stops: the accounts file is never moved under a board that still writes it.
+stopBoard() {
+  docker compose stop board >/dev/null
+  [ -z "$(docker compose ps -q --status running board 2>/dev/null)" ] || { echo "refusing: the board is still running, so its accounts can't move" >&2; return 1; }
+}
+
 # The compose files the apply validates: COMPOSE_FILE (or compose's default) with compose.modules.yaml swapped for the staged one.
 stagedComposeFiles() {
   local files="${COMPOSE_FILE:-compose.yaml:compose.modules.yaml}" sep="${COMPOSE_PATH_SEPARATOR:-:}"
@@ -329,6 +335,11 @@ validate() {
   fi
   local files; files="$(stagedComposeFiles)"
   COMPOSE_FILE="$files" docker compose config -q || { why="docker compose config refused the staged compose files"; return 1; }
+  # The kernel's admin listener binds 127.0.0.1:3120 (lean-core 3a): a host override that still publishes 3120 on the board
+  # would keep one of the two from starting.
+  if [ -f kernel/src/admin.ts ] && COMPOSE_FILE="$files" docker compose config board 2>/dev/null | grep -qE '^[[:space:]]+published: "?3120"?$'; then
+    why="the board still publishes 3120 (compose.override.yaml?): the kernel's admin listener binds it"; return 1
+  fi
   # The authority diff (kernel/src/loader/authority-cli.ts): one `apply authority:` line per module change. A hand apply is
   # the owner's own act, so it is printed, not filed; an unreadable diff refuses.
   if [ -f kernel/src/loader/authority-cli.ts ]; then
@@ -373,12 +384,17 @@ switchOver() {
     rm -f "$old" && systemctl --user daemon-reload && echo "gateway unit removed (the kernel replaces it)"
   fi
   # The accounts move into the kernel (lean-core 3a), once, with the board stopped so nothing writes the file mid-move; compose
-  # brings the board back on the new mount. An older product (a revert) has no kernel/src/auth-move.ts and moves nothing.
+  # brings the board back on the new mount. An older product (a revert or rollback) keeps them in data/board: they go back
+  # there, so there is only ever one copy and its board never makes an empty one.
   local data="${AIDENHQ_DATA_DIR:-$PWD/data}"
   if [ -f kernel/src/auth-move.ts ] && [ -f "$data/board/auth.db" ] && [ ! -f "$data/kernel/auth/auth.db" ]; then
-    docker compose stop board >/dev/null 2>&1 || true
+    stopBoard
     local moved; moved="$(node kernel/src/auth-move.ts "$data")"
     echo "accounts: $moved (data/board/auth.db -> data/kernel/auth/)"
+  elif [ ! -f kernel/src/auth-move.ts ] && [ -f "$data/kernel/auth/auth.db" ] && [ ! -f "$data/board/auth.db" ]; then
+    stopBoard
+    local f; for f in auth.secret auth.db-journal auth.db-wal auth.db-shm auth.db; do [ ! -e "$data/kernel/auth/$f" ] || mv "$data/kernel/auth/$f" "$data/board/$f"; done
+    echo "accounts: moved back (data/kernel/auth/ -> data/board/, for this older product)"
   fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-kernel \

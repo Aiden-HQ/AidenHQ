@@ -63,9 +63,12 @@ describe("board accounts: the sign-in listener's lockout", () => {
     expect((await call("local", "/api/auth/two-factor/verify-totp", { code: totp(enable.json.totpURI) }, {}, signedIn.cookie)).status).toBe(200);
 
     const wrong = { email: "owner@example.com", password: "wrong password!!" };
-    // Without the secret a named address is ignored: five failures from "five addresses" are one pair (the socket's).
+    // Without the secret a named address is ignored: five failures from "five addresses" are the shared peer's, which is
+    // slowed, never locked (a lock there would lock everyone behind it out).
     for (let i = 0; i < 5; i++) expect((await call("signin", "/.auth/api/sign-in/email", wrong, { "x-aidenhq-client-ip": `10.5.0.${i}`, "x-aidenhq-gate": "not the secret" })).status).toBe(401);
-    expect((await call("signin", "/.auth/api/sign-in/email", { email: "owner@example.com", password: PASSWORD }, { "x-aidenhq-client-ip": "10.5.1.1" })).status).toBe(403);
+    const t0 = Date.now();
+    expect((await call("signin", "/.auth/api/sign-in/email", { email: "owner@example.com", password: PASSWORD }, { "x-aidenhq-client-ip": "10.5.1.1" })).json.twoFactorRedirect).toBe(true);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(900);
     // 20 failures through the gate (the 5 above count too) pause the account there, never on the admin listener.
     for (let i = 0; i < 15; i++) expect((await call("signin", "/.auth/api/sign-in/email", wrong, { "x-aidenhq-client-ip": `10.6.0.${i}`, "x-aidenhq-gate": GATE_SECRET })).status).toBe(401);
     expect((await call("signin", "/.auth/api/sign-in/email", { email: "owner@example.com", password: PASSWORD }, { "x-aidenhq-client-ip": "10.6.1.1", "x-aidenhq-gate": GATE_SECRET })).status).toBe(403);

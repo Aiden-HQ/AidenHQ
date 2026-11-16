@@ -19,8 +19,11 @@ type Deps = {
   /** The control plane as the owner (a confirmed status change). */
   owner: Api;
   hosts: () => string[];
-  /** The front door's origin (https://<name>:<port>): a form posted through it carries this Origin whatever Host the proxy sends. */
-  origin: () => string;
+  /**
+   * The origins a form may come from: the front door's (https://<name>:<port>, whatever Host its proxy passes on) and the
+   * loopback addresses. Never derived from the Host: on one host name the board's origin differs only by port.
+   */
+  origins: () => string[];
   /** Origins that may frame /owner/message (the board's). */
   frameOrigins: () => string[];
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -133,7 +136,7 @@ export function createAdmin(d: Deps) {
       const hit = compiled.find((r) => r.method === req.method && r.re.test(url.pathname));
       if (!hit) throw new Refusal(404, "not found");
       const id = hit.re.exec(url.pathname)![1] ?? "";
-      if (req.method === "POST" && ![`${proto(req)}://${host}`, d.origin()].includes(String(req.headers.origin ?? ""))) throw new Refusal(403, "this form didn't come from this page's own address");
+      if (req.method === "POST" && !d.origins().includes(String(req.headers.origin ?? ""))) throw new Refusal(403, "this form didn't come from this page's own address");
       const next = url.searchParams.get("next") ?? "";
       switch (`${hit.method} ${hit.path}`) {
         case "GET /auth/sign-in": return send(res, 200, pages.signIn("", next));

@@ -108,9 +108,11 @@ describe("admin sign-in (the kernel's admin listener, auth-rules) behind a front
 
   it("ignores a named address, X-Forwarded-For and CF-Connecting-IP without the front door's secret", async () => {
     const forged = (i: number) => ({ "x-aidenhq-client-ip": `10.7.0.${i}`, "x-aidenhq-edge": "not the secret", "x-forwarded-for": `10.8.0.${i}`, "cf-connecting-ip": `10.9.0.${i}` });
-    // Five failures from "five addresses" are one pair, the socket's: it locks, and only there.
+    // Five failures from "five addresses" are the shared peer's: slowed, never locked, so the right password still gets in.
     for (let i = 0; i < 5; i++) expect((await guess(OWNER, forged(i))).status).toBe(401);
-    expect((await call("/sign-in/email", { email: OWNER, password: PASSWORD }, forged(9))).status).toBe(403);
+    const t0 = Date.now();
+    expect((await call("/sign-in/email", { email: OWNER, password: PASSWORD }, forged(9))).json.twoFactorRedirect).toBe(true);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(900);
     expect((await call("/sign-in/email", { email: OWNER, password: PASSWORD }, from("192.0.2.45"))).json.twoFactorRedirect).toBe(true);
   });
 });

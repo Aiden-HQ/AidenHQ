@@ -70,15 +70,19 @@ const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "
 const channels = createChannels({ db: records.db, writes, board: boardApi, owner: ownerApi, modules: modulesFile, log });
 const brake = createBrake({ db: records.db, owner: ownerApi, on: () => grantsTable().loop_brake !== "off" });
 const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
-// The admin listener's accounts (data/kernel/auth/auth.db). Not moved yet (the board still holds them): the listener refuses
-// while every other part of the kernel serves.
-const adminUrl = env("AIDENHQ_ADMIN_URL", "");
+// The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
+// listener refuses while every other part of the kernel serves.
+const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
+const adminUrl = urlOf(env("AIDENHQ_ADMIN_URL", ""));
+const boardUrl = urlOf(env("BOARD_LAN_URL", ""));
 // The front door's name with and without its port (proxies differ in the Host they pass on).
-const adminHosts = [...env("AIDENHQ_ADMIN_HOSTS", "localhost:3120,127.0.0.1:3120").split(","), ...(adminUrl ? [new URL(adminUrl).host, new URL(adminUrl).hostname] : [])].map((h) => h.trim().toLowerCase()).filter(Boolean);
-const accounts = await import("./accounts.ts").then((a) => a.openAccounts({ dataDir, hosts: adminHosts, origins: adminUrl ? [new URL(adminUrl).origin] : [], edgeSecret: () => secret("edge_board_secret"), notify: (line) => channels.ownerLine(line), log: { info: (o, m) => log(m, o as never), warn: (o, m) => log(m, o as never), error: (o, m) => log(m, o as never) } }))
+const loopback = env("AIDENHQ_ADMIN_HOSTS", "localhost:3120,127.0.0.1:3120").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+const adminHosts = [...loopback, ...(adminUrl ? [adminUrl.host, adminUrl.hostname] : [])];
+const adminOrigins = [...loopback.map((h) => `http://${h}`), ...(adminUrl ? [adminUrl.origin] : [])];
+const accounts = await import("./accounts.ts").then((a) => a.openAccounts({ dataDir, hosts: adminHosts, origins: adminUrl ? [adminUrl.origin] : [], edgeSecret: () => secret("edge_board_secret"), notify: (line) => channels.ownerLine(line), log: { info: (o, m) => log(m, o as never), warn: (o, m) => log(m, o as never), error: (o, m) => log(m, o as never) } }))
   .catch((e: Error) => (log("accounts off", { err: e.message }), undefined));
-const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", env("BOARD_LAN_URL", "") ? new URL(env("BOARD_LAN_URL", "")).origin : "").split(",").map((o) => o.trim()).filter(Boolean);
-const admin = accounts && createAdmin({ accounts, cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origin: () => (adminUrl ? new URL(adminUrl).origin : ""), frameOrigins: () => boardOrigins, log });
+const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", boardUrl?.origin ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+const admin = accounts && createAdmin({ accounts, cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.

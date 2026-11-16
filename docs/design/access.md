@@ -66,9 +66,11 @@ gate-facing sign-in listener (3129), app access and account administration open 
   the same email kills older ones). No email is sent. Recovery is `ops/setup.sh --reset <email>`, which sends the link
   only to the owner's chat on the owner channel and ends that account's sessions. The operator key can start setup and
   trigger resets; it never creates sessions or decides approvals.
-- **Lockout.** 5 failed sign-ins in 15 minutes pause that (email, listener, address) for 15 minutes; open sessions are
-  unaffected. A 20-failure account-wide ceiling applies only on the gate-facing listener, so strangers cannot lock the
-  owner out of the board.
+- **Lockout.** 5 failed sign-ins in 15 minutes pause that (email, listener, address) for 15 minutes, but only for an
+  address a proxy named with its secret; open sessions are unaffected. An unnamed peer is shared by everyone behind the
+  front door, so its failures only slow each next attempt for that email (1 s, doubling, at most 8 s): a stranger can't
+  lock the owner out, and the right password and code still get in. A 20-failure account-wide ceiling applies only on the
+  gate-facing listener.
 - **Client addresses.** The address every limit counts is the socket's, unless a proxy names the client beside its
   shared secret: the gate on 3129 (`X-AidenHQ-Gate`, `gate_board_secret`; the gate itself believes CF-Connecting-IP only on
   cloudflared's unix socket, `data/gate/socket`), the front door on the board listener (`X-AidenHQ-Edge`,

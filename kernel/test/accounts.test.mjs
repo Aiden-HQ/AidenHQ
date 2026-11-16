@@ -19,6 +19,7 @@ import { serve } from "./helpers.mjs";
 const FIXTURE = new URL("./fixtures/board-auth/", import.meta.url).pathname;
 const OWNER = JSON.parse(readFileSync(join(FIXTURE, "owner.json"), "utf8"));
 const HOST = "localhost:3120";
+const FRONT = "admin.example.com:8444"; // the front door (tailscale serve): https, its own origin
 const silent = { info() {}, warn() {}, error() {} };
 const csp = (r) => String(r.headers["content-security-policy"]);
 
@@ -43,11 +44,11 @@ function boardData() {
 }
 
 /** A browser against one listener: keeps cookies, posts forms from `origin` (its own, unless a test says otherwise). */
-function browser(url, host = HOST) {
+function browser(url, host = HOST, https = false, extra = {}) {
   const jar = new Map();
-  return async (method, path, form, origin = `http://${host}`) => {
+  return async (method, path, form, origin = `${https ? "https" : "http"}://${host}`) => {
     const body = form && new URLSearchParams(form).toString();
-    const headers = { host, ...(jar.size ? { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; ") } : {}), ...(method === "POST" ? { "content-type": "application/x-www-form-urlencoded", ...(origin ? { origin } : {}) } : {}) };
+    const headers = { host, ...extra, ...(https ? { "x-forwarded-proto": "https" } : {}), ...(jar.size ? { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; ") } : {}), ...(method === "POST" ? { "content-type": "application/x-www-form-urlencoded", ...(origin ? { origin } : {}) } : {}) };
     const res = await new Promise((ok, no) => {
       const r = request(`${url}${path}`, { method, headers }, (res) => { let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => ok({ status: res.statusCode, headers: res.headers, html: d })); });
       r.on("error", no);
@@ -64,7 +65,8 @@ function browser(url, host = HOST) {
 
 /** The kernel's admin listener over accounts in `dir`, with one card of the board's and one kernel record pending. */
 async function adminOn(t, dir) {
-  const accounts = await openAccounts({ dataDir: dir, hosts: [HOST], edgeSecret: () => "", notify: () => {}, log: silent });
+  const notices = [];
+  const accounts = await openAccounts({ dataDir: dir, hosts: [HOST, FRONT], origins: [`https://${FRONT}`], edgeSecret: () => "edge-secret", notify: (l) => notices.push(l), log: silent });
   const decided = [];
   const card = (a) => ({ identifier: "WOR-7", action: "push", tier: 2, sentence: "Push the fix.", changes: "c", reads: "r", cost: "0", requestedBy: "ada", ...a });
   const board = async (method, path, body) => {
@@ -75,9 +77,9 @@ async function adminOn(t, dir) {
   };
   const writes = { decide: (id, b) => (decided.push({ id, ...b }), { task: "WOR-7", card: { sentence: "Deploy." }, state: "approved" }) };
   const channels = createChannels({ db: new DatabaseSync(":memory:"), writes, board, owner: async () => ({ status: 200, json: {} }), modules: () => ({}) });
-  const { s, url } = await serve(createAdmin({ accounts, cards: channels, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origin: () => "https://admin.example.com:8444", frameOrigins: () => ["https://board.example.com"] }));
+  const { s, url } = await serve(createAdmin({ accounts, cards: channels, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST, FRONT], origins: () => [`http://${HOST}`, `https://${FRONT}`], frameOrigins: () => ["https://board.example.com"] }));
   t.after(() => { s.close(); accounts.close(); });
-  return { url, decided };
+  return { url, decided, notices };
 }
 
 async function signIn(b, step = 0) {
@@ -101,10 +103,11 @@ test("move keeps the account and TOTP; a missing source refuses to start", async
   writeFileSync(join(dir, "board", "auth.secret"), "stale");
   assert.equal(moveAccounts(dir), "present");
 
-  const { url } = await adminOn(t, dir);
+  const { url, notices } = await adminOn(t, dir);
   const b = browser(url);
   assert.equal((await b("GET", "/approvals")).status, 303); // signed out: to the sign-in page
   await signIn(b);
+  assert.match(notices.join("\n"), /New admin sign-in.*owner@example\.com/); // the owner hears of every new admin session
   const list = await b("GET", "/approvals");
   assert.equal(list.status, 200);
   assert.match(list.html, /Push the fix\./);
@@ -155,7 +158,7 @@ test("a card is decided on the kernel page, stamped with the admin's account; th
   assert.equal(decided.length, 2);
 });
 
-test("every kernel page refuses a frame except the owner message frame (A7); five failed passwords pause sign-in", async (t) => {
+test("every kernel page refuses a frame except the owner message frame (A7); a stranger's failures never lock the owner out", async (t) => {
   const dir = boardData();
   moveAccounts(dir);
   const { url } = await adminOn(t, dir);
@@ -165,12 +168,24 @@ test("every kernel page refuses a frame except the owner message frame (A7); fiv
     assert.match(csp(r), /frame-ancestors 'none'/, path);
     assert.equal(r.headers["x-frame-options"], "DENY", path);
   }
-  for (let i = 0; i < 5; i++) assert.equal((await b("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401);
-  const locked = await b("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
+  // Behind the front door every client shares one peer: a stranger's failures (forged addresses without the front door's
+  // secret count as that peer) slow the next attempt, and the owner still signs in with the right password and code.
+  const stranger = browser(url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.9", "x-aidenhq-edge": "forged" });
+  for (let i = 0; i < 5; i++) assert.equal((await stranger("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401);
+  const started = Date.now();
+  await signIn(b);
+  assert.ok(Date.now() - started >= 900, "a failing peer slows the next attempt");
+  assert.equal((await b("GET", "/approvals")).status, 200);
+  // An address the front door names (with its secret) is locked after five failures; the owner, from another, isn't.
+  const named = (ip) => browser(url, HOST, false, { "x-aidenhq-client-ip": ip, "x-aidenhq-edge": "edge-secret" });
+  const attacker = named("198.51.100.7");
+  for (let i = 0; i < 5; i++) assert.equal((await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401);
+  const locked = await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
   assert.equal(locked.status, 401);
   assert.match(locked.html, /too many failed sign-ins/);
+  await signIn(named("198.51.100.8"), 1);
 
-  // Signed in (on a fresh copy: the lockout above holds this one), the pages a session reaches refuse frames too.
+  // Signed in (on a fresh copy: TOTP steps above are spent), the pages a session reaches refuse frames too.
   const fresh = boardData();
   moveAccounts(fresh);
   const other = await adminOn(t, fresh);
@@ -184,4 +199,26 @@ test("every kernel page refuses a frame except the owner message frame (A7); fiv
   const frame = await o("GET", "/owner/message");
   assert.match(csp(frame), /frame-ancestors https:\/\/board\.example\.com/);
   assert.equal(frame.headers["x-frame-options"], undefined);
+});
+
+test("an invited admin's first sign-in through the front door: claim the link, sign in, enrol an authenticator, decide", async (t) => {
+  const dir = boardData();
+  moveAccounts(dir);
+  const { url } = await adminOn(t, dir);
+  const b = browser(url, FRONT, true);
+  const set = await b("POST", "/auth/set-password", { token: OWNER.invited.link, password: "a long enough password" });
+  assert.equal(set.status, 200, set.html);
+  assert.equal((await b("POST", "/auth/set-password", { token: OWNER.invited.link, password: "a long enough password" })).status, 400); // one use
+  const pw = await b("POST", "/auth/sign-in", { email: OWNER.invited.email, password: "a long enough password" });
+  assert.equal(pw.headers.location, "/auth/enrol");
+  assert.match(String(pw.headers["set-cookie"]), /__Host-better-auth\.session_token=.*Secure/);
+  // Not ready (no authenticator yet): no approval page, only enrolment.
+  assert.equal((await b("GET", "/approvals")).status, 403);
+  const ask = await b("GET", "/auth/enrol");
+  const shown = await b("POST", "/auth/enrol", { password: "a long enough password", csrf: ask.csrf });
+  const key = /Key: <code>([A-Z2-7 ]+)<\/code>/.exec(shown.html)?.[1]?.replace(/ /g, "");
+  assert.ok(key, shown.html);
+  const done = await b("POST", "/auth/enrol", { code: totp(key), csrf: ask.csrf });
+  assert.equal(done.status, 303, done.html);
+  assert.equal((await b("GET", "/approvals")).status, 200);
 });
