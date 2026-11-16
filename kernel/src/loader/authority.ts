@@ -75,17 +75,27 @@ export function renamed(def: ModuleDef, from: string, to: string): ModuleDef {
     seen.set(v, k);
   }
   const r = (x: unknown) => { const t = String(x); const opt = t.endsWith("?") ? "?" : ""; return (m.get(opt ? t.slice(0, -1) : t) ?? t.slice(0, t.length - opt.length)) + opt; };
-  const rk = (o: unknown) => Object.fromEntries(Object.entries(map(o)).map(([k, v]) => [r(k), v]));
+  // Any two names landing on one after the rename (map keys or list items) would hide one of them: refused.
+  const once = <T>(pairs: [string, T][], where: string): [string, T][] => {
+    const got = new Set<string>();
+    for (const [k] of pairs) {
+      if (got.has(k)) throw new Error(`replacing ${from} with ${to}: two entries of ${where} would both be ${k}`);
+      got.add(k);
+    }
+    return pairs;
+  };
+  const rk = (o: unknown, where: string) => Object.fromEntries(once(Object.entries(map(o)).map(([k, v]) => [r(k), v]), where));
+  const rl = (l: unknown[], where: string) => once(l.map((x) => [r(x), x] as [string, unknown]), where).map(([k]) => k);
   const out: Dict = structuredClone(def);
-  if (isMap(def.connections)) out.connections = Object.fromEntries(Object.entries(def.connections).map(([k, c]) => [r(k), isMap(c) && c.auth != null ? { ...c, auth: r(c.auth) } : c]));
-  if (isMap(def.writes)) out.writes = rk(def.writes);
+  if (isMap(def.connections)) out.connections = Object.fromEntries(once(Object.entries(def.connections).map(([k, c]) => [r(k), isMap(c) && c.auth != null ? { ...c, auth: r(c.auth) } : c]), "connections"));
+  if (isMap(def.writes)) out.writes = rk(def.writes, "writes");
   for (const k of ["generated_secrets", "optional_secrets"]) if (Array.isArray(def[k])) out[k] = (def[k] as unknown[]).map(r);
   if (isMap(def.secrets)) out.secrets = { ...s, ...(Array.isArray(s.generated) ? { generated: s.generated.map(r) } : {}), ...(Array.isArray(s.provided) ? { provided: s.provided.map((p) => (isMap(p) ? { ...p, name: r(p.name) } : r(p))) } : {}) };
   if (isMap(def.roles)) out.roles = { ...roles, ...(Array.isArray(roles.declares) ? { declares: roles.declares.map((d) => (isMap(d) ? { ...d, id: r(d.id) } : r(d))) } : {}), ...(Array.isArray(roles.requests) ? { requests: roles.requests.map(r) } : {}) };
   if (Array.isArray(def.jobcaps)) out.jobcaps = def.jobcaps.map((j) => (isMap(j) ? { ...j, id: r(j.id), ...(j.connection != null ? { connection: r(j.connection) } : {}), ...(j.read_secret != null ? { read_secret: r(j.read_secret) } : {}) } : j));
-  if (isMap(def.agents)) out.agents = Object.fromEntries(Object.entries(def.agents).map(([k, a]) => [k, isMap(a) ? { ...a, ...(isMap(a.connections) ? { connections: rk(a.connections) } : {}), ...(Array.isArray(a.roles) ? { roles: a.roles.map(r) } : {}), ...(Array.isArray(a.jobcaps) ? { jobcaps: a.jobcaps.map(r) } : {}) } : a]));
+  if (isMap(def.agents)) out.agents = Object.fromEntries(Object.entries(def.agents).map(([k, a]) => [k, isMap(a) ? { ...a, ...(isMap(a.connections) ? { connections: rk(a.connections, `agent ${k} connections`) } : {}), ...(Array.isArray(a.roles) ? { roles: rl(a.roles, `agent ${k} roles`) } : {}), ...(Array.isArray(a.jobcaps) ? { jobcaps: rl(a.jobcaps, `agent ${k} jobcaps`) } : {}) } : a]));
   const sv = map(def.services);
-  if (isMap(sv.grants)) out.services = { ...sv, grants: rk(sv.grants) };
+  if (isMap(sv.grants)) out.services = { ...sv, grants: rk(sv.grants, "services.grants") };
   return out;
 }
 

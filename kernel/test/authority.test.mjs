@@ -104,6 +104,11 @@ test("a replace renames only the ids A declares, and refuses an ambiguous one", 
   assert.deepEqual(r.agents.bot.connections, { "chan-b": "read", "chan-a-notes": "write" });
   assert.throws(() => renamed({ name: "chan-a", connections: { "chan-a.x": {}, "chan-a-x": {}, "chan-b.x": {} }, writes: {} }, "chan-a", "chan-b"), /would both be chan-b/);
   assert.throws(() => renamed({ name: "chan-a", generated_secrets: ["chan_a_key", "chan_b_key"] }, "chan-a", "chan-b"), /would both be chan_b_key/);
+  // A grant key that collides after the rename, declared or not, would hide one grant: refused.
+  const grants = { name: "chan-a", connections: { "chan-a": { tools: { read: ["r"], write: ["w"] } } }, agents: { bot: { connections: { "chan-a": "read", "chan-b": "write" } } } };
+  assert.throws(() => renamed(grants, "chan-a", "chan-b"), /agent bot connections would both be chan-b/);
+  const roles = { name: "chan-a", roles: { declares: [{ id: "chan-a.editor" }] }, agents: { bot: { roles: ["chan-a.editor", "chan-b.editor"] } } };
+  assert.throws(() => renamed(roles, "chan-a", "chan-b"), /agent bot roles would both be chan-b.editor/);
 });
 
 test("H6: a provided secret named like a model key is still only owner:true (the reviewer rejects it)", () => {
