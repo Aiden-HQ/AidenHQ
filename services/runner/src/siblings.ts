@@ -2,7 +2,7 @@
 // it sees only this card's diff: when the chain's first half merged as an earlier PR, a follow-up that does not contain it
 // was rejected for something no follow-up can contain. A sibling PR is PR text (a branch name, a path), so every name here
 // is encoded and the block is fenced as data.
-import { findPrs } from "./merges.mjs";
+import { findPrs } from "../../../modules/engineering/src/merge-queue.mjs";
 
 /**
  * Percent-encodes every character outside the kind's allowlist, so a PR-controlled name can never emit `<`, `>`,

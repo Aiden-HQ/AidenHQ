@@ -45,13 +45,13 @@
     "id": "A8",
     "attack": "Mutable approval input: workspace commit, target branch head or base changes after approval",
     "unit": "3d",
-    "test": null
+    "test": "modules/codehost-github/test/stale.test.mjs"
   },
   {
     "id": "A9",
     "attack": "Executor module updated between approval and execution",
     "unit": "3d",
-    "test": null
+    "test": "modules/codehost-github/test/stale.test.mjs"
   },
   {
     "id": "A10",

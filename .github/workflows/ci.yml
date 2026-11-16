@@ -250,7 +250,7 @@ jobs:
           packages=$(cat <<'PACKAGES'
           scripts|npm test|*
           services/runner|(its own job)|services/runner services/computer kernel services/shared modules scripts kernel/sdk fixtures services/board/src/app.ts services/board/src/fleet.ts services/board/src/kernel-auth.ts services/board/src/session.ts
-          services/runner#flows|(its own jobs)|services/runner services/shared modules/engine-codex modules/engine-claude modules/engine-opencode modules/ai-reviewer kernel/sdk kernel/src kernel/test/fixtures kernel/package-lock.json fixtures/engine-echo|services/runner/src/prompt.ts modules/engine-codex/codex-home/AGENTS.md
+          services/runner#flows|(its own jobs)|services/runner services/shared modules/engine-codex modules/engine-claude modules/engine-opencode modules/ai-reviewer modules/codehost-github modules/platform modules/engineering kernel/sdk kernel/src kernel/test/fixtures kernel/package-lock.json fixtures/engine-echo|services/runner/src/prompt.ts modules/engine-codex/codex-home/AGENTS.md
           kernel/sdk|(cd ../../services/runner && npm ci) && npm test|kernel/sdk fixtures/engine-echo modules/engine-codex modules/engine-claude modules/engine-opencode
           services/computer|node --test test/*.test.mjs|services/computer services/runner/src services/runner/bin modules/core/design-system modules/design
           kernel|npm ci && npm test && npm run typecheck|kernel services/computer modules/tasks fixtures services/gate
@@ -270,6 +270,9 @@ jobs:
           modules/chat-lane/connections/lane|npm ci --ignore-scripts && npm test && npm run typecheck|modules/chat-lane
           modules/channel-operator|node --test test/*.test.mjs|modules/channel-operator
           modules/ai-reviewer|npm test|modules/ai-reviewer kernel services/shared modules/core/templates/app
+          modules/codehost-github|npm test|modules/codehost-github modules/engineering kernel services/runner/src/main.mjs
+          modules/platform|npm test|modules/platform
+          modules/engineering|npm test|modules/engineering modules/codehost-github
           modules/primer/connections/primer-mcp|npm ci && npm test && npm run typecheck|modules/primer
           modules/slack/connections/slack-mcp|npm ci && npm test && npm run typecheck|modules/slack
           modules/tasks/connections/tasks-mcp|npm ci && npm test|modules/tasks kernel/sdk
@@ -381,7 +384,7 @@ jobs:
   # The one result a merge waits for: every job above passed (pr-title, the runner, board and image-scan jobs may be
   # skipped: not a pull request, or the change doesn't touch them). Jobs that
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
-  # exist; the runner treats this check as required once the base branch has it (services/runner/src/merges.mjs withGate).
+  # exist; the runner treats this check as required once the base branch has it (modules/codehost-github/src/merge-gate.mjs withGate).
   ci-required:
     if: always()
     needs: [supply-chain, pr-title, image-changes, packages, runner-unit, runner-flows, board, image-scan]

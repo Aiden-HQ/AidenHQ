@@ -94,7 +94,7 @@ test("landing refuses when the guard fails on the exact main it would merge onto
   const { mkdtempSync, writeFileSync, mkdirSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { tmpdir } = await import("node:os");
-  const { landOnMain } = await import("../src/git.mjs");
+  const { landOnMain } = await import("../../../modules/codehost-github/src/git.mjs");
   const g = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: "pipe", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).toString().trim();
   const root = mkdtempSync(join(tmpdir(), "land-"));
   g(root, "init", "-q", "--bare", "-b", "main", "origin.git");

@@ -12,7 +12,7 @@ import { readLog } from "./fakes/lib.mjs";
 import { registry } from "./fakes/engines.mjs";
 import { fakePaperclip } from "./flow-harness.mjs";
 import { State } from "../src/state.ts";
-import { ensureRepo, safeWorkspace } from "../src/workspace.ts";
+import { ensureRepo, safeWorkspace } from "../../../modules/codehost-github/src/workspace.ts";
 import { freePort, jobsHost } from "./flow-harness.mjs";
 import { useEngines } from "../src/agents.mjs";
 

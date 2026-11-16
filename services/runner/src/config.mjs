@@ -80,7 +80,7 @@ export function loadConfig() {
     // The product repo (owner/name): AIDENHQ_PRODUCT_REPO (setup records it; the kernel reads only that), else this
     // checkout's origin. Tiering treats it apart.
     productRepo: env.AIDENHQ_PRODUCT_REPO || productRepoOf(REPO_ROOT),
-    /** GitHub token that adds deploy keys (src/repos.ts); optional, never in an agent's sandbox. */
+    /** GitHub token that adds deploy keys (modules/codehost-github/src/repos.ts); optional, never in an agent's sandbox. */
     githubAdminTokenFile: join(secrets, "github_admin_token"),
     repoAccessScript: join(REPO_ROOT, "ops/vm/add-deploy-key.sh"),
     boardInternalUrl: env.BOARD_INTERNAL_URL ?? cfg.recurring?.board_url ?? "http://127.0.0.1:3122",

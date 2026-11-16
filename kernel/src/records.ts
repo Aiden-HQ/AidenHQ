@@ -17,7 +17,7 @@ export type Requester = { agent: string; key: string; name: string; roles: strin
 /** `target`: what it acts on, in a line. */
 export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string };
 export type Rec = {
-  id: string; kind: string; module: string; args: unknown; targets: Record<string, unknown>; executor: { module: string; url?: string }; policy: string;
+  id: string; kind: string; module: string; args: unknown; targets: Record<string, unknown>; executor: { module: string; url?: string; rev?: string }; policy: string;
   digest: string; tier: 0 | 1 | 2; panel: boolean; card: Card;
   /** The tier before the autonomy caps (tier.ts): 2 means the owner's on its merits. Null on older records. */
   merit?: 0 | 1 | 2 | null; requester: Requester; task: string; state: State;

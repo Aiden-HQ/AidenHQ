@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { guardBranch, onMain } from "../src/evidence.ts";
-import { git } from "../src/git.mjs";
+import { git } from "../../../modules/codehost-github/src/git.mjs";
 
 test("already on main by ancestry or identical files; a real change is not", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "evidence-"));

@@ -24,13 +24,13 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { smallFile } from "./git.mjs";
+import { smallFile } from "../../../modules/codehost-github/src/git.mjs";
 
 /**
  * The AI reviewer's own code (spec §8.2, from 3c): the ai-reviewer module (its service, policy, cases and judge), the
  * contract (the SDK's reviewer.ts), what shapes the request it reads (the changed files, the merged-sibling block, the
  * runner's request side), the
- * tier function and the authority-diff classifier.
+ * tier function (tiers.mjs with the code host's git rules and the platform check) and the authority-diff classifier.
  */
 export const REVIEWER_CODE = [
   /^modules\/ai-reviewer\//,
@@ -38,6 +38,8 @@ export const REVIEWER_CODE = [
   /^services\/shared\/review-files\.(mjs|ts)$/,
   /^services\/runner\/src\/(review-request|siblings|cards)\.(mjs|ts)$/,
   /^services\/runner\/src\/tiers\.(mjs|ts)$/,
+  /^modules\/codehost-github\/src\/plan\.mjs$/,
+  /^modules\/platform\/src\/check\.mjs$/,
   /^kernel\/src\/(tier|writes|records|reviews|kinds)\.ts$/,
   /^kernel\/src\/loader\/authority\.ts$/,
 ];
@@ -47,8 +49,6 @@ const MODULE = "modules/ai-reviewer";
 const CASES = `${MODULE}/test/reviewer-cases`;
 const JUDGE = ["modules/ai-reviewer/scripts/reviewer-eval.mjs", "modules/ai-reviewer/test/case-pad.mjs"];
 const EXPECT = ["expect", "expect_code", "expect_second", "expect_flag"] as const;
-/** How long the queue waits on a head's eval (both runs) before it gives up on that PR. */
-export const EVAL_WAIT_MINUTES = 180;
 
 /**
  * The cases the judge runs, file name → text, from the base's and the PR head's case files: every base case at its base

@@ -41,7 +41,8 @@ export function measure(repo) {
   const src = tracked.filter(isSource);
 
   const manifests = tracked.filter((f) => /^modules\/[^/]+\/module\.yaml$/.test(f));
-  const privileged = manifests.filter((f) => [yamlOf(repo, f).privileged ?? []].flat().length).map((f) => f.slice(0, -"module.yaml".length));
+  // Privileged modules and those that enforce a check (P5: a check raises or denies every write it covers) are trusted.
+  const privileged = manifests.filter((f) => [yamlOf(repo, f).privileged ?? []].flat().length || [yamlOf(repo, f).checks ?? []].flat().length).map((f) => f.slice(0, -"module.yaml".length));
   const core = src.filter((f) => under(f, CORE) && !under(f, CORE_EXCEPT));
   const trusted = new Set([...src.filter((f) => under(f, ["kernel/src/", "kernel/ops/", "ops/", ...privileged, ...LEGACY_TRUSTED]) || /^scripts\/[^/]+\.sh$/.test(f)), ...core]);
 

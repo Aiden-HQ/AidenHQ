@@ -1,0 +1,9 @@
+name: codehost-github
+description: "GitHub as the code host: task workspaces and the cache clones, repo-narrowed GitHub App tokens minted per write, git with the hardened arguments, push, PR, merge at the reviewed head once green, create_repo, deploy keys, land, and the git rules that tier those writes."
+license: AGPL-3.0-only
+# The only holder of the GitHub App key (vault github-app/) and the admin PAT, and the owner of all git state. Its code runs in
+# the host runner today (src/: the runner imports it); the write kinds codehost-github.{push,pr,merge,create_repo,deploy_key}
+# go through the kernel's /v1/writes once the runner files its git writes there (lean-core 3b), with src/plan.mjs as their
+# executor@1 plan. Outside the agents org it is PR-only (no merge, no creation, no workflows), except product-repo merges the
+# reviewer or the owner approved.
+privileged: [ git-credential ]

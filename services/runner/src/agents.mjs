@@ -38,22 +38,6 @@ export function parseCommand(body) {
   return COMMANDS.get(text.trim().toLowerCase().replace(/[.!]+$/, ""));
 }
 
-/**
- * Normalize "org/repo", "https://github.com/org/repo(.git)", "git@github.com:org/repo.git", or any
- * of these as Paperclip stores them: Markdown links ("[url](url)"), "<url>", backslash escapes.
- */
-export function normalizeRepo(value) {
-  const text = String(value ?? "")
-    .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, "$2") // [text](url) → url
-    .replace(/\\(.)/g, "$1") // \_ → _
-    .replace(/[<>`]/g, " ")
-    .trim();
-  const m =
-    /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/#?\s)]|$)/.exec(text) ??
-    /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/#?\s]|$)/.exec(text);
-  if (!m) return undefined;
-  return { org: m[1], name: m[2], slug: `${m[1]}/${m[2]}` };
-}
 
 export function repoAllowed(repo, allowedOrgs) {
   return Boolean(repo) && allowedOrgs.some((o) => o.toLowerCase() === repo.org.toLowerCase());
@@ -221,6 +205,16 @@ export function isUserPart(issue, engineers) {
  */
 export function isAgentSubtask(issue) {
   return Boolean(issue?.parentId && issue.createdByAgentId && !issue.createdByUserId);
+}
+
+/**
+ * Where a finished queue leaves its task: an agent's sub-task whose PRs all merged, with no other open PR of its own
+ * (openPrUrls: the task's PRs not known merged), is done; the delegating agent hears it on the parent. The owner's own
+ * tasks, a queue that stopped, and a task with another PR still open stay in review.
+ */
+export function finishedStatus(issue, queue, openPrUrls = []) {
+  const left = openPrUrls.filter((u) => !queue.prs.some((p) => p.url.toLowerCase() === String(u).toLowerCase()));
+  return queue.state === "done" && !left.length && isAgentSubtask(issue) ? "done" : "in_review";
 }
 
 /**

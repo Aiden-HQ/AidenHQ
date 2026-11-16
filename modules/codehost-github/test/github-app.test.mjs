@@ -120,7 +120,7 @@ describe("GitHub App", () => {
   });
 
   it("the runner creates a repo only in createRepoApproved; cloning a missing one is an error", () => {
-    const main = readFileSync(join(import.meta.dirname, "../src/main.mjs"), "utf8");
+    const main = readFileSync(join(import.meta.dirname, "../../../services/runner/src/main.mjs"), "utf8");
     const fn = (name) => main.slice(main.indexOf(`async function ${name}(`)).split("\n}\n")[0];
     assert.equal(main.split("\n").filter((l) => l.includes("createRepo(")).length, 1);
     assert.ok(fn("createRepoApproved").includes("await app.createRepo(slug)"));

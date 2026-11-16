@@ -136,6 +136,13 @@ export const inOrg = (org: string | undefined, slug: string | undefined) => Bool
 const sameSlug = (a: string | undefined, b: string | undefined) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 
 /**
+ * Our own repositories (the agents org's and the product repo): the only ones the App merges in (product merges as its bot,
+ * after the reviewer or the owner). Elsewhere it only pushes and opens PRs; merges there take the host's gh login, behind
+ * that repo's own GitHub review.
+ */
+export const ownRepo = (slug: string | undefined, agentsOrg: string | undefined, productRepo: string | undefined) => inOrg(agentsOrg, slug) || sameSlug(slug, productRepo);
+
+/**
  * A push token's permissions: read-only, or Contents write. Workflows: write goes to the repositories whose pipelines we own
  * (the agents org's and the product repo's): a push that touches a workflow file is refused unless the token itself carries
  * it, whatever the App declares. Elsewhere (another org, which gates workflow files itself) Contents only.
@@ -183,6 +190,14 @@ export async function jobGhToken(app: AppClient | null | undefined, slugs: strin
   if (!app || !names.length) return undefined;
   const org = names[0]![0]!;
   return app.token(org, { repositories: names.filter(([o]) => o!.toLowerCase() === org.toLowerCase()).map(([, n]) => n!), permissions: READ, fresh: true });
+}
+
+/**
+ * A merge-queue write's gh options: the App's token (one repo, `perms`) only in our own repos (ownRepo); anywhere else
+ * nothing is minted and the write runs as the host's gh login, behind that repo's own review.
+ */
+export async function mergeOptions(app: AppClient | null | undefined, slug: string, own: { agentsOrg?: string; productRepo?: string }, perms: Record<string, string> = WRITE, extra: { env?: NodeJS.ProcessEnv; [k: string]: unknown } = {}) {
+  return ownRepo(slug, own.agentsOrg, own.productRepo) ? ghOptions(app, slug, perms, extra) : extra;
 }
 
 /** gh child options: GH_TOKEN for that one process when `app` (the App covering the repo) is set, else the host's gh login. */

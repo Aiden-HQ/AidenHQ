@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
-import { git } from "./git.mjs";
+import { git } from "../../../modules/codehost-github/src/git.mjs";
 
 // Agents the instance defines itself live in agents/<key>/ (agent.yaml + AGENTS.md).
 export const APPLY_PATHS = /^(instance\.yaml|apps\.yaml|agents\/[\w.-]+\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md))$/;

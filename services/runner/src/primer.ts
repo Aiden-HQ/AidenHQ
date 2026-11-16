@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
-import { readOwn } from "./files.ts";
+import { readOwn } from "../../../modules/codehost-github/src/workspace.ts";
 
 export const PRIMER_FILE = join(".aidenhq", "primer.md");
 /** A designed page instead (colours, sections, filtering): Primer serves HTML with its scripts, sandboxed. */

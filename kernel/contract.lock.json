@@ -102,6 +102,10 @@
       "fp": "",
       "remove_after": null
     },
+    "manifest key checks": {
+      "state": "experimental",
+      "fp": ""
+    },
     "manifest key company": {
       "state": "experimental",
       "fp": ""

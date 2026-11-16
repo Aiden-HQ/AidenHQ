@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { GATE_CORE, coverageProblems } from "../src/tiers.mjs";
+import { GATE_CORE, coverageProblems } from "../../../modules/platform/src/check.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const files = execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, maxBuffer: 64 << 20, encoding: "utf8" }).split("\0").filter(Boolean);
@@ -45,5 +45,5 @@ test("the split keeps every file the old list gated; the only additions are the 
   const after = gated(GATE_CORE);
   assert.deepEqual(before.filter((f) => !after.includes(f)), []);
   const added = after.filter((f) => !before.includes(f));
-  assert.ok(added.length > 0 && added.every((f) => f.startsWith("scripts/lean/") || f === "scripts/test/lean.test.mjs" || f === "services/runner/test/gate-coverage.test.mjs" || f.startsWith("kernel/sdk/") || f.startsWith("kernel/") || /(^|\/)aidenhq-sdk\/(caller|executor)\.ts$/.test(f) || f.startsWith("modules/apps-platform/") || f === "services/apps-mcp/src/executor.ts" || f === "modules/primer/module.yaml" || f === "modules/primer/connections/primer-mcp/src/publish.ts" || /^modules\/engine-[^/]+\//.test(f) || f === "services/runner/src/agents.mjs" || f === "services/runner/src/evalgate.ts" || /^modules\/channel-[^/]+\//.test(f) || f.startsWith("modules/ai-reviewer/") || f === "services/runner/src/review-request.mjs" || f === "services/shared/review-files.mjs" || f === "services/runner/src/siblings.ts" || f === "services/runner/src/progress.ts" || f === "services/board/src/kernel-auth.ts" || f === "services/runner/src/cards.ts"), added.join(", "));
+  assert.ok(added.length > 0 && added.every((f) => f.startsWith("scripts/lean/") || f === "scripts/test/lean.test.mjs" || f === "services/runner/test/gate-coverage.test.mjs" || f.startsWith("kernel/sdk/") || f.startsWith("kernel/") || /(^|\/)aidenhq-sdk\/(caller|executor)\.ts$/.test(f) || f.startsWith("modules/apps-platform/") || f === "services/apps-mcp/src/executor.ts" || f === "modules/primer/module.yaml" || f === "modules/primer/connections/primer-mcp/src/publish.ts" || /^modules\/engine-[^/]+\//.test(f) || f === "services/runner/src/agents.mjs" || f === "services/runner/src/evalgate.ts" || /^modules\/channel-[^/]+\//.test(f) || f.startsWith("modules/ai-reviewer/") || f === "services/runner/src/review-request.mjs" || f === "services/shared/review-files.mjs" || f === "services/runner/src/siblings.ts" || f === "services/runner/src/progress.ts" || f === "services/board/src/kernel-auth.ts" || f === "services/runner/src/cards.ts" || f.startsWith("modules/codehost-github/") || f.startsWith("modules/platform/") || f === "modules/engineering/src/merge-queue.mjs"), added.join(", "));
 });

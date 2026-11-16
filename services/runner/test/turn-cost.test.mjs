@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { baseRef, branchChanges, findBranches } from "../src/workspace.ts";
+import { baseRef, branchChanges, findBranches } from "../../../modules/codehost-github/src/workspace.ts";
 
 const ID = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
 

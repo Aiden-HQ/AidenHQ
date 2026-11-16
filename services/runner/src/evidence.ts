@@ -3,8 +3,9 @@
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
 import { RUNNER_MARKER } from "./agents.mjs";
-import { patchKey } from "./git.mjs";
-import { GATE_CHECK, findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
+import { patchKey } from "../../../modules/codehost-github/src/git.mjs";
+import { GATE_CHECK, namedChecks, skippedImageScan } from "../../../modules/codehost-github/src/merge-gate.mjs";
+import { findPrs } from "../../../modules/engineering/src/merge-queue.mjs";
 import { MAX_DIFF } from "./models.mjs";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
 
