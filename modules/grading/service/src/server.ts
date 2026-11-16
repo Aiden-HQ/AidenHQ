@@ -113,8 +113,9 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
     // Cancelled while the pass was running: no verdict, the cancel settles the row (a reopened task is graded again).
     if (issue.status === "cancelled") return grades.settle(issue.id, "the task was cancelled before the grader settled it");
     const g = grades.record(issue.id, v, Date.now(), [issue.createdByAgentId, parent?.assigneeAgentId].filter((x): x is string => Boolean(x)));
-    // Done waiting: the label goes (the runner moves the task on).
-    if (g.state !== "awaiting_evidence") await kernel.release(issue.id);
+    // Done waiting: the label goes (the runner moves the task on). The verdict stands if the kernel can't take the label off
+    // (it restarts on applies): the runner still closes or reopens the task, and the label is only cosmetic by then.
+    if (g.state !== "awaiting_evidence") await kernel.release(issue.id).catch((err: Error) => log("grading label not released", { task: issue.identifier, err: String(err.message).slice(0, 200) }));
     log("grade recorded", { task: issue.identifier, outcome: v.outcome, version: v.version.slice(0, 12), state: g.state, attempts: g.attempts });
     return g;
   }
