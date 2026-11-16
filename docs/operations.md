@@ -165,6 +165,13 @@ ops/app-deploy.sh deploy <app> [sha]
 
 This calls the running apps-mcp, so its per-app lock applies.
 
+A deploy records one of four outcomes: `healthy`, `rolled_back` (it ran but failed health or a check, and the previous good
+commit is running again), `failed`, and `build_failed` (its `compose up` itself failed: a build error or a broken host, so
+nothing of it ever ran). A `build_failed` deploy with no good deploy behind it reads as `failed` in `app_status`. The
+auto-deploy loop treats a commit as done once any attempt at it ends in something other than `build_failed`, and retries
+a `build_failed` commit on each poll up to three attempts: an environment fault that is fixed lets the same commit deploy
+by `auto-deploy` a little later, while an app-side failure is still never retried.
+
 ### Where apps are served
 
 Apps are on their own tailnet node, `https://$APPS_TS_HOSTNAME.<tailnet>.ts.net:<port>` (`apps-edge` in

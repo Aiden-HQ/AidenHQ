@@ -161,7 +161,8 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   async function status(app: App) {
     const last = store.lastDeploy(app.name);
     const inc = store.openIncident(app.name);
-    const state = !last ? "not deployed" : last.status === "failed" ? "failed" : (healthy.get(app.name) ?? (await engine.containersHealthy(app).catch(() => false))) ? "healthy" : "unhealthy";
+    // A deploy that got nothing running reads as failed: a failed first deploy, or one whose build never ran and had nothing to fall back on.
+    const state = !last ? "not deployed" : last.status === "failed" || (last.status === "build_failed" && !store.goodDeploys(app.name).length) ? "failed" : (healthy.get(app.name) ?? (await engine.containersHealthy(app).catch(() => false))) ? "healthy" : "unhealthy";
     const stats = last && last.status !== "failed" ? await engine.stats(app).catch(() => undefined) : undefined;
     return {
       name: app.name, repo: app.repo, healthy: state === "healthy", state, sha: last?.sha, deployed_at: last?.at, deployed_by: last?.by, auto_deploy: app.auto_deploy, owner: app.owner, url: url(app),

@@ -27,7 +27,7 @@ export interface Deps {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
-export interface Result { sha: string; status: "healthy" | "rolled_back" | "failed"; images: string[]; previous?: string; checks?: ProbeResult[] }
+export interface Result { sha: string; status: "healthy" | "rolled_back" | "failed" | "build_failed"; images: string[]; previous?: string; checks?: ProbeResult[] }
 
 export const NOTE = "code only was redeployed; volumes and data were not restored";
 
@@ -99,16 +99,19 @@ export function createEngine(d: Deps) {
   const up = (app: App) => compose(app, ["up", "-d", "--build", "--remove-orphans"]);
   const record = (app: App, r: Result, by: string, detail = "") => d.store.addDeploy({ app: app.name, sha: r.sha, images_json: JSON.stringify(r.images), by, at: now(), status: r.status, detail });
 
-  /** prepare + up + health. Resolves with the outcome (a failed `up`, e.g. a build error, counts as not ok); prepare errors propagate (nothing changed). */
-  async function apply(app: App, sha?: string): Promise<{ sha: string; images: string[]; declared: Declared; ok: boolean; err?: string }> {
+  /**
+   * prepare + up + health. A failed `up` (a build or host error) resolves `ok: false` with `built: false`; prepare errors
+   * propagate (nothing changed).
+   */
+  async function apply(app: App, sha?: string): Promise<{ sha: string; images: string[]; declared: Declared; ok: boolean; err?: string; built: boolean }> {
     const p = await prepare(app, sha);
     try {
       await up(app);
     } catch (e) {
-      return { ...p, ok: false, err: String((e as Error).message).slice(0, 300) };
+      return { ...p, ok: false, err: String((e as Error).message).slice(0, 300), built: false };
     }
     d.store.setRunning(app.name, p.sha); // its containers are up now, healthy or not
-    return { ...p, ok: await waitHealthy(app) };
+    return { ...p, ok: await waitHealthy(app), built: true };
   }
 
   async function deploy(app: App, o: { sha?: string; by: string; allowStateful?: boolean }): Promise<Result> {
@@ -131,13 +134,15 @@ export function createEngine(d: Deps) {
         // First deploy: nothing to roll back to. Stop it, don't loop.
         await compose(app, ["down", "--remove-orphans"]).catch(() => "");
         d.store.clearRunning(app.name);
-        const r: Result = { sha: next.sha, status: "failed", images: next.images, ...(checks ? { checks } : {}) };
+        const r: Result = { sha: next.sha, status: next.built ? "failed" : "build_failed", images: next.images, ...(checks ? { checks } : {}) };
         record(app, r, o.by, `${next.err ?? `health check failed within ${app.health.grace_sec}s`}; stopped (no previous good deploy)`);
         return r;
       }
       const back = await apply(app, prev.sha);
       // The rollback target was healthy before: health alone decides it (its pages may predate a newer check).
-      const r: Result = { sha: next.sha, status: back.ok ? "rolled_back" : "failed", images: next.images, previous: prev.sha, ...(checks ? { checks } : {}) };
+      // A commit whose `up` failed never got running: `build_failed` says the build or host failed, so the loop tries it again.
+      // Anything that ran and then failed is the commit's own, and is never retried.
+      const r: Result = { sha: next.sha, status: !next.built ? "build_failed" : back.ok ? "rolled_back" : "failed", images: next.images, previous: prev.sha, ...(checks ? { checks } : {}) };
       record(app, r, o.by, `${next.err ?? "health check failed"}; ${back.ok ? `rolled back to ${prev.sha.slice(0, 8)}` : `rollback to ${prev.sha.slice(0, 8)} also unhealthy`}; ${NOTE}`);
       if (back.ok) record(app, { sha: back.sha, status: "healthy", images: back.images }, "auto-rollback");
       return r;

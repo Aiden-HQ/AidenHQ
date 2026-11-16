@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { createEngine } from "../src/deploy.js";
-import { healthTick, reconcileTick, WATCH_MS } from "../src/loops.js";
+import { BUILD_ATTEMPTS, healthTick, reconcileTick, WATCH_MS } from "../src/loops.js";
 import type { Platform } from "../src/platform.js";
 import { parseApp, type App } from "../src/registry.js";
 import { openStore } from "../src/store.js";
@@ -12,9 +12,10 @@ const TICK = 2 * 60_000;
 const FIX = "f".repeat(40);
 
 // The real engine and store on a fake docker (as in deploy.test.ts): `up` runs the checked-out sha; `good` decides health.
-// `failure` is what the probe saw when it failed (an HTTP error is app-side evidence; undefined is no answer).
+// `failure` is what the probe saw when it failed (an HTTP error is app-side evidence; undefined is no answer). `broken` shas
+// fail in `up` like a build or host error does: nothing of that commit ever runs.
 function setup(o: { message?: string } = {}) {
-  const st = { out: "", running: "", good: new Set<string>(), failure: undefined as string | undefined, app: parseApp({ name: "demo", repo: "example-org/x", owner: "a", description: "d" }) as App };
+  const st = { out: "", running: "", good: new Set<string>(), broken: new Set<string>(), failure: undefined as string | undefined, app: parseApp({ name: "demo", repo: "example-org/x", owner: "a", description: "d" }) as App };
   const t = { now: 0 };
   const src = mkdtempSync(`${tmpdir()}/src-`);
   writeFileSync(`${src}/compose.yaml`, "services:\n  web:\n    image: x\n");
@@ -27,7 +28,10 @@ function setup(o: { message?: string } = {}) {
     identityKeysHostFile: "/none/keys.json",
     exec: async (args) => {
       if (args.includes("config")) return '{"services":{"web":{"image":"x"}}}';
-      if (args.includes("up")) st.running = st.out;
+      if (args.includes("up")) {
+        if (st.broken.has(st.out)) throw new Error("docker compose -p app-demo failed: buildx Docker CLI plugin not found: falling back to the classic builder");
+        st.running = st.out;
+      }
       return "";
     },
     checkout: async (_a, sha) => ((st.out = sha ?? "newsha"), { sha: st.out, dir: src }),
@@ -147,5 +151,56 @@ describe("post-deploy watch", () => {
     st.good.add(FIX);
     await reconcileTick(p, quiet);
     expect(store.openIncident("demo")).toBeUndefined();
+  });
+
+  // A build or host error (the docker CLI plugin missing, a full disk) is not the commit's fault: an auto-deploy that never
+  // got to run must not mark its commit as deployed for good, or nothing retries it and no healthy auto-deploy can exist.
+  it("retries a commit whose build failed, and a later attempt deploys it", async () => {
+    const { p, st, store, deployed } = setup();
+    await deployed();
+    st.app = { ...st.app, pin: FIX };
+    st.good.add(FIX);
+    st.broken.add(FIX);
+    await reconcileTick(p, quiet);
+    expect(store.deploysOf("demo", FIX)).toMatchObject([{ by: "auto-deploy", status: "build_failed" }]);
+    expect(store.lastDeploy("demo")).toMatchObject({ sha: "v2", by: "auto-rollback", status: "healthy" });
+    expect(st.running).toBe("v2"); // rolled back: nothing of the broken build runs
+    await reconcileTick(p, quiet); // the next poll tries the same commit again
+    expect(store.deploysOf("demo", FIX)).toHaveLength(2);
+    st.broken.delete(FIX); // the host is fixed: the retry deploys it, by the platform's own auto-deploy
+    await reconcileTick(p, quiet);
+    expect(store.lastDeploy("demo")).toMatchObject({ sha: FIX, by: "auto-deploy", status: "healthy" });
+    expect(store.openIncident("demo")).toBeUndefined();
+  });
+
+  it("stops retrying a commit whose build keeps failing, and never retries one that failed health", async () => {
+    const { p, st, store, deployed } = setup();
+    await deployed();
+    st.app = { ...st.app, pin: FIX };
+    st.broken.add(FIX);
+    for (let i = 0; i < BUILD_ATTEMPTS + 2; i++) await reconcileTick(p, quiet);
+    expect(store.deploysOf("demo", FIX)).toHaveLength(BUILD_ATTEMPTS);
+
+    // An app-side failure (the deploy ran and failed health) stays a one-shot: it was the commit, not the host.
+    const other = setup();
+    await other.deployed();
+    other.st.app = { ...other.st.app, pin: FIX };
+    for (let i = 0; i < 3; i++) await reconcileTick(other.p, quiet);
+    expect(other.store.deploysOf("demo", FIX)).toHaveLength(1);
+    expect(other.store.lastDeploy("demo")).toMatchObject({ sha: "v2", status: "healthy" });
+  });
+
+  // The first deploy of an app has nothing to fall back on, but a host error there is no more the commit's own than any other.
+  it("retries a first deploy whose build failed, and a later attempt deploys it", async () => {
+    const { p, st, store } = setup();
+    st.app = { ...st.app, pin: FIX };
+    st.good.add(FIX);
+    st.broken.add(FIX);
+    await reconcileTick(p, quiet);
+    expect(store.deploysOf("demo", FIX)).toMatchObject([{ by: "reconcile", status: "build_failed" }]);
+    expect(store.lastDeploy("demo")?.status).toBe("build_failed");
+    st.broken.delete(FIX);
+    await reconcileTick(p, quiet);
+    expect(store.lastDeploy("demo")).toMatchObject({ sha: FIX, by: "auto-deploy", status: "healthy" });
   });
 });
