@@ -89,6 +89,73 @@ describe("flow-product", () => {
     assert.equal(pings().length, 1, "once per main commit");
   });
 
+  // The repository was recreated once and its numbering restarted, so a number a task stored before then names another
+  // change now: acting on it would rebase, merge or card someone else's PR.
+  const stored = (branch, url) => {
+    const state = new State(join(t.dir, "state"));
+    state.saveBranch("part", { repo: "acme/app", branch, base: "main" });
+    state.updateBranch("part", "acme/app", branch, { pr_url: url });
+    state.db.close();
+  };
+  const askMerge = (number, url) => {
+    const state = new State(join(t.dir, "state"));
+    state.set("auto_merges", JSON.stringify({ part: { prs: [{ repo: "acme/app", number, url }], since: new Date().toISOString() } }));
+    state.db.close();
+  };
+  const staleNotes = (n) => t.partComments().filter((c) => new RegExp(`pull/${n} is stale`).test(c));
+  const pings = (n) => t.partComments().filter((c) => new RegExp(`pull/${n} now conflicts`).test(c));
+
+  it("a stored PR number whose head is another task's branch asks for no rebase, and says once that it is stale", async () => {
+    await t.waitFor("no run going", () => !busy());
+    stored("feat/ours", "https://github.com/acme/app/pull/12");
+    setPrs({ 12: { branch: "fix/theirs", files: ["x.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } });
+    const runs = t.claudeRuns().length;
+    await restart();
+    await t.waitFor("the stale note", () => staleNotes(12).length === 1);
+    assert.match(staleNotes(12)[0], /head branch is `fix\/theirs`, not the task's `feat\/ours`/);
+    await restart();
+    await t.idle(2000);
+    assert.equal(staleNotes(12).length, 1, "one note per stored number");
+    assert.equal(pings(12).length, 0, "no rebase request against another task's PR");
+    assert.equal(t.claudeRuns().length, runs, "nothing dispatched to rebase it");
+  });
+
+  it("a stored PR number whose head is another task's branch files no merge card", async () => {
+    await t.waitFor("no run going", () => !busy());
+    stored("feat/ours", "https://github.com/acme/app/pull/13");
+    askMerge(13, "https://github.com/acme/app/pull/13");
+    setPrs({ 13: { branch: "fix/theirs", files: ["x.txt"], checks: "SUCCESS" } });
+    const cards = () => [...t.paperclip.approvals.values()].filter((a) => a.action === "merge");
+    const was = cards().length;
+    await restart();
+    await t.waitFor("the stale note", () => staleNotes(13).length === 1);
+    await t.idle(2000);
+    assert.equal(cards().length, was, "no merge card for a PR the task does not own");
+    assert.equal(pings(13).length, 0);
+  });
+
+  it("a stored PR number that still names the task's branch gets its merge card as before", async () => {
+    await t.waitFor("no run going", () => !busy());
+    stored("feat/ours", "https://github.com/acme/app/pull/14");
+    askMerge(14, "https://github.com/acme/app/pull/14");
+    setPrs({ 14: { branch: "feat/ours", files: ["x.txt"], checks: "SUCCESS" } });
+    const cards = () => [...t.paperclip.approvals.values()].filter((a) => a.action === "merge" && a.state === "pending");
+    const was = cards().length;
+    await restart();
+    await t.waitFor("the merge card", () => cards().length === was + 1);
+    assert.equal(staleNotes(14).length, 0, "the task's own PR is not reported stale");
+  });
+
+  it("a stored PR number that still names the task's branch asks for its rebase as before", async () => {
+    await t.waitFor("no run going", () => !busy());
+    stored("feat/ours", "https://github.com/acme/app/pull/15");
+    setPrs({ 15: { branch: "feat/ours", files: ["x.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } });
+    await restart();
+    await t.waitFor("the rebase request", () => pings(15).length === 1);
+    assert.match(pings(15)[0], /Asking for one rebase onto `main` and one publish/);
+    assert.equal(staleNotes(15).length, 0, "the task's own PR is not reported stale");
+  });
+
   it("a conflicting PR of a done or cancelled task is never reopened or worked on: one note", async () => {
     await t.waitFor("no run going", () => !busy());
     const state = new State(join(t.dir, "state"));

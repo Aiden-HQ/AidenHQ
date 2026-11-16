@@ -427,6 +427,9 @@ async function watchProductPrs() {
     // The task whose branch is this PR's head: a reused PR number (a recreated repository) belongs to nobody here.
     const issueId = state.issuesWithPrs([pr.url], "").filter((id) => state.branches(id).some((b) => b.branch === pr.headRefName && !b.merged)).at(-1);
     if (!issueId || (bot && pr.author?.login !== bot)) continue;
+    // The number this task stored may be from before the repository was recreated and name another change now: act on it
+    // only while GitHub has it on the branch the task recorded.
+    if (await staleStoredPr(issueId, pr)) continue;
     // A red check whose job never started (GitHub refused it: billing, no runner) is the environment's: it is re-run at this
     // same head once and then said once, and it never asks for a rebase or a new head.
     const env = conflict ? [] : await merges.environmentFailure(mergeGithub, repo, pr).catch((err) => (log("check classification failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 200) }), []));
@@ -597,6 +600,28 @@ async function fileDependabotTask(repo, pr, pe) {
   state.set("dependabot-tasks", JSON.stringify({ ...JSON.parse(state.get("dependabot-tasks") || "{}"), [pr.url.toLowerCase()]: issue.id }));
   log("dependabot task filed", { pr: pr.url, issue: issue.identifier });
   await dispatch({ issue, instructions: `${title}\n\n${description}` });
+}
+
+/**
+ * A PR number the task stored, checked against GitHub before anything acts on it (a rebase request, a merge request, a
+ * card, a conflict or checks report): the repository was recreated once and its numbering restarted, so a number kept from
+ * before then names another change now. The task's recorded branch for that url must be the PR's real head branch; when it
+ * differs, or the head can't be read, this says so once on the task and the caller does nothing with the PR. Only a url the
+ * task recorded is checked: a PR another task opened and this one was asked to merge is not this task's stored number.
+ */
+async function staleStoredPr(issueId, { url, headRefName }) {
+  const row = state.branches(issueId).find((b) => String(b.pr_url ?? "").toLowerCase() === String(url).toLowerCase());
+  if (!row) return undefined;
+  const stale = merges.stalePr(row.branch, headRefName);
+  if (!stale) return undefined;
+  const once = `stale-pr:${issueId}:${String(url).toLowerCase()}:${headRefName ?? ""}`;
+  if (!state.get(once)) {
+    state.set(once, new Date().toISOString());
+    const said = `The PR number stored on this task for ${url} is stale: ${stale.why}. Nothing was done with it: no rebase request, merge or card.`;
+    log("stale stored PR number", { issue: issueId, pr: url, recorded: row.branch, head: headRefName ?? null });
+    await pc.comment(issueId, said).catch((err) => log("stale PR note failed", { issue: issueId, pr: url, err: String(err.message ?? err).slice(0, 200) }));
+  }
+  return stale;
 }
 
 /**
@@ -898,6 +923,8 @@ async function runAutoMerges() {
         const pr = (await mergeGithub.pr(p.repo, p.number))?.repository?.pullRequest;
         if (pr?.state === "MERGED" || pr?.state === "CLOSED") gone.push(p);
         else if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? "")) throw new UserError(`couldn't read ${p.url} on GitHub`);
+        // A stored number that names another change now never becomes a merge request or a card: it is said once, dropped.
+        else if (await staleStoredPr(issueId, { url: p.url, headRefName: pr.headRefName })) gone.push(p);
         else read.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid, noReview: true });
       }
       const states = await mergeTierState(read);
@@ -2851,15 +2878,19 @@ async function executeApproval(a) {
 async function mergeAfterPublish(issue, a, out) {
   const prs = [];
   const missing = [];
+  const stale = [];
   for (const b of a.args.only) {
     const row = sameRepo(b.repo, cfg.productRepo) ? state.branches(issue.id).find((x) => sameRepo(x.repo, b.repo) && x.branch === b.branch) : undefined;
     const pr = row?.pr_url && !row.merged ? merges.findPrs(row.pr_url)[0] : undefined;
-    if (pr) prs.push({ ...pr, head: b.sha, noReview: true });
+    // The row's url is a stored number: one that names another change now is said and never merged on this task's approval.
+    const real = pr ? (await mergeGithub.pr(pr.repo, pr.number).catch(() => null))?.repository?.pullRequest : undefined;
+    if (pr && (await staleStoredPr(issue.id, { url: pr.url, headRefName: real?.headRefName }))) stale.push(`${b.repo} \`${b.branch}\``);
+    else if (pr) prs.push({ ...pr, head: b.sha, noReview: true });
     else missing.push(`${b.repo} \`${b.branch}\``);
   }
   const started = prs.length ? Boolean(await startMerges(issue, { prs, strict: true, during: true })) : false;
-  const said = [prs.length ? (started ? `Merging ${prs.map((p) => p.url).join(", ")} once green on the approved commit.` : "The merge didn't start (said on the task).") : "", missing.length ? `Not merged (no open PR): ${missing.join(", ")}.` : ""].filter(Boolean).join(" ");
-  return { ok: !missing.length && (started || !prs.length), text: `${out.text}\n\n${said}` };
+  const said = [prs.length ? (started ? `Merging ${prs.map((p) => p.url).join(", ")} once green on the approved commit.` : "The merge didn't start (said on the task).") : "", missing.length ? `Not merged (no open PR): ${missing.join(", ")}.` : "", stale.length ? `Not merged (the stored PR number is stale, said above): ${stale.join(", ")}.` : ""].filter(Boolean).join(" ");
+  return { ok: !missing.length && !stale.length && (started || !prs.length), text: `${out.text}\n\n${said}` };
 }
 
 /** Outcomes wait here until the board takes them (an apply rebuilds the board): kept in state, retried every poll. */
@@ -3364,9 +3395,10 @@ async function agentMerge(ctx, args) {
       bound.push({ repo, number, url }); // GitHub's own review gates these
       continue;
     }
-    const head = (await mergeGithub.pr(repo, number))?.repository?.pullRequest?.headRefOid;
-    if (!/^[0-9a-f]{40}$/.test(head ?? "")) throw new UserError(`Couldn't read ${url} on GitHub.`);
-    bound.push({ repo, number, url, head, noReview: true });
+    const pr = (await mergeGithub.pr(repo, number))?.repository?.pullRequest;
+    if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? "")) throw new UserError(`Couldn't read ${url} on GitHub.`);
+    if (await staleStoredPr(ctx.issue.id, { url, headRefName: pr.headRefName })) throw new UserError(`Not merged: the PR number stored on this task is stale, so ${url} is not this task's change.`);
+    bound.push({ repo, number, url, head: pr.headRefOid, noReview: true });
   }
   // Tier 0 (agents org, named checks green or running on the exact head) starts at once, each PR merged on its own
   // once green (owner, 2026-11-12); the rest go on one card, as before.
@@ -4534,12 +4566,14 @@ async function leaveFinishedPrs(issue, workspace) {
   for (const b of state.branches(issue.id).filter((b) => b.pr_url && !b.merged)) {
     let pr;
     try {
-      const { stdout } = await execFileP(await findRealGh(), ["pr", "view", b.pr_url, "--json", "state,number,headRefOid"], await gho(b.repo, READ));
+      const { stdout } = await execFileP(await findRealGh(), ["pr", "view", b.pr_url, "--json", "state,number,headRefOid,headRefName"], await gho(b.repo, READ));
       pr = JSON.parse(stdout);
     } catch (err) {
       log("pr state check failed", { issue: issue.identifier, err: String(err.stderr || err.message).slice(0, 300) });
       continue;
     }
+    // Another change's PR under a stored number is left alone: it is neither read as this branch's merged nor reopened.
+    if (await staleStoredPr(issue.id, { url: b.pr_url, headRefName: pr.headRefName })) continue;
     if (pr.state === "OPEN") continue;
     if (pr.state === "CLOSED") {
       // Closed without merging: remembered as closed, so a receipt leaves the finished work out. `pr` still opens a new one:

@@ -31,6 +31,19 @@ export function findPrs(text) {
   return out;
 }
 
+/**
+ * Whether a stored PR url still names the branch its task recorded: the repository was recreated once and its numbering
+ * restarted, so a bare number kept from before then names another change now. The caller reads the PR's real head branch
+ * from GitHub; a stored url whose head differs, or that can't be read, is stale, and must not produce a rebase, merge or
+ * card request against a PR the task does not own.
+ */
+export function stalePr(recorded, head) {
+  const want = String(recorded ?? "");
+  if (!head) return { stale: true, why: "couldn't read its head branch" };
+  if (want === head) return undefined;
+  return { stale: true, why: `its head branch is \`${head}\`, not the task's \`${want}\`` };
+}
+
 /** A new queue for the PRs, merged in the order given. */
 export function newQueue(prs, { gapMinutes, now = new Date() }) {
   return { state: "running", gapMinutes, startedAt: now.toISOString(), prs: prs.map((p) => ({ ...p, status: "pending" })) };

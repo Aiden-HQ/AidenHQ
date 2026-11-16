@@ -57,6 +57,13 @@ const tip = (branch) => {
     return "0".repeat(40); // not on GitHub yet
   }
 };
+// A PR's state and head, as the runner reads it before it acts on a stored PR number.
+if (args[0] === "pr" && args[1] === "view" && args[4] === "state,number,headRefOid,headRefName" && existsSync(fixture)) {
+  const p = JSON.parse(readFileSync(fixture, "utf8"))[/\/pull\/(\d+)$/.exec(args[2])?.[1]];
+  if (!p) process.exit(1);
+  console.log(JSON.stringify({ state: p.merged ? "MERGED" : "OPEN", number: Number(/\/pull\/(\d+)$/.exec(args[2])[1]), headRefOid: tip(p.branch), headRefName: p.branch }));
+  process.exit(0);
+}
 // The commit statuses the runner itself wrote on a head (a design review's pending wait), alongside the fake's checks.
 const written = (p) => (p.statuses ?? []).map((s) => ({ __typename: "StatusContext", context: s.context, state: s.state.toUpperCase(), description: s.description }));
 const rollup = (state, statuses = []) => {

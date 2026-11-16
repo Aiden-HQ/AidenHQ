@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it, test } from "node:test";
 import { classify } from "../src/tiers.mjs";
-import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, environmentFailure, environmentalChecks, environmentReceipt, findPrs, finishedStatus, jobFor, newQueue, prDecision, startOrResume, supersededDesignReview, touchesUi, WRITES, withGate, ciState, namedChecks } from "../src/merges.mjs";
+import { addEach, advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, environmentFailure, environmentalChecks, environmentReceipt, findPrs, finishedStatus, jobFor, newQueue, prDecision, startOrResume, stalePr, supersededDesignReview, touchesUi, WRITES, withGate, ciState, namedChecks } from "../src/merges.mjs";
 import { prAttention } from "../src/product-prs.ts";
 
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
@@ -814,6 +814,13 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     assert.doesNotMatch(second.say.at(-1), /has failing checks|named check\(s\) failed/);
     assert.deepEqual(gh.writes, [{ rerun: 200, checks: ["image-scan"] }]);
     assert.equal(q.prs[0].head, H);
+  });
+
+  it("a stored PR number is stale unless GitHub has it on the branch the task recorded", () => {
+    assert.equal(stalePr("feat/a", "feat/a"), undefined, "the task's own branch: act as before");
+    assert.deepEqual(stalePr("feat/a", "fix/b"), { stale: true, why: "its head branch is `fix/b`, not the task's `feat/a`" });
+    // A head GitHub didn't give is never taken as a match: a number that can't be confirmed is reported, not acted on.
+    assert.deepEqual(stalePr("feat/a", undefined), { stale: true, why: "couldn't read its head branch" });
   });
 
   it("the product watcher asks for a rebase only when the red checks are the commit's: never for one that never started", () => {
