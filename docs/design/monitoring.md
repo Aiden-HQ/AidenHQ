@@ -29,7 +29,8 @@ their boundary; `scripts/verify-security.sh` checks it.
 
 The host processes (runner, gateway) and the systemd/container states are textfiles, not listeners: no new port on the host, no new privilege
 (`systemctl [--user] list-units` and `docker inspect` as the owner's user, who runs the runner already). A stale textfile
-is itself an alert (`HostMetricsStale`).
+is itself an alert: `HostMetricsStale` for every textfile but the unit snapshot, `HostMetricsExporterStale` for the unit
+snapshot (`units.prom`), whose freshness also gates the unit alerts.
 
 cAdvisor gets no Docker socket (only apps-mcp holds one, `scripts/verify-security.sh`), so it labels containers by cgroup
 id; `containers.prom` carries each compose container's and computer box's id, name, project and service, and the Containers
@@ -58,7 +59,8 @@ Images (pinned by digest; `scripts/supply-chain/best-version.mjs`, release dates
 - Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_fleet_draining`, `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`.
   A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
   that record exists: `UnitFailed` and `CiRunnersDown` (which also needs `aidenhq_fleet_draining == 0`) page on a crash, not on
-  maintenance.
+  maintenance. Both also need a fresh `units.prom` (written within 3 minutes), so a dead exporter is a freshness alert
+  (`HostMetricsExporterStale`) and never reads as "0 active" or "16 failed".
 
 No secrets or ids in labels. TODO: CI time per workflow run lives in GitHub; not recorded here yet (a later small exporter
 over the Actions API, or the runner recording its CI runs).
@@ -68,7 +70,9 @@ over the Actions API, or the runner recording its CI runs).
 Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 85%, or on course to fill in 24 h),
 `DiskNearlyFull` (over 95%, **critical**), `MemoryPressure`, `OomKill`, `HostMetricsStale`, `ContainerRestarting`,
 `CoreServiceDown` (an aidenhq container, the runner or gateway unit, or the board or gateway not answering, for 5 minutes,
-**critical**), `UnitFailed`, `CiRunnersDown`, `RunnerQueueStuck`, `RunnerJobOverlong`, `GatewaySpendNearCap`,
+**critical**), `HostMetricsExporterStale` (`units.prom` absent or not written for 3 minutes: unit state is unknown, not a
+stopped fleet), `UnitFailed`, `CiRunnersDown`, `CiRunnerUnitMissing` (a runner unit in `units.prom` within the last day and
+gone now, named by unit), `RunnerQueueStuck`, `RunnerJobOverlong`, `GatewaySpendNearCap`,
 `CiReviewSpendNearCap`, `AppsCpuStarved` (an `app-*` container's own CPU pressure over 20% while the host's is over 15%; the
 alert names the app's project, and host pressure alone never fires it). The rules' test is
 `modules/monitoring/prometheus/rules.test.yml`: a host-only spike fires nothing, an `app-*` match carries its project, and

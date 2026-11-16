@@ -33,11 +33,24 @@ groups:
         annotations:
           summary: "the kernel killed {{ $value | humanize }} process(es) for memory in the last 10 minutes"
       - alert: HostMetricsStale
-        expr: time() - node_textfile_mtime_seconds > 300
+        expr: time() - node_textfile_mtime_seconds{file!~".*/units\\.prom"} > 300
         for: 5m
         labels: { severity: warning }
         annotations:
-          summary: "textfile {{ $labels.file }} not rewritten for over 5 minutes (the runner, the gateway, or the aidenhq-host-metrics timer)"
+          summary: "textfile {{ $labels.file }} not rewritten for over 5 minutes (the runner or the gateway)"
+      # The host-metrics writer (ops/host-metrics.sh, the aidenhq-host-metrics timer) writes units.prom and containers.prom,
+      # and is the only source of the unit series. When it dies or its file goes stale, the last snapshot is all Prometheus
+      # has: without this alert a frozen "all failed" snapshot reads as a failed fleet. The unit alerts below are gated on the
+      # same freshness, so absent data is unknown, never "0 active" or "16 failed". It runs every 30s; 3 minutes is six misses.
+      - alert: HostMetricsExporterStale
+        expr: |
+          absent(node_textfile_mtime_seconds{file=~".*/units\\.prom"})
+          or absent(aidenhq_unit_active{scope="user"})
+          or (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} > 180)
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "aidenhq-host-metrics has not written units.prom for over 3 minutes, or wrote no unit at all: unit state is unknown, not 0 active"
   - name: services
     rules:
       - alert: ContainerRestarting
@@ -67,7 +80,9 @@ groups:
         annotations:
           summary: "apply generation {{ $labels.n }} {{ $labels.health }}: {{ $labels.reason }} (log {{ $labels.log }}); the host runs the last known good until the instance's main moves"
       - alert: UnitFailed
-        expr: aidenhq_unit_failed == 1
+        expr: |
+          aidenhq_unit_failed == 1
+          and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
         for: 5m
         labels: { severity: warning }
         annotations:
@@ -77,10 +92,23 @@ groups:
           count(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}) > 0
           and sum(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}) == 0
           and on() aidenhq_fleet_draining == 0
+          and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
         for: 10m
         labels: { severity: warning }
         annotations:
           summary: "no CI runner unit is active"
+      # A unit that reported within the last day and is gone from the snapshot now is named by unit: expected units
+      # come from the series themselves (a unit that was there), not a fixed list. A dead exporter is HostMetricsExporterStale's.
+      - alert: CiRunnerUnitMissing
+        expr: |
+          (count_over_time(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}[1d]) > 0
+           unless on (unit) last_over_time(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}[2m]))
+          and on() aidenhq_fleet_draining == 0
+          and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "CI runner unit {{ $labels.unit }} stopped reporting (it was in units.prom within the last day)"
   - name: fleet
     rules:
       - alert: RunnerQueueStuck
