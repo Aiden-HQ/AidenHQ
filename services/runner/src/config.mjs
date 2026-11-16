@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const PRIVATE_BWRAP = "/opt/aidenhq/bwrap/bwrap";
 
 const expand = (p) => (typeof p === "string" && p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
@@ -92,10 +91,9 @@ export function loadConfig() {
     // them; the box reaches the model and its connections through the launcher's gateway.
     launcherUrl: env.AIDENHQ_LAUNCHER_URL ?? "http://10.231.0.1:8199",
     computersRunnerKeyFile: join(secrets, "computers_runner_key"),
-    boxGatewayUrl: "http://10.231.2.1:8200",
     // The engine registry (compile writes it from the modules' providers.engine): kinds, their module, bin and data.
     enginesFile: join(configDir, "engines.json"),
-    // The vault, for the files an engine gets as env (its secret_env): read before a job starts, never visible in one.
+    // The vault (the job token's secret, for `aidenhq advise`; the engineering module's token for the kernel's job routes).
     secretsDir: secrets,
     // Jobs' reads of connections (compile writes it from the modules' jobcaps): through the gateway's /c/<connection>/mcp.
     jobcapsFile: join(configDir, "jobcaps.json"),
@@ -104,38 +102,10 @@ export function loadConfig() {
     gcp: {
       credentialsFile: gcpCredentials,
       projects: (cfg.gcp?.projects ?? []).filter(Boolean),
-      // Hidden from every job: the user's own gcloud sign-in, and AidenHQ's, whose refresh
-      // token can be widened back to cloud-platform. And the secrets dir: the board key, the board's internal
-      // token and the channels' module tokens live there; the runner reads what a job needs before it starts.
-      // ~/.ssh too: the runner's write deploy keys are its own, never an agent's (it fetches and pushes for them).
-      // The services' data dir: the board's account database holds sign-in sessions, and Paperclip's holds sessions and its
-      // signing key. Sockets the runner's user may drive: Docker (its group is root on
-      // the host: every container's secrets; /var/run is /run), tailscaled (it is the operator: serve and funnel) and the
-      // user's own runtime dir (systemd --user and D-Bus: a unit started there runs outside the sandbox).
-      // The user's gh sign-in (~/.config/gh): its OAuth token acts as the owner on GitHub; a job's gh reads with a
-      // repo-narrowed GitHub App token instead (GH_TOKEN). And scripts/backup.sh's archives: copies of the data dir.
-      // The runner's state db (+ WAL files) holds every run's helper token; the state dir itself stays readable because a
-      // job's gcloud session lives under it (gcloud/<issue>), so only the db files are masked.
-      hidden: [
-        join(homedir(), ".config/gcloud"), dirname(gcpCredentials), secrets, join(homedir(), ".ssh"), resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data")),
-        join(homedir(), ".config/gh"), resolve(REPO_ROOT, "backups"),
-        // The computer launcher's live run tokens (each one acts as an agent at the gateway).
-        join(homedir(), ".local/state/aidenhq-computers"),
-        ...["", "-wal", "-shm"].map((x) => join(stateDir, `state.sqlite${x}`)),
-        "/run/docker.sock", "/run/tailscale/tailscaled.sock", `/run/user/${process.getuid()}`,
-      ],
     },
-    // Engineer jobs get a network namespace of their own through pasta (engines.mjs jailed); without it, the host's.
-    // The private bwrap ops/vm/setup.sh installs with its own AppArmor profile (/usr/bin/bwrap keeps the release's
-    // policy); a host set up before it has only the system's.
-    bwrap: existsSync(PRIVATE_BWRAP) ? PRIVATE_BWRAP : "bwrap",
-    pasta: (env.PATH ?? "").split(":").filter((d) => d.startsWith("/")).map((d) => join(d, "pasta")).find((p) => existsSync(p)),
     workDir: expand(cfg.work_dir ?? "~/aidenhq-work"),
     stateDir,
     // The monitoring module's textfile directory (node-exporter reads it): the runner's metrics (metrics.ts).
     metricsFile: join(resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data")), "modules", "monitoring", "textfile", "runner.prom"),
-    ghWrapperDir: join(REPO_ROOT, "services/runner/bin"),
-    // agent-browser and its pinned Chrome (ops/vm/setup.sh, the browser image's build), read-only in jobs (bin/aidenhq-browse).
-    browserDir: "/opt/aidenhq/browser",
   };
 }

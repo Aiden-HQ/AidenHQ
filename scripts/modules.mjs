@@ -812,7 +812,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
 
 /**
  * config/kernel/modules.json's `modules`: what the kernel knows of a module beyond its connections (spec §2.4, §3.3.4, §5.6):
- * the kernel.* roles it requests, its privileged entries, a channel's own token when it has no connection (a generated secret named
+ * the kernel.* roles it requests, its privileged entries, a channel's or a job dispatcher's own token (a generated secret named
  * `<module>_token`, dashes as underscores) and, for a channel (`providers.channel`, which needs privileged speaks-as-owner),
  * the stamp its decisions carry, whether it may close stale cards, and its own settings (a host CLI channel reads them here).
  */
@@ -832,7 +832,8 @@ export function kernelModuleTable(defs, settings = {}) {
     }
     const e = {
       ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
-      ...(ch != null && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      // A channel's, or a job dispatcher's (kernel.jobs): its own generated `<module>_token`.
+      ...((ch != null || roles.includes("kernel.jobs")) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
