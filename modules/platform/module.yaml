@@ -8,3 +8,18 @@ checks:
   - id: product-gate
     at: write.filed
     kinds: [ codehost-github.push, codehost-github.pr, codehost-github.merge ]
+agents:
+  fleet-engineer:
+    department: platform
+    # platform-engineer: settings changes, rule proposals and Dependabot tasks are filed to the agent holding it.
+    roles: [ platform-engineer ]
+    brief: true
+    graded: true
+    adapter: opencode_local
+    engine: codex-openrouter # Codex through the model gateway; `engine: openrouter` falls back to opencode
+    reasoning_effort: high
+    model: openrouter/~deepseek/deepseek-flash-latest
+    dispatch: runner
+    isolation: code-exec
+    max_parallel: 3 # independent product and instance changes run side by side, each in its own task workspace
+    jobcaps: [ primer-read? ] # Primer through the model gateway, when the primer module is on

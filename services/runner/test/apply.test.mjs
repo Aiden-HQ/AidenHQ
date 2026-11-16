@@ -35,7 +35,7 @@ test("paused Engineers are not assignment targets", async () => {
 });
 
 // The worked case: the role template as the Architect's design, through tap 1, a trial edit and tap 2.
-const trialYaml = readFileSync(new URL("../../../modules/core/templates/pr-review-chaser/agent.yaml", import.meta.url), "utf8");
+const trialYaml = readFileSync(new URL("../../../modules/agent-builder/templates/pr-review-chaser/agent.yaml", import.meta.url), "utf8");
 const graduated = trialYaml.replace(/^trial: true\n/m, "").replace("reports_to: architect", "reports_to: chief-of-staff");
 const def = "agents/review-chaser/agent.yaml", book = "agents/review-chaser/AGENTS.md";
 test("tap 1: a new agent must start in trial", () => {

@@ -31,19 +31,19 @@ const CODEX_MODEL_COMMAND = "/opt/aidenhq/codex-model";
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
 // Roles (checked by the services: board fleet tools, tasks bridge, apps-mcp, setup) and the modules allowed to grant each.
 const ROLES = {
-  "fleet-admin": ["core"], // the board's fleet tools and relaying the owner's words; the Chief of Staff: never paused, never passed to by an agent
-  "platform-engineer": ["core"], // the agent that makes fleet and product changes: settings changes, rule proposals and Dependabot PRs are filed to it
-  "board-writer": ["core"], // board moves and recurring tasks
-  "engineer-dispatch": ["core"], // Engineer sub-tasks
+  "fleet-admin": ["chief-of-staff"], // the board's fleet tools and relaying the owner's words; the Chief of Staff: never paused, never passed to by an agent
+  "platform-engineer": ["platform"], // the agent that makes fleet and product changes: settings changes, rule proposals and Dependabot PRs are filed to it
+  "board-writer": ["chief-of-staff"], // board moves and recurring tasks
+  "engineer-dispatch": ["chief-of-staff"], // Engineer sub-tasks
   "app-incidents": ["core"], // change any app with an open incident
   "app-requests": ["core"], // in-app requests and people roles of every shared app (apps-mcp app_requests, app_role_set)
   "security-verdict": ["security"], // finding_verdict: apps-mcp records a verdict on a src_security finding
   "ops-key": ["meetings"], // the agent ops-mcp acts as in Paperclip
-  architect: ["core"], // its Platform Engineer tasks may use the trial exception (the runner reads it from the grants table)
+  architect: ["agent-builder"], // its Platform Engineer tasks may use the trial exception (the runner reads it from the grants table)
   librarian: ["librarian"], // read every handbook, decide proposed identity links, hand rule proposals to the Platform Engineer (tasks bridge, apps-mcp)
-  "fleet-read": ["fleet-ops", "core"], // the board's fleet status only (never fleet_control or relaying the owner's words)
-  "fleet-audit": ["core"], // read any agent's evidence (the board's coach routes) and keep a review log (tasks bridge coach_*)
-  "repo-checkout": ["core", "design"], // a commit of an agents-org repo placed in its computer (services/computer/launcher.mjs POST /repo)
+  "fleet-read": ["fleet-ops", "coach"], // the board's fleet status only (never fleet_control or relaying the owner's words)
+  "fleet-audit": ["coach"], // read any agent's evidence (the board's coach routes) and keep a review log (tasks bridge coach_*)
+  "repo-checkout": ["agent-builder", "design"], // a commit of an agents-org repo placed in its computer (services/computer/launcher.mjs POST /repo)
   "design-review": ["design"], // the design-review commit status on agents-org PRs (github-mcp commit_status_set)
   "product-issues": ["fleet-ops"], // product bugs as issues on the product repo, as the GitHub App (github-mcp github_app_issue)
 };
@@ -1196,11 +1196,11 @@ export async function ensureReviewLogs({ api, companyId, keys, step }) {
   return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
 }
 
-/** The shared "Heartbeats" handbook section (modules/core/heartbeat.md) for an agent with a heartbeat, naming the Fleet issues task. */
+/** The shared "Heartbeats" handbook section (modules/chief-of-staff/heartbeat.md) for an agent with a heartbeat, naming the Fleet issues task. */
 export function heartbeatSection(agent, fleetIssues, productDir) {
   if (agent.heartbeat == null || agent.heartbeat === false) return "";
   if (!fleetIssues) fail("heartbeat: the Fleet issues task is missing");
-  return `\n\n${readFileSync(join(productDir, "modules/core/heartbeat.md"), "utf8").trim().replaceAll("{{fleet_issues}}", fleetIssues)}\n`;
+  return `\n\n${readFileSync(join(productDir, "modules/chief-of-staff/heartbeat.md"), "utf8").trim().replaceAll("{{fleet_issues}}", fleetIssues)}\n`;
 }
 
 /**

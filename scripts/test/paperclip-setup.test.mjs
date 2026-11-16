@@ -73,7 +73,7 @@ test("a recurring correction becomes a fast static check, and the fleet handbook
   assert.doesNotMatch(text, /fix the work first|the same problem twice/);
   const rule = text.match(/A recurring correction is fixed in code first:[^.]*\./)?.[0];
   assert.ok(rule && rule.includes("real judgment calls"), rule);
-  const handbook = readFileSync(join(dirname(script), "../modules/core/agents/fleet-engineer/AGENTS.md"), "utf8");
+  const handbook = readFileSync(join(dirname(script), "../modules/platform/agents/fleet-engineer/AGENTS.md"), "utf8");
   assert.ok(handbook.includes(rule), "the fleet handbook carries the same rule in the same wording");
 });
 

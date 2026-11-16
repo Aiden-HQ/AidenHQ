@@ -6,6 +6,10 @@
   "description": "Official AidenHQ modules",
   "plugins": [
     {
+      "name": "agent-builder",
+      "source": "./agent-builder"
+    },
+    {
       "name": "ai-reviewer",
       "source": "./ai-reviewer"
     },
@@ -30,12 +34,20 @@
       "source": "./chat-lane"
     },
     {
+      "name": "chief-of-staff",
+      "source": "./chief-of-staff"
+    },
+    {
       "name": "ci",
       "source": "./ci"
     },
     {
       "name": "clickhouse",
       "source": "./clickhouse"
+    },
+    {
+      "name": "coach",
+      "source": "./coach"
     },
     {
       "name": "codehost-github",

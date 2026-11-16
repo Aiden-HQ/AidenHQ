@@ -11,7 +11,7 @@ import YAML from "yaml";
 import { compile, grantEntry, TRIAL_WRITE_ALLOWED } from "../modules.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const template = join(product, "modules/core/templates/pr-review-chaser");
+const template = join(product, "modules/agent-builder/templates/pr-review-chaser");
 const owner = { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x" };
 
 /** An instance with agents/<key>/ folders: { key: { yaml (merged over the template; undefined drops a field), md } }. */
@@ -220,8 +220,8 @@ test("the web for every codex agent: live search by default (an agent may opt do
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });
 
-test("every template in modules/core/templates compiles as an instance agent in trial", () => {
-  const root = join(product, "modules/core/templates");
+test("every template in modules/agent-builder/templates compiles as an instance agent in trial", () => {
+  const root = join(product, "modules/agent-builder/templates");
   for (const key of readdirSync(root).filter((d) => existsSync(join(root, d, "agent.yaml")))) {
     const dir = withAgents({}, ["github", "slack"]);
     mkdirSync(join(dir, "agents", key));

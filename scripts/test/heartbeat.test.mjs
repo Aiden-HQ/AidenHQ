@@ -11,7 +11,7 @@ import { compile } from "../modules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const product = join(here, "../..");
-const template = join(product, "modules/core/templates/pr-review-chaser");
+const template = join(product, "modules/agent-builder/templates/pr-review-chaser");
 
 function instance(agents = {}, modules = [], dir = mkdtempSync(join(tmpdir(), "inst-")), settings = {}, overrides = undefined) {
   writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", ...settings }, ...(overrides ? { overrides } : {}) }));
