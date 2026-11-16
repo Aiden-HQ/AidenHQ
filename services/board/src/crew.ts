@@ -51,14 +51,18 @@ export function foldedChildren(issues: Issue[], assignees: Assignee[]): Map<stri
   return out;
 }
 
+/** A part waiting on its own trigger: `backlog` and `blocked` are open, but the task's close doesn't release them. */
+export const waitsOnItsOwn = (part: Issue) => part.status === "backlog" || part.status === "blocked";
+
 /**
  * Crew parts left open on a task closed somewhere other than the board (a scout's "Answered in Telegram",
  * the inbox): they close with it, as a close on the board does. Otherwise a part outlives its parent
  * on the board's recent list and lands in Triage as a card of its own. A part the user took up again after
  * the task closed (a comment of theirs there reopens it) stays open; an agent's reply that lands after the
- * close (a run still going when the PR merged, PEN-3516) doesn't keep it. `parents` holds every parent the
- * caller found; `ownCommentAt` gives the time of the user's last own comment on a part; `mayClose` says a part
- * may close `done` (a graded one only with a passing grade).
+ * close (a run still going when the PR merged, PEN-3516) doesn't keep it. A part parked on its own trigger
+ * (`waitsOnItsOwn`) is never the parent's to close. `parents` holds every parent the caller found; `ownCommentAt`
+ * gives the time of the user's last own comment on a part; `mayClose` says a part may close `done` (a graded one
+ * only with a passing grade).
  */
 export async function partsToClose(
   open: Issue[],
@@ -70,7 +74,7 @@ export async function partsToClose(
   const out: { part: Issue; status: "done" | "cancelled" }[] = [];
   for (const part of open) {
     const parent = part.parentId ? parents.get(part.parentId) : undefined;
-    if (!parent || !crewAgent(part, assignees) || (parent.status !== "done" && parent.status !== "cancelled")) continue;
+    if (!parent || !crewAgent(part, assignees) || waitsOnItsOwn(part) || (parent.status !== "done" && parent.status !== "cancelled")) continue;
     const closedAt = (parent.status === "done" ? parent.completedAt : parent.cancelledAt) ?? parent.updatedAt;
     if ((part.lastActivityAt ?? part.updatedAt) > closedAt && ((await ownCommentAt(part)) ?? "") > closedAt) continue;
     if (parent.status === "done" && !mayClose(part)) continue;

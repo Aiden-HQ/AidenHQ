@@ -13,7 +13,7 @@ import { makeRuns } from "./runs.js";
 import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunContext, type RunnerReport, type TaskRef, type Working } from "./activity.js";
 import { RecurringSchema, RunStateSchema, ScheduleSchema, changeRecurring, claimDue, recurringView, scheduleMove } from "./automation.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, RUNNER_MARKER, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
-import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, type DeliveredFrom } from "./crew.js";
+import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type Accounts, type AccountSession, type Role } from "./accounts.js";
 import { AccessError, assertNamesApp } from "./app-access.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
@@ -2007,11 +2007,11 @@ export function createApp(opts: AppOptions): Server {
         // Closed before the grader settled it: there is nothing left to grade, so its row ends (a timer catches closes made
         // elsewhere, e.g. a cancel in Paperclip itself).
         if (update.status === "done" || update.status === "cancelled") store.grades.settle(issue.id, `the task was ${update.status} before the grader settled it`);
-        // Done or cancelled closes the crew's open parts too, except one an agent is busy with.
+        // Done or cancelled closes the crew's open parts too, except one an agent is busy with or one waiting on its own trigger.
         if ((update.status === "done" || update.status === "cancelled") && issue.assigneeUserId === ctx.me) {
           const [kids, busy] = await Promise.all([pc.children(issue.id), working(ctx)]);
           for (const k of kids) {
-            if (["done", "cancelled"].includes(k.status) || busy.map.has(k.identifier) || !ctx.assignees.some((a) => a.kind !== "me" && a.key === k.assigneeAgentId)) continue;
+            if (["done", "cancelled"].includes(k.status) || waitsOnItsOwn(k) || busy.map.has(k.identifier) || !ctx.assignees.some((a) => a.kind !== "me" && a.key === k.assigneeAgentId)) continue;
             if (update.status === "done" && !gradePassed(store.grades, k.id)) continue;
             await pc.updateIssue(k.id, { status: update.status });
           }
