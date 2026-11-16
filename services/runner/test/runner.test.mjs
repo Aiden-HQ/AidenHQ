@@ -476,7 +476,13 @@ describe("run report footer", async () => {
 });
 
 describe("parent summary", async () => {
-  const { subtaskSummary, coversHead } = await import("../src/prompt.ts");
+  const { subtaskSummary, summaryGist, coversHead } = await import("../src/prompt.ts");
+  it("is the same summary when only a re-filed head's card changed, and a new one when an outcome did", () => {
+    const row = (id) => ({ identifier: "PEN-390", title: "Fix", status: "in_review", job: "done", committed: true, cards: [{ id, action: "pr", sha: id }] });
+    assert.equal(summaryGist([row("A1")]), summaryGist([row("A2")]));
+    assert.notEqual(summaryGist([row("A1")]), summaryGist([{ ...row("A1"), cards: [] }]));
+    assert.notEqual(summaryGist([row("A1")]), summaryGist([{ ...row("A1"), job: "failed" }]));
+  });
   it("tables every sub-task and counts what needs a look", () => {
     const s = subtaskSummary([
       { identifier: "PEN-390", title: "Deprecation notice: legacy-node", status: "in_review", job: "done", committed: true },

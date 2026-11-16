@@ -22,12 +22,12 @@ import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
-import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, appliedNote, runOutcome, coversHead } from "./prompt.ts";
+import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
 import { PRIMER_FILES, primerLink, publishDocument, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.ts";
 import { createMetrics, writeMetrics } from "./metrics.ts";
-import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos, UserError, safeWorkspace } from "./workspace.ts";
+import { baseRef, branchChanges, carryOver, dirtyCheckouts, ensureRepo, findBranches, hasBranch, keepBranches, keepReviewedHead, messagesSince, moveOffDefault, pruneReviewedRefs, readManifest, repairWorkspaceGit, resolvePrBase, retargetBase, reviewedRef, signUnsigned, workspacePath, workspaceRepos, UserError, safeWorkspace } from "./workspace.ts";
 import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "./recurring.ts";
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.ts";
 import * as merges from "./merges.mjs";
@@ -426,7 +426,8 @@ async function watchProductPrs() {
     // This head already stopped on the environment: said once, and nothing in the repository changes that until it moves.
     if (!conflict && state.get(`environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`)) continue;
     // Only an agent's own PR: one a task here opened, authored by the App's bot where there is one.
-    const issueId = state.issuesWithPrs([pr.url], "").at(-1);
+    // The task whose branch is this PR's head: a reused PR number (a recreated repository) belongs to nobody here.
+    const issueId = state.issuesWithPrs([pr.url], "").filter((id) => state.branches(id).some((b) => b.branch === pr.headRefName && !b.merged)).at(-1);
     if (!issueId || (bot && pr.author?.login !== bot)) continue;
     // A red check whose job never started (GitHub refused it: billing, no runner) is the environment's: it is re-run at this
     // same head once and then said once, and it never asks for a rebase or a new head.
@@ -4049,9 +4050,10 @@ async function reportToParent(issue) {
       return { identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed, cards: committed ? await cardsAt(c, headsOf(c.id)) : [], published: committed && publishedAt(c), graded: await graded(c.id) };
     }),
   );
-  // The same table again (a resumed run that changed nothing) would only wake the parent's agent for nothing.
+  // The same outcomes again (a resumed run that changed nothing, or only a newer card on a re-filed head) would only wake the
+  // parent's agent for nothing.
   const text = subtaskSummary(rows);
-  if (state.get(`parent-summary-text:${full.parentId}`) === text) return void state.set(key, String(newest));
+  if (state.get(`parent-summary-gist:${full.parentId}`) === summaryGist(rows)) return void state.set(key, String(newest));
   summarizing.add(full.parentId);
   try {
     // Only when it is the last word (notices.ts summaryKind): with every task graded and nothing asked, the grades say it.
@@ -4060,7 +4062,7 @@ async function reportToParent(issue) {
     summarizing.delete(full.parentId);
   }
   state.set(key, String(newest));
-  state.set(`parent-summary-text:${full.parentId}`, text);
+  state.set(`parent-summary-gist:${full.parentId}`, summaryGist(rows));
   log("parent summary posted", { issue: issue.identifier, parent: full.parentId, tasks: rows.length });
 }
 
@@ -4230,14 +4232,18 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
     if (target !== r.branch) return `The repository was empty: pushed as its first commits on \`${target}\` → https://github.com/${r.repo}/tree/${encodeURIComponent(target)}`;
     pushed = `${lease ? "Replaced the earlier version with" : "Pushed"} ${r.unpublished.length} commit${r.unpublished.length === 1 ? "" : "s"}`;
   }
-  if (r.prUrl && text?.title && command === "pr") {
-    await execFileP(await findRealGh(), ["pr", "edit", r.prUrl, "--title", text.title, "--body", text.body], await gho(r.repo, WRITE, { cwd: r.path })).catch((err) => {
+  // A branch keeps its one PR when what it builds on changes (a stacked parent split, replaced or merged): it moves base.
+  const open = r.prUrl && command === "pr" ? await execFileP(await findRealGh(), ["pr", "view", r.prUrl, "--json", "state,baseRefName"], await gho(r.repo, READ)).then(({ stdout }) => JSON.parse(stdout), () => undefined) : undefined;
+  const moved = open?.state === "OPEN" ? await retargetBase(r.path, { branch: r.branch, base: r.base, current: open.baseRefName, defaultBranch: r.defaultBase }) : "";
+  const onto = moved ? `, moved onto \`${moved}\`` : "";
+  if (r.prUrl && command === "pr" && (text?.title || moved)) {
+    await execFileP(await findRealGh(), ["pr", "edit", r.prUrl, ...(text?.title ? ["--title", text.title, "--body", text.body] : []), ...(moved ? ["--base", moved] : [])], await gho(r.repo, WRITE, { cwd: r.path })).catch((err) => {
       throw new UserError(`couldn't update the PR. GitHub said: ${String(err.stderr || "gh pr edit failed").trim().slice(-400)}`);
     });
-    log("pr description updated", { issue: issue.identifier, url: r.prUrl });
-    return `${pushed ? `${pushed}, updated` : "Updated"} the title and description of ${r.prUrl}`;
+    log("pr updated", { issue: issue.identifier, url: r.prUrl, ...(moved ? { from: open.baseRefName, to: moved } : {}) });
+    if (text?.title) return `${pushed ? `${pushed}, updated` : "Updated"} the title and description of ${r.prUrl}${onto}`;
   }
-  if (r.prUrl) return `${pushed || "Up to date"}. PR: ${r.prUrl}`;
+  if (r.prUrl) return `${pushed || "Up to date"}. PR: ${r.prUrl}${onto}`;
   if (command === "push") return `${pushed} → https://github.com/${r.repo}/compare/${r.base}...${encodeURIComponent(r.branch)}?expand=1`;
   // Written for the repository's reviewers: nothing about AidenHQ, tasks or this machine.
   // The base as GitHub has it now: a stacked branch's base only while it still exists and this branch has commits on it.

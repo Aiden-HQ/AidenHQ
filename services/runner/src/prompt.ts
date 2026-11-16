@@ -78,7 +78,7 @@ export function workspaceSection({ workspace, repos, branches = [], git: withGit
   const git = `## Git
 
 Work the way a careful engineer works in their own checkout:
-- Put each independent change on its own branch, created from the branch it belongs on: usually the repository's default branch (\`git switch -c <name> origin/<default>\`), or a long-lived one such as \`origin/v2\` for a fix to that line. Its PR goes into that branch. A change that builds on another goes on a branch created from that one (a stacked branch). Changes in several repositories each get their own branch there. One focused change is one branch.
+- Put each independent change on its own branch, created from the branch it belongs on: usually the repository's default branch (\`git switch -c <name> origin/<default>\`), or a long-lived one such as \`origin/v2\` for a fix to that line. Its PR goes into that branch. A change that builds on another goes on a branch created from that one (a stacked branch). When what a branch builds on changes (its parent PR was split, replaced or merged), rebase it onto the new base and run \`aidenhq pr\` again: its open PR moves to that base, so the branch keeps one PR and its reviews. Changes in several repositories each get their own branch there. One focused change is one branch.
 - Name branches the way each repository does (rules and examples below). Never mention task trackers, ticket numbers, agents or tools in a branch name.
 - Commit as you go, with conventional commit messages (\`feat: …\`, \`fix: …\`): they are public. Never commit on the default branch itself.
 - \`git worktree add\` is fine for working on several branches side by side.
@@ -405,6 +405,15 @@ export function subtaskSummary(rows: any[]) {
     "",
     committed.length ? ["Each task's report has the details.", requested, ask].filter(Boolean).join(" ") : "Each task's report has the details.",
   ].join("\n");
+}
+
+/**
+ * What a parent's summary tells its delegator (subtaskSummary's rows): each task's outcome, and whether its committed work
+ * still needs a "pr". A newer card on a re-filed head is the reviewer's to carry, so a summary that differs only in its card
+ * ids is not posted again.
+ */
+export function summaryGist(rows: any[]) {
+  return JSON.stringify(rows.map((r) => [r.identifier, r.status === "cancelled" ? "cancelled" : r.job, Boolean(r.committed), Boolean((r.cards ?? []).length || r.published)]));
 }
 
 /** The PR links posted on a parent after its "pr". rows: { identifier, title, prUrl, note }. */

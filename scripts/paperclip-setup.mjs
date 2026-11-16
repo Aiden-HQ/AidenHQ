@@ -696,6 +696,8 @@ async function ensureRoutines(companyId, agents) {
         step(`Added schedule "${s.label}" (${s.cron} ${s.timezone}) to ${r.title}`);
       }
     }
+    // Schedules are matched by label, so a renamed or removed one would keep firing next to its replacement: it stops.
+    for (const t of triggers.filter((t) => t.kind === "schedule" && t.enabled && !(r.schedules ?? []).some((s) => s.label === t.label))) await api("PATCH", `/api/routine-triggers/${t.id}`, { enabled: false }).then(() => step(`Disabled schedule "${t.label}" on ${r.title}: its config no longer names it`));
 
     if (r.webhook) {
       // Webhooks come from modules only: an instance agent (writable through apply) could otherwise take another routine's secret.

@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolvePrBase } from "../src/workspace.ts";
+import { resolvePrBase, retargetBase } from "../src/workspace.ts";
 
 const ID = { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", env: { ...process.env, ...ID } }).toString().trim();
@@ -135,6 +135,25 @@ test("a base seen on GitHub whose fetch fails is refused too, not counted from a
     } finally {
       process.env.PATH = process.env.PATH.slice(bin.length + 1);
     }
+  } finally {
+    r.done();
+  }
+});
+
+test("an open PR moves to the base its branch builds on now, and never off a live stacked base back to main", async () => {
+  const r = repo();
+  try {
+    // The parent was split: its replacement `feat/split` holds the base's change, and the stacked branch now builds on it.
+    git(r.work, "switch", "-qc", "feat/split", "origin/main");
+    commit(r.work, "b.txt", "b\n", "split base");
+    git(r.work, "push", "-q", "origin", "feat/split");
+    git(r.work, "switch", "-q", "feat/stacked");
+    git(r.work, "rebase", "-q", "--onto", "feat/split", "feat/base");
+    const move = (base, current) => retargetBase(r.work, { branch: "feat/stacked", base, current, defaultBranch: "main" });
+    assert.equal(await move("feat/split", "feat/base"), "feat/split");
+    assert.equal(await move("feat/split", "feat/split"), "");
+    // A guessed base of main leaves a PR on a stacked base that is still live where it is.
+    assert.equal(await move("main", "feat/split"), "");
   } finally {
     r.done();
   }
