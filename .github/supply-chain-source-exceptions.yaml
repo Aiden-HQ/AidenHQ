@@ -7,4 +7,5 @@
 #   - { ecosystem: apt, package: gh, from: "Debian sid main", to: "https://cli.github.com/packages stable main", version: 2.104.0, approved_by: owner, reference: "where the owner said so", reason: "why the source has to change" }
 # ecosystem: apt, npm, pypi, docker, github-action or github-release. `from` and `version` are optional; `to` and `package`
 # are what the reviewer matches a diff's added source and package against, and `approved_by` must say `owner`.
-source_exceptions: []
+source_exceptions:
+  - { ecosystem: apt, package: gh, from: "Debian sid main", to: "https://cli.github.com/packages sid main", version: "2.104.0", approved_by: owner, reference: "the owner's approval of 2026-11-16 for this source change, recorded on the gh security-fix work", reason: "Debian's gh 2.46.0-4 has no fix for CVE-2026-48501 and ships a Go stdlib with published advisories; GitHub's own apt repository carries the vendor build 2.104.0" }
