@@ -73,6 +73,27 @@ export class Projects {
     return { repo: `${org}/${repo}`, number, sha, context: r.body.context, state: r.body.state };
   }
 
+  /**
+   * An issue, or a comment on one, as the App (the fleet's own identity, never the owner's): a one-off token narrowed to that
+   * repo and `issues: write`. Refused unless the installation on that repo grants Issues: write, so the operator decides where.
+   */
+  async issueAsApp(owner: string, repo: string, input: { number?: number; title?: string; body: string }) {
+    if (!NAME.test(owner) || !NAME.test(repo)) throw new Error("give the repository as owner/repo");
+    if (input.number === undefined && !input.title) throw new Error("a new issue needs a title (or give `number` to comment on one)");
+    const jwt = this.jwt();
+    const inst = await this.api("GET", `${API}/repos/${owner}/${repo}/installation`, { authorization: jwt });
+    if (inst.status !== 200) throw new Error(`the AidenHQ GitHub App isn't installed on ${owner}/${repo} (GitHub said ${inst.status})`);
+    if (inst.body.permissions?.issues !== "write") throw new Error(`the GitHub App can't write issues on ${owner}/${repo} yet: the operator gives it Issues: Read and write, and accepts that on the installation`);
+    const t = await this.api("POST", `${API}/app/installations/${inst.body.id}/access_tokens`, { authorization: jwt }, { repositories: [repo], permissions: { issues: "write" } });
+    if (t.status !== 201) throw new Error(`couldn't get a GitHub App token for ${owner}/${repo} (GitHub said ${t.status} ${t.body?.message ?? ""})`.trim());
+    const auth = { authorization: `Bearer ${t.body.token}` };
+    const r = input.number === undefined
+      ? await this.api("POST", `${API}/repos/${owner}/${repo}/issues`, auth, { title: input.title, body: input.body })
+      : await this.api("POST", `${API}/repos/${owner}/${repo}/issues/${input.number}/comments`, auth, { body: input.body });
+    if (r.status !== 201) throw new Error(`GitHub refused it (${r.status} ${r.body?.message ?? ""})`.trim());
+    return { repo: `${owner}/${repo}`, url: r.body.html_url as string, ...(input.number === undefined ? { number: r.body.number as number } : { number: input.number, comment: r.body.id as number }) };
+  }
+
   /** Whether `org` is a user account, and whether the App may read its Projects boards. */
   async account(org: string): Promise<{ user: boolean; projects: boolean }> {
     const i = await this.install(org);

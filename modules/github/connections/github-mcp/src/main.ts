@@ -153,6 +153,26 @@ function buildServer(caller?: Caller): McpServer {
       }
     }),
   );
+  server.registerTool(
+    "github_app_issue",
+    {
+      description:
+        "As the instance's GitHub App (the fleet's own identity, never the user's): open an issue (`title`, `body`), or with `number` add a comment to that issue (`body`). For defects the fleet reports on its own. Only repositories where the App's installation has Issues: write (a refusal says so). Markdown body, posted exactly as given; it can't be edited or deleted from here.",
+      inputSchema: {
+        repo: z.string().max(200).describe("owner/repo"),
+        number: z.number().int().min(1).optional().describe("an existing issue to comment on; omit to open a new one"),
+        title: z.string().min(1).max(256).optional(),
+        body: z.string().min(1).max(60_000),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    run("github_app_issue", async (a: { repo: string; number?: number; title?: string; body: string }) => {
+      const [owner = "", name = ""] = a.repo.trim().replace(/^https?:\/\/(?:www\.)?github\.com\//, "").split("/");
+      const out = await projects.issueAsApp(owner, name, a);
+      log.info({ repo: out.repo, number: out.number, comment: "comment" in out ? out.comment : undefined }, "GitHub issue written as the App");
+      return out;
+    }),
+  );
   const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
   const orgs = [...commentOrgs].join(", ") || "(none configured)";
   /** A write's outcome in the log: what and where, never content. */

@@ -30,6 +30,29 @@ it("design-review status: only on the PR's current head, with a token narrowed t
   expect(calls.at(-1)!.url).toBe(`https://api.github.com/repos/org/app/statuses/${head}`);
 });
 
+it("an issue as the App: only where the installation has Issues: write, with a token narrowed to that repo", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
+  writeFileSync(join(dir, "app_id"), "123\n");
+  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
+  let issues = "read";
+  const calls: { method: string; url: string; body?: any }[] = [];
+  const fetchFn = (async (url: string, init: RequestInit) => {
+    calls.push({ method: init.method!, url, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    const json = (status: number, body: unknown) => ({ status, json: async () => body });
+    if (url.endsWith("/repos/acme/product/installation")) return json(200, { id: 9, permissions: { issues } });
+    if (url.endsWith("/app/installations/9/access_tokens")) return json(201, { token: "ghs_i" });
+    if (url.endsWith("/repos/acme/product/issues")) return json(201, { number: 12, html_url: "https://github.com/acme/product/issues/12" });
+    if (url.endsWith("/issues/12/comments")) return json(201, { id: 77, html_url: "https://github.com/acme/product/issues/12#issuecomment-77" });
+    return json(404, {});
+  }) as unknown as typeof fetch;
+  const p = new Projects(dir, fetchFn);
+  await expect(p.issueAsApp("acme", "product", { title: "Bug", body: "x" })).rejects.toThrow(/Issues: Read and write/);
+  issues = "write";
+  expect(await p.issueAsApp("acme", "product", { title: "Bug", body: "x" })).toMatchObject({ repo: "acme/product", number: 12 });
+  expect(calls.find((c) => c.url.endsWith("access_tokens"))!.body).toEqual({ repositories: ["product"], permissions: { issues: "write" } });
+  expect(await p.issueAsApp("acme", "product", { number: 12, body: "more evidence" })).toMatchObject({ number: 12, comment: 77 });
+});
+
 it("mints a read-only narrowed token and flattens project items", async () => {
   const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
   writeFileSync(join(dir, "app_id"), "123\n");
