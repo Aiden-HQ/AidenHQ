@@ -14,6 +14,19 @@ const ciRunner = "aidenhq-ci-runner-Aiden-HQ-8";
 const ciRunnerId = "382e6572c1a0";
 const raced = `Container ${ciRunner}\nError response from daemon: removal of container ${ciRunnerId} is already in progress`;
 
+// A compose model with the root project's services only, and a secret file each: `paperclip` mounts one whose content
+// rotates, `board` mounts none. The real script reads this through `docker compose config --format json`.
+function model(dir) {
+  return {
+    name: "aidenhq",
+    secrets: { grafana_mcp_token: { name: "aidenhq_grafana_mcp_token", file: join(dir, "secrets/grafana_mcp_token") } },
+    services: {
+      board: {},
+      paperclip: { secrets: [{ source: "grafana_mcp_token", target: "/run/secrets/grafana_mcp_token" }] },
+    },
+  };
+}
+
 const fake = `#!/usr/bin/env bash
 set -uo pipefail
 dir=__DIR__
@@ -27,6 +40,7 @@ case "$1" in
       *"config --hash"*)
         s=$(printf '%s' "\${@: -1}")
         if [ "$s" = "*" ]; then cat "$dir/hashes" 2>/dev/null; else awk -v s="$s" '$1 == s {print}' "$dir/hashes" 2>/dev/null; fi ;;
+      *"config --format json"*) cat "$dir/model.json" 2>/dev/null ;;
       *"compose ps -a -q"*)
         s=$(printf '%s' "\${@: -1}"); cat "$dir/psid-$s" 2>/dev/null ;;
       *"compose ps -a --format"*)
@@ -34,8 +48,24 @@ case "$1" in
       *"build"*) cat "$dir/build.out" 2>/dev/null; exit "$(cat "$dir/build.code" 2>/dev/null || echo 0)" ;;
       *"up -d"*)
         n=$(( $(cat "$dir/upcount" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$dir/upcount"
+        code=$(cat "$dir/up-$n.code" 2>/dev/null || echo 0)
+        # A real --force-recreate starts a new container with a new id, carrying the same image and config hash.
+        # A failed up starts nothing, as compose's own race does, unless starts-<n> says it got that far.
+        if [ "$code" = 0 ] || [ -f "$dir/starts-$n" ]; then
+          for s in "\${@:2}"; do
+            case "$s" in -*) continue ;; esac
+            [ -f "$dir/recreate-$s" ] || continue
+            # A rotation that lands while this container is starting: the file it read may be either value.
+            [ -f "$dir/rotate-$s" ] && cat "$dir/rotate-$s" > "$dir/secrets/grafana_mcp_token"
+            old=$(cat "$dir/psid-$s"); g=$(( $(cat "$dir/recreated-$s" 2>/dev/null || echo 0) + 1 ))
+            echo "$g" > "$dir/recreated-$s"; echo "\${s}recreated\${g}" > "$dir/psid-$s"
+            cp "$dir/running-$old" "$dir/running-\${s}recreated\${g}"
+            cp "$dir/imageof-$old" "$dir/imageof-\${s}recreated\${g}"
+            cp "$dir/hashof-$old" "$dir/hashof-\${s}recreated\${g}"
+          done
+        fi
         cat "$dir/up-$n.out" 2>/dev/null
-        exit "$(cat "$dir/up-$n.code" 2>/dev/null || echo 0)" ;;
+        exit "$code" ;;
     esac ;;
   ps) cat "$dir/ids" ;;
   inspect)
@@ -79,7 +109,6 @@ function fixture({ containers = {}, services, hashes = {}, up = [["", 0]], rmFai
     writeFileSync(join(dir, `up-${i + 1}.code`), `${code}\n`);
   });
   if (dump) writeFileSync(join(dir, "dump.code"), `${dump}\n`);
-  writeFileSync(join(dir, "calls"), "");
   const file = join(bin, "docker");
   writeFileSync(file, fake.replace("__DIR__", JSON.stringify(dir)));
   chmodSync(file, 0o755);
@@ -87,6 +116,7 @@ function fixture({ containers = {}, services, hashes = {}, up = [["", 0]], rmFai
 }
 
 function apply(f, { env = {} } = {}) {
+  writeFileSync(join(f.dir, "calls"), "");
   return new Promise((resolve) => {
     execFile("bash", [script], {
       cwd: f.dir,
@@ -238,4 +268,119 @@ test("a dump is created exclusively, 0600 in a 0700 directory, and older dumps k
   assert.equal(statSync(fresh).mode & 0o777, 0o600, "the new dump is 0600");
   assert.equal(statSync(dumps).mode & 0o777, 0o700, "the dumps directory is 0700");
   for (const f2 of ["warehouse.dump", "warehouse-1.dump"]) assert.equal(statSync(join(dumps, f2)).mode & 0o777, 0o600, `${f2} is tightened to 0600`);
+});
+
+test("a service whose mounted secret content changed since it started is recreated", async () => {
+  const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
+  writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);
+  mkdirSync(join(f.dir, "secrets"), { recursive: true });
+  writeFileSync(join(f.dir, "secrets/grafana_mcp_token"), "new-token\n");
+  // A recreate is a new container: the fake up starts <service>recreated<n> for a service marked recreate-<service>.
+  for (const [service, id, hash] of [["board", "board1", "h-board"], ["paperclip", "pc1", "h-paperclip"]]) {
+    writeFileSync(join(f.dir, `psid-${service}`), `${id}\n`);
+    writeFileSync(join(f.dir, `image-${service}`), `aidenhq/${service}:local\n`);
+    writeFileSync(join(f.dir, `imageid-aidenhq_${service}_local`), `sha256:${service}\n`);
+    writeFileSync(join(f.dir, `state-${service}`), "running\n");
+    writeFileSync(join(f.dir, `recreate-${service}`), "1\n");
+    writeFileSync(join(f.dir, `running-${id}`), "true\n");
+    writeFileSync(join(f.dir, `imageof-${id}`), `sha256:${service}\n`);
+    writeFileSync(join(f.dir, `hashof-${id}`), `${hash}\n`);
+  }
+  // No record yet: the start of the running container is unknown, so the mounting service is recreated once and recorded.
+  const first = await apply(f);
+  assert.equal(first.status, 0, first.out);
+  assert.match(recreates(first).at(-1), /--force-recreate paperclip$/, `only the mounting service is recreated: ${first.calls}`);
+  assert.doesNotMatch(recreates(first).at(-1), /board/, `a service with no secret is not recreated: ${first.calls}`);
+  // The recreated container read what is on disk, so the next apply keeps it.
+  const second = await apply(f);
+  assert.equal(second.status, 0, second.out);
+  assert.equal(recreates(second).length, 0, `unchanged content is kept: ${second.calls}`);
+  assert.match(second.out, /compose: paperclip kept/);
+  // A rotation changes the digest the running container was recorded with.
+  writeFileSync(join(f.dir, "secrets/grafana_mcp_token"), "rotated-token\n");
+  const third = await apply(f);
+  assert.equal(third.status, 0, third.out);
+  assert.match(recreates(third).at(-1), /--force-recreate paperclip$/, `the rotated secret recreates paperclip: ${third.calls}`);
+  assert.doesNotMatch(recreates(third).at(-1), /board/, `a service with no secret is not recreated: ${third.calls}`);
+  // The record follows the new container, so a second apply on the same content keeps it rather than restarting it again.
+  const fourth = await apply(f);
+  assert.equal(fourth.status, 0, fourth.out);
+  assert.equal(recreates(fourth).length, 0, `the recreated container's record is written: ${fourth.calls}`);
+});
+
+test("a secret that rotated and then raced a removal is not restarted again by the retry", async () => {
+  // The first pass starts the new container and then loses the daemon race on the way out: what it started already read
+  // the rotated secret, so the retry must keep it rather than start a second one.
+  const f = fixture({ containers, services: ["paperclip"], hashes: { paperclip: "h-paperclip" }, up: [[raced, 1], ["Container paperclip Started", 0]] });
+  writeFileSync(join(f.dir, "starts-1"), "1\n");
+  writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);
+  mkdirSync(join(f.dir, "secrets"), { recursive: true });
+  writeFileSync(join(f.dir, "secrets/grafana_mcp_token"), "new-token\n");
+  writeFileSync(join(f.dir, "psid-paperclip"), "pc1\n");
+  writeFileSync(join(f.dir, "image-paperclip"), "aidenhq/paperclip:local\n");
+  writeFileSync(join(f.dir, "imageid-aidenhq_paperclip_local"), "sha256:paperclip\n");
+  writeFileSync(join(f.dir, "state-paperclip"), "running\n");
+  writeFileSync(join(f.dir, "recreate-paperclip"), "1\n");
+  writeFileSync(join(f.dir, "running-pc1"), "true\n");
+  writeFileSync(join(f.dir, "imageof-pc1"), "sha256:paperclip\n");
+  writeFileSync(join(f.dir, "hashof-pc1"), "h-paperclip\n");
+  // First apply: no record, one recreate, the race, and the retry finds the container it started recorded.
+  const first = await apply(f);
+  assert.equal(first.status, 0, first.out);
+  assert.match(first.out, /retrying once/);
+  assert.equal(recreates(first).length, 1, `the retry keeps what the first pass started: ${first.calls}`);
+  assert.match(recreates(first)[0], /--force-recreate paperclip$/, recreates(first)[0]);
+  // The rotation is recorded against the container that read it.
+  const second = await apply(f);
+  assert.equal(second.status, 0, second.out);
+  assert.equal(recreates(second).length, 0, `the retry's container is recorded: ${second.calls}`);
+});
+
+test("a secret that rotated and raced before anything started is recreated by the retry", async () => {
+  // The other side of the same race: the first pass started nothing, so the retry is the one that has to recreate it.
+  const f = fixture({ containers, services: ["paperclip"], hashes: { paperclip: "h-paperclip" }, up: [[raced, 1], ["Container paperclip Started", 0]] });
+  writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);
+  mkdirSync(join(f.dir, "secrets"), { recursive: true });
+  writeFileSync(join(f.dir, "secrets/grafana_mcp_token"), "rotated-token\n");
+  writeFileSync(join(f.dir, "psid-paperclip"), "pc1\n");
+  writeFileSync(join(f.dir, "image-paperclip"), "aidenhq/paperclip:local\n");
+  writeFileSync(join(f.dir, "imageid-aidenhq_paperclip_local"), "sha256:paperclip\n");
+  writeFileSync(join(f.dir, "state-paperclip"), "running\n");
+  writeFileSync(join(f.dir, "recreate-paperclip"), "1\n");
+  writeFileSync(join(f.dir, "running-pc1"), "true\n");
+  writeFileSync(join(f.dir, "imageof-pc1"), "sha256:paperclip\n");
+  writeFileSync(join(f.dir, "hashof-pc1"), "h-paperclip\n");
+  const r = await apply(f);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(recreates(r).length, 2, `the retry recreates what the first pass never started: ${r.calls}`);
+  assert.match(r.out, /compose: paperclip recreated/);
+});
+
+test("a secret that rotated while its container started is not recorded as read, and is recreated again", async () => {
+  // The container started while the file changed, so whether it read the old or the new value is unknown. Recording the
+  // new digest would claim it read that value and keep a container that may hold the old one.
+  const f = fixture({ containers, services: ["paperclip"], hashes: { paperclip: "h-paperclip" } });
+  writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);
+  mkdirSync(join(f.dir, "secrets"), { recursive: true });
+  writeFileSync(join(f.dir, "secrets/grafana_mcp_token"), "new-token\n");
+  writeFileSync(join(f.dir, "rotate-paperclip"), "rotated-mid-start\n");
+  writeFileSync(join(f.dir, "psid-paperclip"), "pc1\n");
+  writeFileSync(join(f.dir, "image-paperclip"), "aidenhq/paperclip:local\n");
+  writeFileSync(join(f.dir, "imageid-aidenhq_paperclip_local"), "sha256:paperclip\n");
+  writeFileSync(join(f.dir, "state-paperclip"), "running\n");
+  writeFileSync(join(f.dir, "recreate-paperclip"), "1\n");
+  writeFileSync(join(f.dir, "running-pc1"), "true\n");
+  writeFileSync(join(f.dir, "imageof-pc1"), "sha256:paperclip\n");
+  writeFileSync(join(f.dir, "hashof-pc1"), "h-paperclip\n");
+  const first = await apply(f);
+  assert.equal(first.status, 0, first.out);
+  assert.match(recreates(first).at(-1), /--force-recreate paperclip$/, first.calls);
+  // Nothing was recorded, so the next apply recreates the container that may still hold the value from before the rotation.
+  const second = await apply(f);
+  assert.equal(second.status, 0, second.out);
+  assert.match(recreates(second).at(-1), /--force-recreate paperclip$/, `an unknown start is recreated again: ${second.calls}`);
+  // That pass saw a stable file, so it records it and the apply after keeps the container.
+  const third = await apply(f);
+  assert.equal(third.status, 0, third.out);
+  assert.equal(recreates(third).length, 0, `a stable start is recorded: ${third.calls}`);
 });
