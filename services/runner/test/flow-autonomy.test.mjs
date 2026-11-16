@@ -104,6 +104,14 @@ describe("flow-autonomy", { concurrency: true }, () => {
       assert.equal(t.paperclip.autos.at(-1)?.rule, "agents-org-merge", "an audit row, no card");
       release();
       await waitFor("the reply", () => reviews().length > n);
+      // The task's own branch row records the merge too, once the run's end lets the queue's end be posted: a later receipt
+      // must not invite a `pr` for work already on `main`.
+      await waitFor("the row marked merged", () => {
+        const state = new State(join(t.dir, "state"));
+        const row = state.branches("part").find((b) => b.branch === "feat/third");
+        state.db.close();
+        return row?.merged === 1;
+      });
     });
 
     it("never errors or asks for a repository along the way", () => t.noErrors());

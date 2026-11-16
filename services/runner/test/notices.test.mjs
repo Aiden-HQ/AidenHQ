@@ -17,6 +17,9 @@ test("a finished turn is news for the parent only when no grade will speak for i
   for (const s of ["pending", "awaiting_evidence", "needs_revision"]) assert.equal(graderSpeaks(s), true, s);
   for (const s of ["escalated", "satisfied", "not_graded", null, undefined]) assert.equal(graderSpeaks(s), false, String(s));
   assert.equal(summaryKind([row(), row({ cards: [] })]), "decision"); // committed, no card: "reply pr"
+  // Committed with no card, but the board shows it published (its PR merged, or the task closed): no "pr" to ask for.
+  assert.equal(summaryKind([row(), row({ cards: [], published: true, graded: false })]), "done");
+  assert.equal(summaryKind([row({ cards: [], published: true })]), "finished");
   assert.equal(summaryKind([row(), row({ job: "timeout" })]), "failed");
 });
 

@@ -320,7 +320,8 @@ read it).
 4. On the VM (sudo, once): `sudo install -m0755 ops/vm/computer-net.sh /usr/local/sbin/aidenhq-computer-net && sudo install
    -m0644 ops/units/aidenhq-ci-net.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable
    --now aidenhq-ci-net` (`ops/vm/setup.sh` does this on new hosts).
-5. `cp ops/units/aidenhq-ci-runner@.service ~/.config/systemd/user/ && systemctl --user daemon-reload &&
+5. A run of `ops/setup.sh` with `CI_RUNNERS=2` (its config or the environment) starts that many; or by hand:
+   `cp ops/units/aidenhq-ci-runner@.service ~/.config/systemd/user/ && systemctl --user daemon-reload &&
    systemctl --user enable --now aidenhq-ci-runner@1 aidenhq-ci-runner@2`. Check: the org's Settings → Actions →
    Runners lists `aidenhq-<container id>` idle; `journalctl --user -u aidenhq-ci-runner@1`.
 

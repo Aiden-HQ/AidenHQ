@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import YAML from "yaml";
-import { classify, dependabotCommits, newGrants, priorDecisions, rejectedSince, routineCap } from "../src/tiers.mjs";
+import { afterReview, classify, dependabotCommits, newGrants, priorDecisions, rejectedSince, routineCap } from "../src/tiers.mjs";
+import { moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { origins } from "../src/paperclip.ts";
 
 test("a replayed approval: only a later no on its branches (or a merge, or the owner's veto) outranks it", () => {
@@ -385,7 +386,7 @@ test("apply: instance settings, pin and apps", () => {
   assert.equal(tierOf(apply(f, { "instance.yaml": inst({ github_orgs: [] }) }, { "instance.yaml": inst({ github_orgs: ["evil"] }) })), "panel", "github_orgs");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({ autonomy: "full" }) })), "panel", "any other setting");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({ spend_caps: "off" }) })), "panel", "the spend caps' kill switch is the owner's");
-  assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst().replace(PIN_A, PIN_B) }, { pin: { forward: true } })), 1, "pin forward");
+  assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst().replace(PIN_A, PIN_B) }, { pin: { forward: true }, modules: {} })), 1, "pin forward");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({}, "overrides:\n  routines:\n    daily-brief:\n      schedules: []\n") })), 1, "routine schedule");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({}, "overrides:\n  agents:\n    assistant:\n      model: x\n") })), 1, "model change");
   assert.equal(tierOf(apply(f, { "instance.yaml": inst() }, { "instance.yaml": inst({}, "overrides:\n  agents:\n    assistant:\n      caps: { task_usd: 50 }\n") })), "panel", "an agent's spend caps are the owner's");
@@ -413,8 +414,50 @@ test("the four real rejects of 2026-11-10/11 never reach the reviewer as approva
   // An app PR into the product repo, from an app-building agent.
   assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["modules/core/apps/x/index.ts"] })), "reject");
   // A product pin moving backwards.
-  assert.equal(tierOf(apply(["instance.yaml"], { "instance.yaml": inst() }, { "instance.yaml": inst().replace(PIN_A, PIN_B) }, { pin: { back: true } })), "panel");
+  assert.equal(tierOf(apply(["instance.yaml"], { "instance.yaml": inst() }, { "instance.yaml": inst().replace(PIN_A, PIN_B) }, { pin: { back: true }, modules: {} })), "panel");
   // Two leftover cards on cancelled tasks.
   assert.equal(tierOf(pub("push", {}, { taskStatus: "cancelled" })), "reject");
   assert.equal(tierOf(merge({}, { taskStatus: "cancelled" })), "reject");
+});
+
+// Module changes carried by a product bump (spec §5.7, lean-core 2c): the reviewer always first; new authority then goes to
+// the owner with its verdict, and its reject is final. The runner reads the manifests at both product commits (s.modules).
+const crmMod = { name: "acme-crm", connections: { crm: { url: "http://crm:1/mcp", auth: "crm_service_key", tools: { read: ["crm_search"], write: [] } } } };
+const bump = (head, { code = false, files = ["modules/acme-crm/AGENTS.md"] } = {}) => {
+  const i = (pin) => `product: ${pin}\nmodules: [acme-crm]\n`;
+  const modules = moduleInputs({ baseInstance: { modules: ["acme-crm"] }, headInstance: { modules: ["acme-crm"] }, baseDefs: { "acme-crm": crmMod }, headDefs: { "acme-crm": head }, changed: code ? [...files, "modules/acme-crm/src/main.ts"] : files });
+  return apply(["instance.yaml"], { "instance.yaml": i(PIN_A) }, { "instance.yaml": i(PIN_B) }, { pin: { forward: true }, modules });
+};
+const approve = { decision: "approve", reason: "In scope.", model: "~z-ai/glm-flash-latest", code: "in_scope" };
+
+test("a product bump adding a write kind: the reviewer runs first, then the owner card shows its verdict", () => {
+  const t = bump({ ...crmMod, writes: { publish: { floor: 1 } } });
+  assert.deepEqual([t.tier, t.reviewFirst, t.rule], [2, true, "module-authority"]);
+  assert.match(t.reason, /acme-crm: adds write kind publish/);
+  const posted = afterReview(t, approve);
+  assert.deepEqual([posted.decision, posted.code], ["escalate", "new_authority"]);
+  assert.match(posted.reason, /The AI reviewer approved \(~z-ai\/glm-flash-latest\): In scope\. New module authority, so the owner decides/);
+  // A mixed change (a panel part beside it) is still reviewed first, by the panel.
+  const i = (pin, extra = "") => `product: ${pin}\nmodules: [acme-crm]\n${extra}`;
+  const modules = moduleInputs({ baseInstance: { modules: ["acme-crm"] }, headInstance: { modules: ["acme-crm"] }, baseDefs: { "acme-crm": crmMod }, headDefs: { "acme-crm": { ...crmMod, privileged: ["docker"] } }, changed: [] });
+  const mixed = apply(["instance.yaml"], { "instance.yaml": i(PIN_A) }, { "instance.yaml": i(PIN_B, "foo: 1\n") }, { pin: { forward: true }, modules });
+  assert.deepEqual([mixed.tier, mixed.reviewFirst, mixed.panel], [2, true, true]);
+});
+
+test("a reviewer reject on a module change is final: no owner card", () => {
+  const t = bump({ ...crmMod, secrets: { provided: [{ name: "openai_api_key" }] } });
+  assert.equal(t.reviewFirst, true);
+  const no = { decision: "reject", reason: "A model key as a module secret.", model: "~z-ai/glm-flash-latest", code: "secret_exfiltration" };
+  assert.deepEqual(afterReview(t, no), no, "the reject is posted as it is: the card is rejected, never sent to the owner");
+});
+
+test("a text-only module change: AI review only", () => {
+  const t = bump(crmMod);
+  assert.deepEqual([t.tier, Boolean(t.panel), Boolean(t.reviewFirst), t.rule], [1, false, false, "module-config"]);
+  assert.deepEqual(afterReview(t, approve), approve, "the reviewer's approve decides it");
+  assert.deepEqual([bump(crmMod, { code: true }).tier, bump(crmMod, { code: true }).panel], [1, true], "code without new authority: the panel");
+  // Fail closed: modules that couldn't be read never fall through to the pin rule.
+  const i = (pin) => `product: ${pin}\nmodules: [acme-crm]\n`;
+  assert.equal(tierOf(apply(["instance.yaml"], { "instance.yaml": i(PIN_A) }, { "instance.yaml": i(PIN_B) }, { pin: { forward: true }, modulesError: "x" })), "reject");
+  assert.equal(tierOf(apply(["instance.yaml"], { "instance.yaml": i(PIN_A) }, { "instance.yaml": i(PIN_B) }, { pin: { forward: true } })), "reject");
 });

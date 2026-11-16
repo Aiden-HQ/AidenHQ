@@ -41,3 +41,7 @@ CLAUDE.local.md
 .playwright-mcp/
 .remember/
 .superpowers/
+
+# the apply's staged generation (ops/apply-config-work.sh validates it before switching)
+config.next/
+compose.modules.next.yaml

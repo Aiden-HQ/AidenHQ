@@ -40,7 +40,12 @@ export interface CardArgs {
   pr: { only: BranchArg[]; text?: PrText; merge?: true };
   /** `gap`: minutes between merges (0 to 720). */
   merge: { prs: MergePrArg[]; gap?: number };
-  apply: { repo: string; branch: string; sha: string; files: string[] };
+  /**
+   * `authority`: one line per module change the apply carries (`<module>: <change> (owner|review)`), at most 200, owner lines
+   * first. `ownerRequired`: some change adds module authority, so only the owner approves it (the board's gate reads this
+   * flag, never the lines).
+   */
+  apply: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; ownerRequired?: boolean };
   /** A new app's repository in the agents org (tiers.mjs refuses any other org or name before filing). */
   create_repo: { repo: string };
 }
@@ -56,6 +61,20 @@ export function branchCardArgs(branches: BranchArg[], { text, merge }: { text?: 
     ...(text ? { text: { title: text.title.slice(0, 300), body: text.body.slice(0, 60_000) } } : {}),
     ...(merge ? { merge: true } : {}),
   };
+}
+
+/** The most authority lines a card carries (ARGS: 200 lines of at most 300 characters). */
+const AUTHORITY_MAX = 200;
+/**
+ * An apply card's args: the fleet branch at its exact commit, and the module changes it brings (kernel/src/loader/authority.ts
+ * lines, code-chosen words and cleaned ids), so the owner's card lists them and its digest covers them.
+ */
+export function applyCardArgs(b: { r: { repo: string; branch: string }; sha: string; files: string[] }, authority: string[] = [], ownerRequired = false): CardArgs["apply"] {
+  const isOwner = (l: string) => l.endsWith("(owner)");
+  const sorted = [...authority.filter(isOwner), ...authority.filter((l) => !isOwner(l))];
+  const dropped = sorted.slice(AUTHORITY_MAX - 1);
+  const lines = sorted.length > AUTHORITY_MAX ? [...sorted.slice(0, AUTHORITY_MAX - 1), `and ${dropped.length} more module changes (${dropped.some(isOwner) ? "owner" : "review"})`] : sorted;
+  return { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files, ...(lines.length ? { authority: lines.map((l) => l.slice(0, 300)) } : {}), ...(ownerRequired || authority.some(isOwner) ? { ownerRequired: true } : {}) };
 }
 
 /**

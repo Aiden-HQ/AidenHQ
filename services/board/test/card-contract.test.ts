@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ARGS } from "../src/approvals.js";
+import { ARGS, card } from "../src/approvals.js";
 import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
@@ -86,5 +86,32 @@ describe("card contract", () => {
     expect(filed.json.args).toEqual({ repo: "acme-agents/expense-tracker" });
     expect(filed.json.sentence).toBe("Create the repository acme-agents/expense-tracker.");
     for (const repo of ["acme-agents/.github", "acme-agents/Apps", "acme-agents"]) expect((await post("/internal/approvals", { issue: "WOR-184", action: "create_repo", args: { repo } })).status, repo).toBe(400);
+  });
+  it("an apply card carries the runner's authority lines; a reviewer can't approve new module authority alone, only send it on", async () => {
+    const lines = ["acme-crm: adds write kind publish (owner)", "acme-crm: code changes (review)"];
+    const args = runnerCards.applyCardArgs({ r: { repo: "acme/aidenhq-instance", branch: "fleet/x" }, sha: SHA("d"), files: ["instance.yaml"] }, lines);
+    const filed = await post("/internal/approvals", { issue: "WOR-184", action: "apply", args, diff: "x", tier: 1, rule: "module-authority" });
+    expect(filed.status, filed.json?.error).toBe(200);
+    expect(filed.json.args).toEqual(args);
+    expect(filed.json.changes).toContain("acme-crm: adds write kind publish (owner)");
+    // The record at Tier 1, as the runner files it with autonomy full: the reviewer's approve is refused, its escalate sends it on.
+    const tier1 = (a: typeof args, details: string) => store.approvals.request({ issueId: issue.id, identifier: "WOR-184", action: "apply", args: a, requestedBy: "runner", tier: 1, reasonCode: "module-authority", ...card("apply", a, details) });
+    const review = (id: string, digest: string, decision: "approve" | "escalate") => store.approvals.review(id, { digest, decision, reason: "Looks fine.", model: "~z-ai/glm-flash-latest", code: decision === "approve" ? "in_scope" : "new_authority" });
+    const rec = tier1(args, "z");
+    expect(review(rec.id, rec.digest, "approve")).toMatchObject({ ok: false, reason: expect.stringMatching(/the owner decides/) });
+    expect(review(rec.id, rec.digest, "escalate")).toMatchObject({ ok: true, approval: { tier: 2, review: "Looks fine.", state: "pending", reviewCode: "new_authority" } });
+    // Over the line cap, with the one owner change last: owner lines sort first, and the flag (not the text) gates it.
+    const many = [...Array.from({ length: 250 }, (_, i) => `acme-crm: adds read tool t${i} (review)`), "acme-crm: adds secret crm_token (owner)"];
+    const capped = runnerCards.applyCardArgs({ r: { repo: "acme/aidenhq-instance", branch: "fleet/z" }, sha: SHA("f"), files: ["instance.yaml"] }, many, true);
+    expect([capped.authority.length, capped.authority[0], capped.ownerRequired]).toEqual([200, "acme-crm: adds secret crm_token (owner)", true]);
+    const flagOnly = runnerCards.applyCardArgs({ r: { repo: "acme/aidenhq-instance", branch: "fleet/w" }, sha: SHA("f"), files: ["instance.yaml"] }, many.slice(0, 250), true);
+    expect(flagOnly.authority.some((l: string) => l.endsWith("(owner)"))).toBe(false);
+    const gated = tier1(flagOnly, "w");
+    expect(review(gated.id, gated.digest, "approve")).toMatchObject({ ok: false, reason: expect.stringMatching(/the owner decides/) });
+    expect((await post("/internal/approvals", { issue: "WOR-184", action: "apply", args: capped, diff: "c" })).status).toBe(200);
+    // Without owner lines, the reviewer's approve decides it as for any Tier 1 apply.
+    const plainArgs = runnerCards.applyCardArgs({ r: { repo: "acme/aidenhq-instance", branch: "fleet/y" }, sha: SHA("e"), files: ["instance.yaml"] }, ["acme-crm: text only (review)"]);
+    const plain1 = tier1(plainArgs, "y");
+    expect(review(plain1.id, plain1.digest, "approve")).toMatchObject({ ok: true, approval: { state: "approved" } });
   });
 });

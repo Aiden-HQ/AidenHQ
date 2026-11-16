@@ -1,0 +1,16 @@
+# A second test engine in place of engine-echo: shows the replace keys (spec §5.7.1). Dependents name the virtual `engine`,
+# each engine provides it, `conflicts` makes it single-provider, and `replaces` swaps one for the other in one apply.
+# Never listed in modules/marketplace.json.
+name: engine-echo-alt
+description: Echoes the prompt back, as engine-echo does; replaces it in one transaction.
+license: MIT
+kernel: { engine: 1 }
+provides: [engine]
+conflicts: [engine]
+replaces: [engine-echo]
+providers:
+  engine:
+    - kind: echo
+      bin: bin/engine
+      live_input: true
+      label: Echo

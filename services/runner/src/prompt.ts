@@ -371,7 +371,8 @@ export function coversHead(card: any, head: any) {
 /**
  * The summary posted on a parent once all its approved Engineer sub-tasks have finished.
  * rows: { identifier, title, status (issue status), job (last job status), committed,
- * cards: [{ id, action, sha }] (pending pr/merge cards already filed for its committed head) }.
+ * cards: [{ id, action, sha }] (pending pr/merge cards already filed for its committed head),
+ * published: whether the board already shows its work published (the task closed, or its PRs merged) }.
  */
 export function subtaskSummary(rows: any[]) {
   const outcome = (r: any) =>
@@ -383,13 +384,17 @@ export function subtaskSummary(rows: any[]) {
   const committed = ok.filter((r) => r.committed);
   const look = rows.filter((r) => r.status !== "cancelled" && r.job !== "done");
   const cards = committed.flatMap((r) => (r.cards ?? []).map((c: any) => ({ ...c, identifier: r.identifier })));
-  const open = committed.filter((r) => !(r.cards ?? []).length);
+  // Published work needs no "pr": its PR is merged (or the task is closed), so an invitation would only file a card for
+  // commits GitHub already has.
+  const open = committed.filter((r) => !(r.cards ?? []).length && !r.published);
   const requested = cards.length
     ? `Already requested: ${cards.map((c: any) => `${c.identifier} \`${c.id}\` (${c.action}${c.sha ? ` at \`${String(c.sha).slice(0, 12)}\`` : ""}, pending)`).join("; ")}.`
     : "";
+  // Name the tasks that still need it whenever any of them is covered already (a pending card or published work), so the
+  // invitation never reads as covering a task whose work is already out.
   const ask = !open.length
     ? requested ? "No further **pr** reply is needed." : ""
-    : cards.length
+    : cards.length || open.length < committed.length
       ? `Reply **pr** here to open the PRs of ${[...new Set(open.map((r) => r.identifier))].join(", ")}, or **pr** on a single task for just that one.`
       : "Reply **pr** here to open all their PRs, or **pr** on a single task for just that one.";
   return [

@@ -33,6 +33,8 @@ export const REVIEW_CODES = [
   "files_not_shown",
   "check_failed",
   "tier_raised",
+  // the reviewer approved a module change that adds authority: the owner decides next, with that verdict on the card
+  "new_authority",
   "autonomy_off",
   "shadow",
   // the panel's two reviewers disagreed (or the second couldn't decide): the owner decides

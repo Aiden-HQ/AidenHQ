@@ -492,6 +492,21 @@ describe("parent summary", async () => {
     assert.match(s, /Reply \*\*pr\*\* here to open the PRs of PEN-391/);
     assert.doesNotMatch(s, /No further \*\*pr\*\* reply/);
   });
+  it("leaves out a task whose work the board already shows published", () => {
+    const published = { identifier: "PEN-390", title: "Fix the review tasks", status: "done", job: "done", committed: true, cards: [], published: true };
+    const stillOpen = { identifier: "PEN-391", title: "Fix the resume path", status: "in_review", job: "done", committed: true, cards: [] };
+    const s = subtaskSummary([published, stillOpen]);
+    assert.match(s, /Reply \*\*pr\*\* here to open the PRs of PEN-391, or \*\*pr\*\* on a single task for just that one\./);
+    assert.doesNotMatch(s, /PEN-390, |PEN-390\./);
+    // Nothing left to publish at all: no invitation, and nothing named as requested either.
+    const only = subtaskSummary([published]);
+    assert.doesNotMatch(only, /Reply \*\*pr\*\*/);
+    assert.doesNotMatch(only, /Already requested|No further \*\*pr\*\*/);
+    // Committed, no card and no merged PR: the invitation stays as it was.
+    assert.match(subtaskSummary([stillOpen]), /Reply \*\*pr\*\* here to open all their PRs, or \*\*pr\*\* on a single task for just that one\./);
+    // A closed task is finished too, whatever its branches say.
+    assert.doesNotMatch(subtaskSummary([{ ...stillOpen, status: "cancelled", published: true }]), /Reply \*\*pr\*\*/);
+  });
   it("matches a card only at the exact repository, branch and head", () => {
     const head = { repo: "Acme/app", branch: "fix/a", sha: "516c06b166d4" };
     assert.equal(coversHead({ action: "pr", args: { only: [{ repo: "acme/app", branch: "fix/a", sha: "516c06b166d4" }] } }, head), true);

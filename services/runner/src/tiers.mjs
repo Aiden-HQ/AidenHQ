@@ -5,6 +5,7 @@
 // that moved, an unreadable file) is never the owner's: `reject: true` refuses it by code and tells the agent why. A
 // request with several parts takes its highest part (Tier 1 with the panel above plain Tier 1).
 import YAML from "yaml";
+import { classifyModules, diffAll } from "../../../kernel/src/loader/authority.ts";
 
 /**
  * The gate's own core and anything that can bypass or widen it (owner, 2026-11-14): authority-expanding, so the AI reviewer
@@ -100,6 +101,8 @@ const T = (tier, rule, reason) => ({ tier, rule, reason });
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });
 const REJECT = (rule, reason) => ({ tier: 2, rule, reason, reject: true });
+/** New module authority (spec §5.7): the AI reviewer first, then the owner with its verdict; a reviewer reject is final. */
+const OWNER_AFTER_REVIEW = (rule, reason, panel) => ({ tier: 2, rule, reason, reviewFirst: true, ...(panel ? { panel: true } : {}) });
 /** A change to the owner-approval records: the owner's tap in every repo, so no PR records its own approval. */
 const OWNER_APPROVAL = (repo) => T(2, "owner-approval-record", `it changes ${repo}'s ${OWNER_APPROVAL_FILE}, which holds the owner's source approvals: only the owner's own tap makes a record one`);
 const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
@@ -109,7 +112,19 @@ const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);
 /** The highest part (a reject beats everything; Tier 1 with the panel beats plain Tier 1); no parts is Tier 2. */
 export function highest(parts) {
   if (!parts.length) return T(2, "unrecognised", "nothing recognised in the request");
-  return parts.find((p) => p.reject) ?? parts.reduce((a, b) => (rank(b) > rank(a) ? b : a));
+  const top = parts.find((p) => p.reject) ?? parts.reduce((a, b) => (rank(b) > rank(a) ? b : a));
+  // A module change is always reviewed first, whatever else the request carries; the review is a panel if any part is.
+  if (!top.reject && top.tier === 2 && parts.some((p) => p.reviewFirst)) return { ...top, reviewFirst: true, ...(parts.some((p) => p.panel) ? { panel: true } : {}) };
+  return top;
+}
+
+/**
+ * What a review-first card (new module authority) posts after the reviewer: an approve goes to the owner with the verdict
+ * on the card, a reject is final, an escalate stays one. Any other card posts the verdict as it is.
+ */
+export function afterReview(input, v) {
+  if (!input?.reviewFirst || v.decision !== "approve") return v;
+  return { ...v, decision: "escalate", code: "new_authority", reason: `The AI reviewer approved (${v.model}${v.second ? ` and ${v.second}` : ""}): ${v.reason} New module authority, so the owner decides: ${input.reason}` };
 }
 
 /**
@@ -145,6 +160,7 @@ export function classify(action, s) {
   // A routine's cap (its `autonomy`): the stricter of it and the instance's wins. tier0: Tier 1 is the owner's; off: Tier 0 too.
   if (!t.reject && ((s.routineAutonomy === "off" && t.tier < 2) || (s.routineAutonomy === "tier0" && t.tier === 1)))
     return T(2, "routine-autonomy", `a routine's run started this task and that routine's autonomy is ${s.routineAutonomy} (was: ${t.reason})`);
+  if (!t.reject && t.reviewFirst && s.routineAutonomy && s.routineAutonomy !== "full") return { ...t, reason: `${t.reason} (a routine's run started this task: its autonomy is ${s.routineAutonomy})` };
   return t;
 }
 
@@ -787,12 +803,28 @@ function agentDefPart(key, base, head, s) {
   return T(1, "agent-tuning", `${key}: ${keys.join(", ") || "no field"} changes`);
 }
 
+/**
+ * The modules a product bump or a `modules:` edit changes (spec §5.7): `s.modules` is each module's def before and after and
+ * whether its code changed (the runner read them at both product commits); `s.modulesError` when it couldn't. Every module
+ * change is the AI reviewer's first (the panel's when code changed); new authority adds the owner after it.
+ */
+function moduleAuthorityParts(s) {
+  if (s.modulesError || !s.modules) return [REJECT("unknown-content", `couldn't read the module changes${s.modulesError ? ` (${s.modulesError})` : ""}; try again`)];
+  const diffs = diffAll(s.modules);
+  if (!diffs.length) return [];
+  const c = classifyModules(diffs);
+  return [c.reviewFirst ? OWNER_AFTER_REVIEW(c.rule, c.reason, c.panel) : c.panel ? PANEL(c.rule, c.reason) : T(1, c.rule, c.reason)];
+}
+
 function instanceParts(s) {
   const base = parse(s.base?.["instance.yaml"]);
   const head = parse(s.head?.["instance.yaml"]);
   if (!base || !head) return [REJECT("unparseable", "instance.yaml doesn't parse")];
   const parts = [];
-  for (const k of changedKeys(base, head)) {
+  const keys = changedKeys(base, head);
+  if (keys.includes("product") || keys.includes("modules")) parts.push(...moduleAuthorityParts(s));
+  for (const k of keys) {
+    if (k === "modules") continue; // the module parts above
     // A rollback can undo a security fix: the panel's. A pin off product main is refused.
     if (k === "product") parts.push(s.pin?.forward ? T(1, "pin-forward", "the product pin moves forward along product main") : s.pin?.back ? PANEL("pin-backwards", "the product pin moves backwards (a rollback)") : REJECT("pin-unknown", "the product pin moves, and not along product main"));
     else if (k === "settings") {
