@@ -1,0 +1,72 @@
+name: engine-codex
+description: Codex as an engine for runner jobs, on its own sign-in (codex) or on OpenRouter models through the model gateway (codex-openrouter).
+license: AGPL-3.0-only
+kernel: { engine: 1 }
+providers:
+  engine:
+    - kind: codex
+      bin: bin/engine
+      label: Codex
+      adapter: codex_local
+      effort_key: modelReasoningEffort
+      rw: ["~/.codex"]
+      # Paperclip's own Codex agents (the crew): their adapter's args.
+      crew:
+        adapter: codex_local
+        args:
+          - --sandbox
+          - read-only
+          # Paperclip run workspaces are not git repositories.
+          - --skip-git-repo-check
+          # ChatGPT connectors (Gmail etc.) off: Paperclip GHSA-gqqj-85qm-8qhf, codex_local sent real email through an inherited
+          # ChatGPT-connected Gmail. Only our own connections may act.
+          - -c
+          - features.apps=false
+          - -c
+          - features.shell_tool=false
+          - -c
+          - features.unified_exec=false
+          - -c
+          - features.apps=false
+          - -c
+          - features.browser_use=false
+          - -c
+          - features.browser_use_external=false
+          - -c
+          - features.in_app_browser=false
+          - -c
+          - features.computer_use=false
+          - -c
+          - features.image_generation=false
+          - -c
+          # Live web search for every agent; an agent may set web_search: cached | disabled.
+          - web_search="live"
+          - -c
+          - model_provider="or"
+          - -c
+          - model_providers.or.name="OpenRouter"
+          - -c
+          # The model gateway on the backplane (services/gateway): the run's own Paperclip credential is the key.
+          - model_providers.or.base_url="http://10.231.0.1:8201/api/v1"
+          - -c
+          - model_providers.or.env_key="PAPERCLIP_API_KEY"
+          - -c
+          - model_providers.or.wire_api="responses"
+    # Primary engine for the Engineers (docs/design/codex-openrouter-engine.md): a Codex home per task with the product's
+    # instructions and skills, rebuilt before every run so no run leaves instructions, config, hooks or skills for a later one.
+    - kind: codex-openrouter
+      bin: bin/engine
+      label: Codex on OpenRouter
+      effort_key: modelReasoningEffort
+      model_prefix: openrouter/
+      gateway: true
+      box: true
+      state: task
+      reset: [AGENTS.md, AGENTS.override.md, skills, config.toml, auth.json, hooks.json, rules, plugins, .agents]
+      seed:
+        - { from: codex-home/AGENTS.md, to: AGENTS.md }
+        - { from: codex-home/skills, to: skills }
+        # The skills' resources (a job can't read the product checkout): the design system, the app starter, the version picker.
+        - { from: /modules/core/design-system, to: skills/design-system/files }
+        - { from: /modules/core/templates/app, to: skills/design-system/starter }
+        - { from: /scripts/supply-chain/best-version.mjs, to: skills/supply-chain/best-version.mjs }

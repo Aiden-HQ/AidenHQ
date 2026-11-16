@@ -46,6 +46,18 @@
       "source": "./dup2"
     },
     {
+      "name": "eng",
+      "source": "./eng"
+    },
+    {
+      "name": "engdup",
+      "source": "./engdup"
+    },
+    {
+      "name": "engrunner",
+      "source": "./engrunner"
+    },
+    {
       "name": "ext1",
       "source": "./ext1"
     },

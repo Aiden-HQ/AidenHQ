@@ -18,10 +18,13 @@ import YAML from "yaml";
  */
 export const GATE_CORE = [
   // One entry per file, so a renamed or moved gate file shows up as a dead entry (gate-coverage.test.mjs).
-  ...["tiers", "review", "authorize", "merges", "apply", "netjail", "state", "config", "github-app", "git", "main", "engines", "workspace", "files", "commands"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
+  ...["tiers", "review", "authorize", "merges", "apply", "netjail", "state", "config", "github-app", "git", "main", "engines", "workspace", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
   // What a job can reach: its sandbox and launch (engines: the bwrap allowlist, writable roots, env), what lands in its
   // workspace and what the runner reads back from it (workspace, files), and the computer box rules (computers).
   /^scripts\/computers\.(mjs|ts)$/,
+  // The engines that run inside a job (engine@1: their argv, env and what they pass on) and the contract and kit they share.
+  /^modules\/engine-[^/]+\//,
+  /^kernel\/sdk\//,
   /^services\/runner\/test\/reviewer-cases\//,
   /^services\/runner\/scripts\/reviewer-eval\.(mjs|ts)$/,
   /^modules\/core\/security\//,
@@ -64,7 +67,7 @@ export const GATE_DIRS = [
 /** Runner files deliberately outside the core (primer is gate code: GATE_CODE). Adding one here is a gate-core change. */
 export const OUTSIDE_GATE = [
   "advise.ts", "answered.ts", "branch.ts", "breaker.ts", "busy.ts", "cards.ts", "describe.ts", "evidence.ts", "gcp.ts", "grade.ts",
-  "images.ts", "intake.ts", "metrics.ts", "notices.ts", "paperclip.ts", "primer.ts", "product-prs.ts", "progress.ts", "prompt.ts",
+  "images.ts", "intake.ts", "metrics.ts", "notices.ts", "paperclip.ts", "primer.ts", "product-prs.ts", "prompt.ts",
   "recurring.ts", "repohelper.ts", "repos.ts", "retry.ts", "reviews.ts", "siblings.ts", "thread.ts", "types.ts", "usage.ts",
 ].map((f) => `services/runner/src/${f}`);
 /** `uncovered: <file>` for a file in a gate dir that no entry matches and OUTSIDE_GATE doesn't list; `dead entry: <source>`
@@ -78,7 +81,7 @@ export function coverageProblems(files, core = GATE_CORE, outside = OUTSIDE_GATE
 }
 /**
  * Gate code that is not the core: the runner's Primer publishing. The AI reviewer decides (Tier 1) and may flag it for the
- * second reviewer when it weakens a control. (commands.mjs is core: repo access, the owner's words, private reads.)
+ * second reviewer when it weakens a control. (agents.mjs is core: repo access, the owner's words, private reads.)
  */
 const GATE_CODE = [/^services\/runner\/src\/primer\.(mjs|ts)$/];
 const GITHUB = /(^|\/)\.github\//;

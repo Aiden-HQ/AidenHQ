@@ -1,4 +1,4 @@
-import { hasMarker } from "./commands.mjs";
+import { hasMarker } from "./agents.mjs";
 
 const fence = (label: string, text: unknown, max = 12_000) => {
   const body = String(text ?? "").replace(/<<<|>>>/g, "‹‹‹").slice(0, max);

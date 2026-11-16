@@ -1,4 +1,4 @@
-import { RUNNER_MARKER, hasMarker } from "./commands.mjs";
+import { RUNNER_MARKER, hasMarker } from "./agents.mjs";
 import { fence } from "./thread.ts";
 import { CODE_REJECTS } from "./tiers.mjs";
 

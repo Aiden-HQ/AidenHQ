@@ -1,42 +1,22 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { DEFAULT_IDENTITY, identityEnv } from "./github-app.ts";
-import { appendFileSync, closeSync, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { StringDecoder } from "node:string_decoder";
+import { appendFileSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
-import { progressTracker } from "./progress.ts";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { mintToken } from "../../gateway/token.ts";
-import { CODEX_CONFIG_SCRUB } from "../../computer/lib.mjs";
-import { smallFile } from "./git.mjs";
+import { BOX_EXEC_WRAP } from "../../computer/lib.mjs";
+import { appendLine, lines, readFrom } from "../../../kernel/sdk/src/engine-io.ts";
+import { REPO_ROOT } from "./config.mjs";
 
 const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
-
-function sandboxConfig(cfg, worktree, stateRoots = []) {
-  const roots = [worktree, ...stateRoots, ...(cfg.sandbox?.extra_writable_roots ?? []).map(expand)].filter((p) => existsSync(p) || p === worktree);
-  return [
-    "-c", 'sandbox_mode="workspace-write"',
-    "-c", `sandbox_workspace_write.network_access=${cfg.sandbox?.network === false ? "false" : "true"}`,
-    "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`,
-    "-c", 'approval_policy="never"',
-  ];
-}
-
-// Claude Code's built-in tools for coding jobs. Everything else (scheduling, remote triggers,
-// notifications, messaging, workflows) is left out; MCP servers, plugins and claude.ai connectors
-// are off entirely.
-// TaskCreate/TaskUpdate/TaskList: the agent's own task list, which the board shows while it works.
-const CLAUDE_TOOLS = "Bash,Read,Edit,Write,NotebookEdit,Task,TaskStop,TaskCreate,TaskUpdate,TaskList,WebFetch,WebSearch";
 
 /**
  * Whether a job holds private data: its gcloud session, other tasks, and the private jobcaps (Grafana, Slack, Glean,
  * ClickHouse; compile gives those only to such an Engineer). Only an Engineer whose definition opts in (`private_reads: true`,
- * setup's metadata.privateReads; commands.mjs pickedEngine), on any engine. Such a job gets no web search, so private data
+ * setup's metadata.privateReads; agents.mjs pickedEngine), on any engine. Such a job gets no web search, so private data
  * can't leave through search queries. Light Engineers (the Software and Platform Engineers) keep web search.
  */
 export const observes = (engine) => engine?.reads === true;
-
-/** Engines whose model calls go through the model gateway with the job's own token: billed and capped there. */
-export const viaGateway = (kind) => kind === "openrouter" || kind === "codex-openrouter";
 
 /**
  * A job's MCP servers: its jobcaps (the agent's `jobcaps:`, compiled into config/jobcaps.json), each reached through the model
@@ -68,8 +48,8 @@ export const JOB_TOKEN_ENV = "AIDENHQ_JOB_TOKEN";
 // The host's toolchains, read-only in every job: the system (merged-/usr links are recreated as links) and /etc.
 const SYSTEM_RO = ["/usr", "/etc", "/opt", "/snap"];
 const SYSTEM_LINKS = ["/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"];
-// Toolchains people install in their home: read-only when present (sandbox.read_only_roots adds more).
-const HOME_RO = ["~/.local/bin", "~/.local/lib", "~/.local/share/claude", "~/.cargo", "~/.rustup", "~/go/bin", "~/.nvm", "~/.bun", "~/.deno", "~/.pyenv"];
+// Toolchains people install in their home: read-only when present (sandbox.read_only_roots adds more; an engine module its own, `ro`).
+const HOME_RO = ["~/.local/bin", "~/.local/lib", "~/.cargo", "~/.rustup", "~/go/bin", "~/.nvm", "~/.bun", "~/.deno", "~/.pyenv"];
 const inside = (p, root) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 
 /**
@@ -199,65 +179,99 @@ function jailed({ pasta, bwrap = "bwrap" }, masks, loopback, argv) {
 }
 
 /**
- * Command line for one engine run. bwrap (hiding) is the write boundary for every engine; Codex also sandboxes its own tool
- * calls. `gcp` is the job's gcloud session (src/gcp.mjs), for engines that observe. `loopback`: further host URLs the job may
- * reach (the run's helper), besides the model gateway (its model calls and its jobcaps).
+ * The registry of engines (config/engines.json, compiled from the modules' providers.engine): kind → { module, dir, bin,
+ * live_input, label, gateway, box, state, reset, seed, rw, secret_env, … }. The runner knows engines only through it.
  */
-export function buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, loopback = [], job = {}, box }) {
-  if (engine.box) return boxCommand({ cfg, engine, sessionId, job, box });
-  const built = engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp: observes(engine) ? gcp : undefined, job });
-  // OpenRouter engines' model calls and every job's jobcaps go to the model gateway on host loopback (forwarded into the jail).
-  const mcp = viaGateway(engine.kind) || jobcapsFor(cfg, engine, job.jobcaps).length ? [gatewayUrl(cfg)] : [];
-  // The engine writes its last message there (-o): the file alone is bound, made beforehand (bwrap binds what exists).
-  if (lastMessageFile && !existsSync(lastMessageFile)) try { writeFileSync(lastMessageFile, ""); } catch {}
-  const rw = [worktree, ...(built.rw ?? []), lastMessageFile];
+export const readEngines = (cfg) => { try { return JSON.parse(readFileSync(cfg.enginesFile, "utf8")); } catch { return {}; } };
+export function engineEntry(cfg, kind) {
+  const e = readEngines(cfg)[kind];
+  if (!e) throw new Error(`no engine module provides "${kind}" (config/engines.json: enable its module and apply)`);
+  return e;
+}
+/** Engines whose model calls go through the model gateway with the job's own token: billed and capped there. */
+export const viaGateway = (cfg, kind) => readEngines(cfg)[kind]?.gateway === true;
+const fromProduct = (p) => resolve(REPO_ROOT, p);
+export const MODEL_TOKEN_ENV = "AIDENHQ_MODEL_TOKEN";
+
+/**
+ * The engine's state folder for this run (its sessions persist for a resume): under the runner's state dir, one per kind
+ * (`state: shared`) or per kind and task (`state: task`, no task reads another's transcripts), made 0700. Its `reset` names
+ * are removed and its `seed` copied in from the module (or the product) first, so no run leaves instructions, config, hooks
+ * or skills for a later one. Undefined for an engine without one.
+ */
+export function engineState(cfg, kind, issueId) {
+  const e = engineEntry(cfg, kind);
+  if (!e.state) return undefined;
+  const dir = join(cfg.stateDir, kind, ...(e.state === "task" ? [String(issueId ?? "none").replace(/[^\w.-]/g, "_")] : []));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const f of e.reset ?? []) rmSync(join(dir, f), { recursive: true, force: true });
+  for (const { from, to } of e.seed ?? []) {
+    const src = from.startsWith("/") ? fromProduct(from.slice(1)) : join(fromProduct(e.dir), from);
+    mkdirSync(dirname(join(dir, to)), { recursive: true });
+    cpSync(src, join(dir, to), { recursive: true, filter: (p) => !/[\\/](node_modules|dist)$/.test(p) });
+  }
+  return dir;
+}
+
+// A session id an engine reported, before it goes on a command line.
+const SESSION = /^[\w.:-]{1,200}$/;
+
+/**
+ * One run of an engine under engine@1: job.json in the job dir, then the module's bin with the job dir as its argument. bwrap
+ * (hiding) is the write boundary; the engine sees its module folder read-only, and read-write the task folder, the job dir,
+ * its state folder and home folders (rw), and the job's gcloud session. `gcp` is that session, for engines that observe.
+ * `loopback`: further host URLs the job may reach (the run's helper), besides the model gateway (its model calls and its
+ * jobcaps). A box job runs the same bin in its computer (services/computer), its job dir inside the launcher's out folder.
+ */
+export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = "", gcp, loopback = [], job = {}, box }) {
+  const entry = engineEntry(cfg, engine.kind);
+  const caps = box ? [] : jobcapsFor(cfg, engine, job.jobcaps);
+  job = { ...job, jobcaps: caps, observing: observes(engine) };
+  const servers = jobcapServers(cfg, caps);
+  let minted;
+  const token = () => (minted ??= jobToken(cfg, job)); // one credential per job: its model calls and its reads
+  const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live"; // no web search for a job holding private data
+  gcp = observes(engine) && !box ? gcp : undefined;
+  const gcpRoots = gcp ? [gcp.root] : [];
+  const state = box ? undefined : engineState(cfg, engine.kind, job.issueId);
+  const secrets = Object.fromEntries(Object.entries(box ? {} : entry.secret_env ?? {}).map(([k, f]) => {
+    const file = join(cfg.secretsDir, f);
+    if (!existsSync(file)) throw new Error(`The ${entry.label ?? engine.kind} engine isn't set up for the runner: save its token to \`${file}\` (0600).`);
+    return [k, readFileSync(file, "utf8").trim()];
+  }));
+  const env = { ...(servers.length ? { [JOB_TOKEN_ENV]: token() } : {}), ...(entry.gateway && !box ? { [MODEL_TOKEN_ENV]: token() } : {}), ...(gcp?.env ?? {}), ...secrets };
+  const extra = (cfg.sandbox?.extra_writable_roots ?? []).map(expand);
+  const spec = {
+    contract: "engine@1", job: basename(jobDir), agent: job.agentId ?? "", task: job.issueId ?? "", prompt,
+    ...(sessionId && SESSION.test(sessionId) ? { session: sessionId } : {}),
+    model: { base_url: box ? `${cfg.boxGatewayUrl ?? "http://10.231.2.1:8200"}/api/v1` : entry.gateway ? gatewayApi(cfg) : "", token_env: box ? "AIDENHQ_RUN_TOKEN" : MODEL_TOKEN_ENV, id: engine.model ?? "", effort: engine.effort ?? "" },
+    mcp: servers.map((s) => ({ name: s.name, url: s.url, token_env: JOB_TOKEN_ENV, ...(s.toolTimeout ? { tool_timeout_s: s.toolTimeout } : {}) })),
+    env: Object.keys(env), limits: { timeout_s: (cfg.timeout_minutes ?? 60) * 60 }, web: search === "live",
+    ...(state ? { state } : {}),
+    sandbox: { kind: box ? "box" : "bwrap", writable: [worktree, ...gcpRoots, ...extra.filter((p) => existsSync(p))], network: cfg.sandbox?.network !== false },
+  };
+  const bin = relative(entry.dir, entry.bin);
+  if (box) {
+    // The box's own job dir (/aidenhq-out/job) and the engine module the launcher mounted read-only.
+    writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });
+    const argv = ["docker", "exec", "--env-file", box.envFile, "-w", "/workspace", box.container, "sh", "-c", BOX_EXEC_WRAP, "aidenhq-computer", join("/opt/aidenhq/engine", bin), "/aidenhq-out/job"];
+    return { argv, env: {}, spec, entry };
+  }
+  writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });
+  // The model gateway (OpenRouter engines' model calls) and every job's jobcaps, on host loopback (forwarded into the jail).
+  const mcp = entry.gateway || caps.length ? [gatewayUrl(cfg)] : [];
+  const rw = [worktree, jobDir, ...(state ? [state] : []), ...(entry.rw ?? []).map(expand), ...gcpRoots];
   // The shared build caches (sandbox.extra_writable_roots: ~/.npm, ~/.cache): copy-on-write per task, never written back,
   // so no job can poison another's packages or build outputs. The task's writes stay in its own layer outside the jail.
-  const cow = (cfg.sandbox?.extra_writable_roots ?? []).map(expand).map((p, i) => [p, join(cowRoot(cfg, worktree), `${i}-${basename(p)}`)]);
-  // The clones' core.hooksPath (git.mjs ensureGuardHooks: a pre-push that refuses), read-only.
-  const ro = cfg.workDir ? [join(cfg.workDir, ".guard-hooks")] : [];
-  return { ...built, argv: hiding(cfg, built.argv, [...mcp, ...loopback], { rw, ro, cow }) };
+  const cow = extra.map((p, i) => [p, join(cowRoot(cfg, worktree), `${i}-${basename(p)}`)]);
+  // The clones' core.hooksPath (git.mjs ensureGuardHooks: a pre-push that refuses), read-only; the engine's module folder.
+  const ro = [...(cfg.workDir ? [join(cfg.workDir, ".guard-hooks")] : []), fromProduct(entry.dir), ...(entry.ro ?? []).map(expand)];
+  return { argv: hiding(cfg, [process.execPath, fromProduct(entry.bin), jobDir], [...mcp, ...loopback], { rw, ro, cow }), env, spec, entry };
 }
 
 export const gatewayUrl = (cfg) => cfg.gatewayUrl ?? "http://127.0.0.1:8201";
 /** A task's copy-on-write cache layers: beside the task folders, never inside one (no job sees another's, or its own raw). */
 export const cowRoot = (cfg, worktree) => join(cfg.workDir ?? dirname(dirname(worktree)), ".cache-layers", basename(worktree));
-
-// ------------------------------------------------------------------ box jobs (the App Engineer)
-/** A box job's last message: a folder of the launcher's mounted at /aidenhq-out (outDir on the host), never the workspace. */
-export const boxLastFile = (box) => join(box.outDir, "last.txt");
-
-/**
- * A box job's command: Codex in the job's gVisor box (services/computer, POST /job), through `docker exec` with the env file
- * the launcher wrote (run token, granted connections, identity; nothing of the runner's env). The box is the boundary, so
- * Codex's own sandbox is off (it broke Chrome in computers); the model goes through the launcher's gateway with the run token
- * as the key, and the launcher's scrub appends the agent's connections to the Codex home's config first. Web search is
- * on unless the Engineer has private reads (its granted connections, checked at compile). The runner's Codex home for the task (AGENTS.md and skills reset here) is /codex-home.
- */
-function boxCommand({ cfg, engine, sessionId, job, box }) {
-  if (!box?.container || !box.envFile) throw new Error("a box job needs its box (POST /job) before it starts");
-  codexHome(cfg, job.issueId);
-  const base = sessionId ? ["codex", "exec", "resume", sessionId] : ["codex", "exec"];
-  const args = [
-    ...base, "--json", "--skip-git-repo-check", "-o", "/aidenhq-out/last.txt",
-    "-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"',
-    ...(engine.model ? ["-m", engine.model] : []),
-    ...(engine.effort ? ["-c", `model_reasoning_effort="${engine.effort}"`] : []),
-    // Private reads (granted connections that read private data; setup's privateReads): no web search, as for every Engineer.
-    "-c", `web_search="${observes(engine) ? "disabled" : "live"}"`,
-    "-c", 'model_provider="or"',
-    "-c", 'model_providers.or.name="OpenRouter"',
-    "-c", `model_providers.or.base_url=${JSON.stringify(`${cfg.boxGatewayUrl ?? "http://10.231.2.1:8200"}/api/v1`)}`,
-    "-c", 'model_providers.or.env_key="AIDENHQ_RUN_TOKEN"',
-    "-c", 'model_providers.or.wire_api="responses"',
-    // The box's env holds only the run's own revocable token, which its shell tools need (aidenhq, MCP through the gateway).
-    "-c", "shell_environment_policy.ignore_default_excludes=true",
-    ...CODEX_OFF.flatMap((f) => ["-c", `features.${f}=false`]),
-    "-",
-  ];
-  const argv = ["docker", "exec", "-i", "--env-file", box.envFile, "-w", "/workspace", box.container, "sh", "-c", CODEX_CONFIG_SCRUB, "aidenhq-computer", ...args];
-  return { argv, env: {} };
-}
 
 /** The runner's client for the launcher's job routes (bearer computers_runner_key). Rejects with `status` on an error answer. */
 export function launcher(cfg) {
@@ -305,149 +319,6 @@ export const gatewayApi = (cfg) => `${gatewayUrl(cfg)}/api/v1`;
  */
 export const jobToken = (cfg, job) => job.token ?? modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, jobcaps: [...(job.jobcaps ?? [])].sort(), observing: job.observing === true, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 }, job.at);
 
-const GATEWAY_KEY_ENV = "AIDENHQ_GATEWAY_KEY";
-// Off for codex-openrouter, as for Paperclip's Codex agents: ChatGPT connectors, the desktop's browser and computer, OpenAI's
-// image tool, memories across runs, hooks, and plugins fetched from marketplaces (unpinned code).
-const CODEX_OFF = ["apps", "browser_use", "browser_use_external", "in_app_browser", "computer_use", "image_generation", "memories", "hooks", "plugins", "remote_plugin", "recommended_plugins", "plugin_discovery_prefetch", "tool_suggest"];
-const PRODUCT_CODEX_HOME = join(import.meta.dirname, "..", "codex-home");
-const PRODUCT_ROOT = join(import.meta.dirname, "..", "..", "..");
-
-/**
- * codex-openrouter's CODEX_HOME: one per task under the runner's state dir (its sessions persist for `exec resume`; no task
- * reads another's transcripts), outside the codex sandbox's writable roots. AGENTS.md and skills/ are copied from the
- * product at every start and anything else but the sessions and Codex's own state is removed, so no run leaves
- * instructions, config, hooks or skills for a later one. No config.toml or auth.json: everything is set on the command line.
- */
-export function codexHome(cfg, issueId) {
-  const home = join(cfg.codexOpenrouterHome, String(issueId ?? "none").replace(/[^\w.-]/g, "_"));
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  for (const f of ["AGENTS.md", "AGENTS.override.md", "skills", "config.toml", "auth.json", "hooks.json", "rules", "plugins", ".agents"]) rmSync(join(home, f), { recursive: true, force: true });
-  cpSync(join(PRODUCT_CODEX_HOME, "AGENTS.md"), join(home, "AGENTS.md"));
-  cpSync(join(PRODUCT_CODEX_HOME, "skills"), join(home, "skills"), { recursive: true });
-  // The skills' resources, from the product (a job can't read the product checkout): the design system and the version picker.
-  cpSync(join(PRODUCT_ROOT, "modules/core/design-system"), join(home, "skills/design-system/files"), { recursive: true });
-  // The app starter new apps are copied from (a host checkout may hold its node_modules and dist: never copied).
-  cpSync(join(PRODUCT_ROOT, "modules/core/templates/app"), join(home, "skills/design-system/starter"), { recursive: true, filter: (src) => !/[\\/](node_modules|dist)$/.test(src) });
-  cpSync(join(PRODUCT_ROOT, "scripts/supply-chain/best-version.mjs"), join(home, "skills/supply-chain/best-version.mjs"));
-  return home;
-}
-
-function engineCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, job = {} }) {
-  const caps = jobcapsFor(cfg, engine, job.jobcaps);
-  job = { ...job, jobcaps: caps, observing: observes(engine) };
-  const servers = jobcapServers(cfg, caps);
-  let minted;
-  const token = () => (minted ??= jobToken(cfg, job)); // one credential per job: its model calls and its reads
-  const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live"; // no web search for a job holding private data
-  const mcpEnv = { ...(servers.length ? { [JOB_TOKEN_ENV]: token() } : {}), ...(gcp?.env ?? {}) };
-  const gcpRoots = gcp ? [gcp.root] : [];
-  if (engine.kind === "codex" || engine.kind === "codex-openrouter") {
-    const base = sessionId ? ["codex", "exec", "resume", sessionId] : ["codex", "exec"];
-    // The workspace holds several clones and isn't a git repository itself.
-    const args = [...base, "--json", "--skip-git-repo-check", "-o", lastMessageFile, ...sandboxConfig(cfg, worktree, gcpRoots)];
-    for (const r of servers) {
-      args.push(
-        "-c", `mcp_servers.${r.name}.url=${JSON.stringify(r.url)}`,
-        "-c", `mcp_servers.${r.name}.bearer_token_env_var="${JOB_TOKEN_ENV}"`,
-        "-c", `mcp_servers.${r.name}.default_tools_approval_mode="approve"`,
-      );
-      if (r.toolTimeout) args.push("-c", `mcp_servers.${r.name}.tool_timeout_sec=${r.toolTimeout}`);
-    }
-    if (engine.model) args.push("-m", engine.model);
-    if (engine.effort) args.push("-c", `model_reasoning_effort="${engine.effort}"`);
-    args.push("-c", `web_search="${search}"`);
-    if (engine.kind === "codex") {
-      // The job token stays with Codex and its MCP clients, out of every command it runs.
-      args.push("-c", `shell_environment_policy.exclude=${JSON.stringify([JOB_TOKEN_ENV])}`, "-");
-      return { argv: args, env: mcpEnv, rw: [...gcpRoots, join(homedir(), ".codex")] };
-    }
-    // codex-openrouter: OpenRouter through the model gateway with the job's own token (as for opencode), in a Codex home of
-    // the runner's with the product's instructions and skills (docs/design/codex-openrouter-engine.md).
-    const home = codexHome(cfg, job.issueId);
-    args.push(
-      "-c", 'model_provider="or"',
-      "-c", 'model_providers.or.name="OpenRouter"',
-      "-c", `model_providers.or.base_url=${JSON.stringify(gatewayApi(cfg))}`,
-      "-c", `model_providers.or.env_key="${GATEWAY_KEY_ENV}"`,
-      "-c", 'model_providers.or.wire_api="responses"',
-      // The model key and the job token stay with Codex and its MCP clients, out of every command it runs.
-      "-c", `shell_environment_policy.exclude=${JSON.stringify([GATEWAY_KEY_ENV, JOB_TOKEN_ENV])}`,
-      ...CODEX_OFF.flatMap((f) => ["-c", `features.${f}=false`]),
-      "-",
-    );
-    return { argv: args, env: { ...mcpEnv, [GATEWAY_KEY_ENV]: token(), CODEX_HOME: home }, rw: [...gcpRoots, home] };
-  }
-  if (engine.kind === "openrouter") {
-    const key = token();
-    const opencode = ["opencode", "run", "--format", "json", "--model", `openrouter/${engine.model}`];
-    // The reasoning effort (OpenRouter's reasoning.effort) as opencode's model variant.
-    if (engine.effort) opencode.push("--variant", engine.effort);
-    if (sessionId) opencode.push("--session", sessionId);
-    // Its writes: the worktree and these state dirs, under bwrap (hiding).
-    const stateRoots = ["~/.local/share/opencode", "~/.local/state/opencode", "~/.cache/opencode", "~/.config/opencode"].map(expand);
-    return {
-      argv: opencode,
-      rw: stateRoots,
-      env: {
-        ...mcpEnv,
-        OPENROUTER_API_KEY: key,
-        // Non-interactive: opencode must not stop to ask for permission, because an unanswered prompt
-        // is auto-rejected and ends the run. Reading outside the worktree (reference repos) is
-        // fine: bwrap around opencode still limits writes to the worktree. Its default asks
-        // before reading `.env` files, which repositories track too (PEN-2421).
-        OPENCODE_CONFIG_CONTENT: JSON.stringify({
-          permission: { read: "allow", edit: "allow", bash: "allow", webfetch: observes(engine) ? "deny" : "allow", websearch: observes(engine) ? "deny" : "allow", external_directory: "allow", doom_loop: "allow" },
-          autoupdate: false,
-          share: "disabled",
-          // Through the model gateway; its title calls use the job's model, not opencode's default small model.
-          provider: { openrouter: { options: { baseURL: gatewayApi(cfg) } } },
-          small_model: `openrouter/${engine.model}`,
-          mcp: Object.fromEntries(servers.map((r) => [r.name, { type: "remote", url: r.url, headers: { Authorization: `Bearer {env:${JOB_TOKEN_ENV}}` }, oauth: false, enabled: true }])),
-        }),
-      },
-      promptAsArg: true,
-    };
-  }
-  if (engine.kind === "claude") {
-    if (!existsSync(cfg.claudeTokenFile)) throw new Error(`Claude Code isn't set up for the runner: run \`claude setup-token\` and save the token to \`${cfg.claudeTokenFile}\` (0600).`);
-    const token = readFileSync(cfg.claudeTokenFile, "utf8").trim();
-    mkdirSync(cfg.claudeConfigDir, { recursive: true, mode: 0o700 });
-    // Headless, no prompts (bwrap is the write boundary), and nothing from your own
-    // Claude setup: a runner-owned config dir, no settings files (yours or the repo's: no hooks),
-    // no MCP servers but the job's jobcaps through the gateway, and no claude.ai connectors.
-    const mcpServers = Object.fromEntries(servers.map((r) => [r.name, { type: "http", url: r.url, headers: { Authorization: `Bearer \${${JOB_TOKEN_ENV}}` } }]));
-    const claude = [
-      // Streamed input, so the user's comments can reach a run in progress; each one is echoed back
-      // once taken in (--replay-user-messages), which tells runAgent when the conversation is done.
-      "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages",
-      "--permission-mode", "bypassPermissions",
-      "--setting-sources", "",
-      "--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers }),
-      "--tools", observes(engine) ? CLAUDE_TOOLS.replace(",WebFetch,WebSearch", "") : CLAUDE_TOOLS,
-    ];
-    if (engine.model) claude.push("--model", engine.model);
-    if (engine.effort) claude.push("--effort", engine.effort === "minimal" ? "low" : engine.effort);
-    if (sessionId) claude.push("--resume", sessionId);
-    return {
-      argv: claude,
-      rw: [cfg.claudeConfigDir, ...gcpRoots],
-      env: {
-        ...mcpEnv,
-        CLAUDE_CODE_OAUTH_TOKEN: token,
-        CLAUDE_CONFIG_DIR: cfg.claudeConfigDir,
-        ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-        DISABLE_AUTOUPDATER: "1",
-      },
-      streamInput: true,
-    };
-  }
-  throw new Error(`unsupported engine ${engine.kind}`);
-}
-
-/** One message for Claude Code's streamed input. */
-const userMessage = (text) => `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`;
-
-
 /**
  * Each run's command under a small `sh` that records its exit status in `<log>.exit`, in a process
  * group of its own, writing straight to its log: nothing ties it to the runner, so a runner restart
@@ -458,81 +329,83 @@ const userMessage = (text) => `${JSON.stringify({ type: "user", message: { role:
 const WRAP = 'trap : TERM INT HUP; "$@"; echo "$?" > "$0"';
 const exitStatus = (file) => (existsSync(file) ? readFileSync(file, "utf8").trim() : "");
 const POLL_MS = 250;
+/** A run's job dir: beside its log, never in the task folder (a box job's: in its launcher out folder). */
+export const jobDirOf = (logPath, box) => (box ? join(box.outDir, "job") : `${logPath}.job`);
 
 /**
- * Start the agent; returns the run for `watchAgent`. For an engine with streamed input (Claude Code),
- * `channel.send(text)` gives the running session another message from the user (docs/design/conversational-engineers.md,
- * During a run) and returns false once the run is over. An adopted run has no input: its runner is gone.
+ * Start the agent; returns the run for `watchAgent`. For an engine that takes comments while it works (`live_input`),
+ * `channel.send(text)` appends one to the job's inbox.jsonl and returns false once the run is over
+ * (docs/design/conversational-engineers.md, During a run). An adopted run has no input: its runner is gone.
  * The agent's environment: no SSH agent (fetch only via the runner), read-only gh first on PATH (reading with
  * `ghToken`, a read-only App token for the task's repos), and a git ssh wrapper that refuses pushes.
  */
 export function startAgent({ cfg, engine, worktree, prompt, sessionId, logPath, env: jobEnv = {}, gcp, channel, identity = DEFAULT_IDENTITY, ghToken, job, box }) {
-  const lastMessageFile = `${logPath}.last.md`;
-  if (engine.box) return startBoxAgent({ cfg, engine, worktree, prompt, sessionId, logPath, job, box });
-  const { argv, env, promptAsArg, streamInput } = buildCommand({ cfg, engine, worktree, sessionId, lastMessageFile, gcp, loopback: [jobEnv.AIDENHQ_REPO_URL], job });
-  const full = promptAsArg ? [...argv, prompt] : argv;
-  const agentEnv = {
-    ...process.env,
-    ...env,
-    // The private bwrap's folder too, so Codex's own sandbox in the job uses it (Codex takes the first bwrap on PATH).
-    PATH: [cfg.ghWrapperDir, ...(cfg.bwrap?.startsWith("/") ? [dirname(cfg.bwrap)] : []), process.env.PATH].join(":"),
-    GIT_SSH_COMMAND: join(cfg.ghWrapperDir, "git-ssh-no-push"),
-    GIT_TERMINAL_PROMPT: "0",
-    // The agent's git sees the commits the runner will publish, not replacements (the runner's git ignores them too).
-    GIT_NO_REPLACE_OBJECTS: "1",
-    GIT_GRAFT_FILE: "/dev/null",
-    AIDENHQ_TASK_WORKTREE: worktree,
-    AIDENHQ_BROWSER_DIR: cfg.browserDir,
-    // The agent's commits are the App's bot (or AidenHQ agent), never the owner's identity.
-    ...identityEnv(identity),
-    // The agent commits unsigned (it has no SSH agent to sign with); the runner signs its commits
-    // after the run.
-    GIT_CONFIG_COUNT: "2",
-    GIT_CONFIG_KEY_0: "commit.gpgsign",
-    GIT_CONFIG_VALUE_0: "false",
-    GIT_CONFIG_KEY_1: "tag.gpgsign",
-    GIT_CONFIG_VALUE_1: "false",
-    ...jobEnv,
-  };
-  delete agentEnv.SSH_AUTH_SOCK;
-  // A GitHub token in the runner's environment is never the agent's. Its gh reads with `ghToken` (a GitHub App token
-  // narrowed to the task's repos, read-only) or nothing: the user's own gh sign-in is hidden from jobs (cfg.gcp.hidden).
-  delete agentEnv.GH_TOKEN;
-  delete agentEnv.GITHUB_TOKEN;
-  // Twice: Codex drops *TOKEN* variables from its tool calls, so the gh wrapper also takes AIDENHQ_GH_AUTH.
-  if (ghToken) Object.assign(agentEnv, { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken });
-  // Never a prompt on the user's desktop: without credentials, git over https and ssh would fall back
-  // to the session's askpass dialog (seahorse) and pop it up for every private Go module or repo.
-  delete agentEnv.SSH_ASKPASS;
-  agentEnv.SSH_ASKPASS_REQUIRE = "never";
-  agentEnv.GIT_ASKPASS = "false";
-  if (engine.kind === "claude") delete agentEnv.ANTHROPIC_API_KEY; // the subscription token, never an API key
+  const jobDir = jobDirOf(logPath, box);
+  mkdirSync(jobDir, { mode: 0o700 }); // new for every run: nothing of the job's is in it yet
+  const { argv, env, entry } = buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt, gcp, loopback: [jobEnv.AIDENHQ_REPO_URL], job, box });
+  // A box job's client gets only what Docker needs; everything the job gets is in the launcher's env file.
+  const agentEnv = box
+    ? Object.fromEntries(["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"].filter((k) => process.env[k]).map((k) => [k, process.env[k]]))
+    : {
+        ...process.env,
+        ...env,
+        // The private bwrap's folder too, so an engine's own sandbox in the job uses it (it takes the first bwrap on PATH).
+        PATH: [cfg.ghWrapperDir, ...(cfg.bwrap?.startsWith("/") ? [dirname(cfg.bwrap)] : []), process.env.PATH].join(":"),
+        GIT_SSH_COMMAND: join(cfg.ghWrapperDir, "git-ssh-no-push"),
+        GIT_TERMINAL_PROMPT: "0",
+        // The agent's git sees the commits the runner will publish, not replacements (the runner's git ignores them too).
+        GIT_NO_REPLACE_OBJECTS: "1",
+        GIT_GRAFT_FILE: "/dev/null",
+        AIDENHQ_TASK_WORKTREE: worktree,
+        AIDENHQ_BROWSER_DIR: cfg.browserDir,
+        // The agent's commits are the App's bot (or AidenHQ agent), never the owner's identity.
+        ...identityEnv(identity),
+        // The agent commits unsigned (it has no SSH agent to sign with); the runner signs its commits
+        // after the run.
+        GIT_CONFIG_COUNT: "2",
+        GIT_CONFIG_KEY_0: "commit.gpgsign",
+        GIT_CONFIG_VALUE_0: "false",
+        GIT_CONFIG_KEY_1: "tag.gpgsign",
+        GIT_CONFIG_VALUE_1: "false",
+        ...jobEnv,
+      };
+  if (!box) {
+    delete agentEnv.SSH_AUTH_SOCK;
+    // A GitHub token in the runner's environment is never the agent's. Its gh reads with `ghToken` (a GitHub App token
+    // narrowed to the task's repos, read-only) or nothing: the user's own gh sign-in is hidden from jobs (cfg.gcp.hidden).
+    delete agentEnv.GH_TOKEN;
+    delete agentEnv.GITHUB_TOKEN;
+    // Twice: some engines drop *TOKEN* variables from their tool calls, so the gh wrapper also takes AIDENHQ_GH_AUTH.
+    if (ghToken) Object.assign(agentEnv, { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken });
+    // Never a prompt on the user's desktop: without credentials, git over https and ssh would fall back
+    // to the session's askpass dialog (seahorse) and pop it up for every private Go module or repo.
+    delete agentEnv.SSH_ASKPASS;
+    agentEnv.SSH_ASKPASS_REQUIRE = "never";
+    agentEnv.GIT_ASKPASS = "false";
+  }
 
-  appendFileSync(logPath, `# ${new Date().toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in ${worktree}\n`);
+  appendFileSync(logPath, `# ${new Date().toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in ${box ? `box ${box.container} (${worktree})` : worktree}\n`);
   const out = openSync(logPath, "a");
-  const withStdin = streamInput || !promptAsArg;
-  const child = spawn("/bin/sh", ["-c", WRAP, `${logPath}.exit`, ...full], { cwd: worktree, env: agentEnv, detached: true, stdio: [withStdin ? "pipe" : "ignore", out, out] });
+  const child = spawn("/bin/sh", ["-c", WRAP, `${logPath}.exit`, ...argv], { cwd: box ? "/" : worktree, env: agentEnv, detached: true, stdio: ["ignore", out, out] });
   closeSync(out);
-  const run = { pid: child.pid, logPath, program: full[0], streamInput, stdin: child.stdin, sent: 0 };
+  const run = { pid: child.pid, logPath, jobDir, program: engine.kind, offset: 0 };
   // Only /bin/sh itself failing to start lands here; a missing engine is the shell's exit 127.
   child.on("error", (e) => (run.spawnError = `couldn't start /bin/sh: ${e.code ?? e.message}`));
   child.unref();
-  if (child.stdin) {
-    child.stdin.on("error", () => {}); // a message sent as the process exits
-    if (streamInput) {
-      child.stdin.write(userMessage(prompt));
-      run.sent = 1;
-      if (channel) {
-        channel.send = (text) => {
-          if (child.stdin.writableEnded || child.exitCode !== null || child.signalCode !== null) return false;
-          child.stdin.write(userMessage(text));
-          run.sent++;
-          return true;
-        };
-      }
-    } else child.stdin.end(prompt);
-  }
+  if (channel && entry.live_input) channel.send = (text) => sendComment(run, text);
   return run;
+}
+
+/** A comment into a live run's inbox.jsonl: false once the run is over or has given its final answer. */
+function sendComment(run, text) {
+  run.refresh?.();
+  if (run.over || run.final !== undefined || exitStatus(`${run.logPath}.exit`) || !alive(run.pid)) return false;
+  try {
+    appendLine(join(run.jobDir, "inbox.jsonl"), { t: "comment", from: "owner", text: String(text) });
+    return true;
+  } catch {
+    return false; // the inbox isn't a regular file (the job's doing): the comment waits for the next turn
+  }
 }
 
 const alive = (pid) => {
@@ -553,105 +426,86 @@ export function runAlive(pid, logPath) {
   }
 }
 
-/** A run another runner process started (a restart): followed from its files, with no input channel. */
-export const adoptRun = ({ pid, logPath, boxLast }) => ({ pid, logPath, boxLast, adopted: true });
+/** A run another runner process started (a restart): followed from its files, with no input channel, from `offset`. */
+export const adoptRun = ({ pid, logPath, jobDir, offset = 0 }) => ({ pid, logPath, jobDir, offset, adopted: true });
 
 /**
- * A box job's run: the same detached wrapper (log, exit file, adoption by pid), around a `docker exec` client whose own env is
- * only what Docker needs; the prompt goes in on stdin. Everything the job gets is in the launcher's env file.
+ * New engine events from `offset` in a job's events.jsonl: never through a link, a regular file only, each line capped. The
+ * content is the job's (untrusted): a malformed line or an unknown event is skipped. A truncated file starts over.
  */
-function startBoxAgent({ cfg, engine, worktree, prompt, sessionId, logPath, job, box }) {
-  const { argv } = buildCommand({ cfg, engine, worktree, sessionId, job, box });
-  // Nothing is written in the workspace here (the box's to write); its HOME is made inside the box.
-  const boxLast = boxLastFile(box);
-  const env = Object.fromEntries(["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"].filter((k) => process.env[k]).map((k) => [k, process.env[k]]));
-  appendFileSync(logPath, `# ${new Date().toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in box ${box.container} (${worktree})\n`);
-  const out = openSync(logPath, "a");
-  const child = spawn("/bin/sh", ["-c", WRAP, `${logPath}.exit`, ...argv], { cwd: "/", env, detached: true, stdio: ["pipe", out, out] });
-  closeSync(out);
-  const run = { pid: child.pid, logPath, program: argv[0], stdin: child.stdin, sent: 0, boxLast };
-  child.on("error", (e) => (run.spawnError = `couldn't start /bin/sh: ${e.code ?? e.message}`));
-  child.unref();
-  child.stdin.on("error", () => {});
-  child.stdin.end(prompt);
-  return run;
+export function readEvents(jobDir, offset = 0) {
+  const file = join(jobDir, "events.jsonl");
+  const size = (() => { try { return lstatSync(file).size; } catch { return 0; } })();
+  if (size < offset) offset = 0;
+  const buf = readFrom(file, offset, 4 << 20);
+  const { values, used } = lines(buf);
+  // A line longer than one read is skipped whole, not waited on forever.
+  const next = offset + (used || (buf.length === 4 << 20 ? buf.length : 0));
+  const events = values.filter((e) => e && typeof e === "object" && ["progress", "usage", "session", "final"].includes(e.t));
+  return { events, offset: next, skipped: values.length - events.length };
 }
 
+const clip = (s, n) => {
+  const t = String(s ?? "").replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+};
+// Steps show command lines on the board: blank the usual secret shapes first, whatever the engine sent.
+const redact = (t) =>
+  t
+    .replace(/(Bearer|Basic|token)\s+[^\s'"]+/gi, "$1 …")
+    .replace(/:\/\/[^/\s@]+@/g, "://…@")
+    .replace(/([?&](?:token|key|secret|password|sig|access_token)=)[^&\s'"]+/gi, "$1…")
+    .replace(/\b([A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS)[A-Z0-9_]*)=[^\s'"]+/g, "$1=…")
+    .replace(/\b(sk-|ghp_|gho_|github_pat_|xox[abp]-|AKIA)[A-Za-z0-9_-]+/g, "$1…");
+const PLAN = (p) => (Array.isArray(p) ? p.slice(0, 20).map((i) => ({ text: clip(i?.step, 200), state: i?.done ? "done" : i?.doing ? "doing" : "todo" })).filter((i) => i.text) : undefined);
+const STEPS = (s) => (Array.isArray(s) ? s.slice(-30).map((x) => ({ at: typeof x?.at === "string" ? x.at.slice(0, 40) : new Date().toISOString(), kind: "tool", text: clip(redact(String(x?.text ?? "")), 200) })) : undefined);
+
 /**
- * Follow a run to its end: its log (the engine's event stream, read from the start, so an adopted run
- * rebuilds the same state), its exit file, the deadline and a stop request. Resolves with
- * { code, sessionId, lastMessage, timedOut, cancelled }, or { detached: true } once `detach` aborts
- * (the runner is restarting and leaves the run to its successor).
- * `onProgress({ said, saidAt, plan })` gets the agent's latest words and task list as they change.
+ * Follow a run to its end: its events (from the run's offset), its exit file, the deadline and a stop request. Resolves with
+ * { code, sessionId, lastMessage, timedOut, stalled, cancelled, usage, offset }, or { detached: true, offset, sessionId }
+ * once `detach` aborts (the runner is restarting and leaves the run to its successor, which goes on from that offset).
+ * `onProgress({ said, saidAt, plan, steps })` gets the agent's latest words, task list and tool calls as they change.
  */
-export function watchAgent(run, { engine, sessionId, deadline, stallMs = 15 * 60_000, signal, detach, channel, onProgress }) {
-  const { pid, logPath, stdin, streamInput } = run;
+export function watchAgent(run, { sessionId, deadline, stallMs = 15 * 60_000, signal, detach, channel, onProgress }) {
+  const { pid, logPath, jobDir } = run;
   const exitFile = `${logPath}.exit`;
   const lastMessageFile = `${logPath}.last.md`;
   return new Promise((resolve) => {
     let found = sessionId;
-    let finalText = "";
-    // Streamed input: the session ends once every message sent has been taken in and answered. A
-    // message that arrives as a turn ends gets a turn of its own; its answer joins the reply.
-    let taken = 0;
-    const answers = [];
-    let lingering;
-    const finish = () => {
-      clearTimeout(lingering);
-      if (stdin && !stdin.writableEnded) stdin.end();
-    };
-    const progress = progressTracker();
-    const onLine = (line) => {
-      try {
-        const e = JSON.parse(line);
-        if (progress.take(e)) onProgress?.(progress.current());
-        if (e.type === "thread.started" && e.thread_id) found = e.thread_id; // codex
-        if (e.sessionID && !found) found = e.sessionID; // opencode
-        if (e.type === "text" && e.part?.text) finalText = e.part.text; // opencode: keep last text part
-        if (e.type === "system" && e.subtype === "init" && e.session_id && !found) found = e.session_id; // claude
-        if (streamInput && e.type === "user" && e.isReplay) taken++;
-        if (e.type === "result" && typeof e.result === "string") {
-          // claude: the answer of a turn
-          answers.push(e.result);
-          finalText = answers.filter((a) => a.trim() && a.trim() !== "NO_REPLY").join("\n\n") || e.result;
-          if (streamInput && stdin) {
-            clearTimeout(lingering);
-            if (taken >= run.sent) finish();
-            else lingering = setTimeout(finish, 120_000); // a message it never took in: don't wait forever
-          }
-        }
-      } catch {
-        /* non-JSON output */
-      }
-    };
-    let offset = 0;
-    // When the log last grew: a run silent for stallMs (a model call that never answers) is stopped as stalled, so
-    // it doesn't hold its task, and the writes waiting on it, until the deadline.
+    let said;
+    const usage = { input: 0, cached: 0, output: 0, seen: false };
+    // When the log or the events last grew: a run silent for stallMs (a model call that never answers) is stopped as
+    // stalled, so it doesn't hold its task, and the writes waiting on it, until the deadline.
     let grewAt = Date.now();
-    let buffer = "";
-    const decoder = new StringDecoder("utf8");
+    let logSize = 0;
     const read = () => {
-      let fd;
       try {
-        fd = openSync(logPath, "r");
-        const size = fstatSync(fd).size;
-        if (size <= offset) return;
-        grewAt = Date.now();
-        const chunk = Buffer.alloc(size - offset);
-        readSync(fd, chunk, 0, chunk.length, offset);
-        offset = size;
-        buffer += decoder.write(chunk);
-        let i;
-        while ((i = buffer.indexOf("\n")) >= 0) {
-          onLine(buffer.slice(0, i));
-          buffer = buffer.slice(i + 1);
-        }
+        const size = statSync(logPath).size;
+        if (size > logSize) (logSize = size), (grewAt = Date.now());
+      } catch {}
+      let got;
+      try {
+        got = readEvents(jobDir, run.offset);
       } catch {
-        /* no log yet */
-      } finally {
-        if (fd !== undefined) closeSync(fd);
+        return; // not a regular file: the job's own doing, nothing of it is read
+      }
+      if (got.offset !== run.offset) grewAt = Date.now();
+      run.offset = got.offset;
+      for (const e of got.events) {
+        if (e.t === "session" && typeof e.id === "string" && SESSION.test(e.id)) found = e.id;
+        if (e.t === "final" && typeof e.text === "string") run.final = e.text;
+        if (e.t === "usage") {
+          for (const k of ["input", "cached", "output"]) usage[k] += Number.isFinite(e[k]) && e[k] > 0 ? e[k] : 0;
+          usage.seen = true;
+        }
+        if (e.t === "progress") {
+          const text = clip(e.text, 600);
+          if (text && text !== said) (said = text), (run.saidAt = new Date().toISOString());
+          onProgress?.({ ...(said ? { said, saidAt: run.saidAt } : {}), ...(PLAN(e.plan)?.length ? { plan: PLAN(e.plan) } : {}), ...(STEPS(e.steps)?.length ? { steps: STEPS(e.steps) } : {}) });
+        }
       }
     };
+    run.refresh = read;
 
     let timedOut = false;
     let stalled = false;
@@ -675,27 +529,19 @@ export function watchAgent(run, { engine, sessionId, deadline, stallMs = 15 * 60
     let timer;
     const end = (then) => {
       clearInterval(timer);
-      clearTimeout(lingering);
       signal?.removeEventListener("abort", onAbort);
       detach?.removeEventListener("abort", onDetach);
       then();
     };
-    const onDetach = () => end(() => resolve({ detached: true }));
+    const onDetach = () => end(() => resolve({ detached: true, offset: run.offset, sessionId: found }));
     const done = () =>
       end(() => {
         read();
+        run.over = true;
         if (channel) channel.send = () => false;
-        finish();
         const status = exitStatus(exitFile);
         const code = status === "" ? null : Number(status);
-        // A box job's last message is in its workspace (the box's to write): copied out as a small regular file, never a link.
-        if (run.boxLast) {
-          const text = smallFile(run.boxLast, 256 * 1024);
-          if (text !== undefined) writeFileSync(lastMessageFile, text);
-          rmSync(run.boxLast, { force: true });
-        }
-        let lastMessage = existsSync(lastMessageFile) ? readFileSync(lastMessageFile, "utf8").trim() : finalText.trim();
-        if (!lastMessage) lastMessage = finalText.trim();
+        let lastMessage = String(run.final ?? "").trim();
         const startError = run.spawnError || (code === 127 && `couldn't start ${run.program ?? "the engine"}: ENOENT`);
         if (!lastMessage && startError) {
           appendFileSync(logPath, `# ${startError}\n`);
@@ -703,11 +549,11 @@ export function watchAgent(run, { engine, sessionId, deadline, stallMs = 15 * 60
         }
         if (lastMessage) writeFileSync(lastMessageFile, lastMessage);
         // No status: the run died without its shell, by its own stop or timeout (killed), else by hand (a failure).
-        resolve({ code: code === null && !killed ? 1 : code, sessionId: found, lastMessage, timedOut, stalled, cancelled });
+        resolve({ code: code === null && !killed ? 1 : code, sessionId: found, lastMessage, timedOut, stalled, cancelled, offset: run.offset, ...(usage.seen ? { usage: { input: usage.input, cached: usage.cached, output: usage.output, costUsd: null } } : {}) });
       });
     const tick = () => {
       read();
-      if (exitStatus(exitFile) || !pid|| run.spawnError || !alive(pid)) return done();
+      if (exitStatus(exitFile) || !pid || run.spawnError || !alive(pid)) return done();
       if (!timedOut && Date.now() > deadline) {
         timedOut = true;
         kill();
@@ -728,5 +574,5 @@ export function watchAgent(run, { engine, sessionId, deadline, stallMs = 15 * 60
 /** Start the agent and follow it to its end (startAgent + watchAgent). */
 export function runAgent({ cfg, signal, detach, onProgress, channel, ...opts }) {
   const run = startAgent({ cfg, channel, ...opts });
-  return watchAgent(run, { engine: opts.engine, sessionId: opts.sessionId, deadline: Date.now() + (cfg.timeout_minutes ?? 60) * 60_000, stallMs: (cfg.stall_minutes ?? 15) * 60_000, signal, detach, channel, onProgress });
+  return watchAgent(run, { sessionId: opts.sessionId, deadline: Date.now() + (cfg.timeout_minutes ?? 60) * 60_000, stallMs: (cfg.stall_minutes ?? 15) * 60_000, signal, detach, channel, onProgress });
 }

@@ -14,7 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { stripHidden } from "../src/commands.mjs";
+import { stripHidden } from "../src/agents.mjs";
 import { loadConfig, REPO_ROOT } from "../src/config.mjs";
 import { readApproval } from "../src/intake.ts";
 

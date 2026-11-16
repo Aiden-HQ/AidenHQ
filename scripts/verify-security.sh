@@ -575,7 +575,7 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
 # reviewer's yes, and a CI template copy is Tier 0 only when its .github tree is the deployed product's template tree.
 rreview="services/runner/src/review.mjs"; bapprovals="services/board/src/approvals.ts"
 [ "$(grep -oE 'T\(2, "[a-z-]+"' "$rtiers" | sort -u | tr '\n' ' ')" = 'T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
-  && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review","authorize","merges","apply","netjail","state","config","github-app","git","main","engines","workspace","files","commands"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["approvals","app","fleet","accounts","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`])); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
+  && node --input-type=module -e 'const { GATE_CORE } = await import(process.argv[1]); const must = ["tiers","review","authorize","merges","apply","netjail","state","config","github-app","git","main","engines","workspace","files","agents"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["approvals","app","fleet","accounts","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rtiers" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rtiers" \
   && grep -qF '/^services\/runner\/test\/reviewer-cases\//,' "$rtiers" && grep -qF '/^modules\/core\/security\//,' "$rtiers" \
   && true && grep -qF '/(^|\/)agent-auth\.ts$/,' "$rtiers" \
   && true && grep -qF '/(^|\/)\.github\//,' "$rtiers" \
@@ -630,8 +630,28 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && grep -qF 'const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live";' services/runner/src/engines.mjs \
   && grep -qF '(!c.private || who.o === true)' services/gateway/jobcaps.ts \
   && grep -q 'export const observes = (engine) => engine?.reads === true;' services/runner/src/engines.mjs \
-  && grep -q 'agent.metadata?.privateReads === true ? { reads: true }' services/runner/src/commands.mjs \
+  && grep -q 'agent.metadata?.privateReads === true ? { reads: true }' services/runner/src/agents.mjs \
   && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed, apply only files a card at the turn's end, and Primer publishing is checked against the user's words (services/runner/src/authorize.mjs); jobs hold no connection URL or token (their jobcaps go through the gateway with the job token), and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
+# engine@1: the runner writes `web: false` into job.json for a job holding private data; every engine module keeps such a job
+# off the web (by behaviour: each module's own builder, as its bin/engine runs it).
+if web_probe="$(node --input-type=module -e '
+  const spec = { contract: "engine@1", prompt: "", mcp: [], env: [], web: false, limits: { timeout_s: 1 }, model: { base_url: "http://127.0.0.1:1/api/v1", token_env: "AIDENHQ_MODEL_TOKEN", id: "m", effort: "" }, sandbox: { kind: "bwrap", writable: [], network: true } };
+  const bad = [];
+  const { codexCommand } = await import("./modules/engine-codex/src/codex.ts");
+  for (const kind of ["bwrap", "box"]) if (!codexCommand({ ...spec, sandbox: { ...spec.sandbox, kind } }, "/job", {}).argv.includes("web_search=\"disabled\"")) bad.push(`codex (${kind})`);
+  const { claudeCommand } = await import("./modules/engine-claude/src/claude.ts");
+  const argv = claudeCommand(spec, {}).argv;
+  if (/Web/.test(argv[argv.indexOf("--tools") + 1])) bad.push("claude");
+  const { opencodeCommand } = await import("./modules/engine-opencode/src/opencode.ts");
+  const p = JSON.parse(opencodeCommand(spec, {}).env.OPENCODE_CONFIG_CONTENT).permission;
+  if (p.webfetch !== "deny" || p.websearch !== "deny") bad.push("opencode");
+  process.stdout.write(bad.join(", "));
+  process.exit(bad.length ? 1 : 0);
+' 2>&1)"; then
+  pass "engines: a job holding private data gets no web search or fetch from any engine (engine@1 web: false; codex, claude, opencode)"
+else
+  fail "engines: private-data jobs reach the web: ${web_probe:-the probe failed to run}"
+fi
 pass "no email/Slack/Telegram send or calendar write tool is configured for any agent"
 
 echo

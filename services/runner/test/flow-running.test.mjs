@@ -34,6 +34,8 @@ describe("flow-running", () => {
       await waitFor("the answer", () => partComments().slice(c).some((x) => /Still running/.test(x)), 20_000);
       say("Also check the infra repo.");
       await waitFor("the hand-over", () => partComments().slice(c).some((x) => /Passed on: Ada reads it now/.test(x)), 20_000);
+      // engine@1: the comment goes into the job's inbox.jsonl, and the engine passes it on to the session within a poll.
+      await waitFor("the session took it in", () => fakeLog().some((e) => e.kind === "claude-took" && e.data === "Also check the infra repo."));
       release();
       // Claude Code takes it in mid-run: one reply that covers it, no extra turn.
       await waitFor("the reply", () => reviews().length > replies);
@@ -120,3 +122,17 @@ describe("flow-running", () => {
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
 });
+
+// engine@1 end to end: an engine module the runner names nowhere (fixtures/engine-echo, registered only in engines.json) runs
+// the task in the job's sandbox and its final event is the reply.
+describe("flow-running: an engine known only from the registry", () => {
+  const echo = { id: "engineer-echo", name: "Engineer · Echo", status: "idle", adapterType: "process", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-echo", engine: "echo" } };
+  const t = flow({ moreEngineers: [echo], part: { assigneeAgentId: "engineer-echo", description: "Go ahead and say hello from the echo engine." } });
+  it("a job runs through engine@1 and finishes the task with the echoed final", async () => {
+    await t.waitFor("the reply", () => t.reviews().length > 0, 40_000);
+    assert.match(t.reviews().at(-1).comment, /say hello from the echo engine/);
+    assert.equal(t.claudeRuns().length, 0, "no other engine ran");
+  });
+  it("never errors along the way", () => t.noErrors());
+});
+

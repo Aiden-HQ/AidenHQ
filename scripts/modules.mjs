@@ -119,6 +119,36 @@ export function grantEntry(key, a, routines = {}) {
   return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}) };
 }
 
+const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "adapter", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "rw", "ro", "secret_env", "crew"];
+const relPath = (p) => typeof p === "string" && p && !p.split("/").includes("..") && !/^\/\//.test(p);
+/**
+ * A module's `providers.engine` (spec §3.3.1, engine@1): one or more engine kinds, each a `bin` the runner runs inside the
+ * job's sandbox. The rest is data the runner reads instead of knowing engines: how to pick one (adapter, effort_key,
+ * model_prefix), where its model calls go (gateway), its state folder (state: task | shared, under the runner's state dir;
+ * reset names and seed copies made before each run; seed `from` is the module's, or the product's with a leading /), home
+ * folders it writes (rw, ~/…) or only reads (ro: its own toolchain), secrets it gets as env (secret_env: ENV → vault file), whether it runs in a computer box (box)
+ * and the crew adapter args Paperclip uses (crew). Returns config/engines.json's entries, by kind.
+ */
+export function engineEntries(name, def, root, productDir) {
+  const out = {};
+  for (const e of [def.providers?.engine ?? []].flat()) {
+    const where = `module ${name}: engine ${e?.kind}`;
+    for (const f of Object.keys(e ?? {})) if (!ENGINE_FIELDS.includes(f)) fail(`${where}: unknown field ${f} (known: ${ENGINE_FIELDS.join(", ")})`);
+    if (!/^[a-z][a-z0-9-]{0,30}$/.test(e?.kind ?? "")) fail(`module ${name}: an engine needs a kind (a-z, 0-9, -)`);
+    if (!relPath(e.bin) || e.bin.startsWith("/") || !existsSync(join(root, e.bin))) fail(`${where}: bin must be a file in the module`);
+    if (e.state != null && !["task", "shared"].includes(e.state)) fail(`${where}: state is task or shared`);
+    for (const r of e.reset ?? []) if (!relPath(r) || r.startsWith("/")) fail(`${where}: reset names paths in its state folder`);
+    for (const s of e.seed ?? []) if (!relPath(s?.from) || !relPath(s?.to) || s.to.startsWith("/") || !existsSync(s.from.startsWith("/") ? join(productDir, s.from) : join(root, s.from))) fail(`${where}: seed entries are { from, to }: an existing module (or /product) path into the state folder`);
+    if ((e.reset || e.seed) && !e.state) fail(`${where}: reset and seed need a state folder`);
+    for (const f of ["rw", "ro"]) for (const r of e[f] ?? []) if (typeof r !== "string" || !r.startsWith("~/") || !relPath(r.slice(2))) fail(`${where}: ${f} lists home folders (~/…)`);
+    for (const [k, v] of Object.entries(e.secret_env ?? {})) if (!/^[A-Z][A-Z0-9_]*$/.test(k) || !/^[a-z0-9_]+$/.test(String(v))) fail(`${where}: secret_env maps ENV_NAME to a vault file name`);
+    if (e.crew != null && (typeof e.crew.adapter !== "string" || !Array.isArray(e.crew.args))) fail(`${where}: crew is { adapter, args: [...] }`);
+    const dir = relative(productDir, root);
+    out[e.kind] = { ...e, module: name, dir, bin: join(dir, e.bin), live_input: e.live_input === true };
+  }
+  return out;
+}
+
 const JOBCAP_FIELDS = ["id", "connection", "tools", "prompt", "tool_timeout_s", "read_url", "read_secret", "private"];
 /**
  * A module's `jobcaps:` (spec §3.1): what a runner job may read of a connection, through the model gateway's
@@ -348,7 +378,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     .map((k) => [k, { value: settings[k], set: Object.hasOwn(instance.settings ?? {}, k) }]));
 
   const core = substitute(all.get("core").def, settings);
-  const paperclip = { company: core.company, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), grading: String(settings.grading ?? "on"), live_updates: String(settings.live_updates ?? "on"), batch_approvals: String(settings.batch_approvals ?? "on"), dup_guard: String(settings.dup_guard ?? "on"), coach: String(settings.coach ?? "on"), wake_ups: String(settings.wake_ups ?? "on"), loop_brake: String(settings.loop_brake ?? "on"), settings: shownSettings, labels: [], mcp_servers: {}, codex_args: core.codex_args ?? [], agents: {}, routines: {} };
+  const paperclip = { company: core.company, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), grading: String(settings.grading ?? "on"), live_updates: String(settings.live_updates ?? "on"), batch_approvals: String(settings.batch_approvals ?? "on"), dup_guard: String(settings.dup_guard ?? "on"), coach: String(settings.coach ?? "on"), wake_ups: String(settings.wake_ups ?? "on"), loop_brake: String(settings.loop_brake ?? "on"), settings: shownSettings, labels: [], mcp_servers: {}, codex_args: [], agents: {}, routines: {} };
   const apps = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a) => a.name);
@@ -356,6 +386,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const labelNames = new Set();
   const routineTitles = new Set();
   const jobcaps = {};
+  const engines = {};
 
   for (const name of enabled) {
     const { root } = all.get(name);
@@ -364,6 +395,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     if (isolation === "untrusted" && (Object.keys(def.connections ?? {}).length || def.compose)) fail(`untrusted module ${name} may not declare connections or compose services`);
     for (const l of def.labels ?? []) { if (labelNames.has(l.name)) fail(`duplicate label: ${l.name}`); labelNames.add(l.name); paperclip.labels.push(l); }
     for (const [id, j] of Object.entries(jobcapEntries(name, def))) { if (jobcaps[id]) fail(`duplicate jobcap: ${id}`); jobcaps[id] = j; }
+    for (const [kind, e] of Object.entries(engineEntries(name, def, root, productDir))) { if (engines[kind]) fail(`two modules declare engine kind ${kind}: ${engines[kind].module} and ${name}`); engines[kind] = e; }
     for (const [k, c] of Object.entries(def.connections ?? {})) {
       if (!Array.isArray(c.tools?.read) || !Array.isArray(c.tools?.write)) fail(`connection ${k}: tools.read and tools.write must list its tools`);
       if (c.tools.destructive != null && !Array.isArray(c.tools.destructive)) fail(`connection ${k}: tools.destructive must be a list`);
@@ -418,6 +450,8 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "board"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
 
   instanceAgents(instanceDir, settings, paperclip, routineTitles);
+  // Paperclip's crew adapter args come from the engine module that contributes them.
+  for (const e of Object.values(engines)) if (e.crew?.adapter === "codex_local") paperclip.codex_args = e.crew.args;
 
   // Departments: where the board's Agents page lists each agent. One registry, core's `departments:` then the instance's
   // own (instance.yaml `departments:`); an agent's `department:` must name one, and without one it is `general`. Setup
@@ -617,9 +651,11 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     return d;
   }));
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
+  // A runner agent's engine (after the overrides that may set it, and its image) is one an enabled module provides.
+  for (const [key, a] of Object.entries(paperclip.agents)) if (a.dispatch === "runner" && a.engine && !engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);
   // The model gateway's switches (config/gateway.json, re-read per call): spend_caps off stops refusals, tracking stays.
   const gateway = { enforce_caps: String(settings.spend_caps ?? "on") !== "off", ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}) };
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, gateway, jobcaps, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, gateway, jobcaps, engines, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**

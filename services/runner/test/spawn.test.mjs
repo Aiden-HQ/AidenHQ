@@ -5,13 +5,14 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runAgent } from "../src/engines.mjs";
+import { enginesFile } from "./fakes/engines.mjs";
 
 test("a program that isn't installed ends the job with the reason", async () => {
   const dir = mkdtempSync(join(tmpdir(), "spawn-"));
   const path = process.env.PATH;
   process.env.PATH = "/nonexistent";
   try {
-    const r = await runAgent({ cfg: { ghWrapperDir: dir, timeout_minutes: 1 }, engine: { kind: "codex" }, worktree: dir, prompt: "hi", logPath: join(dir, "log") });
+    const r = await runAgent({ cfg: { ghWrapperDir: dir, timeout_minutes: 1, enginesFile: enginesFile(dir), stateDir: dir }, engine: { kind: "codex" }, worktree: dir, prompt: "hi", logPath: join(dir, "log") });
     assert.notEqual(r.code, 0);
     assert.match(r.lastMessage, /couldn't start \S+: ENOENT/);
   } finally {
@@ -26,10 +27,10 @@ test("the runner's own GitHub token never reaches the agent", async () => {
   process.env.PATH = `${dir}:${saved.PATH}`;
   process.env.GH_TOKEN = "runner-secret";
   try {
-    await runAgent({ cfg: { ghWrapperDir: dir, timeout_minutes: 1 }, engine: { kind: "codex" }, worktree: dir, prompt: "hi", logPath: join(dir, "log") });
+    await runAgent({ cfg: { ghWrapperDir: dir, timeout_minutes: 1, enginesFile: enginesFile(dir), stateDir: dir }, engine: { kind: "codex" }, worktree: dir, prompt: "hi", logPath: join(dir, "log") });
     assert.match(readFileSync(join(dir, "log"), "utf8"), /GH=\[\]\[\]/);
     // The job's own: the App's read token for the task's repos.
-    await runAgent({ cfg: { ghWrapperDir: dir, timeout_minutes: 1 }, engine: { kind: "codex" }, worktree: dir, prompt: "hi", logPath: join(dir, "log2"), ghToken: "job-read" });
+    await runAgent({ cfg: { ghWrapperDir: dir, timeout_minutes: 1, enginesFile: enginesFile(dir), stateDir: dir }, engine: { kind: "codex" }, worktree: dir, prompt: "hi", logPath: join(dir, "log2"), ghToken: "job-read" });
     assert.match(readFileSync(join(dir, "log2"), "utf8"), /GH=\[job-read\]\[\]/);
   } finally {
     process.env.PATH = saved.PATH;
@@ -46,7 +47,7 @@ test("a run whose log stops growing is stopped as stalled", async () => {
   process.env.PATH = `${dir}:${path}`;
   try {
     const t0 = Date.now();
-    const r = await runAgent({ cfg: { ghWrapperDir: dir, timeout_minutes: 1, stall_minutes: 0.02 }, engine: { kind: "codex" }, worktree: dir, prompt: "hi", logPath: join(dir, "log") });
+    const r = await runAgent({ cfg: { ghWrapperDir: dir, timeout_minutes: 1, stall_minutes: 0.02, enginesFile: enginesFile(dir), stateDir: dir }, engine: { kind: "codex" }, worktree: dir, prompt: "hi", logPath: join(dir, "log") });
     assert.ok(r.stalled && r.timedOut, "stopped as stalled");
     assert.ok(Date.now() - t0 < 30_000, "well before the deadline");
   } finally {

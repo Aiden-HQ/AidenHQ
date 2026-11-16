@@ -1,0 +1,21 @@
+#!/usr/bin/env node
+// engine@1 with nothing but the files: job.json in, events.jsonl out, inbox.jsonl followed while idle comments arrive.
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const dir = process.argv[2];
+const spec = JSON.parse(readFileSync(join(dir, "job.json"), "utf8"));
+const emit = (ev) => appendFileSync(join(dir, "events.jsonl"), `${JSON.stringify(ev)}\n`);
+emit({ t: "session", id: spec.session ?? `echo-${spec.job}` });
+emit({ t: "progress", text: `echo: ${spec.prompt.slice(0, 80)}` });
+if (process.env.ECHO_FAIL) process.exit(3);
+const idleMs = Number(process.env.ECHO_IDLE_MS ?? 1500);
+let seen = 0;
+for (let last = Date.now(); Date.now() - last < idleMs; await new Promise((r) => setTimeout(r, 100))) {
+  const inbox = join(dir, "inbox.jsonl");
+  const got = existsSync(inbox) ? readFileSync(inbox, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+  for (const c of got.slice(seen)) emit({ t: "progress", text: `heard: ${c.text}` });
+  if (got.length > seen) (seen = got.length), (last = Date.now());
+}
+emit({ t: "usage", input: spec.prompt.length, output: spec.prompt.length, model: spec.model.id || "echo" });
+emit({ t: "final", text: spec.prompt });

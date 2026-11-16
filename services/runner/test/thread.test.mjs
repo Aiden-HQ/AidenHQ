@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { RUNNER_MARKER } from "../src/commands.mjs";
+import { RUNNER_MARKER } from "../src/agents.mjs";
 import { REPLY_MARKER, prSnapshot, stateSection, threadEntries, threadSection, transcript } from "../src/thread.ts";
 
 const at = (m) => `2026-10-27T20:${String(m).padStart(2, "0")}:00.000Z`;

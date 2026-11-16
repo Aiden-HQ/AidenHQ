@@ -1,0 +1,56 @@
+#!/usr/bin/env node
+// engine@1 for Claude Code: the prompt and then each inbox comment as streamed user messages. The session ends once every
+// message sent has been taken in and answered; a message that arrives as a turn ends gets a turn of its own, and its answer
+// joins the reply.
+import { join } from "node:path";
+import { engineIO, lines, readFrom, runProgram } from "../sdk/engine-io.ts";
+import { claudeCommand, claudeEvents } from "../src/claude.ts";
+
+const jobDir = process.argv[2];
+const io = engineIO(jobDir);
+const { argv, env } = claudeCommand(io.spec);
+const message = (text) => `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`;
+const events = claudeEvents(io.spec, io.emit);
+const answers = [];
+let sent = 0;
+let taken = 0;
+let stdin;
+let lingering;
+let ended = false;
+let inboxAt = 0;
+const fromInbox = () => {
+  const { values, used } = lines(readFrom(join(jobDir, "inbox.jsonl"), inboxAt));
+  inboxAt += used;
+  for (const c of values) if (c?.t === "comment" && typeof c.text === "string" && stdin.write(message(c.text))) sent++;
+};
+const reply = () => answers.filter((a) => a.trim() && a.trim() !== "NO_REPLY").join("\n\n") || answers.at(-1) || "";
+const finish = () => {
+  clearTimeout(lingering);
+  fromInbox(); // one last look: a comment that came in as it ended is still taken
+  if (taken < sent) return void (lingering = setTimeout(finish, 120_000)); // a message it never took in: don't wait forever
+  ended = true;
+  clearInterval(poll);
+  io.emit({ t: "final", text: reply() });
+  stdin.end();
+};
+const poll = setInterval(() => !ended && fromInbox(), 100);
+const r = await runProgram(argv, {
+  env,
+  input: (w) => {
+    stdin = w;
+    w.write(message(io.spec.prompt));
+    sent = 1;
+  },
+  onJson: (e) => {
+    const got = events.take(e);
+    if (got.replay) taken++;
+    if (got.result !== undefined) {
+      answers.push(got.result);
+      if (!ended) finish();
+    }
+  },
+});
+clearInterval(poll);
+clearTimeout(lingering);
+if (!ended && (answers.length || r.error)) io.emit({ t: "final", text: reply() || `The job couldn't start: ${r.error}.` });
+process.exit(r.code);

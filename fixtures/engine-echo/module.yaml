@@ -1,0 +1,11 @@
+# A test engine: proves engine@1 is enough to add an engine. Never listed in modules/marketplace.json.
+name: engine-echo
+description: Echoes the prompt back as the final answer, and each live comment as progress.
+license: MIT
+kernel: { engine: 1 }
+providers:
+  engine:
+    - kind: echo
+      bin: bin/engine
+      live_input: true
+      label: Echo

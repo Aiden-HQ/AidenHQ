@@ -210,7 +210,7 @@ const ADAPTER_ENGINE = { codex_local: "codex", claude_local: "claude", opencode_
 // on Codex through the model gateway (docs/design/codex-openrouter-engine.md).
 const ADAPTER_ENGINES = { codex_local: ["codex"], claude_local: ["claude"], opencode_local: ["openrouter", "codex-openrouter"] };
 const engineOf = (a) => a.engine ?? ADAPTER_ENGINE[a.adapter];
-// Where the runner reads an Engineer's effort in its adapter config (services/runner/src/commands.mjs EFFORT_KEY).
+// Where the runner reads an Engineer's effort in its adapter config (each engine module's effort_key, read by services/runner/src/agents.mjs).
 const EFFORT_KEY = { codex: "modelReasoningEffort", "codex-openrouter": "modelReasoningEffort", openrouter: "modelReasoningEffort", claude: "effort" };
 
 /** The crew member's board identity, stored in the agent's metadata for the board and the runner. */

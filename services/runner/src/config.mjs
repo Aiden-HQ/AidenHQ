@@ -93,10 +93,10 @@ export function loadConfig() {
     launcherUrl: env.AIDENHQ_LAUNCHER_URL ?? "http://10.231.0.1:8199",
     computersRunnerKeyFile: join(secrets, "computers_runner_key"),
     boxGatewayUrl: "http://10.231.2.1:8200",
-    claudeTokenFile: expand(cfg.engines?.claude?.token_file ?? join(secrets, "claude_oauth_token")),
-    // codex-openrouter's Codex homes, one per task (engines.mjs codexHome): never the host's ~/.codex.
-    codexOpenrouterHome: expand(cfg.engines?.["codex-openrouter"]?.home ?? join(cfg.state_dir ?? "~/.local/state/aidenhq-runner", "codex-openrouter")),
-    claudeConfigDir: expand(cfg.engines?.claude?.config_dir ?? join(cfg.state_dir ?? "~/.local/state/aidenhq-runner", "claude")),
+    // The engine registry (compile writes it from the modules' providers.engine): kinds, their module, bin and data.
+    enginesFile: join(configDir, "engines.json"),
+    // The vault, for the files an engine gets as env (its secret_env): read before a job starts, never visible in one.
+    secretsDir: secrets,
     // Jobs' reads of connections (compile writes it from the modules' jobcaps): through the gateway's /c/<connection>/mcp.
     jobcapsFile: join(configDir, "jobcaps.json"),
     // The runner itself publishes a task's document there; jobs never get this endpoint.

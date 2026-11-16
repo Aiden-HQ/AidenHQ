@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 
 import { State } from "../src/state.ts";
 import { readLog } from "./fakes/lib.mjs";
+import { registry } from "./fakes/engines.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
 const FAKES = join(import.meta.dirname, "fakes");
@@ -66,6 +67,7 @@ test("a runner restart leaves a running job alone; the next runner adopts it and
     chmodSync(join(bin, name), 0o755);
   }
   writeFileSync(join(config, "system.yaml"), `paperclip:\n  company_id: "${COMPANY}"\nuser:\n  names: ["Dana"]\n`);
+  writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));
   writeFileSync(
     join(config, "runner.yaml"),
     `label: engineer\npoll_seconds: 1\nallowed_orgs: [acme]\nwork_dir: ${join(dir, "work")}\nstate_dir: ${join(dir, "state")}\nmax_concurrent: 1\ntimeout_minutes: 2\n` +
@@ -154,4 +156,30 @@ test("a runner restart leaves a running job alone; the next runner adopts it and
   const tool = readFileSync(env.FAKE_LOG, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((e) => e.kind === "tool").data;
   assert.equal(tool.code, 0, tool.out);
   assert.ok(!paperclip.comments.some((c) => /Resumed after a runner restart|Runner error/.test(c.body)), paperclip.comments.map((c) => c.body).join("\n---\n"));
+});
+
+test("a restarted runner re-attaches by pid and events offset: the turn's events go on from where the last runner left them", async () => {
+  const { adoptRun, watchAgent } = await import("../src/engines.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "aidenhq-offset-"));
+  const jobDir = join(dir, "job");
+  mkdirSync(jobDir);
+  const events = join(jobDir, "events.jsonl");
+  const line = (e) => `${JSON.stringify(e)}\n`;
+  writeFileSync(events, line({ t: "session", id: "s-1" }) + line({ t: "progress", text: "before the restart" }));
+  // The first runner follows the run until a deploy detaches it: it hands over its offset and the session it saw.
+  const detach = new AbortController();
+  const seen = [];
+  const first = watchAgent(adoptRun({ pid: process.pid, logPath: join(dir, "log"), jobDir }), { deadline: Date.now() + 60_000, detach: detach.signal, onProgress: (p) => seen.push(p.said) });
+  await new Promise((r) => setTimeout(r, 400));
+  detach.abort();
+  const handed = await first;
+  assert.deepEqual([handed.detached, handed.sessionId, handed.offset], [true, "s-1", readFileSync(events).length]);
+  // The next runner goes on from that offset: only what came after, then the answer.
+  writeFileSync(events, readFileSync(events, "utf8") + line({ t: "progress", text: "after the restart" }) + line({ t: "final", text: "Done." }));
+  writeFileSync(join(dir, "log.exit"), "0\n");
+  const later = [];
+  const r = await watchAgent(adoptRun({ pid: process.pid, logPath: join(dir, "log"), jobDir, offset: handed.offset }), { sessionId: handed.sessionId, deadline: Date.now() + 60_000, onProgress: (p) => later.push(p.said) });
+  assert.deepEqual(seen, ["before the restart"]);
+  assert.deepEqual(later, ["after the restart"]);
+  assert.deepEqual([r.code, r.lastMessage, r.sessionId], [0, "Done.", "s-1"]);
 });

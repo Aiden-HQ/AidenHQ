@@ -39,11 +39,11 @@ const OLD = [
   /(^|\/)\.github\//,
 ];
 
-test("the split keeps every file the old list gated; the only additions are the lean files and their tests", () => {
+test("the split keeps every file the old list gated; the only additions are the lean files, the engine modules, the SDK and agents.mjs (commands.mjs renamed)", () => {
   const gated = (list) => files.filter((f) => list.some((g) => g.test(f)));
   const before = gated(OLD);
   const after = gated(GATE_CORE);
   assert.deepEqual(before.filter((f) => !after.includes(f)), []);
   const added = after.filter((f) => !before.includes(f));
-  assert.ok(added.length > 0 && added.every((f) => f.startsWith("scripts/lean/") || f === "scripts/test/lean.test.mjs" || f === "services/runner/test/gate-coverage.test.mjs"), added.join(", "));
+  assert.ok(added.length > 0 && added.every((f) => f.startsWith("scripts/lean/") || f === "scripts/test/lean.test.mjs" || f === "services/runner/test/gate-coverage.test.mjs" || f.startsWith("kernel/sdk/") || /^modules\/engine-[^/]+\//.test(f) || f === "services/runner/src/agents.mjs"), added.join(", "));
 });

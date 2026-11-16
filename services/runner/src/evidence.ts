@@ -2,7 +2,7 @@
 // the duplicate-card guard (item 4). Facts here were checked by code and are trusted; anything an agent wrote is returned
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
-import { RUNNER_MARKER } from "./commands.mjs";
+import { RUNNER_MARKER } from "./agents.mjs";
 import { patchKey } from "./git.mjs";
 import { GATE_CHECK, findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
 import { MAX_DIFF } from "./review.mjs";

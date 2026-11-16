@@ -99,7 +99,8 @@ A change is **authority-expanding** when it:
   be sent, or spending (caps, models, budgets);
 - edits the gate's own core: `services/runner/src/tiers.mjs`, `review.mjs`, `authorize.mjs`, `merges.mjs`, `main.mjs` and
   the other runner files that build what tiering trusts or what a job can reach (`engines.mjs`: its sandbox, mounts and
-  env; `workspace.mjs`, `files.mjs`, `commands.mjs`; `scripts/computers.mjs`), `modules/core/security/` (this policy), the reviewer's eval cases
+  env; `workspace.mjs`, `files.mjs`, `agents.mjs`; `scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
+  runs inside a job and what it passes on) and the SDK (`kernel/sdk/`), `modules/core/security/` (this policy), the reviewer's eval cases
   (`services/runner/test/reviewer-cases/`) and `scripts/reviewer-eval.mjs`, the board's `approvals.ts`, `app.ts`,
   `fleet.ts`, `accounts.ts` and `session.ts`, `agent-auth.ts`, `scripts/modules.mjs` and `scripts/paperclip-setup.mjs`,
   `services/computer/`, `services/gateway/`, `ops/`, `scripts/verify-security.sh`, `scripts/supply-chain/`,

@@ -6,7 +6,7 @@
 // it's ready. Anything else stops the queue with a comment; nothing is ever forced, reverted or merged
 // as an admin. The only GitHub writes here are WRITES and READY_MUTATION below, and a stacked PR's head replayed by the
 // runner (github.rebuild: a git push leased to the approved head).
-import { isAgentSubtask } from "./commands.mjs";
+import { isAgentSubtask } from "./agents.mjs";
 
 /**
  * Where a finished queue leaves its task: an agent's sub-task whose PRs all merged, with no other open PR of its own
