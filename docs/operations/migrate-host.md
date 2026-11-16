@@ -539,7 +539,7 @@ failed.
 **Test a restore every few months.** On any machine with Docker:
 
 1. `restic -r <url> restore latest --target /tmp/r`.
-2. On a scratch checkout, run `scripts/restore.sh /tmp/r/.../aidenhq-*.tar`.
+2. On a scratch checkout, run `scripts/restore.sh /tmp/r/.../aidenhq-<timestamp>` (the backup directory).
 3. Check that `data/board/board.sqlite` opens.
 
 ## 11. Optional: gVisor's KVM platform on bare metal
