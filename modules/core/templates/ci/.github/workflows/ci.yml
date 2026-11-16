@@ -5,11 +5,13 @@
 # code-review's model key: on AidenHQ's runners none (it spends through the instance's model gateway, below); elsewhere the
 # secret OPENROUTER_API_KEY. Optional variable CODEGENIE_MODEL (default below).
 # Code-review depth: light by default, whatever the size; normal when the PR touches a critical path; deep with the PR's
-# `deep-review` label. Critical paths are built in (dependency manifests and lock files, .github/, Dockerfiles, and paths
+# `deep-review` label. Critical paths are built in (dependency manifests such as package.json, .github/, Dockerfiles, and paths
 # naming auth, security, tokens, sessions or permissions) plus the app's own `.github/code-review-critical`: one glob per
 # line (bash pattern: `*` also matches `/`, so `src/server/db/*` covers everything under it), `#` comments allowed. That
 # file is read from the default branch, never the PR, so a PR can't drop its own critical paths (and editing it is itself
-# critical: it is under .github/).
+# critical: it is under .github/). Lockfiles (package-lock.json, npm-shrinkwrap.json, pnpm-lock.yaml, yarn.lock,
+# bun.lockb, Cargo.lock, poetry.lock, uv.lock, go.sum, at any depth) are left out of the changed-line count (which counts
+# added lines only: deletions are free) and never raise the depth: the supply-chain checks already gate every dependency, and codegenie skips lock files in its own diff.
 name: ci
 
 on:
@@ -181,12 +183,11 @@ jobs:
         with:
           node-version: 24.x
       # Review only what changed since this PR's last green code review (codegenie-prior.mjs, from the base commit; full
-      # when it isn't there yet, or on any doubt): delta, reuse after a rebase with the same patch, or full. Its own step,
+      # when it isn't there yet, or on any doubt): delta, reuse when the patch is the same (a rebase, or the branch reopened as a new PR), or full. Its own step,
       # so codegenie never gets the token.
       - name: Prior review
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
@@ -217,17 +218,23 @@ jobs:
           # Depth: light by default, whatever the size (a big diff gets more calls through --budget-boost below). Normal
           # when the diff touches a critical path (see the header) or can't be read. Deep only when asked: the PR's
           # `deep-review` label.
-          stat=$(git diff --numstat "$from...$HEAD_SHA") || stat=""
-          lines=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 1000} {n += $1 + $2} END {print n + 0}')
+          # Lockfiles (see the header) are out of both the line count and the critical-path list.
+          nolock=(':(exclude,glob)**/package-lock.json' ':(exclude,glob)**/npm-shrinkwrap.json' ':(exclude,glob)**/pnpm-lock.yaml'
+            ':(exclude,glob)**/yarn.lock' ':(exclude,glob)**/bun.lockb' ':(exclude,glob)**/Cargo.lock' ':(exclude,glob)**/poetry.lock'
+            ':(exclude,glob)**/uv.lock' ':(exclude,glob)**/go.sum')
+          unreadable=""
+          stat=$(git diff --numstat "$from...$HEAD_SHA" -- . "${nolock[@]}") || { stat=""; unreadable=1; }
+          # Added lines only: a deletion needs no review, so a deletion-only diff is light (and skipped when small).
+          lines=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 1000; next} {n += $1} END {print n + 0}')
           # The app's own list comes from the default branch (as fetched at checkout), never the PR's head.
           globs=$(git show "origin/$DEFAULT_BRANCH:.github/code-review-critical" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v -e '^#' -e '^$')
           critical=""
           # Paths raw and NUL-separated (no quoting of odd names, so a tab or non-ASCII name still matches its glob); a
           # list that fails is critical. Each glob is only a [[ == ]] pattern (set -f: never expanded against files).
-          if git -c core.quotePath=false diff --name-only -z --no-renames "$from...$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"; then
+          if git -c core.quotePath=false diff --name-only -z --no-renames "$from...$HEAD_SHA" -- . "${nolock[@]}" > "$RUNNER_TEMP/changed-paths"; then
             set -f
             while IFS= read -r -d '' p; do
-              if printf '%s' "$p" | grep -qiE 'package(-lock)?\.json|lock|\.github/|dockerfile|auth|secur|token|session|permission'; then critical=$p; break; fi
+              if printf '%s' "$p" | grep -qiE 'package\.json|lock|\.github/|dockerfile|auth|secur|token|session|permission'; then critical=$p; break; fi
               while IFS= read -r g; do
                 case "$g" in ''|'#'*) continue ;; esac
                 if [[ "$p" == $g ]]; then critical=$p; break 2; fi
@@ -237,7 +244,7 @@ jobs:
           else
             critical="(a diff that can't be listed)"
           fi
-          [ -z "$stat" ] && critical="(a diff that can't be read)"
+          [ -n "$unreadable" ] && critical="(a diff that can't be read)"
           depth=light
           [ -n "$critical" ] && depth=normal
           case ",$PR_LABELS," in *,deep-review,*) depth=deep ;; esac
