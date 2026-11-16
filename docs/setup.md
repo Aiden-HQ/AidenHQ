@@ -88,7 +88,7 @@ pause the account on the gate's sign-in only, never on the board.
 
 Optional. Colleagues open a shared app at `https://<app>.<domain>` in a browser, signed in through the organisation's
 Cloudflare Access and identity provider (design: [design/access.md](design/access.md)). The VM keeps
-zero inbound ports: `cloudflared` dials out, and the gate (`services/gate`, on `127.0.0.1:3130`) verifies every request
+zero inbound ports: `cloudflared` dials out, and the gate (`services/gate`, reached by `cloudflared` on its unix socket, and on `127.0.0.1:3130`) verifies every request
 before it reaches the app. The board and Paperclip are never reachable this way.
 
 ### What the organisation's Cloudflare admins create

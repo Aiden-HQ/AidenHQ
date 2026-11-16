@@ -25,6 +25,11 @@ import YAML from "yaml";
 
 export const GATE_PORT = 3130; // services/apps-mcp/src/tailnet.ts reserves the same port
 export const GATE_URL = `http://127.0.0.1:${GATE_PORT}`;
+// cloudflared's way to the gate: a unix socket in a directory only the two of them mount (data/gate/socket), so the gate
+// believes CF-Connecting-IP there and nowhere else (anything on the host's loopback reaches GATE_URL).
+export const GATE_SOCKET = "/run/gate/gate.sock";
+export const GATE_SOCKET_URL = `unix:${GATE_SOCKET}`;
+const SOCKET_MOUNT = `\${AIDENHQ_DATA_DIR:-./data}/gate/socket:${dirname(GATE_SOCKET)}`;
 export const AUTH_PORT = 3129; // the board's auth listener: sign-in (password mode) and app access (both modes); apps-mcp reserves it too
 export const AUTH_URL = `http://127.0.0.1:${AUTH_PORT}`;
 export const ACCOUNTS_FILE = "/accounts/accounts.json"; // the board's account map (email, role, disabled), mounted read-only
@@ -125,7 +130,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
   const issuer = team && `https://${team}.cloudflareaccess.com`;
   const gate = {
     port: GATE_PORT, login, ...(issuer ? { issuer, certs_url: `${issuer}/cdn-cgi/access/certs` } : {}),
-    ...(identity ? { identity, front: frontDoor } : {}),
+    ...(identity ? { identity, front: frontDoor } : { socket: GATE_SOCKET }),
     auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE, owner_email: owner,
     ...(myApps ? { my_apps: myApps } : {}), hosts, ...(previews ? { previews } : {}),
   };
@@ -137,7 +142,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
     ingress: [
       // cloudflared checks the Access token too (a second layer); the gate is the one that decides. Only a password-mode
       // host without an aud goes without Access.
-      ...[...gateHosts, ...wild].map(([hostname, h]) => ({ hostname, service: GATE_URL, ...(h.aud ? { originRequest: { access: { required: true, teamName: team, audTag: [h.aud] } } } : {}) })),
+      ...[...gateHosts, ...wild].map(([hostname, h]) => ({ hostname, service: GATE_SOCKET_URL, ...(h.aud ? { originRequest: { access: { required: true, teamName: team, audTag: [h.aud] } } } : {}) })),
       { service: "http_status:404" },
     ],
   };
@@ -156,6 +161,8 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
           `\${AIDENHQ_SECRETS_DIR}/gate_board_secret:${AUTH_SECRET_FILE}:ro`,
           // Which previews run (apps-mcp writes it; a directory, so its atomic replace is seen).
           ...(previews ? [`\${AIDENHQ_DATA_DIR:-./data}/previews:${dirname(PREVIEWS_FILE)}:ro`] : []),
+          // cloudflared's socket (the gate listens there too); not with a front door.
+          ...(front ? [] : [SOCKET_MOUNT]),
         ],
       },
       // The board reads the gate's config (the sign-in host, app hosts, login mode) and writes data/gate/accounts.json.
@@ -163,7 +170,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
       board: { volumes: ["./config/gate.json:/config/gate.json:ro", "${AIDENHQ_DATA_DIR:-./data}/gate:/data/gate"] },
       // Outbound only; locally managed, so its ingress is this file and the dashboard can't change it.
       // The label carries the ingress's hash: compose recreates cloudflared exactly when its config changes (it reads it once).
-      ...(front ? {} : { cloudflared: { ...hardening, labels: { "aidenhq.ingress-sha256": createHash("sha256").update(JSON.stringify(cloudflared)).digest("hex") }, image: CLOUDFLARED_IMAGE, network_mode: "host", command: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run"], volumes: ["./config/cloudflared.yml:/etc/cloudflared/config.yml:ro"], secrets: ["cloudflared_credentials"], depends_on: ["gate"] } }),
+      ...(front ? {} : { cloudflared: { ...hardening, labels: { "aidenhq.ingress-sha256": createHash("sha256").update(JSON.stringify(cloudflared)).digest("hex") }, image: CLOUDFLARED_IMAGE, network_mode: "host", command: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run"], volumes: ["./config/cloudflared.yml:/etc/cloudflared/config.yml:ro", SOCKET_MOUNT], secrets: ["cloudflared_credentials"], depends_on: ["gate"] } }),
     },
     secrets: front ? {} : { cloudflared_credentials: { file: "${AIDENHQ_SECRETS_DIR}/cloudflared_credentials.json" } },
   };
@@ -171,7 +178,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
 }
 
 /**
- * Refuses any ingress whose target isn't the gate: only hostname → GATE_URL rules, then exactly the 404 catch-all. Every
+ * Refuses any ingress whose target isn't the gate: only hostname → GATE_SOCKET_URL rules, then exactly the 404 catch-all. Every
  * rule requires Access, except with app_login password (the gate signs people in), where a rule may carry no Access at all.
  */
 export function checkIngress(cfg, { login = "access" } = {}) {
@@ -187,7 +194,7 @@ export function checkIngress(cfg, { login = "access" } = {}) {
     // A wildcard is one leading `*.` label (preview hosts), never alone on a top-level domain.
     if (typeof r.hostname !== "string" || !HOST.test(r.hostname.replace(/^\*\.(?=[^.]+\.)/, "x.")) || seen.has(r.hostname)) bad(`hostname ${r.hostname}`);
     seen.add(r.hostname);
-    if (r.service !== GATE_URL) bad(`${r.hostname} → ${r.service} (only ${GATE_URL}, the gate)`);
+    if (r.service !== GATE_SOCKET_URL) bad(`${r.hostname} → ${r.service} (only ${GATE_SOCKET_URL}, the gate)`);
     for (const k of Object.keys(r.originRequest ?? {})) if (k !== "access") bad(`${r.hostname}: originRequest.${k}`);
     if ((login !== "password" || r.originRequest) && r.originRequest?.access?.required !== true) bad(`${r.hostname}: Access must be required`);
   }

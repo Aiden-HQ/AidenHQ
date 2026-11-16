@@ -492,15 +492,17 @@ test("fails closed: unreadable accounts or a failing session check refuse with a
   }
 });
 
-test("sign-in traffic names the visitor's address from Cloudflare, never the client's own copy, beside the board's secret", () => {
+test("sign-in traffic names the visitor's address from Cloudflare only on cloudflared's socket, never the client's own copy", () => {
   const req = (headers) => ({ headers: { host: "apps.example.com", ...headers }, socket: { remoteAddress: "127.0.0.1" } });
   const forged = { "x-aidenhq-client-ip": "10.9.9.9", "x-aidenhq-gate": "forged" };
   const secret = "s".repeat(64);
-  assert.equal(authHeaders(req({ ...forged, "cf-connecting-ip": "203.0.113.7" }), secret)["x-aidenhq-client-ip"], "203.0.113.7");
+  assert.equal(authHeaders(req({ ...forged, "cf-connecting-ip": "203.0.113.7" }), secret, true)["x-aidenhq-client-ip"], "203.0.113.7");
   assert.equal(authHeaders(req(forged), secret)["x-aidenhq-gate"], secret);
+  // On the loopback port anyone on the host can set CF-Connecting-IP: it names nothing there.
+  assert.equal(authHeaders(req({ ...forged, "cf-connecting-ip": "203.0.113.7" }), secret)["x-aidenhq-client-ip"], undefined);
   // Only Cloudflare's header names it: never X-Forwarded-For, never a non-IP; then no header (the board uses its socket).
-  assert.equal(authHeaders(req({ ...forged, "x-forwarded-for": "198.51.100.2" }))["x-aidenhq-client-ip"], undefined);
-  assert.equal(authHeaders(req({ ...forged, "cf-connecting-ip": "*" }))["x-aidenhq-client-ip"], undefined);
+  assert.equal(authHeaders(req({ ...forged, "x-forwarded-for": "198.51.100.2" }), "", true)["x-aidenhq-client-ip"], undefined);
+  assert.equal(authHeaders(req({ ...forged, "cf-connecting-ip": "*" }), "", true)["x-aidenhq-client-ip"], undefined);
   assert.equal(authHeaders(req(forged))["x-aidenhq-gate"], undefined);
 });
 

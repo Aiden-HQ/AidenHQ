@@ -358,6 +358,8 @@ generated_secrets:
   - board_internal_token
   # The gate's proof to the board's sign-in listener (3129): the board trusts the gate's client-IP header only beside it.
   - gate_board_secret
+  # The front door's proof to the board listener (U2's Caddy): the board trusts its client-IP header only beside it.
+  - edge_board_secret
   # The board's key to the launcher's /progress only (the live view); never the plugin's full control key.
   - computer_progress_token
   # Tiered approvals: the runner's AI reviewer posts Tier 1 verdicts with this (board + runner only); the owner's

@@ -8,7 +8,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
-import { checkIngress, checkPorts, GATE_URL } from "../edge.mjs";
+import { checkIngress, checkPorts, GATE_SOCKET_URL, GATE_URL } from "../edge.mjs";
 
 const mods = join(dirname(fileURLToPath(import.meta.url)), "fixtures/mods");
 const TUNNEL = "6ff42ae2-765d-4adf-8112-31c55c1551ef";
@@ -30,8 +30,8 @@ test("edge on: every share.host goes to the gate with its own aud, then a 404; t
   assert.equal(out.edge.gate.issuer, "https://acme.cloudflareaccess.com");
   assert.equal(out.edge.gate.owner_email, "owner@acme.com");
   assert.deepEqual(out.edge.cloudflared.ingress, [
-    { hostname: "roadmap.acme.com", service: GATE_URL, originRequest: { access: { required: true, teamName: "acme", audTag: ["aud-roadmap-0001"] } } },
-    { hostname: "apps.acme.com", service: GATE_URL, originRequest: { access: { required: true, teamName: "acme", audTag: ["aud-apps-0001"] } } },
+    { hostname: "roadmap.acme.com", service: GATE_SOCKET_URL, originRequest: { access: { required: true, teamName: "acme", audTag: ["aud-roadmap-0001"] } } },
+    { hostname: "apps.acme.com", service: GATE_SOCKET_URL, originRequest: { access: { required: true, teamName: "acme", audTag: ["aud-apps-0001"] } } },
     { service: "http_status:404" },
   ]);
   assert.equal(out.edge.cloudflared.tunnel, TUNNEL);
@@ -71,11 +71,14 @@ test("edge off: nothing generated; share.host without edge, or an app joining a 
 });
 
 test("apply refuses ingress whose target isn't the gate", () => {
-  const ok = { tunnel: TUNNEL, "credentials-file": "/run/secrets/cloudflared_credentials", ingress: [{ hostname: "roadmap.acme.com", service: GATE_URL, originRequest: { access: { required: true } } }, { service: "http_status:404" }] };
+  const ok = { tunnel: TUNNEL, "credentials-file": "/run/secrets/cloudflared_credentials", ingress: [{ hostname: "roadmap.acme.com", service: GATE_SOCKET_URL, originRequest: { access: { required: true } } }, { service: "http_status:404" }] };
   checkIngress(ok);
   const board = structuredClone(ok);
   board.ingress[0].service = "http://127.0.0.1:3120";
-  assert.throws(() => checkIngress(board), /only http:\/\/127\.0\.0\.1:3130, the gate/);
+  assert.throws(() => checkIngress(board), /only unix:\/run\/gate\/gate\.sock, the gate/);
+  // The gate's loopback port isn't cloudflared's way in: there CF-Connecting-IP could come from anyone on the host.
+  board.ingress[0].service = GATE_URL;
+  assert.throws(() => checkIngress(board), /the gate/);
   assert.throws(() => checkIngress({ ...ok, ingress: ok.ingress.slice(0, 1) }), /404 catch-all/);
   assert.throws(() => checkIngress({ ...ok, ingress: [{ service: "http://127.0.0.1:3100" }] }), /404 catch-all/);
   assert.throws(() => checkIngress({ ...ok, "warp-routing": { enabled: true } }), /unexpected key warp-routing/);
@@ -109,8 +112,11 @@ test("app_login: access needs an aud everywhere; password signs in through the b
   assert.ok(pw.compose.services.gate.volumes.includes("${AIDENHQ_SECRETS_DIR}/gate_board_secret:/secrets/auth_listener:ro"));
   assert.deepEqual(pw.compose.services.board.volumes, ["./config/gate.json:/config/gate.json:ro", "${AIDENHQ_DATA_DIR:-./data}/gate:/data/gate"]);
   assert.ok(compile(mods, inst({ edge }, [roadmap])).compose.services.gate.volumes.some((v) => v.includes("gate_board_secret")));
-  assert.deepEqual(pw.edge.cloudflared.ingress.slice(0, 2), [{ hostname: "roadmap.acme.com", service: GATE_URL }, { hostname: "apps.acme.com", service: GATE_URL }]);
+  assert.deepEqual(pw.edge.cloudflared.ingress.slice(0, 2), [{ hostname: "roadmap.acme.com", service: GATE_SOCKET_URL }, { hostname: "apps.acme.com", service: GATE_SOCKET_URL }]);
   checkIngress(pw.edge.cloudflared, { login: "password" });
+  // cloudflared reaches the gate only over the socket they alone share (the gate believes CF-Connecting-IP only there).
+  assert.equal(pw.edge.gate.socket, "/run/gate/gate.sock");
+  for (const svc of ["gate", "cloudflared"]) assert.ok(pw.compose.services[svc].volumes.includes("${AIDENHQ_DATA_DIR:-./data}/gate/socket:/run/gate"));
   assert.throws(() => checkIngress(pw.edge.cloudflared), /Access must be required/); // access mode stays strict
   // password with an aud keeps Access on that host, and then needs the team
   const both = compile(mods, inst({ edge: { ...edge, my_apps: { host: "apps.acme.com" } }, app_login: "password" }, [roadmap]));
@@ -125,14 +131,14 @@ test("previews: *.<host> per shared app after the exact hosts, behind that app's
   const out = compile(mods, inst({ edge: { ...edge, previews: true } }, [roadmap]));
   assert.deepEqual(out.edge.gate.previews, { file: "/previews/previews.json", ports: [39100, 39399] });
   assert.deepEqual(out.edge.cloudflared.ingress.slice(-2), [
-    { hostname: "*.roadmap.acme.com", service: GATE_URL, originRequest: { access: { required: true, teamName: "acme", audTag: ["aud-roadmap-0001"] } } },
+    { hostname: "*.roadmap.acme.com", service: GATE_SOCKET_URL, originRequest: { access: { required: true, teamName: "acme", audTag: ["aud-roadmap-0001"] } } },
     { service: "http_status:404" },
   ]);
   checkIngress(out.edge.cloudflared);
   assert.ok(out.compose.services.gate.volumes.includes("${AIDENHQ_DATA_DIR:-./data}/previews:/previews:ro"));
   assert.throws(() => compile(mods, inst({ edge: { ...edge, previews: { aud: "aud-shared-001" } } }, [roadmap])), /own Access audience/);
   assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, share: { ...roadmap.share, host: "pr-2.roadmap.acme.com" } }])), /previews'/);
-  const rule = (hostname) => ({ ingress: [{ hostname, service: GATE_URL, originRequest: { access: { required: true, audTag: ["a"] } } }, { service: "http_status:404" }] });
+  const rule = (hostname) => ({ ingress: [{ hostname, service: GATE_SOCKET_URL, originRequest: { access: { required: true, audTag: ["a"] } } }, { service: "http_status:404" }] });
   assert.throws(() => checkIngress(rule("*.com")), /hostname/);
   assert.throws(() => checkIngress(rule("*")), /hostname/);
   assert.throws(() => checkIngress(rule("a.*.acme.com")), /hostname/);
