@@ -40,7 +40,8 @@ export function template(kind: string, dir: string = join(REPO_ROOT, "modules/co
   return readFileSync(file, "utf8").split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim());
 }
 
-const fence = (name: string, text: unknown, max: number) => `<<<${name}\n${String(text ?? "").replace(/<<<|>>>/g, "‹‹‹").slice(0, max) || "(none)"}\n${name}>>>`;
+// Untrusted text never closes its own fence: every triple angle bracket is replaced before the block is made.
+const fence = (name: string, text: unknown, max: number) => `<<<${name}\n${String(text ?? "").replace(/<<<|>>>/g, (m) => (m === "<<<" ? "\u2039\u2039\u2039" : "\u203a\u203a\u203a")).slice(0, max) || "(none)"}\n${name}>>>`;
 
 /**
  * The evidence for one graded task: { awaiting } (why it can't be graded yet) or { version, facts, data }. `deps` reach
