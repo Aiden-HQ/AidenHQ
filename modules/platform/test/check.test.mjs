@@ -22,9 +22,12 @@ test("product files: gate core to the panel, a compose file by content, an unrea
 });
 
 test("the owner-approval records are the owner's in any repo", () => {
+  const f = ".github/supply-chain-source-exceptions.yaml";
   for (const repo of ["acme/aidenhq", "acme-agents/app", "other/lib"]) {
-    const v = push([".github/supply-chain-source-exceptions.yaml", "modules/codehost-github/src/plan.mjs"], repo);
-    assert.deepEqual([v.verdict, v.tier, v.rule, v.owner], ["raise", 2, "owner-approval-record", true], repo);
+    assert.deepEqual([push([f], repo).verdict, push([f], repo).tier, push([f], repo).rule], ["raise", 2, "owner-approval-record"], repo);
+    const both = push([f, "README.md"], repo);
+    assert.deepEqual([both.verdict, both.rule], ["deny", "owner-approval-alone"], repo);
+    assert.match(both.reason, /file the source approval on its own/);
   }
 });
 

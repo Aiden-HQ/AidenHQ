@@ -191,18 +191,25 @@ test("product repo: branch push, PR and merge are Tier 1 for the Platform Engine
 
 test("the owner-approval records are the owner's tap, so no PR records its own source approval", () => {
   const f = ".github/supply-chain-source-exceptions.yaml";
-  // The file itself: a PR or merge of it is the owner's in the product repo, the agents org and anywhere else, whatever the
-  // requester's line and however green the checks are: that card is how the owner approves a source.
+  // The file on its own: a PR or merge of it is the owner's card in the product repo, the agents org and anywhere else
+  // (that card is how the owner approves a source), never lower.
   assert.equal(tierOf(prod("pr", { files: [f] })), 2);
   assert.equal(prod("pr", { files: [f] }).rule, "owner-approval-record");
   assert.equal(tierOf(pub("pr", { files: [f] })), 2, "an agents-org branch (Tier 0 otherwise)");
   assert.equal(tierOf(pub("pr", { repo: "acme/bor", files: [f] })), 2, "outside the agents org");
-  assert.equal(tierOf(merge({ repo: base.productRepo, files: [f] })), 2, "a product merge by another line");
-  assert.equal(merge({ repo: base.productRepo, files: [f] }).rule, "owner-approval-record");
-  assert.equal(tierOf(merge({ repo: base.productRepo, files: [f], checks: [{ name: "t", ok: false }] }, P)), 2, "red checks");
+  assert.equal(merge({ repo: base.productRepo, files: [f] }, P).rule, "owner-approval-record", "a product merge");
   assert.equal(tierOf(merge({ repo: "acme-agents/roadmap", files: [f] })), 2, "an agents-org merge");
-  // Another file beside it changes nothing: the whole change is still the owner's.
-  assert.equal(tierOf(prod("pr", { files: ["services/runner/package-lock.json", f] })), 2);
+  // Every other refusal still wins: another line's product write, red checks, a moved head, a default branch.
+  assert.equal(merge({ repo: base.productRepo, files: [f] }).rule, "product-merge-requester");
+  assert.equal(tierOf(merge({ repo: base.productRepo, files: [f], checks: [{ name: "t", ok: false }] }, P)), "reject", "red checks");
+  assert.equal(tierOf(merge({ repo: "acme-agents/roadmap", files: [f], headMatches: false })), "reject", "a moved head");
+  assert.equal(tierOf(pub("push", { repo: "acme/bor", branch: "main", files: [f] })), "reject", "a default branch outside the org");
+  // Bundled with any other file it is refused, so one owner tap never approves anything else.
+  for (const other of ["services/runner/package-lock.json", "README.md", "modules/codehost-github/src/plan.mjs"]) {
+    const t = prod("pr", { files: [other, f] });
+    assert.equal(tierOf(t), "reject", other);
+    assert.match(t.reason, /file the source approval on its own/);
+  }
   // The instance repo is refused before its files are read: a merge of it never becomes an owner approval.
   const instMerge = merge({ repo: base.instanceRepo, files: [f] });
   assert.equal(tierOf(instMerge), "reject", "the instance repo's merge");

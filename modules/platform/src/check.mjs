@@ -12,7 +12,7 @@ const REJECT = (rule, reason) => ({ tier: 2, rule, reason, reject: true });
 const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 /** A change to the owner-approval records: the owner's tap in every repo, so no PR records its own approval. */
-const OWNER_APPROVAL = (repo) => ({ ...T(2, "owner-approval-record", `it changes ${repo}'s ${OWNER_APPROVAL_FILE}, which holds the owner's source approvals: only the owner's own tap makes a record one`), owner: true });
+const OWNER_APPROVAL = (repo) => T(2, "owner-approval-record", `it changes ${repo}'s ${OWNER_APPROVAL_FILE}, which holds the owner's source approvals: only the owner's own tap makes a record one`);
 
 /**
  * The check: `{ kind, args, facts }` with `args` one branch of a push or PR, or one PR of a merge (repo, files, texts and,
@@ -20,9 +20,9 @@ const OWNER_APPROVAL = (repo) => ({ ...T(2, "owner-approval-record", `it changes
  * `texts` maps a config file to { base, head } (its text on each side, absent when it is missing there) and, for a compose
  * file, { baseDoc, headDoc } (each side parsed: an object, null when it doesn't parse, absent when missing); a compose file
  * whose documents aren't given is judged as one that doesn't parse.
- * `{ verdict: "raise", tier, panel?, rule, reason, owner? }` or `{ verdict: "deny", rule, reason }`. `owner: true` (a change to the
- * owner-approval records) is the owner's card whatever else the request is: the only path by which the owner approves a
- * source, so nothing but the instance repo's own refusal stands before it.
+ * `{ verdict: "raise", tier, panel?, rule, reason }` or `{ verdict: "deny", rule, reason }`. A change to the owner-approval
+ * records is the owner's card only on its own: bundled with any other file it is denied, so one owner tap never also
+ * approves gate-core, grant or other authority-expanding changes.
  */
 export function check({ kind, args: item, facts = {} }) {
   const parts = productParts(kind, item ?? {}, facts);
@@ -30,12 +30,12 @@ export function check({ kind, args: item, facts = {} }) {
   const refused = parts.find((p) => p.reject);
   if (refused) return { verdict: "deny", rule: refused.rule, reason: refused.reason };
   const top = parts.reduce((a, b) => (b.tier * 2 + (b.panel ? 1 : 0) > a.tier * 2 + (a.panel ? 1 : 0) ? b : a));
-  return { verdict: "raise", tier: top.tier, ...(top.panel ? { panel: true } : {}), rule: top.rule, reason: top.reason, ...(top.owner ? { owner: true } : {}) };
+  return { verdict: "raise", tier: top.tier, ...(top.panel ? { panel: true } : {}), rule: top.rule, reason: top.reason };
 }
 
 function productParts(kind, item, facts) {
   const files = Array.isArray(item.files) ? item.files : undefined;
-  if (files?.includes(OWNER_APPROVAL_FILE)) return [OWNER_APPROVAL(item.repo)];
+  if (files?.includes(OWNER_APPROVAL_FILE)) return files.length === 1 ? [OWNER_APPROVAL(item.repo)] : [REJECT("owner-approval-alone", `${OWNER_APPROVAL_FILE} changes with other files: file the source approval on its own`)];
   if (!files || !same(item.repo, facts.productRepo)) return [];
   // A Dependabot pin bump: the reviewer's alone when every condition holds; otherwise the file rules below.
   if (kind === "codehost-github.merge" && item.dependabot === true) {

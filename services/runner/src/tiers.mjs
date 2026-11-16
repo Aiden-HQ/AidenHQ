@@ -57,9 +57,8 @@ function onMerits(action, s) {
 }
 
 /**
- * A push's, PR's or merge's parts, item by item (each branch or PR): the instance repo's refusal stands first; then a change to
- * the owner-approval records is the owner's card alone (the check's `owner`); otherwise the code host's refusal, the platform
- * check's verdict on the item's files, the module rules for a product module.yaml, and the code host's parts.
+ * A push's, PR's or merge's parts, item by item (each branch or PR): the code host's refusal, if any, stands first; then the
+ * platform check's verdict on the item's files, the module rules for a product module.yaml, and the code host's parts.
  */
 function gitParts(action, s) {
   const items = action === "merge" ? s.prs ?? [] : s.branches ?? [];
@@ -68,7 +67,6 @@ function gitParts(action, s) {
     const v = check({ kind: `codehost-github.${action}`, args: withDocs(item), facts: { productRepo: s.productRepo, roles: s.roles } });
     const checked = v.verdict === "deny" ? [{ tier: 2, rule: v.rule, reason: v.reason, reject: true }] : v.verdict === "raise" ? [{ tier: v.tier, rule: v.rule, reason: v.reason, ...(v.panel ? { panel: true } : {}) }] : [];
     const mine = own[i] ?? [];
-    if (v.owner && !same(item.repo, s.instanceRepo)) return checked[0];
     return highest([...mine.filter((p) => p.reject), ...checked, ...productModuleParts(item, s), ...mine.filter((p) => !p.reject)]);
   });
 }
