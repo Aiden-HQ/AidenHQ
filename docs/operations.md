@@ -47,10 +47,24 @@ Each phase prints one line, `apply timing: <phase> <seconds>s`, and a total; set
 `setup timing:` line. A cached image build costs a few seconds; a changed one is the real build (the board's tsc and vite
 build is about 17s). Setup's Paperclip calls run four at a time.
 
+Module data (spec §6.4.1): before an apply switches, it stops the containers of each module it touches that has
+`services.data: true` (its code, its compose services with their settings, or its `data_version` changed) and archives `data/modules/<module>/` to
+`~/checkpoints/gen-<n>/<module>.tar` (as root in a pinned container, so root-owned files come along; the archive is the
+owner's, `0600`). Without room for it (1.2 times the dirs plus 20 GB, as `scripts/backup.sh`) the apply is refused and the
+containers start again. The newest five `gen-*` snapshots are kept. A failed health check puts the whole snapshot back
+before the last known good starts. `ops/rollback.sh <n>` puts back only modules whose `.data_version` marker is above the
+`data_version` generation `n` declared, each from the earliest snapshot after `n`, and refuses when that snapshot was
+pruned. A restore unpacks into a fresh sibling folder and swaps it in, so a module never has half its old data.
+`data/kernel/`, the vault, Paperclip's database and live Postgres clusters are never in a snapshot; `scripts/backup.sh`
+covers them.
+
 It is idempotent. The Platform Engineer runs it for you after you approve a change.
 
 - **Upgrade the product:** merge to product `main`, bump `product: <sha>` in the instance repo, commit and push, apply.
-- **Roll back:** revert the instance commit (or set `product:` to the earlier sha), push, apply again.
+- **Roll back:** revert the instance commit (or set `product:` to the earlier sha), push, apply again. That rolls back
+  code, not module data. `ops/rollback.sh <n> [--plan]` goes back to apply generation `n`
+  (`~/.local/state/aidenhq/generations.jsonl`) with the data it needs (above); `--plan` prints the shas and each module
+  whose data it would restore, with the time that data goes back to.
 - **After changing a connection service:** nothing; apply rebuilds its image and recreates it. A rotated compose secret
   is picked up the same way on the next apply. Force-recreate (`docker compose up -d --force-recreate <svc>`) only after
   changing a file a service reads once at start that is not a compose secret (a bind-mounted config, for example):

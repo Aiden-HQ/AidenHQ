@@ -1,7 +1,7 @@
 // Compiles modules + an instance into what the stack consumes: the Paperclip config (scripts/paperclip-setup.mjs),
 // module apps (apps-mcp), compose services (compose.modules.yaml) and the module catalog. Pure: reads files, writes
 // nothing (scripts/compile.mjs writes). See docs/configuration.md.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import YAML from "yaml";
@@ -445,6 +445,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const secretOwner = {};
   const networkModule = {};
   const dataDirs = [];
+  const dataModules = {};
   const labelNames = new Set();
   const routineTitles = new Set();
   const jobcaps = {};
@@ -519,6 +520,10 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       compose.networks[k] = v;
     }
     dataDirs.push(...gen.dataDirs);
+    // A module with a data dir: its data_version (spec §6.4.1; compile.mjs keeps the marker) and a digest of its services, so
+    // the apply snapshots it when its services or code change (ops/lib/generations.sh).
+    if (def.data_version != null && !(Number.isInteger(def.data_version) && def.data_version >= 0)) fail(`module ${name}: data_version is a whole number, 0 or more`);
+    if (raw.services?.data === true) dataModules[name] = { data_version: def.data_version ?? 0, services: createHash("sha256").update(JSON.stringify(gen.services)).digest("hex").slice(0, 16) };
   }
   // A join reaches only the joined module's own network, which that module defined (not a module named like another's
   // link network, and never a module with no services).
@@ -766,7 +771,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, gateway, jobcaps, engines, connections, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**

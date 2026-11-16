@@ -105,3 +105,4 @@ generated_secrets:
   - gateway_lane_secret
   # src_slack's warehouse login (ops/warehouse-sources.sh gives the role this password).
   - warehouse_src_slack_password
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

@@ -79,6 +79,12 @@ fi
 
 # The kernel: every agent tool call crosses its proxy (aidenhq-kernel, backplane address).
 check "kernel (10.231.0.1:3130)" sh -c 'curl -fsS --max-time 5 http://10.231.0.1:3130/healthz | grep -qx ok'
+# The newest apply generation (ops/lib/generations.sh): `failed` means it failed its health check and its revert did not
+# take over (an apply in flight is `pending`, a revert that worked is the newest line, `good`).
+gen_file="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/generations.jsonl"
+if [ -s "$gen_file" ]; then
+  check "last apply generation" node -e 'const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").at(-1)); if (r.health === "failed") { console.log(`generation ${r.n} failed: ${r.reason ?? "see its apply log"}`); process.exit(1); }' "$gen_file"
+fi
 
 g_health="$(curl -s -m 10 "$(svc google-workspace-mcp 8081)/healthz" 2>&1)"
 if echo "$g_health" | grep -q '"ok":true'; then

@@ -33,3 +33,4 @@ services:
         AIDENHQ_CATALOG_FILE: /catalog/catalog.static.json
 generated_secrets:
   - tasks_service_key
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
