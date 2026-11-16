@@ -234,6 +234,10 @@
       "state": "stable",
       "fp": "auth=none"
     },
+    "route GET /v1/advisories": {
+      "state": "experimental",
+      "fp": "auth=board"
+    },
     "route GET /v1/agents": {
       "state": "experimental",
       "fp": "auth=module"
@@ -333,6 +337,50 @@
     "route POST /v1/writes/:id/review": {
       "state": "experimental",
       "fp": "auth=board"
+    },
+    "schema advisories.json": {
+      "state": "experimental",
+      "fp": "{\"req\":true,\"closed\":true,\"type\":\"object\"}"
+    },
+    "schema advisories.json.advisories": {
+      "state": "experimental",
+      "fp": "{\"req\":true,\"type\":\"array\"}"
+    },
+    "schema advisories.json.advisories[]": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"closed\":true,\"type\":\"object\"}"
+    },
+    "schema advisories.json.advisories[].affected": {
+      "state": "experimental",
+      "fp": "{\"req\":true,\"type\":\"array\"}"
+    },
+    "schema advisories.json.advisories[].affected[]": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^[0-9a-f]{40}$\"}"
+    },
+    "schema advisories.json.advisories[].fixed": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^[0-9a-f]{40}$\"}"
+    },
+    "schema advisories.json.advisories[].id": {
+      "state": "experimental",
+      "fp": "{\"req\":true,\"type\":\"string\",\"pattern\":\"^[A-Z][A-Z0-9]{1,15}-\\\\d{4}-\\\\d{1,6}$\"}"
+    },
+    "schema advisories.json.advisories[].module": {
+      "state": "experimental",
+      "fp": "{\"req\":true,\"type\":\"string\",\"pattern\":\"^[a-z][a-z0-9-]{0,63}$\"}"
+    },
+    "schema advisories.json.advisories[].severity": {
+      "state": "experimental",
+      "fp": "{\"req\":true,\"type\":\"string\",\"enum\":[\"low\",\"medium\",\"high\",\"critical\"]}"
+    },
+    "schema advisories.json.advisories[].summary": {
+      "state": "experimental",
+      "fp": "{\"req\":true,\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}"
+    },
+    "schema advisories.json.advisories[].url": {
+      "state": "experimental",
+      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^https://[A-Za-z0-9.~:/?#@!$&+,;=%_-]{1,500}$\"}"
     },
     "schema services.json": {
       "state": "experimental",

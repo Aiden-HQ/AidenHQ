@@ -12,7 +12,7 @@
 import http from "node:http";
 import { existsSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { configDir, dataDir, env, secret } from "./env.ts";
+import { configDir, dataDir, env, repo, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin } from "./admin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
@@ -21,6 +21,7 @@ import { createBrake } from "./brake.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
 import { createAsCaller, createCp } from "./cp.ts";
 import { createIdentity, type Connection, type Grant, type Jobcap } from "./identity.ts";
+import { createAdvisories } from "./loader/advisories.ts";
 import { createResolver } from "./net.ts";
 import { createProxy } from "./proxy.ts";
 import { openRecords } from "./records.ts";
@@ -76,6 +77,10 @@ const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api =
 const ownerApi = asApi(cpApi);
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
 const channels = createChannels({ db: records.db, writes, board: boardApi, owner: ownerApi, modules: modulesFile, log });
+// Marketplace advisories (loader/advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
+const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main") });
+setInterval(() => void advisories.tick(), 10 * 60_000).unref();
+setTimeout(() => void advisories.tick(), 30_000).unref();
 const brake = createBrake({ db: records.db, owner: ownerApi, on: () => grantsTable().loop_brake !== "off" });
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
@@ -105,7 +110,7 @@ const jobs = createJobs({
 jobs.adopt();
 // A restart: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved.
 for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
-const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
+const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

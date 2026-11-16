@@ -631,6 +631,8 @@ export function recordApproval(r: KernelRecord): Approval {
   };
 }
 
+export type Advisory = { id: string; module: string; severity: string; fixed: string; summary: string; url: string };
+
 /** The kernel's record routes, with the board's key (gateway_board_key). Throws with the kernel's reason. */
 export function kernelRecords(k: { url: string; token: string } | undefined) {
   const call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
@@ -646,5 +648,7 @@ export function kernelRecords(k: { url: string; token: string } | undefined) {
     get: async (id: string) => recordApproval(await call<KernelRecord>("GET", `/v1/writes/${id}`)),
     review: async (id: string, v: unknown) => recordApproval(await call<KernelRecord>("POST", `/v1/writes/${id}/review`, v)),
     panel: async (id: string, digest: string) => recordApproval(await call<KernelRecord>("POST", `/v1/writes/${id}/panel`, { digest })),
+    /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. */
+    advisories: async () => (await call<{ advisories: Advisory[] }>("GET", "/v1/advisories")).advisories,
   };
 }

@@ -20,6 +20,7 @@
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 //   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
 //                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts)
+//   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (loader/advisories.ts)
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
@@ -68,6 +69,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/jobs/:job", auth: "module" },
   { method: "DELETE", path: "/v1/jobs/:job", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/input", auth: "module" },
+  { method: "GET", path: "/v1/advisories", auth: "board" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
@@ -81,7 +83,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, advisories = () => [], log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** 3c: the reviewer slot, and the key its requester (the runner) asks with. */
@@ -90,6 +92,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   channels?: Channels; brake?: Brake; owner?: Api; modules?: () => ModulesFile;
   /** 3e: jobs in the sandbox. */
   jobs?: Jobs;
+  /** 4e: the open marketplace advisories. */
+  advisories?: () => unknown[];
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -128,6 +132,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         }
         case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);
+        case "GET /v1/advisories": board(req); return send(res, 200, { advisories: advisories() });
       }
       if (hit && /^\/v1\/(channel|cp\/read|brake|wake)/.test(hit.path)) {
         const w = await moduleOf(req);
