@@ -120,6 +120,23 @@ describe("flow-product", () => {
     assert.equal(t.claudeRuns().length, runs, "nothing dispatched to rebase it");
   });
 
+  it("a stored PR number is judged by the row that stored it, not by another branch of the same task", async () => {
+    await t.waitFor("no run going", () => !busy());
+    stored("feat/ours", "https://github.com/acme/app/pull/16");
+    // The task's other unmerged branch shares the other change's head: it still must not claim that PR.
+    const state = new State(join(t.dir, "state"));
+    state.saveBranch("part", { repo: "acme/other", branch: "fix/theirs", base: "main" });
+    state.db.close();
+    setPrs({ 16: { branch: "fix/theirs", files: ["x.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } });
+    const runs = t.claudeRuns().length;
+    await restart();
+    await t.waitFor("the stale note", () => staleNotes(16).length === 1);
+    assert.match(staleNotes(16)[0], /head branch is `fix\/theirs`, not the task's `feat\/ours`/);
+    await t.idle(2000);
+    assert.equal(pings(16).length, 0, "no rebase request for a PR its stored row doesn't name");
+    assert.equal(t.claudeRuns().length, runs, "nothing dispatched");
+  });
+
   it("a stored PR number whose head is another task's branch files no merge card", async () => {
     await t.waitFor("no run going", () => !busy());
     stored("feat/ours", "https://github.com/acme/app/pull/13");

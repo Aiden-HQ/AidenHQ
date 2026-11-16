@@ -425,15 +425,16 @@ async function watchProductPrs() {
     if (!conflict && state.get(`environment-note:${pr.url.toLowerCase()}:${pr.headRefOid}`)) continue;
     // Only an agent's own PR: one a task here opened, authored by the App's bot where there is one.
     if (bot && pr.author?.login !== bot) continue;
-    // The task whose branch is this PR's head: a reused PR number (a recreated repository) belongs to nobody here.
-    const owners = state.issuesWithPrs([pr.url], "");
-    const issueId = owners.filter((id) => state.branches(id).some((b) => b.branch === pr.headRefName && !b.merged)).at(-1);
+    // The rows that stored this PR number: the task whose row for this url is the PR's head owns it. A reused number (a
+    // recreated repository) belongs to nobody here, and another unmerged branch of a task that stored it doesn't claim it.
+    const storing = state.issuesWithPrs([pr.url], "").flatMap((id) => state.branches(id).filter((b) => String(b.pr_url ?? "").toLowerCase() === pr.url.toLowerCase()).map((b) => ({ id, b })));
+    const own = storing.filter(({ b }) => b.branch === pr.headRefName && !b.merged).at(-1);
     // A task that stored this number but records another branch: said once, and never asked for a rebase of a PR it doesn't own.
-    if (!issueId) {
-      const storing = owners.filter((id) => state.branches(id).some((b) => String(b.pr_url ?? "").toLowerCase() === pr.url.toLowerCase())).at(-1);
-      if (storing) await staleStoredPr(storing, pr);
+    if (!own) {
+      for (const { id } of storing) await staleStoredPr(id, pr);
       continue;
     }
+    const issueId = own.id;
     // A red check whose job never started (GitHub refused it: billing, no runner) is the environment's: it is re-run at this
     // same head once and then said once, and it never asks for a rebase or a new head.
     const env = conflict ? [] : await merges.environmentFailure(mergeGithub, repo, pr).catch((err) => (log("check classification failed", { pr: pr.url, err: String(err.message ?? err).slice(0, 200) }), []));
