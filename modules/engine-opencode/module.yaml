@@ -12,3 +12,5 @@ providers:
       model_prefix: openrouter/
       gateway: true
       rw: ["~/.local/share/opencode", "~/.local/state/opencode", "~/.cache/opencode", "~/.config/opencode"]
+      # Its gcloud session folder isn't bound (as before engine@1; its env still names it).
+      gcloud: false

@@ -403,7 +403,7 @@ describe("hostile jobs", () => {
     assert.deepEqual([permission.webfetch, permission.websearch], ["deny", "deny"]);
   });
 
-  it("H4: an events file linked to a host file is never read; an inbox link takes no comment", async () => {
+  it("H4: an events file linked to a host file is never read; an inbox link takes no comment; a FIFO hangs nothing", async () => {
     const dir = mkdtempSync(join(tmpdir(), "h4-"));
     const secret = join(dir, "vault-file");
     writeFileSync(secret, `${JSON.stringify({ t: "final", text: "the owner key 0123456789" })}\n`);
@@ -418,6 +418,13 @@ describe("hostile jobs", () => {
     const r = await watchAgent(adoptRun({ pid: process.pid, logPath: log, jobDir: job }), { deadline: Date.now() + 60_000 });
     assert.equal(r.lastMessage, "");
     assert.ok(!existsSync(join(dir, "elsewhere")));
+    // FIFOs in place of the files: the runner neither hangs reading nor hangs writing.
+    const fifo = join(dir, "fifo-job");
+    mkdirSync(fifo);
+    for (const f of ["events.jsonl", "inbox.jsonl"]) execFileSync("mkfifo", [join(fifo, f)]);
+    assert.throws(() => readEvents(fifo, 0), /not a regular file/);
+    const { appendLine } = await import("../../../kernel/sdk/src/engine-io.ts");
+    assert.throws(() => appendLine(join(fifo, "inbox.jsonl"), { t: "comment", from: "owner", text: "x" }), /ENXIO|not a regular file/);
   });
 
   it("H5: a live engine's comment lands in its inbox, never through a link, and stops once the run has answered", async () => {

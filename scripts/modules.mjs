@@ -119,14 +119,15 @@ export function grantEntry(key, a, routines = {}) {
   return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}) };
 }
 
-const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "adapter", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "rw", "ro", "secret_env", "crew"];
+const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "adapter", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "rw", "ro", "gcloud", "secret_env", "crew"];
 const relPath = (p) => typeof p === "string" && p && !p.split("/").includes("..") && !/^\/\//.test(p);
 /**
  * A module's `providers.engine` (spec §3.3.1, engine@1): one or more engine kinds, each a `bin` the runner runs inside the
  * job's sandbox. The rest is data the runner reads instead of knowing engines: how to pick one (adapter, effort_key,
  * model_prefix), where its model calls go (gateway), its state folder (state: task | shared, under the runner's state dir;
  * reset names and seed copies made before each run; seed `from` is the module's, or the product's with a leading /), home
- * folders it writes (rw, ~/…) or only reads (ro: its own toolchain), secrets it gets as env (secret_env: ENV → vault file), whether it runs in a computer box (box)
+ * folders it writes (rw, ~/…) or only reads (ro: its own toolchain), whether an observing job's gcloud session folder is
+ * bound (gcloud: false leaves it out), secrets it gets as env (secret_env: ENV → vault file), whether it runs in a computer box (box)
  * and the crew adapter args Paperclip uses (crew). Returns config/engines.json's entries, by kind.
  */
 export function engineEntries(name, def, root, productDir) {

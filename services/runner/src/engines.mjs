@@ -260,7 +260,7 @@ export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = ""
   writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });
   // The model gateway (OpenRouter engines' model calls) and every job's jobcaps, on host loopback (forwarded into the jail).
   const mcp = entry.gateway || caps.length ? [gatewayUrl(cfg)] : [];
-  const rw = [worktree, jobDir, ...(state ? [state] : []), ...(entry.rw ?? []).map(expand), ...gcpRoots];
+  const rw = [worktree, jobDir, ...(state ? [state] : []), ...(entry.rw ?? []).map(expand), ...(entry.gcloud === false ? [] : gcpRoots)];
   // The shared build caches (sandbox.extra_writable_roots: ~/.npm, ~/.cache): copy-on-write per task, never written back,
   // so no job can poison another's packages or build outputs. The task's writes stay in its own layer outside the jail.
   const cow = extra.map((p, i) => [p, join(cowRoot(cfg, worktree), `${i}-${basename(p)}`)]);

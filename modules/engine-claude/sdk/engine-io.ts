@@ -1,12 +1,13 @@
 // An engine's side of engine@1: read job.json, append events, follow inbox.jsonl. Every file is opened without following
-// a link (the job dir is the job's to write), and each event line is capped.
+// a link and without blocking (the job dir is the job's to write: a FIFO there must not hang the reader), and each event line
+// is capped.
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, constants, fstatSync, openSync, readSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { EngineEvent, InboxLine, JobSpec } from "./types.ts";
 
 export const LINE_MAX = 256 * 1024;
-const NOFOLLOW = constants.O_NOFOLLOW;
+const NOFOLLOW = constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
 /** A regular file's bytes from `offset`, at most `max`: never through a link. Empty when it doesn't exist yet. */
 export function readFrom(path: string, offset = 0, max = 4 << 20): Buffer {
@@ -105,7 +106,7 @@ export function runProgram(argv: string[], { env, input, onJson }: { env: NodeJS
     });
     const stdin = child.stdin;
     stdin?.on("error", () => {});
-    if (stdin && typeof input === "function") input({ write: (s) => !stdin.writableEnded && stdin.write(s), end: () => stdin.end() });
+    if (stdin && typeof input === "function") input({ write: (s) => !stdin.writableEnded && (stdin.write(s), true), end: () => stdin.end() });
     else stdin?.end(input);
     child.on("error", (e: any) => resolve({ code: 127, error: `couldn't start ${argv[0]}: ${e.code ?? e.message}` }));
     child.on("close", (code: number | null, signal: string | null) => resolve({ code: code ?? (signal ? 128 + 15 : 1) }));
