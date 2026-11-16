@@ -47,7 +47,7 @@ agents:
       slack: write
       github?: [ github_issue_read, github_search_issues ]
       google_workspace: [ docs_read, drive_search_files, drive_read_file, calendar_list_events, calendar_get_event, gmail_search, gmail_read_thread ]
-      slack_live: [ notify_owner ]
+      telegram: [ notify_owner ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_update, task_comment, task_handoff, task_set_status, task_join, task_team, task_delegate, task_finish ]
   slack-triage:
     department: intake
@@ -60,7 +60,9 @@ agents:
       # No web: it reads untrusted email/Slack, so no outbound fetch (owner, 2026-11-11). app_view only.
       apps: [ app_view ]
       # The live feed and urgent DMs only (not slack_post); two lookups so tasks carry names, never raw ids.
-      slack_live: [ slack_pending_events, notify_owner ]
+      telegram: [ notify_owner ]
+      # The live Slack events it triages, and the Slack DM page for an urgent one (channel-slack, when installed).
+      slack_live?: [ slack_pending_events, notify_owner ]
       slack: [ slack_read_user_profile, slack_search_channels ]
       paperclip_tasks: [ task_finish, task_search, task_create, task_get ]
 routines:

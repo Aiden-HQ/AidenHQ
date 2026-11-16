@@ -25,6 +25,9 @@ export const GATE_CORE = [
   /^scripts\/computers\.(mjs|ts)$/,
   // The engines that run inside a job (engine@1: their argv, env and what they pass on) and the contract and kit they share.
   /^modules\/engine-[^/]+\//,
+  // The channels (privileged speaks-as-owner, lean-core 2f): they hold decision tokens and post the owner's words, so their
+  // whole process is in the trusted base (channel-slack's executor posts as the bot).
+  /^modules\/channel-[^/]+\//,
   /^kernel\/sdk\//,
   /^services\/runner\/test\/reviewer-cases\//,
   /^services\/runner\/scripts\/reviewer-eval\.(mjs|ts)$/,
@@ -875,11 +878,9 @@ function instanceParts(s) {
     // A rollback can undo a security fix: the panel's. A pin off product main is refused.
     if (k === "product") parts.push(s.pin?.forward ? T(1, "pin-forward", "the product pin moves forward along product main") : s.pin?.back ? PANEL("pin-backwards", "the product pin moves backwards (a rollback)") : REJECT("pin-unknown", "the product pin moves, and not along product main"));
     else if (k === "settings") {
-      for (const sk of changedKeys(base.settings, head.settings)) {
-        const was = [base.settings?.[sk] ?? []].flat();
-        const now = [head.settings?.[sk] ?? []].flat();
-        parts.push(sk === "slack_post_channels" && was.every((c) => now.includes(c)) ? T(1, "slack-channels", `adds Slack channels agents may post to`) : PANEL("settings", `changes the setting ${sk}`));
-      }
+      // Every setting is the panel's. (Slack channels agents post to are no special case since 2f: a post to a channel off
+      // slack_post_channels is itself a Tier 2 channel-slack.post record.)
+      for (const sk of changedKeys(base.settings, head.settings)) parts.push(PANEL("settings", `changes the setting ${sk}`));
     } else if (k === "overrides") {
       for (const kind of changedKeys(base.overrides, head.overrides)) {
         const safe = OVERRIDE_SAFE[kind];

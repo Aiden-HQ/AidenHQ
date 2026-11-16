@@ -47,7 +47,7 @@ const ROLES = {
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
 const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "builder", "department", "chat"];
-// An instance agent's fast chat lane (`chat:`, owner-channel's slack-live-mcp): its chats answered in seconds by a light model
+// An instance agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
 const CHAT_FIELDS = ["model", "reasoning", "tools", "deadline_s", "telegram"];
 export const CHAT_DEFAULTS = { model: "~z-ai/glm-flash-latest", reasoning: "low", deadline_s: 8, telegram: false };
@@ -55,10 +55,10 @@ const INSTANCE_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedul
 // paperclip-tasks-mcp limits these to the trial agent's own tasks (the grants table marks it in trial); source_ack moves only
 // the caller's own source cursor.
 export const TRIAL_WRITES = { paperclip_tasks: ["task_comment", "task_handoff", "task_finish", "task_set_status"], apps: ["source_ack"] };
-// The writes a trial agent may declare in `trial_writes:`: the owner-channel ones (creating its own background task, a
+// The writes a trial agent may declare in `trial_writes:`: the channel and lane ones (creating its own background task, a
 // reminder, a reply in its own chat, asking the owner), as connection.tool. Everything else it may only read, or report on
 // its own tasks (TRIAL_WRITES).
-export const TRIAL_WRITE_ALLOWED = ["paperclip_tasks.task_create", "slack_live.wake_at", "slack_live.chat_send", "slack_live.notify_owner"];
+export const TRIAL_WRITE_ALLOWED = ["paperclip_tasks.task_create", "chat_lane.wake_at", "chat_lane.chat_send", "telegram.notify_owner"];
 // A tool whose name says it deletes (Jira's camelCase too) must be tagged `destructive`, never plain write or read: the
 // `write` shorthand never grants a destructive tool; an agent gets one only by naming it.
 export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
@@ -93,7 +93,11 @@ const fail = (msg) => { throw new Error(msg); };
  * egress, which can't route to it from an internal network; sources: the warehouse).
  */
 export const LEGACY_LINKS = {
-  "owner-channel": { until: "2f", to: ["board", "paperclip", "sources"] },
+  // 2f split owner-channel: its root secrets are gone (the kernel posts the owner's words and holds the board key); what is
+  // left sits on the one module that needs it: the src_slack writer's warehouse network and the HMAC-signed triage webhook
+  // into Paperclip (no key), and the board's calls to the fast lane.
+  "channel-slack": { until: "3g", to: ["sources", "paperclip"] },
+  "chat-lane": { until: "3a", to: ["board"] },
   monitoring: { until: "4c", to: ["board"] },
   tasks: { until: "3e", to: ["backplane"] },
   meetings: { until: "4c", to: ["backplane", "sources"] },
@@ -109,7 +113,6 @@ export const LEGACY_LINKS = {
 };
 /** Root secrets (the root compose's) a module's services may mount, until the same units. Closed; may only shrink. */
 export const LEGACY_SECRETS = {
-  "owner-channel": ["paperclip_board_key", "board_internal_token", "owner_decide_key"],
   tasks: ["board_internal_token"],
   google: ["google_auth_token", "gateway_source_key"],
   jira: ["gateway_source_key"],
@@ -120,7 +123,9 @@ export const LEGACY_SECRETS = {
 };
 /** Host variables (the host's .env, never instance.yaml: they decide whose words count and where links point). Closed. */
 export const LEGACY_HOST_ENV = {
-  "owner-channel": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL", "OWNER_COMMAND_CHANNEL", "AIDENHQ_GATEWAY_URL"],
+  "channel-telegram": ["TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL"],
+  "channel-slack": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "OWNER_COMMAND_CHANNEL"],
+  "chat-lane": ["AIDENHQ_GATEWAY_URL", "TELEGRAM_OWNER_CHAT_ID"],
   google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"],
   jira: ["AIDENHQ_GATEWAY_URL"],
   tasks: ["AIDENHQ_GATEWAY_URL"],
@@ -608,7 +613,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     // Every Codex agent can reply to and ask the owner (notify_owner, the "Asking the owner" shared section), except in
     // trial or in an untrusted module, where write tools stay off.
     const untrusted = a.isolation === "untrusted" || all.get(a.module)?.def.isolation === "untrusted";
-    if (a.adapter === "codex_local" && !a.trial && !untrusted && paperclip.mcp_servers.slack_live && !tools.slack_live?.includes("notify_owner")) tools.slack_live = [...(tools.slack_live ?? []), "notify_owner"];
+    if (a.adapter === "codex_local" && !a.trial && !untrusted && paperclip.mcp_servers.telegram && !tools.telegram?.includes("notify_owner")) tools.telegram = [...(tools.telegram ?? []), "notify_owner"];
     // Every Codex agent can consult the advisor (owner decision, wave 1), except in a computer, which can't reach the model
     // gateway yet; settings.model_tools: off drops both model tools.
     if (a.adapter === "codex_local" && !a.image && paperclip.mcp_servers.paperclip_tasks &&!tools.paperclip_tasks?.includes("advisor_ask")) tools.paperclip_tasks = [...(tools.paperclip_tasks ?? []), "advisor_ask"];
@@ -644,7 +649,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       if (!ROLES[r].includes(a.module)) fail(`${key}: module ${a.module} may not grant ${r}`);
     }
     // In trial (tap 1): read-only but for reporting on its own tasks, and reporting to the Agent Architect, which reviews its
-    // work. A definition may also declare `trial_writes:`, the owner-channel writes it keeps before tap 2. The agent then gets
+    // work. A definition may also declare `trial_writes:`, the channel and lane writes it keeps before tap 2. The agent then gets
     // exactly those writes and the trial ones; every other write it grants is withheld (trial_withheld) and refused by name
     // until tap 2 (the tool isn't offered, and the grants table lacks it). Without a list, today's rule: no write tools
     // beyond TRIAL_WRITES, or the build fails.
@@ -778,7 +783,38 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings) };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+}
+
+/**
+ * config/kernel/modules.json's `modules`: what the kernel knows of a module beyond its connections (spec §2.4, §3.3.4, §5.6):
+ * the kernel.* roles it requests, its privileged entries, its own token when it has no connection (a generated secret named
+ * `<module>_token`, dashes as underscores) and, for a channel (`providers.channel`, which needs privileged speaks-as-owner),
+ * the stamp its decisions carry, whether it may close stale cards, and its own settings (a host CLI channel reads them here).
+ */
+export function kernelModuleTable(defs, settings = {}) {
+  const out = {};
+  for (const [name, def] of Object.entries(defs)) {
+    const roles = [def.roles?.requests ?? []].flat().map(String).filter((r) => r.startsWith("kernel."));
+    const privileged = [def.privileged ?? []].flat().map(String);
+    const token = `${name.replace(/-/g, "_")}_token`;
+    const ch = def.providers?.channel;
+    if (ch != null) {
+      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {stamp, stale})`);
+      for (const k of Object.keys(ch)) if (!["stamp", "stale"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (stamp, stale)`);
+      if (!privileged.includes("speaks-as-owner")) fail(`module ${name}: a channel (providers.channel) needs privileged: [speaks-as-owner]`);
+      if (ch.stamp != null && !/^[a-z]{1,16}$/.test(String(ch.stamp))) fail(`module ${name}: providers.channel.stamp is one lowercase word`);
+      if (ch.stale != null && typeof ch.stale !== "boolean") fail(`module ${name}: providers.channel.stale is true or false`);
+    }
+    const e = {
+      ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
+      ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
+    };
+    if (Object.keys(e).length) out[name] = e;
+  }
+  return out;
 }
 
 const CARD_FIELDS = ["sentence", "changes", "reads", "cost", "details"];

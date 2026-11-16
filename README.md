@@ -26,7 +26,7 @@ turns what you ask for into work for the right agent, chases it, and brings you 
 ## Architecture
 
 ```
- You ── Telegram / Slack ──► owner channel (slack-live-mcp) ──► Aiden (chief of staff)
+ You ── Telegram / Slack ──► owner channels (Telegram, Slack) ──► Aiden (chief of staff)
                                                                    │ delegates
  Board (daily view) ────────┐                                      ▼
  Paperclip UI (fleet) ──────┼───────────── Paperclip (tasks, routines, runs) ── crews (Codex on OpenRouter)

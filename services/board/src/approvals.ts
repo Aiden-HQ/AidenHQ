@@ -388,7 +388,6 @@ export const BatchItemsSchema = z
   .max(BATCH_MAX)
   .refine((xs) => new Set(xs.map((x) => x.id)).size === xs.length, "each card once");
 export type BatchResult = { ok: true; approvals: Approval[] } | { ok: false; reason: string };
-const BATCH_TTL_MS = 86_400_000;
 
 /**
  * The instance's `batch_approvals` setting (grants table, read per use): off is the kill switch; every card is then decided
@@ -452,7 +451,6 @@ export class Approvals {
     if (!columns.includes("panel")) db.exec("ALTER TABLE approvals ADD COLUMN panel INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("review_first")) db.exec("ALTER TABLE approvals ADD COLUMN review_first TEXT");
     // A batch the owner channel showed in Telegram: the exact cards (id and digest), decided at most once within 24h.
-    db.exec("CREATE TABLE IF NOT EXISTS approval_batches (id TEXT PRIMARY KEY, items TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)");
   }
 
   private changed(issueId?: string) {
@@ -669,25 +667,6 @@ export class Approvals {
   }
 
   /**
-   * A batch the owner channel is about to show in Telegram: the cards as they are now (each pending, Tier 2, digest as
-   * given), stored under one id its buttons carry (a button holds 64 bytes, not the list). Refused if any card isn't.
-   */
-  snapshot(items: BatchItem[], now = new Date()): { ok: true; id: string; approvals: Approval[] } | { ok: false; reason: string } {
-    const bad = items.map((x) => this.unbatchable(x, now.getTime())).filter((r): r is string => Boolean(r));
-    if (bad.length) return { ok: false, reason: bad.join("; ") };
-    const id = `B${randomBytes(4).toString("hex")}`;
-    this.db.prepare("INSERT INTO approval_batches (id, items, created_at, expires_at) VALUES (?, ?, ?, ?)").run(id, JSON.stringify(items), now.toISOString(), new Date(now.getTime() + BATCH_TTL_MS).toISOString());
-    return { ok: true, id, approvals: items.map((x) => this.get(x.id)!) };
-  }
-
-  /** A stored batch, used up: its cards as shown, or undefined when unknown, already used or past its 24 hours. */
-  takeBatch(id: string, now = new Date()): BatchItem[] | undefined {
-    const iso = now.toISOString();
-    if (this.db.prepare("UPDATE approval_batches SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?").run(iso, id, iso).changes !== 1) return undefined;
-    return JSON.parse((this.db.prepare("SELECT items FROM approval_batches WHERE id = ?").get(id) as { items: string }).items);
-  }
-
-  /**
    * A typed reply decides an open record on a task. Without a target it acts only when exactly one is open; with a card id
    * or target (PR link/number, repo+branch) it acts on the one that matches, even when several are open. Several without a
    * target, or a selector that matches none or several, decides nothing and says which cards are open. It approves only a
@@ -778,10 +757,6 @@ export function kernelRecords(k: { url: string; token: string } | undefined) {
     enabled: Boolean(k),
     list: async (state: "review" | "owner" | "recent", task?: string) => (await call<{ records: KernelRecord[] }>("GET", `/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}`)).records.map(recordApproval),
     get: async (id: string) => recordApproval(await call<KernelRecord>("GET", `/v1/writes/${id}`)),
-    decide: async (id: string, decision: "approve" | "reject", by: string, via: string) => {
-      const digest = (await call<KernelRecord>("GET", `/v1/writes/${id}`)).digest; // a record never changes after filing
-      return recordApproval(await call<KernelRecord>("POST", `/v1/writes/${id}/decide`, { digest, decision, by, via }));
-    },
     review: async (id: string, v: unknown) => recordApproval(await call<KernelRecord>("POST", `/v1/writes/${id}/review`, v)),
     panel: async (id: string, digest: string) => recordApproval(await call<KernelRecord>("POST", `/v1/writes/${id}/panel`, { digest })),
   };

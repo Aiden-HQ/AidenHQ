@@ -27,7 +27,7 @@ describe("internal listener", () => {
     issue: async () => issue,
     companyId: "co",
   } as unknown as Paperclip;
-  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, decideKey: "d".repeat(40) });
+  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40) });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -73,7 +73,7 @@ describe("internal listener", () => {
     store.setMeta("task_rollover", JSON.stringify({ moved: { old: "new" } }));
     const get = (headers: Record<string, string>) => call("GET", "/internal/successor/old", undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...headers });
     expect((await get({})).status).toBe(403); // the internal token alone opens nothing
-    expect(await (await get({ "x-owner-key": "d".repeat(40) })).json()).toEqual({ id: "new" });
+    expect(await (await get({ "x-gateway-key": "d".repeat(40) })).json()).toEqual({ id: "new" });
   });
 
   it("serves only /internal/ routes: not the user's API or the page", async () => {

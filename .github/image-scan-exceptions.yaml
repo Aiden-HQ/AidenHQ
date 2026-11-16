@@ -22,7 +22,7 @@ exceptions:
   - { image: node, path: /usr/local/lib/node_modules/npm/**, when: "RUN rm -rf /usr/local/lib/node_modules/npm", reason: "node's bundled npm: the Dockerfile deletes it (services/gate)" }
   - { image: docker, path: /lib/apk/db/installed, when: build-stage, reason: "only the docker CLI and compose binaries are copied out of the docker stage (services/apps-mcp); its Alpine packages never ship" }
   - { image: docker, path: /usr/local/libexec/docker/cli-plugins/docker-buildx, when: build-stage, reason: "buildx is never copied out of the docker stage" }
-  - { image: swaggerapi/swagger-ui, path: /lib/apk/db/installed, when: build-stage, reason: "only swagger-ui's CSS and JS files are copied out (modules/owner-channel/whisper); its Alpine packages never ship" }
+  - { image: swaggerapi/swagger-ui, path: /lib/apk/db/installed, when: build-stage, reason: "only swagger-ui's CSS and JS files are copied out (modules/channel-telegram/whisper); its Alpine packages never ship" }
   # The CI runner (modules/ci/runner/Dockerfile) deletes what its jobs never run and what carries known vulnerabilities.
   - { image: ghcr.io/actions/actions-runner, path: /home/runner/externals/node20/**, when: "RUN rm -rf /home/runner/externals/node20", reason: "Node 20 (end of life) and its npm: deleted" }
   - { image: ghcr.io/actions/actions-runner, path: /home/runner/externals/node20_alpine/**, when: "RUN rm -rf /home/runner/externals/node20_alpine", reason: "Node 20 for Alpine: deleted" }

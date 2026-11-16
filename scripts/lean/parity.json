@@ -12,8 +12,8 @@
     "n": 2,
     "workflow": "Owner chats via Telegram, voice notes",
     "today": [
-      "modules/owner-channel/connections/slack-live-mcp/test/telegram.test.ts",
-      "modules/owner-channel/connections/slack-live-mcp/test/commands.test.ts"
+      "modules/channel-telegram/connections/telegram/test/telegram.test.ts",
+      "modules/channel-telegram/connections/telegram/test/commands.test.ts"
     ],
     "next": "channel-telegram tests; TEST chat on instance"
   },
@@ -21,7 +21,7 @@
     "n": 3,
     "workflow": "Agent asks the owner (notify_owner), brake at 5",
     "today": [
-      "modules/owner-channel/connections/slack-live-mcp/test/brake.test.ts",
+      "kernel/test/channels.test.mjs",
       "services/board/test/brake.test.ts"
     ],
     "next": "channel-telegram + /v1/brake/notify test"
@@ -39,7 +39,7 @@
     "n": 5,
     "workflow": "Telegram buttons, typed reply, approve-all",
     "today": [
-      "modules/owner-channel/connections/slack-live-mcp/test/approvals.test.ts"
+      "modules/channel-telegram/connections/telegram/test/approvals.test.ts"
     ],
     "next": "channel tokens tests (unit 2f)"
   },
@@ -261,7 +261,7 @@
     "n": 29,
     "workflow": "Slack post to allowed channels",
     "today": [
-      "modules/owner-channel/connections/slack-live-mcp/test/post.test.ts"
+      "modules/channel-slack/connections/slack/test/post.test.ts"
     ],
     "next": "channel-slack.post"
   },

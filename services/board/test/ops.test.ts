@@ -23,7 +23,7 @@ describe("ops/setup.sh with board accounts", () => {
     accounts = await createAccounts({ dbPath: ":memory:", hosts: ["localhost:3120"], boardUrl: "https://agents.example.ts.net:8443", ownerEmail: "owner@example.com", log });
     const common = { paperclip: {} as Paperclip, store: new Store(":memory:"), log, staticDir: "/nonexistent", timezone: "UTC", accounts, operatorKey: OPERATOR };
     local = createApp({ ...common, allowedHosts: ["localhost:3120"], mode: "local" });
-    internal = createApp({ ...common, allowedHosts: ["127.0.0.1:3122"], mode: "internal", internalToken: TOKEN, decideKey: DECIDE });
+    internal = createApp({ ...common, allowedHosts: ["127.0.0.1:3122"], mode: "internal", internalToken: TOKEN, gatewayKey: DECIDE });
     for (const [k, s] of [["local", local], ["internal", internal]] as const) {
       await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
       port[k] = (s.address() as AddressInfo).port;
@@ -64,8 +64,8 @@ describe("ops/setup.sh with board accounts", () => {
     expect(JSON.stringify(done.json)).not.toContain("set-password");
     const links = (headers: Record<string, string>) => curl("internal", "GET", "/internal/owner/reset-links", { host: "127.0.0.1:3122", authorization: `Bearer ${TOKEN}`, ...headers });
     expect((await links({ "x-operator-key": OPERATOR })).status).toBe(403);
-    const sent = await links({ "x-owner-key": DECIDE });
+    const sent = await links({ "x-gateway-key": DECIDE });
     expect(sent.json.links).toEqual([{ email: "owner@example.com", url: expect.stringMatching(/#\/set-password\//) }]);
-    expect((await links({ "x-owner-key": DECIDE })).json.links).toEqual([]);
+    expect((await links({ "x-gateway-key": DECIDE })).json.links).toEqual([]);
   });
 });

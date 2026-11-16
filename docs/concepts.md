@@ -25,7 +25,7 @@ agents, tasks, routines, run history. Its UI is the fleet console. AidenHQ gener
 applies it idempotently; edits made in Paperclip's UI are overwritten by the next apply.
 
 **Modules.** Product features ship as `modules/<name>/`: a `module.yaml` (settings, agents, routines), agent
-handbooks, connection services, apps and a `compose.yaml`. `core` and `owner-channel` are always installed; the rest
+handbooks, connection services, apps and a `compose.yaml`. `core`, `channel-telegram` and `chat-lane` are always installed; the rest
 (`open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-ops`, `librarian`, `ci`, `warehouse`, and the
 connection modules) are switched on per instance.
 

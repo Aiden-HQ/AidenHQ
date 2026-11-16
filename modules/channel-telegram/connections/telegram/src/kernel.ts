@@ -1,0 +1,74 @@
+// The kernel's channel routes (spec §2.5), with this module's own token (its connection's service key). This channel holds no
+// Paperclip key: owner messages, decisions and reads all go through the kernel, which stamps them as this channel's.
+export type Fetch = typeof fetch;
+
+export interface Card {
+  id: string;
+  identifier: string;
+  kind: string;
+  tier: number;
+  panel: boolean;
+  digest: string;
+  sentence: string;
+  changes: string;
+  reads: string;
+  cost: string;
+  requestedBy: string;
+  replaced: boolean;
+  reason?: string;
+  review?: string | null;
+  tokens?: { approve: string; reject: string };
+}
+export type Finished = { id: string; identifier: string; state: string; outcome: "applied" | "failed" | null; outcomeText: string | null; sentence: string };
+export type Decided = { ok: true; id: string; identifier: string; sentence: string; state: string } | { ok: false; reason: string };
+export interface OwnerMessage {
+  sender: string;
+  text: string;
+  voice?: true;
+  forward?: { from: string; date: string };
+  task?: string;
+  agent?: string;
+  /** A new @agent chat that went to Aiden instead: why (shown under the message). */
+  note?: string;
+}
+
+export function kernelClient(url: string, token: string, f: Fetch = fetch) {
+  const base = url.replace(/\/$/, "");
+  const call = async (method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> => {
+    const res = await f(`${base}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(30_000),
+    });
+    return { status: res.status, json: (await res.json().catch(() => ({}))) as any };
+  };
+  const ok = async (method: string, path: string, body?: unknown) => {
+    const r = await call(method, path, body);
+    if (r.status < 200 || r.status >= 300) throw new Error(`${method} ${path} -> ${r.status}${r.json?.error?.message ? `: ${String(r.json.error.message).slice(0, 200)}` : ""}`);
+    return r.json;
+  };
+  return {
+    /** Pending cards (tokens on the ones new to this channel; resync: fresh tokens for every card) and recent outcomes. */
+    cards: async (resync = false): Promise<{ cards: Card[]; finished: Finished[] }> => {
+      const j = await ok("GET", `/v1/channel/cards${resync ? "?resync=1" : ""}`);
+      return { cards: Array.isArray(j.cards) ? j.cards : [], finished: Array.isArray(j.finished) ? j.finished : [] };
+    },
+    decide: async (body: { token: string; sender: string; reply?: true; stale?: true }): Promise<Decided> => {
+      const r = await call("POST", "/v1/channel/decide", body);
+      if (r.status !== 200) return { ok: false, reason: String(r.json?.error?.message ?? `the kernel said ${r.status}`) };
+      return { ok: true, id: String(r.json.id ?? ""), identifier: String(r.json.identifier ?? ""), sentence: String(r.json.sentence ?? ""), state: String(r.json.state ?? "") };
+    },
+    ownerMessage: async (m: OwnerMessage): Promise<{ task: { id: string; identifier: string } }> => ok("POST", "/v1/channel/owner-message", m),
+    stop: async (task: string): Promise<{ stopped: number }> => ok("POST", "/v1/channel/stop", { task }),
+    notices: async (): Promise<{ lines: string[]; links: { email: string; url: string }[]; digest: string | null }> => {
+      const j = await ok("GET", "/v1/channel/notices");
+      return { lines: Array.isArray(j.lines) ? j.lines.map(String) : [], links: Array.isArray(j.links) ? j.links : [], digest: typeof j.digest === "string" ? j.digest : null };
+    },
+    /** A read of the control plane (GET only), e.g. read("/api/issues/WOR-1"). */
+    read: async (path: string): Promise<any> => ok("GET", `/v1/cp/read${path}`),
+    /** The notify_owner loop brake: whether this message about `task` may go (counted when it may). */
+    brake: async (body: { task: string; agent: string; decision?: true }): Promise<{ allow: boolean; note?: string }> => ok("POST", "/v1/brake/notify", body),
+  };
+}
+export type Kernel = ReturnType<typeof kernelClient>;

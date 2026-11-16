@@ -17,12 +17,8 @@ export interface Config {
   paperclipUrl: string;
   companyId: string;
   boardKey: string;
-  /** The owner-channel's approval decide key (owner_decide_key); none: no decisions from chat. At least 32 characters. */
-  decideKey?: string;
   /** The runner's reviewer key (reviewer_key): Tier 1 verdicts. None: the reviewer can't decide. */
   reviewerKey?: string;
-  /** The owner's Claude watcher's decide key (watcher_decide_key): decisions stamped `watcher`. */
-  watcherKey?: string;
   /** The operator's key (board_operator_key): ops/setup.sh's owner setup link, welcome chat and account resets, nothing else. */
   operatorKey?: string;
   /** The model gateway (kernel/src/gateway): its billed ledger is pulled from `url`; `token` (gateway_board_key) both ways (it files raise_cap). */
@@ -80,9 +76,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     paperclipUrl: env.PAPERCLIP_URL ?? "http://paperclip:3100",
     companyId: system.paperclip.company_id,
     boardKey: readFileSync(env.BOARD_KEY_FILE ?? "/run/secrets/paperclip_board_key", "utf8").trim(),
-    decideKey: keyFile(env.BOARD_DECIDE_KEY_FILE ?? "/run/secrets/owner_decide_key"),
     reviewerKey: keyFile(env.BOARD_REVIEWER_KEY_FILE ?? "/run/secrets/reviewer_key"),
-    watcherKey: keyFile(env.BOARD_WATCHER_KEY_FILE ?? "/run/secrets/watcher_decide_key"),
     operatorKey: keyFile(env.BOARD_OPERATOR_KEY_FILE ?? "/run/secrets/board_operator_key"),
     timezone: system.timezone,
     workdays: system.workdays,

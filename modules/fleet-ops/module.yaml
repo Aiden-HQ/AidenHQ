@@ -20,7 +20,7 @@ agents:
     connections:
       # Reads only: apps, their logs, and the warehouse (src_meta.ingest_run).
       apps: [ app_list, app_status, app_logs, warehouse_query ]
-      slack_live: [ notify_owner ]
+      telegram: [ notify_owner ]
       # Metrics and dashboards (monitoring alerts' series), when the grafana module is on: reads only.
       grafana?: read
       # fleet_status through the fleet-read role: no fleet_control, no relaying, no approvals decided.

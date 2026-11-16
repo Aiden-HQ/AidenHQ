@@ -197,7 +197,7 @@ describe("grade routes", () => {
     for (let i = 0; i < 5; i++) s.grades.record(task.id, { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] }, Date.now(), ["cos"]);
     expect(s.grades.get(task.id)!.state).toBe("escalated");
     const decideKey = "d".repeat(32);
-    const app2 = createApp({ paperclip: pc, store: s, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY, decideKey });
+    const app2 = createApp({ paperclip: pc, store: s, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY, gatewayKey: decideKey });
     await new Promise<void>((r) => app2.listen(0, "127.0.0.1", r));
     const port2 = (app2.address() as AddressInfo).port;
     const call = (method: string, path: string, headers: Record<string, string>, body?: unknown) =>
@@ -211,7 +211,7 @@ describe("grade routes", () => {
         req.end(body === undefined ? undefined : JSON.stringify(body));
       });
     try {
-      expect((await call("GET", "/internal/owner/grades", { "x-owner-key": decideKey })).json).toEqual({ lines: [] });
+      expect((await call("GET", "/internal/owner/grades", { "x-gateway-key": decideKey })).json).toEqual({ lines: [] });
       // Its delegator's close accepts the work.
       expect((await call("POST", "/internal/grades/WOR-7/gate", asAgent("cos"), { via: "task_set_status" })).json).toEqual({ pass: true });
       const accepted = s.grades.get(task.id)!;

@@ -15,7 +15,7 @@ const VENDORS = ["GitHub", "OpenRouter", "Codex", "Claude", "Anthropic", "Slack"
 const CONTROLPLANE = "kernel/src/controlplane/";
 const CORE = ["services/runner/src/", "services/board/src/", "services/computer/", "services/shared/", "services/paperclip-tasks-mcp/", "scripts/modules.mjs", "scripts/compile.mjs", "scripts/paperclip-setup.mjs"];
 const CORE_EXCEPT = ["services/computer/images/"];
-const LEGACY_TRUSTED = ["services/apps-mcp/src/", "services/gate/", "modules/owner-channel/connections/slack-live-mcp/src/"];
+const LEGACY_TRUSTED = ["services/apps-mcp/src/", "services/gate/", "modules/chat-lane/"];
 
 const under = (f, paths) => paths.some((p) => (p.endsWith("/") ? f.startsWith(p) : f === p));
 const isSource = (f) => CODE.test(f) && !SKIP.test(f);

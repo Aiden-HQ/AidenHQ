@@ -106,7 +106,7 @@ export function loadConfig() {
       projects: (cfg.gcp?.projects ?? []).filter(Boolean),
       // Hidden from every job: the user's own gcloud sign-in, and AidenHQ's, whose refresh
       // token can be widened back to cloud-platform. And the secrets dir: the board key, the board's internal
-      // token and owner_decide_key live there; the runner reads what a job needs before it starts.
+      // token and the channels' module tokens live there; the runner reads what a job needs before it starts.
       // ~/.ssh too: the runner's write deploy keys are its own, never an agent's (it fetches and pushes for them).
       // The services' data dir: the board's account database holds sign-in sessions, and Paperclip's holds sessions and its
       // signing key. Sockets the runner's user may drive: Docker (its group is root on

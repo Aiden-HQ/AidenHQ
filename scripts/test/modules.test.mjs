@@ -164,7 +164,9 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
     secrets: { "owner-channel": ["paperclip_board_key", "board_internal_token", "owner_decide_key"], tasks: ["board_internal_token"], google: ["google_auth_token", "gateway_source_key"], jira: ["gateway_source_key"], glean: ["glean_auth_token"], grafana: ["grafana_auth_token"], clickhouse: ["clickhouse_auth_token"], github: ["github_token", "github_app"] },
     host: { "owner-channel": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL", "OWNER_COMMAND_CHANNEL", "AIDENHQ_GATEWAY_URL"], google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"], jira: ["AIDENHQ_GATEWAY_URL"], tasks: ["AIDENHQ_GATEWAY_URL"], github: ["GITHUB_COMMENT_ORGS"], slack: ["SLACK_CLIENT_ID"] },
   };
-  const within = (now, before) => Object.entries(now).every(([m, l]) => l.every((x) => (before[m] ?? []).includes(x)));
+  // 2f split owner-channel into channel-telegram, channel-slack and chat-lane: each may keep only a part of what it had.
+  const split = { "channel-telegram": "owner-channel", "channel-slack": "owner-channel", "chat-lane": "owner-channel" };
+  const within = (now, before) => Object.entries(now).every(([m, l]) => l.every((x) => (before[m] ?? before[split[m]] ?? []).includes(x)));
   assert.ok(within(Object.fromEntries(Object.entries(LEGACY_LINKS).map(([m, v]) => [m, v.to])), was.links));
   assert.ok(within(LEGACY_SECRETS, was.secrets));
   assert.ok(within(LEGACY_HOST_ENV, was.host));
@@ -202,7 +204,7 @@ test("disabling open-loops removes its agents, routines and labels only", () => 
   for (const k of ["open-loops", "slack-triage", "slack-scout", "inbox-agent"]) assert.equal(r.paperclip.agents[k], undefined);
   for (const k of ["chief-of-staff", "assistant", "app-maintainer", "fleet-engineer", "meeting-librarian"]) assert.ok(r.paperclip.agents[k], k);
   assert.ok(!r.paperclip.labels.some((l) => l.name === "waiting-on"));
-  assert.ok(r.paperclip.mcp_servers.slack_live, "owner channel stays: core requires it");
+  assert.ok(r.paperclip.mcp_servers.telegram && r.paperclip.mcp_servers.chat_lane, "the Telegram channel and the chat lane stay: core requires them");
 });
 test("Slack Scout's read grant has no draft tool", () => {
   const dir = inst(["open-loops", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "e@x" });
@@ -222,10 +224,10 @@ const owner = { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x"
 test("core compiles without the slack module", () => {
   const r = compile(product, inst(["core"], owner));
   assert.equal(r.compose.services["slack-mcp"], undefined);
-  assert.ok(r.compose.services["owner-channel-slack-live-mcp"]);
-  assert.ok(r.paperclip.mcp_servers.slack_live);
-  assert.ok(r.compose.secrets.telegram_notify_bot_token, "owner-channel declares its secrets");
-  assert.deepEqual(Object.keys(r.compose.services["owner-channel-whisper"].networks), ["mod-owner-channel", "mod-owner-channel-egress"]);
+  assert.ok(r.compose.services["channel-telegram-telegram"] && r.compose.services["chat-lane-lane"]);
+  assert.equal(r.paperclip.mcp_servers.slack_live, undefined, "channel-slack is optional");
+  assert.ok(r.compose.secrets.telegram_notify_bot_token, "channel-telegram declares its secrets");
+  assert.deepEqual(Object.keys(r.compose.services["channel-telegram-whisper"].networks), ["mod-channel-telegram", "mod-channel-telegram-egress"]);
 });
 test("channels must be web, telegram or slack, and not empty", () => {
   assert.throws(() => compile(product, inst(["core"], { ...owner, channels: ["web", "fax"] })), /settings\.channels: each must be web, telegram or slack/);
@@ -243,14 +245,14 @@ test("optional secrets are created only where the secrets dir is really there (n
 });
 test("secrets the setup must not leave to a manual step are generated", () => {
   const g = compile(product, inst(["core", "primer"], owner)).generatedSecrets;
-  for (const k of ["primer_service_key", "owner_decide_key", "computer_launcher_token"]) assert.ok(g.includes(k), k);
+  for (const k of ["primer_service_key", "telegram_service_key", "computer_launcher_token"]) assert.ok(g.includes(k), k);
 });
-test("autonomy: off by default, reaches the compiled config, a bad value fails; the reviewer and watcher keys are generated", () => {
+test("autonomy: off by default, reaches the compiled config, a bad value fails; the reviewer key is generated, no decide key", () => {
   assert.equal(compile(product, inst(["core"], owner)).paperclip.autonomy, "off");
   assert.equal(compile(product, inst(["core"], { ...owner, autonomy: "tier0" })).paperclip.autonomy, "tier0");
   assert.throws(() => compile(product, inst(["core"], { ...owner, autonomy: "yes" })), /autonomy/);
   const generated = compile(product, inst(["core"], owner)).generatedSecrets;
-  assert.ok(generated.includes("reviewer_key") && generated.includes("watcher_decide_key"));
+  assert.ok(generated.includes("reviewer_key") && !generated.some((g) => /decide_key/.test(g)));
 });
 
 test("two modules extending the same service merge environment and secrets", () => {
@@ -316,8 +318,9 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "primer.publish": 1 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "primer.publish": 1, "channel-slack.post": 1 });
   assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish"]);
+  assert.equal(kindOf["slack_live.slack_post"], "channel-slack.post");
   // A kind naming a tool that isn't one of its module's writes, or one another kind took, fails compile.
   assert.throws(() => writeKinds("m", { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: ["r"], write: ["w"] } } }, writes: { k: { floor: 0, tools: ["r"] } } }, product), /r is no write or destructive tool/);
   assert.throws(() => writeKinds("m", { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: [], write: ["w"] } } }, writes: { k: { floor: 0, tools: ["w"] }, j: { floor: 1, tools: ["w"] } } }, product), /c\.w is already routed/);
