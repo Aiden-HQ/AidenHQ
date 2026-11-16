@@ -1477,6 +1477,10 @@ export function createApp(opts: AppOptions): Server {
       handle: async (_m, body, _u, req) => {
         if (!opts.decideKey || !keyMatches(req.headers["x-owner-key"], opts.decideKey)) throw new HttpError(403, "only the owner's channel lists batches");
         if (!batchesOn()) throw new HttpError(409, "batch approvals are off");
+        // A kernel record (k-) is decided on its own card: a list carries only the board's.
+        const b = body as { items?: { id?: unknown }[] } | undefined;
+        if (Array.isArray(b?.items)) b.items = b.items.filter((x) => !KERNEL_ID.test(String(x?.id ?? "")));
+        if (b?.items?.length === 0) throw new HttpError(409, "no board cards to list together");
         const { items } = parse(z.object({ items: BatchItemsSchema }).strict(), body);
         const r = store.approvals.snapshot(items);
         if (!r.ok) throw new HttpError(409, r.reason);

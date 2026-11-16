@@ -148,7 +148,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         if (!again || digestOf({ ...r, args: again.args, targets: again.targets ?? {} }) !== r.digest) {
           records.close(id, "stale", "stale: what it acts on changed since it was approved");
           const next = k ? await file(r.kind, k, r.requester, r.args, r.task).catch((e: Error) => e) : new Error(`${r.kind} is no longer installed`);
-          const said = next instanceof Error ? `It was not filed again: ${next.message}` : `Filed again as approval ${next.id}, for its current state.`;
+          const said = next instanceof Error ? "It was not filed again: ask again for its current state." : `Filed again as approval ${next.id}, for its current state.`;
           if (!(next instanceof Error) && next.state === "claimed") await execute(next, k!);
           return void onTask.notify(r.task, `**Stale** (approval ${id}, ${r.kind}): what it acts on changed after it was approved, so it did not run. ${said}\n\n${MARKER}`).catch(() => {});
         }
@@ -166,9 +166,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
     async request(who: Identity, { kind, args, task, evidence }: { kind: string; args: unknown; task?: string; evidence?: unknown }): Promise<Rec> {
       const k = Object.hasOwn(registry(), kind) ? registry()[kind] : undefined;
       if (!k) throw fail(404, "unknown_kind", `no write kind ${kind}`);
-      const granted = (who.kind === "module" && who.module === k.module) || (who.kind === "run" && k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
+      const granted = (who.kind === "module" && who.module === k.module) || (who.kind !== "job" && k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
       if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
-      const t = typeof task === "string" && task ? task : who.task ?? "";
+      // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
+      const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";
       const r = await file(kind, k, requesterOf(who, t), args, t, evidence);
       if (r.state === "claimed") await execute(r, k);
       return r;

@@ -99,9 +99,15 @@ outcome, not the others'. A record approved while no runner was up is claimed by
 Only the tick claims and runs them: a second pass on a timer of its own would run alongside work still using the cache
 clones and workspaces, where a lock or a moved ref could lose a claim that is never retried, so there is none.
 
-Actions the board itself applies after approval are tiered by the board (`services/board/src/fleet.ts`): a stateful
-`deploy_app` is Tier 1, with the panel when it touches a migration or schema file (the policy has the reviewers escalate
-a destructive one), refused when it is too large to review, and an `app_run` is Tier 1. With `autonomy: off` the reviewer may only escalate or reject them.
+Module write kinds are records in the kernel (`kernel/src/writes.ts`, `data/kernel/kernel.db`; lean-core 2d): every write
+or destructive tool call through the proxy files one. A tool a module routes into a kind (manifest `writes:`) goes to that
+module's executor (`executor@1`): its plan checks the caller and pins what runs, the kernel tiers it, and the executor runs
+it only once approved, claimed and revalidated (a changed target is stale and filed again). Any other write is `conn.tool`
+at Tier 0 (a destructive one at Tier 1, replayed once). The apps platform's kinds (`modules/apps-platform`): a stateful
+`app_deploy` is Tier 1, with the panel when it touches a migration or schema file (the policy has the reviewers escalate
+a destructive one), refused when it is too large to review, and an `app_run_request` is Tier 1; restarts, rollbacks and
+app API writes are Tier 0. Until 2f and 3a the board lists these records with its own cards, and the reviewer's verdicts and
+the owner's decisions on them (`k-` ids) are forwarded to the kernel. With `autonomy: off` the reviewer may only escalate or reject them.
 
 ## The reviewer
 

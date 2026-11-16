@@ -200,7 +200,7 @@ describe("module write kinds' records (kept by the kernel)", () => {
     expect(r.json).toMatchObject({ id: rec.id, state: "approved", decidedBy: "owner:telegram" });
     expect(kernel.at(-1)).toEqual({ method: "POST", url: `http://kernel.test/v1/writes/${rec.id}/decide`, auth: `Bearer ${KEY}`, body: { digest: rec.digest, decision: "approve", by: "owner:telegram", via: "telegram" } });
     // A batch never takes them (each is the kernel's, decided on its own).
-    expect((await call("POST", "/internal/owner/approvals/batch", { items: [{ id: rec.id, digest: rec.digest }] }, { "x-owner-key": DECIDE_KEY })).status).toBe(400);
+    expect((await call("POST", "/internal/owner/approvals/batch", { items: [{ id: rec.id, digest: rec.digest }] }, { "x-owner-key": DECIDE_KEY })).status).toBe(409);
   });
 });
 
