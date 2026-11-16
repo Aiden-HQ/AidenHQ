@@ -655,7 +655,9 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # head), then retarget it; the replayed head merges only with every named check green on it. A Tier 0 queue only
 # retargets and hands the PR back to be tiered again. allowedWrite refuses all but
 # PUT outside the agents org, except comments, PR edits, job re-runs and statuses (never a branch delete) on the product repo, for closing its
-# Dependabot PRs (Tier 0 only when the runner read the author as dependabot[bot] from the API). The card is the review (bound to the head) in the agents org and the product repo, whose
+# Dependabot PRs (Tier 0 only when the runner read the author as dependabot[bot] from the API), and for closing, once, an
+# agent's own product PR whose task is cancelled (watchProductPrs, #174: the App bot's same-repo PR of a task here, no other
+# task on its branch, marked before the close so it never repeats). The card is the review (bound to the head) in the agents org and the product repo, whose
 # merges go through the App; elsewhere the host gh login merges, behind GitHub's own review. WRITES allows paths, not
 # bodies or orgs, so the call sites and their gates are asserted here too. Pushes and draft PRs stay on the exact word.
 rm_="services/runner/src/merges.mjs"; rmain="services/runner/src/main.mjs"; rtiers="services/runner/src/tiers.mjs"
@@ -704,7 +706,7 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge"' "$rtiers" \
   && [ "$(grep -c 'advanceEach(' "$rm_")" = 2 ] && grep -qF 'if (queue.independent) return advanceEach(' "$rm_" \
   && [ "$(grep -c 'independent: true' "$rm_")" = 1 ] && [ "$(grep -c 'independent: true' "$rmain")" = 0 ] \
-  && [ "$(grep -c 'github\.comment(' "$rm_")" = 1 ] && [ "$(grep -c 'github\.close(' "$rm_")" = 1 ] && [ "$(grep -c 'merges\.closePrs(' "$rmain")" = 1 ] \
+  && [ "$(grep -c 'github\.comment(' "$rm_")" = 1 ] && [ "$(grep -c 'github\.close(' "$rm_")" = 1 ] && [ "$(grep -c 'merges\.closePrs(' "$rmain")" = 2 ] && [ "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -c 'merges\.closePrs(')" = 1 ] && [ "$(awk '/^async function watchProductPrs/,/^}/' "$rmain" | grep -c 'merges\.closePrs(')" = 1 ] && [ "$(awk '/^async function watchProductPrs/,/^}/' "$rmain" | grep -nE '^    if \(issue\.status === "cancelled" && !older\.length && !state\.get\(`abandoned:\$\{url\}`\)\) \{$|^      state\.set\(`abandoned:\$\{url\}`, |^      log\("abandoned PR", \{ pr: pr\.url, issue: issue\.identifier, closed: \(await merges\.closePrs\(\[\{ repo, number: pr\.number, url: pr\.url \}\], ' | cut -d: -f1 | awk 'NR==1{f=$1} {if ($1 != f + NR - 1) bad=1} END{print (NR==3 && !bad) ? "ok" : "bad"}')" = ok ] \
   && [ "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n 'await tierFor(ctx.issue, "close"' | cut -d: -f1)" -lt "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n '^  if (t.tier !== 0) throw ' | cut -d: -f1)" ] \
   && [ "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n '^  if (t.tier !== 0) throw ' | cut -d: -f1)" -lt "$(awk '/^async function agentClose/,/^}/' "$rmain" | grep -n 'merges.closePrs(' | cut -d: -f1)" ] \
   && grep -qF 'if (!same(orgOf(p.repo), s.agentsOrg)) return REJECT("outside-close"' "$rtiers" \
@@ -713,12 +715,13 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF 'if (p.dependabot !== true) return REJECT("core-repo-close"' "$rtiers" \
   && grep -qF 'if (!s.requester?.platform) return REJECT("product-close-requester"' "$rtiers" \
   && grep -qF '? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p' "$rmain" \
-  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues re-tier; reviewed queues replay the approved commits first, leased push), merged-head branch deletes (after any agents-org merge), one re-run per head of a queued PR's infrastructure-failed jobs or of an agent's product PR's never-started jobs, a pending design-review status (never a verdict), and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
+  && pass "runner: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues re-tier; reviewed queues replay the approved commits first, leased push), merged-head branch deletes (after any agents-org merge), one re-run per head of a queued PR's infrastructure-failed jobs or of an agent's product PR's never-started jobs, a pending design-review status (never a verdict), and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo; and, once, the App bot's own same-repo product PR of a cancelled task here that no other task holds); a product merge is never Tier 0 ($rm_)" || fail "runner: unexpected merge-queue writes or their gates changed: $merge_writes"
 # The AI reviewer's own code merges only on a 100% reviewer-eval receipt for its exact head (owner, 2026-11-16): both merge
 # sites in the queue ask the gate (src/evalgate.ts) right before GitHub's merge; the gate runs the eval with the eval's own
 # key (secrets openrouter_eval_key, never the fleet's openrouter_key), the base's judge (eval script and case-pad), in the
-# job jail (the tree read-only, one writable folder whose result is read as a small regular file), and the runner writes
-# the receipt.
+# job jail (kernel/src/sandbox.ts hiding over the kernel's own sandboxConfig: Engineer jobs' layout and hidden paths, its
+# own network when that works; never unconfined), the tree read-only, one writable folder whose result is read as a small
+# regular file, and the runner writes the receipt.
 rgate="services/runner/src/evalgate.ts"
 gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate\(|await github\.merge\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-24 | tr '\n' '|'; }
 [ "$(grep -c 'await github.evalGate(' "$rm_")" = 2 ] \
@@ -729,7 +732,7 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
   && grep -qF '      writeFileSync(join(tree, f), `${await d.git(path, "show", `${base}:${f}`)}\n`);' "$rgate" \
   && grep -qF 'const argv = d.jail([process.execPath, "scripts/reviewer-eval.mjs"], { rw: [out], ro: [tree, ...nm] });' "$rgate" \
   && grep -qF 'r = JSON.parse(smallFile(file, 4 * 1024 * 1024) ?? "");' "$rgate" \
-  && grep -qF '  jail: (argv, paths) => hiding(cfg, argv, [], paths),' "$rmain" \
+  && grep -qF '  jail: (argv, paths) => hiding(evalSandbox, argv, [], paths),' "$rmain" && grep -qF 'import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";' "$rmain" && [ "$(grep -E 'evalSandbox( =|\.[a-zA-Z]+ =)' "$rmain" | tr '\n' '|')" = 'const evalSandbox = sandboxConfig();|if (jailProblem(evalSandbox)) evalSandbox.pasta = undefined;|' ] && ! grep -q 'unconfined' "$rmain" \
   && pass "runner: a product PR that changes the AI reviewer's code merges only on a 100% eval receipt for its exact head (base judge, eval key, jailed; $rgate)" \
   || fail "runner: the reviewer-eval receipt gate on product merges changed ($rgate, $rm_)"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
