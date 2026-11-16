@@ -101,6 +101,16 @@ jobs:
           node-version: 24.x
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
+      # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.mjs): a stable entry is never
+      # removed or reshaped. The scripts suite checks the lock against the code on every run.
+      - name: Contract lock
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          (cd scripts && npm ci --ignore-scripts)
+          git fetch --no-tags --depth=1 origin "$PR_BASE"
+          node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.mjs --check --base "$PR_BASE"
       - name: Test
         env:
           TESTS: ${{ needs.image-changes.outputs.tests }}
