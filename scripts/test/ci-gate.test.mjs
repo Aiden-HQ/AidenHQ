@@ -251,19 +251,20 @@ process.exit(code);
   g("commit", "-qm", "base");
   const base = g("rev-parse", "HEAD");
   const bin = mkdtempSync(join(tmpdir(), "ci-review-bin-"));
-  for (const [name, body] of [["npm", `echo "$*" >> "${join(bin, "npm-args")}"`], ["sleep", ""]]) { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, name), 0o755); }
+  for (const [name, body] of [["npm", `echo "$* oidc=\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-none}" >> "${join(bin, "npm-args")}"`], ["sleep", ""]]) { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, name), 0o755); }
   const change = (file) => { g("checkout", "-q", base); mkdirSync(join(dir, file, ".."), { recursive: true }); writeFileSync(join(dir, file), "x\n".repeat(40)); g("add", "."); g("commit", "-qm", file); return g("rev-parse", "HEAD"); };
   const run = (head, extra = {}) => {
     for (const f of ["runs", "n", "env"]) writeFileSync(join(bin, f), "");
     const env = testEnv({ PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: head, PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin, DEFAULT_BRANCH: "main", CI_REVIEW_MODEL: "~deepseek/deepseek-flash-latest:high", ...extra });
+    if (extra.ACTIONS_ID_TOKEN_REQUEST_TOKEN) env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = extra.ACTIONS_ID_TOKEN_REQUEST_TOKEN; // testEnv drops it
     execFileSync("bash", ["-e", "-c", script], { cwd: dir, env, stdio: "pipe" });
     const runs = readFileSync(join(bin, "runs"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
     return { runs, env: readFileSync(join(bin, "env"), "utf8") };
   };
   const light = change("src/a.ts");
-  let r = run(light);
+  let r = run(light, { ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-secret" });
   assert.deepEqual(r.runs, [{ argv: [base, light], effort: "high", deep: "", model: "~deepseek/deepseek-flash-latest", url: "https://openrouter.ai/api/v1", key: "sk-test", rules: ".github/code-review-rules.md", trusted: base }]);
-  assert.match(readFileSync(join(bin, "npm-args"), "utf8"), /^i -g .* @openai\/codex@\d+\.\d+\.\d+ typescript-language-server@\d+\.\d+\.\d+ typescript@\d+\.\d+\.\d+$/m, "the reviewer and its language server installed at exact versions");
+  assert.match(readFileSync(join(bin, "npm-args"), "utf8"), /^i -g --ignore-scripts .* @openai\/codex@\d+\.\d+\.\d+ typescript-language-server@\d+\.\d+\.\d+ typescript@\d+\.\d+\.\d+ oidc=none$/m, "the reviewer and its language server installed at exact versions, no install scripts, no OIDC credentials");
   assert.match(r.env, /CODEGENIE_EXIT=0\nCODEGENIE_ATTEMPTS=1\nCODE_REVIEW_DONE=1/);
   // A critical path: reviewed at the model's effort, depth normal; only the deep-review label raises the effort.
   r = run(change("src/auth/session.ts"));

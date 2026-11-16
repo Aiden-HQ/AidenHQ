@@ -343,7 +343,10 @@ jobs:
           # The reviewer and its TypeScript navigation, pinned (it reads the PR through review-tools.mjs only: no shell, nothing
           # of the PR runs or is installed). Its scripts and the house rules (.github/code-review-rules.md) are the base
           # commit's, like everything here.
-          npm i -g --no-audit --no-fund --loglevel=error @openai/codex@0.167.0 typescript-language-server@6.0.3 typescript@6.0.3 || gave_up "Couldn't install the reviewer (npm)."
+          # The job's OIDC request credentials are spent (traded above): nothing after this point gets them. The packages run no
+          # install scripts (none of these three has one; --ignore-scripts keeps it so).
+          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL oidc
+          npm i -g --ignore-scripts --no-audit --no-fund --loglevel=error @openai/codex@0.167.0 typescript-language-server@6.0.3 typescript@6.0.3 || gave_up "Couldn't install the reviewer (npm)."
           review() { # $1: minutes. Sets $code.
             CI_REVIEW_KEY="$key" CI_REVIEW_URL="$url" MODEL="$model" EFFORT="$effort" DEEP="$( [ "$depth" = deep ] && echo 1)" \
               TRUSTED_BASE="$BASE_SHA" RULES="$rv/code-review-rules.md" CRITICAL_GLOBS="$globs" REVIEW_LSP="$(npm prefix -g)/bin/typescript-language-server" \
