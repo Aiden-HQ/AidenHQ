@@ -7,6 +7,7 @@
 // as an admin. The only GitHub writes here are WRITES and READY_MUTATION below, and a stacked PR's head replayed by the
 // runner (github.rebuild: a git push leased to the approved head).
 import { isAgentSubtask } from "./agents.mjs";
+import { EVAL_WAIT_MINUTES } from "./evalgate.ts";
 
 /**
  * Where a finished queue leaves its task: an agent's sub-task whose PRs all merged, with no other open PR of its own
@@ -784,6 +785,14 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
       if (r !== "next") return r;
       continue;
     }
+    // A PR that changes the AI reviewer's own code merges only on a 100% reviewer-eval receipt for this head (evalgate.ts).
+    const gate = await github.evalGate(next.repo, pr);
+    if (gate?.stop) return { ...stop(`${next.url}: ${gate.stop}`), turned: [{ repo: next.repo, number: next.number, url: next.url, head: pr.headRefOid, key: "eval" }] };
+    if (gate?.wait) {
+      const r = waitOn(next, pr, `pr:${next.number}:${pr.headRefOid}:eval`, gate.wait, EVAL_WAIT_MINUTES);
+      if (r !== "next") return r;
+      continue;
+    }
     const method = mergeMethod(data.repository);
     if (!method) return stop(`\`${next.repo}\` allows no merge method I can use`);
     try {
@@ -974,6 +983,17 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
         const method = mergeMethod(data.repository);
         if (!method) {
           fail(`\`${p.repo}\` allows no merge method I can use`);
+          continue;
+        }
+        // A PR that changes the AI reviewer's own code merges only on a 100% reviewer-eval receipt for this head (evalgate.ts).
+        const gate = await github.evalGate(p.repo, pr);
+        if (gate?.stop) {
+          fail(gate.stop);
+          turned.at(-1).key = "eval";
+          continue;
+        }
+        if (gate?.wait) {
+          wait(`${pr.headRefOid}:eval`, gate.wait, EVAL_WAIT_MINUTES);
           continue;
         }
         try {

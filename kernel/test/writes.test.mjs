@@ -126,6 +126,16 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   await k.v1("POST", `/v1/writes/${next.id}/review`, { digest: next.digest, decision: "escalate", reason: "r", model: "~acme/model-a" });
   await k.v1("POST", `/v1/writes/${next.id}/decide`, { ...decide, digest: next.digest, decision: "reject" });
   assert.equal((await pending(await tool("post_note", { note: "b" }))).tier, 2);
+  // Tier 2 on its merits (the veto): the reviewer's reject reaches the owner with its note, not a final no. A record only
+  // capped to Tier 2 (autonomy, merit 1) keeps Tier 1's final reject.
+  const merit = k.records.get(again.approval);
+  assert.equal(merit.merit, 2);
+  const rj = await k.v1("POST", `/v1/writes/${merit.id}/review`, { digest: merit.digest, decision: "reject", reason: "it widens access", model: "~acme/model-a" });
+  assert.deepEqual([rj.json.state, rj.json.review], ["owner", "it widens access"]);
+  // The board reads the merit tier from the kernel's list (recordApproval: baseTier, review_first).
+  assert.equal((await k.v1("GET", "/v1/writes?state=owner")).json.records.find((r) => r.id === merit.id)?.merit, 2);
+  const capped = k.records.file({ ...merit, args: { note: "capped" }, tier: 2, merit: 1, state: "review" });
+  assert.equal((await k.v1("POST", `/v1/writes/${capped.id}/review`, { digest: capped.digest, decision: "reject", reason: "no", model: "~acme/model-a" })).json.state, "rejected");
 });
 
 test("a Tier 0 conn.tool call leaves a completed record whose outcome is the MCP result; a Tier 0 kind answers with its outcome", async (t) => {

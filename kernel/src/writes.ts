@@ -121,7 +121,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const same = t.tier > 0 ? records.open(task, kind, digestOf(base)).find((r) => who(r.requester) === who(requester)) : undefined;
     if (same && same.tier >= t.tier && (same.panel || !t.panel)) return same;
     if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
-    return records.file({ ...base, card: { ...card, reason: raise?.reason?.slice(0, 300) ?? "" }, tier: t.tier, panel: t.panel, state: t.tier === 0 ? "claimed" : "review" });
+    return records.file({ ...base, card: { ...card, reason: raise?.reason?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, state: t.tier === 0 ? "claimed" : "review" });
   }
 
   async function execute(r: Rec, k: Kind): Promise<void> {
@@ -191,7 +191,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (t.tier > 0 && !task) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       const shown = JSON.stringify(args ?? {}).slice(0, 4000);
       const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details: `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}` };
-      return records.file({ kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "", card, requester: requesterOf(who, task), task, tier: t.tier, panel: false, state: t.tier === 0 ? "claimed" : "review" });
+      return records.file({ kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "", card, requester: requesterOf(who, task), task, tier: t.tier, merit: t.merit, panel: false, state: t.tier === 0 ? "claimed" : "review" });
     },
     outcome: outcomeOf,
     /** Resolves once the record has an outcome, or with it as it is after `ms`. */

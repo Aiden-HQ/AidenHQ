@@ -15,7 +15,9 @@ export type Requester = { agent: string; key: string; name: string; roles: strin
 export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string };
 export type Rec = {
   id: string; kind: string; module: string; args: unknown; targets: Record<string, unknown>; executor: { module: string; url?: string }; policy: string;
-  digest: string; tier: 0 | 1 | 2; panel: boolean; card: Card; requester: Requester; task: string; state: State;
+  digest: string; tier: 0 | 1 | 2; panel: boolean; card: Card;
+  /** The tier before the autonomy caps (tier.ts): 2 means the owner's on its merits, so even the reviewer's reject reaches them. Null on older records. */
+  merit?: 0 | 1 | 2 | null; requester: Requester; task: string; state: State;
   review: string | null; decided_by: string | null; via: string | null; outcome: { ok: boolean; text: string } | null; created_at: string; updated_at: string;
 };
 const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome"] as const;
@@ -41,6 +43,7 @@ export function openRecords(file: string) {
     CREATE INDEX IF NOT EXISTS records_state ON records (state);
     CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);
     CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL);`);
+  if (!(db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).some((c) => c.name === "merit")) db.exec("ALTER TABLE records ADD COLUMN merit INTEGER");
   const now = () => new Date().toISOString();
   const row = (r: any): Rec | undefined => {
     if (!r) return undefined;
@@ -63,8 +66,8 @@ export function openRecords(file: string) {
     file(r: Omit<Rec, "id" | "digest" | "review" | "decided_by" | "via" | "outcome" | "created_at" | "updated_at">): Rec {
       const id = `k-${randomBytes(8).toString("hex")}`;
       const at = now();
-      db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, panel, card, requester, task, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digestOf(r), r.tier, r.panel ? 1 : 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at);
+      db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digestOf(r), r.tier, r.merit ?? r.tier, r.panel ? 1 : 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at);
       event("approval.filed", { record: id, kind: r.kind, tier: r.tier, panel: r.panel, requester: r.requester.key || r.requester.module || "", task: r.task });
       return get(id)!;
     },
@@ -92,7 +95,8 @@ export function openRecords(file: string) {
       if (r.state !== "review") return `this record is ${r.state}`;
       if (r.digest !== digest) return "the digest doesn't match this record";
       if (r.panel && decision === "approve" && !by.includes("+")) return "an authority-expanding record needs a second reviewer's approval too";
-      const to: State = decision === "reject" ? (stale ? "stale" : "rejected") : decision === "approve" && r.tier < 2 ? "approved" : "owner";
+      // Tier 2 on its merits (merit 2): the reviewer reads it first and the owner decides either way, its reject shown.
+      const to: State = decision === "reject" ? (stale ? "stale" : r.merit === 2 ? "owner" : "rejected") : decision === "approve" && r.tier < 2 ? "approved" : "owner";
       const ok = move(id, ["review"], to, { review: note.slice(0, 2000), ...(to === "owner" ? { tier: 2 } : { decided_by: by, via: "review" }) });
       if (!ok) return "it changed meanwhile";
       if (to !== "owner") event("approval.decided", { record: id, decision: to, by, via: "review" });

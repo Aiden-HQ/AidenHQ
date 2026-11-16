@@ -59,7 +59,20 @@ agent, never to the owner.
   re-review goes to the owner with both rounds' notes.
 - **Tier 2: owner.** A board card plus a message on the owner channel: a panel split, a reviewer's
   "escalate" (a destructive migration), the owner's own veto, a routine's or the instance's autonomy cap, a spend-cap
-  raise, or nothing recognised. If the reviewers looked first, their notes are attached.
+  raise, or nothing recognised. The AI reviewer reads every one first (owner, 2026-11-16: every write is reviewed before it
+  reaches the owner), and its verdict is on the owner's card:
+  - **Tier 2 on its merits** (the owner's veto, a spend-cap raise, an owner-approval record, unknown repos, nothing
+    recognised; `tiers.mjs` `meritOwner`, `byMerit`): the reviewer's approve and its reject both go on to the owner
+    (`owner_tier`). Only code's own refusals (the head moved, `refused_by_code`) close it, and a reviewer that keeps failing
+    hands it to the owner with that note. The board refuses a reviewer approve or reject on such a card (`review_first =
+    owner`), and its own owner-veto check files the card for the reviewer first.
+  - **A cap on a Tier 1 write** (a routine's autonomy, `routineCapped`, code `routine_autonomy`; the instance's, `autonomyCap`,
+    `autonomy_off`): Tier 1 semantics, so the reviewer's reject is final and its approve goes on to the owner. The board
+    refuses a reviewer approve on it (`review_first = final`).
+  - A capped Tier 0 write (autonomy off, or a routine's `off`) still waits for the owner's tap without a review.
+
+  The kernel's records do the same: each keeps its tier before the autonomy caps (`merit`), and a merit-2 record's reject goes
+  to the owner (`records.ts` `review`).
 
 Some requests are refused by code before any review, with the reason to the agent: a request on a cancelled or done
 task; any product write from outside the Platform Engineer's line, or to its default branch; a push to the instance repo
@@ -148,7 +161,7 @@ time, so it is also the pause switch.
 
 - `off` (default): the owner decides every write, but the AI review still runs first (every install and update is
   reviewed regardless). Tier 0 is a card for the owner; Tier 1 goes to the reviewer first: its reject is final, its
-  approve goes on to the owner's card with its verdict (`tiers.mjs` `autonomyCap`). Tier 2 goes straight to the owner.
+  approve goes on to the owner's card with its verdict (`tiers.mjs` `autonomyCap`). Tier 2 is reviewed first too, then the owner decides.
 - `tier0`: Tier 0 runs. On Tier 1, the reviewer comments with what it would do and the owner decides (shadow mode).
 - `full`: the reviewer decides Tier 1.
 
@@ -166,3 +179,36 @@ approved.
 and prints the pass rate. `autonomy: full` is only appropriate when it scores 100%. A refusal or failed call counts as a
 failure even though it escalates safely. Every false reject the reviewer makes in use is added as a new case, and the
 score must stay at 100%.
+
+**The eval-receipt gate** (`services/runner/src/evalgate.ts`, owner 2026-11-16). A product PR that changes the reviewer's
+own code merges only on a 100% receipt for its exact head. The reviewer's own code is `tiers.mjs`, `review.mjs`, the policy
+under `modules/core/security/`, the cases, `case-pad.mjs`, `reviewer-eval.mjs` and the kernel's `tier.ts`.
+
+- **When it runs.** Both merge sites of the queue ask the gate right before GitHub's merge. On a head it hasn't seen, the
+  runner fetches the head and the PR's base branch into its cache clone and reads the changed files itself. If no reviewer
+  code changed, the merge goes ahead.
+- **How it runs.** Otherwise the runner builds a scratch tree and runs the judge there, detached and in the job jail. Its
+  only secret is the eval's own key (secrets `openrouter_eval_key`), never the fleet's. A missing key stops the merge.
+- **The receipt.** The runner writes it itself: head, base, policy hash, score, failures, re-run and cost. The merge goes on
+  only when the receipt is 100%. On less, the queue stops that PR, wakes its agent, and the stop note carries the failing
+  cases, with the model's notes fenced.
+- **What judges what.**
+  - The eval script and `case-pad.mjs` come from the base.
+  - Every base case runs at its base version, including a case the PR deletes.
+  - A case the PR adds runs as written.
+  - A case the PR changes runs twice: at its base version, and as the PR's fixture held to the base's expectations (`expect`,
+    `expect_code`, `expect_second`, `expect_flag`).
+  - The reviewer under test (`src/`, the policy) is the PR's own.
+
+  So a PR can't pass by deleting or weakening its own test. A PR that changes an existing case's expectation can't pass the
+  gate at all; the owner merges it by hand.
+- **A flaky case** may pass alone. After a first run with failures, only the failed cases run once more, and the merge is
+  allowed only if every one of them then passes. Both runs are on the receipt.
+- **Spend.** One full run and at most one partial re-run per head. The attempt is recorded before the run starts, so a
+  runner restart can't buy a second one. Each run's cost goes to the board's ledger ("Reviewer eval").
+- **Honest limits.**
+  - The PR's code runs in the judge's process and could forge a pass. The receipt is regression evidence, and the defence
+    against hostile reviewer code is the panel review (reviewer code is gate core). The jail keeps that code away from the
+    host's secrets.
+  - A base whose judge can't load the PR's reviewer (a changed API) fails closed.
+  - A receipt is bound to the head; a moved base doesn't void it.

@@ -52,7 +52,13 @@ export interface Request {
   reasonCode?: string | null;
   /** Authority-expanding (tiers.mjs `panel`): a reviewer approval must name a second reviewer too. */
   panel?: boolean;
+  /**
+   * The owner decides after the reviewer (tiers.mjs reviewFirstOf): "final", the reviewer may escalate or reject (its reject is
+   * final); "owner", Tier 2 on its merits, the reviewer may only escalate (its reject reaches the owner too). Never an approve.
+   */
+  reviewFirst?: ReviewFirst | null;
 }
+export type ReviewFirst = "final" | "owner";
 
 /** Actions whose content the runner keys by patch (args `patch` per branch or PR). */
 const CONTENT_KEYED = ["push", "pr", "merge"];
@@ -91,8 +97,10 @@ export const ownerAfterReview = (a: { action: string; args: unknown }) => a.acti
 /** The stable reason for a request whose change is already satisfied: no card is filed, the task gets the evidence. */
 export const ALREADY_APPLIED = "already_applied";
 
-export interface Approval extends Omit<Request, "tier" | "reason" | "requesterId" | "baseTier" | "reasonCode" | "panel"> {
+export interface Approval extends Omit<Request, "tier" | "reason" | "requesterId" | "baseTier" | "reasonCode" | "panel" | "reviewFirst"> {
   tier: Tier;
+  /** The owner decides after the reviewer (Request.reviewFirst); null on any other card. */
+  reviewFirst: ReviewFirst | null;
   /** Authority-expanding: the board takes a reviewer's approval only with a second reviewer's. */
   panel: boolean;
   reason: string;
@@ -191,7 +199,8 @@ export type RaiseCap = z.infer<typeof RaiseCapSchema>;
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
 /**
- * The raise_cap request: always Tier 2 (the owner's tap; no reviewer, no autonomy setting lowers it). Its args are the
+ * The raise_cap request: always the owner's tap (no autonomy setting lowers it), after the AI reviewer has read it (Tier 2 on
+ * its merits, review-first: the reviewer may only escalate it, with its verdict on the card). Its args are the
  * checked request plus `to` (twice the cap), which is what the applier sets; the digest covers both. A different cap value
  * is a new request, and like every record it replaces the open raise_cap on the same task.
  */
@@ -213,8 +222,9 @@ export function raiseCapRequest(task: { id: string; identifier: string }, r: Rai
     cost: `Up to ${usd(Math.max(0, args.to - r.spent))} more in model calls.`,
     details: `agent: ${r.agentId}\nscope: ${r.scope}\non: ${r.subject}\ncap: ${usd(r.cap)} → ${usd(args.to)}\nspent: ${usd(r.spent)}`,
     requestedBy: "the model gateway",
-    tier: 2,
+    tier: 1,
     baseTier: 2,
+    reviewFirst: "owner",
     reason: `a ${r.scope} spend cap is the owner's to raise`,
     reasonCode: "raise-cap",
   };
@@ -328,6 +338,7 @@ interface Row {
   review: string | null;
   requester_id: string | null;
   base_tier: number | null;
+  review_first: string | null;
   reason_code: string | null;
   review_code: string | null;
   panel: number | null;
@@ -364,6 +375,7 @@ const toApproval = (r: Row): Approval => ({
   reasonCode: r.reason_code,
   reviewCode: r.review_code as ReviewCode | null,
   panel: r.panel === 1,
+  reviewFirst: (r.review_first as ReviewFirst | null) ?? null,
 });
 
 /** One card as the owner saw it in a batch: its id and the digest of exactly what it runs. */
@@ -438,6 +450,7 @@ export class Approvals {
     if (!columns.includes("reason_code")) db.exec("ALTER TABLE approvals ADD COLUMN reason_code TEXT");
     if (!columns.includes("review_code")) db.exec("ALTER TABLE approvals ADD COLUMN review_code TEXT");
     if (!columns.includes("panel")) db.exec("ALTER TABLE approvals ADD COLUMN panel INTEGER NOT NULL DEFAULT 0");
+    if (!columns.includes("review_first")) db.exec("ALTER TABLE approvals ADD COLUMN review_first TEXT");
     // A batch the owner channel showed in Telegram: the exact cards (id and digest), decided at most once within 24h.
     db.exec("CREATE TABLE IF NOT EXISTS approval_batches (id TEXT PRIMARY KEY, items TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)");
   }
@@ -489,14 +502,16 @@ export class Approvals {
       const key = targetKey(req.action, req.target, req.args);
       const replacing = open.filter((a) => targetKey(a.action, a.target, a.args) === key);
       const veto = req.tier === 1 && this.ownerVetoed(req.issueId, req.action, req.digest, req.args);
-      const tier = veto ? 2 : (req.tier ?? 2);
+      // The owner's veto makes it theirs on its merits: the reviewer still reads it first, then the owner decides either way.
+      const tier = req.tier ?? 2;
+      const reviewFirst = tier === 1 ? (veto ? "owner" : (req.reviewFirst ?? null)) : null;
       for (const a of replacing) this.db.prepare("UPDATE approvals SET state = 'expired', outcome_text = 'replaced by a newer request' WHERE id = ?").run(a.id);
       const id = `A${randomBytes(4).toString("hex")}`;
       const reason = veto ? `the owner rejected this action on this task, so they decide (was: ${req.reason ?? ""})` : (req.reason ?? "");
       const code = veto ? "owner-veto" : ruleCode(req.reasonCode);
       this.db
-        .prepare("INSERT INTO approvals (id, issue_id, identifier, action, target, digest, args, sentence, reads, changes, cost, details, requested_by, state, created_at, expires_at, replaced, tier, reason, requester_id, base_tier, reason_code, panel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, req.issueId, req.identifier, req.action, req.target, req.digest, JSON.stringify(req.args ?? null), req.sentence, req.reads, req.changes, req.cost, req.details, req.requestedBy, iso, new Date(now.getTime() + TTL_MS).toISOString(), replacing.length ? 1 : 0, tier, reason.slice(0, 1000), req.requesterId ?? null, req.baseTier ?? null, code, req.panel ? 1 : 0);
+        .prepare("INSERT INTO approvals (id, issue_id, identifier, action, target, digest, args, sentence, reads, changes, cost, details, requested_by, state, created_at, expires_at, replaced, tier, reason, requester_id, base_tier, reason_code, panel, review_first) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, req.issueId, req.identifier, req.action, req.target, req.digest, JSON.stringify(req.args ?? null), req.sentence, req.reads, req.changes, req.cost, req.details, req.requestedBy, iso, new Date(now.getTime() + TTL_MS).toISOString(), replacing.length ? 1 : 0, tier, reason.slice(0, 1000), req.requesterId ?? null, req.baseTier ?? null, code, req.panel ? 1 : 0, reviewFirst);
       this.db.exec("COMMIT");
       this.changed(req.issueId);
       return this.get(id)!;
@@ -532,8 +547,11 @@ export class Approvals {
     if (a.digest !== v.digest) return { ok: false, reason: "the digest doesn't match this record" };
     if (v.second !== undefined && v.second === v.model) return { ok: false, reason: "the second reviewer must be another model" };
     if (a.panel && v.decision === "approve" && !v.second) return { ok: false, reason: "an authority-expanding record needs a second reviewer's approval too" };
-    // New module authority (spec §5.7): the reviewer goes first, but only the owner approves it.
+    // New module authority (spec §5.7), and every review-first card: the reviewer goes first, but only the owner approves it.
     if (v.decision === "approve" && ownerAfterReview(a)) return { ok: false, reason: "this apply adds module authority: after the reviewer, the owner decides (escalate it)" };
+    if (v.decision === "approve" && a.reviewFirst) return { ok: false, reason: "after the reviewer, the owner decides this card (escalate it)" };
+    // Tier 2 on its merits: the owner sees the reviewer's reject too; only code's own refusals (it moved, refused by code) close it.
+    if (v.decision === "reject" && a.reviewFirst === "owner" && !["stale_head", "refused_by_code"].includes(v.code ?? "")) return { ok: false, reason: "this card is the owner's on its merits: escalate the reject to them" };
     const by = `reviewer:${v.model}${v.decision === "approve" && v.second ? `+${v.second}` : ""}`;
     const note = v.reason.slice(0, 2000);
     const state = v.decision === "approve" ? "approved" : v.decision === "reject" && v.code === "stale_head" ? "stale" : "rejected";
@@ -726,7 +744,7 @@ export class Approvals {
  * and forwards the owner's decisions and the reviewer's verdicts on it to the kernel, which keeps it and runs it.
  */
 export type KernelRecord = {
-  id: string; kind: string; args: unknown; digest: string; tier: Tier; panel: boolean; task: string; state: string; review: string | null;
+  id: string; kind: string; args: unknown; digest: string; tier: Tier; merit?: Tier | null; panel: boolean; task: string; state: string; review: string | null;
   decided_by: string | null; outcome: { ok: boolean; text: string } | null; created_at: string; updated_at: string;
   card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string }; requester: { agent: string; key: string; name: string };
 };
@@ -741,7 +759,7 @@ export function recordApproval(r: KernelRecord): Approval {
     id: r.id, issueId: r.task, identifier: r.task, action: (LEGACY[r.kind] ?? r.kind) as Action, target: String((r.args as { name?: unknown })?.name ?? r.kind), digest: r.digest, args: r.args,
     sentence: r.card.sentence, changes: r.card.changes, reads: r.card.reads, cost: r.card.cost, details: r.card.details, requestedBy: r.requester.name || r.requester.key,
     tier: r.state === "review" ? 1 : r.state === "owner" ? 2 : r.tier, panel: r.panel, reason: r.card.reason ?? "", requesterId: r.requester.agent || null,
-    baseTier: r.tier, review: r.review, reasonCode: null, reviewCode: null, state: KERNEL_STATE[r.state] ?? "expired", decidedBy: r.decided_by, decidedAt: decided,
+    baseTier: r.merit ?? r.tier, reviewFirst: r.merit === 2 ? "owner" : null, review: r.review, reasonCode: null, reviewCode: null, state: KERNEL_STATE[r.state] ?? "expired", decidedBy: r.decided_by, decidedAt: decided,
     usedAt: ["claimed", "done", "failed", "unknown"].includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null,
     outcomeText: r.outcome?.text ?? null, createdAt: r.created_at, expiresAt: "9999-12-31T00:00:00.000Z", replaced: false,
   };

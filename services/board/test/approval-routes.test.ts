@@ -211,10 +211,10 @@ describe("raise_cap from the model gateway", () => {
   const post = (body: unknown, key: string) => internal("POST", "/internal/approvals/raise-cap", body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-gateway-key": key });
   const ask = { issue: issue.id, scope: "task", agentId: "fe", subject: issue.id, cap: 10, spent: 10.02 };
 
-  it("files one Tier 2 card with the gateway's key only, named for the agent", async () => {
+  it("files one card with the gateway's key only, named for the agent: the reviewer reads it first, the owner decides", async () => {
     expect((await post(ask, RUNNER_KEY)).status).toBe(403);
     const a = await post(ask, GATEWAY_KEY);
-    expect(a.json).toMatchObject({ action: "raise_cap", tier: 2, state: "pending", identifier: "WOR-184", sentence: "Double Fleet Engineer's task spend cap from $10.00 to $20.00." });
+    expect(a.json).toMatchObject({ action: "raise_cap", tier: 1, baseTier: 2, reviewFirst: "owner", state: "pending", identifier: "WOR-184", sentence: "Double Fleet Engineer's task spend cap from $10.00 to $20.00." });
     expect((await post({ ...ask, spent: 10.5 }, GATEWAY_KEY)).json.id).toBe(a.json.id);
     expect((await post({ ...ask, to: 500 }, GATEWAY_KEY)).status).toBe(400);
   });
@@ -225,7 +225,9 @@ describe("raise_cap from the model gateway", () => {
       calls.push({ url, auth: String((init.headers as Record<string, string>).authorization), body: JSON.parse(String(init.body)) });
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     });
-    const id = (await post({ ...ask, cap: 20, spent: 20.4 }, GATEWAY_KEY)).json.id;
+    const filed = (await post({ ...ask, cap: 20, spent: 20.4 }, GATEWAY_KEY)).json;
+    const id = filed.id;
+    expect(store.approvals.review(id, { digest: filed.digest, decision: "escalate", code: "owner_tier", reason: "The AI reviewer approved: fine.", model: "~openai/gpt-luna-latest" }).ok).toBe(true);
     const decided = await internal("POST", "/internal/owner/approvals/decide", { id, decision: "approve", via: "telegram" }, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-owner-key": DECIDE_KEY });
     expect(decided.json).toMatchObject({ state: "approved" });
     await vi.waitFor(() => expect(store.approvals.get(id)!.outcome).toBe("applied"));

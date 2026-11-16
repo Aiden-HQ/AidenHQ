@@ -14,9 +14,14 @@ describe("raise_cap", () => {
     const { approvals } = new Store(":memory:");
     const r = RaiseCapSchema.parse({ scope: "task", agentId: "ag1", subject: "i1", cap: 10, spent: 10.02 });
     const a = approvals.request(raiseCapRequest({ id: "i1", identifier: "WOR-9" }, r, "Aiden"));
-    expect(a).toMatchObject({ action: "raise_cap", tier: 2, baseTier: 2, requesterId: null, state: "pending", args: { cap: 10, to: 20 }, sentence: "Double Aiden's task spend cap from $10.00 to $20.00." });
+    // The AI reviewer reads it first (Tier 2 on its merits): it may only escalate, its approve or reject shown to the owner.
+    expect(a).toMatchObject({ action: "raise_cap", tier: 1, baseTier: 2, reviewFirst: "owner", requesterId: null, state: "pending", args: { cap: 10, to: 20 }, sentence: "Double Aiden's task spend cap from $10.00 to $20.00." });
     expect(approvals.request(raiseCapRequest({ id: "i1", identifier: "WOR-9" }, { ...r, spent: 10.4 }, "Aiden")).id).toBe(a.id); // spend moved: the same card
     expect(RaiseCapSchema.safeParse({ ...r, to: 500 }).success).toBe(false); // no typed amount
+    const v = { digest: a.digest, reason: "x", model: "~openai/gpt-luna-latest" };
+    expect(approvals.review(a.id, { ...v, decision: "approve" }).ok).toBe(false);
+    expect(approvals.review(a.id, { ...v, decision: "reject", code: "policy_other" }).ok).toBe(false);
+    expect(approvals.review(a.id, { ...v, decision: "escalate", code: "owner_tier" })).toMatchObject({ ok: true, approval: { tier: 2 } });
     expect(approvals.decide(a.id, "approve", "account:x").ok).toBe(true);
     expect(approvals.approved(Object.keys(ARGS) as RunnerAction[])).toEqual([]);
     expect(BOARD_ACTIONS).toContain("raise_cap");

@@ -167,7 +167,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       const same = open.find((a) => a.digest === digest);
       if (same) return send(same);
       for (const a of open) a.state = "expired";
-      const a = { id: `A${String(approvals.size + 1).padStart(8, "0")}`, issueId, identifier: find(b.issue).identifier, action: b.action, args: b.args, details: b.diff ?? "", digest, state: "pending", replaced: open.length > 0, baseTier: b.baseTier, tier: b.tier ?? 2 };
+      const a = { id: `A${String(approvals.size + 1).padStart(8, "0")}`, issueId, identifier: find(b.issue).identifier, action: b.action, args: b.args, details: b.diff ?? "", digest, state: "pending", replaced: open.length > 0, baseTier: b.baseTier, tier: b.tier ?? 2, reviewFirst: b.reviewFirst, rule: b.rule, reason: b.reason };
       approvals.set(a.id, a);
       return send(a);
     }

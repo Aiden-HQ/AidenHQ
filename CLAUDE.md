@@ -57,8 +57,8 @@ the reviewer eval's case loader).
 
 The AI reviewer's exit test, `node services/runner/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and
 must stay at 100%. It applies to changes to `services/runner/src/tiers.mjs`, `services/runner/src/review.mjs`, the
-reviewer policy (`modules/core/security/`) or `services/runner/test/reviewer-cases/`; the maintainer runs it before
-merging those.
+reviewer policy (`modules/core/security/`) or `services/runner/test/reviewer-cases/`; the runner's merge queue runs it
+on the PR's exact head and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 
 ## Conventions
 

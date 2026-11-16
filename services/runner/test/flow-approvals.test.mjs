@@ -26,8 +26,8 @@ describe("flow-approvals", () => {
       const reply = await turn("Rebase it on main, then start merging them as I listed.");
       const [push, merge] = toolRuns().slice(-2);
       assert.equal(push.code, 0, push.out);
-      assert.match(push.out, /Waiting for Dana's approval \(A\d+\)/);
-      assert.match(merge.out, /Waiting for Dana's approval[\s\S]*#1 merge one at a time/);
+      assert.match(push.out, /Dana's approval \(A\d+\)/);
+      assert.match(merge.out, /Dana's approval[\s\S]*#1 merge one at a time/);
       rmSync(join(t.dir, "github-prs.json")); // the card is filed: GitHub fails again from here, as the rest of this file expects
       assert.equal(githubTip(), before, "nothing pushed before the tap");
       const card = [...t.paperclip.approvals.values()].find((a) => a.action === "push" && a.state === "pending");
@@ -61,7 +61,7 @@ describe("flow-approvals", () => {
       await turn("Look into why CI is red.");
       const call = toolRuns().at(-1);
       assert.equal(call.code, 0, call.out);
-      assert.match(call.out, /Waiting for Dana's approval/);
+      assert.match(call.out, /Dana's approval/);
       const card = t.paperclip.decide("push", "rejected");
       // Autonomy is off here, yet the card carries classify()'s tier on its merits (wave 3: batch approvals).
       assert.ok([0, 1, 2].includes(card.baseTier), `base tier stamped: ${card.baseTier}`);
@@ -73,7 +73,7 @@ describe("flow-approvals", () => {
     it("pushes once the user approves the card", async () => {
       step("second\naidenhq push acme/app feat/second");
       await turn("Add the second change, and go ahead and push it.");
-      assert.match(toolRuns().at(-1).out, /Waiting for Dana's approval/);
+      assert.match(toolRuns().at(-1).out, /Dana's approval/);
       t.paperclip.decide("push", "approved");
       await waitFor("the push", () => partComments().some((c) => /\| Branch \| Result \|[\s\S]*feat\/second[\s\S]*Pushed 1 commit/.test(c)));
       assert.ok(githubTip("feat/second"), "on GitHub");
@@ -116,7 +116,7 @@ describe("flow-approvals", () => {
     it("is claimed and run at the start of a tick whose task list never answers", async () => {
       step("fourth\naidenhq push acme/app feat/fourth");
       await turn("Add the fourth change, and push it.");
-      assert.match(toolRuns().at(-1).out, /Waiting for Dana's approval/);
+      assert.match(toolRuns().at(-1).out, /Dana's approval/);
       // No run on the task: only the approvals pass can claim the card.
       await waitFor("quiet", () => !running());
       t.paperclip.hang.add("issues");
