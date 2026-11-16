@@ -761,7 +761,7 @@ export function kernelRecords(k: { url: string; token: string } | undefined) {
     get: async (id: string) => recordApproval(await call<KernelRecord>("GET", `/v1/writes/${id}`)),
     review: async (id: string, v: unknown) => recordApproval(await call<KernelRecord>("POST", `/v1/writes/${id}/review`, v)),
     panel: async (id: string, digest: string) => recordApproval(await call<KernelRecord>("POST", `/v1/writes/${id}/panel`, { digest })),
-    /** Marketplace advisories open against installed modules (lean-core 4e): Settings > Modules shows them as a banner. */
+    /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. */
     advisories: async () => (await call<{ advisories: Advisory[] }>("GET", "/v1/advisories")).advisories,
   };
 }

@@ -1,4 +1,4 @@
-// Marketplace advisories (spec §6.7, lean-core 4e): notify, never update. The kernel reads the marketplace's advisories.json
+// Marketplace advisories (spec §6.7, plan unit 4e): notify, never update. The kernel reads the marketplace's advisories.json
 // from its head (an advisory published after the pinned marketplace sha is invisible at that sha): once a day and on every
 // apply (the compiled catalog changed), read-only. Only that one file is read; module code and pins are never touched.
 // An installed module is affected when its pinned sha descends from an `affected` commit and not from `fixed`. Before 5b the

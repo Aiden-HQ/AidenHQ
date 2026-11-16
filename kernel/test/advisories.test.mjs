@@ -1,4 +1,4 @@
-// Marketplace advisories (lean-core 4e, spec §6.7): read from the marketplace head, matched by ancestry, shown and noticed once.
+// Marketplace advisories (plan unit 4e, spec §6.7): read from the marketplace head, matched by ancestry, shown and noticed once.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
