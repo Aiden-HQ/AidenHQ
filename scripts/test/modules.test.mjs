@@ -264,6 +264,13 @@ test("destructive tools: `write` never grants them, a list must name them; compi
   assert.deepEqual(agents.wd.enabled_tools.wconn, ["w_get", "w_delete"]);
   assert.throws(() => compile(mods, inst(["sloppy"])), /deleteIssue looks destructive/);
 });
+test("exposure: unset is tailscale (installs before the setting), one mode reaches the compiled output, a list or a bad value fails", () => {
+  assert.equal(compile(product, inst(["core"], owner)).exposure, "tailscale");
+  assert.equal(compile(product, inst(["core"], { ...owner, exposure: "public" })).exposure, "public");
+  assert.throws(() => compile(product, inst(["core"], { ...owner, exposure: "open" })), /exposure/);
+  assert.throws(() => compile(product, inst(["core"], { ...owner, exposure: ["public", "local"] })), /exposure/);
+});
+
 test("routine autonomy: full by default, tier0 for a webhook routine unless it says otherwise; an override must be a known value", () => {
   const { routines } = compile(mods, inst(["wiper"])).paperclip;
   assert.deepEqual([routines.sweep.autonomy, routines.hook.autonomy, routines.hookfull.autonomy], ["full", "tier0", "full"]);

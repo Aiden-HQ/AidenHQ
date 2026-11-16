@@ -29,7 +29,7 @@ test("dry run prints the plan and no secrets", () => {
   const out = dry(conf(person));
   for (const want of [
     "DRY RUN",
-    "AIDENHQ_USER=alice bash", // the machine, for this user
+    "env AIDENHQ_EXPOSURE=tailscale AIDENHQ_NO_TAILSCALE=0 AIDENHQ_USER=alice bash", // the machine, for this user, on the tailnet
     "git init --quiet --bare -b main /home/alice/aidenhq-instance.git", // the local instance repo
     ".env: AIDENHQ_INSTANCE_PUSH_URL=/home/alice/aidenhq-instance.git",
     ".env: BOARD_LAN_URL=https://alice.tail1234.ts.net",
@@ -67,7 +67,7 @@ test("--unattended: no config file, settings from the environment, the SSH-tunne
   const run = (env, ...args) => execFileSync("bash", [setup, "--dry-run", "--unattended", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, AIDENHQ_USER: "alice", ...env } });
   const out = run({ OWNER_EMAIL: "alice@example.com", MAX_CONCURRENT: "8", TIMEOUT_MINUTES: "120", CI_RUNNERS: "2", OPENROUTER_KEY: "sk-SECRET" }, "--no-tailscale");
   for (const want of [
-    "env AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER=alice bash", // the machine without Tailscale
+    "env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER=alice bash", // the machine without Tailscale
     ".env: BOARD_LAN_URL=http://127.0.0.1:3121",
     "config/runner.yaml: max_concurrent: 8",
     "config/runner.yaml: timeout_minutes: 120",

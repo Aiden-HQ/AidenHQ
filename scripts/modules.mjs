@@ -419,6 +419,10 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     }
   }
 
+  // settings.exposure: one mode, never a list; unset is tailscale, the mode of every install made before the setting.
+  if (Array.isArray(settings.exposure)) fail("settings.exposure: one of public, tailscale, cloudflare or local, not a list");
+  settings.exposure ??= "tailscale";
+
   // settings.owner_email is the owner's board account (the only one setup creates, ops/setup.sh); core passes it to the
   // board (BOARD_OWNER_EMAIL). Checked here, after the modules' own required settings.
   if (!settings.owner_email) fail("settings.owner_email is required (the owner's board account)");
@@ -773,7 +777,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 const CARD_FIELDS = ["sentence", "changes", "reads", "cost", "details"];

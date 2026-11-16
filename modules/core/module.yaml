@@ -93,6 +93,12 @@ settings:
   coach:
     default: "on"
     values: ["on", "off"]
+  # How the board is reached, and so what the host firewall opens on the public interface (ops/vm/public-fw.sh):
+  # public = HTTPS on 443 (tcp 22, 443); tailscale = the tailnet (tcp 22, udp 41641); cloudflare = a Cloudflare tunnel,
+  # local = loopback through an SSH tunnel (tcp 22 only). Unset = tailscale, as every install before this setting;
+  # ops/setup.sh writes it. A change reaches the firewall when ops/vm/setup.sh runs again (root).
+  exposure:
+    values: [public, tailscale, cloudflare, local]
   # Shared apps' sign-in (with `edge`): "access" = Cloudflare Access on every gate host; "password" =
   # the gate signs people in with their AidenHQ account (the board's auth listener); a host with an Access aud keeps Access too;
   # "header-jwt" = a front door's signed identity header over the tailnet (settings.edge.identity, edge.front).
