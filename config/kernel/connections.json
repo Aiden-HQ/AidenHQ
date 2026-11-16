@@ -190,7 +190,8 @@
     "returns": "untrusted",
     "tools": {
       "read": [
-        "slack_pending_events"
+        "slack_pending_events",
+        "wake_list"
       ],
       "write": [
         "notify_owner",

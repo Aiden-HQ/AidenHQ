@@ -100,25 +100,39 @@ export function startLaneTelegram(o: { lane: Lane; agents: () => Record<string, 
   return setInterval(check, 30_000).unref();
 }
 
+export interface WakeDeps {
+  store: LaneStore;
+  lane: Lane;
+  agents: () => Record<string, LaneAgent>;
+  noticeOnTask: (task: string, text: string) => Promise<void>;
+  /** Whether that task is done or cancelled: a wake left on finished work is dropped, never posted back onto it. */
+  taskIsClosed: (task: string) => Promise<boolean>;
+  log: Log;
+}
+
 /**
- * Fires due wakes every 15 s: a lane agent's wake with a conversation runs a lane turn there; any other wake is a labelled
- * notice on its task, which wakes that task's agent through Paperclip. The same pass runs what the lane owes (lane.tick);
- * on start, turns a restart cut off are owed first (lane.resume).
+ * One wake pass: a lane agent's due wake with a conversation runs a lane turn there; any other is a labelled notice on its
+ * task, which wakes that task's agent through Paperclip — unless the task has finished, in which case the wake is released
+ * and nothing is posted. Due wakes are taken (marked fired) before their task is checked, so a dropped wake never returns.
+ * The same pass runs what the lane owes (lane.tick).
  */
-export function startWakes(o: { store: LaneStore; lane: Lane; agents: () => Record<string, LaneAgent>; noticeOnTask: (task: string, text: string) => Promise<void>; log: Log }) {
-  const tick = async () => {
-    for (const w of o.store.takeDue()) {
-      try {
-        if (w.conversation && o.agents()[w.agent]) void o.lane.receive(w.agent, w.conversation, w.note, "wake");
-        else if (w.task) await o.noticeOnTask(w.task, `[wake] ${w.note}`);
-        else o.log.warn({ wake: w.id, agent: w.agent }, "wake had nowhere to go");
-      } catch (e) {
-        o.log.warn({ wake: w.id, err: (e as Error).message }, "wake failed");
-      }
+export async function wakePass(o: WakeDeps): Promise<void> {
+  for (const w of o.store.takeDue()) {
+    try {
+      if (w.conversation && o.agents()[w.agent]) void o.lane.receive(w.agent, w.conversation, w.note, "wake");
+      else if (!w.task) o.log.warn({ wake: w.id, agent: w.agent }, "wake had nowhere to go");
+      else if (await o.taskIsClosed(w.task)) o.log.info({ wake: w.id, agent: w.agent, task: w.task }, "wake dropped: its task is done or cancelled");
+      else await o.noticeOnTask(w.task, `[wake] ${w.note}`);
+    } catch (e) {
+      o.log.warn({ wake: w.id, err: (e as Error).message }, "wake failed");
     }
-    await o.lane.tick().catch((e: Error) => o.log.warn({ err: e.message }, "lane owed pass failed"));
-  };
+  }
+  await o.lane.tick().catch((e: Error) => o.log.warn({ err: e.message }, "lane owed pass failed"));
+}
+
+/** Fires due wakes every 15 s (wakePass); on start, turns a restart cut off are owed first (lane.resume). */
+export function startWakes(o: WakeDeps) {
   o.lane.resume();
-  void tick();
-  return setInterval(() => void tick(), 15_000).unref();
+  void wakePass(o);
+  return setInterval(() => void wakePass(o), 15_000).unref();
 }

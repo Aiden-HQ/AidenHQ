@@ -59,7 +59,19 @@ const lane = makeLane({
   },
   log,
 });
-const laneTools = { store: laneStore, lane, agents: laneAgents, timezone: process.env.OWNER_TIMEZONE || "UTC" };
+// Whether a task has finished: the board's own status, cached a minute (a wake cap check asks about every task it holds).
+const closedTasks = new Map<string, { at: number; closed: boolean }>();
+const taskIsClosed = async (task: string): Promise<boolean> => {
+  const hit = closedTasks.get(task);
+  if (hit && Date.now() - hit.at < 60_000) return hit.closed;
+  if (!deliver) return false;
+  const issue = await deliver.api("GET", `/api/issues/${encodeURIComponent(task)}`);
+  const closed = issue?.status === "done" || issue?.status === "cancelled";
+  if (closedTasks.size >= 500) closedTasks.clear(); // ids of finished tasks only; keep the map from growing for good
+  closedTasks.set(task, { at: Date.now(), closed });
+  return closed;
+};
+const laneTools = { store: laneStore, lane, agents: laneAgents, timezone: process.env.OWNER_TIMEZONE || "UTC", taskIsClosed };
 const routeLane = laneRoutes({ lane, store: laneStore, agents: laneAgents, token: env("BOARD_INTERNAL_TOKEN"), log });
 
 // One triage run per minute at most, with every event that arrived in it: the first event after a quiet minute fires at
@@ -223,6 +235,7 @@ startWakes({
   store: laneStore,
   lane,
   agents: laneAgents,
+  taskIsClosed,
   noticeOnTask: async (task, text) => {
     if (!deliver) throw new Error("no Paperclip board key here");
     await deliver.api("POST", `/api/issues/${encodeURIComponent(task)}/comments`, { body: `${text}\n\n<!-- aidenhq-wake -->` });
