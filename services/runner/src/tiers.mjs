@@ -248,10 +248,11 @@ function agentDefPart(key, base, head, s) {
  * The modules a product bump or a `modules:` edit changes (spec §5.7): `s.modules` is each module's def before and after and
  * whether its code changed (the runner read them at both product commits); `s.modulesError` when it couldn't. Every module
  * change is the AI reviewer's first (the panel's when code changed); new authority adds the owner after it.
+ * `s.marketplaces`: the instance's third-party marketplace changes (authority.ts marketplaceChanges); a new one is the owner's.
  */
 function moduleAuthorityParts(s) {
   if (s.modulesError || !s.modules) return [REJECT("unknown-content", `couldn't read the module changes${s.modulesError ? ` (${s.modulesError})` : ""}; try again`)];
-  const diffs = diffAll(s.modules);
+  const diffs = [...(s.marketplaces ?? []), ...diffAll(s.modules)];
   if (!diffs.length) return [];
   const c = classifyModules(diffs);
   return [c.reviewFirst ? OWNER_AFTER_REVIEW(c.rule, c.reason, c.panel) : c.panel ? PANEL(c.rule, c.reason) : T(1, c.rule, c.reason)];
@@ -263,9 +264,9 @@ function instanceParts(s) {
   if (!base || !head) return [REJECT("unparseable", "instance.yaml doesn't parse")];
   const parts = [];
   const keys = changedKeys(base, head);
-  if (keys.includes("product") || keys.includes("modules")) parts.push(...moduleAuthorityParts(s));
+  if (["product", "modules", "marketplaces"].some((k) => keys.includes(k))) parts.push(...moduleAuthorityParts(s));
   for (const k of keys) {
-    if (k === "modules") continue; // the module parts above
+    if (k === "modules" || k === "marketplaces") continue; // the module parts above
     // A rollback can undo a security fix: the panel's. A pin off product main is refused.
     if (k === "product") parts.push(s.pin?.forward ? T(1, "pin-forward", "the product pin moves forward along product main") : s.pin?.back ? PANEL("pin-backwards", "the product pin moves backwards (a rollback)") : REJECT("pin-unknown", "the product pin moves, and not along product main"));
     else if (k === "settings") {

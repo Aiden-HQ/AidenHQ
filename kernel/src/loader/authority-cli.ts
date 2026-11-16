@@ -8,7 +8,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { authorityLines, diffAll, moduleInputs, type ModuleDef } from "./authority.ts";
+import { authorityLines, diffAll, marketplaceChanges, moduleInputs, type ModuleDef } from "./authority.ts";
+import { hostFetch, withRemote } from "./sources.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 // The kernel has no YAML dependency; the compiler's (scripts/, installed by every apply) reads the manifests.
@@ -46,7 +47,9 @@ function main(argv: string[]) {
       baseInstance = headInstance = now;
     }
     const changed = from === to ? [] : git(product, "diff", "--name-only", "--no-renames", from!, to!, "--", "modules").split("\n").filter(Boolean);
-    const lines = authorityLines(diffAll(moduleInputs({ baseInstance, headInstance, baseDefs, headDefs, changed, always: [DEFAULT_MODULE] })));
+    // Third-party modules (instance.yaml marketplaces:) are fetched at their pinned shas through the host's credential helper.
+    const sides = withRemote({ baseInstance, headInstance, baseDefs, headDefs, changed }, { ...hostFetch(repo), parse: YAML.parse });
+    const lines = authorityLines([...marketplaceChanges(baseInstance, headInstance), ...diffAll(moduleInputs({ ...sides, always: [DEFAULT_MODULE] }))]);
     for (const l of lines.length ? lines : ["none"]) console.log(`apply authority: ${l}`);
     return 0;
   } catch (e) {

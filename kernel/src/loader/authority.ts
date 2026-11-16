@@ -5,12 +5,14 @@
 // Lines are built from code-chosen words and ids cleaned to [\w.:@/-], never from manifest prose, because they are shown on
 // the owner's card and in the apply log.
 import { ownSecrets } from "./services.ts";
+import { marketplacesOf } from "./sources.ts";
 
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
 export type Change = { what: string; owner: boolean };
 export type ModuleDiff = { module: string; changes: Change[]; code: boolean };
-export type ModuleInput = { base?: ModuleDef; head?: ModuleDef; codeChanged: boolean; textChanged?: boolean; replacing?: { name: string; def: ModuleDef } };
+/** `origin`: where a third-party module comes from on each side (marketplace, sha, computed tier), for the card. */
+export type ModuleInput = { base?: ModuleDef; head?: ModuleDef; codeChanged: boolean; textChanged?: boolean; replacing?: { name: string; def: ModuleDef }; origin?: { base?: string; head?: string } };
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 const map = (v: unknown): Dict => (isMap(v) ? v : {});
@@ -25,6 +27,8 @@ const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name 
 const PLAIN = new Set(["name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "settings", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
 /** Checked below, field by field. */
 const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces"]);
+/** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
+export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation). Others are new authority. */
 const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "models", "reasoning_effort", "timeout_sec", "heartbeat", "persona", "graded", "brief", "engine", "dispatch", "image", "web_search", "delegate_to", "jobcaps", "builder", "description", "name", "title", "trial"]);
 /** Service fields that change what runs or how much, not what it may reach (the code diff and the panel judge those). */
@@ -103,7 +107,7 @@ export function renamed(def: ModuleDef, from: string, to: string): ModuleDef {
  * What `head` hands out that `base` did not. `base` undefined: an install (diffed against nothing); `head` undefined: a
  * remove. `replacing`: B replaces A in this change, so B is diffed against A's def renamed into B's namespace.
  */
-export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing?: { name: string; def: ModuleDef }): ModuleDiff {
+export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing?: { name: string; def: ModuleDef }, origin: { base?: string; head?: string } = {}): ModuleDiff {
   const changes: Change[] = [];
   const owner = (what: string) => changes.push({ what, owner: true });
   const review = (what: string) => changes.push({ what, owner: false });
@@ -118,7 +122,8 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     return { module: name, changes, code: false };
   }
   const b = base ?? {};
-  if (!base && !replacing) review("installed");
+  if (!base && !replacing) review(`installed${origin.head ? ` from ${origin.head}` : ""}`);
+  else if (origin.head && origin.head !== origin.base) review(`now from ${origin.head}`);
   // Enforcement it drops (a check, its reviewer or executor provider) is authority too: the owner's, as on a remove.
   const checkIds = (x: Dict) => list(x.checks).map((c) => JSON.stringify(isMap(c) ? c.id ?? c : c));
   const gone = checkIds(b).filter((c) => !checkIds(head).includes(c));
@@ -297,7 +302,7 @@ export function enabledModules(instance: Dict, defs: Record<string, ModuleDef>, 
  * enabled on and whether code (anything but module.yaml and Markdown) changed. `replacing` is set only when this very change
  * removes A from the instance's list and adds B, and B `replaces` A (spec §5.7.1); otherwise B is diffed against nothing.
  */
-export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, ModuleDef>; headDefs: Record<string, ModuleDef>; changed: string[]; always?: string[] }): Record<string, ModuleInput> {
+export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, ModuleDef>; headDefs: Record<string, ModuleDef>; changed: string[]; always?: string[]; origins?: { base: Record<string, string>; head: Record<string, string> } }): Record<string, ModuleInput> {
   const before = new Set(enabledModules(a.baseInstance, a.baseDefs, a.always));
   const after = new Set(enabledModules(a.headInstance, a.headDefs, a.always));
   const files = (m: string) => a.changed.filter((f) => f.startsWith(`modules/${m}/`));
@@ -308,8 +313,10 @@ export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDe
     const fs = files(m);
     const base = before.has(m) ? a.baseDefs[m] : undefined;
     const head = after.has(m) ? a.headDefs[m] : undefined;
-    if (!fs.length && before.has(m) === after.has(m) && eq(base, head)) continue;
+    if (!fs.length && before.has(m) === after.has(m) && eq(base, head) && a.origins?.base[m] === a.origins?.head[m]) continue;
     const input: ModuleInput = { base, head, codeChanged: Boolean(head) && fs.some((f) => f !== `modules/${m}/module.yaml` && !f.endsWith(".md")), textChanged: fs.length > 0 };
+    const origin = { base: base && a.origins?.base[m], head: head && a.origins?.head[m] };
+    if (origin.base || origin.head) input.origin = origin;
     if (!base && head) {
       const from = list(head.replaces).map(String).filter((r) => listedBefore.has(r) && !listedAfter.has(r) && before.has(r) && !after.has(r) && a.baseDefs[r]);
       if (from.length === 1) input.replacing = { name: from[0]!, def: a.baseDefs[from[0]!]! };
@@ -322,4 +329,23 @@ export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDe
 }
 
 /** The authority diff of every module input. */
-export const diffAll = (inputs: Record<string, ModuleInput>) => Object.entries(inputs).map(([m, i]) => authorityDiff(m, i.base, i.head, i.codeChanged, i.replacing));
+export const diffAll = (inputs: Record<string, ModuleInput>) => Object.entries(inputs).map(([m, i]) => authorityDiff(m, i.base, i.head, i.codeChanged, i.replacing, i.origin));
+
+/**
+ * instance.yaml `marketplaces:` changes (spec §5.7, §6.4): a new marketplace, or one moved to another repository or folder,
+ * is where code comes from, so the owner's; a sha bump is only the AI reviewer's here, its modules' own diffs carry their
+ * authority; a removal is the reviewer's (compile refuses one whose modules are still listed).
+ */
+export function marketplaceChanges(base: Dict, head: Dict): ModuleDiff[] {
+  const [b, h] = [marketplacesOf(base), marketplacesOf(head)].map((l) => new Map(l.map((m) => [m.name, m.at])));
+  const changes: Change[] = [];
+  const at = (w: { url: string; path: string; sha: string }) => `${id(w.url)}${w.path ? `:${id(w.path)}` : ""} at ${w.sha.slice(0, 12)}`;
+  for (const [n, w] of h!) {
+    const was = b!.get(n);
+    if (!was) changes.push({ what: `adds marketplace ${id(n)} (${at(w)})`, owner: true });
+    else if (was.url !== w.url || was.path !== w.path) changes.push({ what: `moves marketplace ${id(n)} to ${at(w)}`, owner: true });
+    else if (was.sha !== w.sha) changes.push({ what: `marketplace ${id(n)} moves to ${w.sha.slice(0, 12)}`, owner: false });
+  }
+  for (const n of b!.keys()) if (!h!.has(n)) changes.push({ what: `removes marketplace ${id(n)}`, owner: false });
+  return changes.length ? [{ module: "marketplaces", changes, code: false }] : [];
+}

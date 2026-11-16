@@ -1,0 +1,11 @@
+#!/usr/bin/env node
+// engine@1 with no dependencies (a module installed from a marketplace runs from its git tree): job.json in, events out.
+import { appendFileSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const dir = process.argv[2];
+const spec = JSON.parse(readFileSync(join(dir, "job.json"), "utf8"));
+const emit = (ev) => appendFileSync(join(dir, "events.jsonl"), `${JSON.stringify(ev)}\n`);
+emit({ t: "session", id: spec.session ?? `twin-${spec.job}` });
+emit({ t: "usage", input: spec.prompt.length, output: spec.prompt.length, model: spec.model.id || "twin" });
+emit({ t: "final", text: `twin: ${spec.prompt}` });

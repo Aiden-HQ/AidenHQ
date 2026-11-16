@@ -1,0 +1,251 @@
+// Module sources and third-party marketplaces (spec §6.2-§6.5): a module comes from a marketplace at a pinned 40-char sha,
+// never a ref. Sources are a relative path in the marketplace, or a hosted repo, a folder of a git URL (`git-subdir`) or a git `url`, each
+// with its own sha. Git fetches the sha into a cache (through the credential helper the caller passes, per command, never
+// into a checkout's config), checks it is that commit, refuses symlinks and submodules, and extracts the tree; nothing is
+// built or run. The tier is computed, never claimed: declared (it compiles), conformant (+ the contract kit passes in the job
+// sandbox, offline), official (from the `aidenhq` marketplace, whose kit runs in CI). Sync: the compiler is.
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, posix, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+type Dict = Record<string, unknown>;
+/** Where a module or marketplace is: a git repository (https URL or a local absolute path), a folder in it, a commit. */
+export type Where = { url: string; path: string; sha: string };
+export type Fetch = { cacheDir: string; credentialHelper?: string };
+export type Tier = "declared" | "conformant" | "official";
+/** `market`: where its marketplace is (advisories are read from that repository's head). */
+export type Remote = { name: string; marketplace: string; market: Where; at: Where; root: string; def: Dict; tier: Tier };
+
+export const OFFICIAL = "aidenhq";
+const SHA = /^[0-9a-f]{40}$/;
+const NAME = /^[a-z][a-z0-9-]{0,62}$/;
+const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
+const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
+
+/** The default cache: outside the product checkout and the data dir (fetched trees are rebuildable from their shas). */
+export const defaultCache = () => process.env.AIDENHQ_SOURCES_DIR ?? join(homedir(), ".cache/aidenhq/sources");
+
+function relPath(p: unknown, where: string): string {
+  const s = String(p ?? "").replace(/^\.\//, "").replace(/\/+$/, "");
+  if (typeof p !== "string" || s.split("/").some((x) => !/^[\w.-]+$/.test(x) || x === "." || x === "..")) throw new Error(`${where}: path ${JSON.stringify(p)} must be a relative path inside the repository`);
+  return s;
+}
+
+/**
+ * A source as marketplace.json or instance.yaml writes it, as a Where. `within`: the marketplace a relative path is in.
+ * `sha`: the entry's own sha when the source object carries none (instance.yaml's marketplace entries).
+ */
+export function sourceOf(src: unknown, where: string, within?: Where, sha?: unknown): Where {
+  if (typeof src === "string") {
+    if (!within || !src.startsWith("./")) throw new Error(`${where}: a relative source (./<folder>) is only allowed inside a marketplace`);
+    return { url: within.url, path: posix.join(within.path, relPath(src, where)).replace(/^\.$/, ""), sha: within.sha };
+  }
+  if (!isMap(src)) throw new Error(`${where}: source must be a relative path or a { source, ..., sha } object`);
+  const at = String(src.sha ?? sha ?? "");
+  if (!SHA.test(at)) throw new Error(`${where}: a remote source needs a 40-character sha (a ref alone is refused)`);
+  const url = (u: unknown) => {
+    const s = String(u ?? "");
+    if (!/^https:\/\/[\w.-]+(:\d+)?\/[\w./~-]+$/.test(s) && !/^\/[\w./-]+$/.test(s)) throw new Error(`${where}: url must be https://… or an absolute local path`);
+    return s;
+  };
+  if (src.source === "github") {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(String(src.repo ?? ""))) throw new Error(`${where}: repo must be <owner>/<repo>`);
+    return { url: `https://github.com/${src.repo}.git`, path: "", sha: at };
+  }
+  if (src.source === "git-subdir") return { url: url(src.url), path: relPath(src.path, where), sha: at };
+  if (src.source === "url") return { url: url(src.url), path: "", sha: at };
+  throw new Error(`${where}: source ${JSON.stringify(src.source)} is not supported`);
+}
+
+/** A marketplace.json's entries, checked where the kernel uses them; any other field is ignored (decision 6). */
+export function marketplaceEntries(json: unknown, where: string): { name: string; source: unknown }[] {
+  if (!isMap(json) || !Array.isArray(json.plugins)) throw new Error(`${where}: plugins must be a list`);
+  if (json.name != null && (typeof json.name !== "string" || !NAME.test(json.name))) throw new Error(`${where}: name must be kebab-case`);
+  return json.plugins.map((p, i) => {
+    if (!isMap(p) || typeof p.name !== "string" || !NAME.test(p.name)) throw new Error(`${where}: plugins[${i}] needs a kebab-case name`);
+    if (isMap(p.source) && ["npm", "archive", "command"].includes(String(p.source.source))) throw new Error(`${where}: ${p.name}: ${p.source.source} sources are refused`);
+    return { name: p.name, source: p.source };
+  });
+}
+
+/** instance.yaml `marketplaces:`, the third-party ones (the `aidenhq` marketplace is the product's ./modules until 5b). */
+export function marketplacesOf(instance: Dict): { name: string; at: Where }[] {
+  const list = instance.marketplaces == null ? [] : instance.marketplaces;
+  if (!Array.isArray(list)) throw new Error("instance.yaml marketplaces: must be a list");
+  const seen = new Set<string>();
+  return list.map((m, i) => {
+    const name = String(isMap(m) ? m.name : "");
+    const where = `instance.yaml marketplaces[${i}]`;
+    if (!NAME.test(name)) throw new Error(`${where}: name must be kebab-case`);
+    if (name === OFFICIAL) throw new Error(`${where}: ${OFFICIAL} is the official marketplace (the product's ./modules), not a third-party one`);
+    if (seen.has(name)) throw new Error(`${where}: ${name} is listed twice`);
+    seen.add(name);
+    return { name, at: sourceOf((m as Dict).source, where, undefined, (m as Dict).sha) };
+  });
+}
+
+function git(f: Fetch, repo: string, args: string[], input?: Buffer) {
+  const cred = f.credentialHelper ? ["-c", `credential.helper=${f.credentialHelper}`, "-c", "credential.useHttpPath=true"] : [];
+  return execFileSync("git", ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always", "-c", "credential.helper=", ...cred, "--git-dir", repo, ...args], {
+    maxBuffer: 256 << 20, input, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
+  });
+}
+const has = (f: Fetch, repo: string, sha: string) => { try { git(f, repo, ["cat-file", "-e", `${sha}^{commit}`]); return true; } catch { return false; } };
+
+/** The bare cache repository of a URL. */
+export const cacheRepo = (url: string, f: Fetch) => join(f.cacheDir, "git", `${hash(url)}.git`);
+
+/** The bare cache repository of a URL, holding `sha` (fetched by sha, else every branch). */
+export function repoAt(w: Where, f: Fetch): string {
+  const repo = cacheRepo(w.url, f);
+  if (!existsSync(repo)) {
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", "--bare", repo]);
+  }
+  if (!has(f, repo, w.sha)) {
+    try { git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, w.sha]); } catch { git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, "+refs/heads/*:refs/remotes/source/*"]); }
+  }
+  if (!has(f, repo, w.sha) || git(f, repo, ["rev-parse", "--verify", `${w.sha}^{commit}`]).toString().trim() !== w.sha) throw new Error(`${w.url} has no commit ${w.sha}`);
+  return repo;
+}
+
+/** The tree at `w` as a local folder, extracted once per sha and path. Symlinks and submodules are refused. */
+export function checkout(w: Where, f: Fetch): string {
+  const dest = join(f.cacheDir, "trees", `${w.sha}-${hash(`${w.url}\0${w.path}`)}`);
+  if (existsSync(dest)) return dest;
+  const repo = repoAt(w, f);
+  const tree = w.path ? `${w.sha}:${w.path}` : w.sha;
+  const entries = git(f, repo, ["ls-tree", "-r", "-z", tree]).toString().split("\0").filter(Boolean);
+  if (!entries.length) throw new Error(`${w.url}@${w.sha}: ${w.path || "the repository"} is empty or missing`);
+  const odd = entries.filter((e) => /^(120000|160000) /.test(e)).map((e) => e.split("\t")[1]);
+  if (odd.length) throw new Error(`${w.url}@${w.sha}: symlinks and submodules are refused (${odd.slice(0, 5).join(", ")})`);
+  const tmp = `${dest}.tmp-${process.pid}`;
+  rmSync(tmp, { recursive: true, force: true });
+  mkdirSync(tmp, { recursive: true });
+  execFileSync("tar", ["-x", "-C", tmp], { input: git(f, repo, ["archive", "--format=tar", tree]), maxBuffer: 256 << 20 });
+  renameSync(tmp, dest);
+  return dest;
+}
+
+/**
+ * Files that differ between two checkouts of a module, relative to it, for the authority diff's code check. A different
+ * repository or folder is a move: everything changed.
+ */
+export function changedFiles(a: Where, b: Where, f: Fetch): string[] {
+  if (a.sha === b.sha && a.url === b.url && a.path === b.path) return [];
+  if (a.url !== b.url || a.path !== b.path) return ["(source moved)"];
+  const repo = repoAt(b, f);
+  repoAt(a, f);
+  const out = git(f, repo, ["diff", "--name-only", "--no-renames", a.sha, b.sha, "--", ...(b.path ? [b.path] : [])]).toString();
+  return out.split("\n").filter(Boolean).map((p) => (b.path ? p.slice(b.path.length + 1) : p));
+}
+
+/** instance.yaml `modules:` entries naming a third-party marketplace (`name@marketplace`), by marketplace. */
+function wantedRemote(instance: Dict): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const m of Array.isArray(instance.modules) ? instance.modules : []) {
+    if (isMap(m) && m.sha != null) throw new Error(`instance.yaml modules: ${String(m.id)}: a per-module sha is not supported yet; pin the marketplace`);
+    const [name, mkt] = String(isMap(m) ? m.id : m).split("@");
+    if (mkt && mkt !== OFFICIAL) out.set(mkt, [...(out.get(mkt) ?? []), name!]);
+  }
+  return out;
+}
+
+/**
+ * The modules instance.yaml installs from third-party marketplaces, fetched and read. `parse`: the caller's YAML parser (the
+ * compiler's); `kit`: whether a module passes the contract kit (conformant). A module from a third-party marketplace is
+ * `untrusted` unless its manifest says otherwise (spec §4.1); saying otherwise is new authority (the authority diff).
+ */
+export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }): Remote[] {
+  const mkts = new Map(marketplacesOf(instance).map((m) => [m.name, m.at]));
+  const out: Remote[] = [];
+  for (const [mkt, names] of wantedRemote(instance)) {
+    const at = mkts.get(mkt);
+    if (!at) throw new Error(`instance.yaml modules: ${names[0]}@${mkt}: no marketplace ${mkt} in marketplaces:`);
+    const dir = checkout(at, f);
+    const file = join(dir, "marketplace.json");
+    if (!existsSync(file)) throw new Error(`marketplace ${mkt}: no marketplace.json at ${at.url}@${at.sha}${at.path ? `:${at.path}` : ""}`);
+    const entries = marketplaceEntries(JSON.parse(readFileSync(file, "utf8")), `marketplace ${mkt}`);
+    for (const name of names) {
+      const e = entries.find((x) => x.name === name);
+      if (!e) throw new Error(`marketplace ${mkt} lists no module ${name}`);
+      const w = sourceOf(e.source, `marketplace ${mkt}: ${name}`, at);
+      const root = checkout(w, f);
+      if (!existsSync(join(root, "module.yaml"))) throw new Error(`${name}@${mkt}: no module.yaml at ${w.url}@${w.sha}${w.path ? `:${w.path}` : ""}`);
+      const def = (f.parse(readFileSync(join(root, "module.yaml"), "utf8")) ?? {}) as Dict;
+      if (def.name !== name) throw new Error(`${name}@${mkt}: module.yaml name is ${String(def.name)}, expected ${name}`);
+      def.isolation ??= "untrusted";
+      out.push({ name, marketplace: mkt, market: at, at: w, root, def, tier: f.kit?.(root, def, w) ? "conformant" : "declared" });
+    }
+  }
+  return out;
+}
+
+/**
+ * How the host fetches: the default cache, the jailed kit, and the host's credential helper (ops/git-credential-app.mjs, the
+ * code host module's App tokens; it answers nothing for a repo the App can't read, and git then fetches anonymously).
+ */
+export function hostFetch(repo: string): Fetch & { kit: ReturnType<typeof kitInJail> } {
+  const cacheDir = defaultCache();
+  const helper = join(repo, "ops/git-credential-app.mjs");
+  return { cacheDir, kit: kitInJail(cacheDir), ...(existsSync(helper) ? { credentialHelper: `!node ${helper}` } : {}) };
+}
+
+/**
+ * The module side of an apply with third-party modules (the apply log and the card): each side's official defs plus the
+ * third-party modules that side's instance.yaml installs, the files those changed between the sides (as modules/<name>/…
+ * paths, as the product's own diff names them), and where each comes from (marketplace, sha, tier) for the card.
+ */
+export function withRemote<T extends { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, Dict>; headDefs: Record<string, Dict>; changed: string[] }>(a: T, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }) {
+  const [rb, rh] = [remoteModules(a.baseInstance, f), remoteModules(a.headInstance, f)];
+  const defs = (official: Record<string, Dict>, remote: Remote[]) => {
+    const out = { ...official };
+    for (const r of remote) {
+      if (out[r.name]) throw new Error(`${r.name}@${r.marketplace}: a module named ${r.name} is already installed`);
+      out[r.name] = r.def;
+    }
+    return out;
+  };
+  const origin = (l: Remote[]) => Object.fromEntries(l.map((r) => [r.name, `${r.marketplace} at ${r.at.sha.slice(0, 12)} (tier ${r.tier})`]));
+  const changed = [...a.changed];
+  for (const h of rh) {
+    const b = rb.find((x) => x.name === h.name);
+    if (b) changed.push(...changedFiles(b.at, h.at, f).map((p) => `modules/${h.name}/${p}`));
+  }
+  return { ...a, baseDefs: defs(a.baseDefs, rb), headDefs: defs(a.headDefs, rh), changed, origins: { base: origin(rb), head: origin(rh) } };
+}
+
+/**
+ * The contract kit (kernel/sdk) on a third-party module, in the job sandbox with no network: true only when it ran and
+ * passed. The kit covers engine@1, so a module with no engine is not conformant yet. Nowhere to jail it (no bwrap, not
+ * Linux) is not conformant either. One run per sha, remembered in the cache.
+ */
+export function kitInJail(cacheDir: string) {
+  return (root: string, def: Dict, at: Where) => {
+    if (!isMap(def.providers) || def.providers.engine == null || process.platform !== "linux") return false;
+    const mark = join(cacheDir, "kit", `${at.sha}-${hash(`${at.url}\0${at.path}`)}`);
+    if (existsSync(mark)) return readFileSync(mark, "utf8") === "pass";
+    const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", fileURLToPath(import.meta.url), root], { encoding: "utf8", timeout: 120_000 });
+    if (r.status === 3) return false; // no jail here: try again next time
+    mkdirSync(join(cacheDir, "kit"), { recursive: true });
+    writeFileSync(mark, r.status === 0 ? "pass" : "fail");
+    return r.status === 0;
+  };
+}
+
+// The jailed kit itself: `node sources.ts <module dir>`. Exit 0 passed, 3 no jail, else failed.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const root = resolve(process.argv[2] ?? "");
+  const repo = resolve(import.meta.dirname, "../../..");
+  const { sandboxConfig } = await import("../sandbox-config.ts");
+  const { layout } = await import("../sandbox.ts");
+  const cfg = sandboxConfig();
+  const yaml = join(repo, "kernel/node_modules");
+  if (spawnSync(cfg.bwrap, ["--version"]).status !== 0) process.exit(3);
+  const argv = [cfg.bwrap, ...layout(cfg, { ro: [root, join(repo, "kernel/sdk"), yaml] }), "--unshare-net", "--die-with-parent", "--setenv", "NODE_PATH", yaml, "--", process.execPath, "--disable-warning=ExperimentalWarning", join(repo, "kernel/sdk/bin/aidenhq-module-test.ts"), root];
+  const r = spawnSync(argv[0]!, argv.slice(1), { stdio: "inherit", timeout: 110_000 });
+  process.exit(r.status === 0 ? 0 : 1);
+}

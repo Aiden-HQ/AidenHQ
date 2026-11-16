@@ -5,7 +5,7 @@ import YAML from "yaml";
 import { classify, newGrants } from "../src/tiers.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
 import { afterReview, priorDecisions, rejectedSince, routineCap } from "../../../kernel/src/tier.ts";
-import { moduleInputs } from "../../../kernel/src/loader/authority.ts";
+import { marketplaceChanges, moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { origins } from "../src/paperclip.ts";
 
 test("a replayed approval: only a later no on its branches (or a merge, or the owner's veto) outranks it", () => {
@@ -450,6 +450,25 @@ test("a product bump adding a write kind: the reviewer runs first, then the owne
   const modules = moduleInputs({ baseInstance: { modules: ["acme-crm"] }, headInstance: { modules: ["acme-crm"] }, baseDefs: { "acme-crm": crmMod }, headDefs: { "acme-crm": { ...crmMod, privileged: ["docker"] } }, changed: [] });
   const mixed = apply(["instance.yaml"], { "instance.yaml": i(PIN_A) }, { "instance.yaml": i(PIN_B, "foo: 1\n") }, { pin: { forward: true }, modules });
   assert.deepEqual([mixed.tier, mixed.reviewFirst, mixed.panel], [2, true, true]);
+});
+
+// Third-party marketplaces (spec §6.4, lean-core 5a): adding one is where code comes from, so the owner's after the reviewer;
+// a sha bump whose modules gain no authority is the reviewer's alone.
+test("a new marketplace is the owner's after the reviewer; a sha bump without new authority is AI review only", () => {
+  const mkt = (sha) => ({ name: "acme", source: { source: "github", repo: "acme/aidenhq-marketplace" }, sha });
+  const twin = { name: "twin", isolation: "untrusted", providers: { engine: [{ kind: "twin", bin: "bin/engine" }] } };
+  const side = (i, ms) => `product: ${PIN_A}\nmarketplaces: ${JSON.stringify(ms)}\nmodules: ${JSON.stringify(i)}\n`;
+  const run = (bi, hi, changed, origins) => {
+    const [b, h] = [YAML.parse(bi), YAML.parse(hi)];
+    const modules = moduleInputs({ baseInstance: b, headInstance: h, baseDefs: b.modules.length ? { twin } : {}, headDefs: { twin }, changed, origins });
+    return apply(["instance.yaml"], { "instance.yaml": bi }, { "instance.yaml": hi }, { modules, marketplaces: marketplaceChanges(b, h) });
+  };
+  const add = run(side([], []), side(["twin@acme"], [mkt("1".repeat(40))]), [], { base: {}, head: { twin: "acme at 111111111111 (tier declared)" } });
+  assert.deepEqual([add.tier, add.reviewFirst, add.rule], [2, true, "module-authority"]);
+  assert.match(add.reason, /marketplaces: adds marketplace acme \(https:\/\/github.com\/acme\/aidenhq-marketplace.git at 111111111111\)/);
+  const bump = run(side(["twin@acme"], [mkt("1".repeat(40))]), side(["twin@acme"], [mkt("2".repeat(40))]), ["modules/twin/bin/engine"], { base: { twin: "acme at 111111111111 (tier declared)" }, head: { twin: "acme at 222222222222 (tier declared)" } });
+  assert.deepEqual([bump.tier, Boolean(bump.reviewFirst), bump.panel], [1, false, true], "code changed, no new authority: the panel, never the owner");
+  assert.match(bump.reason, /twin: now from acme at 222222222222 \(tier declared\), code changes/);
 });
 
 test("a reviewer reject on a module change is final: no owner card", () => {

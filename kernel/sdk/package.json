@@ -5,7 +5,11 @@
   "license": "MIT",
   "type": "module",
   "engines": { "node": ">=24" },
-  "bin": { "aidenhq-module-test": "bin/aidenhq-module-test.ts" },
-  "exports": { "./types": "./src/types.ts", "./engine-io": "./src/engine-io.ts", "./kit": "./src/kit.ts", "./executor": "./src/executor.ts" },
-  "scripts": { "test": "NODE_PATH=../../services/runner/node_modules node --test test/*.test.mjs ../../modules/engine-*/test/*.test.mjs" }
+  "bin": { "aidenhq-module-test": "dist/bin/aidenhq-module-test.js" },
+  "exports": { "./types": "./dist/src/types.js", "./engine-io": "./dist/src/engine-io.js", "./kit": "./dist/src/kit.js", "./executor": "./dist/src/executor.js" },
+  "files": ["dist", "LICENSE"],
+  "scripts": {
+    "test": "NODE_PATH=../../services/runner/node_modules node --test test/*.test.mjs ../../modules/engine-*/test/*.test.mjs",
+    "prepack": "node ../../scripts/sdk-pack.mjs"
+  }
 }

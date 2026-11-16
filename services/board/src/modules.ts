@@ -9,6 +9,9 @@ interface CatalogEntry {
   chosen?: boolean;
   requires: string[];
   agents: string[];
+  /** Where it comes from and its computed tier (spec §6.5: declared, conformant or official). */
+  marketplace?: string;
+  tier?: string;
 }
 
 export function moduleStates(catalogJson: string) {
@@ -17,6 +20,8 @@ export function moduleStates(catalogJson: string) {
     description: m.description,
     agents: m.agents,
     requires: m.requires,
+    marketplace: m.marketplace ?? "aidenhq",
+    tier: m.tier ?? "official",
     state: (m.name === "core" ? "core" : !m.enabled ? "off" : m.chosen ? "on" : "dependency") as ModuleState,
   }));
 }

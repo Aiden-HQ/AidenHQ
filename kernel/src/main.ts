@@ -29,6 +29,7 @@ import { checksFile, createChecks } from "./checks.ts";
 import { createAsCaller, createCp } from "./cp.ts";
 import { createIdentity, type Connection, type Grant, type Jobcap } from "./identity.ts";
 import { createAdvisories } from "./loader/advisories.ts";
+import { hostFetch } from "./loader/sources.ts";
 import { createResolver } from "./net.ts";
 import { createProxy } from "./proxy.ts";
 import { openRecords } from "./records.ts";
@@ -107,7 +108,7 @@ const ownerApi = asApi(cpApi);
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
 const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, modules: modulesFile, resetLinks: () => accounts?.takeResetLinks() ?? [], log });
 // Marketplace advisories (loader/advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
-const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main") });
+const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });
 setInterval(() => void advisories.tick(), 10 * 60_000).unref();
 setTimeout(() => void advisories.tick(), 30_000).unref();
 const brake = createBrake({ db: records.db, owner: ownerApi, on: () => grantsTable().loop_brake !== "off" });

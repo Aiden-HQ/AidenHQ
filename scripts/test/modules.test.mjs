@@ -35,8 +35,8 @@ test("unknown marketplace fields are ignored", () => {
 });
 test("a module directory missing from the marketplace fails", () =>
   assert.throws(() => compile(market((m) => ({ ...m, plugins: m.plugins.filter((p) => p.name !== "b") })), inst(["a"])), /modules\/b is not in modules\/marketplace.json/));
-test("a remote source fails until unit 5a", () =>
-  assert.throws(() => compile(market((m) => ({ ...m, plugins: m.plugins.map((p) => (p.name === "b" ? { name: "b", source: { source: "github", repo: "acme/b" } } : p)) })), inst(["a"])), /remote sources/));
+test("a remote source without a sha is refused", () =>
+  assert.throws(() => compile(market((m) => ({ ...m, plugins: m.plugins.map((p) => (p.name === "b" ? { name: "b", source: { source: "github", repo: "acme/b", ref: "main" } } : p)) })), inst(["a"])), /needs a 40-character sha \(a ref alone is refused\)/));
 test("requires pulls dependencies in", () => assert.deepEqual(enabledOf(compile(mods, inst(["a"]))), ["a", "b", "core", "eng"]));
 test("engines: the registry lists each kind's module, bin and data; crew args come from the engine module", () => {
   const out = compile(mods, inst([]));
