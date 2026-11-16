@@ -2,7 +2,10 @@
 Description=AidenHQ security inventory (SBOMs for the security module's scanner)
 
 [Service]
+# The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
+Environment=AIDENHQ_DIR=%h/aidenhq
+EnvironmentFile=-%h/.config/aidenhq-checkout.env
 Type=oneshot
-ExecStart=%h/aidenhq/ops/security-sbom.sh
+ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/security-sbom.sh
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Nice=10

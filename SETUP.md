@@ -85,7 +85,8 @@ prints `yes` after that.)
 
 ## 2. Get the product checkout
 
-`ops/setup.sh` requires the checkout at exactly `/home/<you>/aidenhq` (the runner's unit expects it there).
+The checkout may live anywhere; the examples below use `~/aidenhq`. `ops/setup.sh` records where it is in
+`~/.config/aidenhq-checkout.env`, which the user units read.
 
 Choose where your copy of the product comes from. This matters later, because both `ops/setup.sh` and
 `ops/apply-config.sh` only run a product commit that is on the checkout's `origin/main`:

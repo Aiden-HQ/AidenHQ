@@ -3,11 +3,14 @@ Description=AidenHQ kernel (kernel/src/main.ts): the model gateway and the tool 
 After=network-online.target
 
 [Service]
+# The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
+Environment=AIDENHQ_DIR=%h/aidenhq
+EnvironmentFile=-%h/.config/aidenhq-checkout.env
 # The secret vault must be mounted (ops/vault): the model key and the connections' service keys are read from it at each
 # call. It also listens on the backplane's gateway address (10.231.0.1: the model gateway on 8201, the tool proxy on 3130),
 # which exists once compose is up: the kernel retries those binds itself while loopback serves.
 ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
-ExecStart=/usr/bin/env node --disable-warning=ExperimentalWarning %h/aidenhq/kernel/src/main.ts
+ExecStart=/usr/bin/env node --disable-warning=ExperimentalWarning ${AIDENHQ_DIR}/kernel/src/main.ts
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5
