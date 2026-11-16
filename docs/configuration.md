@@ -6,7 +6,7 @@ Configuration has two sources: **modules** in the product repo (`modules/<name>/
 ## Modules
 
 A module is a folder with a `module.yaml` and any of `agents/<key>/AGENTS.md`, `connections/<svc>/` and `apps/<app>/`. It
-ships no compose file: compile generates its services from `services:`. `modules/core` (agents, tasks and apps connections, the board's roles) is always installed and requires `channel-telegram` and `chat-lane`.
+ships no compose file: compile generates its services from `services:`. `modules/core` (the shared settings, departments and labels, and the DevOps Engineer) is always installed and requires the essential modules: among them `chief-of-staff` (Aiden, the Researcher), `coach`, `agent-builder` (the Agent Architect and the agent templates), `platform` (the Platform Engineer), `memory`, `model-tools`, `channel-telegram` and `chat-lane`.
 
 `module.yaml` fields:
 

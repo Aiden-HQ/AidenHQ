@@ -2,12 +2,12 @@
 // `when`/`unless` and orders them first, normal, last, then module, then id. Setup appends the files verbatim.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, cpSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile } from "../modules.mjs";
+import { compile, promptEntries } from "../modules.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const template = join(product, "modules/agent-builder/templates/pr-review-chaser");
@@ -37,10 +37,8 @@ test("each crew agent gets the module sections whose conditions hold, in order",
 });
 
 test("a prompt with an unknown field or test fails compile", () => {
-  const copy = mkdtempSync(join(tmpdir(), "prod-"));
-  cpSync(product, copy, { recursive: true, filter: (s) => !/node_modules|\.git$|\/data$|config\.next/.test(s) });
-  const file = join(copy, "modules/model-tools/module.yaml");
-  const def = YAML.parse(readFileSync(file, "utf8"));
-  writeFileSync(file, YAML.stringify({ ...def, prompts: [{ ...def.prompts[0], when: { agents: ["x"] } }] }));
-  assert.throws(() => compile(copy, instance()), /prompt advisor: unknown when\.agents/);
+  const root = join(product, "modules/model-tools");
+  assert.equal(promptEntries("model-tools", YAML.parse(readFileSync(join(root, "module.yaml"), "utf8")), root).length, 2);
+  assert.throws(() => promptEntries("model-tools", { prompts: [{ id: "advisor", file: "prompts/advisor.md", when: { agents: ["x"] } }] }, root), /prompt advisor: unknown when\.agents/);
+  assert.throws(() => promptEntries("model-tools", { prompts: [{ id: "advisor", file: "prompts/advisor.md", order: "early" }] }, root), /order of first, normal or last/);
 });
