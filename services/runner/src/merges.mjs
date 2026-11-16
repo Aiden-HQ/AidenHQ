@@ -82,6 +82,8 @@ export const WRITES = [
   { method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ },
   // A workflow run whose red jobs all ended on an infrastructure failure: its failed jobs re-run once (infraRetry).
   { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun-failed-jobs$/ },
+  // A workflow run over for 10 minutes with a check still pending (a ghost job): the whole run re-runs once (ghostRetry).
+  { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun$/ },
   // The head is waiting for its design review: written where the runner files and wakes that review.
   { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/statuses\/[0-9a-f]{7,40}$/ },
 ];
@@ -448,7 +450,7 @@ async function retryInfra(github, repo, number, pr) {
   return rerunChecks(github, repo, number, pr.headRefOid, r.rerun);
 }
 
-/** Re-runs the failed jobs of each check's workflow run, one call per run; undefined when refused (no permission). */
+/** Re-runs the failed jobs of each check's workflow run (the whole run for a ghost), one call per run; undefined when refused (no permission). */
 async function rerunChecks(github, repo, number, head, nodes, key = "rerun") {
   const runs = new Map();
   for (const n of nodes) {
@@ -457,7 +459,7 @@ async function rerunChecks(github, repo, number, head, nodes, key = "rerun") {
   }
   for (const [run, checks] of runs) {
     try {
-      await github.rerun(repo, number, { run, checks, head });
+      await github.rerun(repo, number, { run, checks, head, whole: key === "ghost" });
     } catch {
       return undefined;
     }
@@ -469,7 +471,7 @@ async function rerunChecks(github, repo, number, head, nodes, key = "rerun") {
 const GHOST_MINUTES = 10;
 /**
  * Pending checks of the head whose workflow run (`github.run`: { status, updatedAt }) has been over for GHOST_MINUTES
- * (Aiden-HQ/AidenHQ#141, roadmap-keeper#214): the run is re-run once per check per head, by infraRetry's write. A ghost never
+ * (Aiden-HQ/AidenHQ#141, roadmap-keeper#214): the run is re-run once per check per head, by a whole-run re-run (a ghost job isn't failed, so the failed-jobs re-run skips it). A ghost never
  * counts as passed; if the re-run doesn't clear it, the stuck limit reports it. Undefined when no check is one.
  */
 export async function ghostRetry(github, repo, number, pr, now) {

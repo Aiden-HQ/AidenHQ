@@ -68,9 +68,9 @@ function fakeGithub(prs, commits = {}, bases = {}) {
     reruns(repo, number) {
       return this.reran[number] ?? {};
     },
-    async rerun(repo, number, { run, checks, head }) {
+    async rerun(repo, number, { run, checks, head, whole }) {
       if (this.refuseRerun) throw new Error("gh: Resource not accessible by integration (HTTP 403)");
-      writes.push({ rerun: run, checks: checks.map((c) => c.name) });
+      writes.push({ rerun: run, checks: checks.map((c) => c.name), ...(whole ? { whole } : {}) });
       this.reran[number] = { ...this.reran[number], ...Object.fromEntries(checks.map((c) => [c.name, { head, id: c.id }])) };
     },
     // A workflow run's { status, updatedAt } by id: `runs`.
@@ -167,9 +167,10 @@ describe("merge queue: deciding", () => {
   });
 
   it("writes only merges, branch updates, closing a PR (comment, then state) and re-running a job", () => {
-    assert.deepEqual(WRITES.map((w) => w.method), ["PUT", "PUT", "POST", "PATCH", "DELETE", "POST", "POST"]);
+    assert.deepEqual(WRITES.map((w) => w.method), ["PUT", "PUT", "POST", "PATCH", "DELETE", "POST", "POST", "POST"]);
     assert.ok(WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/rerun-failed-jobs")));
-    assert.ok(!WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/rerun")), "only the failed jobs, never a whole run");
+    assert.ok(WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/rerun")), "a whole run re-runs only for a ghost (ghostRetry), its one call site");
+    assert.ok(!WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/cancel") || w.path.test("repos/o/r/actions/runs/7/rerun/x")), "nothing else of a run");
     assert.ok(WRITES.some((w) => w.path.test("repos/o/r/pulls/1/merge")));
     assert.ok(!WRITES.some((w) => w.path.test("repos/o/r/pulls/1/reviews")));
     assert.ok(WRITES.some((w) => w.method === "DELETE" && w.path.test("repos/o/r/git/refs/heads/feat/x")));
@@ -706,7 +707,7 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     assert.deepEqual(gh.writes, []);
     // Over for more than ten minutes: its run is re-run, once.
     await advance(q, { github: gh, now: at(11) });
-    assert.deepEqual(gh.writes, [{ rerun: 100, checks: ["image-changes"] }]);
+    assert.deepEqual(gh.writes, [{ rerun: 100, checks: ["image-changes"], whole: true }], "the whole run: the ghost job is not a failed one");
     await advance(q, { github: gh, now: at(15) });
     assert.equal(gh.writes.length, 1, "once per head, and the old job still reads in progress: never merged");
     assert.equal(q.state, "running");
