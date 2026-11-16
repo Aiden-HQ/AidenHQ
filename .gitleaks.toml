@@ -13,3 +13,13 @@ regexes = [
   '''^abcdef0123456789$''',
   '''^AIDENHQ_MCP_B64$''',
 ]
+
+[[allowlists]]
+description = "Public OpenPGP key fingerprints we pin (vendor apt keys in ops/vm/pins.json, GitHub's gh keyring); the generic rule reads 40 hex digits beside \"key\" as a secret"
+regexes = [
+  '''^9DC858229FC7DD38854AE2D88D81803C0EBFCD88$''',
+  '''^6F71F525282841EEDAF851B42F59B5F99B1BE0B4$''',
+  '''^2596A99EAAB33821893C0A79458CA832957F5868$''',
+  '''^6F1DF85E3A71C24918E727D56FC6D554E32BD943$''',
+  '''^7F38BBB59D064DBCB3D84D725612B36462313325$''',
+]
