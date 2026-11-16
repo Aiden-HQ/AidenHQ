@@ -344,27 +344,59 @@ const DOCUMENT_FILE = 6_000; // one task document's characters
 export const DOCUMENTS_TOTAL = 16_000; // all task documents' characters (its own fenced block, under 20,000)
 const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|ya?ml|log|html?|tsx|ts|jsx|js|css)$/i;
 
+/** The fence characters the grader's prompt escapes: each '<', '>', '\u2039' or '\u203a' costs one more character there. */
+const FENCE_CHARS = /[<>\u2039\u203a]/g;
+
+/** A text's length as the prompt will hold it, escaped: what the budgets below count, never the source's own length. */
+export const promptLength = (text: string): number => text.length + (text.match(FENCE_CHARS)?.length ?? 0);
+
+/** What the facts add when a text's escaping makes it longer than the agent wrote it, so the two lengths are not confused. */
+const escaped = (text: string) => (promptLength(text) > text.length ? ` (${promptLength(text)} in the prompt, its fence characters escaped)` : "");
+
 /**
- * A text cut to `max` characters for the prompt: the start and the end, with the middle replaced by a marker that names how
- * many characters were cut. A test log's verdict is at its end, so cutting only the head would hide the proof a criterion
- * asks for. A cut is always marked: when not even the marker fits, this returns undefined and the caller says the file was
- * not sent, so the trusted facts never claim a marker that is absent.
+ * A text as one fenced block's body: every '<', '>', '\u2039' and '\u203a' escaped, so no arrangement of them can spell a
+ * marker (mapping '<' to '\u2039' would be the hole itself), within `max` characters of the prompt. A text that does not fit
+ * is cut with a marker, never silently: the escaping is paid for out of `max`, so what the facts call sent is in the block.
  */
-function excerpt(text: string, max: number): { shown: string; cut: number } | undefined {
-  if (text.length <= max) return { shown: text, cut: 0 };
+export function fenceBody(text: unknown, max: number): string {
+  const raw = String(text ?? "");
+  const body = promptLength(raw) <= max ? raw : (excerpt(raw, max)?.shown ?? "[... cut: longer than this block's limit ...]");
+  return body.replace(FENCE_CHARS, "\\$&");
+}
+
+/**
+ * A text cut to `max` characters of the prompt: the start and the end, with the middle replaced by a marker that names how
+ * many characters were cut. A test log's verdict is at its end, so cutting only the head would hide the proof a criterion
+ * asks for. `max` counts the prompt's own characters, escaping included, so a block cut here fits the prompt as it is sent. A
+ * cut is always marked: when not even the marker fits, this returns undefined and the caller says the file was not sent, so the
+ * trusted facts never claim a marker that is absent.
+ */
+export function excerpt(text: string, max: number): { shown: string; cut: number } | undefined {
+  if (promptLength(text) <= max) return { shown: text, cut: 0 };
+  // Escapes inside a slice, by prefix sum: fitting a cut to the prompt must not re-scan the text for every candidate.
+  const esc = new Int32Array(text.length + 1);
+  for (let i = 0; i < text.length; i++) esc[i + 1] = esc[i]! + ("<>\u2039\u203a".includes(text[i]!) ? 1 : 0);
+  const weight = (from: number, to: number) => to - from + (esc[to]! - esc[from]!);
   const marker = (head: number, tail: number) => `\n[... characters ${head + 1}-${text.length - tail} cut ...]\n`;
-  let head = Math.floor(max * 0.6);
-  let tail = max - head;
-  for (let i = 0; i < 8; i++) {
-    const m = marker(head, tail);
-    const room = max - m.length;
-    if (room < 0) break;
-    if (head + tail <= room) return { shown: text.slice(0, head) + m + text.slice(text.length - tail), cut: text.length - head - tail };
-    const nextHead = Math.floor(room * 0.6);
-    const nextTail = room - nextHead;
-    if (nextHead === head && nextTail === tail) break;
-    head = nextHead;
-    tail = nextTail;
+  // The largest cut that fits: head and tail share it 60/40, and the marker's own characters count against `max`.
+  const fits = (n: number) => {
+    const head = Math.floor(n * 0.6);
+    const tail = n - head;
+    return weight(0, head) + marker(head, tail).length + weight(text.length - tail, text.length) <= max;
+  };
+  let lo = 0;
+  let hi = max;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(mid)) lo = mid;
+    else hi = mid - 1;
+  }
+  // A marker one digit shorter than its neighbour can fit where the next size does not: settle on a size that does.
+  while (lo > 0 && !fits(lo)) lo--;
+  if (lo > 0) {
+    const head = Math.floor(lo * 0.6);
+    const tail = lo - head;
+    return { shown: text.slice(0, head) + marker(head, tail) + text.slice(text.length - tail), cut: text.length - head - tail };
   }
   // No room for text beside the marker: the marker alone still says the whole file was cut, when it fits.
   const only = marker(0, 0);
@@ -466,9 +498,9 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       facts.push(`${f.label}: text, ${text.length} characters, not sent to the grader (the remaining text budget of ${textLeft} characters has no room for a cut marker)`);
       continue;
     }
-    textLeft -= ex.shown.length;
+    textLeft -= promptLength(ex.shown);
     texts.push(`=== ${f.label}: ${name.slice(0, 200)} ===\n${ex.shown}`);
-    facts.push(`${f.label}: text, ${text.length} characters, in FILES${ex.cut ? ` (too large: ${ex.cut} characters cut from the middle, marked in FILES; ${ex.shown.length} characters shown)` : ""}`);
+    facts.push(`${f.label}: text, ${text.length} characters${escaped(text)}, in FILES${ex.cut ? ` (too large: ${ex.cut} characters cut from the middle, marked in FILES; ${ex.shown.length} characters shown)` : ""}`);
   }
   return { facts, images, data: texts.length ? { FILES: texts.join("\n\n") } : {} };
 }
@@ -510,9 +542,9 @@ export async function documentEvidence(documents: any[], { rubric = "", comments
       facts.push(`${d.label}: text, ${body.length} characters, not sent to the grader (the remaining document budget of ${left} characters has no room for a cut marker)`);
       continue;
     }
-    left -= ex.shown.length;
+    left -= promptLength(ex.shown);
     texts.push(`=== ${d.label}: ${keyOf(d).slice(0, 64)} — ${titleOf(d).slice(0, 200)} ===\n${ex.shown}`);
-    facts.push(`${d.label}: text, ${body.length} characters, in TASK_DOCUMENTS${ex.cut ? ` (too large: ${ex.cut} characters cut from the middle, marked in TASK_DOCUMENTS; ${ex.shown.length} characters shown)` : ""}`);
+    facts.push(`${d.label}: text, ${body.length} characters${escaped(body)}, in TASK_DOCUMENTS${ex.cut ? ` (too large: ${ex.cut} characters cut from the middle, marked in TASK_DOCUMENTS; ${ex.shown.length} characters shown)` : ""}`);
   }
   if (!documents.length) facts.push("no task documents");
   const ids = labelled.map((d: any) => String(d.latestRevisionId ?? d.id ?? `${keyOf(d)}:${bodyOf(d).length}`));

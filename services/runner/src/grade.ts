@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { REPO_ROOT } from "./config.mjs";
-import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, documentEvidence, fileEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
+import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, documentEvidence, fenceBody, fileEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
 import { MAX_DIFF, reviewerModels } from "./review.mjs";
 
 export { GRADER_MARKER };
@@ -43,8 +43,7 @@ export function template(kind: string, dir: string = join(REPO_ROOT, "modules/co
 // Untrusted text never closes its own fence, in any spelling the prompt uses. Every '<', '>', '\u2039' and '\u203a' in it is
 // escaped, so no arrangement of them can spell a marker. Mapping '<' to '\u2039' would be the hole itself: it turns a text's
 // "<<<END FILES" into the guillemet fence spelling instead of defusing it.
-const fence = (name: string, text: unknown, max: number) =>
-  `<<<${name}\n${String(text ?? "").replace(/[<>\u2039\u203a]/g, "\\$&").slice(0, max) || "(none)"}\n${name}>>>`;
+const fence = (name: string, text: unknown, max: number) => `<<<${name}\n${fenceBody(text, max) || "(none)"}\n${name}>>>`;
 
 /**
  * The evidence for one graded task: { awaiting } (why it can't be graded yet) or { version, facts, data }. `deps` reach
