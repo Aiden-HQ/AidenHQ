@@ -41,7 +41,9 @@ export function template(kind: string, dir: string = join(REPO_ROOT, "modules/co
 }
 
 // Untrusted text never closes its own fence: every triple angle bracket is replaced before the block is made.
-const fence = (name: string, text: unknown, max: number) => `<<<${name}\n${String(text ?? "").replace(/<<<|>>>/g, (m) => (m === "<<<" ? "\u2039\u2039\u2039" : "\u203a\u203a\u203a")).slice(0, max) || "(none)"}\n${name}>>>`;
+// Untrusted text can never form a fence: each '<' becomes U+2039 (a different character) and each '>' becomes U+203A.
+const fence = (name: string, text: unknown, max: number) =>
+  `<<<${name}\n${String(text ?? "").replace(/[<>]/g, (c) => (c === "<" ? "\u2039" : "\u203a")).slice(0, max) || "(none)"}\n${name}>>>`;
 
 /**
  * The evidence for one graded task: { awaiting } (why it can't be graded yet) or { version, facts, data }. `deps` reach
