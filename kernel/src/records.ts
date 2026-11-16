@@ -14,7 +14,7 @@ export type State = "review" | "owner" | "approved" | "claimed" | "done" | "fail
 export type Requester = { agent: string; key: string; name: string; roles: string[]; kind: string; task?: string; run?: string; module?: string };
 export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string };
 export type Rec = {
-  id: string; kind: string; module: string; args: unknown; targets: Record<string, unknown>; executor: { module: string; url?: string }; policy: string;
+  id: string; kind: string; module: string; args: unknown; targets: Record<string, unknown>; executor: { module: string; url?: string; rev?: string }; policy: string;
   digest: string; tier: 0 | 1 | 2; panel: boolean; card: Card;
   /** The tier before the autonomy caps (tier.ts): 2 means the owner's on its merits, so even the reviewer's reject reaches them. Null on older records. */
   merit?: 0 | 1 | 2 | null; requester: Requester; task: string; state: State;

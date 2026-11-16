@@ -13,7 +13,7 @@ import { computeTier, type Autonomy, type Raise, type Tier } from "./tier.ts";
 
 type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minimum?: number; maximum?: number };
 /** One compiled kind (config/kernel/writes.json, keyed `<module>.<kind>`); `tools` are `connection.tool`. */
-export type Kind = { module: string; floor: Tier; panel?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string } };
+export type Kind = { module: string; floor: Tier; panel?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
 type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; card?: { [k: string]: string }; satisfied?: { evidence: string } };
 export const CONN_TOOL = "conn.tool";
 const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
@@ -100,7 +100,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
   async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown): Promise<Rec> {
-    const executor = { module: k.module, url: k.executor?.url };
+    const executor = { module: k.module, url: k.executor?.url, ...(k.executor?.rev ? { rev: k.executor.rev } : {}) };
     const plan: Plan = await call(k, "plan", { kind, args, requester, task, ...(evidence !== undefined ? { evidence } : {}) });
     if (k.args) validate(k.args, plan.args);
     const targets = plan.targets ?? {};
@@ -151,7 +151,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (r.task && !(await onTask.open(r.task))) return void records.finish(id, false, "Not run: the task is closed, so a leftover request runs nothing.");
       if (r.kind !== CONN_TOOL) {
         const k = registry()[r.kind];
-        const again: Plan | undefined = k && k.module === r.executor.module && k.executor?.url === r.executor.url && policy(k) === r.policy
+        // The same executor (module, address and code revision) and policy, or the record is stale (A9).
+        const again: Plan | undefined = k && k.module === r.executor.module && k.executor?.url === r.executor.url && k.executor?.rev === r.executor.rev && policy(k) === r.policy
           ? await call(k, "plan", { kind: r.kind, args: r.args, requester: r.requester, task: r.task, revalidate: true }).catch(() => undefined) : undefined;
         if (!again || digestOf({ ...r, args: again.args, targets: again.targets ?? {} }) !== r.digest) {
           records.close(id, "stale", "stale: what it acts on changed since it was approved");
