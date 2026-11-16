@@ -33,13 +33,13 @@
     "id": "A6",
     "attack": "Approve over the board origin: board JavaScript posts to /approvals/* or frames a decide page",
     "unit": "3a",
-    "test": null
+    "test": "kernel/test/accounts.test.mjs"
   },
   {
     "id": "A7",
     "attack": "Clickjack: a module frames /owner/confirm or any decide page",
     "unit": "3a",
-    "test": null
+    "test": "kernel/test/accounts.test.mjs"
   },
   {
     "id": "A8",
@@ -57,7 +57,7 @@
     "id": "A10",
     "attack": "Kernel killed after claim, during execute, during a job",
     "unit": "3e",
-    "test": null
+    "test": "kernel/test/jobs.test.mjs"
   },
   {
     "id": "A11",
@@ -78,22 +78,34 @@
     "test": "kernel/test/data-version.test.mjs"
   },
   {
+    "id": "A16",
+    "attack": "A marketplace's advisories.json names another marketplace's module, or carries instruction text",
+    "unit": "4e",
+    "test": "kernel/test/advisories.test.mjs"
+  },
+  {
+    "id": "A18",
+    "attack": "An upstream issue or PR carrying the owner's name, a hostname, an IP or a secret",
+    "unit": "4f",
+    "test": "modules/github/connections/github-mcp/test/projects.test.ts"
+  },
+  {
     "id": "H1",
     "attack": "Hostile job: symlink in the workspace pointing outside it",
     "unit": "1a",
-    "test": null
+    "test": "kernel/test/jobs.test.mjs"
   },
   {
     "id": "H2",
     "attack": "Hostile job: reads the vault, data dir, Docker or tailscaled socket, /run/user/<uid>",
     "unit": "1a",
-    "test": null
+    "test": "services/runner/test/sandbox.test.mjs"
   },
   {
     "id": "H3",
     "attack": "Hostile job: calls a module MCP server or a model provider directly, with no bearer or key",
     "unit": "1a",
-    "test": null
+    "test": "services/runner/test/sandbox.test.mjs"
   },
   {
     "id": "H4",

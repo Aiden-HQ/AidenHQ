@@ -21,10 +21,12 @@ export const STATE = "code-review/state"; // the commit status this workflow set
 const MAX_STEPS = 3;
 const MAX_LINES = 2000;
 // package-lock.json is not counted as changed lines: npm-age.mjs validates what it changes. It stays in the patch. Nor are an
-// agent's screenshots and reports under .aidenhq/out/ (the workflow's types), and a binary file counts 20 (the workflow's rule).
-export const NOLOCK = [":(exclude,glob)**/package-lock.json", ...["png", "jpg", "jpeg", "webp", "gif", "json", "txt"].map((t) => `:(exclude,glob).aidenhq/out/**/*.${t}`)];
+// agent's screenshots under .aidenhq/out/ (the workflow's image types; its json and txt reports count), and a binary file counts 20 (the workflow's rule).
+export const NOLOCK = [":(exclude,glob)**/package-lock.json", ...["png", "jpg", "jpeg", "webp", "gif"].map((t) => `:(exclude,glob).aidenhq/out/**/*.${t}`)];
 const FULL = { mode: "full", from: "", n: 0, lines: 0 };
-const CI_FILES = [".github/workflows/ci.yml", ".github/codegenie-gate.mjs", ".github/codegenie-prior.mjs", ".github/quick-review.mjs"];
+const CI_FILES = [".github/workflows/ci.yml", ".github/codegenie-gate.mjs", ".github/codegenie-prior.mjs", ".github/code-review.mjs", ".github/review-tools.mjs", ".github/code-review-rules.md"];
+// Files that shape the review but an app may not have: the same on both sides, absent included.
+const OPTIONAL_FILES = [".github/code-review-critical"];
 
 /** The PR's last green head before `head`, with the state its run recorded: { sha, n, lines, mb }, or undefined. */
 async function lastGreen(api, { repo, headRef, baseRef, head }) {
@@ -73,6 +75,7 @@ export async function decide({ api, git, repo, headRef, baseRef, base, head, def
   // carries a verdict forward.
   const blob = (ref, f) => { try { return git("rev-parse", `${ref}:${f}`); } catch { return undefined; } };
   if (!CI_FILES.every((f) => blob(last.sha, f) && blob(last.sha, f) === blob(defaultRef, f))) return full;
+  if (!OPTIONAL_FILES.every((f) => blob(last.sha, f) === blob(defaultRef, f))) return full;
   if ([last.sha, head].some((sha) => !ok("diff", "--quiet", mergeBase(sha), sha, "--", ".github/"))) return full;
   // The same patch: the full diff against each head's own merge-base with 3 lines of context, so the changed lines and
   // where they sit (context, hunk headings, paths, modes) all match; line numbers are dropped so a rebase that shifts

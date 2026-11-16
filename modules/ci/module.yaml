@@ -40,7 +40,11 @@ settings:
   ci_review:
     default: "on"
     values: ["on", "off"]
-  # Models a CI review may call: OpenRouter ids as the code-review job names them (vars.CODEGENIE_MODEL, default below).
+  # The model and reasoning effort of the template's code review (codex review), `<OpenRouter id>:<effort>`: the gateway
+  # hands it to the job with its CI token. Critical paths and reviewer-addressed diffs run one effort higher (xhigh).
+  ci_review_model:
+    default: "~deepseek/deepseek-flash-latest:high"
+  # Models a CI token may call besides ci_review_model: repos still on the older template (codegenie, the quick reviewer).
   ci_review_models:
     default: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest"] # codegenie's, the quick reviewer's
   # CI review spend caps, USD per UTC day: each repo's, and all repos' together. Past one, reviews fail until the next day.

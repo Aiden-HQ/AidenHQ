@@ -2,7 +2,7 @@ name: google
 description: "Google Workspace: Gmail, Calendar, Drive and Docs (reads)."
 connections:
   google_workspace:
-    setup: "Press Connect Google on the board (on an ops/setup.sh host, from its https address; otherwise from http://127.0.0.1:3120). By hand: `scripts/google-auth.sh <client.json>` once per account (`--email`, `--primary`)."
+    setup: "Press Connect Google on the board (on an ops/setup.sh host, from its https address; otherwise from http://127.0.0.1:3121). By hand: `scripts/google-auth.sh <client.json>` once per account (`--email`, `--primary`)."
     guide: "Google Drive, Docs, Calendar and Gmail directly: a document's full current text, events, threads. Glean finds Drive documents faster; read them here when you need the exact current text."
     url: http://google-workspace-mcp:8081/mcp
     auth: google_service_key

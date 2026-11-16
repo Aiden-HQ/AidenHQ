@@ -28,7 +28,8 @@ interface, input and forward) lets in. Everything else on that interface is drop
 | `cloudflare` | cloudflared (outbound only) behind Cloudflare Access | tcp 22 |
 | `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |
 
-- **Board listeners stay loopback** (3120, 3121, 3122, 3129). The front door reaches 3121 on loopback. The one
+- **Admin and board listeners stay loopback** (the kernel's 3120 and 3129; the board's 3121, 3122). The front door reaches
+  3121 and 3120 on loopback. The one
   exception: a LAN-only VM in `local` mode with `AIDENHQ_PUBLIC_IF=none` may publish 3121 on the LAN.
 - **443 opens only once a Caddy front door is compiled** (a `caddy` service in `compose.modules.yaml`). Until then
   `public` keeps the firewall at `local`, and setup says so. An active ufw gets `allow 443/tcp` in that case, and only
@@ -42,22 +43,60 @@ interface, input and forward) lets in. Everything else on that interface is drop
 The full design, including the switch from public to Tailscale or Cloudflare, is
 [minimal-core-install.md](minimal-core-install.md).
 
-## Accounts and board sign-in
+## Accounts and sign-in
 
-Accounts use Better Auth inside the board process, stored in its own SQLite file `data/board/auth.db` (mode 600).
-`services/board/src/accounts.ts` is the glue.
+Accounts use Better Auth inside the kernel (lean-core 3a, 3g), stored in its own SQLite file `data/kernel/auth/auth.db`
+(mode 600, its `auth.secret` beside it). Only the kernel opens it. `kernel/src/auth-rules.ts` holds the options and sign-in
+rules, `kernel/src/accounts.ts` accounts, sessions, links, handoffs and the gate's account map, `kernel/src/admin.ts` the
+admin pages, `kernel/src/signin.ts` the gate-facing sign-in listener (127.0.0.1:3129), `kernel/src/app-access.ts` per-app
+roles and in-app requests, and `kernel/src/auth-api.ts` the backplane routes modules use (the board's session and account
+administration, apps-mcp's in-app requests, `ops/setup.sh`'s setup link and resets with the operator key).
 
-- **Two kinds of account.** An admin signs in to the board with email, password and TOTP and can approve cards. A user
-  never gets the board; the account only opens shared apps.
+- **The board on its own origin** (3g). The board mounts no accounts file. `/auth/start` on the board sets a state nonce in
+  its own cookie and sends the browser to the kernel's `/auth/handoff?to=<board origin>&state=`. There a ready admin
+  (otherwise sign-in first) gets a one-time code (60 s, single use) bound to that origin, the module and the state; `to` must
+  be exactly one of the installed UI origins (`AIDENHQ_BOARD_ORIGINS`, default `BOARD_LAN_URL`'s origin), so there is no
+  open redirect. The board exchanges the code on the backplane (`POST /v1/auth/exchange`, `gateway_board_key`), only in the
+  browser whose state cookie matches, and keeps the session token in its own host-only cookie (`__Host-aidenhq-board` on
+  https). Every board request checks it with the kernel (`POST /v1/auth/session`, believed for 5 seconds): the admin
+  listener's sign-out, a disable, a role change or a reset ends it. The kernel's own session cookie, which reaches the
+  board's origin too, is never read there. Account administration on the board goes to the kernel as that admin's session
+  (`/v1/accounts/*`).
+
+- **The admin listener** is the kernel's, on `127.0.0.1:3120`, behind its own front door (`tailscale serve --https=8446`,
+  or the SSH tunnel). It serves sign-in, TOTP enrolment, link claims, the approval list and card pages, batch decide, the
+  owner's confirmation page and the owner message frame, server-rendered with no script. Every page sends
+  `frame-ancestors 'none'` except `/owner/message`, which the board's origins may frame. Every form carries this
+  listener's own Origin exactly (cookies ignore ports, so the board's origin on the same host is refused) and, signed in,
+  a token bound to the session. The board (3121) links each card to its kernel page; it decides nothing.
+- **Two kinds of account.** An admin signs in on the admin listener with email, password and TOTP and can approve cards
+  there. A user never gets the board or the kernel pages; the account only opens shared apps.
 - **Credentials.** Passwords are argon2id with a 12-character minimum. An admin session is refused unless TOTP is
   enrolled (except on the enrolment routes). Sessions last 30 days, sliding.
 - **Invites and resets.** An admin invites an account by email and passes on a one-time link (72 hours, `BOARD_LINK_TTL_HOURS`; a new link for
   the same email kills older ones). No email is sent. Recovery is `ops/setup.sh --reset <email>`, which sends the link
   only to the owner's chat on the owner channel and ends that account's sessions. The operator key can start setup and
   trigger resets; it never creates sessions or decides approvals.
-- **Lockout.** 5 failed sign-ins in 15 minutes pause that (email, listener, address) for 15 minutes; open sessions are
-  unaffected. A 20-failure account-wide ceiling applies only on the gate-facing listener, so strangers cannot lock the
-  owner out of the board.
+- **Lockout.** A named peer is an address the front door names with its secret, or the tailnet: every request
+  `tailscale serve` passes on (it adds `Tailscale-User-Login`) is the one peer `tailnet`, whatever login it names, so a
+  varied or forged login makes no new bucket. That header is read only on the admin listener `tailscale serve` targets
+  (3120, behind `--https=8446`), only from the host's loopback and never beside the front door's header (Caddy's path,
+  which strips it); the gate's listener (3129) never reads it. The tailnet peer is rate-limited only, never locked or banned:
+  one check in flight per email, 4 in all, 20 failures a minute (past which it waits out the minute) and Better Auth's
+  20-a-minute limit on the sign-in steps. **Accepted risk:**
+  the tailnet is the owner's own (the owner's devices and invited members), so one member slowing another is acceptable.
+  For an address the front door names, 5 failed sign-ins in 15 minutes pause that (email, listener, address) for 15
+  minutes, and Better Auth's per-address rate limits apply; open sessions are unaffected. An unidentified
+  peer gets hard limits instead: per email, one check in flight, two free failures and then a stepped hold (1 s, x4, at
+  most 5 minutes; 429 at once, Retry-After, the wrong-password words, no hashing), and after 10 failures in an hour no
+  unidentified sign-in for that email until the hour is up (the owner hears once); across every email, at most 4 checks in
+  flight and 30 failures a minute. Unidentified failures never hold a named peer. **Codes, per account, whatever the
+  peer:** past 5 wrong codes in 15 minutes the next code check waits (1 s, doubling, at most a minute; 429 at once), about
+  one guess a minute even for someone with the password on the owner's tailnet, and never more than a minute's wait;
+  one code check per account runs at a time (another gets 429, Retry-After: 1). **Why the tailnet header is safe to read:** only host processes reach that loopback listener. Engineer jobs are
+  network-jailed (verify-security's job-network probe finds every host address and port refused), and host processes are
+  already trusted; a forged header only changes which limits apply, never who is signed in. A 20-failure account-wide
+  ceiling applies only on the gate-facing listener.
 - **Client addresses.** The address every limit counts is the socket's, unless a proxy names the client beside its
   shared secret: the gate on 3129 (`X-AidenHQ-Gate`, `gate_board_secret`; the gate itself believes CF-Connecting-IP only on
   cloudflared's unix socket, `data/gate/socket`), the front door on the board listener (`X-AidenHQ-Edge`,
@@ -68,10 +107,10 @@ Accounts use Better Auth inside the board process, stored in its own SQLite file
 - **Owner notices.** More than 30 failures in an hour for one account, from any addresses, tell the owner once an hour;
   nothing locks (an account-wide lock would let anyone lock the owner out). Those alerts are capped at 5 an hour (past it,
   one line says they are held back). Every new admin session tells the owner the time and address, never capped.
-- **Every route needs an admin session**, reads and file downloads included, on the board listeners. The internal
-  listener uses bearer tokens.
+- **Every route needs an admin session**, reads and file downloads included, on the admin listener and the board's.
+  The internal listener uses bearer tokens.
 - **Every admin is an owner.** Any ready admin writes to Paperclip with the board key, so agents act on their words,
-  and their taps or typed replies decide approvals. Decisions are stamped `account:<id>` from the session, never from
+  and their decisions on the kernel's pages decide approvals. Decisions are stamped `account:<id>` from the session, never from
   the client. The board records which account wrote what (`authored`) and shows "by <name>" for non-owner admins.
 - Exactly one account is the owner (`settings.owner_email`). The board cannot demote, disable or reset the owner; only
   `--reset` does.
@@ -120,14 +159,15 @@ With `settings.edge.previews: true`, each open PR on a shared app's repo also ru
 Each mode is a sign-in adapter in the gate (`authenticate(req) → { email, idp }`; [app-identity.md](app-identity.md)); a
 new identity provider is one more adapter.
 
-`settings.app_login` chooses how people sign in (the "gate sign-in listener" is the board's auth listener on 3129):
+`settings.app_login` chooses how people sign in (the "gate sign-in listener" is the kernel's on 127.0.0.1:3129; the gate
+serves the sign-in pages itself, `services/gate/signin-pages.ts`, and passes only their steps on):
 
 - **`access` (default).** The Access token for the host's audience tag (`share.aud`) is required and verified against
   the team's JWKS (signature, issuer, audience, expiry). The identity provider is configured in Access by the
   organization's administrators, never in this code. Any email Access admits is a platform member unless its account is
   disabled.
 - **`password`.** For instances without single sign-on. The gate delegates sign-in to Better Auth on 3129, which serves
-  only sign-in pages, Better Auth's endpoints and the handoff and app-access calls; no board route. Sign-in lives only on
+  only Better Auth's endpoints and the handoff and app-access calls; no page and no admin or board route. Sign-in lives only on
   the my-apps host. Each app host gets its own host-only `__Host-` session cookie through a one-time, 60-second handoff
   code bound to that host; there is no shared cookie. The gate calls 3129 with `gate_board_secret`, caches
   `get-session` for 60 seconds, and a membership is an enabled account. A host that also has an `aud` still needs Access:
@@ -221,7 +261,8 @@ run, without the text leaving the app and without giving app users' words a priv
      `task_comments`, `task_list`, `task_comment`, `task_finish`, `task_set_status`, `task_delegate`, the automatic
      `memory_note`): any other tool, a read included, fails, and so does that agent in another app's `api.callers`;
    - apps-mcp refuses it any app but the ones that name it, with any tool (`feedbackOnly`), and an app may give it narrower
-     API paths than its other callers (`api.callers: [{agent, paths}]`);
+     API paths than its other callers (`api.callers: [{agent, paths}]`), down to exact routes: `GET /api/agent/intake` and
+     `POST /api/agent/intake/{reference}/decision` (the method, then `{name}` for one segment; `services/apps-mcp/src/api.ts`);
    - what it delegates or comments for others starts with `(From app feedback, untrusted: …)` (tasks-mcp, from the grants
      table's `feedback_for`); the runner then shows the task to the Engineer as a person's suggestion, as untrusted input,
      never as the agent's or the owner's request, and the AI reviewer sees the mark in the request chain;

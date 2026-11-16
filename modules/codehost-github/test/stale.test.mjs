@@ -20,13 +20,15 @@ async function codehost(t, state) {
   t.after(() => ex.s.close());
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token", rev: "r1" };
   const kinds = { "codehost-github.push": { module: "codehost-github", floor: 0, tools: [], executor }, "codehost-github.merge": { module: "codehost-github", floor: 1, tools: [], executor } };
-  const k = await kernel(t, { secrets: { codehost_github_token: "ch-key" }, connections: {}, writes: kinds, modules: { modules: { "codehost-github": { token: "codehost_github_token" } } } });
+  const verdicts = [];
+  const k = await kernel(t, { secrets: { codehost_github_token: "ch-key" }, connections: {}, writes: kinds, reviewer: () => verdicts.shift(), modules: { modules: { "codehost-github": { token: "codehost_github_token" } } } });
   handler = serveExecutor({
     plan: async (req) => plan(req, state.now),
     execute: async (rec) => (fx.executes.push(rec), { ok: true, text: "pushed" }),
   }, { key: "ch-key", kernelUrl: k.url });
   const file = async (kind, args) => (await k.v1("POST", "/v1/writes", { kind, args, task: "TASK-1" }, "ch-key")).json;
-  const approve = (id) => k.v1("POST", `/v1/writes/${id}/review`, { digest: k.records.get(id).digest, decision: "approve", reason: "fine", model: "~acme/model-a" });
+  // The runner asks for the record's review (its key); the bound reviewer approves.
+  const approve = (id) => (verdicts.push({ decision: "approve", reason: "fine", model: "~acme/model-a" }), k.v1("POST", `/v1/writes/${id}/review`, { input: { model: "~acme/model-b", tier: 1 }, request: { card: {} } }, "the-runners-key"));
   const updateExecutor = (rev) => {
     const file = join(k.dir, "writes.json");
     writeFileSync(file, JSON.stringify({ ...kinds, "codehost-github.push": { ...kinds["codehost-github.push"], executor: { ...executor, rev } } }));

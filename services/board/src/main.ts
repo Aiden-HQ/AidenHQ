@@ -1,11 +1,9 @@
 import pino from "pino";
 import { readFileSync } from "node:fs";
-import { createAccounts, readGate } from "./accounts.js";
+import { createKernelAuth } from "./kernel-auth.js";
 import { createApp } from "./app.js";
-import { routineWake, webhookWake, type Manifest } from "./app-access.js";
 import { appsApi } from "./fleet.js";
 import { appWatchTick, type AppStatus } from "./app-watch.js";
-import { createSigninServer } from "./signin.js";
 import { queueOwnerLine, startDetector } from "./fleet-ops.js";
 import { backfillEscalatedDelegators, settleClosedGrades } from "./grades.js";
 import { loadConfig } from "./config.js";
@@ -13,6 +11,7 @@ import { pullUsage } from "./costs.js";
 import { McpAuth } from "./mcpauth.js";
 import { GoogleAuth } from "./google.js";
 import { Paperclip } from "./paperclip.js";
+import { kernelRecords } from "./records.js";
 import { weekdayOf } from "./recurrence.js";
 import { Store, localDate } from "./store.js";
 import { startWake } from "./wake.js";
@@ -25,6 +24,8 @@ const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
 const store = new Store(cfg.dbPath);
 const paperclip = new Paperclip(cfg.paperclipUrl, cfg.companyId, cfg.boardKey);
+// The kernel keeps every approval record; the board reads them with the gateway_board_key.
+const records = kernelRecords(cfg.gateway && { url: (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, ""), token: cfg.gateway.token }, log);
 
 /** Every minute: Tomorrow → Today at the start of a workday, then any scheduled moves that are due, on top. */
 function rollover() {
@@ -66,9 +67,9 @@ startDetector(paperclip, store, log);
 const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: (line) => queueOwnerLine(store, line) }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
 setInterval(appWatch, 2 * 60_000).unref();
 // Event wake-ups for heartbeat agents (wake.ts): on unless the instance setting wake_ups is off.
-startWake(paperclip, store, log);
+startWake(paperclip, store, records, log);
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
-startRollover(paperclip, store, log);
+startRollover(paperclip, store, records, log);
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent
 // computers' included (the launcher forwards their calls there).
 pullUsage(cfg.gateway, store, log, 60_000, "gateway_usage_pulled_at");
@@ -79,46 +80,29 @@ const glean = cfg.glean && new McpAuth("Glean", cfg.glean.url, cfg.glean.token, 
 const grafana = cfg.grafana && new McpAuth("Grafana", cfg.grafana.url, cfg.grafana.token, log);
 const clickhouse = cfg.clickhouse && new McpAuth("ClickHouse", cfg.clickhouse.url, cfg.clickhouse.token, log);
 const jira = cfg.jira && new McpAuth("Jira", cfg.jira.url, cfg.jira.token, log);
-// Board accounts: Better Auth in data/board/auth.db; every board route needs a signed-in admin.
-const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...cfg.allowedHosts, ...cfg.lan.hosts, ...cfg.accounts.signin.hosts], boardUrl: cfg.accounts.boardUrl, gate: () => readGate(cfg.accounts.gateFile), gateAccountsFile: cfg.accounts.gateAccountsFile, gateSecret: cfg.accounts.gateSecret, edgeSecret: cfg.accounts.edgeSecret, linkTtlHours: cfg.accounts.linkTtlHours, ownerEmail: cfg.accounts.ownerEmail,
-  // Sign-in alerts and new-sign-in notices: the owner-line queue the owner channel collects (/internal/owner/grades).
-  notify: (line) => queueOwnerLine(store, line),
-  // Each shared app's manifest at its running commit (apps-mcp), and the app-request routine's webhook (setup writes its files).
-  manifest: (app) => appsApi<Manifest>(`/internal/apps/${encodeURIComponent(app)}/manifest`, undefined, { auth: true }),
-  wake: webhookWake(process.env.APP_REQUEST_WEBHOOK_URL_FILE ?? "/run/secrets/app_request_webhook_url", process.env.APP_REQUEST_WEBHOOK_SECRET_FILE ?? "/run/secrets/app_request_webhook_secret", log),
-  // In-app feedback: the app's own "App feedback: <app>" routine (compiled from its registry entry), run by its title.
-  feedbackWake: routineWake(paperclip, log),
-  log });
+// Board sign-in: admins sign in on the kernel's admin listener and the kernel hands this origin its own session (kernel-auth.ts);
+// the board opens no accounts file.
+const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, "");
+if (!cfg.gateway) throw new Error("the board needs gateway_board_key: its key on the kernel's backplane (sign-in, records)");
+const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway.token }, adminUrl: cfg.accounts.adminUrl });
 // The runner's Engineer jobs, as it last reported them (shared by the listeners: it reports to the internal one).
 const activity: { runner?: RunnerReport } = {};
 // Open boards hear what agents change in their chats (watch.ts): one look at Paperclip every 2s while any board listens.
-startWatch({ pc: paperclip, events: store.events, log, runner: () => activity.runner, session: liveActivity(cfg.sessions) });
-const common = { paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway, kernel: cfg.gateway && { url: (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, ""), token: cfg.gateway.token }, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
-const server = createApp({ ...common, allowedHosts: cfg.allowedHosts, mode: "local", operatorKey: cfg.operatorKey });
-server.listen(cfg.port, "0.0.0.0", () => log.info({ port: cfg.port, hosts: cfg.allowedHosts }, "board listening"));
-// The board's https address (`tailscale serve`) and phones on the home network: a separate port, signed in as on 3120.
+startWatch({ pc: paperclip, events: store.events, records, log, runner: () => activity.runner, session: liveActivity(cfg.sessions) });
+const common = { adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway, records, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
+// The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));
 
 // The tasks bridge and the runner: bearer token, /internal/ only. Not published beyond loopback.
 const internal = cfg.internal && createApp({ ...common, allowedHosts: cfg.internal.hosts, mode: "internal", internalToken: cfg.internal.token, reviewerKey: cfg.reviewerKey, operatorKey: cfg.operatorKey, gatewayKey: cfg.gateway?.token });
-// The gate's sign-in listener (3129): Better Auth's sign-in endpoints and pages only, never a board route.
-const signin = createSigninServer({ accounts, hosts: cfg.accounts.signin.hosts, gate: () => readGate(cfg.accounts.gateFile), log });
-void accounts.syncGate();
-// Apps come and go with applies (config/gate.json): a removed app's rows leave the gate's map within a minute; manifests
-// refresh, undelivered request wakes and a failed write retry on the same beat.
-setInterval(() => void accounts.syncGate(), 60_000).unref();
-signin.listen(cfg.accounts.signin.port, "0.0.0.0", () => log.info({ port: cfg.accounts.signin.port, hosts: cfg.accounts.signin.hosts }, "sign-in listener up"));
 if (internal && cfg.internal) internal.listen(cfg.internal.port, "0.0.0.0", () => log.info({ port: cfg.internal!.port }, "internal API listening"));
 
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.on(sig, () => {
     store.events.close();
-    server.close();
     lan.close();
     internal?.close();
-    signin.close();
-    accounts.close();
     store.close();
     process.exit(0);
   });

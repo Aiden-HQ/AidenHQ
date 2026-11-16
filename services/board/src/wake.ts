@@ -29,6 +29,7 @@ import { takeWake } from "./brake.js";
 import { NOTICE_MARKER } from "./chats.js";
 import { appsApi } from "./fleet.js";
 import { OPEN, REPAIR_SUPPRESSED, REPAIR_SUPPRESSED_WHY, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
+import type { Approval, Records } from "./records.js";
 import type { Store } from "./store.js";
 
 const MIN = 60_000;
@@ -49,7 +50,8 @@ export interface PrState {
 }
 export interface WakeDeps {
   pc: PaperclipPart;
-  store: Pick<Store, "meta" | "setMeta" | "approvals" | "grades" | "events">;
+  store: Pick<Store, "meta" | "setMeta" | "grades" | "events">;
+  records: Pick<Records, "list">;
   prStates: (refs: string[]) => Promise<PrState[] | undefined>;
   log: { info(o: object, m: string): void; warn(o: object, m: string): void };
   grantsFile?: string;
@@ -91,16 +93,16 @@ const latest = (...xs: (string | null | undefined)[]) => xs.filter(Boolean).sort
 const childState = (status: string) => (status === "done" || status === "cancelled" ? status : "open");
 
 /** The PRs a task names: its description and its merge cards. */
-function prsOf(x: Issue, store: WakeDeps["store"]): string[] {
+function prsOf(x: Issue, cards: Approval[]): string[] {
   const refs = prRefs(x.description);
-  for (const a of store.approvals.on(x.id)) if (a.action === "merge") for (const p of (a.args as { prs?: { url: string }[] }).prs ?? []) refs.push(...prRefs(p.url));
+  for (const a of cards) if (a.action === "merge") for (const p of (a.args as { prs?: { url: string }[] }).prs ?? []) refs.push(...prRefs(p.url));
   return refs;
 }
 
 /** The signals for one task: its sub-tasks (others' only) and their grades' outcomes, its own cards and the PRs it names. */
-function signals(task: Issue, kids: Issue[], store: WakeDeps["store"], prs: Map<string, PrState>): Map<string, Signal> {
+function signals(task: Issue, kids: Issue[], cards: Approval[], store: WakeDeps["store"], prs: Map<string, PrState>): Map<string, Signal> {
   const out = new Map<string, Signal>();
-  const refs = new Set(prsOf(task, store));
+  const refs = new Set(prsOf(task, cards));
   for (const k of kids) {
     const st = childState(k.status);
     out.set(`child:${k.id}`, { value: st, at: latest(k.completedAt, k.cancelledAt, k.updatedAt), line: (was) => `${k.identifier} is ${was === "done" || was === "cancelled" ? `reopened (${k.status})` : `now ${k.status}`}.` });
@@ -112,7 +114,7 @@ function signals(task: Issue, kids: Issue[], store: WakeDeps["store"], prs: Map<
       out.set(`graded:${k.id}`, { value: gs, at: g.updatedAt, line: () => `${k.identifier}'s grade: ${gs}.` });
     }
   }
-  for (const a of store.approvals.on(task.id)) {
+  for (const a of cards) {
     // Approved and not yet applied is not news: the runner's outcome follows. An outcome carries no time of its own.
     const terminal = a.outcome != null || a.state === "rejected" || a.state === "stale";
     out.set(`card:${a.id}`, { value: terminal ? `${a.state}|${a.outcome ?? ""}` : "open", at: a.state === "rejected" || a.state === "stale" ? (a.decidedAt ?? undefined) : undefined, line: () => `The ${a.action} card on ${a.identifier} is ${a.outcome ?? a.state}.` });
@@ -140,7 +142,7 @@ export type Recent = Map<string, number[]>;
 /** One pass. Returns the task ids it woke. */
 export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now()): Promise<string[]> {
   if (!wakeUpsOn(deps.grantsFile)) return [];
-  const { pc, store, log } = deps;
+  const { pc, store, records, log } = deps;
   const routines = await pc.routines();
   const agents = await pc.agents(); // one at a time: Paperclip limits a client's concurrent list requests
   const paused = new Set(agents.filter((a: Agent) => a.status === "paused" || a.status === "terminated").map((a) => a.id));
@@ -159,7 +161,9 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   const tasks = open.filter((t) => t.assigneeAgentId && watched.has(t.assigneeAgentId) && OPEN_STATUSES.has(t.status) && !t.title.startsWith("Heartbeat: "));
   const ownKids = (t: Issue) => (kidsOf.get(t.id) ?? []).filter((k) => k.assigneeAgentId !== t.assigneeAgentId);
 
-  const refs = [...new Set(tasks.flatMap((t) => prsOf(t, store)))].slice(0, 100);
+  const cardsOf = new Map<string, Approval[]>();
+  for (const a of await records.list("recent", { limit: 500 })) cardsOf.set(a.issueId, [...(cardsOf.get(a.issueId) ?? []), a]);
+  const refs = [...new Set(tasks.flatMap((t) => prsOf(t, cardsOf.get(t.id) ?? [])))].slice(0, 100);
   const prs = new Map<string, PrState>();
   const found = refs.length ? await deps.prStates(refs).catch(() => undefined) : [];
   for (const p of found ?? []) prs.set(`${p.repo.toLowerCase()}#${p.number}`, p);
@@ -194,7 +198,7 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   for (const t of tasks) {
     const agent = t.assigneeAgentId!;
     const was = state.cursors[t.id];
-    const sig = signals(t, ownKids(t), store, prs);
+    const sig = signals(t, ownKids(t), cardsOf.get(t.id) ?? [], store, prs);
     const next: Record<string, string> = {};
     // A source's first sighting is its baseline; a source that went away (a pruned card, an old closed sub-task) is dropped.
     const changed: [string, Signal][] = [];
@@ -258,10 +262,11 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
 }
 
 /** Starts the reconciler (main.ts). */
-export function startWake(pc: Paperclip, store: Store, log: WakeDeps["log"]): void {
+export function startWake(pc: Paperclip, store: Store, records: Records, log: WakeDeps["log"]): void {
   const deps: WakeDeps = {
     pc,
     store,
+    records,
     log,
     prStates: async (refs) => (await appsApi<{ prs?: PrState[] }>(`/internal/pr-states?${new URLSearchParams(refs.map((r) => ["pr", r]))}`, undefined, { auth: true, timeoutMs: 20_000 })).prs,
   };

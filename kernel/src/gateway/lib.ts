@@ -10,8 +10,10 @@
 //   POST /c/<connection>/mcp      (Bearer: a job's own `ahqj_` token) the job's reads of a connection, its jobcaps only (../proxy.ts)
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
-//   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at}: an opaque CI token
-//   POST /api/v1/chat/completions  kind ci-code-review: the allowed models only, CI's own caps, attributed to repo and PR
+//   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at, review}: an opaque CI
+//                                 token, and the instance's review model and effort (settings.ci_review_model)
+//   POST /api/v1/chat/completions | /api/v1/responses  kind ci-code-review: the allowed models and fields only (ci.ts), CI's
+//                                 own caps, attributed to repo and PR; streamed or not, reserved and settled like any call
 //   GET /health
 // Credentials: a Paperclip run JWT (Codex in Paperclip, env_key PAPERCLIP_API_KEY; checked at Paperclip's /api/agents/me,
 // its run id from the checked token, the task from that run); an agent computer's run token `ahqc_` (the launcher forwards
@@ -51,7 +53,7 @@ type Caps = { run_usd: number; task_usd: number; day_usd: number };
 /** config/grants/grants.json `agents`, by Paperclip id (setup writes it). */
 type Grants = Record<string, { rev?: string; key?: string; caps?: Partial<Caps> }>;
 /** config/gateway.json `ci` (compile writes it from the ci module's settings). */
-type CiConf = { enabled?: boolean; orgs?: unknown; models?: unknown; repo_day_usd?: unknown; day_usd?: unknown };
+type CiConf = { enabled?: boolean; orgs?: unknown; models?: unknown; review?: unknown; repo_day_usd?: unknown; day_usd?: unknown };
 /** A run key's settled identity (the runs table), or the same fields resolved for one call. */
 type RunRow = { run_key: string; agent_id: string | null; run_id: string | null; issue_id: string | null; rev: string | null; perpetual: number; at: string };
 type RunIdentity = Pick<RunRow, "agent_id" | "run_id" | "issue_id" | "rev"> & { perpetual: number | boolean };
@@ -209,11 +211,13 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, boardUrl, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }: {
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string; tools?: (req: IncomingMessage, res: ServerResponse, connection: string, o: { jobs: boolean }) => Promise<void>;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
-  boardUrl?: string; launcherUrl?: string; githubJwksUrl?: string; log?: Log; now?: () => number;
+  launcherUrl?: string; githubJwksUrl?: string; log?: Log; now?: () => number;
+  /** Files a kernel.raise_cap record (writes.ts fileNative): the owner's, after the AI reviewer. */
+  fileRaiseCap?: (b: { task: string; scope: string; agentId: string; subject: string; cap: number; spent: number }) => Promise<void>;
 }) {
   const { db, moved } = openLedger(dbFile, legacyDbFile);
   if (moved) log("ledger rows moved into kernel.db", { rows: moved });
@@ -448,23 +452,17 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       throw fail(401, "unauthorized", "this run attempt has already traded its GitHub token");
     }
     log("ci token issued", { repo: claims.repo, pr: claims.pr, run: claims.runId });
-    send(res, 200, { token, expires_at: exp });
+    send(res, 200, { token, expires_at: exp, review: c.review ?? null });
   }
 
-  /** One raise_cap per scope, subject and cap value, filed on the board with the gateway's key (needs the run's task). */
+  /** One raise_cap per scope, subject and cap value, filed as a kernel.raise_cap record (needs the run's task). */
   async function fileRaise(who: Caller, over: Over): Promise<boolean> {
     // A run cap is on the credential's hash: the next run has a new one, so a raised run cap would never be used.
-    if (over.scope === "run" || !who.agentId || !who.issueId || !boardUrl) return false;
+    if (over.scope === "run" || !who.agentId || !who.issueId || !fileRaiseCap) return false;
     const args = [over.scope, who.agentId, over.subject, over.cap];
     if (!q.file.run(...args, new Date(now()).toISOString()).changes) return true;
     try {
-      const res = await fetch(new URL("/internal/approvals/raise-cap", boardUrl), {
-        method: "POST",
-        headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" },
-        body: JSON.stringify({ issue: who.issueId, scope: over.scope, agentId: who.agentId, subject: over.subject, cap: over.cap, spent: Math.round(over.spent * 1e4) / 1e4 }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!res.ok) throw new Error(`the board answered ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+      await fileRaiseCap({ task: who.issueId, scope: over.scope, agentId: who.agentId, subject: over.subject, cap: over.cap, spent: Math.round(over.spent * 1e4) / 1e4 });
       log("raise_cap filed", { scope: over.scope, agent: who.agentId, subject: over.subject, cap: over.cap });
       return true;
     } catch (e) {
@@ -503,7 +501,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       // CI's own gates: the models and fields it may use. A refusal is a 403 or 402 (codegenie and the workflow read those as
       // permanent: no retry).
       const c = ciOn();
-      const problem = ciBodyProblem(body, Array.isArray(c.models) ? c.models : []);
+      const problem = ciBodyProblem(body, Array.isArray(c.models) ? c.models : [], path);
       if (problem) throw fail(403, "not_allowed", problem);
     }
     const price = priceOf(body);
@@ -608,7 +606,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       if (req.method === "GET" && path === "/health") return send(res, 200, ci ? { ok: true } : { ok: true, inflight: (q.inflight.get() as { n: number }).n });
       if (ci) {
         if (req.method === "POST" && path === "/ci/token") return await ciToken(req, res);
-        if (req.method === "POST" && path === "/api/v1/chat/completions") return await model(req, res, "agent", "chat/completions", true);
+        const m = /^\/api\/v1\/(chat\/completions|responses)$/.exec(path);
+        if (req.method === "POST" && m) return await model(req, res, "agent", m[1]!, true);
         return send(res, 404, { error: { code: 404, type: "not_found", message: "no such route" } });
       }
       const c = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(path);
@@ -639,5 +638,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     }
   }
 
-  return { handle, db, metricsText, ciEnabled: () => Boolean(ciConf()?.enabled), close: () => { clearInterval(pruner); db.close(); } };
+  /** An approved raise_cap: the cap for that scope and subject becomes `cap`. */
+  const setCap = (scope: string, agentId: string, subject: string, cap: number) => {
+    q.setCap.run(scope, agentId, subject, cap, new Date(now()).toISOString());
+    log("cap set", { scope, agent: agentId, subject, cap });
+  };
+  return { handle, db, metricsText, setCap, ciEnabled: () => Boolean(ciConf()?.enabled), close: () => { clearInterval(pruner); db.close(); } };
 }

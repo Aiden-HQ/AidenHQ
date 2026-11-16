@@ -6,6 +6,7 @@ import { createApp } from "../src/app.js";
 import { chatAgentMarker } from "../src/chats.js";
 import type { Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
+import { card, fakeRecords } from "./fake-records.js";
 
 const chatLabel = { id: "33333333-3333-3333-3333-333333333333", name: "chat", color: "#0ea5e9" };
 const base = { priority: "medium", assigneeUserId: null, assigneeAdapterOverrides: null, description: "", createdAt: "2026-11-10T10:00:00.000Z", updatedAt: "2026-11-10T10:05:00.000Z" };
@@ -42,7 +43,7 @@ const pc = {
 
 describe("lineage, settle and the side chat", () => {
   const store = new Store(":memory:");
-  store.approvals.request({ issueId: grand.id, identifier: grand.identifier, action: "apply", target: "x", digest: "d".repeat(40), args: {}, sentence: "Deploy billing-web v14.", reads: "", changes: "deploy", cost: "", details: "", requestedBy: "DevOps Engineer" });
+  const records = fakeRecords([card({ id: "A1", issueId: grand.id, identifier: grand.identifier, sentence: "Deploy billing-web v14.", requestedBy: "DevOps Engineer" })]);
   store.addUsage({ key: "u1", at: "2026-11-10T10:02:00.000Z", component: "agent", model: "m", input: 1000, cached: 500, output: 200, costUsd: 0.4, issueId: child.id });
   store.addUsage({ key: "u2", at: "2026-11-10T10:03:00.000Z", component: "agent", model: "m", input: 100, cached: 0, output: 20, costUsd: 0.05, issueId: grand.id });
   const asked: any[] = [];
@@ -59,7 +60,7 @@ describe("lineage, settle and the side chat", () => {
   beforeAll(async () => {
     await new Promise<void>((r) => gateway.listen(0, "127.0.0.1", r));
     const gw = { url: `http://127.0.0.1:${(gateway.address() as AddressInfo).port}`, token: "gw-board" };
-    app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", gateway: gw, session: () => ({ accountId: "owner", role: "admin" as const }) });
+    app = createApp({ paperclip: pc, store, records, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", gateway: gw, session: () => ({ accountId: "owner", role: "admin" as const }) });
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
     port = (app.address() as AddressInfo).port;
   });
@@ -91,7 +92,7 @@ describe("lineage, settle and the side chat", () => {
     expect((await call("GET", "/api/chats")).chats.find((c: any) => c.identifier === "WOR-10").settled).toBeUndefined();
     await expect(call("POST", "/api/issues/WOR-11/settle", { settled: true })).rejects.toThrow(/409/); // still being worked
     // A chat whose handed-out work waits on the owner stays active.
-    store.approvals.request({ issueId: child.id, identifier: child.identifier, action: "apply", target: "y", digest: "e".repeat(40), args: {}, sentence: "Ship the empty states.", reads: "", changes: "ui", cost: "", details: "", requestedBy: "UI/UX Designer" });
+    records.cards.push(card({ id: "A2", issueId: child.id, identifier: child.identifier, sentence: "Ship the empty states.", requestedBy: "UI/UX Designer" }));
     await expect(call("POST", "/api/issues/WOR-10/settle", { settled: true })).rejects.toThrow(/409 .*handed out/);
   });
 

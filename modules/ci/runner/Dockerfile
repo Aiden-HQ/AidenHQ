@@ -10,9 +10,10 @@
 # entry there too, conditioned on this rm naming it, so keep it one `rm -rf` with every path as an argument.
 # Node for the jobs, in setup-node's tool cache (<cache>/node/<version>/x64 plus x64.complete): `node-version: 24.x`
 # resolves to it without a download (setup-node took 9-16 s a job). node 24.22.2 (pushed 2026-11-05); its npm 11.19.1
-# bundles vulnerable undici and brace-expansion, so npm 11.21.2 (2026-11-04), which image-scan finds clean.
+# bundles vulnerable undici and brace-expansion, so npm 11.21.2 (2026-11-04), which image-scan finds clean (the exact
+# `npm install -g npm@<version>` form, no other flag or argument, is what its exception accepts).
 FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS node
-RUN npm install -g npm@11.21.2 --no-audit --no-fund
+RUN npm install -g npm@11.21.2
 
 FROM ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300
 USER root

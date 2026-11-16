@@ -28,12 +28,11 @@
   },
   {
     "n": 4,
-    "workflow": "Card approve/reject on board",
+    "workflow": "Card approve/reject on the kernel's approval page",
     "today": [
-      "services/board/test/approval-routes.test.ts",
-      "services/board/test/card-contract.test.ts"
+      "kernel/test/accounts.test.mjs"
     ],
-    "next": "kernel page tests"
+    "next": "kernel page tests (unit 3a)"
   },
   {
     "n": 5,
@@ -47,7 +46,8 @@
     "n": 6,
     "workflow": "Watcher decide and stale reject",
     "today": [
-      "services/board/test/approval-routes.test.ts"
+      "kernel/test/channels.test.mjs",
+      "modules/channel-operator/test/decide.test.mjs"
     ],
     "next": "channel-operator test"
   },
@@ -65,7 +65,8 @@
     "workflow": "Engineer job: prompt, run, comment mid-run, finish",
     "today": [
       "services/runner/test/flow-running.test.mjs",
-      "services/runner/test/flow-conversation.test.mjs"
+      "services/runner/test/flow-conversation.test.mjs",
+      "kernel/test/jobs.test.mjs"
     ],
     "next": "engineering + engine-codex + K7"
   },
@@ -73,7 +74,8 @@
     "n": 9,
     "workflow": "Runner restart adopts jobs",
     "today": [
-      "services/runner/test/adopt.test.mjs"
+      "services/runner/test/adopt.test.mjs",
+      "kernel/test/jobs.test.mjs"
     ],
     "next": "K7 adopt test"
   },
@@ -180,7 +182,8 @@
     "n": 20,
     "workflow": "Shared apps sign-in (gate, 3129)",
     "today": [
-      "services/gate/test/gate.test.mjs"
+      "services/gate/test/gate.test.mjs",
+      "kernel/test/gate-seam.test.mjs"
     ],
     "next": "apps-platform + /auth/handoff"
   },

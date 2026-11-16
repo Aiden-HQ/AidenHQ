@@ -8,7 +8,7 @@ settings:
     type: url
     host: "*.clickhouse.cloud"
 # How to set it up (the board's Settings, Connections).
-setup: "Set ClickHouse Cloud's MCP server URL on the board (Settings, Connections) and approve the change, then press Connect on the board from the host's loopback address (http://127.0.0.1:3120). Used by the runner's Engineer jobs."
+setup: "Set ClickHouse Cloud's MCP server URL on the board (Settings, Connections) and approve the change, then press Connect on the board from the host's loopback address (http://127.0.0.1:3121). Used by the runner's Engineer jobs."
 secrets:
   state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
 services:

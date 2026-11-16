@@ -6,6 +6,7 @@
 // Everything an agent wrote (handbook text, run output, comments, app samples) is data, clipped here.
 import { readFileSync } from "node:fs";
 import type { Agent, Comment, Issue, Paperclip, PastRun, Routine } from "./paperclip.js";
+import type { Records } from "./records.js";
 import type { Store } from "./store.js";
 import type { RunView } from "./runs.js";
 import { detectorState } from "./fleet-ops.js";
@@ -241,7 +242,7 @@ export function packEvidence(p: EvidenceParts) {
 }
 
 /** coach_evidence: the packet for one agent (by key), read from Paperclip, the board's ledger and the apps platform. */
-export async function coachEvidence(pc: Paperclip, store: Pick<Store, "meta" | "approvals" | "grades" | "usageDaily">, runOf: (id: string) => Promise<RunView | null>, agentKey: string, caller: Pick<Agent, "id">, now = Date.now()) {
+export async function coachEvidence(pc: Paperclip, store: Pick<Store, "meta" | "grades" | "usageDaily">, records: Pick<Records, "list">, runOf: (id: string) => Promise<RunView | null>, agentKey: string, caller: Pick<Agent, "id">, now = Date.now()) {
   if (coachOff()) return { off: true, note: "The Agent Coach is switched off (instance setting coach: off)." };
   const agents = (await pc.request<Agent[]>("GET", `/api/companies/${pc.companyId}/agents`)) as (Agent & { createdAt?: string })[];
   const a = agents.find((x) => x.status !== "terminated" && keyOf(x) === agentKey.trim());
@@ -286,7 +287,7 @@ export async function coachEvidence(pc: Paperclip, store: Pick<Store, "meta" | "
     const mine = (await pc.comments(issueId).catch(() => [] as Comment[])).filter((c) => c.authorAgentId === a.id).map((c) => clip(c.body, 200));
     wakes.push({ task: ids.get(issueId) ?? (await pc.issueSummary(issueId).then((i) => i.identifier, () => issueId)), runs: n, repeated_comments: mine.length - new Set(mine).size });
   }
-  const card = await part("scorecard", async () => scorecard(await gatherFacts(pc, store, now), a.id, now));
+  const card = await part("scorecard", async () => scorecard(await gatherFacts(pc, store, records, now), a.id, now));
   const fixes = await part("corrections", () => corrections(pc, now));
   const s = detectorState(store);
   // Only apps the caller may read (as fleet_catalog filters them): a restricted app stays out unless it holds the app's role.

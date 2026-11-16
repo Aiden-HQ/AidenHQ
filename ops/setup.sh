@@ -127,10 +127,14 @@ set_env() { # KEY VALUE: sets KEY in .env (replacing a commented or old line, el
 }
 json() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }   # a JSON string, without node (a dry run has none)
 read_secret() { [ -s "$SECRETS/$1" ] && cat "$SECRETS/$1" || true; }
-board() { # METHOD PATH [JSON]: the board's own (loopback) listener, with the operator's key (setup link, welcome chat)
-  # The key goes in on stdin (-H @-), never in argv where other processes could read it.
-  printf 'x-operator-key: %s\n' "$(read_secret board_operator_key)" | curl -fsS -X "$1" "http://127.0.0.1:3120$2" \
-    -H 'host: localhost:3120' -H 'content-type: application/json' -H 'x-aidenhq-board: 1' -H @- ${3:+--data "$3"}
+board() { # METHOD PATH [JSON]: the board's internal listener, with the operator's key (the welcome chat)
+  # The keys go in on stdin (-H @-), never in argv where other processes could read them.
+  printf 'x-operator-key: %s\nauthorization: Bearer %s\n' "$(read_secret board_operator_key)" "$(read_secret board_internal_token)" \
+    | curl -sS -X "$1" "http://127.0.0.1:3122$2" -H 'host: 127.0.0.1:3122' -H 'content-type: application/json' -H @- ${3:+--data "$3"} "${@:4}"
+}
+operator() { # OP [JSON]: the kernel's accounts (its backplane, POST /v1/operator/<op>) with the operator's key: setup link, resets
+  printf 'x-operator-key: %s\n' "$(read_secret board_operator_key)" \
+    | curl -sS -X POST "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/v1/operator/$1" -H 'content-type: application/json' -H @- ${2:+--data "$2"} "${@:3}"
 }
 
 # The board's address on the tailnet: the link, Google's redirect and the apps all hang off it.
@@ -148,20 +152,18 @@ fi
 # The owner's way in: the one-time setup link for OWNER_EMAIL (it sets a password; the board then asks for an
 # authenticator), only while no owner account exists.
 owner_link() {
-  if [ "$DRY" = 1 ]; then echo "  + board: the owner's one-time setup link"; return 0; fi
-  for _ in $(seq 60); do curl -fsS -o /dev/null http://127.0.0.1:3120/healthz 2>/dev/null && break; sleep 2; done
+  if [ "$DRY" = 1 ]; then echo "  + kernel: the owner's one-time setup link"; return 0; fi
+  for _ in $(seq 60); do curl -fsS -o /dev/null "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/healthz" 2>/dev/null && break; sleep 2; done
   local resp code url
   # The status too: only 409 (the owner already exists) is a quiet answer; any other failure stops setup.
-  resp="$(printf 'x-operator-key: %s\n' "$(read_secret board_operator_key)" | curl -sS -X POST http://127.0.0.1:3120/api/accounts/setup \
-    -H 'host: localhost:3120' -H 'content-type: application/json' -H 'x-aidenhq-board: 1' -H @- -w '\n%{http_code}' \
-    --data "{\"email\":$(json "$OWNER_EMAIL"),\"name\":$(json "$OWNER_NAME")}" 2>/dev/null || true)"
+  resp="$(operator setup "{\"email\":$(json "$OWNER_EMAIL"),\"name\":$(json "$OWNER_NAME")}" -w '\n%{http_code}' 2>/dev/null || true)"
   code="${resp##*$'\n'}"; url="$(printf '%s' "${resp%$'\n'*}" | jq -r '.url // empty' 2>/dev/null || true)"
   if [ "$code" = 200 ] && [[ "$url" =~ ^https?://[^[:space:]]+$ ]]; then
     echo "$url"
     # The installer reads this line (the last one wins).
     [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SETUP_URL=$url"
   elif [ "$code" = 409 ]; then echo "(the owner's account already exists; a new link goes to the owner's Telegram: sudo ops/setup.sh ${CONFIG:+--config $CONFIG }--reset $OWNER_EMAIL)"
-  else die "the board gave no setup link for $OWNER_EMAIL (HTTP ${code:-none}; is it up? docker compose ps board)"; fi
+  else die "the kernel gave no setup link for $OWNER_EMAIL (HTTP ${code:-none}; is it up? systemctl --user status aidenhq-kernel)"; fi
 }
 
 if [ "$LINK_ONLY" = 1 ]; then
@@ -170,13 +172,11 @@ if [ "$LINK_ONLY" = 1 ]; then
   exit 0
 fi
 
-# Recovery: the board's internal listener with the operator key; the link goes to the owner's Telegram
+# Recovery: the kernel's accounts with the operator key; the link goes to the owner's Telegram
 # through the owner channel, never back here.
 if [ -n "$RESET" ]; then
-  if [ "$DRY" = 1 ]; then echo "  + board: reset $RESET (its link to the owner's Telegram)"; exit 0; fi
-  printf 'x-operator-key: %s\nauthorization: Bearer %s\n' "$(read_secret board_operator_key)" "$(read_secret board_internal_token)" \
-    | curl -fsS -X POST http://127.0.0.1:3122/internal/accounts/reset -H 'host: 127.0.0.1:3122' -H 'content-type: application/json' \
-      -H @- --data "{\"email\":$(json "$RESET")}" >/dev/null || die "the board refused the reset (is $RESET an account?)"
+  if [ "$DRY" = 1 ]; then echo "  + kernel: reset $RESET (its link to the owner's Telegram)"; exit 0; fi
+  operator reset "{\"email\":$(json "$RESET")}" -f >/dev/null || die "the kernel refused the reset (is $RESET an account?)"
   echo "Reset $RESET: its sessions ended. A new one-time link (72 hours) goes to the owner's Telegram within a minute."
   exit 0
 fi
@@ -222,7 +222,9 @@ if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ]; then
 fi
 # The board's URL for links: its tailnet name over https, or (no Tailscale) loopback, reached through an SSH tunnel.
 if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://127.0.0.1:3121"; fi
-say "Board address: $BOARD_URL"
+# The kernel's admin listener (sign-in and approvals) on its own origin: a second tailnet port, or the second tunnel.
+if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8446"; else ADMIN_URL="http://127.0.0.1:3120"; fi
+say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
 # The machine step installs node; everything after it needs it.
 [ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
 
@@ -254,6 +256,7 @@ set_env VAULT_FOLDERS ""
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
 set_env BOARD_LAN_HOSTS "${BOARD_HOST:-127.0.0.1:3121,localhost:3121}"
 set_env BOARD_LAN_URL "$BOARD_URL"
+set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
 # Apps get their own tailnet node and name (compose.yaml apps-edge), never the board's: browsers send a name's cookies
 # to every port of it. Without Tailscale there is no apps node yet.
 if [ -n "$BOARD_HOST" ]; then
@@ -267,6 +270,11 @@ if [ ! -f "$REPO/config/runner.yaml" ]; then
   { sed -e 's/^allowed_orgs: .*/allowed_orgs: [local]/' -e 's#^  repo: your-org/aidenhq-instance#  repo: local/aidenhq-instance#' "$REPO/config/runner.example.yaml"
     printf '\nrepo_sources:\n  local/aidenhq-instance: %s\n' "$REMOTE"; } | write_user_file "$REPO/config/runner.yaml" 644
 fi
+# The product repo (owner/name, from this checkout's origin) and the instance repo the runner applies to (runner.yaml
+# apply.repo): the kernel holds the runner's writes to its own floors with them, and makes every runner write the owner's
+# while either is missing.
+grep -q '^AIDENHQ_PRODUCT_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_PRODUCT_REPO "$(ugit -C "$REPO" remote get-url origin | sed -E 's#^.*github\.com[/:]##; s#\.git/*$##')"
+grep -q '^AIDENHQ_INSTANCE_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_INSTANCE_REPO "$(awk '/^apply:/{a=1; next} a && /^  repo:/{print $2; exit}' "$REPO/config/runner.yaml" 2>/dev/null)"
 # The runner's size, when given: a top-level `key: n` in config/runner.yaml (a running runner restarts gracefully below).
 RUNNER_RESIZED=0
 runner_set() { # key value
@@ -383,7 +391,7 @@ else
   # The board reads its Paperclip key and company at start: both exist only now.
   as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --force-recreate board"
 fi
-[ -z "$BOARD_HOST" ] || run tailscale serve --bg --https=443 http://127.0.0.1:3121
+[ -z "$BOARD_HOST" ] || { run tailscale serve --bg --https=443 http://127.0.0.1:3121; run tailscale serve --bg --https=8446 http://127.0.0.1:3120; }
 say "Runner, model gateway and run pruning (user units)"
 as_user mkdir -p "$H/.config/systemd/user"
 # Where the units find this checkout (their default is ~/aidenhq).
@@ -420,8 +428,8 @@ elif [ ! -e "$marker" ]; then
   if [ "$DRY" = 1 ]; then echo "  + board: new chat to Aiden, \"Welcome\""
   elif [ "$HAS_KEY" = 0 ]; then say "Aiden's welcome waits for the model key (a rerun of setup with it sends it)"
   else
-    for _ in $(seq 60); do curl -fsS -o /dev/null http://127.0.0.1:3120/healthz 2>/dev/null && break; sleep 2; done
-    board POST /api/chats "{\"text\":$(json "$text")}" >/dev/null
+    for _ in $(seq 60); do curl -fsS -o /dev/null http://127.0.0.1:3121/healthz 2>/dev/null && break; sleep 2; done
+    board POST /internal/owner/welcome "{\"text\":$(json "$text")}" -f >/dev/null
     as_user touch "$marker"
   fi
 fi
@@ -433,7 +441,7 @@ fi
 if [ -n "$BOARD_HOST" ]; then
   echo "Done. Send $OWNER_NAME this link (their laptop must be on the tailnet; one use; a new one: --reset $OWNER_EMAIL):"
 else
-  tunnel="ssh -N -L 3121:127.0.0.1:3121 $U@$(hostname -f 2>/dev/null || hostname)"
+  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 $U@$(hostname -f 2>/dev/null || hostname)"
   echo "Done. The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first:"
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"

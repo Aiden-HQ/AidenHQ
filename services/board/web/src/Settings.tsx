@@ -8,7 +8,7 @@ import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
 import { AgentsPage } from "./SettingsAgents";
 import { parseInput, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, Segmented, StatusPill, Switch, Toasts, useFiled } from "./settings-ui";
-import type { FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData } from "./types";
+import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData } from "./types";
 import { urlSettingProblem } from "../../src/url-setting";
 import "./settings.css";
 
@@ -474,10 +474,11 @@ function NotificationsPage({ rows, conns }: { rows: SettingRow[]; conns: Connect
 
 function ModulesPage({ onSignIn }: { onSignIn: () => void }) {
   const [mods, setMods] = useState<ModuleRow[] | null>(null);
+  const [advisories, setAdvisories] = useState<Advisory[]>([]);
   const [error, setError] = useState("");
   useEffect(() => {
     api.modules().then(
-      (r) => setMods(r.modules),
+      (r) => (setMods(r.modules), setAdvisories(r.advisories ?? [])),
       (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)),
     );
   }, [onSignIn]);
@@ -491,6 +492,20 @@ function ModulesPage({ onSignIn }: { onSignIn: () => void }) {
   const off = mods.filter((m) => m.state === "off");
   return (
     <Page title="Modules" sub={`${on.length} on, ${off.length} available. A module brings its agents, connections and apps; turning one on or off is a change you approve.`}>
+      {advisories.map((a) => (
+        <div key={a.id} className={`st-banner${a.severity === "high" || a.severity === "critical" ? " bad" : ""}`} role="alert">
+          <strong>Advisory {a.id}</strong> ({a.severity}) affects the installed {a.module}: {a.summary.replace(/^`|`$/g, "")}
+          {a.url && (
+            <>
+              {" "}
+              <a href={a.url} target="_blank" rel="noreferrer noopener">
+                Details
+              </a>
+            </>
+          )}
+          . The fix is an ordinary update to a newer product pin.
+        </div>
+      ))}
       <Group title="On" count={on.length}>
         {on.map((m) => (
           <ModuleItem key={m.name} m={m} />

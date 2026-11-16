@@ -1,11 +1,13 @@
 // Shared by the flow-*.test.mjs files (one conversation each, so node runs them side by side): the real runner
 // (src/main.mjs) as a child process, talking to a fake Paperclip, with fake engines (test/fakes: bwrap, codex,
-// claude, gh) and local repositories for GitHub.
+// claude, gh) and local repositories for GitHub. Its jobs run in the kernel's job half (kernel/test/fixtures/jobs-host.mjs,
+// the real kernel/src/jobs.ts in its own process), which the fake Paperclip's /v1/jobs routes lead to.
 import { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -15,8 +17,32 @@ import { REQUEST_FIELDS } from "../../../kernel/sdk/src/reviewer.ts";
 import { reviewWith } from "../../../modules/ai-reviewer/service/src/server.mjs";
 import { readLog } from "./fakes/lib.mjs";
 import { registry } from "./fakes/engines.mjs";
+import { openRecords } from "../../../kernel/src/records.ts";
+import { createWrites } from "../../../kernel/src/writes.ts";
+import { createBackplane } from "../../../kernel/src/backplane.ts";
+import { KERNEL_KINDS } from "../../../kernel/src/kinds.ts";
+import { asApproval } from "../src/cards.ts";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
+const JOBS_HOST = join(import.meta.dirname, "../../../kernel/test/fixtures/jobs-host.mjs");
+
+/** The kernel's job half for a flow: its own process (a restart test kills and starts it again), over `db`. */
+export function jobsHost(env, db) {
+  const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", JOBS_HOST], { env: { ...env, JOBS_DB: db, JOBS_MODULE: "engineering" }, stdio: ["ignore", "pipe", "pipe"] });
+  let log = "";
+  p.stderr.on("data", (d) => (log += d));
+  const port = new Promise((res, rej) => { p.stdout.once("data", (d) => res(Number(String(d).trim()))); p.once("exit", (c) => rej(new Error(`the jobs host exited (${c}): ${log}`))); });
+  return { p, port, log: () => log };
+}
+
+/** A free loopback port: each flow's runner gets its own helper port (runner.yaml helper_port), which the kernel holds it to. */
+export const freePort = () => new Promise((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
+
+/** Forward a request to the job host at `port` (the runner's /v1/jobs calls, as the kernel's backplane takes them). */
+export async function forwardJobs(port, req, body, res) {
+  const r = await fetch(`http://127.0.0.1:${await port}${req.url}`, { method: req.method, headers: { "content-type": "application/json" }, ...(body ? { body } : {}) }).catch((e) => ({ status: 502, text: async () => JSON.stringify({ error: { message: e.message } }) }));
+  res.writeHead(r.status, { "content-type": "application/json" }).end(await r.text());
+}
 const FAKES = join(import.meta.dirname, "fakes");
 const COMPANY = "00000000-0000-4000-8000-000000000001";
 const USER = "user-1";
@@ -38,7 +64,7 @@ const gitEnv = {
 };
 
 /** A Paperclip with one parent task (the user's) and one part of it for Ada. */
-export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0, onIssueCreated, ownerFallback = false, config, secrets }) {
+export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0, onIssueCreated, ownerFallback = false, config, secrets, repos = {}, jobs }) {
   const gradeLog = [];
   const graderCalls = [];
   const graderAnswers = [];
@@ -54,10 +80,50 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const passed = [];
   const attached = [];
   const unknown = [];
-  const approvals = new Map();
-  // The kernel's records (POST /v1/writes, GET /v1/writes/:id), with the bearer each request came with.
+  // The kernel's records for the runner's kinds: the real records, write lifecycle and backplane routes (kernel/src), with
+  // the real reviewer module in the reviewer slot. `approvals` and `autos` are views of them as the board once kept them.
+  const kdb = openRecords(join(mkdtempSync(join(tmpdir(), "flow-kernel-")), "kernel.db"));
+  const key = (n) => { try { return readFileSync(join(secrets, n), "utf8").trim(); } catch { return ""; } };
+  const autonomy = () => { try { return JSON.parse(readFileSync(join(config, "grants", "grants.json"), "utf8")).autonomy ?? "off"; } catch { return "off"; } };
+  const reviewer = async (request) => {
+    const gateway = /gateway:\n {2}url: (\S+)/.exec(readFileSync(join(config, "runner.yaml"), "utf8"))?.[1];
+    if (!gateway) throw new Error("no gateway");
+    const picked = Object.fromEntries(REQUEST_FIELDS.filter((k) => request[k] !== undefined).map((k) => [k, request[k]]));
+    let marked = false;
+    const modelToken = mintToken(key("gateway_job_secret"), { kind: "reviewer", component: request.component ?? "AI reviewer", ttlMs: 3600_000 });
+    const v = await reviewWith(`${gateway}/api/v1/chat/completions`)(picked, { modelToken, onPanel: async () => void (marked = true) });
+    return { ...v, ...(marked ? { panel_marked: true } : {}) };
+  };
+  const reviews = { request: reviewer };
+  const kw = createWrites({ records: kdb, registry: () => KERNEL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, reviews, autonomy, repos: () => ({ product: "acme/aidenhq", instance: "acme/aidenhq-instance", ...repos }),
+    onTask: { open: async (t) => !["done", "cancelled"].includes(find(t)?.status), notify: async (t, text) => void notices.push({ task: find(t)?.identifier, text }), parent: async (t) => find(t)?.parentId ?? undefined }, replay: async () => ({ ok: false, text: "" }) });
+  const backplane = createBackplane({ whoami: async () => { throw new Error("not here"); }, writes: kw, records: kdb, reviews, runnerKey: () => key("runner_writes_key"), reviewerKey: () => key("reviewer_key"), grantsFile: () => ({}) });
+  /** A record as the board once showed it (cards.ts asApproval, the outcome whole, the reviewer's verdict as one entry). */
+  const view = (r) => {
+    const a = asApproval(r);
+    const byReviewer = r.decided_by?.startsWith("reviewer:") || (r.state === "owner" && r.review);
+    const verdicts = byReviewer ? [{ decision: r.state === "approved" || (["claimed", "done", "failed"].includes(r.state) && r.decided_by?.startsWith("reviewer:")) ? "approve" : ["rejected", "stale"].includes(r.state) ? "reject" : "escalate", code: r.review_code, reason: r.review, model: r.decided_by?.replace(/^reviewer:/, "").split("+")[0] }] : undefined;
+    return { ...a, outcome: r.outcome, ...(verdicts ? { verdicts } : {}) };
+  };
+  const notices = []; // the kernel's notices on tasks (the owner's rejections, outcomes): kept apart from the thread
+  const aliases = new Map(); // a test's own card id → the record it stands for
+  const all = () => kdb.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"], 1000).reverse();
+  const approvals = {
+    values: () => all().filter((r) => r.tier > 0).map(view)[Symbol.iterator](),
+    get: (id) => { const r = kdb.get(aliases.get(id) ?? id); return r && view(r); },
+    get size() { return all().filter((r) => r.tier > 0).length; },
+    /** A card the owner already approved (`state: "approved"`), as a test plants one. */
+    set: (id, c) => {
+      const kind = c.action === "apply" ? "kernel.apply" : `runner.${c.action}`;
+      const r = kdb.file({ kind, module: KERNEL_KINDS[kind].module, args: c.args, targets: {}, executor: { module: KERNEL_KINDS[kind].module }, policy: "test", tier: 2, panel: false, card: { sentence: c.sentence ?? "", changes: "", reads: "", cost: "", details: c.details ?? "" }, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" }, task: c.issueId, identifier: c.identifier, state: "owner" });
+      kdb.decide(r.id, r.digest, c.state === "rejected" ? "reject" : "approve", c.decidedBy ?? "account:owner", "web");
+      aliases.set(id, r.id);
+    },
+  };
+  const autoRows = () => all().filter((r) => r.tier === 0).map((r) => ({ ...view(r), rule: r.rule, ok: r.outcome?.ok }));
+  const autos = { some: (fn) => autoRows().some(fn), at: (i) => autoRows().at(i) };
+  // primer.publish (POST /v1/writes with a job token), with the bearer each request came with.
   const records = new Map();
-  const autos = [];
   const created = []; // tasks the runner filed (POST …/issues), as the board key
   const filings = []; // every POST …/issues, created or answered from an idempotency key
   const runs = []; // the runs Paperclip started, one per task it could dispatch
@@ -104,23 +170,18 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       res.end(JSON.stringify(json));
     };
     const path = url.pathname;
+    if (path.startsWith("/v1/jobs")) return forwardJobs(jobs(), req, body, res);
+    const agentRead = req.method === "GET" && /^\/api\/agents\/([^/]+)$/.exec(path)?.[1];
+    if (agentRead) { const a = engineers.find((x) => x.id === decodeURIComponent(agentRead)); return a ? send(a) : send({ error: "not found" }, 404); }
+    // The runner's own kinds, claims, outcomes and reviews: the kernel's real routes (its keys only).
+    const bearer = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
+    if (/^\/v1\/(writes|reviews)/.test(path) && bearer && [key("runner_writes_key"), key("reviewer_key")].includes(bearer)) {
+      return backplane(Object.assign(Readable.from(body ? [Buffer.from(body)] : []), { method: req.method, url: req.url, headers: req.headers }), res);
+    }
     if (path === "/v1/writes" && req.method === "POST") {
       const id = `k-${String(records.size + 1).padStart(16, "0")}`;
       records.set(id, { id, ...JSON.parse(body), bearer: String(req.headers.authorization ?? "").replace(/^Bearer /, ""), tier: 1, state: "review", outcome: null });
       return send({ id, tier: 1, state: "review" });
-    }
-    // The kernel's reviewer slot (reviewer@1): the real reviewer module, asked as the kernel asks it, with a reviewer token
-    // for the model gateway the flow configured (config/runner.yaml `gateway.url`), and only the runner's reviewer key.
-    if (path === "/v1/reviews" && req.method === "POST") {
-      if (req.headers.authorization !== `Bearer ${readFileSync(join(secrets, "reviewer_key"), "utf8").trim()}`) return send({ error: { message: "the runner's reviewer key is required" } }, 401);
-      const gateway = /gateway:\n {2}url: (\S+)/.exec(readFileSync(join(config, "runner.yaml"), "utf8"))?.[1];
-      if (!gateway) return send({ error: { message: "no gateway" } }, 502);
-      const { request } = JSON.parse(body);
-      const picked = Object.fromEntries(REQUEST_FIELDS.filter((k) => request[k] !== undefined).map((k) => [k, request[k]]));
-      let marked = false;
-      const modelToken = mintToken(readFileSync(join(secrets, "gateway_job_secret"), "utf8").trim(), { kind: "reviewer", component: request.component ?? "AI reviewer", ttlMs: 3600_000 });
-      const v = await reviewWith(`${gateway}/api/v1/chat/completions`)(picked, { modelToken, onPanel: async () => void (marked = true) }).catch((e) => ({ error: e.message }));
-      return v.error ? send({ error: { message: v.error } }, 502) : send({ ...v, ...(marked ? { panel_marked: true } : {}) });
     }
     const record = req.method === "GET" && /^\/v1\/writes\/(k-[0-9a-f]{16})$/.exec(path)?.[1];
     if (record) return records.has(record) ? send(records.get(record)) : send({ error: { message: "no record" } }, 404);
@@ -190,23 +251,6 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       }
       if (req.method === "GET") return send(i);
     }
-    // The board's approval records: filed by the runner, decided here by the test (the owner's tap), claimed once.
-    if (path === "/internal/approvals" && req.method === "POST") {
-      const b = JSON.parse(body);
-      const extra = strictArgs(b.args);
-      if (extra.length) return send({ error: extra.join(", ") }, 400);
-      const digest = JSON.stringify([b.action, b.args, b.diff ?? ""]);
-      const issueId = find(b.issue).id;
-      const open = [...approvals.values()].filter((a) => a.issueId === issueId && a.action === b.action && a.state === "pending");
-      const same = open.find((a) => a.digest === digest);
-      if (same) return send(same);
-      for (const a of open) a.state = "expired";
-      const a = { id: `A${String(approvals.size + 1).padStart(8, "0")}`, issueId, identifier: find(b.issue).identifier, action: b.action, args: b.args, details: b.diff ?? "", digest, state: "pending", replaced: open.length > 0, baseTier: b.baseTier, tier: b.tier ?? 2, reviewFirst: b.reviewFirst, rule: b.rule, reason: b.reason };
-      approvals.set(a.id, a);
-      return send(a);
-    }
-    if (path === "/internal/approvals" && req.method === "GET" && url.searchParams.get("issue")) return send({ approvals: [...approvals.values()].filter((a) => a.issueId === find(url.searchParams.get("issue"))?.id) });
-    if (path === "/internal/approvals" && req.method === "GET") return send({ approvals: [...approvals.values()].filter((a) => a.state === url.searchParams.get("state")) });
     // Graded done: the board's grades contract (services/board/src/grades.ts), simplified, and a scripted grader model.
     const gradeOne = /^\/internal\/grades\/([^/]+)$/.exec(path);
     if (gradeOne && req.method === "GET") return send({ state: (!gradingOff && grades.get(find(decodeURIComponent(gradeOne[1]))?.id)?.state) || null });
@@ -245,32 +289,6 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       }
       return send({ choices: [{ message: { content: JSON.stringify(next ?? { verdict: "cannot_judge", criteria: [] }) } }], usage: { prompt_tokens: 10, completion_tokens: 5 } });
     }
-    // A Tier 0 run's audit row: only with the runner's key.
-    if (path === "/internal/approvals/auto" && req.method === "POST") {
-      const b = JSON.parse(body);
-      const extra = strictArgs(b.args);
-      if (extra.length) return send({ error: extra.join(", ") }, 400);
-      autos.push({ key: req.headers["x-reviewer-key"], ...b });
-      return send({ state: "auto" });
-    }
-    // The reviewer's verdicts on a card, recorded only (a test decides what the board would make of them).
-    const verdict = /^\/internal\/approvals\/(A\d{8})\/review$/.exec(path);
-    if (verdict && req.method === "POST") {
-      const a = approvals.get(verdict[1]);
-      (a.verdicts ??= []).push(JSON.parse(body));
-      return send({});
-    }
-    const approval = /^\/internal\/approvals\/(A\d{8})\/(claim|outcome)$/.exec(path);
-    if (approval) {
-      const a = approvals.get(approval[1]);
-      if (approval[2] === "claim") {
-        if (a?.state !== "approved") return send({ error: "not approved" }, 409);
-        a.state = "used";
-        return send({ ...a, nonce: "0".repeat(32) });
-      }
-      a.outcome = JSON.parse(body);
-      return send({ ok: true });
-    }
     // The board's internal API: the runner's activity for the Crew view, and messages passed on.
     if (path.startsWith("/internal/")) {
       if (path.endsWith("/runner/activity")) activity.push(JSON.parse(body));
@@ -283,14 +301,16 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     unknown.push(`${req.method} ${path}`);
     send({ error: "not found" }, 404);
   });
-  /** The owner's decision on the newest pending card for an action. */
+  /** The owner's decision on the newest pending card for an action (one with the reviewer is escalated to them first). */
   const decide = (action, state) => {
-    const a = [...approvals.values()].filter((x) => x.action === action && x.state === "pending").at(-1);
-    assert.ok(a, `a pending ${action} card`);
-    a.state = state;
-    return a;
+    const r = all().filter((x) => asApproval(x).action === action && ["review", "owner"].includes(x.state)).at(-1);
+    assert.ok(r, `a pending ${action} card`);
+    if (r.state === "review") kdb.review(r.id, r.digest, { decision: "escalate", by: "reviewer:~acme/test", note: "(test) to the owner" });
+    const out = kw.decide(r.id, { digest: r.digest, decision: state === "approved" ? "approve" : "reject", by: "account:owner", via: "web" });
+    assert.equal(typeof out, "object", String(out));
+    return view(kdb.get(r.id));
   };
-  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead };
+  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, kdb, kw, notices, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead };
 }
 
 /**
@@ -298,7 +318,9 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
 export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, ownerFallback = false, setup } = {}) {
-  let dir, runner, runnerEnv, paperclip, output = "";
+  let dir, runner, runnerEnv, paperclip, jobs, output = "";
+  /** The kernel's job half (a test may stop it and start it again: a kernel restart). */
+  const startJobs = () => (jobs = jobsHost(runnerEnv, join(dir, "kernel.db")));
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
     runner.stdout.on("data", (d) => (output += d));
@@ -350,8 +372,12 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
       mkdirSync(dirname(join(dir, "github", slug)), { recursive: true });
       git(dir, "clone", "-q", "--bare", src, join(dir, "github", `${slug}.git`));
     }
+    // The fakes log and take their steps through FAKE_* settings, baked in here: a job's env is the kernel's allowlist, so
+    // nothing of the runner's environment reaches the engine or the bwrap it runs under.
+    const fakeEnv = { FAKE_LOG: join(dir, "fake.log"), FAKE_STEP: join(dir, "claude-step"), ...Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("FAKE_"))) };
+    const exports = Object.entries(fakeEnv).map(([k, v]) => `export ${k}='${v}'\n`).join("");
     for (const name of ["bwrap", "codex", "claude", "gh"]) {
-      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\nexec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\nexec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
+      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
       chmodSync(join(bin, name), 0o755);
     }
 
@@ -361,6 +387,7 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
       join(config, "runner.yaml"),
       `label: engineer
 poll_seconds: 0.2
+helper_port: ${await freePort()}
 allowed_orgs: [acme]
 work_dir: ${join(dir, "work")}
 state_dir: ${join(dir, "state")}
@@ -394,12 +421,16 @@ ${runnerYaml}`,
     writeFileSync(join(secrets, "gateway_job_secret"), "job-secret\n", { mode: 0o600 });
     // The runner's own board key: the board returns a card's args only to it, as in production.
     writeFileSync(join(secrets, "reviewer_key"), `${"k".repeat(64)}\n`, { mode: 0o600 });
+    // The runner's key to the kernel for its own kinds (runner_writes_key).
+    writeFileSync(join(secrets, "runner_writes_key"), `${"w".repeat(64)}\n`, { mode: 0o600 });
+    writeFileSync(join(secrets, "engineering_token"), "engineering-token\n", { mode: 0o600 });
 
     // PEN-2713/PEN-2714: the repositories are on the user's task; Ada's part only says go.
     const engineers = [
-      { id: "engineer-claude", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", persona: { name: "Ada" }, privateReads: true } },
-      { id: "engineer-codex", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-codex", persona: { name: "Grace" }, privateReads: true } },
-      ...moreEngineers,
+      { id: "engineer-claude", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", runnerEngine: true, persona: { name: "Ada" }, privateReads: true } },
+      { id: "engineer-codex", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-codex", runnerEngine: true, persona: { name: "Grace" }, privateReads: true } },
+      // Setup marks every engine-run agent (dispatch: runner) runnerEngine: the kernel starts jobs only for those.
+      ...moreEngineers.map((a) => ({ ...a, metadata: { runnerEngine: true, ...a.metadata } })),
     ];
     const parent = { id: "parent", identifier: "PEN-1", title: "Drop Legacy support", status: "todo", assigneeUserId: USER, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Remove Legacy from these repos:\n\n- acme/app\n- acme/infra\n" };
     const part = { id: "part", identifier: "PEN-2", title: "Drop Legacy support", status: "todo", parentId: "parent", assigneeAgentId: "engineer-claude", assigneeUserId: null, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Ada, go ahead and start this on dev please" };
@@ -416,7 +447,7 @@ ${runnerYaml}`,
     Object.assign(part, partOver);
     // Agents in a computer (`image:` in the module): Paperclip runs them, and a task they get must have a folder of its own.
     const inComputers = computers.map((id) => ({ id, name: id, status: "idle", adapterType: "codex_local", adapterConfig: {}, defaultEnvironmentId: "env-computer", metadata: { setupKey: `aidenhq:${id}` } }));
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated, ownerFallback, config, secrets });
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated, ownerFallback, config, secrets, jobs: () => jobs.port, repos: { agentsOrg: env.AIDENHQ_GITHUB_AGENTS_ORG ?? "acme", ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 
@@ -438,10 +469,12 @@ ${runnerYaml}`,
     };
     // Fixtures a scenario needs before the first poll: GitHub's PRs (github-prs.json) or the runner's own state rows.
     setup?.({ dir });
+    startJobs();
     startRunner();
   });
   after(() => {
     runner?.kill("SIGKILL");
+    jobs?.p.kill("SIGKILL");
     paperclip?.server.close();
     // A job the runner left going (jobs are detached) may still be writing here: retried, so a failed flow ends instead of
     // throwing here and skipping the file's later after hooks (a server left listening keeps the process alive).
@@ -482,9 +515,12 @@ ${runnerYaml}`,
     get paperclip() {
       return paperclip;
     },
+    get jobs() {
+      return jobs;
+    },
     get output() {
       return output;
     },
-    startRunner, fakeLog, partComments, claudeRuns, toolRuns, step, say, context, waitFor, reviews, starts, turn, githubTip, running, settled, publish, release, idle, noErrors,
+    startRunner, startJobs, fakeLog, partComments, claudeRuns, toolRuns, step, say, context, waitFor, reviews, starts, turn, githubTip, running, settled, publish, release, idle, noErrors,
   };
 }

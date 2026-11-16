@@ -247,33 +247,70 @@ function alike(a, b) {
   return A.size + B.size === 0 ? 1 : both / (A.size + B.size - both);
 }
 report.routes = [];
-if (!palettes.length && !args.includes("--no-routes")) {
-  ab("set", "viewport", String(Math.max(...widths)), "900");
-  ab("set", "media", modes[0]);
-  const settle = () => { ab("wait", "--load", "networkidle"); ab("wait", "300"); };
-  const look = () => JSON.parse(run(ROUTE_PAGE));
-  const openAt = (path) => { ab("open", path === "/" ? base : new URL(path, base).href); settle(); };
+// Readiness, not network idle: the page is done when it has loaded, its fonts are in, no fetch or XHR is in flight and
+// no new resource has arrived for 200 ms, at most 1.5 s. (Network idle plus 300 ms cost 1.5 s a step; this is ~0.25 s.)
+const ROUTE_READY = `/*routes:ready*/(() => new Promise((done) => {
+  if (!window.__uiReview) {
+    const u = (window.__uiReview = { pending: 0 }), end = () => { u.pending--; };
+    const f = window.fetch;
+    window.fetch = function (...a) { u.pending++; const p = f.apply(this, a); p.then(end, end); return p; };
+    const send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function (...a) { u.pending++; this.addEventListener("loadend", end, { once: true }); return send.apply(this, a); };
+  }
+  const t0 = performance.now();
+  let seen = -1, quiet = t0;
+  const tick = () => {
+    const now = performance.now(), n = performance.getEntriesByType("resource").length;
+    if (n !== seen || window.__uiReview.pending > 0 || document.readyState !== "complete" || document.fonts.status === "loading") { seen = n; quiet = now; }
+    if (now - quiet >= 200 || now - t0 >= 1500) done("ready"); else setTimeout(tick, 25);
+  };
+  tick();
+}))()`;
+const ROUTE_WORKERS = 4;
+const firstLine = (e) => String(e.stderr || e.message).split("\n")[0].slice(0, 160);
+/** One browser session for route checks (its own Chrome, so checks on different pages run side by side). */
+function browserSession(name, execFileP) {
+  const env = { ...process.env, AGENT_BROWSER_SESSION: name };
+  const ab = (...a) => execFileP(AB, a, { env, encoding: "utf8", maxBuffer: 64 << 20 }).then((r) => r.stdout);
+  const run = async (expr) => JSON.parse(await ab("eval", expr, "--json")).data.result;
+  const settle = async () => {
+    try { await run(ROUTE_READY); } catch {
+      // The click replaced the document under the wait: wait for the new one, then once more.
+      try { await ab("wait", "--load", "domcontentloaded"); await run(ROUTE_READY); } catch {}
+    }
+  };
+  const look = async () => JSON.parse(await run(ROUTE_PAGE));
+  const openAt = async (path) => { await ab("open", path === "/" ? base : new URL(path, base).href); await settle(); };
+  const ready = async () => { await ab("set", "viewport", String(Math.max(...widths)), "900"); await ab("set", "media", modes[0]); return s; };
+  const s = { name, ab, run, settle, look, openAt, ready };
+  return s;
+}
+async function routeChecks() {
+  const { execFile } = require("node:child_process");
+  const execFileP = require("node:util").promisify(execFile);
+  const main = browserSession("default", execFileP);
+  await main.ready();
+  const tasks = []; // {route, check(session), label(problem)}, in report order
+  const add = (route, check, label) => { report.routes.push(route); if (check) tasks.push({ route, check, label }); };
+  const skip = (route, e, what) => { route.skipped = `couldn't ${what}: ${firstLine(e)}`; };
   // The header brand, on every reviewed page: it goes home, with no query, and lands at the top. The page is scrolled to
   // its foot first, so a brand that looks clickable and does nothing fails here, on "/" too.
   for (const path of paths) {
-    const route = { from: path, what: "the header brand", problems: [] };
-    report.routes.push(route);
-    try {
-      openAt(path);
-      run(ROUTE_SCROLL);
-      const brand = run(ROUTE_MARK_BRAND);
-      if (brand === "none") { route.problems.push(`there is no header brand to click on ${path}`); continue; }
-      if (brand !== "ok") { route.problems.push("its header has no brand link to /"); continue; }
-      if (run(ROUTE_CLICK_BRAND) !== "ok") { route.skipped = "the brand went away before it was clicked"; continue; }
-      settle();
-      const page = JSON.parse(run(ROUTE_STATE));
-      if (page.origin !== new URL(base).origin) route.problems.push(`clicking it leaves the app for ${page.origin}${page.at}`);
-      else if (page.at !== "/") route.problems.push(`clicking it goes to ${page.at}, not /`);
-      else if (page.scrollY) route.problems.push(`clicking it leaves the page scrolled ${page.scrollY}px down, not at the top`);
-    } catch (e) {
-      route.skipped = `couldn't check it: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}`;
-    }
-    for (const p of route.problems) blocking.push(`${path} the header brand: ${p}`);
+    add({ from: path, what: "the header brand", problems: [] }, async (s, route) => {
+      try {
+        await s.openAt(path);
+        await s.run(ROUTE_SCROLL);
+        const brand = await s.run(ROUTE_MARK_BRAND);
+        if (brand === "none") { route.problems.push(`there is no header brand to click on ${path}`); return; }
+        if (brand !== "ok") { route.problems.push("its header has no brand link to /"); return; }
+        if (await s.run(ROUTE_CLICK_BRAND) !== "ok") { route.skipped = "the brand went away before it was clicked"; return; }
+        await s.settle();
+        const page = JSON.parse(await s.run(ROUTE_STATE));
+        if (page.origin !== new URL(base).origin) route.problems.push(`clicking it leaves the app for ${page.origin}${page.at}`);
+        else if (page.at !== "/") route.problems.push(`clicking it goes to ${page.at}, not /`);
+        else if (page.scrollY) route.problems.push(`clicking it leaves the page scrolled ${page.scrollY}px down, not at the top`);
+      } catch (e) { skip(route, e, "check it"); }
+    }, (p) => `${path} the header brand: ${p}`);
   }
   // Links to the page they are on: from the foot of the page, such a link must act: scroll the page, move the address (a
   // hash) or change the page. A link with no hash on a page too short to scroll has nothing to do, so it is skipped: on a
@@ -281,110 +318,101 @@ if (!palettes.length && !args.includes("--no-routes")) {
   for (const path of paths) {
     let sameLinks = [];
     try {
-      openAt(path);
-      sameLinks = JSON.parse(run(ROUTE_SAME));
+      await main.openAt(path);
+      sameLinks = JSON.parse(await main.run(ROUTE_SAME));
     } catch (e) {
-      report.routes.push({ from: path, what: "its links to this page", problems: [], skipped: `couldn't read them: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}` });
+      add({ from: path, what: "its links to this page", problems: [], skipped: `couldn't read them: ${firstLine(e)}` });
       continue;
     }
-    for (let i = 0; i < sameLinks.length; i++) {
-      const l = sameLinks[i];
-      const route = { from: path, link: l.label, to: l.to, samePage: true, problems: [] };
-      report.routes.push(route);
+    sameLinks.forEach((l, i) => add({ from: path, link: l.label, to: l.to, samePage: true, problems: [] }, async (s, route) => {
       try {
-        openAt(path);
-        const foot = Number(run(ROUTE_SCROLL));
-        if (!(foot > 1) && !l.hash) { route.skipped = "the page is too short to scroll, so a link to it has nothing to do"; continue; }
-        if (run(ROUTE_MARK_SAME(i)) !== "ok") { route.skipped = "the link wasn't on the page when it was opened again"; continue; }
-        const start = JSON.parse(run(ROUTE_STATE));
-        if (run(ROUTE_CLICK_SAME) !== "ok") { route.skipped = "the link went away before it was clicked"; continue; }
-        settle();
-        const after = JSON.parse(run(ROUTE_STATE));
+        await s.openAt(path);
+        const foot = Number(await s.run(ROUTE_SCROLL));
+        if (!(foot > 1) && !l.hash) { route.skipped = "the page is too short to scroll, so a link to it has nothing to do"; return; }
+        if (await s.run(ROUTE_MARK_SAME(i)) !== "ok") { route.skipped = "the link wasn't on the page when it was opened again"; return; }
+        const start = JSON.parse(await s.run(ROUTE_STATE));
+        if (await s.run(ROUTE_CLICK_SAME) !== "ok") { route.skipped = "the link went away before it was clicked"; return; }
+        await s.settle();
+        const after = JSON.parse(await s.run(ROUTE_STATE));
         if (after.origin !== start.origin) route.problems.push(`clicking it leaves the app for ${after.origin}${after.at}`);
         else if (after.at === start.at && after.scrollY === start.scrollY && after.focus === start.focus && after.html === start.html && after.live === start.live)
           route.problems.push("clicking it changes nothing: same address, same page, same focus, nothing opens");
-      } catch (e) {
-        route.skipped = `couldn't check it: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}`;
-      }
-      for (const p of route.problems) blocking.push(`${path} link "${l.label || l.href}" (${l.to}): ${p}`);
-    }
+      } catch (e) { skip(route, e, "check it"); }
+    }, (p) => `${path} link "${l.label || l.href}" (${l.to}): ${p}`));
   }
   const links = [], seen = new Set();
   for (const path of paths) {
     try {
-      ab("open", path === "/" ? base : new URL(path, base).href);
-      settle();
-      for (const l of JSON.parse(run(ROUTE_LINKS)).sort((a, b) => b.nav - a.nav)) {
+      await main.openAt(path);
+      for (const l of JSON.parse(await main.run(ROUTE_LINKS)).sort((a, b) => b.nav - a.nav)) {
         if (seen.has(l.kind)) continue;
         if (links.length === 12) { report.routesCut = true; break; }
         seen.add(l.kind);
         links.push({ ...l, from: path });
       }
     } catch (e) {
-      report.routes.push({ from: path, link: "", to: "", problems: [], skipped: `couldn't read its links: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}` });
+      add({ from: path, link: "", to: "", problems: [], skipped: `couldn't read its links: ${firstLine(e)}` });
     }
   }
   for (const l of links) {
-    const route = { from: l.from, link: l.label, to: l.to, problems: [] };
-    report.routes.push(route);
-    try {
-      ab("open", l.from === "/" ? base : new URL(l.from, base).href);
-      settle();
-      const start = look();
-      if (run(ROUTE_MARK(l.href)) !== "ok") { route.skipped = "the link wasn't on the page when it was opened again"; continue; }
-      try { ab("click", "[data-ui-review-link]"); } catch { run(`document.querySelector("[data-ui-review-link]").click()`); }
-      settle();
-      const clicked = look();
-      if (clicked.at === start.at) route.problems.push(`clicking it leaves the URL at ${start.at}`);
-      else if (clicked.text === start.text) route.problems.push(`clicking it changes the URL to ${clicked.at} but the page stays the same`);
-      ab("back");
-      settle();
-      const back = look();
-      if (back.at !== start.at) route.problems.push(`Back goes to ${back.at}, not ${start.at}`);
-      else if (alike(back.text, start.text) < 0.8) route.problems.push(`Back to ${start.at} doesn't show that page again`);
-      ab("forward");
-      settle();
-      const fwd = look();
-      if (fwd.at !== clicked.at) route.problems.push(`Forward goes to ${fwd.at}, not ${clicked.at}`);
-      else if (alike(fwd.text, clicked.text) < 0.8) route.problems.push(`Forward to ${clicked.at} doesn't show that page again`);
-      ab("open", new URL(clicked.at, base).href);
-      settle();
-      const fresh = look();
-      if (fresh.status >= 400) route.problems.push(`a reload of ${clicked.at} answers ${fresh.status}`);
-      else if (alike(fresh.text, clicked.text) < 0.8) route.problems.push(`a reload of ${clicked.at} shows a different page than the click did`);
-    } catch (e) {
-      route.skipped = `couldn't check it: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}`;
-    }
-    for (const p of route.problems) blocking.push(`${l.from} link "${l.label || l.href}" (${l.to}): ${p}`);
+    add({ from: l.from, link: l.label, to: l.to, problems: [] }, async (s, route) => {
+      try {
+        await s.openAt(l.from);
+        const start = await s.look();
+        if (await s.run(ROUTE_MARK(l.href)) !== "ok") { route.skipped = "the link wasn't on the page when it was opened again"; return; }
+        try { await s.ab("click", "[data-ui-review-link]"); } catch { await s.run(`document.querySelector("[data-ui-review-link]").click()`); }
+        await s.settle();
+        const clicked = await s.look();
+        if (clicked.at === start.at) route.problems.push(`clicking it leaves the URL at ${start.at}`);
+        else if (clicked.text === start.text) route.problems.push(`clicking it changes the URL to ${clicked.at} but the page stays the same`);
+        await s.ab("back");
+        await s.settle();
+        const back = await s.look();
+        if (back.at !== start.at) route.problems.push(`Back goes to ${back.at}, not ${start.at}`);
+        else if (alike(back.text, start.text) < 0.8) route.problems.push(`Back to ${start.at} doesn't show that page again`);
+        await s.ab("forward");
+        await s.settle();
+        const fwd = await s.look();
+        if (fwd.at !== clicked.at) route.problems.push(`Forward goes to ${fwd.at}, not ${clicked.at}`);
+        else if (alike(fwd.text, clicked.text) < 0.8) route.problems.push(`Forward to ${clicked.at} doesn't show that page again`);
+        await s.openAt(clicked.at);
+        const fresh = await s.look();
+        if (fresh.status >= 400) route.problems.push(`a reload of ${clicked.at} answers ${fresh.status}`);
+        else if (alike(fresh.text, clicked.text) < 0.8) route.problems.push(`a reload of ${clicked.at} shows a different page than the click did`);
+      } catch (e) { skip(route, e, "check it"); }
+    }, (p) => `${l.from} link "${l.label || l.href}" (${l.to}): ${p}`);
   }
   // Every other visible control (a button, [role=button], a tab or option, a summary) must visibly act when clicked:
   // the address, the scroll, the focus or the page changes, or something opens. A click that changes nothing at all is
   // the dead click this checks for. Every one on the page; never one that deletes, sends or pays.
   for (const path of paths) {
     let controls = [];
-    try { openAt(path); controls = JSON.parse(run(ROUTE_CLICKS)); } catch (e) {
-      report.routes.push({ from: path, what: "its controls", problems: [], skipped: `couldn't read them: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}` });
+    try { await main.openAt(path); controls = JSON.parse(await main.run(ROUTE_CLICKS)); } catch (e) {
+      add({ from: path, what: "its controls", problems: [], skipped: `couldn't read them: ${firstLine(e)}` });
       continue;
     }
-    for (let i = 0; i < controls.length; i++) {
-      const c = controls[i];
-      const route = { from: path, what: `${c.kind} "${c.label}"`, problems: [] };
-      report.routes.push(route);
+    controls.forEach((c, i) => add({ from: path, what: `${c.kind} "${c.label}"`, problems: [] }, async (s, route) => {
       try {
-        openAt(path);
-        if (run(ROUTE_MARK_CLICK(i)) !== "ok") { route.skipped = "the control wasn't on the page when it was opened again"; continue; }
-        const start = JSON.parse(run(ROUTE_STATE));
-        try { ab("click", "[data-ui-review-click]"); } catch { run(`document.querySelector("[data-ui-review-click]").click()`); }
-        settle();
-        const after = JSON.parse(run(ROUTE_STATE));
+        await s.openAt(path);
+        if (await s.run(ROUTE_MARK_CLICK(i)) !== "ok") { route.skipped = "the control wasn't on the page when it was opened again"; return; }
+        const start = JSON.parse(await s.run(ROUTE_STATE));
+        try { await s.ab("click", "[data-ui-review-click]"); } catch { await s.run(`document.querySelector("[data-ui-review-click]").click()`); }
+        await s.settle();
+        const after = JSON.parse(await s.run(ROUTE_STATE));
         if (after.at === start.at && after.scrollY === start.scrollY && after.focus === start.focus && after.html === start.html && after.live === start.live)
           route.problems.push("clicking it changes nothing: same address, same page, same focus, nothing opens");
-      } catch (e) {
-        route.skipped = `couldn't check it: ${String(e.stderr || e.message).split("\n")[0].slice(0, 160)}`;
-      }
-      for (const p of route.problems) blocking.push(`${path} ${route.what}: ${p}`);
-    }
+      } catch (e) { skip(route, e, "check it"); }
+    }, (p) => `${path} ${`${c.kind} "${c.label}"`}: ${p}`));
   }
+  // The checks are independent (each opens its page afresh), so a few browser sessions share the queue.
+  const sessions = [main, ...Array.from({ length: Math.min(ROUTE_WORKERS, tasks.length) - 1 }, (_, i) => browserSession(`ui-review-${i + 1}`, execFileP))];
+  let next = 0;
+  await Promise.all(sessions.map(async (s) => {
+    if (s !== main) await s.ready();
+    while (next < tasks.length) { const t = tasks[next++]; await t.check(s, t.route); }
+  }));
+  await Promise.all(sessions.filter((s) => s !== main).map((s) => s.ab("close").catch(() => {})));
+  for (const t of tasks) for (const p of t.route.problems) blocking.push(t.label(p));
 }
 
 /**
@@ -403,25 +431,28 @@ function splitPreexisting(found = [], baseFound = []) {
   return { introduced, preexisting };
 }
 
-const baseReport = baseline && existsSync(join(baseline, "report.json")) ? JSON.parse(readFileSync(join(baseline, "report.json"), "utf8")) : null;
-const { introduced, preexisting } = splitPreexisting(blocking, baseReport?.blocking);
+function finish() {
+  const baseReport = baseline && existsSync(join(baseline, "report.json")) ? JSON.parse(readFileSync(join(baseline, "report.json"), "utf8")) : null;
+  const { introduced, preexisting } = splitPreexisting(blocking, baseReport?.blocking);
 
-const lines = [`# UI review of ${base}`, "", `${report.at} · widths ${widths.join("/")} · modes ${modes.join("/")}${palettes.length ? ` · palettes ${palettes.join("/")}` : ""}${baseline ? ` · baseline ${baseline}` : ""}`, ""];
-lines.push(introduced.length ? `## Blocking (${introduced.length})` : "## Blocking: none found by the automated checks", "", ...introduced.map((b) => `- ${b}`), "");
-if (preexisting.length) lines.push(`## Already on this base (${preexisting.length}): not this change's`, "", ...preexisting.map((b) => `- ${b}`), "");
-lines.push("## Pages", "");
-for (const p of report.pages) {
-  const shows = map?.find((m) => m.path === p.path)?.shows;
-  lines.push(`### ${p.path}${p.palette ? ` [${p.palette}]` : ""}${typeof shows === "string" && shows ? ` — ${shows}` : ""}`, "");
-  if (p.vitals) lines.push(`Vitals: LCP ${p.vitals.lcp_ms ?? "–"} ms · CLS ${p.vitals.cls ?? "–"} · FCP ${p.vitals.fcp_ms ?? "–"} ms · TTFB ${p.vitals.ttfb_ms ?? "–"} ms`);
-  for (const [mode, a] of Object.entries(p.a11y)) lines.push(`Accessibility (${mode}): ${a.violations.length ? a.violations.map((v) => `${v.id} ${v.impact} ×${v.nodes}`).join(", ") : "no violations"}${a.incomplete.length ? `; check by eye: ${a.incomplete.join(", ")}` : ""}`);
-  const small = Object.entries(p.layout).filter(([k, l]) => k.startsWith(String(Math.min(...widths))) && l.small).map(([, l]) => l.small)[0];
-  if (small) lines.push(`Phone: ${small} controls are 24-43px tall (44px is the phone rule; check the main ones).`);
-  lines.push("", "Screenshots (open each one):", ...p.shots.map((s) => `- ${s.name}${s.compare ? ` · before|after: ${s.compare.compare ?? "–"} · diff: ${s.compare.diff} (${s.compare.diffResult})` : ""}`), "");
+  const lines = [`# UI review of ${base}`, "", `${report.at} · widths ${widths.join("/")} · modes ${modes.join("/")}${palettes.length ? ` · palettes ${palettes.join("/")}` : ""}${baseline ? ` · baseline ${baseline}` : ""}`, ""];
+  lines.push(introduced.length ? `## Blocking (${introduced.length})` : "## Blocking: none found by the automated checks", "", ...introduced.map((b) => `- ${b}`), "");
+  if (preexisting.length) lines.push(`## Already on this base (${preexisting.length}): not this change's`, "", ...preexisting.map((b) => `- ${b}`), "");
+  lines.push("## Pages", "");
+  for (const p of report.pages) {
+    const shows = map?.find((m) => m.path === p.path)?.shows;
+    lines.push(`### ${p.path}${p.palette ? ` [${p.palette}]` : ""}${typeof shows === "string" && shows ? ` — ${shows}` : ""}`, "");
+    if (p.vitals) lines.push(`Vitals: LCP ${p.vitals.lcp_ms ?? "–"} ms · CLS ${p.vitals.cls ?? "–"} · FCP ${p.vitals.fcp_ms ?? "–"} ms · TTFB ${p.vitals.ttfb_ms ?? "–"} ms`);
+    for (const [mode, a] of Object.entries(p.a11y)) lines.push(`Accessibility (${mode}): ${a.violations.length ? a.violations.map((v) => `${v.id} ${v.impact} ×${v.nodes}`).join(", ") : "no violations"}${a.incomplete.length ? `; check by eye: ${a.incomplete.join(", ")}` : ""}`);
+    const small = Object.entries(p.layout).filter(([k, l]) => k.startsWith(String(Math.min(...widths))) && l.small).map(([, l]) => l.small)[0];
+    if (small) lines.push(`Phone: ${small} controls are 24-43px tall (44px is the phone rule; check the main ones).`);
+    lines.push("", "Screenshots (open each one):", ...p.shots.map((s) => `- ${s.name}${s.compare ? ` · before|after: ${s.compare.compare ?? "–"} · diff: ${s.compare.diff} (${s.compare.diffResult})` : ""}`), "");
+  }
+  if (report.routes.length) lines.push("## Routes (brand, click, Back, Forward, reload)", "", ...report.routes.map((r) => `- ${r.from} ${r.link ? `link "${r.link}" (${r.to})` : r.what}: ${r.skipped ?? (r.problems.join("; ") || (r.link && !r.samePage ? "renders" : "acts"))}`), ...(report.routesCut ? ["- (more kinds of link than the 12 checked: review the rest with --paths on their pages)"] : []), "");
+  lines.push("Automated checks find maybe a third of what matters. Now look at every screenshot against the review checklist.");
+  writeFileSync(join(out, "report.md"), lines.join("\n"));
+  writeFileSync(join(out, "report.json"), JSON.stringify({ ...report, blocking: introduced, preexisting }, null, 2));
+  console.log(`${join(out, "report.md")}: ${introduced.length} blocking, ${preexisting.length} already on this base, ${report.pages.reduce((n, p) => n + p.shots.length, 0)} screenshots`);
+  process.exit(introduced.length ? 1 : 0);
 }
-if (report.routes.length) lines.push("## Routes (brand, click, Back, Forward, reload)", "", ...report.routes.map((r) => `- ${r.from} ${r.link ? `link "${r.link}" (${r.to})` : r.what}: ${r.skipped ?? (r.problems.join("; ") || (r.link && !r.samePage ? "renders" : "acts"))}`), ...(report.routesCut ? ["- (more kinds of link than the 12 checked: review the rest with --paths on their pages)"] : []), "");
-lines.push("Automated checks find maybe a third of what matters. Now look at every screenshot against the review checklist.");
-writeFileSync(join(out, "report.md"), lines.join("\n"));
-writeFileSync(join(out, "report.json"), JSON.stringify({ ...report, blocking: introduced, preexisting }, null, 2));
-console.log(`${join(out, "report.md")}: ${introduced.length} blocking, ${preexisting.length} already on this base, ${report.pages.reduce((n, p) => n + p.shots.length, 0)} screenshots`);
-process.exit(introduced.length ? 1 : 0);
+(!palettes.length && !args.includes("--no-routes") ? routeChecks() : Promise.resolve()).then(finish, (e) => { console.error(`ui-review: ${e.stack || e.message}`); process.exit(2); });

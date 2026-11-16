@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { authorize } from "../src/api.js";
 import { checkRemovable, isSensitive, loadRegistry, parseApp } from "../src/registry.js";
 import { exposes } from "../src/tailnet.js";
 
@@ -22,6 +23,58 @@ describe("two registries", () => {
   it("won't remove a module app", () => {
     const wh = loadRegistry(instance, modules).find((a) => a.name === "warehouse")!;
     expect(() => checkRemovable(wh)).toThrow("warehouse comes from module warehouse; disable the module instead");
+  });
+});
+
+describe("a caller's exact routes, read from an apps.yaml", () => {
+  // Written the way an instance writes it: the flow sequence is quoted because a route's space is ambiguous unquoted YAML.
+  const file = write(
+    "routes.yaml",
+    `apps:
+  - name: roadmap-keeper
+    repo: example-org/roadmap-keeper
+    owner: app-maintainer
+    description: d
+    health: { url: http://app:8080/api/health }
+    api:
+      callers:
+        - roadmap-keeper
+        - agent: roadmap-feedback
+          paths: ["GET /api/agent/intake", "POST /api/agent/intake/{reference}/decision"]
+      paths: [/api/agent/roadmap, /api/agent/intake]
+`,
+  );
+  const rk = loadRegistry(file).find((a) => a.name === "roadmap-keeper")!;
+  const verdict = (method: string, path: string, key = "roadmap-feedback") => {
+    try {
+      authorize(rk, key, path, method);
+      return "allow";
+    } catch {
+      return "deny";
+    }
+  };
+  it("keeps the two routes the caller names and refuses the rest", () => {
+    expect(verdict("GET", "/api/agent/intake?status=received")).toBe("allow");
+    expect(verdict("POST", "/api/agent/intake/AB12CD34/decision")).toBe("allow");
+    for (const [m, p] of [
+      ["DELETE", "/api/agent/intake"],
+      ["POST", "/api/agent/intake"],
+      ["GET", "/api/agent/intake/AB12CD34/decision"],
+      ["HEAD", "/api/agent/intake"],
+      ["POST", "/api/agent/intake/AB12CD34/decision/extra"],
+      ["POST", "/api/agent/intake/decision"],
+      ["GET", "/api/item"],
+    ] as const)
+      expect(verdict(m, p), `${m} ${p}`).toBe("deny");
+  });
+  it("leaves the app's own caller a prefix caller", () => {
+    expect(verdict("GET", "/api/agent/roadmap/items/3", "roadmap-keeper")).toBe("allow");
+    expect(verdict("DELETE", "/api/agent/intake/x", "roadmap-keeper")).toBe("allow");
+    expect(verdict("GET", "/", "roadmap-keeper")).toBe("deny");
+  });
+  it("refuses a malformed route in the file", () => {
+    for (const entry of ["PATCH /api/x/{a}{b}", "get /api/x", "GET /api/x/{a b}", "GET /api/x/", "GET /api/x?a=1", "GET /api/x y"])
+      expect(() => loadRegistry(write("bad-routes.yaml", `apps:\n  - { name: broken, repo: example-org/x, owner: a, description: d, api: { callers: [{ agent: k, paths: [${JSON.stringify(entry)}] }], paths: [/api/x] } }\n`)), entry).toThrow();
   });
 });
 

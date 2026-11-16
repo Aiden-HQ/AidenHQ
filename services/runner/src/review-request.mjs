@@ -1,7 +1,7 @@
-// The runner as the AI reviewer's requester (reviewer@1, kernel/sdk/src/reviewer.ts): it gathers what the reviewer reads (the
-// diff, the changed files shaped by fileContext, the request chain, the base's source records, earlier findings) and asks
-// the kernel, which sends it to the bound reviewer module and hands back its verdict. Until 3b it stays the requester for
-// every review, git cards and kernel records alike.
+// What the AI reviewer reads (reviewer@1, kernel/sdk/src/reviewer.ts), as the runner gathers it until 3e: the diff, the
+// changed files shaped by fileContext, the request chain, the base's source records, earlier findings. A record's review
+// goes to the kernel with its record (POST /v1/writes/:id/review), which asks the bound reviewer module and applies the
+// verdict; the Engineer's check before filing goes to POST /v1/reviews with the same request.
 import { readExceptions } from "../../../scripts/supply-chain/best-version.mjs";
 
 /** The owner-approved source exceptions: read from the base branch, never from the change under review. */
@@ -40,6 +40,28 @@ export function kernelCardDiff(a) {
   const marker = "\n\nCommit message (written by the app's author): ";
   const i = a.action === "deploy_app" ? a.details.lastIndexOf(marker) : -1;
   return { diff: i < 0 ? a.details : a.details.slice(0, i) };
+}
+
+/**
+ * The request the reviewer reads: the card's review (main.mjs reviewOne) and the Engineer's check before filing one
+ * (agentReview) both build it here, so the check sees exactly what the card will. `a`: { action, target, sentence, panel? };
+ * `input`: the runner's tier input with the diff; `previous`: its own checks' findings for the action on the task.
+ */
+export function reviewRequest(a, input, chain, { component = "AI reviewer", siblings, sources, requesterModel = "", previous = [] } = {}) {
+  return {
+    card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
+    diff: input.diff,
+    files: input.files,
+    chain,
+    siblings,
+    sources,
+    requesterModel,
+    // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
+    panel: Boolean(input.panel || a.panel),
+    previous: [...(input.previous ?? []), ...previous],
+    relift: input.relift,
+    component,
+  };
 }
 
 /** How long the runner waits on one review: up to four model calls of ten minutes each, and the kernel's own 45-minute limit. */

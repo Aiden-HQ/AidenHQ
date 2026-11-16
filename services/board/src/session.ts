@@ -1,5 +1,5 @@
 import type { IncomingMessage } from "node:http";
-import type { AccountSession } from "./accounts.js";
+import type { AccountSession } from "./kernel-auth.js";
 
 /**
  * Who a board request comes from. Every admin writes as the owner (the board key); the account is

@@ -78,12 +78,15 @@ failing for 15 minutes, an agents-org pull request open over an hour without mer
   a connection, the CI template, Paperclip wiring; your own finding, or a `product-bug` line another agent left on Fleet
   issues): report it upstream as one GitHub issue on the product repo, one issue per defect.
   1. Its fingerprint is `product-bug:<slug>` (the component and the symptom, a few lowercase words; reuse the slug your
-     log already has for it). `github_app_issue` with the fingerprint, title `<component>: <the symptom in one line>` and
-     a body: what happened, what you expected, and the evidence. An open issue with that fingerprint gets the body as a
-     comment instead (`deduplicated: true`), so new evidence on a known defect goes the same way.
-  2. The issue is public to the product repo's readers. Its body carries only product evidence: task ids, run ids, card
-     ids, the one log or error line that matters, versions and commits. Slack, email, chat and document text, people's
-     names and emails, and secrets stay out of it.
+     log already has for it). `github_app_issue` with the fingerprint, title `<component>: <the symptom in one line>`, a
+     body (what happened, what you expected) and `evidence`: the `module`, the `version` (the product sha in
+     `instance.yaml` `product:`), the `reproduction` steps and the `log` lines that show it. The tool adds opaque ids for this instance
+     and you. An open issue with that fingerprint gets the report as a comment instead (`deduplicated: true`), so new
+     evidence on a known defect goes the same way.
+  2. The issue is public to the product repo's readers, so it carries product evidence only: task identifiers
+     (`WOR-…`), the one log or error line that matters, versions and commits, in the product's own words. The tool
+     checks for owner data first and refuses the whole report with what it found (names, emails, hosts, IPs, uuids,
+     account and chat ids, credentials); replace each with a neutral word (`<host>`, `<agent id>`) and file again.
   3. Log `log · <time> · product-bug · <slug> · <issue link>` and leave the fix to the product: the issue is the record.
      Without the `github` tools (no github module), log the same line with `not reported` and list it in the digest
      for the owner to report.

@@ -4,18 +4,22 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines } from "./agents.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
-import { applyCardArgs, branchCardArgs, cardText } from "./cards.ts";
+import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
+import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
 import { authorityLines, diffAll, moduleInputs } from "../../../kernel/src/loader/authority.ts";
-import { adoptRun, cowRoot, engineState, hiding, overlayProblem, readEngines, removeLayers, gatewayApi, jailProblem, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
+import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
+import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
+import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";
+import { runAlive } from "../../../kernel/src/jobs.ts";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "../../../modules/codehost-github/src/git.mjs";
-import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg, jobGhToken, mergeOptions, mergePermissions, ownRepo as appOwnRepo, pushPermissions } from "../../../modules/codehost-github/src/github-app.ts";
+import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, identityEnv, inOrg, jobGhToken, mergeOptions, mergePermissions, ownRepo as appOwnRepo, pushPermissions } from "../../../modules/codehost-github/src/github-app.ts";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
@@ -23,6 +27,7 @@ import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
+import { staleRef } from "./progress.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.ts";
@@ -38,9 +43,10 @@ import { State } from "./state.ts";
 import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, stateSection, threadEntries, threadSection, transcript } from "./thread.ts";
 import { checkSignature, record } from "../../../modules/engineering/src/breaker.ts";
 import YAML from "yaml";
-import { CODE_REJECTS, MAX_REJECTS, afterReview, autonomyCap, classify, highest, meritOwner, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, reviewFirstOf, routineCap, routineCapped, sensitiveTraits } from "./tiers.mjs";
+import { classify, normalizeApp, sensitiveTraits } from "./tiers.mjs";
+import { CODE_REJECTS, MAX_REJECTS, autonomyCap, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, routineCapped } from "../../../kernel/src/tier.ts";
 import { LUNA, openRouterAsk, openRouterKey } from "./models.mjs";
-import { kernelCardDiff, readCardSourceExceptions, requestReview, unreadSourceExceptions } from "./review-request.mjs";
+import { kernelCardDiff, readCardSourceExceptions, requestReview, reviewRequest, unreadSourceExceptions } from "./review-request.mjs";
 import { UNSURE } from "../../../kernel/sdk/src/reviewer.ts";
 import { fileContext } from "../../shared/review-files.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
@@ -57,20 +63,11 @@ const cfg = loadConfig();
 const pc = new Paperclip(cfg);
 const state = new State(cfg.stateDir);
 const log = (msg, extra = {}) => console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
-// Jobs run in a network namespace of their own (engines.mjs jailed). Without one that works they fall back to the host's
-// network, where every loopback service is in reach: loudly, so scripts/verify-security.sh and the journal both say so.
-const jailIssue = jailProblem(cfg);
-if (jailIssue) {
-  cfg.pasta = undefined;
-  log("WARNING: Engineer jobs share the host's network (every loopback service, the LAN)", { reason: jailIssue });
-}
-// The build caches (sandbox.extra_writable_roots) are copy-on-write per task. A bwrap without overlay support (before
-// 0.11, e.g. Ubuntu 24.04's) binds them read-write and shared as before: loudly.
-const overlayIssue = cfg.sandbox?.extra_writable_roots?.length && cfg.gcp ? overlayProblem(cfg) : undefined;
-if (overlayIssue) {
-  cfg.noOverlay = true;
-  log("WARNING: Engineer jobs share their build caches read-write (bwrap can't mount overlays; bubblewrap 0.11+ can)", { reason: overlayIssue });
-}
+// Engineer jobs run in the kernel (kernel/src/jobs.ts): the runner asks for them and follows them.
+const jobsApi = kernelJobs(cfg);
+// The reviewer-eval gate's runs (evalgate.ts) use the same sandbox, launched here: in its own network when that works.
+const evalSandbox = sandboxConfig();
+if (jailProblem(evalSandbox)) evalSandbox.pasta = undefined;
 // The instance's GitHub App: its key stays in this process; tokens go only to the git/gh child that needs one,
 // and a read-only one for its task's repos to each job's gh (jobGhToken).
 const app = cfg.githubApp && appClient({ appId: readFileSync(cfg.githubApp.appIdFile, "utf8").trim(), key: readFileSync(cfg.githubApp.keyFile, "utf8"), log });
@@ -85,7 +82,8 @@ async function appFor(slug) {
 const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, perms, extra);
 // Outside our own repos (github-app.ts ownRepo) the App only pushes and opens PRs. Their reviewers are us, so internal names
 // are fine there too.
-const sameRepo = (a, b) => Boolean(a && b) && String(a).toLowerCase() === String(b).toLowerCase();
+/** One repository however written (kernel/src/kinds.ts repoKey: the kernel holds the runner's writes with the same key). */
+const sameRepo = (a, b) => Boolean(repoKey(a)) && repoKey(a) === repoKey(b);
 const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, cfg.productRepo);
 const ghoMerge = async (slug, extra, perms = WRITE) => mergeOptions(await appFor(slug), slug, { agentsOrg: cfg.agentsOrg, productRepo: cfg.productRepo }, perms, extra);
 /** A re-run's token: only this (the App needs Actions: write; without it the re-run is refused and the check's failure stands). */
@@ -147,7 +145,7 @@ async function poll() {
   const updatedSince = since ? new Date(Date.parse(since) - 120_000).toISOString() : undefined;
   // Writes the user approved first, before anything else the tick reads: an approved card must be claimed and run even
   // when the task list, a merge or a GitHub read fails or is slow this time round. Every poll.
-  if (boardApi) await runApprovals().catch((err) => log("approvals check failed", { err: String(err.message ?? err).slice(0, 300) }));
+  await runApprovals().catch((err) => log("approvals check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Tasks labelled "engineer" or assigned to an Engineer agent.
   const byId = new Map((await pc.labelledIssues(cfg.label, updatedSince)).map((i) => [i.id, i]));
   const engineers = await pc.engineerAgents().catch(() => []);
@@ -206,9 +204,9 @@ async function poll() {
   if (minute) lastMergeCheck = Date.now();
   await advanceMerges({ minute }).catch((err) => log("merge check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Agents-org merge requests (owner, 2026-11-12): Tier 0 starts at once, even during the run; cards wait for its end. Every poll.
-  if (boardApi) await runAutoMerges().catch((err) => log("auto merges failed", { err: String(err.message ?? err).slice(0, 300) }));
+  await runAutoMerges().catch((err) => log("auto merges failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Tier 1 cards for the AI reviewer, while autonomy is on. Every poll.
-  if (boardApi) await runReviews().catch((err) => log("reviews check failed", { err: String(err.message ?? err).slice(0, 300) }));
+  await runReviews().catch((err) => log("reviews check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Handbook edits to agents in trial: no tap. Every poll.
   await runTrialEdits().catch((err) => log("trial edits failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Graded done: finished deliverables waiting for the grader (grade.ts). Every poll.
@@ -756,7 +754,7 @@ async function whileBusy(issue, latest, instructions) {
   }
   if (read.decision === "answer" && read.answer) return void (await pc.comment(issue.id, read.answer));
   // A session that takes messages while it works gets the comment now, as the user's own words.
-  if (r?.channel?.send?.(latest)) {
+  if (await r?.channel?.send?.(latest)) {
     log("comment passed to the run", { issue: issue.identifier });
     return void (await pc.comment(issue.id, `Passed on: ${r.who ?? "the agent"} reads it now, while working.`));
   }
@@ -923,6 +921,9 @@ async function runAutoMerges() {
       const rest = bound.map((p, i) => [p, tiers[i]]).filter(([, t]) => !isZero(t));
       // Taken out before acting, so a failure from here on can't file twice: it's said on the task instead. During the run
       // the rest stays for its end (a newer request for it clears that and tiers it again).
+      // The Tier 0 merges' record first, while they are still requested (a wait mid-run sees them requested throughout):
+      // the kernel runs it at once only if it keeps it at Tier 0.
+      const zeroRec = zero.length ? await fileApproval(issue, { action: "merge", args: { prs: zero.map(cardPr) }, ts: tiers.filter(isZero) }) : undefined;
       const taken = [...gone, ...zero, ...(busy ? [] : rest.map(([p]) => p))];
       save((b) => {
         const e = b[issueId];
@@ -932,9 +933,12 @@ async function runAutoMerges() {
         if (!e.prs.length) delete b[issueId];
       });
       want.taken = true;
-      if (zero.length && (await startMerges(issue, { prs: zero, strict: true, each: true }))) {
-        const zt = tiers.filter(isZero);
-        await recordAuto(issue, "merge", { prs: zero.map(cardPr) }, "", { rule: zt[0].rule, reason: zt.map((t) => t.reason).join("; ") }, { ok: true, text: `Merging ${zero.map((p) => p.url).join(", ")}, each once green on the head shown.` });
+      if (zeroRec) {
+        const rec = zeroRec;
+        if (rec.state === "used") {
+          const started = await startMerges(issue, { prs: zero, strict: true, each: true });
+          await reportOutcome(rec.id, started ? { ok: true, text: `Merging ${zero.map((p) => p.url).join(", ")}, each once green on the head shown.` } : { ok: false, text: "The merge didn't start (said on the task)." });
+        } else await pc.comment(issueId, `The merge waits for ${rec.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${rec.id}).`);
       }
       if (busy || !rest.length) continue;
       const said = rest.filter(([, t]) => t.reject);
@@ -942,9 +946,8 @@ async function runAutoMerges() {
       for (const [p, t] of said) await wakeForTurnedAway(issueId, { ...p, key: t.rule });
       const carded = rest.filter(([p]) => !said.some(([s]) => s === p));
       if (carded.length) {
-        const tier = carded.some(([, t]) => cardTier(t) !== 1) ? 2 : 1;
         const reason = carded.map(([, t]) => t.reason).join("; ");
-        const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(([p]) => cardPr(p)), ...(want.gap !== undefined ? { gap: want.gap } : {}) }, tier, reason, baseTier: baseOf(...carded.map(([, t]) => t)), rule: highest(carded.map(([, t]) => t)).rule, panel: carded.some(([, t]) => t.panel), reviewFirst: reviewFirstOf(...carded.map(([, t]) => t)) });
+        const a = await fileApproval(issue, { action: "merge", args: { prs: carded.map(([p]) => cardPr(p)), ...(want.gap !== undefined ? { gap: want.gap } : {}) }, ts: carded.map(([, t]) => t) });
         await pc.comment(issueId, `The merge waits for ${a.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${a.id}): ${reason}.`);
       }
     } catch (err) {
@@ -1193,7 +1196,7 @@ const evalGate = createEvalGate({
   state,
   git,
   clone: async (slug) => ensureClone(cfg.workDir, normalizeRepo(slug), cfg.repo_sources?.[slug] ?? ((await appFor(slug)) ? appRemoteUrl(slug) : undefined)),
-  jail: (argv, paths) => hiding(cfg, argv, [], paths),
+  jail: (argv, paths) => hiding(evalSandbox, argv, [], paths),
   log,
   usage: reportUsage,
 });
@@ -1412,13 +1415,13 @@ function gradeDeps(issue) {
         : mergeQueue(issue.id)?.state === "running" || JSON.parse(state.get("auto_merges") || "{}")[issue.id]?.prs?.length
           ? "its merges are still running"
           : "",
-    approvals: async () => (await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.id)}`)).approvals ?? [],
+    approvals: () => recordsOn(issue),
     taskPrs: async () => mergeQueue.findPrs(state.branches(issue.id).map((b) => b.pr_url).filter(Boolean).join("\n")),
     // The PRs this task's own runner records tie to it when no branch row does: its merge queue for the task, the merges it was
     // asked to run, and the merge cards it filed on it. The runner's own state and the board's cards, never a comment: a
     // comment's runner marker is text any writer can copy, so it proves nothing about which task a PR belongs to.
     taskMerged: async () => {
-      const cards = ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.id)}`)).approvals ?? []).filter((a) => a.action === "merge");
+      const cards = (await recordsOn(issue)).filter((a) => a.action === "merge");
       const asked = JSON.parse(state.get("auto_merges") || "{}")[issue.id]?.prs ?? [];
       return [...(mergeQueue(issue.id)?.prs ?? []).filter((p) => p.status === "merged"), ...asked, ...cards.flatMap((a) => a.args?.prs ?? [])];
     },
@@ -1456,7 +1459,7 @@ function gradeDeps(issue) {
  */
 async function lastMoved(issue, g) {
   if ((await pc.children(issue.id)).length) return Date.now();
-  const cards = await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.id)}`).then((r) => r.approvals ?? [], () => []);
+  const cards = await recordsOn(issue).catch(() => []);
   return Math.max(Date.parse(g.updatedAt) || 0, Date.parse(state.lastJob(issue.id)?.finished_at ?? "") || 0, ...cards.map((a) => Date.parse(a.usedAt ?? a.decidedAt ?? a.createdAt ?? "") || 0));
 }
 
@@ -1753,31 +1756,43 @@ async function agentStatus({ issue, workspace }, { wait } = {}) {
 // ------------------------------------------------------------------ approval records
 
 /**
- * Pushes, PRs, merges and fleet applies are approval records on the board: the exact request (targets, commit shas, the
- * args replayed here) waits for the user's tap or exact typed reply, then runApprovals() claims it once and runs it.
- * Nothing the agent says or holds approves it; a model never stands in for the tap.
+ * Pushes, PRs, merges and fleet applies are kernel records (lean-core 3b): the exact request (targets, commit shas, the args
+ * replayed here) waits for the AI reviewer and the owner's tap or exact typed reply, then runApprovals() claims it once and
+ * runs it. Nothing the agent says or holds approves it; a model never stands in for the tap.
  */
 class AwaitingApproval extends Error {}
 const waitingFor = (a, issue) =>
   a.tier === 1 && a.reviewFirst
-    ? `Waiting for the AI reviewer, then for ${cfg.selfName}'s approval (${a.id}): the reviewer reads it first${a.reviewFirst === "final" ? " and its reject is final (the reason is posted here)" : ""}; then a card on the board's Approvals tab and in Telegram shows ${cfg.selfName} its verdict. It runs on their tap, and the result is posted here. Nothing more to do now: end your turn and say in one line what is waiting for their approval.`
+    ? `Waiting for the AI reviewer, then for ${cfg.selfName}'s approval (${a.id}): the reviewer reads it first${a.reviewFirst === "final" ? " and its reject is final (the reason is posted here)" : ""}; then a card on the Approvals page and in Telegram shows ${cfg.selfName} its verdict. It runs on their tap, and the result is posted here. Nothing more to do now: end your turn and say in one line what is waiting for their approval.`
     : a.tier === 1
     ? `Waiting for the AI reviewer (${a.id}): it approves this, rejects it with a reason posted here, or sends it to ${cfg.selfName}. It runs once approved, and the result is posted here. Nothing more to do now: end your turn and say in one line what is waiting for review.`
-    : `Waiting for ${cfg.selfName}'s approval (${a.id}${a.replaced ? ", replacing the earlier request" : ""}): a card on the board's Approvals tab and in Telegram${a.replaced ? "" : `; replying \`apply ${issue.identifier}\` works too`}. It runs on their tap, and the result is posted here. Nothing more to do now: end your turn and say in one line what is waiting for their approval.`;
+    : `Waiting for ${cfg.selfName}'s approval (${a.id}${a.replaced ? ", replacing the earlier request" : ""}): a card on the Approvals page and in Telegram${a.replaced ? "" : `; replying \`apply ${issue.identifier}\` works too`}. It runs on their tap, and the result is posted here. Nothing more to do now: end your turn and say in one line what is waiting for their approval.`;
+
+/** The kernel, as the runner: its own kinds with runner_writes_key, the reviews it asks for with reviewer_key. Throws with the kernel's reason. */
+const keyIn = (file) => (existsSync(file) ? readFileSync(file, "utf8").trim() : "");
+async function kernel(method, path, body, { key = cfg.runnerWritesKeyFile, ms = 60_000 } = {}) {
+  const res = await fetch(`${cfg.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${keyIn(key)}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(ms) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(`${method} ${path.split("?")[0]} → ${res.status}: ${String(j?.error?.message ?? "").slice(0, 300)}`), { status: res.status });
+  return j;
+}
+/** A task's records, newest first, as tiering reads them (cards.ts asApproval). */
+const recordsOn = async (issue) => ((await kernel("GET", `/v1/writes?state=recent&task=${encodeURIComponent(issue.id)}&limit=50`)).records ?? []).map(asApproval);
+const kindOf = (action) => (action === "apply" ? "kernel.apply" : `runner.${action}`);
 
 /**
- * File (or find, when the same request is already open) the approval record for one exact request. The board writes the
- * card from `args`; `diff` (apply only) is what the user reads, and applyApproved() rechecks it before landing.
+ * File (or find, when the same request is already open) the record for one exact request, with the runner's plan from its
+ * tier parts (`ts`): the kernel raises it by what it derives itself and never lowers it. The card is written here from
+ * `args` (an apply's from its args and `diff`, whose hash binds it). Tier 0 comes back claimed (`used`): run it, then
+ * reportOutcome. `carries`: approved records whose commits a rebuild replays (no new card for them).
  */
-async function fileApproval(issue, { action, args, diff, tier = 2, reason = "", baseTier, rule, panel = false, reviewFirst }) {
-  if (!boardApi) throw new UserError("Not done: approvals need the board, which isn't set up here.");
-  // rule: the classifier's rule, the card's reason code (the board keeps it only in kebab-case). reviewFirst (tiers.mjs
-  // reviewFirstOf): the owner decides after the reviewer, so the board takes no reviewer approve ("owner": no reject either).
-  const a = await boardApi.post("/internal/approvals", { issue: issue.identifier, action, args, ...(diff ? { diff } : {}), ...(tier === 1 ? { tier } : {}), ...(reason ? { reason: reason.slice(0, 1000) } : {}), ...(baseTier !== undefined ? { baseTier } : {}), ...(rule ? { rule } : {}), ...(panel && tier === 1 ? { panel: true } : {}), ...(reviewFirst && tier === 1 ? { reviewFirst } : {}) }, runnerKey());
-  log("approval filed", { issue: issue.identifier, approval: a.id, action, state: a.state, tier: a.tier, panel: Boolean(panel) });
+async function fileApproval(issue, { action, args, diff, ts, carries }) {
+  const card = action === "apply" ? applyCard(args, diff ?? "") : cardOf(action, args);
+  const plan = { ...planOf(...ts), card, ...(action === "apply" ? { targets: { diff: createHash("sha256").update(diff ?? "").digest("hex") } } : {}), ...(carries?.length ? { carries } : {}) };
+  const a = asApproval(await kernel("POST", "/v1/writes", { kind: kindOf(action), task: issue.id, identifier: issue.identifier, args, plan }));
+  log("approval filed", { issue: issue.identifier, approval: a.id, action, state: a.state, tier: a.tier, panel: a.panel });
   return a;
 }
-
 // ------------------------------------------------------------------ tiered approvals
 
 /**
@@ -1786,13 +1801,6 @@ async function fileApproval(issue, { action, args, diff, tier = 2, reason = "", 
  * full (the reviewer decides Tier 1).
  */
 const autonomyNow = () => (["tier0", "full"].includes(readGrants()?.autonomy) ? readGrants().autonomy : "off");
-/**
- * A card's base tier (wave 3, batch approvals): what classify() says on the request's merits, before the autonomy override;
- * a reject is 2. Unknown (undefined: a read failed) when any part of the card is, so the card is never batched.
- */
-const baseOf = (...ts) => (ts.length && ts.every(Boolean) ? Math.max(...ts.map((t) => (t.reject ? 2 : (t.baseTier ?? t.tier)))) : undefined);
-/** The tier a card is filed at: the reviewer's queue (1) for Tier 1 and review-first requests, else the owner's (2). */
-const cardTier = (t) => (!t.reject && (t.tier === 1 || t.reviewFirst) ? 1 : 2);
 /** The duplicate-card guard's kill switch (instance setting `dup_guard`, in the grants table next to `autonomy`). */
 const dupGuardOn = () => readGrants()?.dup_guard !== "off";
 /** The guard found the change already satisfied on the target: no card; the evidence goes back to the agent instead. */
@@ -1811,7 +1819,7 @@ async function alreadyApplied(issue, action, key, evidence) {
   log("already applied", { issue: issue.identifier, action, key: key.slice(0, 120) });
   return `${text} Nothing more to do for it: say so in one line.`;
 }
-/** The runner's own key to the board (reviewer_key): Tier 1 filing, Tier 0 audit rows, the reviewer's verdicts. */
+/** The runner's own key to the board (reviewer_key): its usage reports. */
 const runnerKey = () => (existsSync(cfg.reviewerKeyFile) ? { "x-reviewer-key": readFileSync(cfg.reviewerKeyFile, "utf8").trim() } : {});
 
 /** The apps registry (instance apps.yaml plus the module apps), and the module apps alone, as plain entries. */
@@ -1856,11 +1864,10 @@ async function commonTierState(issue, action, also = []) {
   const creator = grants?.agents?.[full.createdByAgentId];
   // A task the runner filed itself (a Dependabot PR's) carries the board key's user, but is never the owner's.
   const ownerMade = ownerMadeTask(full);
-  const all = boardApi ? ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(full.identifier)}`)).approvals ?? []) : [];
-  const split = splitAnswered(all, await pc.comments(full.id).catch(() => []), cfg.selfName, await pc.me().catch(() => undefined));
-  // Two reviewers' unsure carries the request chain it saw (its hash, kept when it was posted): the same content is
-  // reviewed again only once that chain changed (tiers.mjs priorDecisions).
-  const records = split.records.map((r) => (r.reviewCode === "reviewer_unsure" ? { ...r, requestChain: state.get(unsureChainKey(r.id)) || undefined } : r));
+  // Two reviewers' unsure carries the request chain it saw (its hash, kept on the record by the kernel): the same content is
+  // reviewed again only once that chain changed (tier.ts priorDecisions).
+  const split = splitAnswered(await recordsOn(full), await pc.comments(full.id).catch(() => []), cfg.selfName, await pc.me().catch(() => undefined));
+  const { records } = split;
   return {
     answers: split.answers,
     requestChain: chainHash(await prRequest(full).catch(() => "")),
@@ -1884,9 +1891,8 @@ async function commonTierState(issue, action, also = []) {
   };
 }
 
-/** The request chain's hash (what the reviewer was shown as what was asked), kept per unsure-twice rejection. */
+/** The request chain's hash (what the reviewer was shown as what was asked; the kernel keeps it with an unsure-twice rejection). */
 const chainHash = (chain) => (chain ? createHash("sha256").update(chain).digest("hex").slice(0, 32) : "");
-const unsureChainKey = (id) => `unsure-chain:${id}`;
 
 /** One branch as tiering sees it: empty repo, default/deploy branch, and the files it changes against the default branch. */
 async function branchTierState(r, sha, bound) {
@@ -2094,16 +2100,6 @@ async function tierFor(issue, action, own, also = []) {
 }
 
 /**
- * A Tier 0 run's audit row on the board (state auto), never a card. Queued in state and sent with the approval outcomes
- * (flushOutcomes), so a row survives the board restarting under a Tier 0 apply.
- */
-async function recordAuto(issue, action, args, diff, t, outcome) {
-  const body = { issue: issue.identifier, action, args, ...(diff ? { diff: diff.slice(0, 64_000) } : {}), rule: t.rule, reason: t.reason.slice(0, 1000), ok: Boolean(outcome.ok), text: String(outcome.text ?? "").slice(0, 8000) };
-  state.set("auto_outbox", JSON.stringify([...JSON.parse(state.get("auto_outbox") || "[]"), body]));
-  await flushOutcomes().catch(() => {});
-}
-
-/**
  * The current tier of a recorded request (just before running a reviewer-approved one, and before reviewing): from the
  * same verified state as when it was filed. { tier, reason, rule, diff?, files? }. The agent's PR text is not part of it:
  * the reviewer is reasoning-blind (modules/ai-reviewer).
@@ -2153,7 +2149,7 @@ async function currentTier(issue, a, { withDiff = false, bases } = {}) {
     if (JSON.stringify([now.authority ?? [], now.ownerRequired ?? false]) !== JSON.stringify([a.args.authority ?? [], a.args.ownerRequired ?? false])) throw new UserError("the module changes no longer match the card");
     if (!withDiff) return t;
     const diff = await fleetDiffText(b, bump);
-    if (diff !== a.details) throw new UserError("the change no longer matches the card's diff");
+    if (createHash("sha256").update(diff).digest("hex") !== a.targets.diff) throw new UserError("the change no longer matches the card's diff");
     // The module changes the product move brings, as code computed them from the manifests at both commits (the reviewer
     // reads them as facts; the modules' own descriptions and commit messages stay claims).
     const lines = a.args.authority ?? [];
@@ -2175,29 +2171,26 @@ async function readFiles(list) {
   return fileContext(files);
 }
 
-/**
- * Never claimed by the runner, reviewed here all the same: a module write kind's record (a `k-` id, lean-core 2d), which the
- * kernel keeps and runs; the board lists it and forwards the verdict. Its tier comes from the kernel, its diff from its card.
- */
-const kernelRecord = (a) => /^k-[0-9a-f]{16}$/.test(a.id);
+/** A module kind's record or kernel.raise_cap: tiered by the kernel, not by classify(). Its diff is its card. */
+const notRunners = (a) => !/^(runner\.|kernel\.apply$)/.test(a.kind);
 const reviewing = new Set();
 /**
- * Every poll: each pending Tier 1 card gets one review by the reviewer module (askReviewer, through the kernel). The tier is recomputed first (a card filed
- * through the board's internal token, or one whose state changed, goes to the owner). In tier0 the verdict is only a note:
- * the card is escalated with it, so the owner decides. With autonomy off every card is review-first (autonomyCap): an
- * approve goes on to the owner with the verdict, a reject is final. A reject's reason is posted on the task.
+ * Every poll: each record waiting for the AI reviewer gets one review, which the kernel runs (writes.ts review): the runner
+ * gathers what it reads, its tier input now (a card filed earlier, or one whose state changed, may be the owner's now, or
+ * refused by code), and the kernel asks the bound reviewer, holds the verdict to the record's review-first, waits out a
+ * failed review's backoff and makes it a note under autonomy tier0. A reject's reason is posted on the task here.
  */
 async function runReviews() {
-  const mode = autonomyNow();
-  if (!runnerKey()["x-reviewer-key"]) return; // no key: the board refuses every verdict, so don't ask a model each poll
-  const { approvals = [] } = await boardApi.get("/internal/approvals?state=review");
-  for (const a of approvals) {
+  if (!keyIn(cfg.runnerWritesKeyFile)) return; // no key: the kernel refuses every review, so don't gather each poll
+  await reviewsLeftOver().catch((err) => log("review follow-up failed", { err: String(err.message ?? err).slice(0, 300) }));
+  const { records = [] } = await kernel("GET", "/v1/writes?state=review&limit=200");
+  for (const a of records.map(asApproval)) {
     // Cards pin exact commits and digests, so a task's job still running never makes a review unsafe (a card whose branch
     // moved fails its digest check); skipping them deadlocked jobs waiting on their own cards.
-    if (reviewing.has(a.id)) continue;
+    if (reviewing.has(a.id) || (a.retryAt && Date.now() < a.retryAt)) continue;
     reviewing.add(a.id);
     try {
-      await reviewOne(a, mode);
+      await reviewOne(a);
     } catch (err) {
       log("review failed", { approval: a.id, err: String(err.message ?? err).slice(0, 300) });
     } finally {
@@ -2206,74 +2199,65 @@ async function runReviews() {
   }
 }
 
-/** Transient review failures (the model gateway, GitHub on a bad minute): card id → { n, next }. Retried with backoff, then refused. */
-const reviewRetries = new Map();
-const REVIEW_TRIES = 6;
-
-async function reviewOne(a, mode) {
-  const wait = reviewRetries.get(a.id);
-  if (wait && Date.now() < wait.next) return;
+async function reviewOne(a) {
   const issue = await pc.issue(a.issueId);
-  const board = kernelRecord(a);
   let input;
   try {
-    if (board) {
+    if (notRunners(a) && a.action === "raise_cap") {
+      // The model gateway's spend-cap raise (the kernel files it): the owner's on its merits, read by the reviewer first. Its
+      // card is the change; every number on it is the gateway's.
+      input = { ...classify("raise_cap", {}), diff: [a.sentence, a.changes, a.cost, a.details].join("\n") };
+    } else if (notRunners(a)) {
       // The kernel files them without classify(): earlier decisions on the task count as for any request (the card's digest
       // is its content), and a routine's cap (tier0 or off) makes them review-first, as classify() does.
       const common = await commonTierState(issue, a.action);
       const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain);
       const veto = priorPart(prior);
-      // The board's own panel flag (a deploy touching a migration or schema): two reviewers, as the board requires.
       const reviewed = { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...kernelCardDiff(a) };
       // Tier 2 on its merits (the owner's veto here, or the kernel's own tier before any autonomy cap): reviewed, then the owner's.
       const merit = veto ?? (a.baseTier === 2 ? { tier: 2, rule: `${a.action}`, reason: a.reason || "the kernel's tier on its merits is 2" } : undefined);
-      input = veto?.reject ? veto : autonomyCap(routineCapped(merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed, common.routineAutonomy), mode);
-    } else if (a.action === "raise_cap") {
-      // The model gateway's spend-cap raise (the board files it): the owner's on its merits, read by the reviewer first. Its
-      // card is the change; every number on it is the gateway's.
-      input = { ...classify("raise_cap", {}), diff: [a.sentence, a.changes, a.cost, a.details].join("\n") };
+      input = veto?.reject ? veto : autonomyCap(routineCapped(merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed, common.routineAutonomy), autonomyNow());
     } else input = await currentTier(issue, a, { withDiff: true });
   } catch (err) {
-    input = { error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300), lasting: err instanceof UserError, stale: err instanceof MovedHead };
+    input = { tier: 1, error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300), lasting: err instanceof UserError, stale: err instanceof MovedHead };
   }
-  // The card stays what it was filed as: the board takes no reviewer approve on a review-first card (nor a reject on the
-  // owner's), so a tier that dropped since filing still posts a verdict the board accepts.
-  if (a.reviewFirst && !input.error && !input.reject && (input.tier < 2 || input.reviewFirst)) input = { ...input, reviewFirst: true, ...(a.reviewFirst === "owner" ? { byMerit: true } : {}) };
-  // The request chain the reviewer reads; its hash is kept with an unsure-twice rejection (commonTierState).
-  const owners = input.tier > 1 && !input.reviewFirst;
-  const chain = input.error || input.reject || owners ? "" : await prRequest(await pc.issue(issue.id)).catch(() => "");
-  let v = input.error
-    ? input.lasting
-      ? { decision: "reject", code: input.stale ? "stale_head" : "refused_by_code", reason: `${input.error}. Ask again.`, model: LUNA }
-      : { decision: "escalate", code: "reviewer_failed", reason: `couldn't check the change (${input.error})`, model: LUNA }
-    : input.reject
-      ? { decision: "reject", code: input.rule === "head-moved" ? "stale_head" : "refused_by_code", reason: `${input.reason}.`, model: LUNA }
-      : owners
-        ? { decision: "escalate", code: "tier_raised", reason: `code now puts it at Tier 2: ${input.reason}`, model: LUNA }
-        : // Review-first (tiers.mjs afterReview): its approve goes on to the owner; its reject is final, except on a card that
-          // is the owner's on its merits (byMerit), where the owner sees it too.
-          afterReview(input, await askReviewer(issue, a, input, chain, {
-            onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()),
-            ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)),
-          }));
-  // A failed call or check is friction, not a decision: it stays with the reviewer and is tried again later (1, 2, 4… minutes);
-  // after REVIEW_TRIES it goes back to the agent, never to the owner.
-  if (v.code === "reviewer_failed") {
-    const n = (wait?.n ?? 0) + 1;
-    if (n < REVIEW_TRIES) {
-      reviewRetries.set(a.id, { n, next: Date.now() + 60_000 * 2 ** (n - 1) });
-      log("review deferred", { approval: a.id, issue: a.identifier, tries: n, reason: v.reason.slice(0, 200) });
-      return;
-    }
-    // The owner's card on its merits still reaches them, with the reviewer's failure on it.
-    v = input.byMerit ? { ...v, decision: "escalate", code: "owner_tier", reason: `The AI reviewer couldn't read it (${v.reason}, ${n} times). It is Tier 2 on its merits, so the owner decides: ${input.reason}` } : { ...v, decision: "reject", reason: `${v.reason}, ${n} times: ask again later.` };
+  const held = heldInput(input, a.reviewFirst);
+  // What the reviewer reads, only when it is asked: code's own verdicts (refused, the owner's now) read nothing.
+  const asked = !codeVerdict(held, LUNA);
+  const chain = asked ? await prRequest(await pc.issue(issue.id)).catch(() => "") : "";
+  const request = asked ? reviewRequest(a, input, chain, { requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
+  const { diff: _d, files: _f, previous: _p, relift: _r, bases: _b, full: _full, ...tierInput } = input;
+  // Kept until the answer is handled: a lost answer (a restart, a timeout) still gets its follow-up (reviewsLeftOver).
+  inFlight((ids) => [...ids, a.id]);
+  const out = await kernel("POST", `/v1/writes/${a.id}/review`, { input: { ...tierInput, model: LUNA }, request }, { ms: 46 * 60_000 });
+  inFlight((ids) => ids.filter((x) => x !== a.id));
+  if (out.deferred) return void log("review deferred", { approval: a.id, issue: a.identifier, until: new Date(out.deferred).toISOString() });
+  if (out.refused) return void log("review refused", { approval: a.id, reason: String(out.refused).slice(0, 200) });
+  log("reviewed", { approval: a.id, issue: a.identifier, action: a.action, decision: out.posted.decision, code: out.posted.code, model: out.posted.model, second: out.posted.second });
+  await afterVerdict(issue, a, out.posted);
+}
+
+/** Reviews asked for whose answer wasn't handled (runner state `reviews_in_flight`). */
+const inFlight = (fn) => state.set("reviews_in_flight", JSON.stringify(fn(JSON.parse(state.get("reviews_in_flight") || "[]"))));
+/**
+ * A review whose answer never reached the runner (it restarted mid-review, or the call timed out while the kernel went on):
+ * the record says how it ended, and a reviewer's reject gets its follow-up as if the answer had come. One still in review is
+ * reviewed again as usual.
+ */
+async function reviewsLeftOver() {
+  for (const id of JSON.parse(state.get("reviews_in_flight") || "[]")) {
+    if (reviewing.has(id)) continue;
+    const a = asApproval(await kernel("GET", `/v1/writes/${id}`));
+    inFlight((ids) => ids.filter((x) => x !== id));
+    if (!["rejected", "stale"].includes(a.state) || !a.decidedBy?.startsWith("reviewer:")) continue;
+    const [model, second] = a.decidedBy.slice("reviewer:".length).split("+");
+    log("review answer recovered", { approval: id, issue: a.identifier });
+    await afterVerdict(await pc.issue(a.issueId), a, { decision: "reject", code: a.reviewCode ?? undefined, reason: a.review ?? "", model, ...(second ? { second } : {}) });
   }
-  reviewRetries.delete(a.id);
-  const post = mode === "full" || v.decision === "escalate" || (mode === "off" && v.decision === "reject") ? v : { ...v, decision: "escalate", code: "shadow", reason: `Shadow (autonomy: tier0): the reviewer would ${v.decision} this. ${v.reason}` };
-  // Kept before the verdict is posted, so a rejection never lands without the chain it judged (missing: the lock stays).
-  if (post.decision === "reject" && post.code === UNSURE && chain) state.set(unsureChainKey(a.id), chainHash(chain));
-  await boardApi.post(`/internal/approvals/${a.id}/review`, { digest: a.digest, decision: post.decision, reason: post.reason.slice(0, 2000), model: post.model, ...(post.second ? { second: post.second } : {}), ...(post.code ? { code: post.code } : {}) }, runnerKey());
-  log("reviewed", { approval: a.id, issue: a.identifier, action: a.action, decision: post.decision, code: post.code, model: post.model, second: post.second });
+}
+
+/** What the runner does after a verdict the kernel posted: a reject's note on the task, the breaker, and the Engineer sent back. */
+async function afterVerdict(issue, a, post) {
   // The breaker: the same change (its content keys, whatever its commits) rejected twice for the same reason stops the task.
   if (post.decision === "reject" && post.code !== UNSURE && !CODE_REJECTS.includes(post.code)) await rejectedAgain(issue, a, post.code).catch((err) => log("breaker failed", { approval: a.id, err: String(err.message ?? err).slice(0, 200) }));
   if (post.decision === "reject") {
@@ -2291,44 +2275,6 @@ async function reviewOne(a, mode) {
   }
 }
 
-/**
- * The AI reviewer on a Tier 1 request: the card's review (reviewOne) and the Engineer's check before filing one
- * (agentReview) make this same call, so the check sees exactly the prompt, policy and models the card will.
- * `a`: { action, target, sentence, panel? }; `input`: currentTier()'s result with the diff.
- */
-async function askReviewer(issue, a, input, chain, { onPanel, component = "AI reviewer", siblings, sources } = {}) {
-  const request = {
-    card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
-    diff: input.diff,
-    files: input.files,
-    chain,
-    siblings,
-    sources,
-    requesterModel: state.task(issue.id)?.engine?.model ?? "",
-    // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
-    panel: Boolean(input.panel || a.panel),
-    previous: [...(input.previous ?? []), ...checkFindings(issue.id, a.action)],
-    relift: input.relift,
-    component,
-  };
-  let v;
-  try {
-    v = await requestReview({ kernelUrl: cfg.kernelUrl, key: runnerKey()["x-reviewer-key"] ?? "" }, request);
-  } catch (err) {
-    // The reviewer module unreachable, failing or slow: a failed review, retried later (never a decision).
-    return { decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA };
-  }
-  const { panel_marked: marked, ...verdict } = v;
-  // The first reviewer called it authority-expanding: recorded on the card before the verdict counts, so a retry can't drop it.
-  if (marked && onPanel) {
-    try {
-      await onPanel();
-    } catch (err) {
-      return { ...verdict, decision: "escalate", code: "reviewer_failed", reason: `couldn't record that it needs a second reviewer (${String(err.message ?? err).slice(0, 160)})` };
-    }
-  }
-  return verdict;
-}
 
 /**
  * What the Engineer's checks before filing (agentReview) found, for every later review of the action on the task, first,
@@ -2652,7 +2598,7 @@ async function approvalStands(issue, action, args, ordered, branches, t) {
   if (records.some((r) => !r || r.action !== action || r.merge !== Boolean(args.merge) || (args.text && r.text !== textHash(args.text)))) return undefined;
   if (records.some((r) => r.by !== "owner") && !(autonomyNow() === "full" && t.tier <= 1)) return undefined;
   // A later no on these branches (or the owner's veto) outranks an earlier yes; another branch's rejection doesn't.
-  const cards = boardApi ? ((await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.identifier)}`)).approvals ?? []) : [];
+  const cards = await recordsOn(issue);
   const since = records.map((r) => cards.find((c) => c.id === r.approval)?.decidedAt ?? "").sort()[0] ?? "";
   // A rejection on another branch blocks too when it carries the same patch (renamed and rebased): matched by content.
   const samePatch = new Set();
@@ -2702,10 +2648,16 @@ async function rebaseInCode(issue, pr, why) {
     const t = await tierFor(issue, "pr", { branches: [await branchTierState(r, rec.sha, rec.base)] }, rec.merge ? ["merge"] : []);
     if (!(await approvalStands(issue, "pr", args, [r], approved, t))) return false;
     const main = await githubDefault(repo);
+    let replayRecord; // the replay's own record, filed before its push
     const moved = await withTrusted(repo, [main, b.branch], async (path, [tip, onGithub], out) => {
       if (onGithub !== rec.sha || (await git(path, "merge-base", "--is-ancestor", tip, rec.sha).then(() => true, () => false))) return null;
       const re = await replayOnto(path, rec.base, rec.sha, tip, await botIdentity());
-      if (!re || (await patchKey(path, rec.base, rec.sha)) !== (await patchKey(path, tip, re.tip))) return null;
+      const patch = re && (await patchKey(path, tip, re.tip));
+      if (!re || (await patchKey(path, rec.base, rec.sha)) !== patch) return null;
+      // Its record before anything is pushed, carried by the approval it replays (the kernel checks it: the same patch).
+      const filed = await fileApproval(issue, { action: "pr", args: { ...args, only: [{ ...b, sha: re.tip, base: tip, ...(patch ? { patch } : {}) }] }, ts: [{ tier: 0, rule: "replayed-approval", reason: `the commits of approval ${rec.approval}, replayed by the runner onto a new base with no conflict` }], carries: [rec.approval] }).catch(() => undefined);
+      if (filed?.state !== "used") return null;
+      replayRecord = filed;
       await git(path, "update-ref", out, re.tip);
       await git(path, "push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${b.branch}:${rec.sha}`, await git(path, "remote", "get-url", "origin"), `${re.tip}:refs/heads/${b.branch}`);
       await git(r.path, "fetch", "--quiet", path, `+${out}:refs/aidenhq/replayed`);
@@ -2724,7 +2676,7 @@ async function rebaseInCode(issue, pr, why) {
     log("rebased in code", { issue: issue.identifier, pr: pr.url, from: rec.sha, to: moved.tip, onto: moved.base });
     const said = `Rebased by the runner: ${pr.url}'s approved commits (approval ${rec.approval}) replayed onto \`${main}\` at \`${moved.base.slice(0, 12)}\` with no conflict and the same change, pushed as \`${moved.tip.slice(0, 12)}\`. No job and no new card.`;
     const outcome = rec.merge ? await mergeAfterPublish(issue, { args: { ...args, only } }, { ok: true, text: said }) : { ok: true, text: said };
-    await recordAuto(issue, "pr", { ...args, only }, "", { rule: "replayed-approval", reason: `the commits of approval ${rec.approval}, replayed by the runner onto a new base with no conflict` }, outcome);
+    await reportOutcome(replayRecord.id, outcome);
     await pc.comment(issue.id, outcome.text);
     return true;
   });
@@ -2834,14 +2786,18 @@ async function runTrialEdits() {
         const t = await tierFor(issue, "apply", await applyTierState(b, bump));
         if (t.reject || t.tier !== 0) throw new UserError(`it's no longer Tier 0 (${t.reason}), so it needs a card`);
         const guard = async (main) => (await tierFor(issue, "apply", await applyTierState(b, bump, main))).tier === 0;
-        const outcome = await landFleet(issue, b.r, b.sha, b.files, `Tier 0: ${t.reason}`, `Tier 0 change (${issue.identifier}): ${t.rule}`, guard);
-        await recordAuto(issue, "apply", { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, await fleetDiffText(b, bump), t, outcome);
+        // Its record first: an apply is read by the AI reviewer at least (the kernel's floor), so it lands once approved.
+        const rec = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), ts: [t] });
+        if (rec.state !== "used") { await pc.comment(issueId, waitingFor(rec, issue)); continue; }
+        await reportOutcome(rec.id, await landFleet(issue, b.r, b.sha, b.files, `Tier 0: ${t.reason}`, `Tier 0 change (${issue.identifier}): ${t.rule}`, guard));
         continue;
       }
       if (!trialNoTap(await pc.issue(issueId), readGrants()) || !trialHandbookOnly(b.files, (await agentTexts(b)).base)) throw new UserError("it's no longer a handbook-only edit to an agent in trial, so it needs a tap");
       // Checked again on the exact main it lands on: an agent that graduated meanwhile gets a card.
       const guard = async (main) => trialHandbookOnly(b.files, await textsAt(b, main));
-      await landFleet(issue, b.r, b.sha, b.files, "a handbook edit to an agent in trial: no tap needed", `Handbook edit to an agent in trial (${issue.identifier})`, guard);
+      const rec = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, await productBump(b)), ts: [{ tier: 0, rule: "trial-handbook", reason: "a handbook edit to an agent in trial: no tap needed" }] });
+      if (rec.state !== "used") { await pc.comment(issueId, waitingFor(rec, issue)); continue; }
+      await reportOutcome(rec.id, await landFleet(issue, b.r, b.sha, b.files, "a handbook edit to an agent in trial: no tap needed", `Handbook edit to an agent in trial (${issue.identifier})`, guard));
     } catch (err) {
       await pc.comment(issueId, `**The trial handbook edit didn't land:** ${String(err instanceof UserError ? err.message : err.stderr || err.message || err).trim().slice(0, 1000)}`).catch(() => {});
     }
@@ -2884,10 +2840,10 @@ async function mergeAfterPublish(issue, a, out) {
   return { ok: !missing.length && (started || !prs.length), text: `${out.text}\n\n${said}` };
 }
 
-/** Outcomes wait here until the board takes them (an apply rebuilds the board): kept in state, retried every poll. */
-function queueOutcome(id, nonce, outcome) {
+/** Outcomes wait here until the kernel takes them (an apply restarts it): kept in state, retried every poll. */
+function queueOutcome(id, outcome) {
   const box = JSON.parse(state.get("approval_outbox") || "{}");
-  box[id] = { nonce, ok: Boolean(outcome.ok), text: String(outcome.text ?? "").slice(0, 8000) };
+  box[id] = { ok: Boolean(outcome.ok), text: String(outcome.text ?? "").slice(0, 8000) };
   state.set("approval_outbox", JSON.stringify(box));
 }
 /** A refusal retrying won't change (4xx), except 401/403: a runner key missing or wrong now is right again after a fix. */
@@ -2895,35 +2851,32 @@ const refusedForGood = (err) => / → 4(?!01|03)\d\d:/.test(String(err.message))
 async function flushOutcomes() {
   const box = JSON.parse(state.get("approval_outbox") || "{}");
   for (const [id, o] of Object.entries(box)) {
-    // Delivered, or refused for good (e.g. a record the board no longer knows): either way, not retried forever.
-    const sent = await boardApi.post(`/internal/approvals/${id}/outcome`, o).then(() => true, refusedForGood);
+    // Delivered, or refused for good (e.g. a record the kernel no longer knows): either way, not retried forever.
+    const sent = await kernel("POST", `/v1/writes/${id}/outcome`, o).then(() => true, refusedForGood);
     if (sent) delete box[id];
   }
   state.set("approval_outbox", JSON.stringify(box));
-  // Tier 0 audit rows, the same way: kept until the board takes them (or refuses them for good).
-  const rows = [];
-  for (const body of JSON.parse(state.get("auto_outbox") || "[]")) {
-    const sent = await boardApi.post("/internal/approvals/auto", body).then(() => true, refusedForGood);
-    if (!sent) rows.push(body);
-  }
-  state.set("auto_outbox", JSON.stringify(rows));
+}
+/** A claimed record's outcome, queued and sent. */
+async function reportOutcome(id, outcome) {
+  queueOutcome(id, outcome);
+  await flushOutcomes().catch(() => {});
 }
 
-/** Every poll, first: claim each approved record once (approved → used on the board), run it, report how it went. Never retried. */
+/** Every poll, first: claim each approved record of the runner's once (approved → claimed in the kernel), run it, report how it went. Never retried. */
 async function runApprovals() {
   await flushOutcomes();
-  const { approvals = [] } = await boardApi.get("/internal/approvals?state=approved");
-  for (const a of approvals) {
+  const { records = [] } = await kernel("GET", "/v1/writes?state=approved&limit=200");
+  for (const a of records.map(asApproval)) {
     if (running.has(a.issueId)) continue; // after the run in progress
-    const claimed = await boardApi.post(`/internal/approvals/${a.id}/claim`).catch((err) => void log("approval claim failed", { approval: a.id, err: String(err.message ?? err).slice(0, 200) }));
+    const claimed = await kernel("POST", `/v1/writes/${a.id}/claim`).then(asApproval, (err) => void log("approval claim failed", { approval: a.id, err: String(err.message ?? err).slice(0, 200) }));
     if (!claimed) continue;
     log("approval claimed", { approval: a.id, issue: a.identifier, action: a.action });
     // One card's trouble is that card's outcome: a claimed record never goes without one, and the others still run this tick.
     await runClaimed(claimed).catch(async (err) => {
       const text = `Not run: ${String(err.message ?? err).slice(0, 2000)}`;
       log("approval dispatch failed", { approval: claimed.id, issue: claimed.identifier, action: claimed.action, err: text });
-      queueOutcome(claimed.id, claimed.nonce, { ok: false, text });
-      await flushOutcomes();
+      await reportOutcome(claimed.id, { ok: false, text });
     });
   }
 }
@@ -2938,8 +2891,7 @@ async function runClaimed(claimed) {
   if (!status || CLOSED.includes(status)) {
     const text = `Not run: the task is ${status ?? "unreadable"}: a leftover request runs nothing.`;
     log("approval skipped: its task is closed", { approval: claimed.id, issue: claimed.identifier, status });
-    queueOutcome(claimed.id, claimed.nonce, { ok: false, text });
-    await flushOutcomes();
+    await reportOutcome(claimed.id, { ok: false, text });
     return;
   }
   // The AI reviewer approved it: recompute the tier just before running. Refused by code now (it moved, say): it runs
@@ -2954,14 +2906,13 @@ async function runClaimed(claimed) {
     const panelMissing = (t.panel || claimed.panel) && !claimed.decidedBy.includes("+");
     if (t.reject || t.tier > 1 || panelMissing || t.rule === "recheck") {
       const tier = t.reject || t.tier > 1 ? 2 : 1;
-      const refiled = t.reject ? undefined : await fileApproval(issue, { action: claimed.action, args: claimed.args, diff: claimed.action === "apply" ? claimed.details : undefined, tier, reason: t.reason, baseTier: t.rule ? baseOf(t) : undefined, rule: t.rule, panel: Boolean(t.panel) }).catch(() => undefined);
+      const refiled = t.reject ? undefined : await fileApproval(issue, { action: claimed.action, args: claimed.args, diff: claimed.action === "apply" ? claimed.details : undefined, ts: [tier === 2 ? { ...t, tier: 2, reviewFirst: false, byMerit: false } : { ...t, tier: 1 }] }).catch(() => undefined);
       const text = t.reject
         ? `Not run: since the reviewer approved it, code refuses it (${t.reason}). Ask again.`
         : `Not run yet: ${panelMissing ? "it is authority-expanding now, so a second reviewer must approve it too" : tier === 2 ? `since the reviewer approved it, code puts it at Tier 2 (${t.reason})` : t.reason}.${refiled ? ` A new card (${refiled.id}) goes to ${tier === 2 ? cfg.selfName : "the reviewers"}.` : ""}`;
       log("tier rose before running", { approval: claimed.id, issue: claimed.identifier, reason: t.reason });
-      queueOutcome(claimed.id, claimed.nonce, { ok: false, text });
       await pc.comment(claimed.issueId, text).catch(() => {});
-      await flushOutcomes();
+      await reportOutcome(claimed.id, { ok: false, text });
       return;
     }
   }
@@ -2973,7 +2924,7 @@ async function runClaimed(claimed) {
     await pc.comment(claimed.issueId, `**Approved, but it failed** (approval ${claimed.id}): ${outcome.text}`).catch(() => {});
   }
   log("approval applied", { approval: claimed.id, ok: outcome.ok });
-  queueOutcome(claimed.id, claimed.nonce, outcome);
+  queueOutcome(claimed.id, outcome);
   // The agent that delegated this (e.g. the Agent Architect, on its chat) learns a failure, or the result of work no grade
   // will judge; a graded task's grade is the news (notices.ts).
   const full = await pc.issue(claimed.issueId).catch(() => null);
@@ -3054,8 +3005,8 @@ async function agentPublish(ctx, command, args) {
     .map((b) => ({ repo: normalizeRepo(String(b?.repo ?? ""))?.slug ?? "", branch: String(b?.branch ?? "") }))
     .filter((b) => b.repo && b.branch);
   const text = command === "pr" && args.title ? { title: String(args.title), body: String(args.body ?? "") } : undefined;
-  let ranAtOnce; // Tier 0: published now, recorded as an audit row afterwards
-  let carried; // an earlier approval's commits, replayed by the runner: published (and merged) on it, recorded as an audit row
+  let ranAtOnce; // Tier 0: its record, claimed at filing; published now, the outcome reported on it
+  let carried; // an earlier approval's commits, replayed by the runner: published (and merged) on it, its record carried by it
   try {
     const result = await publish(ctx.issue, ctx.workspace, command, ctx.signal, {
       only,
@@ -3083,24 +3034,36 @@ async function agentPublish(ctx, command, args) {
         if (t.tier === 0) {
           // Once more right before it goes out at once: nothing rewrote the clone's history while it was tiered.
           await refuseRewritten(ordered);
-          ranAtOnce = { t, args: cardArgs };
+          // Its record first: the kernel may raise it (a protected target, the owner's veto), and then it is a card.
+          const rec = await fileApproval(ctx.issue, { action: command, args: cardArgs, ts: [t] });
+          if (rec.state !== "used") {
+            if (command === "pr") await keepReviewed(ordered, branches, rec.id);
+            throw new AwaitingApproval(waitingFor(rec, ctx.issue));
+          }
+          ranAtOnce = { rec };
           // Exactly the commits classified go out (a branch moved meanwhile can't ride along).
           return new Map(branches.map((b) => [pinKey(b.repo, b.branch), b.sha]));
         }
         // A clean rebase of approved commits: the runner's own replay of them is published on that approval.
         const built = await rebuild(ctx.issue, command, cardArgs, ordered, branches, t);
         if (built) {
-          carried = { ...built, args: { ...cardArgs, only: branches.map((b, i) => ({ ...b, sha: built.pins.get(pinKey(b.repo, b.branch)), base: built.moves[i].base })) } };
-          return built.pins;
+          const args2 = { ...cardArgs, only: branches.map((b, i) => ({ ...b, sha: built.pins.get(pinKey(b.repo, b.branch)), base: built.moves[i].base })) };
+          const ids = [...new Set(built.records.map((r) => r.approval))];
+          // Its record, carried by those approvals (the kernel checks them): no new card unless the kernel says otherwise.
+          const rec = await fileApproval(ctx.issue, { action: command, args: args2, ts: [{ tier: 0, rule: "replayed-approval", reason: `the commits of approval ${ids.join(", ")}, replayed by the runner onto a new base with no conflict` }], carries: ids }).catch((err) => (refusedForGood(err) ? undefined : Promise.reject(err)));
+          if (rec?.state === "used") {
+            carried = { ...built, args: args2, rec };
+            return built.pins;
+          }
         }
-        const a = await fileApproval(ctx.issue, { action: command, args: cardArgs, tier: cardTier(t), reason: t.reason, baseTier: baseOf(t), rule: t.rule, panel: Boolean(t.panel), reviewFirst: reviewFirstOf(t) });
+        const a = await fileApproval(ctx.issue, { action: command, args: cardArgs, ts: [t] });
         // A `pr` card's head is never on GitHub before approval: the cache keeps exactly what was reviewed
         // (refs/reviewed/<approval>/<branch>), so a rejection can name it and the next task on the work can resolve it.
         if (command === "pr") await keepReviewed(ordered, branches, a.id);
         throw new AwaitingApproval(waitingFor(a, ctx.issue));
       },
     });
-    if (ranAtOnce) await recordAuto(ctx.issue, command, ranAtOnce.args, "", ranAtOnce.t, result);
+    if (ranAtOnce) await reportOutcome(ranAtOnce.rec.id, result);
     if (carried) {
       const ids = [...new Set(carried.records.map((r) => r.approval))].join(", ");
       const said = `The approved commits of ${ids}, replayed by the runner onto the new \`main\` with no conflict (your rebase matches them), so no new card: ${carried.args.merge ? "published, and merging once green on the new commits" : "published"}.`;
@@ -3115,7 +3078,7 @@ async function agentPublish(ctx, command, args) {
       }
       // Merged as the approved card's own merge would, bound to the runner's commits.
       const outcome = carried.args.merge && result.ok ? await mergeAfterPublish(ctx.issue, { args: carried.args }, result) : result;
-      await recordAuto(ctx.issue, command, carried.args, "", { rule: "replayed-approval", reason: `the commits of approval ${ids}, replayed by the runner onto a new base with no conflict` }, outcome);
+      await reportOutcome(carried.rec.id, outcome);
       return `${said}\n\n${stripHidden(outcome.text).trim()}`;
     }
     return stripHidden(result.text).trim();
@@ -3132,7 +3095,7 @@ class Checked extends Error {}
 
 /**
  * `aidenhq review [push] [<org/repo> <branch>]…`: the AI reviewer's verdict on the card `aidenhq pr` (or `push`) would file
- * now, without filing it. The same branches, the same tiering and the same reviewer call as the card's review (askReviewer),
+ * now, without filing it. The same branches, the same tiering and the same request as the card's review (reviewRequest),
  * so a rejection is fixed in the same run instead of costing a card, a rejection notice and a new job. No card is filed.
  * The gate isn't an oracle to tune against: only a real reviewer call counts, REVIEW_CHECKS per task across its jobs (kept in
  * state; the next word of whoever asked, the delegator or the owner, gives REVIEW_CHECKS more); each check is one short line
@@ -3170,7 +3133,8 @@ async function agentReview(ctx, args) {
         state.set(checksKey(ctx.issue.id), JSON.stringify([...checksOf(ctx.issue.id), entry]));
         const chain = await prRequest(await pc.issue(ctx.issue.id)).catch(() => "");
         const context = await cardContext(ctx.issue, { branches: branches.map((x) => ({ repo: x.repo, branch: x.branch })) }, input.bases);
-        const v = await askReviewer(ctx.issue, card, input, chain, { component: "AI reviewer check", ...context });
+        // The same request a card's review sends (reviewRequest), through the kernel's reviewer slot; a failed call is no verdict.
+        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(card, input, chain, { component: "AI reviewer check", requesterModel: state.task(ctx.issue.id)?.engine?.model ?? "", previous: checkFindings(ctx.issue.id, card.action), ...context })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
         log("review checked", { issue: ctx.issue.identifier, action: command, decision: v.decision, code: v.code, model: v.model, second: v.second, used: n + 1, target: card.target.slice(0, 300) });
         // No verdict (the call failed): the check doesn't count. Otherwise it is kept with its finding.
         const rest = checksOf(ctx.issue.id).filter((c) => c.at !== entry.at || c.target !== entry.target);
@@ -3282,7 +3246,7 @@ async function showFleetDiff(issue, workspace) {
   }
   // A review-first card (new module authority, or autonomy off) is filed for the reviewer (Tier 1); its approve goes on to the owner.
   const reviewFirst = Boolean(tier.reviewFirst);
-  const card = await fileApproval(issue, { action: "apply", args: applyCardArgs(b, ...authorityOf(st)), diff: await fleetDiffText(b, bump), tier: cardTier(tier), reason: tier.reason, baseTier: baseOf(tier), rule: tier.rule, panel: Boolean(tier.panel), reviewFirst: reviewFirstOf(tier) }).catch((err) => ({ error: String(err.message ?? err).slice(0, 300) }));
+  const card = await fileApproval(issue, { action: "apply", args: applyCardArgs(b, ...authorityOf(st)), diff: await fleetDiffText(b, bump), ts: [tier] }).catch((err) => ({ error: String(err.message ?? err).slice(0, 300) }));
   const upgrade = bump ? `\n\n**${bump.title}:**\n\n\`\`\`\n${bump.log.replaceAll("```", "‵‵‵")}\n\`\`\`` : "";
   const ask = card.error
     ? `**Couldn't file the approval card:** ${card.error}. Nothing will be applied until it is filed; ask the agent to try again.`
@@ -3403,7 +3367,7 @@ async function agentMerge(ctx, args) {
   const merging = now.length ? `Merging ${now.map((p) => `#${p.number}`).join(", ")} now, each as soon as its named checks are green on its current head; results are posted on this task.` : "";
   if (!card.length) return `${merging} No card is needed.`;
   const rest = tiers.filter((t) => t.tier !== 0);
-  const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, tier: rest.some((t) => cardTier(t) !== 1) ? 2 : 1, reason: rest.map((t) => t.reason).filter(Boolean).join("; "), baseTier: baseOf(...rest), rule: highest(rest).rule, panel: rest.some((t) => t.panel), reviewFirst: reviewFirstOf(...rest) });
+  const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, ts: rest });
   return `${merging ? `${merging} ` : ""}${waitingFor(a, ctx.issue)} Once approved, ${card.map((p) => `#${p.number}`).join(", ")} merge one at a time${gap !== undefined ? `, ${gap} minutes apart` : ""}, each only at the commit the card shows, with green checks and a green base branch (outside ${cfg.agentsOrg ?? "the agents org"} also approved on GitHub), or the queue stops and says why on the task.`;
 }
 
@@ -3424,7 +3388,6 @@ async function agentClose(ctx, args) {
   if (t.rule === "autonomy-off") throw new UserError(`Not closed: ${t.reason}. Closing PRs runs only while autonomy is on; ask ${cfg.selfName} to close them.`);
   if (t.tier !== 0) throw new UserError(`Not closed: ${t.reason}. Only PRs in the agents org (${cfg.agentsOrg}) and the product repo's Dependabot PRs can be closed; the instance repo's and the product repo's other PRs are ${cfg.selfName}'s.`);
   const lines = await merges.closePrs(prs, reason, mergeGithub);
-  await recordAuto(ctx.issue, "close", { prs: prs.map((p) => p.url), reason }, "", t, { ok: lines.every((l) => l.startsWith("Closed")), text: lines.join("\n") });
   return lines.join("\n");
 }
 
@@ -3441,7 +3404,7 @@ async function agentCreateRepo(ctx, args) {
   if (await app.repoExists(repo.slug)) return `${repo.slug} already exists: \`aidenhq repo ${repo.slug}\` clones it into the workspace.`;
   const t = await tierFor(ctx.issue, "create_repo", { repo: repo.slug });
   if (t.reject) throw new UserError(`Not done: ${t.reason}.`);
-  const a = await fileApproval(ctx.issue, { action: "create_repo", args: { repo: repo.slug }, tier: cardTier(t), reason: t.reason, baseTier: baseOf(t), rule: t.rule, panel: Boolean(t.panel), reviewFirst: reviewFirstOf(t) });
+  const a = await fileApproval(ctx.issue, { action: "create_repo", args: { repo: repo.slug }, ts: [t] });
   return `${waitingFor(a, ctx.issue)} Once approved, ${repo.slug} is created (private, with a README) and is in the workspace on this task's next run.`;
 }
 
@@ -3568,6 +3531,7 @@ async function startJob({ issue, instructions }) {
   let tools; // the run's `aidenhq` context: what it asked for after the run (merges, engine, reset, cleanup)
   let launched; // the run, once the agent is going: its turn ends in finishTurn
   let box; // a box job's box (POST /job): released before anything inspects the workspace
+  let handedOver = false; // started just as the runner stops: the next runner follows it
   try {
     // Recorded before any setup can fail: a job that died while preparing its workspace still counts as having run
     // (its delegator's follow-up is only read on a task with history).
@@ -3604,6 +3568,9 @@ async function startJob({ issue, instructions }) {
     const prNotes = await leaveFinishedPrs(issue, workspace);
     if (prNotes.length) instructions = `(Runner note: ${prNotes.join(" ")} Build on what is there now.)\n\n${instructions}`;
     const repos = await repoInfo(workspace, { naming: issue });
+    // A brief naming a commit or branch that isn't there is the delegator's to fix: the job never starts on it.
+    const stale = await staleRef(`${instructions}\n${full.description ?? ""}`, repos.map((r) => r.path));
+    if (stale) throw new UserError(`Not started: ${stale}. Fix the brief and send it again.`);
     state.updateTask(issue.id, { engine });
     // Grafana and Google Cloud reads for an Engineer with private reads: a one-hour gcloud token of the job's own.
     gcp = observes(engine) && !engine.box
@@ -3611,9 +3578,10 @@ async function startJob({ issue, instructions }) {
       : undefined;
     if (gcp && gcp.state !== "ok" && gcp.state !== "missing") log("gcp unavailable for the job", { issue: issue.identifier, state: gcp.state, detail: gcp.detail });
 
-    const logPath = join(logsDir, `${issue.identifier}-${Date.now()}.log`);
-    jobId = state.startJob(issue.id, engineLabel(engine), logPath);
-    Object.assign(running.get(issue.id), { jobId, logPath, info: { engine: engineLabel(engine), mode: "working", repo: repos.map((r) => r.slug).join(", ").slice(0, 200) } });
+    // The job's log is the kernel's (its path comes back when the job starts).
+    let logPath = "";
+    jobId = state.startJob(issue.id, engineLabel(engine), "");
+    Object.assign(running.get(issue.id), { jobId, info: { engine: engineLabel(engine), mode: "working", repo: repos.map((r) => r.slug).join(", ").slice(0, 200) } });
     reportActivity();
     // A saved session can only be continued by the engine that created it (engines' sessions are not
     // interchangeable). After a switch the new engine starts fresh, with the
@@ -3672,18 +3640,33 @@ async function startJob({ issue, instructions }) {
     const helperToken = randomBytes(24).toString("hex");
     if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity, engine });
     if (stopping) return; // the runner is restarting: the job resumes after it (RESUME_KEY)
-    // From here on nothing waits before the run is recorded: a restart either cuts the job before it or adopts the run.
     tools = { issue, workspace, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box, agentId };
     const helper = repoHelper.register(tools, helperToken);
     const sessionId = resumed ? state.task(issue.id).session_id : undefined;
-    const startedAt = Date.now();
-    // The job's gateway credential comes from its agent, task and start time: `aidenhq advise` mints the same one (advise.ts).
-    const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, at: startedAt, jobcaps, observing: observes(engine) }, box });
-    // What the next runner needs to adopt the run and finish its turn after a restart.
-    tools.run = { pid: run.pid, jobDir: run.jobDir, eventsOffset: 0, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, observing: observes(engine), repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
+    // The kernel starts the job (its sandbox, limits and adoption are the kernel's). A restart waits for this answer
+    // (`starting`), so the job is either recorded here for the next runner or never started.
+    running.get(issue.id).starting = true;
+    let started;
+    try {
+      started = await jobsApi.start({
+        agent: agentId, task: issue.id, label: issue.identifier, workspace: { module: "engineering", id: basename(workspace) }, prompt,
+        ...(sessionId ? { session: sessionId } : {}), engine: { kind: engine.kind, model: engine.model ?? "", effort: engine.effort ?? "" },
+        env: { ...helper.env, ...identityEnv(identity), ...(ghToken ? { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken } : {}) },
+        ...(gcp ? { cloud: { root: gcp.root, env: gcp.env } } : {}), ...(box ? { box } : {}),
+      });
+    } finally {
+      running.get(issue.id).starting = false;
+    }
+    logPath = started.log;
+    state.setJobLog(jobId, logPath);
+    // What the next runner needs to follow the job and finish its turn after a restart. The job's gateway credential comes from
+    // its agent, task, jobcaps and start time: `aidenhq advise` mints the same one (advise.ts).
+    tools.run = { kernelJob: started.id, pid: started.pid, token: helper.token, startedAt: started.at, sessionId, workspace, engine, tipsBefore, instructions, brief: Boolean(brief), who: persona?.name, agentId, jobcaps: started.jobcaps, observing: started.observing, repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
     state.saveRun(jobId, tools.run);
-    running.get(issue.id).pid = run.pid;
-    const watch = watchAgent(run, { sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
+    Object.assign(running.get(issue.id), { pid: started.pid, logPath });
+    if (started.live_input) channel.send = (text) => jobsApi.input(started.id, text);
+    if (stopping) return void (handedOver = true); // the next runner follows it (state.runningJobs): its box and session stay
+    const watch = followJob(jobsApi, started.id, { signal: controller.signal, detach: detach.signal, onProgress: progressOf(issue.id), log });
     launched = { issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep: box && keepBox(issue, box, helper) };
   } catch (err) {
     if (stopping) return;
@@ -3700,7 +3683,7 @@ async function startJob({ issue, instructions }) {
     }
     await reportError(issue, err);
   } finally {
-    if (!launched) {
+    if (!launched && !handedOver) {
       // A box that never got its run (a failed start, a restart): destroyed, never left holding the task.
       if (box) await stopBox(issue, box).catch((err) => log("box release failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 300) }));
       gcp?.done();
@@ -3774,11 +3757,17 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
   try {
     result = await watch;
     keep?.();
-    // The runner is restarting: the run goes on (its box too, on its lease), and the next runner finishes this turn.
-    // It goes on from the events read so far (and the session already reported).
-    if (result.detached) return void (tools?.run && state.saveRun(jobId, { ...tools.run, eventsOffset: result.offset ?? tools.run.eventsOffset ?? 0, sessionId: result.sessionId ?? tools.run.sessionId }));
+    // The runner is restarting: the job goes on in the kernel (its box too, on its lease), and the next runner finishes this turn.
+    if (result.detached) return;
     Object.assign(running.get(issue.id) ?? {}, { finishing: true });
     helper.done();
+    // The job died while no kernel followed it (a reboot): resumed in the same workspace and session, like a cut-off turn.
+    if (result.lost) {
+      if (box) await stopBox(issue, box);
+      state.finishJob(jobId, "interrupted", "lost");
+      state.set(RESUME_KEY, JSON.stringify([...JSON.parse(state.get(RESUME_KEY) || "[]"), { issueId: issue.id, instructions: tools?.instructions ?? "" }]));
+      return void log("job lost: resuming", { issue: issue.identifier });
+    }
     // A box job's process may outlive its `docker exec` client (a cancel, a timeout): the box goes, confirmed, before
     // anything below reads, signs or cleans the workspace. If it can't be confirmed, nothing below runs.
     if (box) await stopBox(issue, box);
@@ -3994,10 +3983,10 @@ function publishedAt(issue) {
 async function cardsAt(issue, heads) {
   // The board returns a card's args (the branch and commit) only to the runner's own key. Without it, no card can be
   // matched: the receipt keeps its `pr` invitation rather than guessing.
-  if (!heads.length || !boardApi || !runnerKey()["x-reviewer-key"]) return [];
+  if (!heads.length) return [];
   let approvals;
   try {
-    ({ approvals = [] } = await boardApi.get(`/internal/approvals?issue=${encodeURIComponent(issue.identifier)}`));
+    approvals = await recordsOn(issue);
   } catch (err) {
     log("receipt card lookup failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
     return [];
@@ -4435,9 +4424,10 @@ const repoHelper = startRepoHelper(async ({ issue, workspace, box }, raw) => {
   task: agentTask,
   tasks: agentTasks,
   advise: agentAdvise,
-}, Number(state.get("helper_port") ?? 0));
+}, cfg.helperPort);
 // One port across restarts: runs a restart left going keep reaching their tools.
-repoHelper.listening.then((port) => state.set("helper_port", String(port)));
+// The one host port a job's jail opens besides the kernel's 8201 (runner.yaml helper_port): the kernel refuses any other.
+repoHelper.listening.then((port) => port !== cfg.helperPort && log("WARNING: the helper isn't on its port: jobs can't start until it is", { port, want: cfg.helperPort }));
 
 /** Each repository in the workspace for the prompt; with `naming`, its branch naming rules and examples. */
 async function repoInfo(workspace, { naming } = {}) {
@@ -4629,55 +4619,57 @@ let stopping = false;
 const RESUME_KEY = "resume_after_restart";
 
 /**
- * Runs the previous runner process left going (a restart): followed to their end and reported exactly
- * as if this runner had started them, including those that ended while no runner was up. A run gone
- * without an exit status is resumed instead.
+ * Jobs the previous runner process was following (a restart): the kernel still runs them, so they are followed to their end and
+ * reported exactly as if this runner had started them, including those that ended while no runner was up. A run from before
+ * jobs moved into the kernel (no kernel job: the cutover) is stopped if it still runs, and resumed in its workspace and session.
  */
 function adoptRuns() {
   const lost = [];
   for (const job of state.runningJobs()) {
     const run = job.run;
-    const status = existsSync(`${job.log_path}.exit`) ? Number(readFileSync(`${job.log_path}.exit`, "utf8").trim() || NaN) : NaN;
-    // Killed by a signal (above 128) while no runner followed it, e.g. a reboot: resumed like a run gone without a status.
-    const ended = status >= 0 && status <= 128;
-    // A run from before engine@1 (no job dir) is resumed: the drill stops those before a deploy.
-    if (!run?.jobDir || !(ended || (Number.isNaN(status) && runAlive(run.pid, job.log_path)))) {
+    if (!run?.kernelJob) {
+      if (run?.pid && job.log_path && runAlive(run.pid, job.log_path)) {
+        try { process.kill(-run.pid, "SIGTERM"); } catch {}
+        log("stopped a job from before the kernel ran jobs: resuming it", { issue: state.task(job.issue_id)?.identifier, pid: run.pid });
+      }
       state.finishJob(job.id, "interrupted", "restart");
       if (run) lost.push({ issueId: job.issue_id, instructions: run.instructions });
       continue;
     }
     const issue = { id: job.issue_id, identifier: state.task(job.issue_id)?.identifier };
     const controller = new AbortController();
-    const channel = {}; // no input: the session's stdin closed with the old runner
+    const channel = {};
     // Its tools keep working: the same helper port, its own token, what it already asked for.
     const tools = { issue, workspace: run.workspace, instructions: run.instructions, brief: run.brief, kind: run.engine.kind, reads: observes(run.engine), who: run.who, signal: controller.signal, jobId: job.id, run, reset: run.reset, engine: run.switchTo, cleanup: run.cleanup, box: run.box, agentId: run.agentId ?? null };
     const helper = repoHelper.register(tools, run.token);
-    running.set(issue.id, { controller, jobId: job.id, identifier: issue.identifier, startedAt: job.started_at, request: run.instructions, pid: run.pid, channel, who: run.who, info: { engine: engineLabel(run.engine), mode: "working", repo: run.repos } });
-    log("adopted a running job", { issue: issue.identifier, pid: run.pid });
+    channel.send = (text) => jobsApi.input(run.kernelJob, text);
+    running.set(issue.id, { controller, jobId: job.id, identifier: issue.identifier, startedAt: job.started_at, request: run.instructions, pid: run.pid, logPath: job.log_path, channel, who: run.who, info: { engine: engineLabel(run.engine), mode: "working", repo: run.repos } });
+    log("following a running job again", { issue: issue.identifier, job: run.kernelJob });
     void (async () => {
       const gcp = observes(run.engine)
         ? await gcpSession({ credentialsFile: cfg.gcp.credentialsFile, dir: join(cfg.stateDir, "gcloud", issue.identifier), project: cfg.gcp.projects[0], log: (m, f) => log(m, { issue: issue.identifier, ...f }) }).catch(() => undefined)
         : undefined;
       // A box job: its lease renewed and its helper binding re-registered, the launcher's record checked against ours. A box
-      // gone (its lease lapsed while no runner followed it) means a dead run, unless it had already finished: the task resumes
-      // from its session in a new box, once this one is confirmed gone.
+      // gone (its lease lapsed while no runner followed it) means a dead run: the job is stopped and the task resumes from its
+      // session in a new box, once this one is confirmed gone.
       if (run.box) {
         const live = await boxCall("/job/renew", { container: run.box.container, issueId: issue.id, helperPort: helperPort(), helperToken: run.token }).then(
           (r) => r.issueId === issue.id && r.workspace === run.workspace,
           (err) => err.status !== 404, // the launcher not answering yet is not a gone box: the renewals go on trying
         );
-        if (!live && status !== 0) {
-          try { process.kill(-run.pid, "SIGKILL"); } catch {}
+        const now = live ? undefined : await jobsApi.get(run.kernelJob).catch(() => undefined);
+        if (!live && !(now && now.state === "done")) {
+          await jobsApi.stop(run.kernelJob).catch(() => {});
           helper.done();
           await stopBox(issue, run.box).catch((err) => log("box release failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 300) }));
           state.finishJob(job.id, "interrupted", "box gone");
           running.delete(issue.id);
-          log("adopted box job's box is gone: resuming", { issue: issue.identifier, container: run.box.container });
+          log("followed box job's box is gone: resuming", { issue: issue.identifier, container: run.box.container });
           state.set(RESUME_KEY, JSON.stringify([...JSON.parse(state.get(RESUME_KEY) || "[]"), { issueId: issue.id, instructions: run.instructions }]));
           return resumeInterrupted();
         }
       }
-      const watch = watchAgent(adoptRun({ pid: run.pid, logPath: job.log_path, jobDir: run.jobDir, offset: run.eventsOffset ?? 0 }), { sessionId: run.sessionId, deadline: run.startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
+      const watch = followJob(jobsApi, run.kernelJob, { signal: controller.signal, detach: detach.signal, onProgress: progressOf(issue.id), log });
       await finishTurn({ issue, workspace: run.workspace, engine: run.engine, jobId: job.id, logPath: job.log_path, tipsBefore: run.tipsBefore, tools, gcp, helper, watch, box: run.box, keep: run.box && keepBox(issue, run.box, helper) });
     })();
   }
@@ -4736,7 +4728,8 @@ async function shutdown(code, waitMs) {
   if (stopping) return;
   stopping = true;
   detach.abort();
-  const cut = [...running].filter(([, r]) => r.request !== undefined && !r.pid);
+  // A job the kernel is starting (`starting`) is waited for below: it is either recorded for the next runner or never started.
+  const cut = [...running].filter(([, r]) => r.request !== undefined && !r.pid && !r.starting);
   const jobs = cut.map(([issueId, r]) => ({ issueId, instructions: r.request }));
   for (const j of queue) jobs.push({ issueId: j.issue.id, instructions: j.instructions });
   state.set(RESUME_KEY, JSON.stringify(jobs));
@@ -4744,7 +4737,7 @@ async function shutdown(code, waitMs) {
     if (r.jobId) state.finishJob(r.jobId, "interrupted", "restart");
     r.controller.abort();
   }
-  const halfDone = () => repoHelper.busy() > 0 || [...running.values()].some((r) => r.request === undefined || r.finishing);
+  const halfDone = () => repoHelper.busy() > 0 || [...running.values()].some((r) => r.request === undefined || r.finishing || r.starting);
   log("stopping for a restart", { resume: jobs.length, handed_over: [...running.values()].filter((r) => r.pid && !r.finishing).length });
   for (const end = Date.now() + waitMs; halfDone() && Date.now() < end; ) await new Promise((r) => setTimeout(r, 100));
   process.exit(code);

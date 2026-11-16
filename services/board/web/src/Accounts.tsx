@@ -1,8 +1,6 @@
-// Board accounts: sign-in, the authenticator setup admins need, setting a password from a
-// link, and the Accounts page (people and your own signed-in browsers). Better Auth does the work behind /api/auth.
-import QRCode from "qrcode";
+// Board accounts: the Accounts page (people and your own signed-in browsers), and the pointer to the kernel's sign-in pages.
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { SignInRequired, accountsApi, type Account, type AppAdmins, type AuthSession, type Session } from "./api";
+import { SignInRequired, accountsApi, api, type Account, type AppAdmins, type AuthSession, type Session } from "./api";
 import { SkeletonLines } from "./Skeleton";
 import { ago } from "./util";
 
@@ -37,132 +35,16 @@ function useSubmit(run: () => Promise<void>) {
   return { busy, error, submit };
 }
 
-/** Email and password, then the authenticator's code when the account has one. */
-export function SignInScreen({ onDone }: { onDone: () => void }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [code, setCode] = useState("");
-  const [step, setStep] = useState<"password" | "code">("password");
-  const signIn = useSubmit(async () => {
-    const r = await accountsApi.signIn(email, password);
-    if (r?.twoFactorRedirect) setStep("code");
-    else onDone();
-  });
-  const verify = useSubmit(async () => {
-    await accountsApi.verifyTotp(code.replace(/\s/g, ""));
-    onDone();
-  });
-  if (step === "code")
-    return (
-      <Screen title="Enter your code" sub="The 6-digit code from your authenticator app.">
-        <form className="code-form" onSubmit={(e) => void verify.submit(e)}>
-          <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" maxLength={7} placeholder="123 456" aria-label="Code" autoFocus />
-          <button className="btn primary" disabled={verify.busy || code.replace(/\D/g, "").length !== 6}>
-            {verify.busy ? "Checking…" : "Sign in"}
-          </button>
-        </form>
-        {verify.error && <p className="auth-error">{verify.error}</p>}
-      </Screen>
-    );
+/**
+ * Signing in, enrolling an authenticator and claiming a link happen on the kernel's admin pages; /auth/start then has the
+ * kernel hand this board its own session (and sends the browser to sign in there first when it isn't).
+ */
+export function SignInScreen() {
   return (
-    <Screen title="AidenHQ" sub="Sign in to your board.">
-      <form className="auth-form" onSubmit={(e) => void signIn.submit(e)}>
-        <label>
-          Email
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required autoFocus />
-        </label>
-        <label>
-          Password
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
-        </label>
-        <button className="btn primary" disabled={signIn.busy}>
-          {signIn.busy ? "Signing in…" : "Sign in"}
-        </button>
-      </form>
-      {signIn.error && <p className="auth-error">{signIn.error}</p>}
-      <p className="muted small">Locked out or forgot your password? The owner can send you a new link.</p>
-    </Screen>
-  );
-}
-
-/** Admins set up an authenticator before anything else (TOTP is required for board access). */
-export function EnrolScreen({ session, onDone }: { session: Session; onDone: () => void }) {
-  const [password, setPassword] = useState("");
-  const [uri, setUri] = useState("");
-  const [qr, setQr] = useState("");
-  const [code, setCode] = useState("");
-  const start = useSubmit(async () => {
-    const r = await accountsApi.enableTotp(password);
-    setUri(r.totpURI);
-    setQr(await QRCode.toDataURL(r.totpURI, { margin: 1, width: 220, errorCorrectionLevel: "M" }));
-  });
-  const verify = useSubmit(async () => {
-    await accountsApi.verifyTotp(code.replace(/\s/g, ""));
-    onDone();
-  });
-  const secret = uri ? new URL(uri).searchParams.get("secret") ?? "" : "";
-  return (
-    <Screen title="Set up your authenticator" sub={<>Signed in as <b>{session.account?.email}</b>. Admins sign in with a code from an authenticator app (1Password, Google Authenticator, …).</>}>
-      {!uri ? (
-        <form className="auth-form" onSubmit={(e) => void start.submit(e)}>
-          <label>
-            Your password, to confirm
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required autoFocus />
-          </label>
-          <button className="btn primary" disabled={start.busy}>
-            {start.busy ? "…" : "Continue"}
-          </button>
-          {start.error && <p className="auth-error">{start.error}</p>}
-        </form>
-      ) : (
-        <>
-          <p className="muted small">Scan this in your authenticator app, then type the code it shows.</p>
-          <div className="qr">{qr ? <img src={qr} alt="Authenticator QR code" width={220} height={220} /> : <span className="spinner" />}</div>
-          <p className="small muted totp-secret">
-            Or enter this key: <code>{secret.replace(/(.{4})/g, "$1 ").trim()}</code>
-          </p>
-          <form className="code-form" onSubmit={(e) => void verify.submit(e)}>
-            <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" maxLength={7} placeholder="123 456" aria-label="Code" autoFocus />
-            <button className="btn primary" disabled={verify.busy || code.replace(/\D/g, "").length !== 6}>
-              {verify.busy ? "Checking…" : "Turn on"}
-            </button>
-          </form>
-          {verify.error && <p className="auth-error">{verify.error}</p>}
-        </>
-      )}
-      <button className="link-btn" onClick={() => void accountsApi.signOut().then(onDone)}>
-        Sign out
-      </button>
-    </Screen>
-  );
-}
-
-/** A setup, invite or reset link (#/set-password/<token>): one use, 72 hours. */
-export function SetPasswordScreen({ token, onDone }: { token: string; onDone: () => void }) {
-  const [password, setPassword] = useState("");
-  const [again, setAgain] = useState("");
-  const set = useSubmit(async () => {
-    if (password !== again) throw new Error("the two passwords differ");
-    await accountsApi.setPassword(token, password);
-    history.replaceState(null, "", "/#/"); // the link is spent; keep it out of history
-    onDone();
-  });
-  return (
-    <Screen title="Set your password" sub="12 characters or more. This link works once.">
-      <form className="auth-form" onSubmit={(e) => void set.submit(e)}>
-        <label>
-          New password
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" minLength={12} required autoFocus />
-        </label>
-        <label>
-          Again
-          <input type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" minLength={12} required />
-        </label>
-        <button className="btn primary" disabled={set.busy || password.length < 12}>
-          {set.busy ? "Saving…" : "Set password"}
-        </button>
-      </form>
-      {set.error && <p className="auth-error">{set.error}</p>}
+    <Screen title="Sign in" sub="Admins sign in on the AidenHQ sign-in page, then come back here.">
+      <a className="btn primary" href="/auth/start">
+        Sign in
+      </a>
     </Screen>
   );
 }
@@ -226,8 +108,11 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
           <p className="page-sub">
             Signed in as {session.account?.email}
             {session.account?.owner ? " (owner)" : ""}.{" "}
-            <button className="link-btn" onClick={() => void accountsApi.signOut().then(() => location.reload())}>
-              Sign out
+            <a className="link-btn" href={`${session.adminUrl ?? ""}/auth/password`}>
+              Password
+            </a>{" "}
+            <button className="link-btn" onClick={() => void api.signOut().then(() => location.reload())}>
+              Sign out of the board
             </button>
           </p>
         </div>

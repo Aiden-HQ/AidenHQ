@@ -5,6 +5,9 @@
 #
 # One entry per line, in this flow style (other YAML shapes are not read):
 #   - { ecosystem: npm, package: fast-uri, version: 3.1.1, advisory: GHSA-xxxx-xxxx-xxxx, reason: "why it cannot wait" }
+# An owner-approved entry (npm only) has no advisory: { ecosystem: npm, package: X, version: Y, owner: approved, expires: YYYY-MM-DD,
+# reason: "..." }. It clears only that exact version, only while today < expires and expires is at most 14 days away.
+# Use it only when waiting would block a release of code already running elsewhere in the product.
 # ecosystem: npm (lockfiles and global installs), pypi, docker (package = the image without its tag, version = the
 # tag), github-action, github-release or apt. npm entries are checked against the GitHub Advisory Database
 # (scripts/supply-chain/npm-age.mjs); the others rest on review. scripts/supply-chain/best-version.mjs returns a listed
@@ -29,3 +32,12 @@ exceptions:
   - { ecosystem: docker, package: prom/alertmanager, version: v0.35.0, advisory: GO-2026-6865, reason: "v0.35.0 (2026-11-09) ships klauspost/compress v1.20.3, the fix for the high zstd decoder panic (CVE-2026-116591); the release is under 7 days old" }
   - { ecosystem: github-release, package: chrome-for-testing, version: 157.0.8103.78, advisory: CVE-2026-126885, reason: "Chrome 157.0.8103.78 (2026-11-11) fixes 5 critical use-after-frees (ServiceWorker, CSS, Layout, Skia, Accessibility: CVE-2026-126885/126895/126879/126846/126911) and many highs in V8 and Skia; agents load untrusted pages in this browser" }
   - { ecosystem: apt, package: gh, version: 2.104.0, advisory: CVE-2026-48501, reason: "2.104.0 (2026-11-12) is GitHub's vendor build, fixing the auth token sent to tuf-repo.github.com (CVE-2026-48501, fixed 2.93.0) and two Go stdlib CVEs Debian's bookworm gh never got; the release is under 7 days old" }
+  - { ecosystem: npm, package: @better-auth/core, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
+  - { ecosystem: npm, package: @better-auth/drizzle-adapter, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
+  - { ecosystem: npm, package: @better-auth/kysely-adapter, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
+  - { ecosystem: npm, package: @better-auth/memory-adapter, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
+  - { ecosystem: npm, package: @better-auth/mongo-adapter, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
+  - { ecosystem: npm, package: @better-auth/prisma-adapter, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
+  - { ecosystem: npm, package: @better-auth/telemetry, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
+  - { ecosystem: npm, package: better-auth, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
+  - { ecosystem: npm, package: jose, version: 6.2.17, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }

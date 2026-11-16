@@ -6,81 +6,18 @@
 // request with several parts takes its highest part (Tier 1 with the panel above plain Tier 1).
 // The git rules are the code host's (modules/codehost-github/src/plan.mjs), the product's own files and the owner-approval
 // records the platform check's (modules/platform/src/check.mjs); this file combines them with the module and apply rules,
-// earlier decisions and the caps.
+// and the shared rules (kernel/src/tier.ts: earlier decisions and the caps).
 import YAML from "yaml";
 import { classifyModules, diffAll } from "../../../kernel/src/loader/authority.ts";
+import { REJECT, T, highest, meritOwner, priorDecisions, priorPart, requestKey, requestPatches, routineCapped } from "../../../kernel/src/tier.ts";
 import { planParts } from "../../../modules/codehost-github/src/plan.mjs";
 import { COMPOSE, GATE_CORE, ROLE_AGENTS, check, imageRepo } from "../../../modules/platform/src/check.mjs";
 
-const T = (tier, rule, reason) => ({ tier, rule, reason });
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });
-const REJECT = (rule, reason) => ({ tier: 2, rule, reason, reject: true });
 /** New module authority (spec §5.7): the AI reviewer first, then the owner with its verdict; a reviewer reject is final. */
 const OWNER_AFTER_REVIEW = (rule, reason, panel) => ({ tier: 2, rule, reason, reviewFirst: true, ...(panel ? { panel: true } : {}) });
 const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
-
-const rank = (p) => p.tier * 2 + (p.panel ? 1 : 0);
-/** The highest part (a reject beats everything; Tier 1 with the panel beats plain Tier 1); no parts is Tier 2. */
-export function highest(parts) {
-  if (!parts.length) return T(2, "unrecognised", "nothing recognised in the request");
-  const top = parts.find((p) => p.reject) ?? parts.reduce((a, b) => (rank(b) > rank(a) ? b : a));
-  // A module change is always reviewed first, whatever else the request carries; the review is a panel if any part is. A
-  // part that is the owner's on its merits keeps the reviewer's reject from being final.
-  if (!top.reject && top.tier === 2 && parts.some((p) => p.reviewFirst)) return { ...top, reviewFirst: true, ...(parts.some((p) => p.panel) ? { panel: true } : {}), ...(parts.some((p) => p.tier === 2 && (p.byMerit || !p.reviewFirst)) ? { byMerit: true } : {}) };
-  return top;
-}
-
-/**
- * Tier 2 on its merits (the owner's veto, a spend-cap raise, an owner-approval record, unknown repos, nothing recognised):
- * the owner's tap decides, but the AI reviewer reads it first (owner, 2026-11-16: every write is reviewed before it reaches
- * the owner). Its approve and its reject both go on to the owner with the verdict on the card (`byMerit`).
- */
-export const meritOwner = (t) => (!t.reject && t.tier === 2 && !t.reviewFirst ? { ...t, reviewFirst: true, byMerit: true } : t);
-
-/** Code's own refusals that stay final on any card: the change moved, or code refused it (a closed task, a rejected copy). */
-const FINAL_CODES = ["stale_head", "refused_by_code"];
-
-/**
- * What a review-first card posts after the reviewer: an approve goes to the owner with the verdict on the card; a reject is
- * final (new module authority, autonomy off, a routine's cap: Tier 1 semantics), except on a card that is the owner's on its
- * merits (`byMerit`), where every verdict but code's own refusals goes on to the owner with the reject shown. An escalate
- * stays one. Any other card posts the verdict as it is.
- */
-export function afterReview(input, v) {
-  if (!input?.reviewFirst) return v;
-  const by = `${v.model}${v.second ? ` and ${v.second}` : ""}`;
-  if (input.byMerit && v.decision === "reject" && !FINAL_CODES.includes(v.code)) return { ...v, decision: "escalate", code: "owner_tier", reason: `The AI reviewer rejected (${by}${v.code ? `, ${v.code}` : ""}): ${v.reason} It is Tier 2 on its merits, so the owner decides: ${input.reason}` };
-  if (v.decision !== "approve") return v;
-  const [code, why] = input.byMerit ? ["owner_tier", "It is Tier 2 on its merits"] : input.routineCap ? ["routine_autonomy", `A routine's autonomy is ${input.routineCap}`] : input.autonomyOff ? ["autonomy_off", "Autonomy is off"] : ["new_authority", "New module authority"];
-  return { ...v, decision: "escalate", code, reason: `The AI reviewer approved (${by}): ${v.reason} ${why}, so the owner decides: ${input.reason}` };
-}
-
-/** How the board holds a review-first card: "owner" (byMerit: the reviewer may only escalate), "final" (it may escalate or reject). */
-export const reviewFirstOf = (...ts) => (ts.some((t) => t && !t.reject && t.byMerit) ? "owner" : ts.some((t) => t && !t.reject && t.reviewFirst) ? "final" : undefined);
-
-/**
- * A routine's cap (its `autonomy`): the stricter of it and the instance's wins. tier0 or off: a Tier 1 write is review-first
- * (the reviewer's reject is final, its approve goes on to the owner), as autonomy off does it (autonomyCap); off: a Tier 0
- * write waits for the owner's tap.
- */
-export function routineCapped(t, cap) {
-  if (t.reject || !cap || cap === "full") return t;
-  if (t.tier === 0 && cap === "off") return { ...T(2, "routine-autonomy", `a routine's run started this task and that routine's autonomy is ${cap} (was: ${t.reason})`), baseTier: 0 };
-  if (t.tier === 1) return { ...t, tier: 2, reason: `${t.reason} (a routine's run started this task: its autonomy is ${cap})`, reviewFirst: true, routineCap: cap, baseTier: 1 };
-  if (t.reviewFirst) return { ...t, reason: `${t.reason} (a routine's run started this task: its autonomy is ${cap})` };
-  return t;
-}
-
-/**
- * The instance's autonomy off (lean-core decision 5: every install and update is AI-reviewed regardless): the owner decides
- * every write, but what the reviewer reads with autonomy on it still reads first. Tier 1 becomes review-first (a reject is
- * final; an approve goes on to the owner with the verdict); Tier 0 waits for the owner's tap. `baseTier`: the merit tier.
- */
-export function autonomyCap(t, autonomy) {
-  if (autonomy !== "off" || t.reject || t.tier === 2) return t;
-  return t.tier === 0 ? { ...T(2, "autonomy-off", `autonomy is off (was: ${t.reason})`), baseTier: 0 } : { ...t, tier: 2, reviewFirst: true, autonomyOff: true, baseTier: 1 };
-}
 
 /**
  * The tier of one request. `s` is the verified state:
@@ -145,164 +82,6 @@ function productModuleParts(item, s) {
     return t ? moduleParts(f, t.base, t.head, s.connections) : [REJECT("unknown-content", `couldn't read ${f} on both sides; try again`)];
   });
 }
-
-/** A routine's `autonomy` values, strictest first (the instance setting's names). */
-export const AUTONOMY = ["off", "tier0", "full"];
-/**
- * The cap on a task from the routines its work came from. `origins`: the task and every issue it traces back to, as
- * Paperclip returns them: its parents, and through each one's `originRunId` (Paperclip's record of the run that created it,
- * which no agent sets) the issue that run worked on, and so on. So an unparented task a routine's run created keeps the
- * cap. `complete`: the trace finished; `routines`: the grants table's {<Paperclip routine id>: autonomy}. The strictest
- * routine found wins. Fails closed: a routine the table doesn't know, or an invalid value, is "off" (setup writes each
- * routine's autonomy into the table before it adds the routine's triggers), and so is a trace too long to finish. None
- * found is no cap.
- */
-export function routineCap(origins, complete, routines = {}) {
-  const caps = origins.filter((i) => i?.originKind === "routine_execution").map((run) => (AUTONOMY.includes((routines ?? {})[run.originId]) ? routines[run.originId] : "off"));
-  if (!complete) caps.push("off");
-  return caps.length ? AUTONOMY[Math.min(...caps.map((c) => AUTONOMY.indexOf(c)))] : undefined;
-}
-
-/** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
-const carried = (r) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
-/** A watcher's no on a stale or duplicate card (decided_by `stale:watcher`) judged nothing: neither a veto nor a rejection. */
-const STALE = (r) => /^stale:/.test(r.decidedBy ?? "");
-
-/**
- * The rebuild path's check (an earlier yes is never replayed over a later no; the request gets a fresh card instead):
- * whether a no outranks the approvals being replayed. The owner's veto on the task does; so does a judged rejection (not
- * code's refusal) of the action, or of one the request carries, decided after the earliest of those approvals (`since`),
- * that names one of these branches, is a merge card, or carries the same patch under another name (`samePatch`: record ids
- * the runner matched by content; one it couldn't read counts as the same). A rejection of another branch on the same task never does: it
- * disabled the carry-over for every later rebase (PR #36, WOR-4253).
- */
-export function rejectedSince(records, action, also = [], branches = [], since = "", samePatch = new Set()) {
-  if (priorDecisions(records, action, also).ownerVeto) return true;
-  const mine = (b) => branches.some((x) => same(x.repo, b.repo) && x.branch === b.branch);
-  return laterRejections(records, action, also, since).some((r) => r.action === "merge" || (r.args?.only ?? []).some(mine) || samePatch.has(r.id));
-}
-
-/**
- * The judged rejections (not code's refusals) of the action, or of one the request carries, decided at or after `since`.
- * The runner checks those on other branches by patch (rebuild): the same change renamed and rebased is still rejected.
- */
-export function laterRejections(records, action, also = [], since = "") {
-  const want = [action, ...also];
-  return (records ?? []).filter((r) => r.state === "rejected" && !STALE(r) && carried(r).some((x) => want.includes(x)) && !CODE_REJECTS.includes(r.reviewCode) && String(r.decidedAt ?? "") >= String(since));
-}
-
-/**
- * What a request changes, as a key two requests share only when their content is identical: the commits (push, PR), the
- * PR heads (merge), the fleet commit (apply), a board card's digest. Never a branch name or PR number: renaming a branch
- * doesn't make a rejected change new.
- */
-export function requestKey(action, s) {
-  if (action === "push" || action === "pr") return keyOf((s.branches ?? []).map((b) => b.sha));
-  if (action === "merge") return keyOf((s.prs ?? []).map((p) => p.head));
-  if (action === "apply") return s.sha ? `apply:${s.sha}` : undefined;
-  if (action === "create_repo") return s.repo ? `create_repo:${String(s.repo).toLowerCase()}` : undefined;
-  return s.digest ? `digest:${s.digest}` : undefined;
-}
-/**
- * A branch or PR request's patch keys (each branch's or PR's change, git.mjs patchKey), sorted and joined: the same however
- * the commits are rebased or the branch named. null when any is missing (fails closed against an owner veto); undefined for
- * actions keyed otherwise.
- */
-export function requestPatches(action, s) {
-  const list = action === "push" || action === "pr" ? s.branches : action === "merge" ? s.prs : undefined;
-  if (!list) return undefined;
-  return list.length && list.every((x) => typeof x.patch === "string") ? list.map((x) => x.patch).sort().join(",") : null;
-}
-const recordPatches = (r) => requestPatches(r.action, { branches: r.args?.only ?? [], prs: r.args?.prs ?? [] }) ?? undefined;
-
-/** The same key for an approval record (its args; a board-applied card's digest is its content). */
-export function recordKey(r) {
-  if (r.action === "push" || r.action === "pr") return keyOf((r.args?.only ?? []).map((b) => b.sha));
-  if (r.action === "merge") return keyOf((r.args?.prs ?? []).map((p) => p.head));
-  if (r.action === "apply") return r.args?.sha ? `apply:${r.args.sha}` : undefined;
-  if (r.action === "create_repo") return r.args?.repo ? `create_repo:${String(r.args.repo).toLowerCase()}` : undefined;
-  return r.digest ? `digest:${r.digest}` : undefined;
-}
-const keyOf = (list) => (list.length && list.every((x) => typeof x === "string" && /^[0-9a-f]{7,64}$/i.test(x)) ? list.map((x) => x.toLowerCase()).sort().join(",") : undefined);
-
-/** Reviewer rejections a task's retries are bounded by: past this many (since the owner's last yes), the action is parked. */
-export const MAX_REJECTS = 3;
-/** Rejections code made without judging the change (it moved, couldn't be read, too large): they are never findings. */
-export const CODE_REJECTS = ["refused_by_code", "stale_head", "check_failed", "too_large", "files_not_shown", "no_diff", "reviewer_failed"];
-const byOwner = (r) => Boolean(r.decidedBy) && !/^(reviewer|auto|stale):/.test(r.decidedBy);
-// An approved card a newer request replaced is `expired`, still decided (a yes).
-const decided = (r) => ["approved", "used", "expired", "rejected"].includes(r.state) && Boolean(r.decidedBy);
-
-/**
- * Earlier decisions on a task for a request (owner, 2026-11-14), from its approval records of the action (or of one the
- * request also carries; only decided records, never a Tier 0 audit row):
- * - ownerVeto: the owner's latest decision on it was a no (their later yes withdraws that), or the owner rejected exactly
- *   this content and hasn't approved that same content since (an approval of other content doesn't lift it).
- * - rejects: the AI reviewer's rejections on the task since the owner's last yes, task-wide (any branch, PR or name),
- *   except those whose exact content was approved later. At MAX_REJECTS the action is parked.
- * - same: one of those rejected exactly this content (requestKey): it stays rejected (its note). Two reviewers' unsure
- *   lifts once, after the request chain changed (`chain`: the current chain's hash).
- * - relift: that lift's earlier note: the re-review's unsure goes to the owner, not back to the agent.
- * - findings: every one of those notes, attached to the next review.
- */
-export function priorDecisions(records, action, also = [], key, patches, chain) {
-  const want = [action, ...(also ?? [])];
-  const mine = (records ?? []).filter((r) => decided(r) && carried(r).some((x) => want.includes(x))).sort((a, b) => String(a.decidedAt ?? "").localeCompare(String(b.decidedAt ?? "")));
-  const lastOwner = mine.filter(byOwner).at(-1);
-  const ownerYes = mine.filter((r) => byOwner(r) && r.state !== "rejected").at(-1);
-  const approvedLater = (r) => mine.some((y) => y.state !== "rejected" && String(y.decidedAt) > String(r.decidedAt) && recordKey(y) !== undefined && recordKey(y) === recordKey(r));
-  const since = mine.filter((r) => r.state === "rejected" && r.decidedBy.startsWith("reviewer:") && !CODE_REJECTS.includes(r.reviewCode) && (!ownerYes || String(r.decidedAt) > String(ownerYes.decidedAt)) && !approvedLater(r));
-  // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
-  // same commits may come back once, after the request chain changed (`chain`, its hash now; `requestChain`, its hash
-  // when they were unsure). The chain is agent-editable, so that relift happens at most once per content: the re-review
-  // gets `relift` (the first round's note), and unsure again there goes to the owner (the reviewer module). Unchanged or unknown
-  // chain, or any other rejection of the content, and it stays rejected. It still counts toward MAX_REJECTS.
-  const rejectedSame = key ? since.filter((r) => recordKey(r) === key) : [];
-  const [only] = rejectedSame;
-  const lifted = rejectedSame.length === 1 && only.reviewCode === "reviewer_unsure" && Boolean(only.requestChain) && Boolean(chain) && only.requestChain !== chain;
-  const same = lifted ? undefined : rejectedSame[0];
-  // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
-  // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed
-  // (null) fail closed: any owner rejection of the action on the task makes it theirs.
-  const sameContent = (r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
-  const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: same ? same.review || "no note" : undefined, relift: lifted ? only.review || "no note" : undefined, rejects: since.length, findings: since.map((r) => r.review).filter(Boolean) };
-}
-
-/** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */
-export function priorPart(p) {
-  if (!p) return undefined;
-  if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
-  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this change on this task (its note: ${String(p.same).slice(0, 400)}). Fix what it found and ask again with the changed commits`);
-  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on this task, so it isn't reviewed again here. Report what it found to whoever asked for this work`);
-  return undefined;
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /** What a module agent may change with one reviewer: everything else (model, connections, roles, image, a new agent) is the panel's. */
 const MODULE_AGENT_SAFE = new Set(["reasoning_effort", "timeout_sec", "heartbeat", "persona", "max_parallel", "graded", "brief"]);

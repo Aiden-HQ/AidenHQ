@@ -98,11 +98,12 @@ A change is **authority-expanding** when it:
 - widens credentials, grants, tools, roles, public access (`access`, `share`, a public port, a sign-in path), where data may
   be sent, or spending (caps, models, budgets);
 - edits the gate's own core: `services/runner/src/tiers.mjs`, `review-request.mjs`, `merges.mjs`, `main.mjs` and
-  the other runner files that build what tiering trusts or what a job can reach (`engines.mjs`: its sandbox, mounts and
-  env; `workspace.mjs`, `files.mjs`, `agents.mjs`; `scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
+  the other runner files that build what tiering trusts or what a job can reach (`engines.mjs`: the job request;
+  `workspace.mjs`, `files.mjs`, `agents.mjs`; `scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
   runs inside a job and what it passes on) and the SDK (`kernel/sdk/`), the AI reviewer module (`modules/ai-reviewer/`: its service, this policy,
   its eval cases and `scripts/reviewer-eval.mjs`), the board's `approvals.ts`, `app.ts`,
-  `fleet.ts`, `accounts.ts` and `session.ts`, the kernel (`kernel/`: the tool proxy, caller identity and the model gateway) and
+  `fleet.ts`, `accounts.ts` and `session.ts`, the kernel (`kernel/`: the tool proxy, caller identity, the model gateway, and the job sandbox and lifecycle in
+  `sandbox.ts` and `jobs.ts`: mounts, network jail, env, the job's identity binding) and
   each module server's caller check (`aidenhq-sdk/caller.ts`), `scripts/modules.mjs` and `scripts/paperclip-setup.mjs`,
   `services/computer/`, `ops/`, `scripts/verify-security.sh`, `scripts/supply-chain/`,
   `.gitleaks.toml`, and the product's `.github/` (each of these files is the same file as `.ts`, once converted from `.mjs`);

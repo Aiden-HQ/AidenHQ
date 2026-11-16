@@ -62,14 +62,15 @@ const jwks = kernelJwks();
 // without it, the instance checkout's origin remote over SSH with the deploy key.
 const repo = { dir: instanceDir, pushUrl: process.env.REGISTRY_PUSH_URL || (appToken && agentsOrg ? `https://github.com/${agentsOrg}/aidenhq-instance.git` : "origin") };
 
-// In-app requests and app roles (app_requests, app_role_set…) go to the board's internal API with the apps token, under /internal/apps/.
-const boardUrl = (process.env.BOARD_URL ?? "http://board:3122").replace(/\/$/, "");
-const board: Board = async (path, req) => {
-  const res = await fetch(`${boardUrl}/internal/apps/${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${internalToken}` }, body: JSON.stringify(req), signal: AbortSignal.timeout(30_000) }).catch((e: Error) => {
-    throw new Error(`the board is unreachable (${e.message})`);
+// In-app requests and app roles (app_requests, app_role_set…) go to the kernel, which holds the accounts and app access
+// (lean 3g): POST /v1/apps/<op> on the backplane with this module's own token (its service key).
+const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, "");
+const board: Board = async (op, req) => {
+  const res = await fetch(`${kernelUrl}/v1/apps/${op}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serviceKey}` }, body: JSON.stringify(req), signal: AbortSignal.timeout(30_000) }).catch((e: Error) => {
+    throw new Error(`the kernel is unreachable (${e.message})`);
   });
   const text = await res.text();
-  if (!res.ok) throw new Error(`board: ${text.slice(0, 300)}`);
+  if (!res.ok) throw new Error(`kernel: ${text.slice(0, 300)}`);
   return JSON.parse(text);
 };
 

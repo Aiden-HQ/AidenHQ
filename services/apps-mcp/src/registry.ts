@@ -4,6 +4,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseDocument } from "yaml";
 import { z } from "zod";
+import { parseRoute } from "./api.js";
 
 /** A preview's name (previews.ts): reserved, so no registry app can share its project, secrets, checkout or database role. */
 export const PREVIEW_NAME = /-pr-\d+$/;
@@ -11,6 +12,12 @@ export const PREVIEW_NAME = /-pr-\d+$/;
 export const PREVIEW_PORTS = { min: 39100, max: 39399 } as const;
 
 const plainRel = (p: string) => !p.startsWith("/") && !p.startsWith("~") && !p.includes("$") && !p.split(/[\\/]/).includes("..");
+
+const PREFIX = /^\/[A-Za-z0-9._~\/-]*$/;
+/** A caller's `api.paths` entry: a bare prefix, or one exact route (`POST /api/x/{id}/y`; api.ts's parseRoute rejects
+ * everything else). In a flow sequence the route's space makes it ambiguous YAML (`Missing , or : between flow sequence
+ * items`), so quote it: `paths: ["GET /api/x", "POST /api/x/{id}/y"]`, or use block style. */
+const callerPath = z.string().refine((p) => PREFIX.test(p) || !!parseRoute(p), "paths are plain absolute path prefixes, or one exact route as 'METHOD /path' with {name} for one segment");
 
 // `paperclip` and `sources` name AidenHQ networks in connects; `<app>-pr-<n>` names a pull request's preview (previews.ts).
 const name = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/).refine((n) => n !== "paperclip" && n !== "sources", "reserved name").refine((n) => !PREVIEW_NAME.test(n), "names ending -pr-<number> are previews'");
@@ -43,9 +50,10 @@ const AppSchema = z
     // prefixes; apps-mcp signs each call's X-AidenHQ-Identity (identity.ts; docs/design/app-identity.md).
     api: z.object({
       token: z.never({ error: "api.token is gone: app_api signs each call's identity (docs/design/app-identity.md); remove it and its secret" }).optional(),
-      // A caller is an agent key (the app's paths) or {agent, paths}: that agent only under its own narrower prefixes.
-      callers: z.array(z.union([z.string().min(1), z.object({ agent: z.string().min(1), paths: z.array(z.string().regex(/^\/[A-Za-z0-9._~\/-]*$/, "paths are plain absolute path prefixes")).min(1) }).strict()])).min(1),
-      paths: z.array(z.string().regex(/^\/[A-Za-z0-9._~\/-]*$/, "paths are plain absolute path prefixes")).min(1),
+      // A caller is an agent key (the app's paths) or {agent, paths}: that agent only under its own narrower prefixes, or only
+      // the exact routes it names. The app's own paths stay prefixes: where its agent API lives, not which routes it serves.
+      callers: z.array(z.union([z.string().min(1), z.object({ agent: z.string().min(1), paths: z.array(callerPath).min(1) }).strict()])).min(1),
+      paths: z.array(z.string().regex(PREFIX, "paths are plain absolute path prefixes")).min(1),
     }).strict().optional(),
     // Shared access (docs/design/access.md): people (not agents) who reach the app through
     // Cloudflare Access and the gate at https://<host>. Instance apps.yaml only (compile refuses it on module apps), sensitive.

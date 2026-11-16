@@ -17,8 +17,8 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SignInRequired, accountsApi, api, type Session } from "./api";
-import { EnrolScreen, SetPasswordScreen, SignInScreen } from "./Accounts";
+import { SignInRequired, api, type Session } from "./api";
+import { SignInScreen } from "./Accounts";
 import { SettingsView, isCategory, type Category } from "./Settings";
 import { ApprovalsView } from "./Chat";
 import { clearCache, load, peek, setAccount } from "./cache";
@@ -42,7 +42,7 @@ const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage }
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "set-password"; token: string };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -107,8 +107,6 @@ function parseRoute(): Route {
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
   if (h === "brief") return { kind: "brief" };
   if (h === "help") return { kind: "help" };
-  // A setup, invite or reset link.
-  if (h.startsWith("set-password/")) return { kind: "set-password", token: h.slice(13) };
   return { kind: "board" };
 }
 const go = (hash: string) => {
@@ -230,7 +228,7 @@ export function App() {
   // The cache (cache.ts) belongs to the signed-in account; with one, the last board paints at once while /api/board loads.
   useEffect(() => {
     if (!session) return;
-    const admin = session.account?.role === "admin" && !session.needsTotp;
+    const admin = session.account?.role === "admin";
     setAccount(admin ? session.account!.id : null);
     const cached = admin ? peek<Board>("board")?.data : undefined;
     if (!cached) return;
@@ -246,11 +244,7 @@ export function App() {
   }, [view, refresh]);
 
   useEffect(() => {
-    // Also slide the session cookie's expiry forward (Better Auth refreshes it on get-session).
-    load("session", api.session, false).then((s) => {
-      setSession(s);
-      if (s.account) void accountsApi.refresh().catch(() => {});
-    }, () => {});
+    load("session", api.session, false).then(setSession, () => {});
     void refresh(true);
     // Every 10s on Tasks; elsewhere only the header reads it (the working dot, sign-in banners, the brief): once a minute.
     const t = setInterval(() => {
@@ -558,23 +552,12 @@ export function App() {
 
   // ---------------------------------------------------------------- render
 
-  const signedIn = useCallback(() => {
-    if (location.hash.startsWith("#/set-password/") || location.hash === "#/two-factor" || location.search) history.replaceState(null, "", "/#/");
-    setRoute(parseRoute());
-    setNeedsSignIn(false);
-    void api.session().then(setSession);
-    void refresh(true);
-  }, [refresh]);
   // A 401 or "totp" from any view means the session ended or changed: ask again which screen to show.
   useEffect(() => {
     if (needsSignIn) void api.session().then(setSession, () => {});
   }, [needsSignIn]);
-  // A link sets a password; then sign in, and admins set up an authenticator before anything else.
-  if (session) {
-    if (route.kind === "set-password") return <SetPasswordScreen token={route.token} onDone={signedIn} />;
-    if (!session.account) return <SignInScreen onDone={signedIn} />;
-    if (session.needsTotp) return <EnrolScreen session={session} onDone={signedIn} />;
-  }
+  // Signed out, or an admin without an authenticator yet: both are done on the kernel's sign-in pages.
+  if (session && !session.account) return <SignInScreen />;
 
   if (!board || !items || !filtered)
     return <div className="splash">{error ? <>Can't reach the board: {error}</> : <span className="spinner" />}</div>;
@@ -587,7 +570,7 @@ export function App() {
   const onBoard = view === "board";
   // A chat (or a settings category) open on a phone takes the whole screen (back arrow to the list).
   const chatFull = mobile && ((view === "chat" && route.kind === "chat") || (view === "settings" && route.kind === "settings" && route.cat !== null));
-  const local = session?.mode === "local" && ["localhost", "127.0.0.1"].includes(location.hostname);
+  const local = ["localhost", "127.0.0.1"].includes(location.hostname); // a tunnel to 3121: the loopback sign-ins work
   const googleConnect = local || !!session?.googleConnect;
   const connectionsOk = !board.google?.error && !board.google?.accounts.some((a) => a.state === "expired") && [board.glean, board.grafana, board.clickhouse, board.jira].every((c) => !c || !c.configured || c.state === "ok" || c.state === "unknown");
   const openCard = (c: Card) => {

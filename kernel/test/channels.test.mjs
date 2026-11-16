@@ -16,44 +16,36 @@ const MODULES = { owner: { name: "Ada", timezone: "UTC" }, modules: {
 const SECRETS = { tg_token: "tg-key", op_token: "op-key", lane_token: "lane-key", plain_token: "plain-key", quiet_token: "quiet-key", std_token: "std-key" };
 const TG = "tg-key", OP = "op-key", LANE = "lane-key", PLAIN = "plain-key";
 
-/** A kernel whose board holds two pending cards (one of the board's, one kernel record) and records each decision. */
+/** A kernel with two records waiting for the owner: the runner's push (WOR-1) and a module kind's. */
 async function setup(t, extra = {}) {
-  const decided = [];
-  let k;
-  const card = (a) => ({ identifier: "WOR-1", action: "push", tier: 2, sentence: "Push x.", changes: "c", reads: "r", cost: "0", requestedBy: "ada", replaced: false, ...a });
-  const board = async (method, path, body) => {
-    if (path === "/internal/approvals?state=pending") return { status: 200, json: { approvals: [card({ id: "A0000aaaa", digest: "d-board" }), ...k.records.list(["owner"]).map((r) => card({ id: r.id, digest: r.digest, action: r.kind, panel: r.panel }))] } };
-    if (path === "/internal/approvals?state=finished") return { status: 200, json: { approvals: [] } };
-    if (method === "POST" && path === "/internal/owner/approvals/decide") {
-      decided.push(body);
-      return body.digest === "d-board" && decided.filter((d) => d.id === body.id).length === 1 ? { status: 200, json: { identifier: "WOR-1", sentence: "Push x.", state: body.decision === "approve" ? "approved" : "rejected" } } : { status: 409, json: { error: "this approval is approved" } };
-    }
-    return { status: 404, json: {} };
-  };
-  k = await kernel(t, { modules: MODULES, secrets: SECRETS, board, grants: { "ag-cos": { key: "chief-of-staff" } }, ...extra });
+  const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff" } }, ...extra });
+  const runnerCard = { sentence: "Push x.", changes: "c", reads: "r", cost: "0", details: "" };
+  const push = k.records.file({ kind: "runner.push", module: "runner", args: { only: [] }, targets: {}, executor: { module: "runner" }, policy: "p", tier: 2, panel: false, card: runnerCard, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" }, task: "t-1", identifier: "WOR-1", state: "owner" });
   const rec = k.records.file({ kind: "twin.post", module: "twin", args: { note: "x" }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 2, panel: false, card: { sentence: "Post x.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "owner" });
   const cards = (token, q = "") => k.v1("GET", `/v1/channel/cards${q}`, undefined, token);
   const decide = (token, body) => k.v1("POST", "/v1/channel/decide", { sender: "owner", ...body }, token);
-  return { k, rec, decided, cards, decide };
+  return { k, rec, push, cards, decide };
 }
 
 test("A1: a token decides its own card once, on its digest, from its own channel; every token of the card burns", async (t) => {
-  const { k, rec, decided, cards, decide } = await setup(t);
+  const { k, rec, push, cards, decide } = await setup(t);
   const tg = (await cards(TG)).json.cards;
-  assert.deepEqual(tg.map((c) => c.id).sort(), ["A0000aaaa", rec.id].sort());
+  assert.deepEqual(tg.map((c) => c.id).sort(), [push.id, rec.id].sort());
+  assert.deepEqual(tg.find((c) => c.id === push.id).identifier, "WOR-1");
+  assert.deepEqual(tg.find((c) => c.id === push.id).kind, "push");
   assert.ok(tg.every((c) => c.tokens.approve.length >= 43 && c.tokens.approve !== c.tokens.reject));
   // Issued once: the next poll carries no tokens; tokens are never stored in the clear.
   assert.ok((await cards(TG)).json.cards.every((c) => !c.tokens));
   assert.equal(k.records.db.prepare("SELECT count(*) AS n FROM channel_tokens WHERE hash = ?").get(tg[0].tokens.approve).n, 0);
   const op = (await cards(OP)).json.cards;
-  const board = tg.find((c) => c.id === "A0000aaaa"), mine = tg.find((c) => c.id === rec.id);
+  const board = tg.find((c) => c.id === push.id), mine = tg.find((c) => c.id === rec.id);
   // Another channel's token: refused, and it stays usable by its own channel.
   assert.equal((await decide(OP, { token: board.tokens.approve })).status, 403);
   const r = await decide(TG, { token: board.tokens.approve });
   assert.deepEqual([r.status, r.json.state], [200, "approved"]);
-  assert.deepEqual(decided.at(-1), { id: "A0000aaaa", digest: "d-board", decision: "approve", by: "owner:telegram", via: "telegram" });
+  assert.deepEqual([k.records.get(push.id).state, k.records.get(push.id).decided_by, k.records.get(push.id).via], ["approved", "owner:telegram", "telegram"]);
   // Replay, the card's reject token and the other channel's tokens for that card: all burned.
-  for (const [who, tok] of [[TG, board.tokens.approve], [TG, board.tokens.reject], [OP, op.find((c) => c.id === "A0000aaaa").tokens.reject]]) assert.equal((await decide(who, { token: tok })).status, 409);
+  for (const [who, tok] of [[TG, board.tokens.approve], [TG, board.tokens.reject], [OP, op.find((c) => c.id === push.id).tokens.reject]]) assert.equal((await decide(who, { token: tok })).status, 409);
   // A kernel record: decided on its digest, stamped from the channel (typed reply: owner:reply).
   const k2 = await decide(TG, { token: mine.tokens.reject, reply: true });
   assert.equal(k2.status, 200);
@@ -149,13 +141,15 @@ test("a wake notice: labelled and marked, posted only on an open task", async (t
 });
 
 test("the kernel holds a channel to its own decide setting: none mints nothing; standard keeps panel cards and applies", async (t) => {
-  const { k, rec, cards, decide } = await setup(t);
+  const { k, rec, push, cards, decide } = await setup(t);
   assert.ok((await cards("quiet-key")).json.cards.every((c) => !c.tokens));
-  // standard: the board's push card gets tokens; a panel card and an apply don't.
+  // standard: the runner's push card gets tokens; a panel card and an apply don't.
   const panel = k.records.file({ ...k.records.get(rec.id), args: { note: "p" }, panel: true, state: "owner" });
+  const apply = k.records.file({ ...k.records.get(push.id), kind: "kernel.apply", module: "kernel", state: "owner" });
   const std = (await cards("std-key")).json.cards;
-  assert.ok(std.find((c) => c.id === "A0000aaaa").tokens);
+  assert.ok(std.find((c) => c.id === push.id).tokens);
   assert.equal(std.find((c) => c.id === panel.id).tokens, undefined);
+  assert.equal(std.find((c) => c.id === apply.id).tokens, undefined);
   // A setting narrowed after the tokens were minted: decide re-checks it and refuses (403), and nothing is decided.
   const op = (await cards("op-key")).json.cards.find((c) => c.id === rec.id).tokens;
   const file = join(k.dir, "modules.json");

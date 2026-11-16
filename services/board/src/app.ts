@@ -14,16 +14,14 @@ import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunCo
 import { RecurringSchema, RunStateSchema, ScheduleSchema, changeRecurring, claimDue, recurringView, scheduleMove } from "./automation.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, RUNNER_MARKER, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
-import { AccountError, forwardedProto, type Accounts, type AccountSession, type Role } from "./accounts.js";
-import { AccessError, assertNamesApp } from "./app-access.js";
+import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, appsToken, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { detectorState, kickDetector, staleSources, takeOwnerLines } from "./fleet-ops.js";
 import { AlertsSchema, metricsText, receiveAlerts } from "./monitoring.js";
-import { ARGS, BOARD_ACTIONS, BatchItemsSchema, KERNEL_ID, REVIEWER_MODELS, RaiseCapSchema, autonomy, batchesOn, card, digestText, kernelRecords, parseReply, raiseCapRequest, shown, type Approval, type BatchResult, type RaiseCap, type RunnerAction } from "./approvals.js";
+import { kernelRecords, type Approval, type Records } from "./records.js";
 import { liveUpdatesOn } from "./events.js";
 import { wakeCheck } from "./brake.js";
-import { REVIEW_CODES, TIER_RULE } from "./reason-codes.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
@@ -39,7 +37,7 @@ import { OPEN, Paperclip, PaperclipError, type Agent, type Comment, type Issue, 
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { latest, successorOf } from "./rollover.js";
-import { APPROVAL_MARKER, NOTICE_MARKER, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
+import { NOTICE_MARKER, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
 import { activityDays } from "./days.js";
 import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
@@ -50,7 +48,7 @@ export interface AppOptions {
   paperclip: Paperclip;
   /**
    * Who a request comes from, in place of `accounts` (tests only: a stub resolver). The listeners in main.ts never set it;
-   * "local" and "lan" refuse to start with neither.
+   * "lan" refuses to start with neither.
    */
   session?: SessionOf;
   store: Store;
@@ -63,11 +61,12 @@ export interface AppOptions {
   /** Slack host → workspace or organization ID, so the web app opens Slack links in the desktop app. */
   slackTeams?: Record<string, string>;
   /**
-   * "local": the loopback listener (3120). "lan": the board's https address and home network (3121). Both need a
-   * signed-in admin on every API route.
-   * "internal": the tasks bridge and the runner, with a bearer token, /internal/ routes only.
+   * "lan": the board's https address and home network (3121), a signed-in admin on every API route (admins sign in on the
+   * kernel's admin listener, 3120). "internal": the tasks bridge, the runner and the kernel, with a bearer token, /internal/ only.
    */
-  mode?: "local" | "lan" | "internal";
+  mode?: "lan" | "internal";
+  /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in, and the approval page where every card is decided. */
+  adminUrl?: string;
   /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
   lan?: { url: string; googleConnect?: boolean };
   internalToken?: string;
@@ -87,7 +86,7 @@ export interface AppOptions {
   clickhouse?: McpAuth;
   /** Jira sign-in state and sign-in; no banner and no sign-in without it (the jira module is off). */
   jira?: McpAuth;
-  /** "internal" mode: the runner's reviewer key (secret reviewer_key): the only way a Tier 1 verdict is taken. */
+  /** "internal" mode: the runner's key (secret reviewer_key): its routes (grades, usage, jobs), never agents'. */
   reviewerKey?: string;
   /**
    * "internal" mode: the kernel's key (secret gateway_board_key, x-gateway-key; held only by the kernel and the board): the model
@@ -96,61 +95,25 @@ export interface AppOptions {
   gatewayKey?: string;
   /** The model gateway (every listener: a raise_cap is applied where it is tapped): an approved raise_cap sets the new cap there. */
   gateway?: { url: string; token: string };
-  /** The kernel's record routes (lean-core 2d), with gateway_board_key: module write kinds' cards are shown here (decided by channel token) until 3a. */
-  kernel?: { url: string; token: string };
+  /** The kernel's records, read-only (records.ts): the cards every view shows. Without it, there are none. */
+  records?: Records;
   /**
-   * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only: on "local", the owner's setup
-   * link and the welcome chat; on "internal", an account reset. Nothing else.
+   * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only, on "internal": the owner's setup
+   * link, the welcome chat and an account reset. Nothing else.
    */
   operatorKey?: string;
   /**
-   * Board accounts (docs/design/access.md): every route on "local" and "lan" needs an admin
-   * session with TOTP. Required there (or the `session` stub); "internal" uses it for resets.
+   * Board sign-in (kernel-auth.ts, docs/design/access.md): every route on "lan" needs a ready admin's board session, handed off
+   * by the kernel. Required there (or the `session` stub).
    */
-  accounts?: Accounts;
+  accounts?: KernelAuth;
 }
 
-/** What the board and the owner-channel show: the shown state; the executor's args stay server-side. */
+/** What the board and agents see of a card; the executor's args stay in the kernel. */
 const approvalView = (approval: Approval) => {
   const { args: _args, ...a } = approval;
-  return { ...a, state: shown(approval) };
+  return a;
 };
-const ApprovalRequestSchema = z
-  .object({
-    issue: z.string().regex(/^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/),
-    action: z.enum(Object.keys(ARGS) as [RunnerAction, ...RunnerAction[]]),
-    args: z.unknown(),
-    /** apply only: the diff the runner showed; it rechecks it against the approved commit before landing. */
-    diff: z.string().max(64_000).default(""),
-    /** The runner's tier: 1 (the reviewer's first) or 2 (the owner's); 2 when absent. */
-    tier: z.union([z.literal(1), z.literal(2)]).default(2),
-    reason: z.string().max(1000).default(""),
-    /** classify()'s tier on the request's merits, before the autonomy override (batch approvals); absent when unknown. */
-    baseTier: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
-    /** classify()'s rule: the card's reason code. */
-    rule: z.string().regex(TIER_RULE).optional(),
-    /** classify()'s panel: authority-expanding, so a reviewer approval needs a second reviewer's. */
-    panel: z.literal(true).optional(),
-    /** tiers.mjs reviewFirstOf: the owner decides after the reviewer ("owner": Tier 2 on its merits, so not even its reject is final). */
-    reviewFirst: z.enum(["final", "owner"]).optional(),
-  })
-  .strict();
-/** A Tier 0 run the runner already made: an audit row only. */
-const AuditSchema = z
-  .object({
-    issue: z.string().regex(/^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/),
-    action: z.enum(Object.keys(ARGS) as [RunnerAction, ...RunnerAction[]]),
-    args: z.unknown(),
-    diff: z.string().max(64_000).default(""),
-    rule: z.string().regex(/^[a-z0-9-]{1,60}$/),
-    reason: z.string().max(1000),
-    ok: z.boolean(),
-    text: z.string().max(8000),
-  })
-  .strict();
-const ReviewSchema = z
-  .object({ digest: z.string().min(1).max(64), decision: z.enum(["approve", "reject", "escalate"]), reason: z.string().max(2000), model: z.enum(REVIEWER_MODELS), second: z.enum(REVIEWER_MODELS).optional(), code: z.enum(REVIEW_CODES).optional() })
-  .strict();
 
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
 const RECENT_MS = 48 * 3_600_000;
@@ -209,7 +172,7 @@ export function checkRequest(req: Pick<IncomingMessage, "method" | "headers" | "
 
 export function createApp(opts: AppOptions): Server {
   const { paperclip: boardPc, store, log } = opts;
-  const mode = opts.mode ?? "local";
+  const mode = opts.mode ?? "lan";
   if (mode !== "internal" && !opts.accounts && !opts.session) throw new Error(`the ${mode} listener needs board accounts`);
 
   /**
@@ -239,7 +202,7 @@ export function createApp(opts: AppOptions): Server {
   /** Display names of the accounts other than the owner: what they wrote or decided carries a "by <name>" label. */
   async function bylines(): Promise<Map<string, string>> {
     if (!opts.accounts) return new Map();
-    return new Map((await opts.accounts.list()).filter((a) => !a.owner).map((a) => [a.id, a.name || a.email]));
+    return new Map((await opts.accounts.names()).filter((a) => !a.owner).map((a) => [a.id, a.name || a.email]));
   }
   /** The signed-in admin's name when that admin is not the owner (what the lane labels "by <name>"). */
   async function laneByline(_req: IncomingMessage): Promise<string | undefined> {
@@ -256,18 +219,16 @@ export function createApp(opts: AppOptions): Server {
     const name = a.decidedBy?.startsWith("account:") ? names.get(a.decidedBy.slice("account:".length)) : undefined;
     return { ...approvalView(a), ...(name ? { decidedByName: name } : {}) };
   };
-  // Module write kinds' records live in the kernel (lean-core 2d): listed with the board's cards, and every decision or
-  // verdict on a k- id is forwarded there; the kernel keeps them, runs them and tells their task.
-  const kernel = kernelRecords(opts.kernel);
-  // A record names its task by id: shown by its identifier, as the board's cards are.
+  // Every approval record lives in the kernel (records.ts). A record names its task by id (and its identifier when its filer knew it).
+  const records = opts.records ?? kernelRecords(undefined);
   const identifiers = new Map<string, string>();
   async function named<T extends Approval>(a: T): Promise<T> {
+    if (a.identifier !== a.issueId) return a;
     const id = identifiers.get(a.issueId) ?? (await pc.issue(a.issueId).then((i) => i.identifier, () => undefined));
     if (id) identifiers.set(a.issueId, id);
     return id ? { ...a, identifier: id } : a;
   }
-  const kernelList = async (state: "review" | "owner" | "recent", task?: string) => (kernel.enabled ? Promise.all((await kernel.list(state, task).catch((err) => (log.warn({ err: String(err) }, "kernel records unavailable"), [] as Approval[]))).map(named)) : []);
-  const fromKernel = <T extends Approval>(p: Promise<T>) => p.then(named, (e: Error & { status?: number }) => { throw new HttpError(e.status && e.status < 500 ? (e.status === 404 ? 404 : 409) : 502, e.message); });
+  const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
 
   const sessionOf = liveActivity(opts.sessions);
   const runOf = makeRuns({ pc, store, sessionsDir: opts.sessions?.dir, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
@@ -317,30 +278,17 @@ export function createApp(opts: AppOptions): Server {
   const isChat = (i: Issue, ctx: { labels: Label[] }) => Boolean(i.labels?.some((l) => l.name === "chat") || i.labelIds?.some((id) => ctx.labels.find((l) => l.id === id)?.name === "chat"));
 
   /**
-   * Who may tap an approval on the board, and the stamp it carries: any ready admin's session (TOTP
-   * was checked at sign-in), stamped `account:<id>` from the session, never from the request. Never the operator's key.
-   */
-  function requireAdmin(req: IncomingMessage): string {
-    const s = perRequest.getStore()?.session;
-    if (s && s !== OPERATOR && s.role === "admin") return `account:${s.accountId}`;
-    log.warn({ peer: req.socket.remoteAddress, mode, account: s?.accountId }, "approval refused: no admin session");
-    throw new HttpError(403, "approve signed in as an admin, or in Telegram");
-  }
-
-  /** A typed reply ("approve WOR-184") decides from any admin's session, stamped `account:<id>`; never the operator's key. */
-  function replyStamp(): string | null {
-    const s = perRequest.getStore()?.session;
-    return s && s !== OPERATOR && s.role === "admin" ? `account:${s.accountId}` : null;
-  }
-
-  /**
    * The runner's own key (secret reviewer_key: held only by the runner and the board, never by agents, which can reach the
-   * internal token): needed to file Tier 1, to record a Tier 0 run, and for the reviewer's verdicts.
+   * internal token): its routes (grades, usage, jobs).
    */
   const runnerKeyed = (req: IncomingMessage) => Boolean(opts.reviewerKey && keyMatches(req.headers["x-reviewer-key"], opts.reviewerKey));
   /** The internal token alone opens nothing: every route also names its caller (agents can read the token in their shell). */
   function requireRunner(req: IncomingMessage, what: string) {
     if (!runnerKeyed(req)) throw new HttpError(403, `only the runner ${what}`);
+  }
+  /** The operator's key (ops/setup.sh), on the internal listener only; it never decides or opens a session. */
+  function requireOperator(req: IncomingMessage, what: string) {
+    if (!opts.operatorKey || !keyMatches(req.headers["x-operator-key"], opts.operatorKey)) throw new HttpError(403, `only the operator ${what}`);
   }
   /** The kernel (gateway_board_key): every channel reaches the owner's cards, decisions and notices only through it. */
   const kernelKeyed = (req: IncomingMessage) => Boolean(opts.gatewayKey && keyMatches(req.headers["x-gateway-key"], opts.gatewayKey));
@@ -372,111 +320,6 @@ export function createApp(opts: AppOptions): Server {
       const id = /^[0-9a-f-]{36}$/i.test(ref) ? ref : (await pc.issue(ref)).id;
       if (inboxes.has(id)) throw new HttpError(403, "that task is a memory inbox; only memory_note writes there");
     }
-  }
-
-  /** A decision taken: board-applied actions run now (in the background); the runner claims its own on its next poll. */
-  async function decided(r: ReturnType<Store["approvals"]["decide"]>, via: string) {
-    if (!r.ok) throw new HttpError(409, r.reason);
-    const a = r.approval;
-    log.info({ approval: a.id, task: a.identifier, action: a.action, state: a.state, via }, "approval decided");
-    // What follows a decision is the board's own speech (outcome, rejection notice): never recorded as the deciding admin's.
-    perRequest.exit(() => void followUp(a));
-    return shownApproval(await bylines(), a);
-  }
-
-  /** What follows one decided card: a board-applied action runs now; a rejection is told on its task. */
-  async function followUp(a: Approval) {
-    if (a.state === "approved" && BOARD_ACTIONS.includes(a.action)) await applyOnBoard(a);
-    if (a.state === "rejected") await toldRejected(a);
-  }
-
-  /** A batch decided (all or nothing): each card is followed up on its own, one after another, as if tapped alone. */
-  async function decidedMany(r: BatchResult, via: string) {
-    if (!r.ok) throw new HttpError(409, r.reason);
-    log.info({ approvals: r.approvals.map((a) => a.id), state: r.approvals[0]?.state, via }, "approvals decided as a batch");
-    perRequest.exit(() => {
-      void (async () => {
-        for (const a of r.approvals) await followUp(a).catch((err) => log.warn({ approval: a.id, err: String(err) }, "batch follow-up failed"));
-      })();
-    });
-    const names = await bylines();
-    return { approvals: r.approvals.map((a) => shownApproval(names, a)) };
-  }
-
-  /**
-   * The refs a rejected `pr` card's reviewed heads were kept at (the runner keeps them in its cache clone when it files the
-   * card): the branch comes from the card's checked args, so the name is a ref, never prose. Nothing was pushed for it.
-   */
-  function reviewedRefsText(a: Approval): string {
-    if (a.action !== "pr") return "";
-    const parsed = ARGS.pr.safeParse(a.args);
-    if (!parsed.success) return "";
-    const repos = [...new Set(parsed.data.only.map((b) => b.repo))];
-    const names = parsed.data.only.map((b) => `\`refs/reviewed/${a.id}/${b.branch}\``).join(", ");
-    return `\n\nThe reviewed head stays in the runner's cache as ${names} (a task clone of ${repos.join(", ")} fetches it): it was never pushed, so GitHub has no branch and no PR for it. Start from that ref rather than from this note.`;
-  }
-
-  /**
-   * A rejection reaches the asking task, so nobody waits on a card that won't run. The AI reviewer's is the runner's to say:
-   * it posts the one notice, with the reviewer's note, and sends it back to an Engineer itself. The owner's no is an outcome
-   * (notices inform; only an outcome wakes an agent), so the chat above an agent's sub-task hears it too; a card closed as
-   * stale is not news there.
-   */
-  async function toldRejected(a: Approval) {
-    if (a.decidedBy?.startsWith("reviewer:")) return;
-    // A task closed since the card was filed hears nothing: a comment on it reopens it in Paperclip, so a leftover
-    // rejection would bring a finished or cancelled task back. An unreadable task counts as closed here too.
-    const issue = await pc.issue(a.issueId).catch(() => undefined);
-    if (!issue || ["done", "cancelled"].includes(issue.status)) return;
-    // Fixed text and ids only: never the card's agent-supplied fields in a comment posted as the owner.
-    const stale = a.decidedBy?.startsWith("stale:");
-    const text = stale
-      ? `**Closed as stale or a duplicate** (approval ${a.id}, ${a.action}): not a no on the change. If it is still needed, ask again for its current state.\n\n${APPROVAL_MARKER}`
-      : `**Rejected** (approval ${a.id}, ${a.action}). Don't file it again unchanged; if it isn't clear why, ask what to change.${reviewedRefsText(a)}\n\n${APPROVAL_MARKER}`;
-    await pc.addComment(a.issueId, text).catch((err) => log.warn({ err: String(err) }, "couldn't post the rejection"));
-    if (issue.parentId && !stale) await pc.addComment(issue.parentId, `**Rejected** on ${a.identifier} (approval ${a.id}, ${a.action}).\n\n${APPROVAL_MARKER}`).catch(() => {});
-  }
-
-  /** Approve = apply, once: claimed before acting; the outcome (or the failure) goes on the card and the task. Never retried. */
-  async function applyOnBoard(a: Approval) {
-    // A card on a closed task applies nothing: its work was asked for before someone finished or cancelled the task, and
-    // the outcome on the task would reopen it. The card says so; the task is left alone. An unreadable task counts as closed.
-    const status = await pc.issue(a.issueId).then((i) => i.status, () => undefined);
-    if (!status || ["done", "cancelled"].includes(status)) {
-      const closed = store.approvals.claim(a.id);
-      if (closed) store.approvals.finish(a.id, closed.nonce, false, `Not run: the task is ${status ?? "unreadable"}: a leftover request runs nothing.`);
-      log.info({ approval: a.id, task: a.identifier, status }, "approval runs nothing: its task is closed");
-      return;
-    }
-    const used = store.approvals.claim(a.id);
-    if (!used) return;
-    let ok = true;
-    let text: string;
-    try {
-      if (a.action === "raise_cap") text = await raiseCap(used.args as RaiseCap & { to: number });
-      else throw new Error(`${a.action} isn't applied by the board`);
-    } catch (err) {
-      ok = false;
-      text = (err as Error).message;
-    }
-    store.approvals.finish(a.id, used.nonce, ok, text);
-    log[ok ? "info" : "warn"]({ approval: a.id, ok, text: text.slice(0, 300) }, "approval applied");
-    // The owner's comment wakes the task's agent (Paperclip); a task Paperclip holds gets its agent woken directly.
-    const posted = await pc.addComment(a.issueId, `${ok ? "" : "**Failed:** "}${text} (approval ${a.id})\n\n${APPROVAL_MARKER}`).catch((err) => void log.warn({ err: String(err) }, "couldn't post the approval outcome"));
-    if (posted && ok && a.action === "raise_cap") await wakeIfHeld(a.issueId, posted.id);
-  }
-
-  /** An approved raise_cap: the gateway's cap for that scope and subject becomes `to` (the card's doubled cap). */
-  async function raiseCap(r: RaiseCap & { to: number }): Promise<string> {
-    if (!opts.gateway) throw new Error("the board has no model gateway configured (AIDENHQ_GATEWAY_URL, gateway_board_key)");
-    const res = await fetch(`${opts.gateway.url}/internal/caps`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${opts.gateway.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ scope: r.scope, agentId: r.agentId, subject: r.subject, cap: r.to }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) throw new Error(`the model gateway refused the new cap (${res.status}): ${(await res.text().catch(() => "")).slice(0, 200)}`);
-    return `Raised the ${r.scope} spend cap from $${r.cap.toFixed(2)} to $${r.to.toFixed(2)} ($${r.spent.toFixed(2)} spent). Carry on where the cap stopped you.`;
   }
 
   /** A label by name, created on first use. */
@@ -718,7 +561,7 @@ export function createApp(opts: AppOptions): Server {
     ]);
     // Questions an agent this chat handed work to is asking the owner: shown here, answered on that agent's task.
     const [messages, asks] = await Promise.all([chatMessages(issue, ctx, comments), askingKids(issue, kids, ctx.me)]);
-    const awaiting = store.approvals.awaiting();
+    const awaiting = await records.awaiting();
     const lastRun = (id: string) => runs.find((r) => r.issueId === id && r.finishedAt);
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
     const base = shownState(chatState(issue, live, lastRun(issue.id), ctx.me, awaiting), messages, lastRun(issue.id));
@@ -737,7 +580,7 @@ export function createApp(opts: AppOptions): Server {
       messages: messages.map((m) => (m.kind === "owner" ? { ...m, ...byOf(names, m.id === `${issue.id}:opening` ? issue.id : m.id) } : m)),
       working: await withSession(busy.map.get(issue.identifier), live, issue.id, true),
       files: fileViews(files, ctx.me),
-      approvals: store.approvals.list().filter((a) => ids.has(a.issueId)).map((a) => shownApproval(names, a)),
+      approvals: (await cardsOf("recent", { limit: 50 })).filter((a) => ids.has(a.issueId)).map((a) => shownApproval(names, a)),
       // Work handed out from this chat (Aiden's delegations are children of the chat).
       handedOut: await Promise.all(
         kids
@@ -792,9 +635,9 @@ export function createApp(opts: AppOptions): Server {
     for (let i = 0; i < kids.length; i += 4) grand.push(...(await Promise.all(kids.slice(i, i + 4).map((k) => pc.children(k.id).then((l) => l.filter((g) => g.status !== "cancelled")).catch(() => [] as Issue[])))));
     const all = [...kids, ...grand.flat()];
     const [live, runs, busy, names] = await Promise.all([pc.liveRuns(), pc.recentRuns(100), working(ctx), bylines()]);
-    const awaiting = store.approvals.awaiting();
+    const awaiting = await records.awaiting();
     const usage = store.usageByIssue(all.flatMap((i) => [i.id, i.identifier]));
-    const pending = store.approvals.list().filter((a) => a.state === "pending");
+    const pending = await cardsOf("pending");
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
     const row = async (k: Issue, children: LineageRow[]): Promise<LineageRow & { approvals: ReturnType<typeof shownApproval>[] }> => {
       const st = chatState(k, live, runs.find((r) => r.issueId === k.id && r.finishedAt), ctx.me, awaiting);
@@ -830,7 +673,7 @@ export function createApp(opts: AppOptions): Server {
     }
     const [live, runs, kids] = await Promise.all([pc.liveRuns(), pc.recentRuns(100), pc.children(issue.id).catch(() => [] as Issue[])]);
     const chat = isChat(issue, ctx);
-    const awaiting = store.approvals.awaiting();
+    const awaiting = await records.awaiting();
     const stateOf = (i: Issue) => chatState(i, live, runs.find((r) => r.issueId === i.id && r.finishedAt), ctx.me, awaiting).state;
     if (!settleable(stateOf(issue), issue, chat)) throw new HttpError(409, chat ? "this chat isn't finished: its agent is working or waiting on you" : "only a finished task can be settled");
     if (kids.some((k) => holdsActive(stateOf(k)))) throw new HttpError(409, "work handed out from here is still running or waiting on you");
@@ -970,15 +813,15 @@ export function createApp(opts: AppOptions): Server {
       // The summary is extra: a failed read there never fails fleet_status (summary: null). After the status reads, not beside
       // them (Paperclip limits concurrent list requests per client).
       const window = (body as { window?: string } | null)?.window === "7d" ? "7d" : "24h";
-      const status = await fleetStatus(pc, store);
-      const summary = await statusSummary(pc, store, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
+      const status = await fleetStatus(pc, records);
+      const summary = await statusSummary(pc, store, records, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
       // `detector` first and a bounded reply: the lists are what get long, and a cut-off payload leaves its open and
       // recovered keys (the block Fleet Ops acts on) unreadable.
       return boundedFleetStatus({ detector: detectorState(store), ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
     // The Agent Coach's reads (coach.ts), for the fleet-audit role: who is due a review (never the caller) and one agent's bounded evidence.
     { method: "POST", path: /^\/internal\/coach\/due$/, handle: async (_m, _b, _u, req) => fleetCall(req, (pc, caller) => coachDue(pc, store, caller), ["fleet-audit"]) },
-    { method: "POST", path: /^\/internal\/coach\/evidence$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc, caller) => coachEvidence(pc, store, runOf, parse(z.object({ agent_key: z.string().trim().min(1).max(64) }).strict(), body).agent_key, caller), ["fleet-audit"]) },
+    { method: "POST", path: /^\/internal\/coach\/evidence$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc, caller) => coachEvidence(pc, store, records, runOf, parse(z.object({ agent_key: z.string().trim().min(1).max(64) }).strict(), body).agent_key, caller), ["fleet-audit"]) },
     { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
@@ -1046,110 +889,15 @@ export function createApp(opts: AppOptions): Server {
           for (const chat of chats) comment ??= (await pc.comments(chat.id)).find((c) => c.id === comment_id);
           if (!comment) throw new Refused("refused: that comment is not on your open `chat` task");
           const words = relayableWords(comment, ctx.me);
-          const owner = opts.accounts && (await opts.accounts.list()).find((a) => a.owner);
-          if (!owner) throw new Refused("refused: the owner has no account");
+          if (!opts.accounts) throw new Refused("refused: the board has no kernel to file it with");
           const key = `app-request:${comment_id}`;
           if (store.meta(key)) throw new Refused("refused: that message was already filed as a request");
-          assertNamesApp(words, app, opts.accounts!.apps.view(app).host);
-          const r = opts.accounts!.apps.ownerRequest(app, owner.email, words);
+          // The kernel checks the words name the app and files them as the owner's request.
+          const r = await opts.accounts.ownerRequest(app, words).catch((e: AccountError) => { throw new Refused(e.message); });
           store.setMeta(key, r.id);
           log.info({ app, request: r.id }, "owner's app request filed");
           return { request_id: r.id, app, note: `Pass ${r.id} to ${app}'s agent; it acts on it with app_role_set.` };
         }),
-    },
-    // Approval records. The runner (its key) files, claims and reports; the owner channel reads the cards and decides.
-    {
-      // The runner files a request (apply, push, pr, merge); the task's id and identifier come from Paperclip, not the caller.
-      method: "POST",
-      path: /^\/internal\/approvals$/,
-      handle: async (_m, body, _u, req) => {
-        requireRunner(req, "files approval requests");
-        const b = parse(ApprovalRequestSchema, body);
-        const args = parse(ARGS[b.action], b.args);
-        const [ctx, task] = await Promise.all([context(), pc.issue(b.issue)]);
-        // Only on a task the runner serves (an Engineer's, or labelled `engineer`): the one whose work it publishes or applies.
-        const engineer = ctx.assignees.find((a) => a.kind === "engineer" && a.key === task.assigneeAgentId);
-        if (!engineer && !(task.labels ?? []).some((l) => l.name === "engineer")) throw new HttpError(403, "only on an Engineer's task");
-        // A run still finishing after its task was cancelled or closed asks for nothing.
-        if (["cancelled", "done"].includes(task.status)) throw new HttpError(409, `the task is ${task.status}`);
-        // "From" on the card is the task's agent, looked up here; never the caller's text.
-        const from = engineer ? engineer.name : "an Engineer";
-        // The runner's tier as filed: with autonomy off a Tier 1 card is review-first (the reviewer may only escalate or reject it).
-        const tier = b.tier;
-        // The requester is the task's agent, looked up here; the base tier is the runner's classify() (its key filed this).
-        const a = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: from, tier, reason: b.reason, requesterId: task.assigneeAgentId ?? null, baseTier: b.baseTier ?? null, reasonCode: b.rule ?? null, panel: b.panel === true, reviewFirst: b.reviewFirst ?? null, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
-        log.info({ approval: a.id, task: a.identifier, action: a.action, replaced: a.replaced, tier: a.tier, baseTier: a.baseTier, code: a.reasonCode }, "approval requested");
-        return { ...approvalView(a), args: a.args };
-      },
-    },
-    {
-      // The model gateway refused a call at a spend cap: one raise_cap card (the owner's, after the AI reviewer), filed with the gateway's own key. The numbers
-      // are the gateway's ledger; the task and the agent's name are looked up here. The card and its apply are the board's (W2).
-      method: "POST",
-      path: /^\/internal\/approvals\/raise-cap$/,
-      handle: async (_m, body, _u, req) => {
-        if (!opts.gatewayKey || !keyMatches(req.headers["x-gateway-key"], opts.gatewayKey)) throw new HttpError(403, "only the model gateway files raise_cap");
-        const { issue, ...r } = parse(RaiseCapSchema.extend({ issue: z.string().min(1).max(80) }).strict(), body);
-        const [ctx, task] = await Promise.all([context(), pc.issue(issue)]);
-        const name = ctx.agents.find((a) => a.id === r.agentId)?.name ?? r.agentId;
-        const a = store.approvals.request(raiseCapRequest({ id: task.id, identifier: task.identifier }, r, name));
-        log.info({ approval: a.id, task: a.identifier, scope: r.scope, agent: r.agentId, cap: r.cap }, "raise_cap requested");
-        return approvalView(a);
-      },
-    },
-    {
-      // A Tier 0 run: the runner already ran it; this is its audit row (state auto), never a card. Only with the runner's
-      // key: the internal token (agents can reach it) can't write rows that claim something ran.
-      method: "POST",
-      path: /^\/internal\/approvals\/auto$/,
-      handle: async (_m, body, _u, req) => {
-        if (!runnerKeyed(req)) throw new HttpError(403, "only the runner records a Tier 0 run");
-        const b = parse(AuditSchema, body);
-        const args = parse(ARGS[b.action], b.args);
-        const [ctx, task] = await Promise.all([context(), pc.issue(b.issue)]);
-        const engineer = ctx.assignees.find((a) => a.kind === "engineer" && a.key === task.assigneeAgentId);
-        const a = store.approvals.audit({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: engineer ? engineer.name : "an Engineer", reason: b.reason, rule: b.rule, ok: b.ok, outcomeText: b.text, requesterId: task.assigneeAgentId ?? null, baseTier: 0, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
-        log.info({ approval: a.id, task: a.identifier, action: a.action, rule: b.rule, ok: b.ok }, "tier 0 ran");
-        return approvalView(a);
-      },
-    },
-    {
-      // The AI reviewer's verdict on a Tier 1 card, from the runner with its own key (reviewer_key), which agents never
-      // hold. Only a pending Tier 1 record whose digest matches; approve only while autonomy is full (tier0: it may only
-      // escalate, with its would-be verdict as the note; off: escalate or reject, the owner deciding the rest). decided_by is
-      // `reviewer:<model>`, from the key and an allowed model.
-      method: "POST",
-      path: /^\/internal\/approvals\/(A[0-9a-f]{8}|k-[0-9a-f]{16})\/review$/,
-      handle: async (m, body, _u, req) => {
-        if (!runnerKeyed(req)) throw new HttpError(403, "only the reviewer decides Tier 1");
-        const b = parse(ReviewSchema, body);
-        if (b.decision === "approve" && autonomy() !== "full") throw new HttpError(409, "autonomy isn't full: the reviewer may not approve");
-        if (b.decision === "reject" && autonomy() === "tier0") throw new HttpError(409, "autonomy is tier0: the reviewer may only escalate");
-        if (KERNEL_ID.test(m[1]!)) {
-          const a = await fromKernel(kernel.review(m[1]!, b));
-          log.info({ approval: a.id, task: a.identifier, model: b.model, code: b.code, decision: b.decision }, "kernel record reviewed");
-          return approvalView(a);
-        }
-        const r = store.approvals.review(m[1]!, b);
-        if (r.ok && b.decision === "escalate") {
-          log.info({ approval: r.approval.id, task: r.approval.identifier, model: b.model, code: b.code }, "approval escalated by the reviewer");
-          return approvalView(r.approval);
-        }
-        return decided(r, r.ok ? (r.approval.decidedBy ?? `reviewer:${b.model}`) : `reviewer:${b.model}`);
-      },
-    },
-    {
-      // The reviewer found a pending Tier 1 card authority-expanding: it needs a second reviewer from now on (set, never cleared).
-      method: "POST",
-      path: /^\/internal\/approvals\/(A[0-9a-f]{8}|k-[0-9a-f]{16})\/panel$/,
-      handle: async (m, body, _u, req) => {
-        if (!runnerKeyed(req)) throw new HttpError(403, "only the reviewer marks a card for the panel");
-        const b = parse(z.object({ digest: z.string().min(1).max(64) }).strict(), body);
-        if (KERNEL_ID.test(m[1]!)) return approvalView(await fromKernel(kernel.panel(m[1]!, b.digest)));
-        const r = store.approvals.markPanel(m[1]!, b.digest);
-        if (!r.ok) throw new HttpError(409, r.reason);
-        return approvalView(r.approval);
-      },
     },
     {
       // Where a message to a task the board moved to a successor goes (rollover.ts): read-only, from the board's own record.
@@ -1162,58 +910,15 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // pending: the cards the kernel hands channels (with their tokens); approved: what the runner may claim (with the args it replays).
+      // Every card on one task, any state, read from the kernel's records (an agent's task_approvals through the tasks bridge; no args).
       method: "GET",
       path: /^\/internal\/approvals$/,
       handle: async (_m, _b, url, req) => {
-        const state = url.searchParams.get("state");
-        // issue: every card on one task, any state (the runner, or an agent's task_approvals through the tasks bridge, read-only).
         const issue = url.searchParams.get("issue");
-        if (issue) {
-          if (!runnerKeyed(req)) await requireAgentTool(req, "task_approvals");
-          // The runner gets the args too: earlier decisions count by content and target, and a product PR card carries its merge.
-          const task = kernel.enabled ? await pc.issue(issue).then((i) => i.id, () => undefined) : undefined;
-          const all = [...(await (task ? kernelList("recent", task) : [])), ...store.approvals.on(issue)];
-          return { approvals: all.map((a) => (runnerKeyed(req) ? { ...approvalView(a), args: a.args } : approvalView(a))) };
-        }
-        // pending and finished: the kernel's (for the channels); review and approved: the runner's.
-        if (state === "pending" || state === "finished") {
-          if (!kernelKeyed(req) && !runnerKeyed(req)) throw new HttpError(403, "only the kernel or the runner reads the cards");
-        } else if (!runnerKeyed(req)) throw new HttpError(403, "only the runner reads its queue");
-        // pending: the owner's cards (Tier 2); review: the reviewer's queue (Tier 1), with the args it checks.
-        if (state === "pending") return { approvals: [...store.approvals.pending(), ...(await kernelList("owner"))].map(approvalView) };
-        if (state === "review") return { approvals: [...store.approvals.pending(Date.now(), 1), ...(await kernelList("review"))].map((a) => ({ ...approvalView(a), args: a.args })) };
-        if (state === "approved") return { approvals: store.approvals.approved(Object.keys(ARGS) as RunnerAction[]).map(approvalView) };
-        // finished: recent records with an outcome (or that died mid-way), for a channel to report under its card.
-        if (state === "finished") return { approvals: [...store.approvals.list(50), ...(await kernelList("recent"))].map(approvalView).filter((a) => a.outcome || a.state === "unknown") };
-        throw new HttpError(400, "state=pending, review, approved or finished, or issue=<task>");
-      },
-    },
-    {
-      method: "POST",
-      path: /^\/internal\/approvals\/(A[0-9a-f]{8})\/claim$/,
-      handle: async (m, _b, _u, req) => {
-        requireRunner(req, "claims approved work");
-        const a = store.approvals.get(m[1]!);
-        if (!a || BOARD_ACTIONS.includes(a.action)) throw new HttpError(404, "no such approval for the runner");
-        const used = store.approvals.claim(a.id);
-        if (!used) throw new HttpError(409, `this approval is ${shown(a)}`);
-        log.info({ approval: a.id, task: a.identifier, action: a.action }, "approval claimed");
-        return used;
-      },
-    },
-    {
-      method: "POST",
-      path: /^\/internal\/approvals\/(A[0-9a-f]{8})\/outcome$/,
-      handle: async (m, body, _u, req) => {
-        // Only the runner says how a claimed run went: the internal token alone could forge a result.
-        requireRunner(req, "reports outcomes");
-        const { nonce, ok, text } = parse(z.object({ nonce: z.string().regex(/^[0-9a-f]{32}$/), ok: z.boolean(), text: z.string().max(8000) }).strict(), body);
-        const a = store.approvals.get(m[1]!);
-        if (!a || BOARD_ACTIONS.includes(a.action)) throw new HttpError(404, "no such approval for the runner");
-        if (!store.approvals.finish(a.id, nonce, ok, text)) throw new HttpError(409, "not claimed with that nonce");
-        log[ok ? "info" : "warn"]({ approval: m[1], ok }, "approval applied");
-        return { ok: true };
+        if (!issue) throw new HttpError(400, "issue=<task>");
+        await requireAgentTool(req, "task_approvals");
+        const task = await pc.issue(issue).then((i) => i.id, () => undefined);
+        return { approvals: task ? (await cardsOf("recent", { task, limit: 50 })).map(approvalView) : [] };
       },
     },
     // Graded done (grades.ts): the delegating agent files the rubric (write-once, trusted storage); every completion path
@@ -1422,51 +1127,13 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // Account reset links for the owner's Telegram: only the kernel collects them (for the owner's channel), once.
-      method: "GET",
-      path: /^\/internal\/owner\/reset-links$/,
-      handle: async (_m, _b, _u, req) => {
-        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel collects reset links");
-        return { links: opts.accounts?.takeResetLinks() ?? [] };
-      },
-    },
-    {
-      // ops/setup.sh --reset <email> (operator key): the link goes to the owner's Telegram, never back to the caller.
+      // ops/setup.sh's welcome chat (operator key): a new chat, written as the owner.
       method: "POST",
-      path: /^\/internal\/accounts\/reset$/,
-      handle: async (_m, body, _u, req) => {
-        if (!opts.operatorKey || !keyMatches(req.headers["x-operator-key"], opts.operatorKey)) throw new HttpError(403, "only the operator resets an account");
-        if (!opts.accounts) throw new HttpError(409, "no board accounts here");
-        await opts.accounts.reset(parse(z.object({ email: z.string().email().max(200) }).strict(), body).email);
-        return { ok: true, sent: "the link goes to the owner's Telegram" };
-      },
-    },
-    {
-      // A channel's decision on one of the board's cards, spent and stamped by the kernel (lean-core 2f: a decision token bound
-      // to the card's digest). Only the kernel's key; `by` is one of the stamps a channel decision carries, never an account's.
-      method: "POST",
-      path: /^\/internal\/owner\/approvals\/decide$/,
-      handle: async (_m, body, _u, req) => {
-        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel decides for a channel");
-        const b = parse(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/), digest: z.string().min(1).max(128), decision: z.enum(["approve", "reject"]), by: z.enum(["owner:telegram", "owner:slack", "owner:reply", "watcher", "stale:watcher"]), via: z.string().regex(/^[a-z]{1,16}$/) }).strict(), body);
-        const a = store.approvals.get(b.id);
-        if (!a || a.digest !== b.digest) throw new HttpError(409, "this card changed since it was shown");
-        return decided(store.approvals.decide(b.id, b.decision, b.by), b.by);
-      },
-    },
-    {
-      // The daily digest: once a day from 21:00 in the owner's timezone, what was decided without the owner (Tier 0
-      // runs, the reviewer's verdicts) and what was escalated. Handed once to a channel through the kernel; null otherwise.
-      method: "GET",
-      path: /^\/internal\/owner\/approvals\/digest$/,
-      handle: async (_m, _b, _u, req) => {
-        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel collects the digest");
-        const now = new Date();
-        const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: opts.timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(now).map((p) => [p.type, p.value]));
-        const day = `${parts.year}-${parts.month}-${parts.day}`;
-        if (Number(parts.hour) < 21 || store.meta("approvals_digest_day") === day) return { text: null };
-        store.setMeta("approvals_digest_day", day);
-        return { text: digestText(store.approvals.since(new Date(now.getTime() - 86_400_000).toISOString())) };
+      path: /^\/internal\/owner\/welcome$/,
+      handle: async (m, body, u, req) => {
+        requireOperator(req, "posts the welcome chat");
+        const chats = routes.find((r) => r.method === "POST" && r.path.test("/api/chats"))!;
+        return perRequest.run({ session: OPERATOR }, () => chats.handle(m, body, u, req));
       },
     },
     // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.
@@ -1571,7 +1238,7 @@ export function createApp(opts: AppOptions): Server {
   ];
 
   // Where OAuth sign-ins must start: the loopback board, reached from a laptop through an SSH tunnel (docs/setup.md).
-  const TUNNEL = "http://127.0.0.1:3120 through ssh -N -L 3120:127.0.0.1:3120 <you>@<host> from your laptop";
+  const TUNNEL = "http://127.0.0.1:3121 through ssh -N -L 3121:127.0.0.1:3121 <you>@<host> from your laptop";
   const googleViaBoard = mode === "lan" && !!opts.lan?.googleConnect && !!opts.lan.url.startsWith("https://");
 
   // ------------------------------------------------------------------ Settings (settings.ts)
@@ -1579,7 +1246,7 @@ export function createApp(opts: AppOptions): Server {
   const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
 
   async function settingsData() {
-    const pending = store.approvals.pending();
+    const pending = await records.list("owner");
     return settingsView({
       ...readSources(settingsFiles()),
       autopause: process.env.FLEET_OPS_AUTOPAUSE || undefined,
@@ -1666,7 +1333,7 @@ export function createApp(opts: AppOptions): Server {
         return { roster: roster(agents, routines, new Map()) };
       },
     },
-    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, store), m[1]!) },
+    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, store, records), m[1]!) },
     {
       // Chats: open ones first, then the 20 newest finished ones; each with its agent and state.
       method: "GET",
@@ -1678,7 +1345,7 @@ export function createApp(opts: AppOptions): Server {
         const [open, closed, live, runs, openTasks] = await Promise.all([pc.labelled(label.id, OPEN), pc.labelled(label.id, "done,cancelled", "20"), pc.liveRuns(), pc.recentRuns(100), pc.openIssues()]);
         const newest = (a: Issue, b: Issue) => (b.lastActivityAt ?? b.updatedAt).localeCompare(a.lastActivityAt ?? a.updatedAt);
         const all = [...open.sort(newest), ...closed.sort(newest)];
-        const awaiting = store.approvals.awaiting();
+        const awaiting = await records.awaiting();
         const lastRun = (id: string) => runs.find((r) => r.issueId === id && r.finishedAt);
         const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
         const row = (i: Issue, agent: ReturnType<typeof agentOf>) => ({
@@ -1755,7 +1422,7 @@ export function createApp(opts: AppOptions): Server {
       handle: async () => {
         const ctx = await context();
         const [open, live, runs] = await Promise.all([pc.openIssues(), pc.liveRuns(), pc.recentRuns(100)]);
-        const awaiting = store.approvals.awaiting();
+        const awaiting = await records.awaiting();
         const base = needsYou(open, live, runs, ctx.me, awaiting);
         // Chats also need the owner when their messages say so (a reply asking him, a run that ended without a reply):
         // the same state the chat list and the conversation show.
@@ -1774,33 +1441,12 @@ export function createApp(opts: AppOptions): Server {
         const agentName = (i: Issue) => ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You";
         const items = [...base, ...more].map((i) => ({ identifier: i.identifier, title: i.title, agent: agentName(i), state: i.state, ...(i.reason ? { reason: i.reason } : {}) }));
         // approvals: the Tier 2 cards the owner decides in Approvals (its badge); items: everything else that waits on him too.
-        return { count: items.length, items, approvals: store.approvals.pending().length };
+        return { count: items.length, items, approvals: (await records.list("owner")).length };
       },
     },
-    // Approvals: the cards, open ones first, then the newest decided ones with their outcome.
-    { method: "GET", path: /^\/api\/approvals$/, handle: async () => { const names = await bylines(); return { approvals: [...store.approvals.list(), ...(await kernelList("recent"))].map((a) => shownApproval(names, a)) }; } },
-    {
-      // One tap: approve = apply. The approver is the listener's owner check, never a field in the request.
-      method: "POST",
-      path: /^\/api\/approvals\/(A[0-9a-f]{8}|k-[0-9a-f]{16})\/(approve|reject)$/,
-      handle: async (m, _b, _u, req) => {
-        const by = requireAdmin(req);
-        // A module write kind's card is decided in a channel (its token) until the kernel's own page lands (3a).
-        if (KERNEL_ID.test(m[1]!)) throw new HttpError(409, "decide this card in Telegram (or your channel): the board decides it again once the kernel's approval page lands");
-        return decided(store.approvals.decide(m[1]!, m[2] === "approve" ? "approve" : "reject", by), by);
-      },
-    },
-    {
-      // Several of the owner's cards at once, as the board showed them (id and digest each, at most 10): all or nothing.
-      method: "POST",
-      path: /^\/api\/approvals\/batch\/(approve|reject)$/,
-      handle: async (m, body, _u, req) => {
-        const by = requireAdmin(req);
-        if (!batchesOn()) throw new HttpError(409, "batch approvals are off; decide each card");
-        const { items } = parse(z.object({ items: BatchItemsSchema }).strict(), body);
-        return decidedMany(store.approvals.decideMany(items, m[1] === "approve" ? "approve" : "reject", by), by);
-      },
-    },
+    // Approvals: the cards, open ones first, then the newest decided ones with their outcome. Read-only: every card is decided on
+    // the kernel's approval page (or in a channel).
+    { method: "GET", path: /^\/api\/approvals$/, handle: async () => { const names = await bylines(); return { approvals: (await cardsOf("recent", { limit: 100 })).map((a) => shownApproval(names, a)) }; } },
     {
       // A new chat: with the agent named (body.agent or a leading @name), else Aiden.
       method: "POST",
@@ -1889,7 +1535,7 @@ export function createApp(opts: AppOptions): Server {
         ledgerTop({ store, agents: () => pc.agents(), issue: (id) => pc.issueSummary(id) }, ledgerRange(url.searchParams), { agentId: url.searchParams.get("agent") ?? undefined, model: url.searchParams.get("model") ?? undefined }),
     },
     // Read-only module catalog (compiled config/modules.json), for Settings > Modules.
-    { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")) }) },
+    { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")), advisories: await records.advisories().catch(() => []) }) },
     // Settings (web/src/Settings.tsx): the compiled config, read-only, with what the board can see live. Edits go through git.
     { method: "GET", path: /^\/api\/settings$/, handle: async () => settingsData() },
     { method: "GET", path: /^\/api\/settings\/connections$/, handle: async (_m, _b, url) => connectionsData(url.searchParams.has("fresh")) },
@@ -1898,8 +1544,7 @@ export function createApp(opts: AppOptions): Server {
       // the owner's task for the Platform Engineer, whose commit becomes the tiered apply card (docs/design/settings-changes.md).
       method: "POST",
       path: /^\/api\/settings\/change$/,
-      handle: async (_m, body, _u, req) => {
-        requireAdmin(req);
+      handle: async (_m, body) => {
         const { changes } = parse(ChangesSchema, body);
         const { compiled, catalog } = readSources(settingsFiles());
         try {
@@ -1930,10 +1575,14 @@ export function createApp(opts: AppOptions): Server {
         const tasks = (await pc.labelled(label.id, "backlog,todo,in_progress,in_review,blocked,done,cancelled", "20")).filter((i) => i.createdAt >= since);
         // A list may cut descriptions short; the typed change is at the end of one, so read those in full.
         const full = await Promise.all(tasks.map((i) => (i.descriptionTruncated ? pc.issue(i.id) : i)));
-        const changes = full.flatMap((i) => {
-          const items = changesOf(i.description);
-          return items ? [{ identifier: i.identifier, title: i.title, createdAt: i.createdAt, items, ...stageOf(i.status, store.approvals.on(i.identifier)) }] : [];
-        });
+        const changes = (
+          await Promise.all(
+            full.map(async (i) => {
+              const items = changesOf(i.description);
+              return items ? [{ identifier: i.identifier, title: i.title, createdAt: i.createdAt, items, ...stageOf(i.status, await records.list("recent", { task: i.identifier, limit: 50 })) }] : [];
+            }),
+          )
+        ).flat();
         return { changes: changes.sort((a, b) => b.createdAt.localeCompare(a.createdAt)) };
       },
     },
@@ -1972,17 +1621,8 @@ export function createApp(opts: AppOptions): Server {
         const issue = await latest(pc, store, asked);
         const moved = issue.id !== asked.id ? { movedTo: issue.identifier } : {};
         // `brief`: the chat's send, which refetches the chat itself, so the reply skips building the whole task view.
-        const { body: text, answer, brief } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional(), brief: z.boolean().optional() }).strict(), body);
+        const { body: text, brief } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional(), brief: z.boolean().optional() }).strict(), body);
         const view = async () => (brief ? { identifier: issue.identifier } : issueView(issue.id));
-        // A tapped answer button (agent-written label) is only ever a message, never a decision.
-        // An exact typed reply decides an open approval on its task (or the one its card id or target names); it isn't posted.
-        const reply = parseReply(text);
-        const replyRef = reply ? reply.ref ?? issue.identifier : "";
-        const replyBy = reply && !answer && (reply.ref || reply.target || store.approvals.pendingOn(replyRef).length) ? replyStamp() : null;
-        if (reply && replyBy) {
-          const a = await decided(store.approvals.decideByReply(replyRef, reply.decision, replyBy, new Date(), reply.target), replyBy);
-          return { ...(await view()), ...moved, approval: a };
-        }
         // @-mentions: the agents named, other than the one this chat is with, get the message on their part.
         const task = await userTaskOf(issue, ctx);
         const own = issue.id === task?.id ? ctx.assignees.find((a) => a.kind === "assistant")?.key : issue.assigneeAgentId;
@@ -2168,35 +1808,6 @@ export function createApp(opts: AppOptions): Server {
     }
   }
 
-  // apps-mcp's tools for in-app requests and roles (docs/design/access.md, In-app requests and roles), with the apps token.
-  // apps-mcp checked the calling agent may (the app's owner, or the app-requests role) and names it in `agent`.
-  const fromApps: typeof routes = [];
-  const AppName = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/);
-  const appAccess = () => {
-    if (!opts.accounts) throw new HttpError(503, "board accounts are off");
-    return opts.accounts.apps;
-  };
-  fromApps.push(
-    { method: "POST", path: /^\/internal\/apps\/requests$/, handle: async (_m, body) => ({ requests: appAccess().open(parse(z.object({ app: AppName }).strict(), body).app) }) },
-    {
-      method: "POST",
-      path: /^\/internal\/apps\/requests\/reply$/,
-      handle: async (_m, body) => {
-        const b = parse(z.object({ app: AppName, id: z.string().max(40), status: z.enum(["done", "declined", "answered"]), reply: z.string().min(1).max(1000) }).strict(), body);
-        return appAccess().reply(b.app, b.id, b.status, b.reply);
-      },
-    },
-    { method: "POST", path: /^\/internal\/apps\/roles$/, handle: async (_m, body) => appAccess().view(parse(z.object({ app: AppName }).strict(), body).app) },
-    {
-      method: "POST",
-      path: /^\/internal\/apps\/role-set$/,
-      handle: async (_m, body) => {
-        const b = parse(z.object({ app: AppName, agent: z.string().min(1).max(100), request_id: z.string().max(40), email: z.string().max(200), role: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/).nullable() }).strict(), body);
-        return appAccess().agentAssign(b.agent, b.app, b.request_id, b.email, b.role);
-      },
-    },
-  );
-
   async function handleInternal(req: IncomingMessage, res: ServerResponse, url: URL, internal: typeof routes) {
     const route = internal.find((r) => r.method === req.method && r.path.test(url.pathname));
     if (!route) throw new HttpError(404, "not found");
@@ -2204,64 +1815,50 @@ export function createApp(opts: AppOptions): Server {
     send(res, 200, JSON.stringify(await route.handle(url.pathname.match(route.path)!, body, url, req)), "application/json");
   }
 
-  /** Account administration on the board: any admin, and never the owner's account (accounts.ts refuses). */
+  /** Account administration on the board: any admin, and never the owner's account. The kernel acts as that admin's session. */
   const RoleSchema = z.enum(["admin", "user"]);
   const accountRoutes: { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession) => Promise<unknown> }[] = [
-    { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => ({ accounts: await opts.accounts!.list(), me: who.account.id }) },
+    { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => opts.accounts!.call("list", who) },
     // Your own signed-in browsers.
-    { method: "GET", path: /^\/api\/accounts\/sessions$/, handle: async (_m, _b, who) => ({ sessions: await opts.accounts!.sessionsOf(who.account.id, who.session.id) }) },
-    { method: "POST", path: /^\/api\/accounts\/sessions\/([\w-]{1,64})\/revoke$/, handle: async (m, _b, who) => opts.accounts!.revokeSession(who.account.id, m[1]!) },
+    { method: "GET", path: /^\/api\/accounts\/sessions$/, handle: async (_m, _b, who) => opts.accounts!.call("sessions", who) },
+    { method: "POST", path: /^\/api\/accounts\/sessions\/([\w-]{1,64})\/revoke$/, handle: async (m, _b, who) => opts.accounts!.call("revoke_session", who, { id: m[1]! }) },
     {
       method: "POST",
       path: /^\/api\/accounts$/,
-      handle: async (_m, body, who) => {
-        const input = parse(z.object({ email: z.string().email().max(200), name: z.string().max(100).default(""), role: RoleSchema }).strict(), body);
-        return opts.accounts!.invite(who.account, input);
-      },
+      handle: async (_m, body, who) => opts.accounts!.call("invite", who, parse(z.object({ email: z.string().email().max(200), name: z.string().max(100).default(""), role: RoleSchema }).strict(), body)),
     },
-    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/role$/, handle: async (m, body, who) => opts.accounts!.setRole(who.account, m[1]!, parse(z.object({ role: RoleSchema }).strict(), body).role as Role) },
-    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/(disable|enable)$/, handle: async (m, _b, who) => opts.accounts!.setDisabled(who.account, m[1]!, m[2] === "disable") },
-    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/link$/, handle: async (m, _b, who) => opts.accounts!.newLink(who.account, m[1]!) },
+    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/role$/, handle: async (m, body, who) => opts.accounts!.call("role", who, { id: m[1]!, role: parse(z.object({ role: RoleSchema }).strict(), body).role }) },
+    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/(disable|enable)$/, handle: async (m, _b, who) => opts.accounts!.call(m[2]!, who, { id: m[1]! }) },
+    { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/link$/, handle: async (m, _b, who) => opts.accounts!.call("link", who, { id: m[1]! }) },
     // App admins (docs/design/access.md, Per-app roles): every shared app, its admins and default; name or remove one.
-    { method: "GET", path: /^\/api\/app-admins$/, handle: async () => ({ apps: opts.accounts!.apps.adminsByApp() }) },
+    { method: "GET", path: /^\/api\/app-admins$/, handle: async (_m, _b, who) => opts.accounts!.call("app_admins", who) },
     {
       method: "POST",
       path: /^\/api\/app-admins\/([a-z][a-z0-9-]{1,30})$/,
-      handle: async (m, body, who) => {
-        const { email, admin } = parse(z.object({ email: z.string().max(200), admin: z.boolean() }).strict(), body);
-        return opts.accounts!.apps.assign(who.account.email, m[1]!, email, admin ? "admin" : null);
-      },
+      handle: async (m, body, who) => opts.accounts!.call("app_admin_set", who, { app: m[1]!, ...parse(z.object({ email: z.string().max(200), admin: z.boolean() }).strict(), body) }),
     },
   ];
 
   /**
-   * The session gate for every API route on "local" and "lan" (reads and file downloads included). Open: /api/session and
-   * Better Auth's own endpoints (sign-in, link claims, enrolment; accounts.ts lists which). The operator's key on the local
-   * listener only starts setup and posts the welcome chat. Returns true when it answered the request, else the session the
-   * board routes run under.
+   * The session gate for every API route on "lan" (reads and file downloads included). Open: /api/session and /api/sign-out;
+   * signing in, claiming a link and enrolling happen on the kernel's admin listener (`adminUrl`), and the board's own session
+   * comes from the kernel's handoff (/auth/start). Returns true when it answered the request, else the session the board
+   * routes run under.
    */
   async function accountGate(req: IncomingMessage, res: ServerResponse, url: URL): Promise<true | BoardSession> {
     const accounts = opts.accounts!;
     const path = url.pathname;
-    if (path.startsWith("/api/auth/")) {
-      await accounts.handle(req, res, path.slice("/api/auth".length), "board", url.search);
+    if (path === "/api/sign-out" && req.method === "POST") {
+      await accounts.signOut(req, res, SECURITY_HEADERS);
       return true;
     }
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      send(res, 200, JSON.stringify({ mode, account, needsTotp: Boolean(who && who.account.role === "admin" && !who.ready), googleConnect: googleViaBoard }), "application/json");
+      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
-    const operator = mode === "local" && Boolean(opts.operatorKey && keyMatches(req.headers["x-operator-key"], opts.operatorKey));
-    if (operator && req.method === "POST" && path === "/api/accounts/setup") {
-      const { email, name } = parse(z.object({ email: z.string().email().max(200), name: z.string().max(100).default("") }).strict(), await readJson(req));
-      send(res, 200, JSON.stringify(await accounts.setup(email, name)), "application/json");
-      return true;
-    }
-    if (operator && req.method === "POST" && path === "/api/chats") return OPERATOR; // ops/setup.sh's welcome chat, as the owner
     if (!who) throw new HttpError(401, "sign in");
-    if (!who.ready) throw new HttpError(403, who.account.role === "admin" ? "totp" : "this account has no board access");
     const a = accountRoutes.find((r) => r.method === req.method && r.path.test(path));
     if (a) {
       const body = req.method === "GET" ? undefined : await readJson(req);
@@ -2278,6 +1875,7 @@ export function createApp(opts: AppOptions): Server {
     if (opts.session) {
       const session = await opts.session(req);
       if (!session) throw new HttpError(401, "sign in");
+      if (session.role !== "admin") throw new HttpError(403, "this account has no board access");
       return routeApi(req, res, url, session);
     }
     const session = await accountGate(req, res, url);
@@ -2320,7 +1918,7 @@ export function createApp(opts: AppOptions): Server {
    */
   async function handleGoogle(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (!opts.google) throw new HttpError(404, "Google sign-in isn't set up on the board (no google_auth_token)");
-    if (!googleViaBoard && (mode !== "local" || !loopbackPort(req.headers.host))) throw new HttpError(403, `connect Google from ${TUNNEL}`);
+    if (!googleViaBoard && !loopbackPort(req.headers.host)) throw new HttpError(403, `connect Google from ${TUNNEL}`);
     const callback = googleViaBoard ? `${opts.lan!.url}/google/callback` : `http://${String(req.headers.host).toLowerCase()}/google/callback`;
     try {
       if (url.pathname === "/google/connect") {
@@ -2367,7 +1965,7 @@ export function createApp(opts: AppOptions): Server {
     const auth = opts[key];
     const port = loopbackPort(req.headers.host);
     if (!auth) throw new HttpError(404, `${name} sign-in isn't set up on the board (no ${secret})`);
-    if (mode !== "local" || !port) throw new HttpError(403, `sign in to ${name} from ${TUNNEL}`);
+    if (!port) throw new HttpError(403, `sign in to ${name} from ${TUNNEL}`);
     const host = String(req.headers.host).toLowerCase();
     try {
       if (url.pathname === connect) {
@@ -2422,18 +2020,17 @@ export function createApp(opts: AppOptions): Server {
           const token = monitoringToken();
           if (!token || !bearerMatches(req.headers.authorization, token)) throw new HttpError(401, "unauthorized");
           if (!String(req.headers.host ?? "") || !opts.allowedHosts.includes(String(req.headers.host).toLowerCase())) throw new HttpError(403, "unknown host");
-          if (req.method === "GET" && url.pathname === "/internal/metrics") return send(res, 200, metricsText(store), "text/plain; version=0.0.4; charset=utf-8");
+          if (req.method === "GET" && url.pathname === "/internal/metrics") return send(res, 200, await metricsText(store, records), "text/plain; version=0.0.4; charset=utf-8");
           if (req.method !== "POST" || url.pathname !== "/internal/alerts") throw new HttpError(405, "method not allowed");
           const r = receiveAlerts(store, parse(AlertsSchema, await readJson(req, 2_000_000)));
           kickDetector();
           return send(res, 200, JSON.stringify(r), "application/json");
         }
-        // /internal/apps/ takes only the apps token; everything else only the board's internal token.
-        const apps = url.pathname.startsWith("/internal/apps/");
-        const token = apps ? appsToken() : opts.internalToken;
+        // Only the board's internal token.
+        const token = opts.internalToken;
         if (!token || !bearerMatches(req.headers.authorization, token)) throw new HttpError(401, "unauthorized");
         if (!String(req.headers.host ?? "") || !opts.allowedHosts.includes(String(req.headers.host).toLowerCase())) throw new HttpError(403, "unknown host");
-        await handleInternal(req, res, url, apps ? fromApps : internal);
+        await handleInternal(req, res, url, internal);
       } catch (err) {
         const status = statusOf(err);
         if (status >= 500 || status === 401) log[status === 401 ? "warn" : "error"]({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "internal request failed");
@@ -2448,6 +2045,9 @@ export function createApp(opts: AppOptions): Server {
     }
     try {
       if (url.pathname.startsWith("/api/")) await handleApi(req, res, url);
+      // The kernel's handoff (kernel-auth.ts): the board's own session, on its own origin.
+      else if (url.pathname === "/auth/start" && req.method === "GET" && opts.accounts) opts.accounts.start(req, res);
+      else if (url.pathname === "/auth/handoff" && req.method === "GET" && opts.accounts) await opts.accounts.finish(req, res, url);
       else if (isConnect(url.pathname) && !(await adminSignedIn(req))) throw new HttpError(403, "sign in as an admin to connect accounts");
       else if (url.pathname.startsWith("/google/") && req.method === "GET") await handleGoogle(req, res, url);
       else if (signInFor(url.pathname) && req.method === "GET") await handleSignIn(req, res, url, signInFor(url.pathname)!);
@@ -2464,7 +2064,7 @@ export function createApp(opts: AppOptions): Server {
 /** ops/setup.sh's welcome chat (the operator's key): written as the owner, and never an approver. */
 const OPERATOR: BoardSession = { accountId: "operator", role: "admin" };
 
-const statusOf = (err: unknown) => (err instanceof HttpError || err instanceof AccountError || err instanceof AccessError ? err.status : err instanceof BadRequest ? 400 : err instanceof PaperclipError ? (err.status === 404 ? 404 : 502) : 500);
+const statusOf = (err: unknown) => (err instanceof HttpError || err instanceof AccountError ? err.status : err instanceof BadRequest ? 400 : err instanceof PaperclipError ? (err.status === 404 ? 404 : 502) : 500);
 
 function keyMatches(header: string | string[] | undefined, key: string): boolean {
   const given = Buffer.from(typeof header === "string" ? header : "");

@@ -99,7 +99,7 @@ grep -q 'names: \[\]' "$config_dir/system.yaml" && say "edit self.names/self.ema
 
 echo "Data"
 data="${AIDENHQ_DATA_DIR:-./data}"
-mkdir -p "$data/paperclip/instances/default/companies" "$data/modules/meetings/ops-mcp" "$data/board" "$data/apps" "$data/apps-mcp" "$data/apps-edge/state" "$data/apps-edge/serve"   # as you, so Docker never creates them as root
+mkdir -p "$data/paperclip/instances/default/companies" "$data/modules/meetings/ops-mcp" "$data/board" "$data/kernel/auth" "$data/apps" "$data/apps-mcp" "$data/apps-edge/state" "$data/apps-edge/serve"   # as you, so Docker never creates them as root
 # (the board mounts Paperclip's companies folder: made by Docker as root, Paperclip itself could no longer write its home)
 umask 022
 

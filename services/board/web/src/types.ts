@@ -237,8 +237,6 @@ export interface IssueView extends Omit<Card, "scheduled" | "recurring" | "worki
   crew: (CrewMember & { said: { text: string; at: string } | null })[];
   /** After a reply: the agent's part a message that @-mentioned them went to, instead of this chat. */
   movedTo?: string;
-  /** After an exact typed reply ("apply WOR-184"): the approval it decided, instead of a posted message. */
-  approval?: Approval;
 }
 
 /** An approval card: the exact request, written by the board; the outcome lands on the same card. */
@@ -276,7 +274,6 @@ export interface Approval {
   outcome: "applied" | "failed" | null;
   outcomeText: string | null;
   createdAt: string;
-  expiresAt: string;
   replaced: boolean;
 }
 
@@ -310,6 +307,16 @@ export interface Update {
 }
 
 /** One module from the compiled catalog, with how it is on (src/modules.ts). */
+/** A marketplace advisory open against an installed module (the kernel's loader/advisories.ts); `summary` is fenced text. */
+export interface Advisory {
+  id: string;
+  module: string;
+  severity: "low" | "medium" | "high" | "critical";
+  fixed: string;
+  summary: string;
+  url: string;
+}
+
 export interface ModuleRow {
   name: string;
   description: string;

@@ -21,6 +21,8 @@ export async function generate(repo) {
   const out = {};
   const { ROUTES } = await import(pathToFileURL(join(repo, "kernel/src/backplane.ts")).href);
   for (const r of ROUTES) out[`route ${r.method} ${r.path}`] = `auth=${r.auth}`;
+  const { ROUTES: ADMIN } = await import(pathToFileURL(join(repo, "kernel/src/admin.ts")).href);
+  for (const r of ADMIN) out[`admin route ${r.method} ${r.path}`] = `auth=${r.auth}`;
 
   const walk = (id, node, req) => {
     const { description, title, $schema, $id, properties, additionalProperties, items, required, ...shape } = node;

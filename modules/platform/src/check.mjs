@@ -49,13 +49,13 @@ function productParts(kind, item, facts) {
  * approval path (tiers, the reviewer, its policy and its eval cases, the owner's-words check, the merge queue's writes,
  * apply), the state classify() trusts and the runner's GitHub writes (main, state, config, github-app, host git on agent
  * clones), the job jail, who an agent is and what it may call (the kernel's identity and tool proxy, the modules' caller check, the compiler's grants, setup), the board's
- * approval records, decision routes, tier rules and sign-in, the sandboxes, the kernel (its model gateway: key and spend caps), host
+ * approval records, decision routes, tier rules and sign-in (the kernel's admin pages from 3a), the sandboxes, the kernel (its model gateway: key and spend caps), host
  * privileges, the security checks, and the product's CI (the checks a merge waits on). A file stays here when it moves from
  * `.mjs` to `.ts` (the TypeScript conversion), so each name matches either extension.
  */
 export const GATE_CORE = [
   // One entry per file, so a renamed or moved gate file shows up as a dead entry (gate-coverage.test.mjs).
-  ...["tiers", "review-request", "siblings", "evalgate", "apply", "netjail", "state", "config", "main", "engines", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
+  ...["tiers", "review-request", "siblings", "cards", "evalgate", "apply", "state", "config", "progress", "main", "engines", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
   // What a job can reach: its sandbox and launch (engines: the bwrap allowlist, writable roots, env), what lands in its
   // workspace and what the runner reads back from it (workspace, files), and the computer box rules (computers).
   /^scripts\/computers\.(mjs|ts)$/,
@@ -92,10 +92,10 @@ export const GATE_CORE = [
   /^scripts\/modules\.(mjs|ts)$/,
   /^scripts\/paperclip-setup\.(mjs|ts)$/,
   /^scripts\/no-shell\.(mjs|ts)$/,
-  /^services\/board\/src\/approvals\.ts$/,
   /^services\/board\/src\/app\.ts$/,
   /^services\/board\/src\/fleet\.ts$/,
-  /^services\/board\/src\/accounts\.ts$/,
+  // The board's sign-in: its own session, handed off and checked by the kernel (3g); the board opens no accounts file.
+  /^services\/board\/src\/kernel-auth\.ts$/,
   /^services\/board\/src\/session\.ts$/,
   /^services\/computer\//,
   /^ops\//,
@@ -122,16 +122,15 @@ export const GATE_DIRS = [
   "modules/engineering/src/",
   "services/shared/review-files.mjs",
   "modules/apps-platform/",
-  "services/board/src/approvals.ts",
   "services/board/src/app.ts",
   "services/board/src/fleet.ts",
-  "services/board/src/accounts.ts",
+  "services/board/src/kernel-auth.ts",
   "services/board/src/session.ts",
 ];
 /** Files in a gate dir deliberately outside the core. Adding one here is a gate-core change. */
 export const OUTSIDE_GATE = [
   ...[
-    "advise.ts", "answered.ts", "branch.ts", "busy.ts", "cards.ts", "describe.ts", "evidence.ts", "gcp.ts", "grade.ts",
+    "advise.ts", "answered.ts", "branch.ts", "busy.ts", "describe.ts", "evidence.ts", "gcp.ts", "grade.ts",
     "images.ts", "intake.ts", "metrics.ts", "models.mjs", "notices.ts", "paperclip.ts", "primer.ts", "prompt.ts",
     "recurring.ts", "repohelper.ts", "retry.ts", "reviews.ts", "thread.ts", "types.ts", "usage.ts",
   ].map((f) => `services/runner/src/${f}`),

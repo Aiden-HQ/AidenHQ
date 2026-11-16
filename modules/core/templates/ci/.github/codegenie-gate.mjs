@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// The `code-review` check's verdict: reads codegenie's JSON review (`codegenie review --format json`) and fails the check
-// when any finding is critical or high, or the review didn't complete (failed, partial, unreadable): missing evidence
-// never passes, except on a diff past the review target whose budget ran out, which passes with the unread part named.
+// The `code-review` check's verdict: reads the review's JSON (code-review.mjs: codex's review, its P0 and P1 as critical
+// and high; codegenie's `--format json` from repos on the older template has the same shape) and fails the check when any
+// finding is critical or high, or the review didn't complete (failed, no coverage, unreadable): missing evidence never
+// passes.
 // Keeps one PR comment with every finding, updated in place on each push. No dependencies; Node 22+.
-//   node codegenie-gate.mjs <review.json> <codegenie exit code>
+//   node codegenie-gate.mjs <review.json> <reviewer exit code>
 // Env: GITHUB_TOKEN (pull-requests: write), GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, REVIEW_COUNTED_LINES (the workflow's
 // counted changed lines: added plus deleted, package-lock.json excluded), GITHUB_API_URL (optional).
 import { appendFileSync, readFileSync } from "node:fs";
@@ -14,29 +15,26 @@ const BOT = "github-actions[bot]"; // the author of comments posted with the wor
 const BLOCKING = new Set(["critical", "high"]);
 // Everything posted goes through clip: the comment is public to the repo and GitHub masks secrets only in job logs, so
 // anything secret-shaped (API keys, bearer tokens, key=/token= values) is masked first.
-const mask = (s) => s.replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{6,}/g, "$1-***").replace(/\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, "$1 ***")
+const mask = (s) => s.replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{6,}/g, "$1-***").replace(/\b(ahq[a-z]{1,3})_[A-Za-z0-9._-]{6,}/g, "$1_***").replace(/\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, "$1 ***")
   .replace(/\b(key|token|secret|password|api_key|apikey|access_token|auth)=[^\s&"']+/gi, "$1=***").replace(/\bgh[pousr]_[A-Za-z0-9]{10,}/g, "gh*_***");
 const clip = (s, n) => { const t = mask(String(s ?? "").trim()); return t.length > n ? `${t.slice(0, n)}…` : t; };
 
-// The gate's review target in counted changed lines. A diff past it cannot be reviewed at any budget, so a budget stop
-// there is a decision (what it read passes or blocks, the rest is named) rather than a failed check.
-const TARGET_LINES = 2000;
-const SPLIT = `Split it into stacked PRs of at most ${TARGET_LINES.toLocaleString("en-US")} counted changed lines each (package-lock.json doesn't count) and push those.`;
-// What to do when no review came out, by the workflow's CODEGENIE_FAILURE (it retries budget and transient once, time
-// permitting: a retry shows as "2 attempts"; too-large ends at once). The split is in counted lines: package-lock.json
-// is out of the count (#135), so a diff whose lockfile alone is past the target is still splittable.
+// What to do when no review came out, by the workflow's CODEGENIE_FAILURE. transient: a confirmed provider error (HTTP 429
+// or 5xx, a dropped connection), retried once by the workflow; a retry shows as "2 attempts". no-verdict: anything else
+// (a timeout, an answer that isn't a review); the PR's content can cause it, so it is never retried.
 const NEXT = {
-  budget: `It ran out of its review budget: the PR is too big to review in one go. ${SPLIT}`,
-  transient: "The model provider failed or timed out. Re-run the check; if it fails the same way again, read the job log.",
-  "too-large": `Diff too large for one review: ${SPLIT.charAt(0).toLowerCase()}${SPLIT.slice(1)}`,
+  transient: "The model provider failed twice (rate limit, server error or a dropped connection). Re-run the check; if it fails the same way again, read the job log.",
+  "no-verdict": "The reviewer gave no verdict (it timed out, or its answer wasn't a review). Something in the change may have caused it: read the job log.",
 };
+// Fail closed (operator ruling, 2026-11-17, replacing #144's pass for big PRs): no verdict always fails the check. Past the
+// review target in counted changed lines (package-lock.json doesn't count), the reason given is the size. On the
+// 2026-11-16 eval a 1,936-line PR took 17 minutes and a 5,230-line one ended without a verdict after 25.
+const TARGET_LINES = 2000;
 const FALLBACK = "See the job log, fix the cause and re-run the check.";
 
 /**
- * { block, body, quiet, short } from codegenie's exit code and its stdout. quiet: nothing worth a new comment. short: a
- * diff past the target whose review stopped, so the body names the unread part instead of claiming a whole review. The workflow's
- * reading of a run with no verdict: failure (budget, transient, permanent), cause (the specific reason it found in
- * codegenie's output, stderr or telemetry), attempts (how many runs it made), lines (the PR's counted changed lines).
+ * { block, body, quiet } from the reviewer's exit code and its stdout. quiet: nothing worth a new comment. The workflow's
+ * reading of a run with no verdict: failure (transient, permanent), cause (a fixed class), attempts (how many runs it made).
  * What it reviewed (codegenie-prior.mjs): mode (full, delta: only the changes since `from`, the n-th delta since a full
  * review; reuse: `from`'s verdict stands).
  */
@@ -46,12 +44,12 @@ export function verdict(exitCode, stdout, sha = "", opts = {}) {
   const old = `\`${String(from).slice(0, 7)}\``;
   if (mode === "reuse") return { block: false, quiet: true, body: `${MARKER}\n**Code review reused${at}** from ${old}: the PR's patch is the same as at that green review (a rebase), so it isn't reviewed again.` };
   const v = judge(exitCode, stdout, sha, opts);
-  const scope = v.short ? "" : mode === "delta" ? `_Reviewed only the changes since ${old}, this PR's last green review (delta ${n} of at most 3 before a full review). codegenie saw that diff alone, not the rest of the PR's._`
+  const scope = v.short ? "" : mode === "delta" ? `_Reviewed only the changes since ${old}, this PR's last green review (delta ${n} of at most 3 before a full review)._`
     : mode === "full" ? "_Reviewed the whole PR._" : "";
-  // The depth the workflow picked: quick (quick-review.mjs) or light by default, normal on a critical path (the first one it
-  // matched), deep on request.
-  const how = depth === "normal" && critical ? `_Depth normal: touches \`${clip(critical, 200).replace(/`/g, "")}\`._`
-    : depth === "quick" ? "_Quick review (one model call): it touches no critical path._" : depth ? `_Depth ${depth}._` : "";
+  // The depth the workflow picked: light by default, normal on a critical path (the first one it matched), deep on request
+  // (the higher effort). quick: the older template's one-call reviewer.
+  const how = depth === "normal" && critical ? `_Touches a critical path: \`${clip(critical, 200).replace(/`/g, "")}\`._`
+    : depth === "deep" ? "_Reviewed at the higher effort (deep-review)._" : depth === "quick" ? "_Quick review (one model call): it touches no critical path._" : "";
   const notes = [scope, how].filter(Boolean).join(" ");
   return notes ? { ...v, body: `${v.body}\n\n${notes}` } : v;
 }
@@ -62,53 +60,44 @@ function judge(exitCode, stdout, sha, { failure, cause, attempts, lines }) {
   const at = sha ? ` on \`${sha.slice(0, 7)}\`` : "";
   const next = NEXT[failure] ?? FALLBACK;
   const tries = Number(attempts) > 1 ? `, ${attempts} attempts` : "";
-  const counted = Number(lines) > 0 ? Number(lines) : 0;
   const readable = Boolean(review) && Array.isArray(review.findings) && review.health?.status !== "failed";
-  const noVerdict = exitCode !== 0 || !readable;
-  // A budget stop on a diff past the target never gets a verdict, however it is retried: decide on the part it read, and
-  // name the part it didn't. Findings are read first (below), so a critical or high one still blocks.
-  const oversized = counted > TARGET_LINES && (failure === "budget" || failure === "too-large") && (noVerdict || Boolean(review?.coverage?.unavailable));
   // Its own headline: the runner re-runs a check whose comment says the review failed or was incomplete
-  // (services/runner/src/merges.mjs codeReviewInfra), and this one is final for the diff.
-  if (failure === "too-large" && !oversized) return { block: true, body: `${MARKER}\n**Diff too large for one review${at}** (codegenie exit ${exitCode}${tries}${cause ? `: ${clip(cause, 300)}` : ""}). ${next}` };
-  if (noVerdict && !oversized) {
-    const why = cause || review?.health?.diagnostics?.map((d) => d.reason).filter(Boolean).slice(0, 3).join("; ");
-    return { block: true, body: `${MARKER}\n**Code review failed${at}** (codegenie exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${next}` };
+  // (services/runner/src/merges.mjs codeReviewInfra).
+  const counted = Number(lines) > 0 ? Number(lines) : 0;
+  // No verdict that isn't a provider failure gets its own headline (never "failed"/"incomplete": the runner re-runs those, and
+  // a re-run would end the same way). Past the target, the size is the reason.
+  if ((exitCode !== 0 || !readable) && counted > TARGET_LINES && failure !== "permanent") {
+    return { block: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}**: too large to review in one pass (${counted.toLocaleString("en-US")} counted changed lines; review exit ${exitCode}${tries}). Split it into stacked PRs under ~${TARGET_LINES.toLocaleString("en-US")} counted changed lines each (package-lock.json doesn't count) and push those.` };
   }
-  // Whatever findings came out are read before the oversized decision: a critical or high one blocks even when the
-  // review stopped early.
-  const all = Array.isArray(review?.findings) ? [...review.findings, ...(review.summaryOnlyFindings ?? [])] : [];
+  if ((exitCode !== 0 || !readable) && failure === "no-verdict") {
+    return { block: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}** (review exit ${exitCode}${tries}${cause ? `: ${clip(cause, 300)}` : ""}). ${NEXT["no-verdict"]}` };
+  }
+  if (exitCode !== 0 || !readable) {
+    const why = cause || review?.health?.diagnostics?.map((d) => d.reason).filter(Boolean).slice(0, 3).join("; ");
+    return { block: true, body: `${MARKER}\n**Code review failed${at}** (review exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${next}` };
+  }
+  const all = [...review.findings, ...(review.summaryOnlyFindings ?? [])];
   const blocking = all.filter((f) => BLOCKING.has(f.severity));
   const rest = all.filter((f) => !BLOCKING.has(f.severity));
   // "unresolved" is a finished review that left questions it couldn't settle: listed for a human, never blocking.
   // Owner (2026-11-12): a partial review that still ran and found nothing high/critical passes with a note; only a review
   // with no coverage at all blocks.
-  const incomplete = Boolean(review?.coverage?.unavailable) && !oversized;
-  const partial = !incomplete && !oversized && Boolean(review?.coverage?.partial || review?.health?.status === "incomplete");
-  const questions = review?.needsHumanAttention ?? [];
+  const incomplete = Boolean(review.coverage?.unavailable);
+  const partial = !incomplete && Boolean(review.coverage?.partial || review.health?.status === "incomplete");
+  const questions = review.needsHumanAttention ?? [];
   const line = (f) => {
     const where = f.anchor?.line ? `${f.path}:${f.anchor.line}` : f.path;
     return `- **${f.severity}** \`${where}\`: ${clip(f.title, 200)}\n  ${clip(f.finalBody || f.failureMode, 800).replace(/\n+/g, "\n  ")}`;
   };
   const parts = [MARKER];
-  if (oversized) {
-    const reason = failure === "too-large" ? "too large for one review" : "review budget exhausted";
-    const why = [reason, cause ? clip(cause, 200) : (review?.coverage?.reasons ?? []).filter(Boolean).join("; "), `codegenie exit ${exitCode}${tries}`].filter(Boolean).join(", ");
-    const read = blocking.length
-      ? `It reported the blocking findings below but did not read the rest of the diff. ${SPLIT}`
-      : all.length
-        ? `Nothing high or critical in the part it read, so this check passes; it did not read the rest of the diff. ${SPLIT}`
-        : `No review came out, so nothing of it was read and no finding could block; the check passes. ${SPLIT}`;
-    parts.push(`**Code review stopped short${at}** (${counted.toLocaleString("en-US")} counted changed lines: ${why}). ${read}`);
-  }
   if (partial) parts.push(`**Code review partly done${at}** (passes: nothing high or critical in what it covered). ${clip((review.coverage?.reasons ?? []).join("; ") || review.health?.status, 300)}`);
-  if (incomplete) parts.push(`**Code review incomplete${at}${NEXT[failure] ? "" : ": re-run the check"}.** ${clip((review.coverage?.reasons ?? []).join("; ") || review.health?.status, 300)}${NEXT[failure] ? ` ${NEXT[failure]}` : ""}`);
+  if (incomplete) parts.push(`**Code review incomplete${at}: re-run the check.** ${clip((review.coverage?.reasons ?? []).join("; ") || review.health?.status, 300)}`);
   if (blocking.length) parts.push(`**Code review: ${blocking.length} blocking finding${blocking.length === 1 ? "" : "s"}${at}.** Fix these before merging.`, blocking.map(line).join("\n"));
   if (rest.length) parts.push(`**Not blocking${blocking.length || incomplete ? "" : at}** (for a follow-up change, not this PR):`, rest.map(line).join("\n"));
   if (questions.length) parts.push("**Questions the review couldn't settle** (for a human to check; not blocking):", questions.map((q) => `- ${clip(q.question, 300)}${q.files?.length ? ` (${q.files.slice(0, 3).map((f) => `\`${f}\``).join(", ")})` : ""}`).join("\n"));
-  if (!all.length && !incomplete && !questions.length && !oversized) parts.push(`**Code review: no findings${at}.**`);
-  const quiet = !all.length && !incomplete && !questions.length && !oversized;
-  return { block: blocking.length > 0 || incomplete, partial: Boolean(partial), short: oversized, body: parts.join("\n\n"), quiet };
+  const quiet = !all.length && !incomplete && !questions.length;
+  if (quiet) parts.push(`**Code review: no findings${at}.**`);
+  return { block: blocking.length > 0 || incomplete, partial, body: parts.join("\n\n"), quiet };
 }
 
 async function upsertComment(body, { quiet }) {

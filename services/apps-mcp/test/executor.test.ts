@@ -9,6 +9,7 @@ const SHA = "a".repeat(40);
 const diff = (file: string) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -0,0 +1 @@\n+x\n`;
 const apps: Record<string, App> = {
   web: parseApp({ name: "web", repo: "example-org/web", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: ["keeper"], paths: ["/api/agent"] } }),
+  narrow: parseApp({ name: "narrow", repo: "example-org/narrow", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: [{ agent: "keeper", paths: ["GET /api/agent/intake", "POST /api/agent/intake/{reference}/decision"] }], paths: ["/api/agent/intake"] } }),
   db: parseApp({ name: "db", repo: "example-org/db", owner: "app-maintainer", description: "d", stateful: true }),
 };
 const who = (key: string, roles: string[] = []) => ({ agent: `ag-${key}`, key, name: key, roles, kind: "run" });
@@ -68,6 +69,10 @@ describe("apps-platform write kinds", () => {
     await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x" })).rejects.toThrow(/may not call web's API/);
     await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/admin" }, who("keeper"))).rejects.toThrow(/isn't under web's agent API paths/);
     expect((await plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x", body: { a: 1 } }, who("keeper"))).args).toEqual({ name: "web", caller: "keeper", method: "POST", path: "/api/agent/x", body: { a: 1 } });
+    // A caller held to exact routes: the method is part of the check, so a write plan can't spend its read route.
+    expect((await plan(ex, "api_write", { name: "narrow", method: "POST", path: "/api/agent/intake/AB12CD34/decision" }, who("keeper"))).args).toMatchObject({ caller: "keeper", method: "POST" });
+    await expect(plan(ex, "api_write", { name: "narrow", method: "DELETE", path: "/api/agent/intake/AB12CD34/decision" }, who("keeper"))).rejects.toThrow(/isn't under narrow's agent API paths/);
+    await expect(plan(ex, "api_write", { name: "narrow", method: "POST", path: "/api/agent/intake" }, who("keeper"))).rejects.toThrow(/isn't under narrow's agent API paths/);
     // execute runs exactly the record's args.
     expect(await ex.execute({ id: "k-0000000000000000", kind: "apps-platform.deploy", args: { name: "db", sha: SHA, stateful: true }, digest: "d", idempotency_key: "k-0000000000000000" })).toMatchObject({ ok: true });
     expect(calls[0]).toEqual(["deploy", apps.db, { sha: SHA, by: "approval k-0000000000000000", allowStateful: true }]);

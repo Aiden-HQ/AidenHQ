@@ -99,8 +99,8 @@ main() {
   # Entered through the hand-over of a script that predates generations: the instance had already moved, so the commit that
   # ran before is the newest one pinning `before`.
   if [ -n "${AIDENHQ_APPLY_BEFORE:-}" ] && [ -z "${AIDENHQ_APPLY_INST_BEFORE:-}" ]; then inst_before="$(instancePinning "$before")"; fi
-  # Host-side Node deps (the compiler/setup and the runner) follow the product's lockfiles.
-  for d in scripts services/runner; do
+  # Host-side Node deps (the compiler/setup, the runner and the kernel) follow the product's lockfiles.
+  for d in scripts services/runner kernel; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
   lap npm
@@ -265,7 +265,7 @@ applyGeneration() {
   done <<< "$plan"
   git -C "$inst" checkout --quiet --detach "$instance"
   git checkout --quiet --detach "$product"
-  for d in scripts services/runner; do
+  for d in scripts services/runner kernel; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
   local m; m="$(genAppend "$product" "$instance" pending "" "${AIDENHQ_REVERT_OF:-}" "$gen")"
@@ -308,10 +308,16 @@ instancePinning() {
 # A refusal before the switch: both checkouts back where the running generation has them, with the host's Node deps.
 restoreCheckouts() {
   git checkout --quiet --detach "$before"
-  for d in scripts services/runner; do
+  for d in scripts services/runner kernel; do
     git diff --quiet "$before" "$product" -- "$d/package-lock.json" || npm ci --prefix "$d" --silent || true
   done
   if [ -n "${inst_before:-}" ] && [ "$(git -C "$inst" rev-parse HEAD)" != "$inst_before" ]; then git -C "$inst" checkout --quiet --detach "$inst_before"; fi
+}
+
+# The board stopped, or the apply stops: the accounts file is never moved under a board that still writes it.
+stopBoard() {
+  docker compose stop board >/dev/null
+  [ -z "$(docker compose ps -q --status running board 2>/dev/null)" ] || { echo "refusing: the board is still running, so its accounts can't move" >&2; return 1; }
 }
 
 # The compose files the apply validates: COMPOSE_FILE (or compose's default) with compose.modules.yaml swapped for the staged one.
@@ -329,6 +335,15 @@ validate() {
   fi
   local files; files="$(stagedComposeFiles)"
   COMPOSE_FILE="$files" docker compose config -q || { why="docker compose config refused the staged compose files"; return 1; }
+  # The kernel's admin listener binds 127.0.0.1:3120 (lean-core 3a): a host override that still publishes 3120 on the board
+  # would keep one of the two from starting.
+  if [ -f kernel/src/admin.ts ] && COMPOSE_FILE="$files" docker compose config board 2>/dev/null | grep -qE '^[[:space:]]+published: "?3120"?$'; then
+    why="the board still publishes 3120 (compose.override.yaml?): the kernel's admin listener binds it"; return 1
+  fi
+  # The kernel's sign-in listener binds 127.0.0.1:3129 (lean-core 3g): the same for a host override that still publishes it.
+  if [ -f kernel/src/signin.ts ] && COMPOSE_FILE="$files" docker compose config board 2>/dev/null | grep -qE '^[[:space:]]+published: "?3129"?$'; then
+    why="the board still publishes 3129 (compose.override.yaml?): the kernel's sign-in listener binds it; drop that port from the override"; return 1
+  fi
   # The authority diff (kernel/src/loader/authority-cli.ts): one `apply authority:` line per module change. A hand apply is
   # the owner's own act, so it is printed, not filed; an unreadable diff refuses.
   if [ -f kernel/src/loader/authority-cli.ts ]; then
@@ -372,6 +387,19 @@ switchOver() {
     systemctl --user disable --now aidenhq-gateway 2>/dev/null || true
     rm -f "$old" && systemctl --user daemon-reload && echo "gateway unit removed (the kernel replaces it)"
   fi
+  # The accounts move into the kernel (lean-core 3a), once, with the board stopped so nothing writes the file mid-move; compose
+  # brings the board back on the new mount. An older product (a revert or rollback) keeps them in data/board: they go back
+  # there, so there is only ever one copy and its board never makes an empty one.
+  local data="${AIDENHQ_DATA_DIR:-$PWD/data}"
+  if [ -f kernel/src/auth-move.ts ] && [ -f "$data/board/auth.db" ] && [ ! -f "$data/kernel/auth/auth.db" ]; then
+    stopBoard
+    local moved; moved="$(node kernel/src/auth-move.ts "$data")"
+    echo "accounts: $moved (data/board/auth.db -> data/kernel/auth/)"
+  elif [ ! -f kernel/src/auth-move.ts ] && [ -f "$data/kernel/auth/auth.db" ] && [ ! -f "$data/board/auth.db" ]; then
+    stopBoard
+    local f; for f in auth.secret auth.db-journal auth.db-wal auth.db-shm auth.db; do [ ! -e "$data/kernel/auth/$f" ] || mv "$data/kernel/auth/$f" "$data/board/$f"; done
+    echo "accounts: moved back (data/kernel/auth/ -> data/board/, for this older product)"
+  fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-kernel \
       && systemctl --user restart aidenhq-kernel && echo "kernel unit installed/updated"
@@ -403,7 +431,7 @@ switchOver() {
   # The runner is running this script: restart it only after the apply in flight has reported back. SIGUSR2 to its main
   # process only: it takes no new jobs, leaves the agents' runs going (the new runner adopts them and reports their
   # turns), exits as soon as nothing is half done (a reply being posted, a publish, this apply) and systemd starts it again.
-  if [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/runner kernel/sdk modules/codehost-github modules/platform modules/engineering/src ops/units/aidenhq-runner.service; then
+  if [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/runner kernel/sdk kernel/src/sandbox.ts kernel/src/jobs.ts modules/codehost-github modules/platform modules/engineering/src ops/units/aidenhq-runner.service; then
     systemd-run --user --quiet --on-active=30 systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner && echo "runner code changed: restart once idle, from 30s"
   fi
   # The computer launcher holds live run tokens in memory: restart it only when its code changed (running computers get new tokens next run).

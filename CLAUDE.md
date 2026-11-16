@@ -55,12 +55,12 @@ The app starter (`modules/core/templates/app/`) is Vite + shadcn: `npm ci && npm
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
 the reviewer eval's case loader).
 
-The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the runner asks it through the kernel). Its exit test,
+The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks it for each record's review). Its exit test,
 `node modules/ai-reviewer/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and must stay at 100%. It
 applies to changes to the module (its service, policy `service/security/`, cases `test/reviewer-cases/`, judge),
-`kernel/sdk/src/reviewer.ts`, the tier function (`services/runner/src/tiers.mjs`, the code host's git rules `modules/codehost-github/src/plan.mjs`, the
-platform check `modules/platform/src/check.mjs`, `kernel/src/tier.ts`) or the
-authority-diff classifier (`kernel/src/loader/authority.ts`); the runner's merge queue runs it on the PR's exact head
+`kernel/sdk/src/reviewer.ts`, the tier function and write lifecycle (`services/runner/src/tiers.mjs`, `cards.ts`,
+`review-request.mjs`, `kernel/src/{tier,writes,records,reviews,kinds}.ts`, the code host's git rules
+`modules/codehost-github/src/plan.mjs`, the platform check `modules/platform/src/check.mjs`) or the authority-diff classifier (`kernel/src/loader/authority.ts`); the runner's merge queue runs it on the PR's exact head
 and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 
 ## Conventions
@@ -71,7 +71,8 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 - **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model. Gate
   only real risk (writes, spend, auth and security boundaries, the sandbox, untrusted text); set a default at its
   source, never re-enforce it downstream.
-  Writes are approval records tiered in code (`services/runner/src/tiers.mjs`): Tier 0 runs, Tier 1 the AI reviewer
+  Writes are kernel records tiered in code (`kernel/src/tier.ts`, the runner's `tiers.mjs` proposing for its kinds, the
+  kernel enforcing floors, owner authority and vetoes itself): Tier 0 runs, Tier 1 the AI reviewer
   decides, Tier 2 the owner; setting `autonomy`. Every reviewer false reject becomes a planted case in
   `modules/ai-reviewer/test/reviewer-cases/`.
 - **Cross-agent behaviour goes in `scripts/paperclip-setup.mjs` sections** (approvals, replying, delegating, web),
@@ -79,21 +80,23 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 - **Source writers:** one bad item never fails a pass (skip only permanent errors, rethrow transient ones); passes
   are time-bounded. Probe a vendor MCP's real tool shapes live before trusting guessed params
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
-- **Inbound:** board port 3120 is loopback-only but every host process shares that loopback (Engineer jobs, Tailscale
-  serve), so every route on 3120 and 3121 needs a signed-in admin (board accounts: Better Auth, password + TOTP,
-  `data/board/auth.db`; no SSO, sign-in beyond that is Cloudflare Access). Every admin is an owner: writes with the
+- **Inbound:** the kernel's admin listener (3120: sign-in, approval pages) and the board (3121) are loopback-only but every
+  host process shares that loopback (Engineer jobs, Tailscale serve), so every route on 3120 and 3121 needs a signed-in
+  admin (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
+  also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages or
+  by channel token. Every admin is an owner: writes with the
   board key, taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
   `authored`). `board_operator_key` (ops/setup.sh) only makes the owner's setup link, posts the welcome chat and resets
   an account. Users get apps only; each app's admins manage its access on the my-apps host's `/access` (never a
   set-password link from an app admin). The gate's auth listener is 3129 (loopback; `X-AidenHQ-Gate` =
   `gate_board_secret`); app hosts get host-only `__Host-` cookies through a one-time handoff, never a shared cookie.
   Engineer jobs never see the
-  secrets dir, the data dir, the Docker and tailscaled sockets or `/run/user/<uid>` (`gcp.hidden` in
-  `services/runner/src/config.mjs`). Run `scripts/verify-security.sh` on the host after exposure changes. See
+  secrets dir, the data dir, the Docker and tailscaled sockets or `/run/user/<uid>` (`hidden` in
+  `kernel/src/sandbox.ts`). Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
-- **Approval card args are a contract:** the runner builds them (`services/runner/src/cards.ts`) and the board validates
-  them strictly (`services/board/src/approvals.ts` ARGS). A new field goes in both; `card-contract.test.ts` must pass.
+- **Approval records live in the kernel** (`kernel/src/records.ts`, `kinds.ts`): the runner files its plan and card args, the
+  kernel validates them strictly and decides who decides. The board keeps no approval store and only reads them.
 - **Supply chain:** unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version
   published less than 7 days ago. Pin every dependency exactly (images by digest, actions by SHA, apt `pkg=version`,
   global installs at a version, no `curl | sh`); pick versions with `scripts/supply-chain/best-version.mjs`, and state the
@@ -128,9 +131,11 @@ after it is merged and that instance's owner bumps the pin.
    config changed. Force-recreate a service (`docker compose up -d --force-recreate <svc>`) only after changing a file it
    reads once at start outside compose (a secret, e.g. a rotated token). Each apply prints `apply timing: <phase> <s>s`.
 
-Runner restarts never interrupt agents: jobs run detached (`KillMode=process`) and the next runner adopts them.
-`ops/apply-config.sh` sends SIGUSR2 (`systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`); the runner
-exits once nothing is half done and systemd restarts it. See [docs/operations.md](docs/operations.md).
+Restarts never interrupt agents: the kernel runs Engineer jobs detached (`KillMode=process`, `kernel/src/jobs.ts`) and the
+next kernel adopts them from `kernel.db`; the runner dispatches through `/v1/jobs` and the next runner follows them again.
+`ops/apply-config.sh` sends SIGUSR2 to the runner (`systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`) and
+restarts the kernel when its code changed; each exits once nothing is half done and systemd restarts it. See
+[docs/operations.md](docs/operations.md).
 
 Operating an instance: improve the system, don't babysit the agents. When an agent's work goes wrong, fix the source
 (handbook rule, shared section, gate, test, tier) so it never recurs, and let the fleet's own gates (CI, reviewers,

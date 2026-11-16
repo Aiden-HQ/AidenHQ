@@ -2,6 +2,8 @@ name: engine-opencode
 description: opencode as an engine for runner jobs (kind openrouter), on OpenRouter models through the model gateway; the Engineers' fallback.
 license: AGPL-3.0-only
 kernel: { engine: 1 }
+# One of the interchangeable engines `engineering` requires (spec §5.7.1): any number may be installed side by side.
+provides: [ engine ]
 providers:
   engine:
     - kind: openrouter

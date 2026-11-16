@@ -1105,8 +1105,6 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .approval-head .approval-actions { margin-left: 8px; }
 .approval-head .chat-open { flex: 1 1 auto; }
 .batch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; font-size: 13px; }
-.batch-bar label { display: inline-flex; align-items: center; gap: 6px; font-weight: 550; }
-.approval-pick { flex: none; width: 16px; height: 16px; margin: 0; }
 .pending-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); align-items: start; }
 .pending-grid .approval-card { padding: 18px 22px; }
 .pending-grid .approval-sentence { font-size: 17px; }
@@ -1362,7 +1360,6 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
 .auth-form label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 .auth-form input, .invite-form input { font: inherit; font-size: 15px; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); outline: none; min-width: 0; }
 .auth-form input:focus, .invite-form input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.totp-secret code { overflow-wrap: anywhere; }
 .accounts-section { display: grid; gap: 8px; }
 .accounts-section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 8px 0 0; }
 .invite-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

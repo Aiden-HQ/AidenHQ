@@ -348,7 +348,8 @@ export function modelPrices(defs) {
 
 /**
  * The gateway's CI code review switches (config/gateway.json `ci`, kernel/src/gateway/ci.ts): only the agents org's app repos;
- * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped).
+ * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped); the review model and
+ * effort the code-review job gets with its CI token (always one of the allowed models).
  */
 function ciReview(settings) {
   const usd = (k) => {
@@ -356,8 +357,37 @@ function ciReview(settings) {
     if (!(v > 0 && v <= 1000)) fail(`settings.${k}: USD per day, above 0 and at most 1000`);
     return v;
   };
-  const models = [settings.ci_review_models ?? []].flat().map((m) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "")).filter(Boolean);
-  return { enabled: String(settings.ci_review ?? "on") !== "off", orgs: [agentsOrg(settings)].filter(Boolean), models, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
+  const want = String(settings.ci_review_model ?? "~deepseek/deepseek-flash-latest:high").trim(), bare = (m) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "");
+  const review = { model: bare(want), effort: /:(minimal|low|medium|high|xhigh)$/.exec(want)?.[1] ?? "high" }, models = [...new Set([...[settings.ci_review_models ?? []].flat().map(bare), review.model])].filter(Boolean);
+  return { enabled: String(settings.ci_review ?? "on") !== "off", orgs: [agentsOrg(settings)].filter(Boolean), models, review, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
+}
+
+/**
+ * The owner-data scrub's literals (spec §6.9a), comma-separated: the owner's and company's names and each word of them (a
+ * module default names nobody), the instance name and every org the instance names, and every host and email an instance
+ * setting holds (a URL's host, a value that is a hostname; an email's address, local part and domain). The tool that files
+ * upstream drops the upstream's own org and host.
+ */
+const COMMON_WORDS = new Set(["the", "and", "for", "inc", "ltd", "llc", "labs", "lab", "company", "corp", "group", "team", "work", "home", "personal", "admin", "user", "mail", "info"]);
+function ownerTerms(own, settings, declared) {
+  const terms = new Set();
+  const add = (t) => { const v = String(t ?? "").replace(/[,$]/g, "").trim(); if (v.length >= 3 && !COMMON_WORDS.has(v.toLowerCase())) terms.add(v); };
+  const isDefault = (k) => declared.some((d) => d[k] && "default" in d[k] && d[k].default === settings[k]);
+  for (const k of ["owner_name", "company_name", "instance_name", "agents_org"]) {
+    if (isDefault(k) || settings[k] == null) continue;
+    add(settings[k]);
+    if (k === "owner_name" || k === "company_name") for (const w of String(settings[k]).split(/[^\p{L}\p{N}]+/u)) add(w);
+  }
+  for (const o of [settings.github_orgs ?? []].flat()) add(o);
+  const walk = (v) => {
+    if (Array.isArray(v) || (v && typeof v === "object")) return Object.values(v).forEach(walk);
+    if (typeof v !== "string") return;
+    for (const m of v.matchAll(/([\w.+-]+)@([\w-]+(?:\.[\w-]+)+)/g)) { add(m[0]); add(m[1]); add(m[2]); }
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) { try { add(new URL(v).hostname); } catch {} }
+    else if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(v)) add(v);
+  };
+  walk({ own, email: settings.owner_email });
+  return [...terms].join(",");
 }
 
 /**
@@ -446,8 +476,8 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   if (Array.isArray(settings.exposure)) fail("settings.exposure: one of public, tailscale, cloudflare or local, not a list");
   settings.exposure ??= "tailscale";
 
-  // settings.owner_email is the owner's board account (the only one setup creates, ops/setup.sh); core passes it to the
-  // board (BOARD_OWNER_EMAIL). Checked here, after the modules' own required settings.
+  // settings.owner_email is the owner's account (the only one setup creates, ops/setup.sh); the kernel reads it from
+  // config/kernel/modules.json (owner.email). Checked here, after the modules' own required settings.
   if (!settings.owner_email) fail("settings.owner_email is required (the owner's board account)");
 
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
@@ -459,6 +489,8 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const shownSettings = Object.fromEntries([...new Set([...enabled.flatMap((n) => Object.keys(all.get(n).def.settings ?? {})), ...Object.keys(instance.settings ?? {})])]
     .filter((k) => !/token|secret|password/i.test(k) && settings[k] !== undefined)
     .map((k) => [k, { value: settings[k], set: Object.hasOwn(instance.settings ?? {}, k) }]));
+  // Derived for upstream contributions (spec §6.9): the owner-data scrub's literals (ownerTerms).
+  settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, enabled.map((n) => all.get(n).def.settings ?? {}));
 
   const core = substitute(all.get("core").def, settings);
   const paperclip = { company: core.company, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), grading: String(settings.grading ?? "on"), live_updates: String(settings.live_updates ?? "on"), batch_approvals: String(settings.batch_approvals ?? "on"), dup_guard: String(settings.dup_guard ?? "on"), coach: String(settings.coach ?? "on"), wake_ups: String(settings.wake_ups ?? "on"), loop_brake: String(settings.loop_brake ?? "on"), settings: shownSettings, labels: [], mcp_servers: {}, codex_args: [], agents: {}, routines: {} };
@@ -498,6 +530,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       if (!/^[a-z0-9_]+_service_key$/.test(c.auth ?? "")) fail(`connection ${k}: auth must name its service key secret (<name>_service_key)`);
       if (c.returns != null && !["trusted", "untrusted"].includes(c.returns)) fail(`connection ${k}: returns is trusted or untrusted`);
       if (c.model_as_caller != null && typeof c.model_as_caller !== "boolean") fail(`connection ${k}: model_as_caller is true or false`);
+      if (c.upstream != null && (!Array.isArray(c.upstream) || c.upstream.some((t) => ![...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])].includes(t)))) fail(`connection ${k}: upstream lists tools it tags read, write or destructive`);
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
     Object.assign(writes, writeKinds(name, def, root, instance.writes ?? {}, writes));
@@ -585,8 +618,8 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     }
   }
   for (const k of Object.keys(compose.services)) if (!serviceModule[k] && claimed[k]) fail(`module ${claimed[k]}: the service name ${k} is a root service's`);
-  // One host port, one owner: the product's compose, the modules', the gate, the board's auth listener and the apps.
-  checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "board"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
+  // One host port, one owner: the product's compose, the modules', the gate, the kernel's sign-in listener and the apps.
+  checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
 
   instanceAgents(instanceDir, settings, paperclip, routineTitles);
   // Paperclip's crew adapter args come from the engine module that contributes them.
@@ -626,7 +659,11 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       const all = [...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])];
       const list = grant === "read" ? c.tools.read : grant === "write" ? [...c.tools.read, ...c.tools.write] : Array.isArray(grant) ? grant : fail(`${key}: grant to ${name} must be read, write or a list of tools`);
       for (const t of list) if (!all.includes(t)) fail(`${key}: ${name} has no tool ${t}`);
-      tools[name] = [...list];
+      // A connection's `upstream` tools file to the product's upstream repos: granted only while the upstream setting
+      // allows issues (spec §6.9a; off grants none of them).
+      const upstreamOff = !["issues", "prs"].includes(String(settings.upstream ?? "off"));
+      tools[name] = list.filter((t) => !(upstreamOff && (c.upstream ?? []).includes(t)));
+      if (!tools[name].length) delete tools[name];
     }
     // Every Codex agent can reply to and ask the owner (notify_owner, the "Asking the owner" shared section), except in
     // trial or in an untrusted module, where write tools stay off.
@@ -806,13 +843,19 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), ...(reviewer ? { reviewer } : {}) };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), ...(reviewer ? { reviewer } : {}) };
+  // The engine-run agents (`dispatch: runner`, any module's or the instance's) are the job dispatcher's: the one enabled module
+  // with kernel.jobs. The kernel starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
+  const dispatchers = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
+  const runAgents = Object.entries(paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
+  if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
+  if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = runAgents;
   return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
  * config/kernel/modules.json's `modules`: what the kernel knows of a module beyond its connections (spec §2.4, §3.3.4, §5.6):
- * the kernel.* roles it requests, its privileged entries, a channel's own token when it has no connection (a generated secret named
+ * the kernel.* roles it requests, its privileged entries, a channel's or a job dispatcher's own token (a generated secret named
  * `<module>_token`, dashes as underscores) and, for a channel (`providers.channel`, which needs privileged speaks-as-owner),
  * the stamp its decisions carry, whether it may close stale cards, and its own settings (a host CLI channel reads them here).
  */
@@ -832,7 +875,8 @@ export function kernelModuleTable(defs, settings = {}) {
     }
     const e = {
       ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
-      ...(ch != null && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      // A channel's, or a job dispatcher's (kernel.jobs): its own generated `<module>_token`.
+      ...((ch != null || roles.includes("kernel.jobs")) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;

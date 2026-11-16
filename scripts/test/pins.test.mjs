@@ -96,6 +96,21 @@ test("pins: unpinned images, actions, installs and apt after a repo fail; new pi
   assert.match(problems[0], /b 2\.0\.0 was published 2\.0 days ago/);
 });
 
+test("pins: ops/vm/pins.json with no releases dates its apt for the default release; a changed repo or distro is dated again", async () => {
+  const text = (repos, extra = {}) => JSON.stringify({ repos, apt: { tailscale: "1.0.0" }, ...extra }, null, 2);
+  const one = scanFile("ops/vm/pins.json", text({ t: "https://pkgs.tailscale.com/stable/{distro} {codename} main" }));
+  assert.deepEqual([one.problems, one.pins.map((p) => `${p.name}=${p.version} ${p.release} ${p.sources}`)], [[], ["tailscale=1.0.0 noble https://pkgs.tailscale.com/stable/ubuntu noble main"]]);
+  assert.deepEqual(scanFile("ops/vm/pins.json", text({}, { releases: {} })).pins.map((p) => p.release), ["noble"]);
+  // The same version from another repository: not the base's pin, so it is dated.
+  const moved = scanFile("ops/vm/pins.json", text({ t: "https://evil.example.com/{distro} {codename} main" })).pins;
+  const dated = [];
+  await checkAges({ pins: moved, basePins: one.pins, date: async (p) => { dated.push(p.name); return { published: "2020-01-01", via: "test" }; } });
+  assert.deepEqual(dated, ["tailscale"]);
+  // An apt block no release can read is a problem, never skipped.
+  assert.equal(scanFile("ops/vm/pins.json", text({}, { releases: ["noble"] })).problems.length, 1);
+  assert.equal(scanFile("ops/vm/pins.json", text({}, { releases: { noble: "x" } })).problems.length, 1);
+});
+
 test("pins: ops/vm/pins.json pins each release from its repos as that release reads them, then its distro", async () => {
   const text = JSON.stringify({
     repos: { docker: "https://download.docker.com/linux/{distro} {codename} stable" },

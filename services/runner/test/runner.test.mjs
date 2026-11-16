@@ -7,8 +7,8 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { normalizeRepo } from "../../../modules/codehost-github/src/repos.ts";
 import { crewNames, findRepos, mentionedRepos, parseCommand, repoAllowed, resolveEngine, useEngines } from "../src/agents.mjs";
-import { buildJob, cowRoot, removeLayers } from "../src/engines.mjs";
 import { enginesFile, registry } from "./fakes/engines.mjs";
+import { buildJob } from "../../../kernel/src/sandbox.ts";
 import { staleRoutineRuns } from "../src/recurring.ts";
 import { firstPrompt, followUpPrompt, latestReport, observeSection } from "../src/prompt.ts";
 import { accessToken, gcpSession } from "../src/gcp.ts";
@@ -25,7 +25,9 @@ function bj({ cfg: c, ...o }) {
   const d = mkdtempSync(join(tmpdir(), "pw-job-"));
   for (const x of ["job", "vault"]) mkdirSync(join(d, x));
   writeFileSync(join(d, "vault", "claude_oauth_token"), "tok\n");
-  return { ...buildJob({ cfg: { stateDir: join(d, "state"), secretsDir: join(d, "vault"), enginesFile: ENGINES, ...c }, jobDir: join(d, "job"), ...o }), dir: d };
+  writeFileSync(join(d, "vault", "gateway_job_secret"), "s".repeat(32));
+  const base = { bwrap: "bwrap", hidden: [], binDir: join(d, "bin"), browserDir: "/opt/aidenhq/browser", workDir: join(d, "work"), gatewayUrl: "http://127.0.0.1:8201", boxGatewayUrl: "http://10.231.2.1:8200", helperPort: 41000, timeout_minutes: 60 };
+  return { ...buildJob({ cfg: { ...base, stateDir: join(d, "state"), secretsDir: join(d, "vault"), enginesFile: ENGINES, ...c }, jobDir: join(d, "job"), boxWrap: 'exec "$@"', ...o }), dir: d };
 }
 
 describe("exact commands", () => {
@@ -92,7 +94,7 @@ describe("engines and modes", () => {
     assert.equal(spec.state, join(dir, "state", "claude"));
     assert.equal(statSync(spec.state).mode & 0o777, 0o700);
     assert.deepEqual([spec.session, spec.model.id, spec.model.base_url], ["abc", "opus", ""]);
-    assert.throws(() => bj({ cfg: { ...cfg, secretsDir: "/nonexistent" }, engine: { kind: "claude" }, worktree: "/w" }), /isn't set up for the runner: save its token/);
+    assert.throws(() => bj({ cfg: { ...cfg, secretsDir: "/nonexistent" }, engine: { kind: "claude" }, worktree: "/w" }), /isn't set up: save its token/);
     // A session id that isn't one never reaches an engine's command line.
     assert.equal(bj({ cfg, engine: { kind: "claude" }, worktree: "/w", sessionId: "--x; rm" }).spec.session, undefined);
   });
@@ -1053,76 +1055,6 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     return { dir, c, gcp };
   };
 
-  it("gives gcloud to an Engineer with private reads, never to a light one; Grafana through its jobcap", () => {
-    const { c, gcp } = setup();
-    for (const kind of ["codex", "claude"]) {
-      const { argv, env, spec } = bj({ cfg: c, engine: { kind, reads: true }, worktree: "/w", gcp, job: { issueId: "i1", jobcaps: ["grafana-read"] } });
-      assert.equal(env.CLOUDSDK_CONFIG, gcp.env.CLOUDSDK_CONFIG, kind);
-      assert.equal(spec.mcp[0].url, "http://127.0.0.1:8201/c/grafana/mcp", kind);
-      assert.ok(argv.join(" ").includes(`--bind ${gcp.root} ${gcp.root}`), `${kind}: gcloud dir writable`);
-    }
-    const or = bj({ cfg: c, engine: { kind: "openrouter", model: "m" }, worktree: "/w", gcp });
-    assert.equal(or.env.CLOUDSDK_CONFIG, undefined);
-    assert.ok(!or.argv.some((a) => a.includes(gcp.root)));
-  });
-
-  // The job's filesystem is an allowlist: its task folder, the toolchains, its engine's state; nothing else of the host.
-  it("binds only the job's task folder and toolchains: no sibling task, no product checkout", () => {
-    const { dir, c } = setup();
-    const tasks = join(dir, "tasks");
-    for (const t of ["WOR-1", "WOR-2"]) mkdirSync(join(tasks, t), { recursive: true });
-    mkdirSync(join(tasks, "WOR-1", "gcloud-in-task"));
-    const repo = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
-    const jc = { ...c, ghWrapperDir: join(repo, "services/runner/bin"), gcp: { hidden: [join(dir, "gcloud-user"), join(tasks, "WOR-1", "gcloud-in-task")] } };
-    for (const kind of ["codex", "claude", "openrouter", "codex-openrouter"]) {
-      const { argv } = bj({ cfg: jc, engine: { kind, model: "m" }, worktree: join(tasks, "WOR-1"), job: { issueId: "i1" } });
-      const sep = argv.indexOf("--die-with-parent");
-      const mounts = argv.slice(0, sep);
-      assert.equal(mounts[0], "bwrap", kind);
-      assert.ok(!mounts.includes("/") , `${kind}: the host's root is not bound`);
-      assert.ok(mounts.join(" ").includes(`--bind ${join(tasks, "WOR-1")} ${join(tasks, "WOR-1")}`), `${kind}: its task folder, read-write`);
-      assert.ok(!mounts.some((m) => m.startsWith(join(tasks, "WOR-2")) || m === tasks), `${kind}: no sibling task`);
-      const engineDir = join(repo, registry()[kind].dir);
-      assert.ok(mounts.join(" ").includes(`--ro-bind ${engineDir} ${engineDir}`), `${kind}: its engine module, read-only`);
-      assert.ok(!mounts.some((m) => m === repo || (m.startsWith(repo + "/") && !m.startsWith(jc.ghWrapperDir) && m !== engineDir)), `${kind}: of the product checkout only the wrappers and its engine module`);
-      assert.ok(mounts.join(" ").includes(`--tmpfs ${join(tasks, "WOR-1", "gcloud-in-task")}`), `${kind}: a hidden path inside an allowed one stays masked`);
-      assert.ok(!mounts.includes(join(dir, "gcloud-user")), `${kind}: a hidden path outside the allowlist is simply absent`);
-    }
-  });
-
-  // The private bwrap (ops/vm/setup.sh) carries the AppArmor exemption; /usr/bin/bwrap keeps the release's policy.
-  it("runs jobs with the configured bwrap, with and without the network jail", () => {
-    const { dir, c } = setup();
-    const jc = { ...c, bwrap: "/opt/aidenhq/bwrap/bwrap" };
-    const plain = bj({ cfg: jc, engine: { kind: "codex", model: "m" }, worktree: join(dir, "WOR-1"), job: { issueId: "i1" } }).argv;
-    assert.equal(plain[0], "/opt/aidenhq/bwrap/bwrap");
-    mkdirSync(join(dir, "bin"));
-    writeFileSync(join(dir, "bin/ip"), "#!/bin/sh\necho '1: lo    inet 127.0.0.1/8 scope host lo'\n");
-    chmodSync(join(dir, "bin/ip"), 0o755);
-    const path = process.env.PATH;
-    process.env.PATH = `${join(dir, "bin")}:${path}`;
-    try {
-      const jailed = bj({ cfg: { ...jc, pasta: "/usr/bin/pasta" }, engine: { kind: "codex", model: "m" }, worktree: join(dir, "WOR-1"), job: { issueId: "i1" } }).argv;
-      assert.equal(jailed[5], "/opt/aidenhq/bwrap/bwrap"); // netjail.ts <pasta> <ports> <link> <bwrap> …
-    } finally {
-      process.env.PATH = path;
-    }
-  });
-
-  // bin/aidenhq-browse drives the host's pinned browser (ops/vm/setup.sh): every job sees it, none can change it.
-  it("binds the host's browser read-only into every job", () => {
-    const { dir, c } = setup();
-    const browserDir = join(dir, "browser");
-    mkdirSync(browserDir);
-    const jc = { ...c, browserDir };
-    for (const kind of ["codex", "claude", "openrouter", "codex-openrouter"]) {
-      const { argv } = bj({ cfg: jc, engine: { kind, model: "m" }, worktree: join(dir, "WOR-1"), job: { issueId: "i1" } });
-      const mounts = argv.slice(0, argv.indexOf("--die-with-parent")).join(" ");
-      assert.ok(mounts.includes(`--ro-bind ${browserDir} ${browserDir}`), kind);
-      assert.ok(!mounts.includes(`--bind ${browserDir}`), `${kind}: never writable`);
-    }
-  });
-
   it("aidenhq-browse refuses to browse anywhere but the app's own origin", () => {
     const browse = fileURLToPath(new URL("../bin/aidenhq-browse", import.meta.url));
     for (const a of [["--paths", "/,https://example.com/"], ["--paths", "//example.com/x"]]) {
@@ -1130,103 +1062,6 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
       assert.equal(r.status, 2, r.stderr);
       assert.match(r.stderr, /only the app itself is browsed/);
     }
-  });
-
-  // Run for real where bwrap works (the host, CI on Linux): a job can't read a sibling task or the product checkout.
-  it("a real job can read its own task folder but not a sibling's or the product checkout", { skip: spawnSync("bwrap", ["--ro-bind", "/", "/", "true"]).status !== 0 && "bwrap unavailable" }, () => {
-    const { dir, c } = setup();
-    const tasks = join(dir, "tasks");
-    for (const t of ["WOR-1", "WOR-2"]) {
-      mkdirSync(join(tasks, t), { recursive: true });
-      writeFileSync(join(tasks, t, "f"), t);
-    }
-    const repo = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
-    const { argv } = bj({ cfg: { ...c, ghWrapperDir: join(repo, "services/runner/bin") }, engine: { kind: "codex" }, worktree: join(tasks, "WOR-1") });
-    const inner = argv.indexOf("--") + 1;
-    const run = (path) => spawnSync(argv[0], [...argv.slice(1, inner), "cat", path], { encoding: "utf8" });
-    assert.equal(run(join(tasks, "WOR-1", "f")).stdout, "WOR-1");
-    assert.notEqual(run(join(tasks, "WOR-2", "f")).status, 0);
-    assert.notEqual(run(join(repo, "CLAUDE.md")).status, 0);
-    assert.equal(run(join(repo, "services/runner/bin/git-ssh-no-push")).status, 0);
-    // Its own PID namespace and procfs: another process's environment (the runner's) and the host's root through
-    // /proc/1/root are out of reach.
-    const other = spawn("sleep", ["30"], { env: { ...process.env, AIDENHQ_TEST_MARKER: "host-secret" } });
-    try {
-      const sh = (cmd) => spawnSync(argv[0], [...argv.slice(1, inner), "sh", "-c", cmd], { encoding: "utf8" });
-      assert.notEqual(sh(`cat /proc/${other.pid}/environ`).status, 0);
-      assert.doesNotMatch(sh("cat /proc/[0-9]*/environ 2>/dev/null | tr '\\0' '\\n'").stdout, /host-secret/);
-      assert.notEqual(sh(`cat /proc/1/root${repo}/CLAUDE.md`).status, 0);
-    } finally {
-      other.kill();
-    }
-  });
-
-  // The shared build caches are copy-on-write per task: a job's writes stay in its task's layer, never in the seed others read.
-  it("a real job's cache writes stay with its task: the shared seed and other tasks never see them", { skip: spawnSync("bwrap", ["--ro-bind", "/", "/", "true"]).status !== 0 && "bwrap unavailable" }, () => {
-    const { dir, c } = setup();
-    const seed = join(dir, "npm-cache");
-    mkdirSync(seed);
-    writeFileSync(join(seed, "pkg"), "seed\n");
-    const tasks = join(dir, "tasks");
-    for (const t of ["WOR-1", "WOR-2"]) mkdirSync(join(tasks, t), { recursive: true });
-    const cc = { ...c, workDir: dir, sandbox: { extra_writable_roots: [seed] } };
-    const sh = (task, cmd) => {
-      const { argv } = bj({ cfg: cc, engine: { kind: "codex" }, worktree: join(tasks, task) });
-      const inner = argv.indexOf("--") + 1;
-      return spawnSync(argv[0], [...argv.slice(1, inner), "sh", "-c", cmd], { encoding: "utf8" });
-    };
-    assert.equal(sh("WOR-1", `cat ${seed}/pkg && echo poisoned > ${seed}/pkg && echo mine > ${seed}/new`).status, 0);
-    assert.equal(readFileSync(join(seed, "pkg"), "utf8"), "seed\n", "the seed is unchanged");
-    assert.ok(!existsSync(join(seed, "new")));
-    assert.equal(sh("WOR-2", `cat ${seed}/pkg; ls ${seed}`).stdout, "seed\npkg\n", "another task reads the seed only");
-    assert.equal(sh("WOR-1", `cat ${seed}/pkg ${seed}/new`).stdout, "poisoned\nmine\n", "the task keeps its own writes");
-    // Its layers go with its workspace, read-only folders (Go's module cache) included.
-    assert.equal(sh("WOR-1", `mkdir -p ${seed}/mod/x && touch ${seed}/mod/x/f && chmod -R a-w ${seed}/mod`).status, 0);
-    removeLayers(cowRoot(cc, join(tasks, "WOR-1")));
-    assert.ok(!existsSync(cowRoot(cc, join(tasks, "WOR-1"))));
-  });
-
-  it("with pasta, a job gets its own network: of the host's loopback only its helper and the model gateway", () => {
-    const { dir, c } = setup();
-    const jc = { ...c, pasta: "/usr/bin/pasta" };
-    const loopback = ["http://127.0.0.1:41000"];
-    // The host's addresses, as `ip -4 -o addr show` gives them: its LAN is 10.0.2.0/24, the first link candidate.
-    mkdirSync(join(dir, "bin"));
-    // ...and its routes (`ip -4 route show table all`): a VPN routes 172.31.254.0/24, the second candidate, though no address is on it.
-    writeFileSync(join(dir, "bin/ip"), "#!/bin/sh\ncase \"$*\" in *route*) echo 'default via 10.0.2.1 dev eth0'; echo '172.31.254.0/24 via 10.0.2.9 dev eth0'; echo 'local 10.0.2.7 dev eth0 table local proto kernel scope host src 10.0.2.7'; exit 0;; esac\necho '1: lo    inet 127.0.0.1/8 scope host lo'\necho '2: eth0    inet 10.0.2.7/24 brd 10.0.2.255 scope global eth0'\necho '3: br0    inet 203.0.113.9/32 scope global br0'\n");
-    chmodSync(join(dir, "bin/ip"), 0o755);
-    const path = process.env.PATH;
-    process.env.PATH = `${join(dir, "bin")}:${path}`;
-    const claude = bj({ cfg: jc, engine: { kind: "claude", reads: true }, worktree: "/w", loopback, job: { issueId: "i1", jobcaps: ["grafana-read"] } }).argv;
-    const or = bj({ cfg: jc, engine: { kind: "openrouter", model: "m" }, worktree: "/w", loopback }).argv;
-    const codex = bj({ cfg: jc, engine: { kind: "codex" }, worktree: "/w", loopback }).argv;
-    process.env.PATH = path;
-    assert.equal(claude[0], process.execPath);
-    assert.ok(claude[1].endsWith("/netjail.ts"));
-    assert.deepEqual([...claude.slice(2, 4), ...claude.slice(5, 8)], ["/usr/bin/pasta", "8201,41000", "bwrap", "--unshare-pid", "--unshare-ipc"]);
-    assert.equal(claude[4], "192.168.254"); // pasta's link: apart from the host's 10.0.2.0/24 and the routed 172.31.254.0/24
-    assert.ok(claude.includes("--unshare-net") && claude.includes("--die-with-parent"));
-    // The public resolvers sit on the job's own tmpfs, not on the host's resolver file (whose rewrites detach a bind).
-    const rc = claude.indexOf("/etc/resolv.conf");
-    assert.deepEqual(claude.slice(rc - 4, rc), ["--tmpfs", "/run/systemd/resolve", "--ro-bind-data", "5"]);
-    const jail = claude.indexOf("aidenhq-jail");
-    assert.deepEqual(claude.slice(jail + 1, jail + 3), [process.execPath, join(fileURLToPath(new URL("../../..", import.meta.url)), "modules/engine-claude/bin/engine")]); // the engine itself, after the jail's own setup: bwrap is its boundary
-    // The job's first step: private and reserved ranges, and each of the host's own addresses (a public one too), are unreachable.
-    for (const n of ["192.168.0.0/16", "240.0.0.0/4", "10.0.2.7/32", "203.0.113.9/32"]) assert.ok(claude[jail - 1].split(/[ ;]/).includes(n), n);
-    // The model gateway's port for its model calls; a job with neither jobcaps nor gateway models gets only its helper.
-    assert.equal(or[3], "8201,41000");
-    assert.equal(codex[3], "41000");
-  });
-
-  it("masks the state db (every run's helper token) but not the state dir, where a job's gcloud session lives", async () => {
-    const { loadConfig } = await import("../src/config.mjs");
-    const dir = mkdtempSync(join(tmpdir(), "pw-cfg-"));
-    writeFileSync(join(dir, "system.yaml"), `paperclip:\n  company_id: "${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}"\n`);
-    process.env.AIDENHQ_CONFIG_DIR = dir;
-    const cfg = loadConfig();
-    delete process.env.AIDENHQ_CONFIG_DIR;
-    for (const x of ["", "-wal", "-shm"]) assert.ok(cfg.gcp.hidden.includes(join(cfg.stateDir, `state.sqlite${x}`)), `state.sqlite${x} hidden`);
-    assert.ok(!cfg.gcp.hidden.includes(cfg.stateDir));
   });
 
   it("refreshes the plain gcloud sign-in into a one-hour token, and says when the session ended", async () => {

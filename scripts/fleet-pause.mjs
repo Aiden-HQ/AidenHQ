@@ -4,7 +4,7 @@
 //       pauses every active routine in every company, drains and stops the CI runner units (aidenhq-ci-runner@*), then
 //       waits until Paperclip's live runs, the runner's running jobs and agent computers are all zero (exit 1 on timeout;
 //       run it again to keep waiting). Event wakes (Slack, the board's wake-ups) can still start runs; it waits for those.
-//       A runner unit between jobs is stopped at once; one running a job is left to finish it, so a drain does not cancel
+//       A runner unit with no job (no Runner.Worker in its container) is stopped at once; one running a job is left to finish it, so a drain does not cancel
 //       the job under it (a job still running at the timeout is stopped with the rest).
 //   node scripts/fleet-pause.mjs resume
 //       reactivates exactly the routines and starts exactly the units pause recorded, then deletes the record. Each unit's
@@ -23,11 +23,22 @@ export function listedUnits(text) {
   return text.split("\n").map((l) => l.trim().split(/\s+/)).filter(([u, , active]) => u && active).map(([unit, _load, active, sub]) => ({ unit, active, sub }));
 }
 
-/** Live CI runner units to stop now, and the ones running a job to wait for. Restart=always keeps an idle instance in
- * "activating", so "active" means a job is on it; "start" is the job's own container still starting. */
-export function ciDrain(rows) {
+/** The runner container ops/ci-runner.sh names for a unit: aidenhq-ci-runner@<id>.service runs aidenhq-ci-runner-<id>. */
+export function runnerContainer(unit) {
+  return unit.replace(/^aidenhq-ci-runner@/, "aidenhq-ci-runner-").replace(/\.service$/, "");
+}
+
+/** Whether a runner container's `docker top` shows a job: the Actions runner starts Runner.Worker for a job only (an idle
+ * runner, which is also "active", has just Runner.Listener waiting for one). */
+export function hasJob(dockerTop) {
+  return /Runner\.Worker/.test(dockerTop);
+}
+
+/** Live CI runner units to stop now, and the ones running a job to wait for. A unit is "active" while it waits for a job
+ * too (one fresh container per job), so `working(unit)` says whether a job is on it. */
+export function ciDrain(rows, working) {
   const up = rows.filter((u) => ["active", "activating", "reloading"].includes(u.active));
-  const busy = up.filter((u) => u.active === "active" || u.sub === "start");
+  const busy = up.filter((u) => working(u.unit));
   return { stop: up.filter((u) => !busy.includes(u)).map((u) => u.unit), wait: busy.map((u) => u.unit) };
 }
 
@@ -113,7 +124,7 @@ async function main() {
     };
     const until = Date.now() + timeoutMs;
     for (;;) {
-      const { stop: idle, wait } = ciDrain(listed());
+      const { stop: idle, wait } = ciDrain(listed(), (unit) => hasJob(sh("docker", ["top", runnerContainer(unit)])));
       stop(idle);
       if (!wait.length) break;
       if (Date.now() > until) { console.warn(`timeout: stopping ${wait.join(", ")} with a job still running`); stop(wait); break; }

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { WEEKDAYS, type Weekday } from "./recurrence.js";
@@ -17,25 +17,22 @@ export interface Config {
   paperclipUrl: string;
   companyId: string;
   boardKey: string;
-  /** The runner's reviewer key (reviewer_key): Tier 1 verdicts. None: the reviewer can't decide. */
+  /** The runner's key (reviewer_key): its routes (grades, usage, jobs). None: they refuse. */
   reviewerKey?: string;
   /** The operator's key (board_operator_key): ops/setup.sh's owner setup link, welcome chat and account resets, nothing else. */
   operatorKey?: string;
-  /** The model gateway (kernel/src/gateway): its billed ledger is pulled from `url`; `token` (gateway_board_key) both ways (it files raise_cap). */
+  /** The model gateway (kernel/src/gateway): its billed ledger is pulled from `url`; `token` (gateway_board_key) both ways (the kernel's records). */
   gateway?: { url: string; token: string };
   timezone: string;
   workdays: Weekday[];
   /** Slack host → workspace or organization ID (E… on Enterprise Grid), for slack:// links. */
   slackTeams: Record<string, string>;
   dbPath: string;
-  port: number;
-  /** Host headers the board answers to (DNS-rebinding guard), e.g. localhost:3120. */
-  allowedHosts: string[];
   staticDir: string;
   logLevel: string;
   /**
-   * The second listener (3121): the board's https address behind `tailscale serve`, and phones on the home network, under
-   * these host names; signed-in admins only, like the local one. `url`: the board's https address (BOARD_LAN_URL).
+   * The board's listener (3121): its https address behind the front door, and phones on the home network, under these host
+   * names; signed-in admins only. `url`: the board's https address (BOARD_LAN_URL).
    */
   lan: { port: number; hosts: string[]; url: string; googleConnect?: boolean };
   /**
@@ -55,11 +52,8 @@ export interface Config {
   jira?: { url: string; token: string };
   /** Where Paperclip keeps its Codex session logs (read-only mount), and the computer launcher for agents in their own computers. */
   sessions?: { dir?: string; launcher?: { url: string; token: string } };
-  /**
-   * Board accounts: Better Auth in auth.db beside the board's database, and the gate-facing sign-in listener (3129) at
-   * `signin.hosts` (loopback; the gate calls it). `gateFile`: config/gate.json (the sign-in host, app hosts, login mode); `gateAccountsFile`: data/gate/accounts.json, which the board writes.
-   */
-  accounts: { dbPath: string; boardUrl: string; gateFile: string; gateAccountsFile?: string; gateSecret?: string; edgeSecret?: string; linkTtlHours?: number; ownerEmail?: string; signin: { port: number; hosts: string[] } };
+  /** The kernel's admin listener at its front door (AIDENHQ_ADMIN_URL): sign-in, the handoff to the board, admin links. */
+  accounts: { adminUrl: string };
 }
 
 /** A key file's value, at least 32 characters, else undefined (not configured). */
@@ -70,8 +64,6 @@ function keyFile(f: string): string | undefined {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const system = SystemSchema.parse(parseYaml(readFileSync(env.BOARD_SYSTEM_CONFIG ?? "/config/system.yaml", "utf8")));
-  const port = Number(env.BOARD_PORT ?? 3120);
-  const hosts = hostList(env.BOARD_ALLOWED_HOSTS ?? `localhost:${port},127.0.0.1:${port}`);
   return {
     paperclipUrl: env.PAPERCLIP_URL ?? "http://paperclip:3100",
     companyId: system.paperclip.company_id,
@@ -82,8 +74,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     workdays: system.workdays,
     slackTeams: system.slack.teams,
     dbPath: env.BOARD_DB ?? "/data/board/board.sqlite",
-    port,
-    allowedHosts: hosts,
     staticDir: env.BOARD_STATIC_DIR ?? new URL("../web", import.meta.url).pathname,
     logLevel: env.LOG_LEVEL ?? "info",
     lan: lanConfig(env),
@@ -95,28 +85,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     jira: signIn(env.JIRA_AUTH_TOKEN_FILE ?? "/run/secrets/jira_auth_token", env.JIRA_SERVICE_URL ?? "http://jira-mcp:8091"),
     sessions: sessionsConfig(env),
     gateway: env.AIDENHQ_GATEWAY_URL && keyFile(env.GATEWAY_BOARD_KEY_FILE ?? "/run/secrets/gateway_board_key") ? { url: env.AIDENHQ_GATEWAY_URL.replace(/\/+$/, ""), token: keyFile(env.GATEWAY_BOARD_KEY_FILE ?? "/run/secrets/gateway_board_key")! } : undefined,
-    accounts: accountsConfig(env, port, hosts),
+    accounts: accountsConfig(env),
   };
 }
 
-function accountsConfig(env: NodeJS.ProcessEnv, port: number, hosts: string[]): Config["accounts"] {
-  const dbPath = env.BOARD_AUTH_DB ?? join(dirname(env.BOARD_DB ?? "/data/board/board.sqlite"), "auth.db");
-  const signinPort = Number(env.BOARD_SIGNIN_PORT ?? 3129);
-  // Admin links open on the board's https address (the tailnet name), else its first host.
-  const boardUrl = (env.BOARD_LAN_URL || `http://${hosts[0] ?? `localhost:${port}`}`).replace(/\/+$/, "");
-  const gateFile = env.BOARD_GATE_CONFIG ?? "/config/gate.json";
-  // Written only where its directory is mounted (with settings.edge); without shared apps there's no gate to tell.
-  const accountsFile = env.BOARD_GATE_ACCOUNTS ?? "/data/gate/accounts.json";
-  const gateAccountsFile = existsSync(dirname(accountsFile)) ? accountsFile : undefined;
-  // The gate's shared secret (gate_board_secret): a sign-in request carrying it may name the client's address.
-  const gateSecret = keyFile(env.BOARD_GATE_SECRET_FILE ?? "/run/secrets/gate_board_secret");
-  // The front door's shared secret (edge_board_secret): a board request carrying it may name the client's address.
-  const edgeSecret = keyFile(env.BOARD_EDGE_SECRET_FILE ?? "/run/secrets/edge_board_secret");
-  // Setup, invite and reset links' lifetime in hours (default 72; the exposure setting makes it 24 when public, D9).
-  const linkTtlHours = Number(env.BOARD_LINK_TTL_HOURS) > 0 ? Number(env.BOARD_LINK_TTL_HOURS) : undefined;
-  // settings.owner_email: the only email setup makes the owner's account (the gate makes the same email admin of every app).
-  const ownerEmail = env.BOARD_OWNER_EMAIL?.trim().toLowerCase() || undefined;
-  return { dbPath, boardUrl, gateFile, gateAccountsFile, gateSecret, edgeSecret, linkTtlHours, ownerEmail, signin: { port: signinPort, hosts: hostList(env.BOARD_SIGNIN_HOSTS ?? `localhost:${signinPort},127.0.0.1:${signinPort}`) } };
+function accountsConfig(env: NodeJS.ProcessEnv): Config["accounts"] {
+  return { adminUrl: (env.AIDENHQ_ADMIN_URL || "http://127.0.0.1:3120").replace(/\/+$/, "") };
 }
 
 function sessionsConfig(env: NodeJS.ProcessEnv): Config["sessions"] {

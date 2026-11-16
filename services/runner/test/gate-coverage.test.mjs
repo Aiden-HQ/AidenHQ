@@ -12,14 +12,14 @@ const moved = (from, to) => files.map((f) => (f === from ? to : f));
 test("every gate file is covered and every entry is used", () => assert.deepEqual(coverageProblems(files), []));
 
 test("a moved gate file fails", () => {
-  const problems = coverageProblems(moved("services/runner/src/netjail.ts", "services/runner/src/jail.ts"));
-  assert.ok(problems.includes("uncovered: services/runner/src/jail.ts"));
-  assert.ok(problems.some((p) => p.startsWith("dead entry: ^services\\/runner\\/src\\/netjail")));
+  const problems = coverageProblems(moved("services/runner/src/state.ts", "services/runner/src/store.ts"));
+  assert.ok(problems.includes("uncovered: services/runner/src/store.ts"));
+  assert.ok(problems.some((p) => p.startsWith("dead entry: ^services\\/runner\\/src\\/state")));
 });
 
-test("a renamed board approvals file fails", () => {
-  const problems = coverageProblems(moved("services/board/src/approvals.ts", "services/board/src/records.ts"));
-  assert.ok(problems.includes("dead entry: ^services\\/board\\/src\\/approvals\\.ts$"));
+test("a renamed board gate file fails", () => {
+  const problems = coverageProblems(moved("services/board/src/fleet.ts", "services/board/src/fleets.ts"));
+  assert.ok(problems.includes("dead entry: ^services\\/board\\/src\\/fleet\\.ts$"));
 });
 
 // origin/main's GATE_CORE before the split (tiers.mjs at a9f2ae66).
@@ -39,11 +39,11 @@ const OLD = [
   /(^|\/)\.github\//,
 ];
 
-test("the split keeps every file the old list gated; the only additions are the lean files, the engine modules, the SDK, the kernel (the gateway moved in), the SDK caller and executor copies, the apps platform's kinds and executor (2d), primer.publish's manifest and executor (2e), agents.mjs (commands.mjs renamed), the eval-receipt gate, the channel modules (2f), the reviewer module with the runner's request side (3c), and the code host, the platform check and the merge queue (3d)", () => {
+test("the split keeps every file the old list gated; the only additions are the lean files, the engine modules, the SDK, the kernel (the gateway moved in), the SDK caller and executor copies, the apps platform's kinds and executor (2d), primer.publish's manifest and executor (2e), agents.mjs (commands.mjs renamed), the eval-receipt gate, the channel modules (2f), the reviewer module with the runner's request side (3c), the board's kernel sign-in client (3g) and the runner's card text and plan (3b)", () => {
   const gated = (list) => files.filter((f) => list.some((g) => g.test(f)));
   const before = gated(OLD);
   const after = gated(GATE_CORE);
   assert.deepEqual(before.filter((f) => !after.includes(f)), []);
   const added = after.filter((f) => !before.includes(f));
-  assert.ok(added.length > 0 && added.every((f) => f.startsWith("scripts/lean/") || f === "scripts/test/lean.test.mjs" || f === "services/runner/test/gate-coverage.test.mjs" || f.startsWith("kernel/sdk/") || f.startsWith("kernel/") || /(^|\/)aidenhq-sdk\/(caller|executor)\.ts$/.test(f) || f.startsWith("modules/apps-platform/") || f === "services/apps-mcp/src/executor.ts" || f === "modules/primer/module.yaml" || f === "modules/primer/connections/primer-mcp/src/publish.ts" || /^modules\/engine-[^/]+\//.test(f) || f === "services/runner/src/agents.mjs" || f === "services/runner/src/evalgate.ts" || /^modules\/channel-[^/]+\//.test(f) || f.startsWith("modules/ai-reviewer/") || f === "services/runner/src/review-request.mjs" || f === "services/shared/review-files.mjs" || f === "services/runner/src/siblings.ts" || f.startsWith("modules/codehost-github/") || f.startsWith("modules/platform/") || f === "modules/engineering/src/merge-queue.mjs"), added.join(", "));
+  assert.ok(added.length > 0 && added.every((f) => f.startsWith("scripts/lean/") || f === "scripts/test/lean.test.mjs" || f === "services/runner/test/gate-coverage.test.mjs" || f.startsWith("kernel/sdk/") || f.startsWith("kernel/") || /(^|\/)aidenhq-sdk\/(caller|executor)\.ts$/.test(f) || f.startsWith("modules/apps-platform/") || f === "services/apps-mcp/src/executor.ts" || f === "modules/primer/module.yaml" || f === "modules/primer/connections/primer-mcp/src/publish.ts" || /^modules\/engine-[^/]+\//.test(f) || f === "services/runner/src/agents.mjs" || f === "services/runner/src/evalgate.ts" || /^modules\/channel-[^/]+\//.test(f) || f.startsWith("modules/ai-reviewer/") || f === "services/runner/src/review-request.mjs" || f === "services/shared/review-files.mjs" || f === "services/runner/src/siblings.ts" || f === "services/runner/src/progress.ts" || f === "services/board/src/kernel-auth.ts" || f === "services/runner/src/cards.ts" || f.startsWith("modules/codehost-github/") || f.startsWith("modules/platform/") || f === "modules/engineering/src/merge-queue.mjs"), added.join(", "));
 });
