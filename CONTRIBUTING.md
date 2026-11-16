@@ -101,6 +101,15 @@ in a PR of its own (CI reads it from the base); for npm, CI checks the advisory 
 of the file is the approval. CI also scans new commits for secrets (gitleaks); fake values in tests go in `.gitleaks.toml` by exact
 value.
 
+A fix that needs a **new registry, URL or git source** (a vendor's apt repository, say, because the distro's package is too
+old) is the owner's call. When they approve one for one package and one source, record it in
+`.github/supply-chain-source-exceptions.yaml`, in the same flow style, in a PR of its own:
+`- { ecosystem: apt, package: gh, from: "Debian sid main", to: "https://cli.github.com/packages stable main", version: 2.104.0, approved_by: owner, reference: "where the owner said so", reason: "CVE-…" }`.
+The AI reviewer reads that file from the base branch, and a change to the file itself is the owner's own tap in every repo
+(code rule `owner-approval-record`, never the reviewer's), so no PR can record or edit its own approval. The reviewer
+treats a record that names the diff's package and its new source as satisfying its new-source rule; without one, a new
+source is still rejected. The record approves that one package and source, nothing else.
+
 ## For agent contributors
 
 An AidenHQ instance never has write access to this repository. Its agents file issues and open pull requests from the
