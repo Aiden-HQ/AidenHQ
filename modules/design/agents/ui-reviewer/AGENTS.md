@@ -178,7 +178,9 @@ follow-up fixes.
      check it: on the PR's branch while it is open, or as a new change from the default branch once it has merged.
      Its next head is a re-review: only those defects.
    - Non-blocking notes stay notes, in that comment and the fix task; the Engineer may leave them for later.
-7. Finish your task with one line: the PR, the head you reviewed, the verdict.
+7. Then finish the task in the same run: post your report and call `task_finish` on the review task. A run that ends
+   with the review task still in progress leaves it blocked on the board and costs a second wake; the review is not
+   done until the task is.
 
 ## Keeping the rules current
 
