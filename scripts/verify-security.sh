@@ -656,7 +656,7 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # default branch once its parent merged, deleting a merged PR's own head branch (never the default branch, only at the
 # merged head, never under an open PR), `aidenhq close` (a comment, then the PR closed), and re-running a queued PR's
 # failed jobs when every red check is an infrastructure failure (once per check per head, only from a started queue:
-# merges.mjs infraRetry), or when a red check's job never started (merges.mjs environmentRetry: once per check per head, the
+# merges.mjs infraRetry), or when a pending check's workflow run has been over for ten minutes (merges.mjs ghostRetry: the same re-run write, once per check per head, never read as passed), or when a red check's job never started (merges.mjs environmentRetry: once per check per head, the
 # head never moves; from a started queue, or from watchProductPrs on the product repo's own same-repo PRs that a task here
 # opened, authored by the App's bot), and a `pending` commit status where the design review is woken (main.mjs, the
 # only status write; never success or failure, so the runner can only hold a merge, never pass the review). A sequential queue on a card that is the review (agents org, product repo) may also replay a
@@ -685,6 +685,7 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && [ "$(grep -rhoE '\.status\(' services/runner/src | wc -l | tr -d ' ')" = 1 ] && [ "$(grep -c 'github\.status(' "$rm_")" = 0 ] \
   && grep -qF '      .status(pr.repo, pr.head, { state: "pending", context: merges.DESIGN_REVIEW.name, description: "Waiting for the UI Reviewer" })' "$rmain" \
   && [ "$(grep -c 'github\.rerun(' "$rm_")" = 2 ] && [ "$(grep -c 'retryInfra(' "$rm_")" = 3 ] \
+  && [ "$(grep -c 'ghostRetry(' "$rm_")" = 3 ] && grep -qF '    if (advisory(n) || n.__typename !== "CheckRun" || n.status === "COMPLETED" || !n.databaseId || !run || reruns[n.name]?.head === head) continue;' "$rm_" \
   && [ "$(grep -c 'environmentRetry(' "$rm_")" = 3 ] && [ "$(grep -c 'environmentRetry(' "$rmain")" = 1 ] \
   && grep -qF '  if (checks.some((c) => reruns[c.name]?.head === head && reruns[c.name].id !== c.id)) return { stop: environmentReceipt(ref, shown, head), names };' "$rm_" \
   && grep -qF '  if (checks.every((c) => reruns[c.name]?.head === head)) return { wait: RERUN_SHOWS_MINUTES };' "$rm_" \

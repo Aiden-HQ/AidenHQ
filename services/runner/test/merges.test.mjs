@@ -73,6 +73,11 @@ function fakeGithub(prs, commits = {}, bases = {}) {
       writes.push({ rerun: run, checks: checks.map((c) => c.name) });
       this.reran[number] = { ...this.reran[number], ...Object.fromEntries(checks.map((c) => [c.name, { head, id: c.id }])) };
     },
+    // A workflow run's { status, updatedAt } by id: `runs`.
+    runs: {},
+    async run(repo, run) {
+      return this.runs[run] ?? { status: "in_progress", updatedAt: at(0).toISOString() };
+    },
     async codeReviewInfra(repo, number, head) {
       return codeReviewInfra(this.reviewComments[number], head);
     },
@@ -683,6 +688,32 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     assert.equal(eachDecision(own(1, { mergeStateStatus: "CLEAN", ...rollup("PENDING", [build]) }), p).do, "wait", "the rollup itself must be green");
     const paged = own(1, { commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: true }, nodes: [build] } } } }] } });
     assert.equal(eachDecision(paged, p).do, "fail");
+  });
+
+  // Aiden-HQ/AidenHQ#141, roadmap-keeper#214: a job stayed in_progress for an hour after its workflow run completed.
+  it("a check still pending an hour after its workflow run is over is re-run once, never counted as passed, and merges once green", async () => {
+    const H = "c0de".repeat(10);
+    const run = (name, conclusion, databaseId, wf = 100) => ({ __typename: "CheckRun", name, status: conclusion ? "COMPLETED" : "IN_PROGRESS", conclusion, databaseId, checkSuite: { workflowRun: { databaseId: wf } } });
+    const state = (nodes) => head({ state: nodes.some((x) => !x.conclusion) ? "PENDING" : "SUCCESS", contexts: { nodes } });
+    const pr1 = (nodes) => own(1, { headRefOid: H, mergeStateStatus: nodes.some((x) => !x.conclusion) ? "UNSTABLE" : "CLEAN", ...state(nodes) });
+    const tests = run("tests", "SUCCESS", 1);
+    const gh = fakeGithub({ 1: pr1([tests, run("image-changes", null, 10)]) });
+    const q = addEach(undefined, [{ repo: "o/r", number: 1, url: "u1", head: H }], { now: at(0) });
+    // A run still going is not a ghost; one over for only a few minutes isn't yet.
+    await advance(q, { github: gh, now: at(0) });
+    gh.runs[100] = { status: "completed", updatedAt: at(0).toISOString() };
+    await advance(q, { github: gh, now: at(5) });
+    assert.deepEqual(gh.writes, []);
+    // Over for more than ten minutes: its run is re-run, once.
+    await advance(q, { github: gh, now: at(11) });
+    assert.deepEqual(gh.writes, [{ rerun: 100, checks: ["image-changes"] }]);
+    await advance(q, { github: gh, now: at(15) });
+    assert.equal(gh.writes.length, 1, "once per head, and the old job still reads in progress: never merged");
+    assert.equal(q.state, "running");
+    gh.prs[1] = pr1([tests, run("image-changes", "SUCCESS", 11)]);
+    await advance(q, { github: gh, now: at(20) });
+    assert.equal(gh.writes.at(-1).merge, 1);
+    assert.equal(q.prs[0].status, "merged");
   });
 
   // roadmap-keeper#111 (2026-11-13): its merge failed on a code-review timeout and sat until someone re-ran the check.
