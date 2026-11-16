@@ -172,6 +172,7 @@ describe("recurring tasks", () => {
 
   it("hands out a run again if it wasn't started, then gives up with a comment on your task", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-07T12:00:00Z")); // a Wednesday midday: no Monday 07:00 occurrence falls inside the test
     try {
       const s = new Store(":memory:");
       const def = issue();
@@ -193,6 +194,7 @@ describe("recurring tasks", () => {
 
   it("started runs aren't handed out again", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-07T12:00:00Z")); // a Wednesday midday: no Monday 07:00 occurrence falls inside the test
     try {
       const s = new Store(":memory:");
       const def = issue();
