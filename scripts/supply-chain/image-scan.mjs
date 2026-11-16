@@ -9,8 +9,10 @@
 // --only-fixed --fail-on high. Exceptions (.github/image-scan-exceptions.yaml, read from the base commit) ignore one path
 // in one base image, for files a Dockerfile replaces or never copies out, only while every Dockerfile using that image
 // still meets the exception's condition; or one accepted advisory with no fixed release in one image, until it expires.
+// Accepted risks (.github/image-scan-accepted.yaml, read from the base commit, the owner's approval): one finding in one
+// image pinned by digest that no newer upstream release of that image fixes yet, for at most 14 days; an expired entry fails the scan.
 // No dependencies, Node 22+; a byte-identical copy is in the app CI template.
-//   node image-scan.mjs [--exceptions <file>] [--local <name>=<Dockerfile>]... -- <Dockerfile>...
+//   node image-scan.mjs [--exceptions <file>] [--accepted <file>] [--local <name>=<Dockerfile>]... -- <Dockerfile>...
 //     (options only before --; everything after it is a path, even one that starts with -)
 //     (grype on PATH; GRYPE_DB_CACHE_DIR)
 // --local: an image this repository builds itself, named by a FROM (e.g. an ARG default): scanned through its own
@@ -184,6 +186,35 @@ export function readExceptions(text, now = Date.now()) {
   return out;
 }
 
+const ADVISORY = /^(?:GHSA(?:-[a-z0-9]{4}){3}|CVE-\d{4}-\d{4,}|GO-\d{4}-\d{4,})$/;
+// An accepted entry's image: always pinned by digest (a tag alone would cover whatever is pushed under it later).
+const PINNED = new RegExp(`^${REPO}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$`);
+
+/**
+ * Accepted risks, one flow-style line each, every other line a comment, blank or `accepted:`:
+ * `- { id: GO-2026-6888, image: grafana/grafana:13.3.0, expires: 2026-11-30, reason: "…" }`. Returns the entries in
+ * force and the expired ones (which fail the scan: an owner renews or drops them).
+ */
+export function readAccepted(text, now = Date.now()) {
+  const entries = [], expired = [];
+  for (const l of text.split("\n")) {
+    if (/^\s*(#.*)?$/.test(l) || /^accepted:\s*$/.test(l)) continue;
+    const m = /^\s*-\s*\{\s*id:\s*([^,\s]+),\s*image:\s*([^,\s]+),\s*expires:\s*(\d{4}-\d{2}-\d{2}),\s*reason:\s*"[^"]{12,}"\s*\}\s*$/.exec(l);
+    if (!m || !ADVISORY.test(m[1]) || !PINNED.test(m[2]) || Number.isNaN(Date.parse(m[3])))
+      throw new Error(`accepted risk ${show(l.trim())} is not { id: <GHSA-…, CVE-… or GO-…>, image: <name[:tag]@sha256:…>, expires: <YYYY-MM-DD>, reason: "…" }`);
+    if (Date.parse(m[3]) - now > 14 * 86_400_000) throw new Error(`accepted risk ${show(l.trim())}: expires at most 14 days ahead`);
+    (now < Date.parse(m[3]) + 86_400_000 ? entries : expired).push({ id: m[1], image: m[2], expires: m[3] });
+  }
+  return { entries, expired };
+}
+
+/** The accepted ids for one scanned reference: entries for the same image name and the same digest (the tag is ignored). */
+export function acceptedFor(ref, entries) {
+  const digest = (r) => /@(sha256:[0-9a-f]{64})$/.exec(r)?.[1];
+  const same = (img) => nameOf(img) === nameOf(ref) && digest(img) !== undefined && digest(img) === digest(ref);
+  return [...new Set(entries.filter((e) => same(e.image)).map((e) => e.id))];
+}
+
 /** Whether COPY sources (paths in the source stage) may carry anything under an exception's path. */
 function covers(paths, glob) {
   const lit = glob.includes("*") ? glob.slice(0, glob.indexOf("*")).replace(/\/[^/]*$/, "") : glob; // its literal directory
@@ -265,7 +296,7 @@ export function ignored(image, exceptions, now = Date.now()) {
 
 function main(argv) {
   const local = new Map(), dockerfiles = [];
-  let exceptions = [];
+  let exceptions = [], accepted = { entries: [], expired: [] };
   try {
     for (let i = 0; i < argv.length; i++) {
       if (argv[i] === "--") { dockerfiles.push(...argv.slice(i + 1)); break; }
@@ -274,6 +305,7 @@ function main(argv) {
         if (!m || !NAMED.test(m[1]) || !PATH.test(m[2])) throw new Error(`--local ${show(argv[i])} is not <name>=<Dockerfile>`);
         local.set(m[1], m[2]);
       } else if (argv[i] === "--exceptions") exceptions = readExceptions(readFileSync(argv[++i], "utf8"));
+      else if (argv[i] === "--accepted") accepted = readAccepted(readFileSync(argv[++i], "utf8"));
       else throw new Error(`${show(argv[i])} is not an option; paths go after --`);
     }
   } catch (e) { console.log(`::error::${e.message}`); return 1; }
@@ -292,10 +324,12 @@ function main(argv) {
     return 1;
   }
   let status = 0, n = 0;
-  const scan = (label, target, { ignore = [], vulnerabilities = [] }, ...extra) => {
+  for (const e of accepted.expired) { console.log(`::error::accepted risk ${e.id} in ${e.image} expired on ${e.expires} (.github/image-scan-accepted.yaml): renew it with the owner or drop it`); status = 1; }
+  const scan = (label, target, { ignore = [], vulnerabilities = [], risks = [] }, ...extra) => {
     const config = join(cwd, `grype-${++n}.yaml`);
-    writeFileSync(config, JSON.stringify({ ignore: [...ignore.map((path) => ({ package: { location: path } })), ...vulnerabilities.map((vulnerability) => ({ vulnerability }))] }) + "\n");
+    writeFileSync(config, JSON.stringify({ ignore: [...ignore.map((path) => ({ package: { location: path } })), ...[...vulnerabilities, ...risks].map((vulnerability) => ({ vulnerability }))] }) + "\n");
     for (const x of [...ignore, ...vulnerabilities]) console.log(`${label}: ignoring ${x} (.github/image-scan-exceptions.yaml)`);
+    for (const x of risks) console.log(`${label}: accepting ${x} (.github/image-scan-accepted.yaml)`);
     // grype's output names files and packages from the repository and the images: no workflow commands inside it.
     const token = randomBytes(16).toString("hex");
     console.log(`::group::${label}`);
@@ -309,7 +343,7 @@ function main(argv) {
   for (const i of p.images) {
     const { ignore, vulnerabilities, skipped } = ignored(i, exceptions);
     for (const s of skipped) console.log(`image ${i.ref}: ${s}`);
-    scan(`image ${i.ref}`, `registry:${i.ref}`, { ignore, vulnerabilities }, "--platform", "linux/amd64");
+    scan(`image ${i.ref}`, `registry:${i.ref}`, { ignore, vulnerabilities, risks: acceptedFor(i.ref, accepted.entries) }, "--platform", "linux/amd64");
   }
   return status;
 }
