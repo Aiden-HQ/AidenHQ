@@ -54,7 +54,7 @@ of these needs a host package.
 | `local` | Lima on macOS, LAN VMs, and SSH-tunnel users (today's `--no-tailscale`) | none | `http://aidenhq.localhost:3121` (Lima) or a tunnel to `127.0.0.1:3121` | 22 |
 
 **Why one core setting rather than exposure modules.** The front door is part of the trusted base, like the gate. A
-mode switch also changes a root-owned firewall (section 4.5), which modules must never touch. The four modes are a
+mode switch also changes a root-owned firewall (section 4.4), which modules must never touch. The four modes are a
 closed list, and each costs a pinned image, never a host package. Decision D5 asks whether to turn them into
 `provides: exposure` modules later.
 
@@ -100,7 +100,8 @@ install. gVisor's repo stays when apps-platform is on, which is the default.
 - IPv4 and IPv6 are both supported.
 - IP certificates are issued **only** under the `shortlived` ACME profile (160 hours, just over six days). The ACME
   client must support ACME Profiles.
-- Validation for an IP identifier is `http-01` or `tls-alpn-01` (RFC 8738). `dns-01` can't apply to an IP.
+- Validation for an IP identifier is `http-01` or `tls-alpn-01` (RFC 8738). `dns-01` can't apply to an IP. The GA
+  post doesn't list challenge types, so U2's staging issuance confirms TLS-ALPN-01.
 
 Sources:
 [Let's Encrypt GA post](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability.html),
@@ -130,18 +131,22 @@ Generated Caddyfile (compile writes it, from the detected public IP):
 203.0.113.7 {
 	reverse_proxy 127.0.0.1:3121 {
 		header_up X-Forwarded-Proto https
-		header_up -X-AidenHQ-*
-		header_up X-AidenHQ-Client-IP {remote_host}
+		header_up X-AidenHQ-Client-IP {remote_host}   # set replaces any client-sent value
 		header_up X-AidenHQ-Edge {$EDGE_BOARD_SECRET}
 	}
 	header Strict-Transport-Security "max-age=86400"
 }
 ```
 
+- **Header order.** No wildcard delete (`-X-AidenHQ-*`). Whether Caddy applies deletes before or after sets is
+  unverified, and a delete that runs last would strip the two headers just set. `set` already replaces a client's
+  value, and the board drops every other inbound `x-aidenhq-*` (`accounts.ts:507`). U2 tests that a client-sent
+  `X-AidenHQ-Edge` never reaches the board.
 - **Container.** `caddy`, host network, `cap_drop: ALL` plus `cap_add: NET_BIND_SERVICE`, read-only root, and the cert
   store in `data/caddy`. `EDGE_BOARD_SECRET` is read from the vault by the entrypoint, the same pattern as Paperclip's
   secrets in `compose.yaml`; it is never put in env from compose.
-- **Renewal.** Caddy renews short-lived certificates early and honours ACME Renewal Information. The board alerts the
+- **Renewal.** Caddy is expected to renew short-lived certificates early and honour ACME Renewal Information
+  (unverified for the pinned build; U2 watches one renewal on staging). The board alerts the
   owner on the channel when the served certificate has less than 48 hours left.
 - **ACME success is the reachability proof.** Setup waits up to 3 minutes for Caddy to obtain the certificate. Issuance
   fails on a host behind NAT, a cloud security group that blocks 443, or a private IP only. When it fails, setup:
@@ -163,7 +168,8 @@ Generated Caddyfile (compile writes it, from the detected public IP):
   - One wildcard `A` record, set by the owner.
 - **sslip.io / nip.io (rejected).**
   - Neither is on the Public Suffix List (checked 2026-11-16). Every sslip user worldwide therefore shares one
-    registered domain for Let's Encrypt's per-domain weekly limit, so issuance is unreliable.
+    registered domain for Let's Encrypt's per-domain weekly limit, so issuance is unreliable. The size of that limit
+    and any exemption sslip.io holds are unverified.
   - Every other user's `*.sslip.io` host is also *same-site* with ours. Strangers' pages could toss non-`__Host-`
     cookies at us and send same-site requests.
 - **Self-signed with a printed fingerprint (rejected).** Owners click through warnings, which trains exactly the wrong
@@ -256,7 +262,8 @@ reappears weekly):
 > **[Use Cloudflare Access]** [Keep it public]
 
 **Switch to Tailscale, two-phase so one click can't lock the owner out:**
-1. The click files a Tier 0 settings change: `exposure: tailscale-pending`.
+1. The click files a settings change: `exposure: tailscale-pending`. It runs through the settings-change path
+   (`docs/design/settings-changes.md`) as the owner's own typed change.
    - Compile adds `edge-tailscale`: the pinned `tailscale/tailscale` image, userspace, host network, state in
      `data/edge-tailscale`, `TS_SERVE_CONFIG` → 127.0.0.1:3121, hostname `aidenhq-<user>`.
    - Caddy and 443 stay up.
@@ -264,8 +271,13 @@ reappears weekly):
      an auth key typed into the card.
 2. The board polls until the node is up and shows its `https://aidenhq-<user>.<tailnet>.ts.net` URL with "open it from
    a device on your tailnet".
-3. **Only a session that arrives over the tailnet path can confirm.** The request reaches 3121 from `edge-tailscale` and
-   carries its own edge secret, which marks it as the tailnet route. Confirming sets `exposure: tailscale`:
+3. **Only a session that arrives over the tailnet path can confirm.**
+   - `tailscale serve` only proxies; it can't add our secret. So the board accepts the confirm only when `Host` is the
+     tailnet name and the request has **no** `X-AidenHQ-Edge`.
+   - Caddy adds that header to every request it forwards, and only proxies its own site's `Host`. So no request over
+     the public path can pass.
+   - A loopback process could forge the `Host`, but it would still need the owner's session.
+   - Confirming sets `exposure: tailscale`:
    - Caddy is removed.
    - The root helper re-renders the firewall without 443.
    - The apps node starts if a key was given.
@@ -274,6 +286,11 @@ reappears weekly):
 
 **Cloudflare Access** uses the same two phases. It needs a domain and a tunnel token, and confirming must come from a
 request carrying a valid Access JWT for the board's audience.
+
+**Who may change exposure.** `settings.exposure` is classified in `tiers.mjs` as **Tier 2, owner only**. It is never
+decided by AI review, whoever proposes it. The owner's own click on the card is that tap; an agent-proposed change
+waits for the owner. Widening (to `public`) and narrowing are classified alike, so the classifier stays simple. This
+touches `tiers.mjs`, so U5 needs the paid reviewer eval at 100%.
 
 **The root helper** (`aidenhq-exposure.path` and `.service`, root, installed by setup):
 - It watches `~/.local/state/aidenhq/exposure` and runs `public-fw.sh` from the verified root copy
@@ -285,12 +302,19 @@ request carrying a valid Access JWT for the board's audience.
 
 ### 4.5 What does not work on a bare IP
 
-Each was checked against the code:
-- **Google Connect from the board** (`BOARD_GOOGLE_CONNECT`, redirect `$BOARD_URL/google/callback`). Google's web
-  clients refuse raw-IP redirect URIs (localhost excepted).
-  - In public IP mode, setup leaves `BOARD_GOOGLE_CONNECT` off.
-  - The board's existing Desktop-app client flow (loopback redirect on the owner's laptop) is the path.
-  - A domain or Tailscale restores the web flow.
+- **Google Connect from the board** (`BOARD_GOOGLE_CONNECT`, redirect `$BOARD_URL/google/callback`, `app.ts:2364`).
+  - Google documents that web-client redirect URIs can't be raw IPs (localhost excepted). This is not yet verified
+    against a live client: U4's live test registers one.
+  - Without the web flow, the board's code already falls back to `http://<loopback host>/google/callback` on the local
+    listener, which means an SSH tunnel to 3120.
+  - Setup defaults to `MODULES=google` and `BOARD_GOOGLE_CONNECT=1`, so **the default mode breaks the default module's
+    one-click connect**. In public IP mode setup leaves `BOARD_GOOGLE_CONNECT` off and the board shows the tunnel
+    command. A domain or Tailscale restores the web flow.
+- **Glean, Grafana, ClickHouse and Jira sign-ins** (`app.ts:2394-2425`) already work only on the local listener through
+  a tunnel (`mode !== "local"` gives 403). This is unchanged in every mode, but in public mode it is the owner's only
+  reason to open a tunnel; the board says so.
+- **A mode switch changes the board's URL.** Registered OAuth redirects (Google's web client) and any saved links break.
+  The switch card lists the redirect to add for the new URL.
 - **The GitHub App setup helper.** `ops/github-app-setup.mjs` listens on `0.0.0.0:8765` and needs `AIDENHQ_SETUP_HOST`
   (LAN or tailnet). The firewall blocks 8765. Change: bind to 127.0.0.1 and print the tunnel command. GitHub's manifest
   flow accepts an `http://localhost` redirect.
@@ -337,7 +361,12 @@ In public mode:
 ### 4.7 What `verify-security.sh` checks in each mode
 
 All modes (existing, kept):
-- the board's 3120, 3121, 3122 and 3129 publish on 127.0.0.1 only;
+- the board's 3120, 3122 and 3129 publish on 127.0.0.1 only;
+- 3121 publishes on 127.0.0.1 only, **except** in `local` mode on a LAN VM (`BOARD_LAN_BIND=0.0.0.0` with
+  `AIDENHQ_PUBLIC_IF=none`). That case exists today and stays, with its session check. In `public`, `tailscale` and
+  `cloudflare` modes, a 3121 bind beyond loopback is a failure: a plain-http LAN listener next to a public door is
+  not allowed. What we lose: phones on the home network reach a public-mode board through its public URL, not the
+  LAN;
 - reads and writes without a session give 401;
 - cross-origin writes give 403;
 - an unknown `Host` gives 403;
@@ -387,6 +416,9 @@ There is no public port, no Caddy and no certificate.
 - Base pins (Docker, Node, bubblewrap, passt, nftables, gocryptfs) stay at the top level.
 - A module declares `host: [browser]` from that closed list. The list is a kernel contract, so a third-party module
   can't name new root work.
+  - `host:` is a new manifest field, so it is a contract change and goes into `contract.lock.json` (lean-core §3.3.5).
+  - Each feature is shown on the module's install card as new authority, so it needs the owner's tap (lean-core
+    decision 7).
 - Compile writes `config/host-features.json`, the union of installed modules' features plus settings (for example
   fail2ban on).
 - `ops/vm/setup.sh` installs exactly that union. Recipes come only from `pins.json`; modules never ship scripts that
@@ -430,8 +462,8 @@ Order: U1 → (U2, U3 in parallel) → U4 → U5, U6 → U7, U8. No public port 
 | **U1** | `feat(board): trusted client address from the front door, address bans and sign-in notices` | `accounts.ts` changes: <br>- `X-AidenHQ-Client-IP` on 3121 only with `edge_board_secret` (a new generated secret in compile); <br>- a per-address ban (20 in 15 minutes → 1 hour); <br>- an account-wide alert (no lock); <br>- a new-session notice; <br>- setup-link TTL 24 hours in public mode; <br>- `--reset` prints on the terminal while the owner has never enrolled TOTP. | Two vitest cases: a forged address without the secret locks only the socket address, and 20 failures from one address across emails get banned. | Board sign-in is gate core: panel review and the paid reviewer eval apply. |
 | **U2** | `feat(ops): the exposure setting and a Caddy front door with an IP certificate` | `settings.exposure` in `modules.mjs` and `compile.mjs`; generated `caddy` service and Caddyfile; `BOARD_LAN_*` derived from the mode; `apps-edge` moved into generated compose for `tailscale` only. | `scripts/test` compile cases per mode. | Exit check: live staging issuance of an IPv4 certificate over TLS-ALPN-01 on a throwaway VM. |
 | **U3** | `feat(ops): mode-aware public firewall and host features from pins.json` | `public-fw.sh` renders its ports from the mode. `pins.json` gains `features`; `ops/vm/setup.sh` installs the compiled union. Tailscale is out of the base. Also: ufw detection, the root helper units, and `github-app-setup.mjs` bound to loopback. | A `pins.mjs` CI check over `features`; `public-fw.sh --check` per mode. | Supply chain: `pins.mjs` dates every feature pin. |
-| **U4** | `feat(ops): install public by default, Tailscale and tunnel opt-in` | `ops/setup.sh` changes: <br>- default `public`, plus `--exposure tailscale\|local\|cloudflare`; `--no-tailscale` becomes an alias for the default; <br>- detects the public IPv4 and waits for the certificate; <br>- falls back to `local` loudly; <br>- prints `https://<ip>` and the link. <br>`distro/install.sh`: messages and flags; uninstall removes Caddy and the helper. | The installer's container test runs with `--exposure local`; a live VM test for public. | Lean-core 5d's exit check changes (section 10). |
-| **U5** | `feat(board): secure-your-server card with a two-phase switch to Tailscale or Cloudflare` | The board card; `exposure: *-pending`; `edge-tailscale` auth-URL readout; confirmation only from the new path. | A vitest case: a confirm over 3121 without the tailnet edge secret is refused. | Settings changes ride the existing settings-change flow. |
+| **U4** | `feat(ops): install public by default, Tailscale and tunnel opt-in` | `ops/setup.sh` changes: <br>- default `public`, plus `--exposure tailscale\|local\|cloudflare`; `--no-tailscale` keeps its promise of no public port and means `--exposure local`; <br>- detects the public IPv4 and waits for the certificate; <br>- falls back to `local` loudly; <br>- prints `https://<ip>` and the link. <br>`distro/install.sh`: messages and flags; uninstall removes Caddy and the helper. | The installer's container test runs with `--exposure local`; a live VM test for public. | Lean-core 5d's exit check changes (section 10). |
+| **U5** | `feat(board): secure-your-server card with a two-phase switch to Tailscale or Cloudflare` | The board card; `exposure: *-pending`; `edge-tailscale` auth-URL readout; confirmation only from the new path; `settings.exposure` as Tier 2 in `tiers.mjs`. | A vitest case: a confirm carrying `X-AidenHQ-Edge`, or under any `Host` other than the tailnet name, is refused. | Settings changes ride the existing settings-change flow. A `tiers.mjs` change: the paid reviewer eval must stay at 100%. |
 | **U6** | `feat(apps): publish apps through the gate behind Caddy with a domain` | `edge.mjs` `ingress: caddy`; `checkIngress` for the Caddyfile; gate client address from the edge secret; apps-mcp sets `AIDENHQ_ANONYMOUS` only for `apps-edge` apps; an Apps-tab notice when there's no domain. | `scripts/test` edge cases; the gate test for a forged client address. | Gate changes are gate core: panel review. |
 | **U7** | `refactor(modules): voice, browser, gh and engine CLIs follow their modules; passt required` | The `voice` module; `host:` tags; the kernel refuses jobs without pasta. | Existing suites; one test that a job without pasta is refused. | |
 | **U8** | `feat(ops): verify-security per exposure mode, and docs` | Section 4.7's checks. Docs: `access.md`, `SETUP.md`, `CLAUDE.md` Inbound, `docs/architecture.md`. Instance repo: spec §2.3 and §6.10, plan 5d. | `scripts/verify-security.sh` on a live host in each mode. | |
@@ -449,23 +481,25 @@ Migration of existing instances:
    - Mitigations: a tiny pre-auth surface, pinned images on the image scan, unattended upgrades and the
      secure-your-server nudge.
    - What we lose: today's "zero inbound ports" property, by default.
-2. **Lockout regression if U1 slips.** Without the trusted client address, one stranger can lock the owner out (section
+2. **The default mode breaks the default module's one-click connect.** Google Connect needs a domain or Tailscale;
+   on a bare IP it takes a tunnel (section 4.5).
+3. **Lockout regression if U1 slips.** Without the trusted client address, one stranger can lock the owner out (section
    4.3). U4 must not merge before U1 is deployed.
-3. **Six-day certificates.** A Let's Encrypt or Caddy renewal failure lasting more than about four days takes the board
+4. **Six-day certificates.** A Let's Encrypt or Caddy renewal failure lasting more than about four days takes the board
    down.
    - Mitigations: the 48-hour alert, and the tunnel to 127.0.0.1:3121, which always works.
    - The owner channel (Telegram) doesn't depend on the board.
-4. **Caddy IP-certificate maturity.** The fixes landed in 2026-04, and the release notes don't name them. U2's staging
+5. **Caddy IP-certificate maturity.** The fixes landed in 2026-04, and the release notes don't name them. U2's staging
    issuance proves the pinned build before anything ships.
-5. **Lock-out by the switch.** Prevented by the two-phase confirm over the new path. A bug there could still strand an
+6. **Lock-out by the switch.** Prevented by the two-phase confirm over the new path. A bug there could still strand an
    owner; SSH and `sudo ops/setup.sh --exposure public` is the documented way back.
-6. **Setup-link theft before the claim.** The link is on the terminal and in a root-only log. A 24-hour TTL, a visible
+7. **Setup-link theft before the claim.** The link is on the terminal and in a root-only log. A 24-hour TTL, a visible
    "already used" result and terminal reissue limit the damage.
-7. **Same-site apps under a domain.** Covered by the exact-Origin and `Sec-Fetch-Site` checks and host-only cookies. A
+8. **Same-site apps under a domain.** Covered by the exact-Origin and `Sec-Fetch-Site` checks and host-only cookies. A
    future board route that skips `csrfReason` would be exposed to every app, so `verify-security` keeps the
    cross-origin probe.
-8. **IP changes on cloud VMs** break the URL and the certificate until the boot-time recompile runs.
-9. **The host-feature helper** runs root work on a user-written request. That is acceptable only because the vocabulary
+9. **IP changes on cloud VMs** break the URL and the certificate until the boot-time recompile runs.
+10. **The host-feature helper** runs root work on a user-written request. That is acceptable only because the vocabulary
    is closed and recipes come from the verified root copy's `pins.json`.
 
 ## 8. Decisions for the owner
