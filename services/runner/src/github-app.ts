@@ -132,6 +132,20 @@ export const identityEnv = (who: { name: string; email: string }) => ({ GIT_AUTH
 /** True when slug ("org/name") is in the agents org. */
 export const inOrg = (org: string | undefined, slug: string | undefined) => Boolean(org && slug) && slug!.split("/")[0]!.toLowerCase() === org!.toLowerCase();
 
+/** True when two slugs name the same repository (case-insensitively). */
+const sameSlug = (a: string | undefined, b: string | undefined) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
+
+/**
+ * A push token's permissions: read-only, or Contents write. Workflows: write goes to the repositories whose pipelines we own
+ * (the agents org's and the product repo's): a push that touches a workflow file is refused unless the token itself carries
+ * it, whatever the App declares. Elsewhere (another org, which gates workflow files itself) Contents only.
+ */
+export const pushPermissions = (write: boolean, slug: string | undefined, agentsOrg: string | undefined, productRepo: string | undefined): Record<string, string> =>
+  !write ? { contents: "read" } : inOrg(agentsOrg, slug) || sameSlug(slug, productRepo) ? { contents: "write", workflows: "write" } : { contents: "write" };
+
+/** The merge queue's write token: a merge or a branch update in the product repo may carry a workflow file change too. */
+export const mergePermissions = (slug: string | undefined, productRepo: string | undefined) => (sameSlug(slug, productRepo) ? { ...WRITE, workflows: "write" } : WRITE);
+
 /**
  * Origin URL for an agents-org repo. The `x-access-token@` user keeps it from matching the host's global
  * `url.git@github.com:.pushInsteadOf https://github.com/` (pushes stay on HTTPS) and `insteadOf git@github.com:`.

@@ -15,7 +15,7 @@ import { adoptRun, cowRoot, engineState, overlayProblem, readEngines, removeLaye
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
-import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg } from "./github-app.ts";
+import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, inOrg, mergePermissions, pushPermissions } from "./github-app.ts";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
@@ -105,8 +105,7 @@ async function jobGhToken(repos) {
 /** Commit identity for agents and landed commits: the App's bot, else "AidenHQ agent"; never the owner's. */
 const botIdentity = async () => (app ? await app.identity().catch((err) => (log("github app identity failed", { err: String(err.message).slice(0, 200) }), DEFAULT_IDENTITY)) : DEFAULT_IDENTITY);
 if (app) {
-  // Workflow files only in the agents org: elsewhere (e.g. another org, whose CI standard gates them) such a push fails loudly.
-  const pushPerms = (slug, write) => (!write ? { contents: "read" } : inOrg(cfg.agentsOrg, slug) ? { contents: "write", workflows: "write" } : { contents: "write" });
+  const pushPerms = (slug, write) => pushPermissions(write, slug, cfg.agentsOrg, cfg.productRepo);
   setGitAuth({
     cacheRoot: join(cfg.workDir, "repos"),
     token: async (slug, write) => (await appFor(slug))?.token(slug.split("/")[0], { repositories: [slug.split("/")[1]], permissions: pushPerms(slug, write) }),
@@ -1196,10 +1195,10 @@ const mergeGithub = {
     return JSON.parse(stdout).data?.repository?.object;
   },
   async merge(repo, number, { sha, method }) {
-    return (await githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha })).sha;
+    return (await githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha }, "PUT", mergePermissions(repo, cfg.productRepo))).sha;
   },
   async updateBranch(repo, number, head) {
-    await githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head });
+    await githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head }, "PUT", mergePermissions(repo, cfg.productRepo));
   },
   /** The base branch's files changed since `oid`, and its tip (siblings.ts): paged or unread is `files: undefined`. */
   async prBaseFiles(repo, base, oid) {
