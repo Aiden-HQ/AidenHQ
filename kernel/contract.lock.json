@@ -18,6 +18,10 @@
       "state": "experimental",
       "fp": ""
     },
+    "manifest key conflicts": {
+      "state": "experimental",
+      "fp": ""
+    },
     "manifest key connections": {
       "state": "experimental",
       "fp": ""
@@ -67,6 +71,14 @@
       "fp": ""
     },
     "manifest key providers": {
+      "state": "experimental",
+      "fp": ""
+    },
+    "manifest key provides": {
+      "state": "experimental",
+      "fp": ""
+    },
+    "manifest key replaces": {
       "state": "experimental",
       "fp": ""
     },

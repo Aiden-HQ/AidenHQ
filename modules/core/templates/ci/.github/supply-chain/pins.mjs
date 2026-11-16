@@ -13,6 +13,8 @@
 //                 distro package pinned anyway (`pkg=version`) is dated from the host's Ubuntu pockets. A host script
 //                 pins per Ubuntu release in the arms of `case "$codename" in <release>) …;; esac`: a pin in an arm is
 //                 dated for that release only, any other for every release the file names (noble when it names none).
+//   host pins     ops/vm/pins.json (read by ops/vm/setup.sh): `apt` for every release, `releases.<codename>.apt` for one;
+//                 each dated from the file's `repos` as that release reads them, then its distro's pockets.
 // Dated (only pins a change adds or alters, against the base; any lookup error fails): images, actions, npm, PyPI, apt
 // pins, GitHub release downloads, and digest-pinned image strings in code. Each must be 7+ days old or be a security
 // exception in .github/supply-chain-exceptions.yaml read from the base (`ecosystem` docker, github-action, npm, pypi,
@@ -26,15 +28,21 @@ const COMPOSE = /(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
 const WORKFLOW = /(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/;
 const SHELL = /\.sh$/;
 const CODE = /\.(m?js|ts)$/;
+const HOST_PINS = /(^|\/)ops\/vm\/pins\.json$/;
 const SKIP = /(^|\/)(node_modules|test\/fixtures)\//;
 const DIGEST = /@sha256:[0-9a-f]{64}$/;
 const DEFAULT_RELEASE = "noble"; // a host file that names no release: Ubuntu 24.04 (hosts are amd64)
-// A repository line as the host reads it on that release ($codename, $(. /etc/os-release …), $arch).
-const onRelease = (s, release) => s.replace(/\$\{?(\w+)\}?/g, (x, k) => ({ codename: release, VERSION_CODENAME: release, arch: "amd64" })[k] ?? x).replace(/"?\$\(\.\s*\/etc\/os-release.*$/, release);
+// A repository line as the host reads it on that release ($codename, $(. /etc/os-release …), $arch; pins.json's {distro}
+// and {codename}).
+const onRelease = (s, release, distro = "ubuntu") => s.replace(/\{(distro|codename)\}/g, (x, k) => (k === "distro" ? distro : release)).replace(/\$\{?(\w+)\}?/g, (x, k) => ({ codename: release, VERSION_CODENAME: release, arch: "amd64" })[k] ?? x).replace(/"?\$\(\.\s*\/etc\/os-release.*$/, release);
 // The release's own repositories, tried after any the file adds: where a pinned distro package (fail2ban=…) is dated.
-const distroSources = (r) => [`${r}-updates main`, `${r}-updates universe`, `${r}-security main`, `${r}-security universe`, `${r} main`, `${r} universe`].map((s) => `http://archive.ubuntu.com/ubuntu ${s}`);
+// Debian's point releases fold updates into the release suite; its -updates and -security indexes are xz only (unread
+// here), so a pin only they carry fails as unlisted.
+const distroSources = (r, distro = "ubuntu") => distro === "debian"
+  ? [`http://deb.debian.org/debian ${r} main`]
+  : [`${r}-updates main`, `${r}-updates universe`, `${r}-security main`, `${r}-security universe`, `${r} main`, `${r} universe`].map((s) => `http://archive.ubuntu.com/ubuntu ${s}`);
 
-export const wanted = (path) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path));
+export const wanted = (path) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path));
 
 // Logical lines: backslash continuations joined, with the first line's number.
 function logical(text) {
@@ -107,8 +115,20 @@ function commands(text, at, state, pins, problems) {
   if (/;;\s*$/.test(cmd)) state.arm = undefined;
 }
 
+/** ops/vm/pins.json: one apt pin per package and release, with the file's repositories as that release reads them. */
+function hostPins(path, text) {
+  const j = JSON.parse(text);
+  const lineOf = (name, version) => text.split("\n").findIndex((l) => l.includes(`"${name}": "${version}"`)) + 1;
+  return Object.entries(j.releases ?? {}).flatMap(([release, r]) => {
+    const sources = Object.values(j.repos ?? {}).map((s) => onRelease(s, release, r.distro));
+    return Object.entries({ ...j.apt, ...r.apt }).map(([name, version]) =>
+      ({ kind: "apt", name, package: name, version, sources, release, distro: r.distro, at: `${path}:${lineOf(name, version)}` }));
+  });
+}
+
 /** One file's pins and its unpinned problems. */
 export function scanFile(path, text) {
+  if (HOST_PINS.test(path)) return { pins: hostPins(path, text), problems: [] };
   const pins = [], problems = [];
   const state = { repoAdded: false, sources: [], releases: new Set() };
   const at = (n) => `${path}:${n}`;
@@ -202,7 +222,7 @@ async function datePin(p) {
  */
 export async function dateApt(p, lookup = publishedAt) {
   const release = p.release ?? DEFAULT_RELEASE;
-  for (const source of [...p.sources.map((s) => onRelease(s, release)), ...distroSources(release)]) {
+  for (const source of [...p.sources.map((s) => onRelease(s, release, p.distro)), ...distroSources(release, p.distro)]) {
     try { return await lookup("apt", p.name, { version: p.version, source }); } catch (e) { if (!e.notListed) throw e; }
   }
   throw new Error(`${p.name}=${p.version}: no apt repository in this file, nor ${release}'s own, lists it`);

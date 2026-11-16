@@ -9,7 +9,8 @@ import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines } from "./agents.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
-import { branchCardArgs, cardText } from "./cards.ts";
+import { applyCardArgs, branchCardArgs, cardText } from "./cards.ts";
+import { authorityLines, diffAll, moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { adoptRun, cowRoot, engineState, overlayProblem, readEngines, removeLayers, gatewayApi, jailProblem, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
@@ -37,7 +38,7 @@ import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, state
 import { authorize } from "./authorize.mjs";
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
-import { CODE_REJECTS, MAX_REJECTS, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
+import { CODE_REJECTS, MAX_REJECTS, afterReview, classify, dependabotCommits, highest, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, sensitiveTraits } from "./tiers.mjs";
 import { LUNA, UNSURE, fileContext, openRouterAsk, openRouterKey, review } from "./review.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
@@ -1172,8 +1173,12 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
   }
   // The tasks that opened these PRs close too, so they don't sit "in review" (shown as waiting for the owner).
   const mergedUrls = queue.prs.filter((p) => p.status === "merged").map((p) => p.url);
+  // Its own task too: a merge recorded only on other tasks' rows left this one's branch reading unmerged, so a later receipt
+  // invited a `pr` for work already on the default branch.
+  const markMerged = (id) => state.branches(id).filter((b) => b.pr_url && mergedUrls.some((u) => u.toLowerCase() === String(b.pr_url).toLowerCase())).forEach((b) => state.updateBranch(id, b.repo, b.branch, { merged: 1 }));
+  markMerged(issueId);
   for (const other of state.issuesWithPrs(mergedUrls, issueId)) {
-    for (const b of state.branches(other)) if (b.pr_url && mergedUrls.some((u) => u.toLowerCase() === b.pr_url.toLowerCase())) state.updateBranch(other, b.repo, b.branch, { merged: 1 });
+    markMerged(other);
     const o = await pc.issue(other).catch(() => undefined);
     const open = state.branches(other).filter((b) => b.pr_url && !b.merged).map((b) => b.pr_url);
     if (o?.status === "in_review" && merges.finishedStatus(o, queue, open) === "done" && (await mayClose(other, "finish_merges"))) await pc.setStatus(other, "done", `Merged by ${queue.identifier}'s merge queue.`).catch(() => {});
@@ -2022,8 +2027,38 @@ async function dependabotPr(repo, number, pr) {
 async function applyTierState(b, bump, baseRev = b.base) {
   const paths = [...new Set([...b.files, ...definitionsOf(b.files)])];
   const at = async (rev) => Object.fromEntries((await Promise.all(paths.map(async (p) => [p, await git(b.r.path, "show", `${rev}:${p}`).catch(() => undefined)]))).filter(([, t]) => t !== undefined));
-  return { sha: b.sha, files: b.files, base: await at(baseRev), head: await at(b.sha), pin: bump && !bump.error ? { forward: Boolean(bump.forward), back: Boolean(bump.back) } : null };
+  const [base, head] = [await at(baseRev), await at(b.sha)];
+  return { sha: b.sha, files: b.files, base, head, pin: bump && !bump.error ? { forward: Boolean(bump.forward), back: Boolean(bump.back) } : null, ...(await moduleTierState(base["instance.yaml"], head["instance.yaml"])) };
 }
+
+/**
+ * The module side of an apply (tiers.mjs moduleAuthorityParts, spec §5.7): when the product pin or the `modules:` list moves,
+ * each module's manifest at the old and new product (this checkout's git, which productBump fetched) and whether its code
+ * changed. { modulesError } when anything can't be read: the tier fails closed.
+ */
+async function moduleTierState(baseText, headText) {
+  if (baseText === undefined || headText === undefined) return {};
+  try {
+    const [bi, hi] = [YAML.parse(baseText) ?? {}, YAML.parse(headText) ?? {}];
+    if (JSON.stringify(bi.product ?? null) === JSON.stringify(hi.product ?? null) && JSON.stringify(bi.modules ?? null) === JSON.stringify(hi.modules ?? null)) return {};
+    const [from, to] = [String(bi.product ?? ""), String(hi.product ?? "")];
+    if (![from, to].every((x) => /^[0-9a-f]{40}$/.test(x))) return { modulesError: "the product pin isn't a full commit on both sides" };
+    const defs = async (rev) => {
+      const files = (await git(REPO_ROOT, "ls-tree", "-r", "--name-only", rev, "--", "modules")).split("\n").filter((f) => /^modules\/[a-z0-9][a-z0-9-]*\/module\.yaml$/.test(f));
+      return Object.fromEntries(await Promise.all(files.map(async (f) => [f.split("/")[1], YAML.parse(await git(REPO_ROOT, "show", `${rev}:${f}`)) ?? {}])));
+    };
+    const changed = from === to ? [] : (await git(REPO_ROOT, "diff", "--name-only", "--no-renames", from, to, "--", "modules")).split("\n").filter(Boolean);
+    return { modules: moduleInputs({ baseInstance: bi, headInstance: hi, baseDefs: await defs(from), headDefs: await defs(to), changed, always: ["core"] }) };
+  } catch (err) {
+    return { modulesError: String(err.message ?? err).split("\n")[0].slice(0, 200) };
+  }
+}
+
+/** The authority lines an apply card carries (its args, so in its digest): one per module change, code-chosen words only. */
+const authorityOf = (st) => {
+  const diffs = st?.modules ? diffAll(st.modules) : [];
+  return [authorityLines(diffs), diffs.some((d) => d.changes.some((c) => c.owner))];
+};
 
 /** The tier of a request now: classify() over the common state plus the action's own. Logged. */
 async function tierFor(issue, action, own, also = []) {
@@ -2085,11 +2120,18 @@ async function currentTier(issue, a, { withDiff = false } = {}) {
     if (b.sha !== a.args.sha) throw new MovedHead("the fleet branch moved since the card");
     const bump = await productBump(b);
     if (bump?.error) throw new UserError(bump.error);
-    const t = await tierFor(issue, "apply", await applyTierState(b, bump));
+    const st = await applyTierState(b, bump);
+    const t = await tierFor(issue, "apply", st);
+    // The module changes the card lists (and its digest covers) must be the ones recomputed now.
+    const now = applyCardArgs(b, ...authorityOf(st));
+    if (JSON.stringify([now.authority ?? [], now.ownerRequired ?? false]) !== JSON.stringify([a.args.authority ?? [], a.args.ownerRequired ?? false])) throw new UserError("the module changes no longer match the card");
     if (!withDiff) return t;
     const diff = await fleetDiffText(b, bump);
     if (diff !== a.details) throw new UserError("the change no longer matches the card's diff");
-    return { ...t, diff };
+    // The module changes the product move brings, as code computed them from the manifests at both commits (the reviewer
+    // reads them as facts; the modules' own descriptions and commit messages stay claims).
+    const lines = a.args.authority ?? [];
+    return { ...t, diff: lines.length ? `${diff}\n\nModule changes (the authority diff, computed by code from the module manifests; owner = new authority):\n${lines.join("\n")}` : diff };
   }
   if (a.action === "create_repo") {
     if (!app) throw new UserError("the GitHub App isn't set up here");
@@ -2173,16 +2215,18 @@ async function reviewOne(a, mode) {
     input = { error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300), lasting: err instanceof UserError, stale: err instanceof MovedHead };
   }
   // The request chain the reviewer reads; its hash is kept with an unsure-twice rejection (commonTierState).
-  const chain = input.error || input.reject || input.tier > 1 ? "" : await prRequest(await pc.issue(issue.id)).catch(() => "");
+  const owners = input.tier > 1 && !input.reviewFirst;
+  const chain = input.error || input.reject || owners ? "" : await prRequest(await pc.issue(issue.id)).catch(() => "");
   let v = input.error
     ? input.lasting
       ? { decision: "reject", code: input.stale ? "stale_head" : "refused_by_code", reason: `${input.error}. Ask again.`, model: LUNA }
       : { decision: "escalate", code: "reviewer_failed", reason: `couldn't check the change (${input.error})`, model: LUNA }
     : input.reject
       ? { decision: "reject", code: input.rule === "head-moved" ? "stale_head" : "refused_by_code", reason: `${input.reason}.`, model: LUNA }
-      : input.tier > 1
+      : owners
         ? { decision: "escalate", code: "tier_raised", reason: `code now puts it at Tier 2: ${input.reason}`, model: LUNA }
-        : await askReviewer(issue, a, input, chain, { onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()), siblings: await cardSiblings(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }) });
+        : // New module authority (reviewFirst): the reviewer first; its approve goes on to the owner, its reject is final.
+          afterReview(input, await askReviewer(issue, a, input, chain, { onPanel: () => boardApi.post(`/internal/approvals/${a.id}/panel`, { digest: a.digest }, runnerKey()), siblings: await cardSiblings(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }) }));
   // A failed call or check is friction, not a decision: it stays with the reviewer and is tried again later (1, 2, 4… minutes);
   // after REVIEW_TRIES it goes back to the agent, never to the owner.
   if (v.code === "reviewer_failed") {
@@ -3168,7 +3212,8 @@ async function showFleetDiff(issue, workspace) {
   const mode = autonomyNow();
   let bump = mode === "off" ? undefined : await productBump(b).catch((e) => ({ error: e.message }));
   if (bump?.error) return `**Can't be applied:** ${bump.error}.`;
-  const tier = mode === "off" ? undefined : await tierFor(issue, "apply", await applyTierState(b, bump));
+  let st = mode === "off" ? undefined : await applyTierState(b, bump);
+  const tier = st && (await tierFor(issue, "apply", st));
   if (tier?.reject) return `**Can't be applied:** ${tier.reason}.`;
   // Only on a task the owner or the Agent Architect started: anyone else's handbook edit (or a chain of agent comments) gets a card.
   if (tier ? tier.tier === 0 : trialHandbookOnly(b.files, t.base) && trialNoTap(await pc.issue(issue.id), readGrants())) {
@@ -3179,11 +3224,16 @@ async function showFleetDiff(issue, workspace) {
   if (mode === "off") bump = await productBump(b).catch((e) => ({ error: e.message }));
   if (bump?.error) return `**Can't be applied:** ${bump.error}.`;
   // The base tier on its merits, also with autonomy off (best effort there: unknown on a failed read).
-  const base = mode === "off" ? await applyTierState(b, bump).then((s) => tierFor(issue, "apply", s)).catch(() => null) : tier;
-  const card = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), tier: tier?.tier === 1 ? 1 : 2, reason: tier?.reason, baseTier: baseOf(base), rule: tier?.rule ?? "autonomy-off", panel: Boolean(tier?.panel) }).catch((err) => ({ error: String(err.message ?? err).slice(0, 300) }));
+  if (mode === "off") st = await applyTierState(b, bump).catch(() => undefined);
+  const base = mode === "off" ? (st ? await tierFor(issue, "apply", st).catch(() => null) : null) : tier;
+  // A review-first card (new module authority) is filed for the reviewer (Tier 1); its approve goes on to the owner.
+  const reviewFirst = Boolean(tier?.reviewFirst && !tier.reject);
+  const card = await fileApproval(issue, { action: "apply", args: applyCardArgs(b, ...authorityOf(st)), diff: await fleetDiffText(b, bump), tier: tier?.tier === 1 || reviewFirst ? 1 : 2, reason: tier?.reason, baseTier: baseOf(base), rule: tier?.rule ?? "autonomy-off", panel: Boolean(tier?.panel) }).catch((err) => ({ error: String(err.message ?? err).slice(0, 300) }));
   const upgrade = bump ? `\n\n**${bump.title}:**\n\n\`\`\`\n${bump.log.replaceAll("```", "‵‵‵")}\n\`\`\`` : "";
   const ask = card.error
     ? `**Couldn't file the approval card:** ${card.error}. Nothing will be applied until it is filed; ask the agent to try again.`
+    : card.tier === 1 && reviewFirst
+      ? `**With the AI reviewer, then you** (${card.id}: ${tier?.reason ?? ""}): the reviewer reads it first and its reject is final; if it approves, the card comes to you with its verdict. On your approval it lands exactly this commit on the latest \`${b.r.defaultBase}\`.`
     : card.tier === 1
       ? `**With the AI reviewer** (${card.id}, Tier 1: ${tier?.reason ?? ""}): it approves, rejects with a reason, or sends it to you. On approval it lands exactly this commit on the latest \`${b.r.defaultBase}\`.`
       : `**Waiting for your approval** (${card.id}): tap Approve on the board's Approvals tab or the Telegram card${card.replaced ? "" : `, or reply \`apply ${issue.identifier}\``}. It lands exactly this commit on the latest \`${b.r.defaultBase}\`; Reject and nothing lands.`;
@@ -3840,6 +3890,25 @@ function headsOf(issueId) {
 }
 
 /**
+ * Whether the board already shows a task's work published, so the receipt leaves it out of its `pr` invitation: every branch
+ * row's PR merged or closed at the head its run ended on (a merge after that run counts; a commit made on the branch since
+ * does not). A row with no PR, no recorded head, or a head its merge or close doesn't account for keeps the invitation: the
+ * row alone is no evidence a committed head went out. Only the runner's own records are read, never a guess.
+ */
+function publishedAt(issue) {
+  if (CLOSED.includes(issue.status)) return true;
+  // No row or head is no evidence (`every` on nothing is true), so both are asked for first.
+  const heads = headsOf(issue.id);
+  const rows = state.branches(issue.id);
+  const merged = (mergeQueue(issue.id)?.prs ?? []).filter((p) => p.status === "merged");
+  return heads.length > 0 && rows.length > 0 && rows.every((row) => {
+    const head = heads.find((h) => sameRepo(h.repo, row.repo) && h.branch === row.branch);
+    if (!head || !((row.pr_url && row.merged) || row.closed)) return false;
+    return row.closed ? row.closed_head === head.sha : merged.some((p) => sameRepo(p.repo, row.repo) && (p.head === head.sha || p.headOid === head.sha));
+  });
+}
+
+/**
  * The pending pr/merge cards that cover every one of a task's heads: [{ id, action, sha }]. Only a task whose every
  * head is covered counts, so the receipt never hides a branch that still needs a request. A failed board read is no
  * cards: the receipt then offers `pr`, as it did before this existed.
@@ -3887,6 +3956,7 @@ async function handleParentPr(parent, fresh) {
         const cards = await cardsAt(kid, headsOf(kid.id));
         if (running.has(kid.id) || queue.some((j) => j.issue.id === kid.id)) note = "Still running: reply **pr** on it when it's done";
         else if (cards.length) note = `Already requested: ${cards.map((c) => `${c.id} (${c.action})`).join(", ")}`;
+        else if (publishedAt(kid)) note = "Already published";
         else if (!(await taskHasCommits(task))) note = "Nothing to publish";
         else await runCommand(kid, task, "pr");
       } catch (err) {
@@ -3924,7 +3994,7 @@ async function reportToParent(issue) {
   const rows = await Promise.all(
     sorted.map(async ({ c, job }) => {
       const committed = job?.detail === "committed";
-      return { identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed, cards: committed ? await cardsAt(c, headsOf(c.id)) : [], graded: await graded(c.id) };
+      return { identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed, cards: committed ? await cardsAt(c, headsOf(c.id)) : [], published: committed && publishedAt(c), graded: await graded(c.id) };
     }),
   );
   // The same table again (a resumed run that changed nothing) would only wake the parent's agent for nothing.
@@ -4151,11 +4221,11 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   });
   const prUrl = stdout.trim().split("\n").pop();
   if (adopted) {
-    state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl });
+    state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });
     log("existing PR adopted", { issue: issue.identifier, url: prUrl });
     return `${pushed ? `${pushed} to the PR that was already open` : "This branch already has an open PR"}: ${prUrl}`;
   }
-  state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl });
+  state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });
   log("draft PR opened", { issue: issue.identifier, url: prUrl });
   return `${pushed ? `${pushed}, opened` : "Opened"} draft PR ${prUrl}`;
 }
@@ -4411,7 +4481,9 @@ async function leaveFinishedPrs(issue, workspace) {
     }
     if (pr.state === "OPEN") continue;
     if (pr.state === "CLOSED") {
-      state.updateBranch(issue.id, b.repo, b.branch, { pr_url: null });
+      // Closed without merging: remembered as closed, so a receipt leaves the finished work out. `pr` still opens a new one:
+      // it takes the closed row as a branch with no PR and clears the flag when it does.
+      state.updateBranch(issue.id, b.repo, b.branch, { pr_url: null, closed: 1, closed_head: pr.headRefOid ?? null });
       notes.push(`PR #${pr.number} (\`${b.branch}\`) was closed without merging, so **pr** will open a new one.`);
       continue;
     }

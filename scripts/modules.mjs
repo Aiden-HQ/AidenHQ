@@ -9,6 +9,7 @@ import { validateImages } from "./computers.mjs";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.mjs";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets } from "../kernel/src/loader/services.ts";
+import { capabilityProblems, conflictProblems, danglingBindings } from "../kernel/src/loader/bindings.ts";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
@@ -301,14 +302,18 @@ function discover(productDir) {
   return out;
 }
 
-/** core + the instance's modules, closed over `requires`, in name order with core first. */
+/**
+ * core + the instance's modules, closed over `requires`, in name order with core first. A virtual capability (a name some
+ * module `provides`) never enables a module: the instance lists its provider, and the binding check below needs one enabled.
+ */
 function resolveEnabled(all, wanted) {
+  const virtual = new Set([...all.values()].flatMap((m) => [m.def.provides ?? []].flat().map(String)));
   const enabled = new Set();
   const visit = (name, path) => {
     if (path.includes(name)) fail(`module cycle: ${[...path.slice(path.indexOf(name)), name].join(" → ")}`);
     if (!all.has(name)) fail(`unknown module: ${name}${path.length ? ` (required by ${path.at(-1)})` : ""}`);
     if (enabled.has(name)) return;
-    for (const dep of all.get(name).def.requires ?? []) visit(dep, [...path, name]);
+    for (const dep of all.get(name).def.requires ?? []) if (!virtual.has(String(dep))) visit(dep, [...path, name]);
     enabled.add(name);
   };
   for (const name of ["core", ...wanted]) visit(name, []);
@@ -384,7 +389,12 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const instance = readYaml(instFile);
   const all = discover(productDir);
   if (!all.has("core")) fail("modules/core is missing");
+  const problems = capabilityProblems(Object.fromEntries([...all].map(([n, m]) => [n, m.def])));
+  if (problems.length) fail(problems.join("; "));
   const enabled = resolveEnabled(all, instance.modules ?? []);
+  const enabledDefs = Object.fromEntries(enabled.map((n) => [n, all.get(n).def]));
+  const conflicts = conflictProblems(enabledDefs);
+  if (conflicts.length) fail(conflicts.join("; "));
   const warnings = [];
 
   // Settings: module defaults, then the instance; required ones must end up set.
@@ -752,6 +762,10 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   for (const [key, a] of Object.entries(paperclip.agents)) if (a.dispatch === "runner" && a.engine && !engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);
   // The model gateway's switches (config/gateway.json, re-read per call): spend_caps off stops refusals, tracking stays.
   const gateway = { enforce_caps: String(settings.spend_caps ?? "on") !== "off", ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}) };
+  // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
+  // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
+  const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
+  if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, gateway, jobcaps, engines, connections, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 

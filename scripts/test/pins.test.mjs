@@ -95,3 +95,17 @@ test("pins: unpinned images, actions, installs and apt after a repo fail; new pi
   assert.equal(problems.length, 1);
   assert.match(problems[0], /b 2\.0\.0 was published 2\.0 days ago/);
 });
+
+test("pins: ops/vm/pins.json pins each release from its repos as that release reads them, then its distro", async () => {
+  const text = JSON.stringify({
+    repos: { docker: "https://download.docker.com/linux/{distro} {codename} stable" },
+    apt: { nodejs: "24.0.0-1nodesource1" },
+    releases: { noble: { distro: "ubuntu", apt: { "docker-ce": "5:1-1~ubuntu.24.04~noble" } }, trixie: { distro: "debian", apt: { fail2ban: "1.1.0-8" } } },
+  }, null, 2);
+  const pins = scanFile("ops/vm/pins.json", text).pins;
+  assert.deepEqual(pins.map((p) => `${p.name}=${p.version} ${p.release}`), ["nodejs=24.0.0-1nodesource1 noble", "docker-ce=5:1-1~ubuntu.24.04~noble noble", "nodejs=24.0.0-1nodesource1 trixie", "fail2ban=1.1.0-8 trixie"]);
+  const tried = [];
+  const notListed = async (_k, _n, { source }) => { tried.push(source); throw Object.assign(new Error("not in"), { notListed: true }); };
+  await assert.rejects(dateApt(pins[3], notListed), /no apt repository/);
+  assert.deepEqual(tried, ["https://download.docker.com/linux/debian trixie stable", "http://deb.debian.org/debian trixie main"]);
+});

@@ -85,6 +85,9 @@ function targetKey(action: Action, target: string, args: unknown): string {
   return `${action}:${target}`;
 }
 
+/** An apply carrying new module authority (its explicit ownerRequired flag, never its line text): the reviewer never approves it alone. */
+export const ownerAfterReview = (a: { action: string; args: unknown }) => a.action === "apply" && (a.args as any)?.ownerRequired === true;
+
 /** The stable reason for a request whose change is already satisfied: no card is filed, the task gets the evidence. */
 export const ALREADY_APPLIED = "already_applied";
 
@@ -131,7 +134,9 @@ export const ARGS = {
   // merge: the product repo's one-card path (push, PR, then merge at exactly these commits once green), shown on the card.
   pr: z.object({ only: z.array(BRANCH).min(1).max(30), text: z.object({ title: z.string().max(300), body: z.string().max(60_000) }).strict().optional(), merge: z.literal(true).optional() }).strict(),
   merge: z.object({ prs: z.array(z.object({ repo: REPO, number: z.number().int().positive(), url: z.string().regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/), head: z.string().regex(/^[0-9a-f]{40}$/).optional(), noReview: z.literal(true).optional(), patch: PATCH.optional() }).strict()).min(1).max(30), gap: z.number().int().min(0).max(720).optional() }).strict(),
-  apply: z.object({ repo: REPO, branch: z.string().min(1).max(200).regex(/^[^\s`]+$/), sha: SHA, files: z.array(z.string().max(300)).min(1).max(200) }).strict(),
+  // authority: the module changes the apply brings, one line each (the runner's kernel/src/loader/authority.ts), shown on the card;
+// ownerRequired: one of them adds module authority, so the reviewer may only send it on to the owner (in the digest, as args).
+  apply: z.object({ repo: REPO, branch: z.string().min(1).max(200).regex(/^[^\s`]+$/), sha: SHA, files: z.array(z.string().max(300)).min(1).max(200), authority: z.array(z.string().max(300).regex(/^[^\p{Cc}\p{Cf}]+$/u)).min(1).max(200).optional(), ownerRequired: z.boolean().optional() }).strict(),
   // A new app's repository in the agents org (the runner's tiers.mjs refuses any other org or name before filing).
   create_repo: z.object({ repo: z.string().regex(/^[\w.-]+\/[a-z][a-z0-9-]{0,62}$/) }).strict(),
 };
@@ -161,7 +166,8 @@ export function card(action: RunnerAction, args: any, diff = ""): Pick<Request, 
     const what = `Creates the private repository ${args.repo} (with a README) through the instance's GitHub App. It adds a repository to the agents org; nothing else changes.`;
     return { ...base, target: args.repo, sentence: `Create the repository ${args.repo}.`, changes: what, details: what };
   }
-  return { ...base, target: `${args.repo} ${args.branch}`, sentence: `Apply a change to the fleet's configuration (commit ${args.sha.slice(0, 12)}).`, changes: `Lands ${args.sha.slice(0, 12)} on ${args.repo}'s main and re-applies the live fleet. Files: ${args.files.join(", ")}`, cost: "No model cost; services restart.", details: diff };
+  const authority = Array.isArray(args.authority) && args.authority.length ? `\nModule changes (the owner decides those marked owner, after the AI reviewer):\n${args.authority.join("\n")}` : "";
+  return { ...base, target: `${args.repo} ${args.branch}`, sentence: `Apply a change to the fleet's configuration (commit ${args.sha.slice(0, 12)}).`, changes: `Lands ${args.sha.slice(0, 12)} on ${args.repo}'s main and re-applies the live fleet. Files: ${args.files.join(", ")}${authority}`, cost: "No model cost; services restart.", details: diff };
 }
 
 /** An app_run: apps-mcp's checked request (owner, script in package.json at the running commit), filed with the apps token. */
@@ -567,6 +573,8 @@ export class Approvals {
     if (a.digest !== v.digest) return { ok: false, reason: "the digest doesn't match this record" };
     if (v.second !== undefined && v.second === v.model) return { ok: false, reason: "the second reviewer must be another model" };
     if (a.panel && v.decision === "approve" && !v.second) return { ok: false, reason: "an authority-expanding record needs a second reviewer's approval too" };
+    // New module authority (spec §5.7): the reviewer goes first, but only the owner approves it.
+    if (v.decision === "approve" && ownerAfterReview(a)) return { ok: false, reason: "this apply adds module authority: after the reviewer, the owner decides (escalate it)" };
     const by = `reviewer:${v.model}${v.decision === "approve" && v.second ? `+${v.second}` : ""}`;
     const note = v.reason.slice(0, 2000);
     const state = v.decision === "approve" ? "approved" : v.decision === "reject" && v.code === "stale_head" ? "stale" : "rejected";

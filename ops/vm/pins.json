@@ -1,0 +1,86 @@
+{
+  "keys": {
+    "docker": "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+    "nodesource": "6F71F525282841EEDAF851B42F59B5F99B1BE0B4",
+    "tailscale": "2596A99EAAB33821893C0A79458CA832957F5868",
+    "gvisor": "6F1DF85E3A71C24918E727D56FC6D554E32BD943"
+  },
+  "repos": {
+    "docker": "https://download.docker.com/linux/{distro} {codename} stable",
+    "nodesource": "https://deb.nodesource.com/node_24.x nodistro main",
+    "tailscale": "https://pkgs.tailscale.com/stable/{distro} {codename} main",
+    "gvisor": "https://storage.googleapis.com/gvisor/releases 20261102 main"
+  },
+  "apt": {
+    "nodejs": "24.22.3-1nodesource1",
+    "tailscale": "1.104.7",
+    "runsc": "20261102.0"
+  },
+  "releases": {
+    "jammy": {
+      "distro": "ubuntu",
+      "version": "22.04",
+      "apt": {
+        "docker-ce": "5:29.9.3-1~ubuntu.22.04~jammy",
+        "docker-ce-cli": "5:29.9.3-1~ubuntu.22.04~jammy",
+        "docker-ce-rootless-extras": "5:29.9.3-1~ubuntu.22.04~jammy",
+        "containerd.io": "2.4.2-4~ubuntu.22.04~jammy",
+        "docker-buildx-plugin": "0.39.0-1~ubuntu.22.04~jammy",
+        "docker-compose-plugin": "5.7.0-1~ubuntu.22.04~jammy",
+        "fail2ban": "0.11.2-6"
+      }
+    },
+    "noble": {
+      "distro": "ubuntu",
+      "version": "24.04",
+      "apt": {
+        "docker-ce": "5:29.9.3-1~ubuntu.24.04~noble",
+        "docker-ce-cli": "5:29.9.3-1~ubuntu.24.04~noble",
+        "docker-ce-rootless-extras": "5:29.9.3-1~ubuntu.24.04~noble",
+        "containerd.io": "2.4.2-4~ubuntu.24.04~noble",
+        "docker-buildx-plugin": "0.39.0-1~ubuntu.24.04~noble",
+        "docker-compose-plugin": "5.7.0-1~ubuntu.24.04~noble",
+        "fail2ban": "1.0.2-3ubuntu0.1"
+      }
+    },
+    "resolute": {
+      "distro": "ubuntu",
+      "version": "26.04",
+      "apt": {
+        "docker-ce": "5:29.9.3-1~ubuntu.26.04~resolute",
+        "docker-ce-cli": "5:29.9.3-1~ubuntu.26.04~resolute",
+        "docker-ce-rootless-extras": "5:29.9.3-1~ubuntu.26.04~resolute",
+        "containerd.io": "2.4.2-4~ubuntu.26.04~resolute",
+        "docker-buildx-plugin": "0.39.0-1~ubuntu.26.04~resolute",
+        "docker-compose-plugin": "5.7.0-1~ubuntu.26.04~resolute",
+        "fail2ban": "1.1.0-9"
+      }
+    },
+    "bookworm": {
+      "distro": "debian",
+      "version": "12",
+      "apt": {
+        "docker-ce": "5:29.9.3-1~debian.12~bookworm",
+        "docker-ce-cli": "5:29.9.3-1~debian.12~bookworm",
+        "docker-ce-rootless-extras": "5:29.9.3-1~debian.12~bookworm",
+        "containerd.io": "2.4.2-4~debian.12~bookworm",
+        "docker-buildx-plugin": "0.39.0-1~debian.12~bookworm",
+        "docker-compose-plugin": "5.7.0-1~debian.12~bookworm",
+        "fail2ban": "1.0.2-2"
+      }
+    },
+    "trixie": {
+      "distro": "debian",
+      "version": "13",
+      "apt": {
+        "docker-ce": "5:29.9.3-1~debian.13~trixie",
+        "docker-ce-cli": "5:29.9.3-1~debian.13~trixie",
+        "docker-ce-rootless-extras": "5:29.9.3-1~debian.13~trixie",
+        "containerd.io": "2.4.2-4~debian.13~trixie",
+        "docker-buildx-plugin": "0.39.0-1~debian.13~trixie",
+        "docker-compose-plugin": "5.7.0-1~debian.13~trixie",
+        "fail2ban": "1.1.0-8"
+      }
+    }
+  }
+}

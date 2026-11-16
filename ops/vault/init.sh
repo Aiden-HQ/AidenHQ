@@ -7,7 +7,8 @@ set -euo pipefail
 
 U="${AIDENHQ_USER:-${SUDO_USER:-}}"   # the host user AidenHQ runs as (ops/setup.sh sets it; else the sudo caller)
 [ -n "$U" ] && [ "$U" != root ] || { echo "set AIDENHQ_USER to the user AidenHQ runs as" >&2; exit 2; }
-H=/home/$U
+H="$(getent passwd "$U" | cut -d: -f6 || true)"   # the user's home, wherever it is
+[ -n "$H" ] || { echo "no user $U" >&2; exit 2; }
 VIEW=$H/.config/aidenhq
 CIPHER=$H/.local/share/aidenhq/vault.enc
 PLAIN=$H/.config/aidenhq.plain-pre-vault
