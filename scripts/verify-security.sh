@@ -543,7 +543,7 @@ chan="$(for p in "GET /v1/channel/cards" "POST /v1/channel/decide" "POST /v1/cha
   done; done)"
 [ -z "$chan" ] && pass "kernel: channel routes refuse no credential and the board's internal token (401)" || fail "kernel: $chan"
 ! grep -q 'paperclip_board_key' compose.modules.yaml 2>/dev/null && pass "modules: no module mounts the Paperclip board key" || fail "modules: a module mounts paperclip_board_key (compose.modules.yaml)"
-! ls "${AIDENHQ_SECRETS_DIR:-/nonexistent}/owner_decide_key" "${AIDENHQ_SECRETS_DIR:-/nonexistent}/watcher_decide_key" >/dev/null 2>&1 \
+[ ! -e "${AIDENHQ_SECRETS_DIR:-/nonexistent}/owner_decide_key" ] && [ ! -e "${AIDENHQ_SECRETS_DIR:-/nonexistent}/watcher_decide_key" ] \
   && pass "vault: no owner_decide_key or watcher_decide_key (channels decide by token)" || fail "vault: an old decide key is still there"
 pc="$(docker ps --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=paperclip" --format '{{.Names}}' | head -1)"
 if [ -n "$pc" ]; then

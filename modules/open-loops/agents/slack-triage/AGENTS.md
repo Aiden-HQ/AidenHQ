@@ -23,7 +23,7 @@ When torn between two levels, pick the lower. Urgent is rare: a normal day has z
 
 ## Tools
 
-- **Live feed:** `slack_pending_events` (returns the events not yet handled, each with `eventId`, `kind`, `channelId`, `userId`, `threadTs`, `ts`, `text`, `permalink`, `receivedAt`), `notify_owner`.
+- **Live feed:** `slack_pending_events` (returns the events not yet handled, each with `eventId`, `kind`, `channelId`, `userId`, `threadTs`, `ts`, `text`, `permalink`, `receivedAt`), and two `notify_owner` tools: `slack_live.notify_owner` (a Slack DM, with the per-thread cooldown) and `telegram.notify_owner` (the user's Telegram).
 - **Names:** `slack_read_user_profile` (a person) and `slack_search_channels` (a channel).
 - **Paperclip tasks:** `task_search`, `task_create` (idempotent by marker), `task_get`.
 
@@ -67,7 +67,7 @@ Your task gives the user's Slack user ID (`U...`), written `<me>` below.
      One sentence.
      ```
 
-4. **Urgent DMs.** Call `notify_owner` with `priority: "urgent"`, a one-line `text` (what happened, who, what is needed), and always pass `permalink`, `channel_id`, `thread_ts`, `ts` and `received_at` from the event so the per-thread cooldown and staleness header work. If it returns `{sent: false, reason: "cooldown"}` an earlier DM already covers the thread: do nothing more, unless the thread has got worse since that DM (it spread, a second incident, customer impact): then call again with `escalate` set to one line saying what changed, which pages through the cooldown. If `reason: "error"`, create a `needs-response` task for it instead so it is not lost. One DM per incident thread; do not send several for one thread in the same run.
+4. **Urgent DMs.** Call `slack_live.notify_owner` with `priority: "urgent"`, a one-line `text` (what happened, who, what is needed), and always pass `permalink`, `channel_id`, `thread_ts`, `ts` and `received_at` from the event so the per-thread cooldown and staleness header work. If it returns `{sent: false, reason: "cooldown"}` an earlier DM already covers the thread: do nothing more, unless the thread has got worse since that DM (it spread, a second incident, customer impact): then call again with `escalate` set to one line saying what changed, which pages through the cooldown. When it is sent, also call `telegram.notify_owner` with `priority: "urgent"` and the same `text` and `permalink`, so the page reaches Telegram too. If `reason: "error"`, create a `needs-response` task for it instead so it is not lost. One DM per incident thread; do not send several for one thread in the same run.
 
 5. **Finish.** Finish with a one-line count summary in your final message, e.g. "12 events: 9 ignored, 2 tasks (1 needs-response, 1 waiting-on), 1 urgent".
 

@@ -208,10 +208,10 @@ export function createChannels({ db, writes, board, owner, modules, log = () => 
     /** The owner's one-line notices, account reset links and the daily digest, each handed over once (by the board). */
     async notices(module: string) {
       channelOf(module);
-      const [lines, links, digest] = await Promise.all([
-        ok(board("GET", "/internal/owner/grades"), "owner notices"), ok(board("GET", "/internal/owner/reset-links"), "reset links"), ok(board("GET", "/internal/owner/approvals/digest"), "the digest"),
-      ]);
-      return { lines: Array.isArray(lines.lines) ? lines.lines.map(String) : [], links: Array.isArray(links.links) ? links.links : [], digest: typeof digest.text === "string" ? digest.text : null };
+      // Each is handed over once: one failing call never drops what the others already took.
+      const [lines, links, digest] = (await Promise.allSettled([board("GET", "/internal/owner/grades"), board("GET", "/internal/owner/reset-links"), board("GET", "/internal/owner/approvals/digest")]))
+        .map((r) => (r.status === "fulfilled" && r.value.status === 200 ? r.value.json : {}));
+      return { lines: Array.isArray(lines!.lines) ? lines!.lines.map(String) : [], links: Array.isArray(links!.links) ? links!.links : [], digest: typeof digest!.text === "string" ? digest!.text : null };
     },
   };
 }
