@@ -19,9 +19,9 @@ const TIERS = { meritOwner, routineCapped };
 const tierOf = (c, mode) => autonomyCap(c.wrap ? TIERS[c.wrap[0]](c.t, c.wrap[1]) : c.t, mode);
 const ARGS = { only: [{ repo: "acme/app", branch: "feat/x", sha: "a".repeat(40), patch: "b".repeat(64) }] };
 
-function kernel(mode, reviewer = async () => { throw new Error("no reviewer"); }) {
+function kernel(mode, reviewer = async () => { throw new Error("no reviewer"); }, repos = { product: "acme/aidenhq", instance: "acme-agents/aidenhq-instance" }) {
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "parity-")), "kernel.db"));
-  const writes = createWrites({ records, registry: () => KERNEL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, autonomy: () => mode, repos: () => ({ product: "acme/aidenhq", instance: "acme-agents/aidenhq-instance" }),
+  const writes = createWrites({ records, registry: () => KERNEL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, autonomy: () => mode, repos: () => repos,
     reviews: { request: reviewer }, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({ ok: true, text: "" }) });
   return { records, writes };
 }
@@ -148,6 +148,26 @@ test("the kernel decides what the plan only proposes: new module authority, the 
   const no = k.writes.fileRunner({ kind: "runner.push", task: "i-2", args: { only: [{ repo: "acme-agents/app", branch: "feat/b", sha: "7".repeat(40) }] }, plan: { tier: 2, card: { sentence: "x" } } });
   k.writes.decide(no.id, { digest: no.digest, decision: "reject", by: "account:owner", via: "web" });
   assert.deepEqual([push("8".repeat(40))].map((r) => [r.state, r.review_first, r.rule])[0], ["review", "owner", "owner-veto"]);
+  // A merge whose PR URL names another repo, a merge on the instance repo, a repository over the product's name: refused.
+  const mergeOf = (repo, url) => k.writes.fileRunner({ kind: "runner.merge", task: "i-1", args: { prs: [{ repo, number: 2, url }] }, plan: { tier: 0, card: { sentence: "x" } } });
+  assert.throws(() => mergeOf("acme-agents/app", "https://github.com/acme/aidenhq/pull/2"), /another repository/);
+  assert.throws(() => mergeOf("acme-agents/aidenhq-instance", "https://github.com/acme-agents/aidenhq-instance/pull/2"), /only through apply/);
+  assert.throws(() => k.writes.fileRunner({ kind: "runner.create_repo", task: "i-1", args: { repo: "acme/aidenhq" }, plan: { tier: 0, card: { sentence: "x" } } }), /already exists/);
+  // The veto binds to each patch: a request that adds another patch, or reorders them, is still the owner's.
+  const two = (sha, patches) => k.writes.fileRunner({ kind: "runner.push", task: "i-4", args: { only: patches.map((p, i) => ({ repo: "acme-agents/app", branch: `feat/${i}`, sha, patch: p.repeat(64) })) }, plan: { tier: 0, card: { sentence: "x" } } });
+  const first = two("a".repeat(40), ["1"]);
+  assert.equal(first.state, "claimed");
+  const vetoedOne = k.writes.fileRunner({ kind: "runner.push", task: "i-4", args: { only: [{ repo: "acme-agents/app", branch: "feat/v", sha: "b".repeat(40), patch: "2".repeat(64) }] }, plan: { tier: 2, card: { sentence: "x" } } });
+  k.writes.decide(vetoedOne.id, { digest: vetoedOne.digest, decision: "reject", by: "account:owner", via: "web" });
+  const ok = k.writes.fileRunner({ kind: "runner.push", task: "i-4", args: { only: [{ repo: "acme-agents/app", branch: "feat/w", sha: "c".repeat(40), patch: "3".repeat(64) }] }, plan: { tier: 2, card: { sentence: "x" } } });
+  k.records.review(ok.id, ok.digest, { decision: "escalate", by: "reviewer:~acme/a", note: "x" });
+  k.writes.decide(ok.id, { digest: ok.digest, decision: "approve", by: "account:owner", via: "web" }); // the latest owner decision is a yes
+  assert.equal(two("d".repeat(40), ["4", "2"]).rule, "owner-veto");
+  assert.equal(two("e".repeat(40), ["2", "5", "6"]).rule, "owner-veto");
+  assert.equal(two("f".repeat(40), ["5"]).state, "claimed");
+  // An unknown product or instance repo: every runner write is the owner's after the reviewer (fails closed).
+  const blind = kernel("full", undefined, {}).writes.fileRunner({ kind: "runner.push", task: "i-5", args: { only: [{ repo: "acme-agents/app", branch: "feat/c", sha: "9".repeat(40) }] }, plan: { tier: 0, card: { sentence: "x" } } });
+  assert.deepEqual([blind.state, blind.review_first, blind.rule], ["review", "owner", "unknown-repos"]);
   // Autonomy off: the plan's Tier 0 waits for the owner.
   assert.equal(kernel("off").writes.fileRunner({ kind: "runner.push", task: "i-3", args: { only: [{ repo: "acme-agents/app", branch: "feat/c", sha: "9".repeat(40) }] }, plan: { tier: 0, card: { sentence: "x" } } }).state, "owner");
 });

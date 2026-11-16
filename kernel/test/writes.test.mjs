@@ -26,7 +26,7 @@ async function twin(t, { satisfied } = {}) {
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
   const verdicts = [];
   const k = await kernel(t, {
-    agents, grants, secrets, reviewer: () => verdicts.shift(),
+    agents, grants, secrets, reviewer: () => verdicts.shift(), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance" },
     connections: {
       twin: { url: `${mod.url}/mcp`, auth_secret: "twin_service_key", module: "twin", returns: "untrusted", tools: { read: ["note_read"], write: ["post_note", "ping", "note_write"], destructive: ["note_drop"] } },
       other: { url: `${mod.url}/mcp`, auth_secret: "other_service_key", module: "other", returns: "untrusted", tools: { read: [], write: [], destructive: [] } },

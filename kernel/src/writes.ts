@@ -184,6 +184,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     if (autonomy() === "off" && tier === 0) [tier, reviewFirst, rule, reason] = [2, null, "autonomy-off", `autonomy is off (was: ${reason})`];
     if (tier === 1 && autonomy() === "off") reviewFirst ??= "final";
     if (f.ownerRequired) { tier = 2; reviewFirst = reviewFirst === "owner" ? "owner" : "final"; }
+    if (f.owner) [tier, reviewFirst, rule, reason] = [2, "owner", "unknown-repos", `the product or instance repo isn't set here, so the owner decides (was: ${reason})`];
     const veto = records.vetoed(task, kind, { digest, content: f.content });
     if (veto) [tier, reviewFirst, rule, reason] = [2, "owner", "owner-veto", `the owner rejected this action on this task, so they decide (was: ${reason})`];
     if (tier === 1 && reviewFirst) tier = 2;

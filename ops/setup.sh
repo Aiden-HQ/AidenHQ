@@ -266,6 +266,11 @@ if [ ! -f "$REPO/config/runner.yaml" ]; then
   { sed -e 's/^allowed_orgs: .*/allowed_orgs: [local]/' -e 's#^  repo: your-org/aidenhq-instance#  repo: local/aidenhq-instance#' "$REPO/config/runner.example.yaml"
     printf '\nrepo_sources:\n  local/aidenhq-instance: %s\n' "$REMOTE"; } | write_user_file "$REPO/config/runner.yaml" 644
 fi
+# The product repo (owner/name, from this checkout's origin) and the instance repo the runner applies to (runner.yaml
+# apply.repo): the kernel holds the runner's writes to its own floors with them, and makes every runner write the owner's
+# while either is missing.
+grep -q '^AIDENHQ_PRODUCT_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_PRODUCT_REPO "$(ugit -C "$REPO" remote get-url origin | sed -E 's#^.*github\.com[/:]##; s#\.git/*$##')"
+grep -q '^AIDENHQ_INSTANCE_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_INSTANCE_REPO "$(awk '/^apply:/{a=1; next} a && /^  repo:/{print $2; exit}' "$REPO/config/runner.yaml" 2>/dev/null)"
 # The runner's size, when given: a top-level `key: n` in config/runner.yaml (a running runner restarts gracefully below).
 RUNNER_RESIZED=0
 runner_set() { # key value

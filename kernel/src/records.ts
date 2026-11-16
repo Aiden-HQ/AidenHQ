@@ -151,8 +151,11 @@ export function openRecords(file: string, now = () => new Date()) {
       const decided = rows(db.prepare(`SELECT * FROM records WHERE task = ? AND kind = ?${tool ? " AND json_extract(args, '$.connection') || '.' || json_extract(args, '$.tool') = ?" : ""} AND ${OWNER_SQL} AND state IN ('approved','claimed','done','failed','unknown','rejected','cancelled') ORDER BY COALESCE(decided_at, updated_at) DESC, rowid DESC`).all(task, kind, ...(tool ? [tool] : [])));
       if (decided[0]?.state === "rejected") return true;
       if (content === "?" && decided.some((r) => r.state === "rejected")) return true;
-      const sameOne = decided.find((r) => (digest && r.digest === digest) || (content && content !== "?" && r.content === content));
-      return sameOne?.state === "rejected";
+      if (digest && decided.find((r) => r.digest === digest)?.state === "rejected") return true;
+      // Content keys are a set (each branch's or PR's patch): any one the owner's latest decision on it rejected holds,
+      // whatever else the request adds or however it orders them.
+      const keys = (c: string | null | undefined) => (c && c !== "?" ? c.split(",") : []);
+      return keys(content).some((k) => decided.find((r) => keys(r.content).includes(k))?.state === "rejected");
     },
     /**
      * The reviewer's verdict on a record in review, bound to its digest and held to its review-first: approve decides it

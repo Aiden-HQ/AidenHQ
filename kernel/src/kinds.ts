@@ -60,27 +60,37 @@ export function raiseCapCard(a: { scope: string; agentId: string; subject: strin
   };
 }
 
-/** The repositories a runner kind may never treat as ordinary (main.ts reads them from the checkouts' remotes). */
+/** The product and instance repositories (owner/name), from the host's settings (AIDENHQ_PRODUCT_REPO, AIDENHQ_INSTANCE_REPO). */
 export type Repos = { product?: string; instance?: string };
 const lower = (v: unknown) => String(v ?? "").toLowerCase();
+const urlRepo = (url: unknown) => /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/\d+$/.exec(String(url ?? ""))?.[1];
 /**
- * What the kernel derives from a runner kind's args itself, never from the runner's plan: the floor of what it touches (the
- * product repo, a main branch: at least the reviewer), a refusal (a push or PR to the instance repo: it changes only
- * through kernel.apply), new module authority (the owner decides after the reviewer), the replacement target and the veto's
- * content key ("?" when a branch or PR has no patch key: fails closed against any owner no).
+ * What the kernel derives from a runner kind's args itself, never from the runner's plan:
+ * - unknown product or instance repo: nothing can be told apart from them, so every runner kind is the owner's after the
+ *   reviewer (fails closed, as tiers.mjs's unknown-repos);
+ * - a refusal: a push, PR or merge on the instance repo (it changes only through kernel.apply), a merge whose PR URL names
+ *   another repo than its `repo`, a repository created over the product's or the instance's name;
+ * - the floor: the product repo or a main branch, and a PR that also merges, at least the reviewer;
+ * - new module authority (an apply's ownerRequired): the owner decides after the reviewer;
+ * - the replacement target, and the veto's content keys (each branch's or PR's patch; "?" when one has none: fails closed).
  */
-export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 | 1; refuse?: string; ownerRequired: boolean; target?: string; content: string | null } {
+export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 | 1 | 2; owner: boolean; refuse?: string; ownerRequired: boolean; target?: string; content: string | null } {
   const action = kind.replace(/^(runner|kernel)\./, "");
   const branches: { repo: string; branch: string }[] = args?.only ?? [];
-  const prRepos: string[] = (args?.prs ?? []).map((p: any) => p.repo);
-  const touched = [...branches.map((b) => b.repo), ...prRepos].map(lower);
-  if (repos.instance && (action === "push" || action === "pr") && touched.includes(lower(repos.instance))) return { floor: 1, refuse: "the instance repo changes only through apply", ownerRequired: false, content: null };
-  const floor = (repos.product && touched.includes(lower(repos.product))) || branches.some((b) => /^(main|master)$/.test(b.branch)) || args?.merge === true ? 1 : 0;
-  const target = action === "merge" && prRepos.length ? (args.prs as any[]).map((p) => lower(p.url)).sort().join(" ")
+  const prs: { repo: string; url: string }[] = args?.prs ?? [];
+  const refused = (why: string) => ({ floor: 2 as const, owner: false, refuse: why, ownerRequired: false, content: null });
+  if (prs.some((p) => lower(urlRepo(p.url)) !== lower(p.repo))) return refused("a PR's URL names another repository than its repo");
+  const touched = [...branches.map((b) => b.repo), ...prs.map((p) => p.repo), ...(action === "create_repo" ? [args?.repo] : [])].map(lower);
+  const product = lower(repos.product), instance = lower(repos.instance);
+  if (instance && action !== "apply" && touched.includes(instance)) return refused("the instance repo changes only through apply");
+  if (product && action === "create_repo" && touched.includes(product)) return refused("the product repo already exists");
+  const unknown = !product || !instance;
+  const floor = unknown ? 2 : touched.includes(product) || branches.some((b) => /^(main|master)$/.test(b.branch)) || args?.merge === true ? 1 : 0;
+  const target = action === "merge" && prs.length ? prs.map((p) => lower(p.url)).sort().join(" ")
     : (action === "push" || action === "pr") && branches.length ? branches.map((b) => `${lower(b.repo)} ${b.branch}`).sort().join(" ")
     : action === "apply" ? `${lower(args.repo)} ${args.branch}` : action === "create_repo" ? lower(args.repo) : undefined;
-  const p = requestPatches(action, { branches, prs: args?.prs ?? [] });
-  return { floor, ownerRequired: action === "apply" && args?.ownerRequired === true, ...(target ? { target } : {}), content: p === undefined ? null : p === null ? "?" : p };
+  const p = requestPatches(action, { branches, prs });
+  return { floor, owner: unknown, ownerRequired: action === "apply" && args?.ownerRequired === true, ...(target ? { target } : {}), content: p === undefined ? null : p === null ? "?" : p };
 }
 
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */

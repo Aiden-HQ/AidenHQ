@@ -10,8 +10,7 @@
 import http from "node:http";
 import { existsSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
-import { configDir, dataDir, env, repo, secret } from "./env.ts";
+import { configDir, dataDir, env, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin } from "./admin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
@@ -64,17 +63,11 @@ const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
 const moduleKinds = watched(path.join(configDir, "kernel", "writes.json"), (j) => j as Record<string, Kind>, {});
 const registry = () => ({ ...moduleKinds(), ...KERNEL_KINDS });
 let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => ({ ok: false, text: "the proxy isn't up" });
-// The product and instance repositories (owner/name on GitHub, from each checkout's origin): runner kinds touching them get
-// the kernel's own floors and refusals (kinds.ts runnerFacts), whatever the runner's plan says. Read once at start.
-const slugOf = (dir: string | undefined) => {
-  if (!dir) return undefined;
-  try {
-    const url = execFileSync("git", ["-C", dir.replace(/^~(?=\/)/, process.env.HOME ?? ""), "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return /github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?\/*$/.exec(url)?.[1];
-  } catch { return undefined; }
-};
-const repos = { product: env("AIDENHQ_PRODUCT_REPO") || slugOf(repo), instance: slugOf(env("AIDENHQ_INSTANCE_DIR")) };
-if (!repos.product || !repos.instance) log("runner kinds: a repository is unknown, so its floor isn't applied here", repos);
+// The product and instance repositories (owner/name), as setup recorded them in .env: runner kinds touching them get the
+// kernel's own floors and refusals (kinds.ts runnerFacts), whatever the runner's plan says. Either unknown: every runner
+// kind is the owner's after the reviewer (fails closed).
+const repos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined };
+if (!repos.product || !repos.instance) log("runner kinds: AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set, so every runner write is the owner's", repos);
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
