@@ -16,4 +16,6 @@ RUN curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.2
     && chmod -R a+rX /opt/rust && /opt/rust/cargo/bin/rustc --version
 ENV PATH=/opt/rust/cargo/bin:$PATH
 # Global npm installs land in /usr/local (the node image's prefix), readable by all.
-RUN npm i -g pnpm@10.20.0 typescript@5.9.3 && npm cache clean --force
+# pnpm 10.34.9 (2026-10-25): its vendored tree carries tar 7.5.22 (GHSA-23hp-3jrh-7fpw fixed in 7.5.19), glob 10.5.0,
+# picomatch 4.0.7, brace-expansion 2.1.7, minimatch 9.0.9 and ip-address 10.7.4 (the 14 highs 10.20.0 had).
+RUN npm i -g pnpm@10.34.9 typescript@5.9.3 && npm cache clean --force
