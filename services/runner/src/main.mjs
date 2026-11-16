@@ -1173,8 +1173,12 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
   }
   // The tasks that opened these PRs close too, so they don't sit "in review" (shown as waiting for the owner).
   const mergedUrls = queue.prs.filter((p) => p.status === "merged").map((p) => p.url);
+  // Its own task too: a merge recorded only on other tasks' rows left this one's branch reading unmerged, so a later receipt
+  // invited a `pr` for work already on the default branch.
+  const markMerged = (id) => state.branches(id).filter((b) => b.pr_url && mergedUrls.some((u) => u.toLowerCase() === String(b.pr_url).toLowerCase())).forEach((b) => state.updateBranch(id, b.repo, b.branch, { merged: 1 }));
+  markMerged(issueId);
   for (const other of state.issuesWithPrs(mergedUrls, issueId)) {
-    for (const b of state.branches(other)) if (b.pr_url && mergedUrls.some((u) => u.toLowerCase() === b.pr_url.toLowerCase())) state.updateBranch(other, b.repo, b.branch, { merged: 1 });
+    markMerged(other);
     const o = await pc.issue(other).catch(() => undefined);
     const open = state.branches(other).filter((b) => b.pr_url && !b.merged).map((b) => b.pr_url);
     if (o?.status === "in_review" && merges.finishedStatus(o, queue, open) === "done" && (await mayClose(other, "finish_merges"))) await pc.setStatus(other, "done", `Merged by ${queue.identifier}'s merge queue.`).catch(() => {});
@@ -3886,6 +3890,25 @@ function headsOf(issueId) {
 }
 
 /**
+ * Whether the board already shows a task's work published, so the receipt leaves it out of its `pr` invitation: every branch
+ * row's PR merged or closed at the head its run ended on (a merge after that run counts; a commit made on the branch since
+ * does not). A row with no PR, no recorded head, or a head its merge or close doesn't account for keeps the invitation: the
+ * row alone is no evidence a committed head went out. Only the runner's own records are read, never a guess.
+ */
+function publishedAt(issue) {
+  if (CLOSED.includes(issue.status)) return true;
+  // No row or head is no evidence (`every` on nothing is true), so both are asked for first.
+  const heads = headsOf(issue.id);
+  const rows = state.branches(issue.id);
+  const merged = (mergeQueue(issue.id)?.prs ?? []).filter((p) => p.status === "merged");
+  return heads.length > 0 && rows.length > 0 && rows.every((row) => {
+    const head = heads.find((h) => sameRepo(h.repo, row.repo) && h.branch === row.branch);
+    if (!head || !((row.pr_url && row.merged) || row.closed)) return false;
+    return row.closed ? row.closed_head === head.sha : merged.some((p) => sameRepo(p.repo, row.repo) && (p.head === head.sha || p.headOid === head.sha));
+  });
+}
+
+/**
  * The pending pr/merge cards that cover every one of a task's heads: [{ id, action, sha }]. Only a task whose every
  * head is covered counts, so the receipt never hides a branch that still needs a request. A failed board read is no
  * cards: the receipt then offers `pr`, as it did before this existed.
@@ -3933,6 +3956,7 @@ async function handleParentPr(parent, fresh) {
         const cards = await cardsAt(kid, headsOf(kid.id));
         if (running.has(kid.id) || queue.some((j) => j.issue.id === kid.id)) note = "Still running: reply **pr** on it when it's done";
         else if (cards.length) note = `Already requested: ${cards.map((c) => `${c.id} (${c.action})`).join(", ")}`;
+        else if (publishedAt(kid)) note = "Already published";
         else if (!(await taskHasCommits(task))) note = "Nothing to publish";
         else await runCommand(kid, task, "pr");
       } catch (err) {
@@ -3970,7 +3994,7 @@ async function reportToParent(issue) {
   const rows = await Promise.all(
     sorted.map(async ({ c, job }) => {
       const committed = job?.detail === "committed";
-      return { identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed, cards: committed ? await cardsAt(c, headsOf(c.id)) : [], graded: await graded(c.id) };
+      return { identifier: c.identifier, title: c.title, status: c.status, job: job?.status, committed, cards: committed ? await cardsAt(c, headsOf(c.id)) : [], published: committed && publishedAt(c), graded: await graded(c.id) };
     }),
   );
   // The same table again (a resumed run that changed nothing) would only wake the parent's agent for nothing.
@@ -4197,11 +4221,11 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   });
   const prUrl = stdout.trim().split("\n").pop();
   if (adopted) {
-    state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl });
+    state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });
     log("existing PR adopted", { issue: issue.identifier, url: prUrl });
     return `${pushed ? `${pushed} to the PR that was already open` : "This branch already has an open PR"}: ${prUrl}`;
   }
-  state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl });
+  state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });
   log("draft PR opened", { issue: issue.identifier, url: prUrl });
   return `${pushed ? `${pushed}, opened` : "Opened"} draft PR ${prUrl}`;
 }
@@ -4457,7 +4481,9 @@ async function leaveFinishedPrs(issue, workspace) {
     }
     if (pr.state === "OPEN") continue;
     if (pr.state === "CLOSED") {
-      state.updateBranch(issue.id, b.repo, b.branch, { pr_url: null });
+      // Closed without merging: remembered as closed, so a receipt leaves the finished work out. `pr` still opens a new one:
+      // it takes the closed row as a branch with no PR and clears the flag when it does.
+      state.updateBranch(issue.id, b.repo, b.branch, { pr_url: null, closed: 1, closed_head: pr.headRefOid ?? null });
       notes.push(`PR #${pr.number} (\`${b.branch}\`) was closed without merging, so **pr** will open a new one.`);
       continue;
     }
