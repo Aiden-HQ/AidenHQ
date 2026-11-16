@@ -12,6 +12,21 @@ export class State {
     this.db.exec(`
       PRAGMA busy_timeout = 5000;
       PRAGMA journal_mode = WAL;
+    `);
+    // One writer migrates at a time: the runner and a second opener (a test, a CLI) checking for a column at once would both
+    // add it ("duplicate column name").
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.migrate();
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  private migrate() {
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         issue_id    TEXT PRIMARY KEY,
         identifier  TEXT NOT NULL,
