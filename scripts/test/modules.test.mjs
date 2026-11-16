@@ -165,7 +165,10 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
     host: { "owner-channel": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL", "OWNER_COMMAND_CHANNEL", "AIDENHQ_GATEWAY_URL"], google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"], jira: ["AIDENHQ_GATEWAY_URL"], tasks: ["AIDENHQ_GATEWAY_URL"], github: ["GITHUB_COMMENT_ORGS"], slack: ["SLACK_CLIENT_ID"] },
   };
   // 2f split owner-channel into channel-telegram, channel-slack and chat-lane: each may keep only a part of what it had.
-  const split = { "channel-telegram": "owner-channel", "channel-slack": "owner-channel", "chat-lane": "owner-channel" };
+  const split = { "channel-telegram": "owner-channel", "channel-slack": "owner-channel", "chat-lane": "owner-channel", grading: "board-grades" };
+  // 3h moved the grade rows out of the board into the grading module: its one link is the pair network to the board, for the
+  // board's reads of those rows, until the board is a module (4a). No root secret, no host variable.
+  was.links["board-grades"] = ["board"];
   const within = (now, before) => Object.entries(now).every(([m, l]) => l.every((x) => (before[m] ?? before[split[m]] ?? []).includes(x)));
   assert.ok(within(Object.fromEntries(Object.entries(LEGACY_LINKS).map(([m, v]) => [m, v.to])), was.links));
   assert.ok(within(LEGACY_SECRETS, was.secrets));
@@ -205,6 +208,19 @@ test("disabling open-loops removes its agents, routines and labels only", () => 
   for (const k of ["chief-of-staff", "assistant", "app-maintainer", "fleet-engineer", "meeting-librarian"]) assert.ok(r.paperclip.agents[k], k);
   assert.ok(!r.paperclip.labels.some((l) => l.name === "waiting-on"));
   assert.ok(r.paperclip.mcp_servers.telegram && r.paperclip.mcp_servers.chat_lane, "the Telegram channel and the chat lane stay: core requires them");
+});
+// Lean-core 3h: graded done is the grading module, always installed: its finish check for the kernel, its own token, the
+// board's read key and the tasks module on its network; nothing of the control plane's.
+test("the grading module: its finish check, its token, the board's key, tasks on its network", () => {
+  const r = compile(repo, inst([], { timezone: "UTC", owner_name: "Sam", owner_email: "o@x" }));
+  assert.deepEqual(r.checks["grading.finish"], { module: "grading", at: "task.finish", url: "http://grading:8096/check/finish", auth_secret: "grading_check_key", label: "grading" });
+  assert.equal(r.kernelModules.modules.grading.token, "grading_token");
+  assert.deepEqual(r.kernelModules.modules.grading.roles, ["kernel.cp-read"]);
+  const g = r.compose.services["grading-grading"];
+  assert.ok(g && !g.ports && !JSON.stringify(g).includes("paperclip_board_key"), "no published port, no control-plane key");
+  assert.equal(r.compose.services.board.environment.GRADING_URL, "http://grading:8096");
+  assert.ok(r.compose.services.board.secrets.includes("grading_board_key"));
+  assert.ok(Object.keys(r.compose.services["tasks-mcp"].networks).includes("mod-grading"));
 });
 // Lean-core 3e: the runner starts jobs through the kernel as engineering, with its own generated token, for every engine-run
 // agent (core's Platform Engineer included); engineering needs any engine, which core's engine-codex provides.

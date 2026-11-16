@@ -19,7 +19,7 @@ export const cpSeen = [];
 
 const front = await listen(async (req, res) => {
   const u = req.url ?? "";
-  if (u.startsWith("/internal/") && u !== "/internal/apps") {
+  if ((u.startsWith("/internal/") && u !== "/internal/apps") || u === "/grades") {
     if (current.board) return current.board(req, res);
     await read(req);
     return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(/\/gate$/.test(u) ? { pass: true } : {}));
@@ -50,7 +50,7 @@ const kernel = await listen(async (req, res) => {
   send(404, {});
 });
 
-Object.assign(process.env, { AIDENHQ_KERNEL_URL: url(kernel), MCP_TOKEN: SERVICE_KEY, AIDENHQ_BOARD_TOKEN: "board-token", AIDENHQ_BOARD_URL: url(front), APPS_MCP_URL: url(front), AIDENHQ_GATEWAY_URL: url(front), AIDENHQ_MODULE: "tasks" });
+Object.assign(process.env, { AIDENHQ_KERNEL_URL: url(kernel), MCP_TOKEN: SERVICE_KEY, AIDENHQ_BOARD_TOKEN: "board-token", AIDENHQ_BOARD_URL: url(front), GRADING_URL: url(front), APPS_MCP_URL: url(front), AIDENHQ_GATEWAY_URL: url(front), AIDENHQ_MODULE: "tasks" });
 const { server } = await import("../src/main.mjs");
 const { forget } = await import("../src/tools.mjs");
 await new Promise((ok) => server.listen(0, "127.0.0.1", ok));

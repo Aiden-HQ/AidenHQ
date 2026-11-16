@@ -2,9 +2,11 @@
 // caller assertion it was handed (X-AidenHQ-Caller), which opens this route only while that call is in flight and only for
 // the module it was addressed to (assert.ts). The path must be one of the control plane's agent routes below; the kernel
 // forwards with the caller's own credential (the run's JWT or agent key; an agent computer's run through its launcher, on the
-// box's own bridge), so the control plane sees the agent itself, never the owner.
+// box's own bridge), so the control plane sees the agent itself, never the owner. A status change to `done` passes the
+// finish gate first (checks.ts): held or reopened, the change isn't forwarded and the answer says so (202).
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Asserter } from "./assert.ts";
+import type { Checks } from "./checks.ts";
 import type { Connection, Whoami } from "./identity.ts";
 import { fail } from "./proxy.ts";
 
@@ -25,8 +27,8 @@ export const CP_AGENT_PATHS: [string, RegExp][] = [
 ];
 const MAX = 32 * 1024 * 1024;
 
-export function createCp({ whoami, asserter, controlUrl, launcherUrl, log = () => {} }: {
-  whoami: Whoami; asserter: Asserter; controlUrl: string; launcherUrl?: string; log?: (msg: string, f?: Record<string, unknown>) => void;
+export function createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log = () => {} }: {
+  whoami: Whoami; asserter: Asserter; controlUrl: string; launcherUrl?: string; checks?: Checks; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   return async function cp(req: IncomingMessage, res: ServerResponse, path: string, query: string): Promise<void> {
     const mod = await whoami(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim()).catch(() => undefined);
@@ -42,6 +44,21 @@ export function createCp({ whoami, asserter, controlUrl, launcherUrl, log = () =
     for await (const c of req) { n += c.length; if (n > 4 * 1024 * 1024) throw fail(413, "too_large", "too large"); chunks.push(c); }
     const body = method === "GET" || method === "HEAD" ? undefined : Buffer.concat(chunks);
     const target = `${path}${query}`;
+    const task = method === "PATCH" ? /^\/api\/issues\/([^/]+)$/.exec(path)?.[1] : undefined;
+    if (task && checks) {
+      let status: unknown;
+      try { status = JSON.parse(body?.toString("utf8") || "{}")?.status; } catch { throw fail(400, "bad_request", "the body must be JSON"); }
+      if (status === "done") {
+        // The tool claim is `<connection>.<tool>`, the connection always this module's own: the check gets the tool's name.
+        const tool = String(live.caller.tool ?? "").split(".").pop()!;
+        const f = await checks.finish(decodeURIComponent(task), { agent: live.caller.agent, tool, via: tool });
+        if (!f.pass) {
+          const out = Buffer.from(JSON.stringify("held" in f ? { held: { state: f.state, reason: f.reason } } : { reopened: { reason: f.reason } }));
+          log("cp", { module: mod.module, agent: live.caller.key, method, path, finish: "held" in f ? "held" : "reopened" });
+          return void res.writeHead(202, { "content-type": "application/json", "content-length": out.length }).end(out);
+        }
+      }
+    }
     let status: number, type: string, out: Buffer;
     if (cred.startsWith("ahqc_")) {
       // An agent computer's run: its control-plane credential works only inside its box (the launcher runs the call there).

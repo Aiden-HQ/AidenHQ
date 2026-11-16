@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { Paperclip, type Issue } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
+import { fakeGrading } from "./fake-grading.js";
 
 const CO = "00000000-0000-4000-8000-000000000001";
 const KEY = "owner-board-key";
@@ -76,9 +77,9 @@ afterEach(() => {
   while (servers.length) servers.pop()!.close();
 });
 
-async function board(issues: Issue[]) {
+async function board(issues: Issue[], grading = fakeGrading()) {
   const { patches, paperclip, find } = fake(issues);
-  const app = createApp({ paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
+  const app = createApp({ paperclip, store: new Store(":memory:"), grading, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
   servers.push(app);
   await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
   const port = (app.address() as AddressInfo).port;
@@ -117,6 +118,21 @@ describe("the board-load sweep leaves parts waiting on their own trigger", () =>
     expect(b.find(prerequisite.id)!.status).toBe("blocked");
     expect(b.patches.map((p) => p.id)).not.toContain(prerequisite.id);
     expect(b.patches).toEqual([{ id: ordinary.id, body: { status: "done" } }]);
+  });
+});
+
+describe("the grading module down", () => {
+  it("leaves a part undone (fail closed) when its task is done, but still cancels with a cancelled task", async () => {
+    const grading = fakeGrading();
+    grading.down = true;
+    const done = issue({ status: "done", title: "Merged task", completedAt: at(30), updatedAt: at(30) });
+    const cancelled = issue({ status: "cancelled", title: "Dropped task", cancelledAt: at(30), updatedAt: at(30) });
+    const partOfDone = issue({ status: "in_review", title: "Read it", parentId: done.id, assigneeUserId: null, assigneeAgentId: "eng" });
+    const partOfCancelled = issue({ status: "todo", title: "Ship it", parentId: cancelled.id, assigneeUserId: null, assigneeAgentId: "eng" });
+    const b = await board([done, cancelled, partOfDone, partOfCancelled], grading);
+    expect((await b.get("/api/board")).status).toBe(200);
+    expect(b.patches).toEqual([{ id: partOfCancelled.id, body: { status: "cancelled" } }]);
+    expect(b.find(partOfDone.id)!.status).toBe("in_review");
   });
 });
 

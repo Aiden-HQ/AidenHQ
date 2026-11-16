@@ -34,6 +34,8 @@ export const SHARED = {
     "modules/primer/connections/primer-mcp/src",
     "modules/slack/connections/slack-mcp/src",
     "modules/tasks/connections/tasks-mcp/src",
+    // The grading service checks the tasks module's assertion when it files a rubric; it fences nothing.
+    ...(f === "caller.ts" ? ["modules/grading/service/src"] : []),
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
   "kernel/sdk/src/executor.ts": ["services/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/channel-slack/connections/slack/src/aidenhq-sdk/executor.ts"],

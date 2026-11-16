@@ -91,6 +91,10 @@ export const GATE_CORE = [
   // record carries.
   /^modules\/primer\/module\.yaml$/,
   /^modules\/primer\/connections\/primer-mcp\/src\/publish\.ts$/,
+  // Graded done (lean-core 3h): the whole grading module, as the board's gate route in app.ts was. Its finish check decides
+  // who may close a graded task and holds it; its manifest registers that check with the kernel's finish gate; its service
+  // build, the grade loop the runner hosts, and every file added later sit behind the same panel (GATE_DIRS below).
+  /^modules\/grading\//,
   /^scripts\/modules\.(mjs|ts)$/,
   /^scripts\/paperclip-setup\.(mjs|ts)$/,
   /^scripts\/no-shell\.(mjs|ts)$/,
@@ -114,6 +118,7 @@ export const GATE_CORE = [
 /** Where gate files live: every tracked file here must match a GATE_CORE entry or be listed in OUTSIDE_GATE. A trailing
  * `/` is a prefix; anything else is an exact path. */
 export const GATE_DIRS = [
+  "modules/grading/",
   "services/runner/src/",
   "kernel/",
   "services/computer/",

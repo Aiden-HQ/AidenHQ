@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../src/store.js";
 import { card, fakeRecords } from "./fake-records.js";
+import { fakeGrading } from "./fake-grading.js";
 import { WAKE_MARKER, wakeTick, type Recent } from "../src/wake.js";
 
 const t0 = Date.parse("2026-11-13T12:00:00Z");
@@ -44,8 +45,8 @@ function fake() {
   return { pc, tasks, runs, comments, put, holds, released };
 }
 
-function deps(f: ReturnType<typeof fake>, store: Store, records = fakeRecords()) {
-  return { pc: f.pc as never, store, records, prStates: async () => [], log: { info() {}, warn() {} }, grantsFile: "/nonexistent" };
+function deps(f: ReturnType<typeof fake>, store: Store, records = fakeRecords(), grading = fakeGrading()) {
+  return { pc: f.pc as never, store, records, grading, prStates: async () => [], log: { info() {}, warn() {} }, grantsFile: "/nonexistent" };
 }
 
 describe("event wake-ups", () => {
@@ -143,18 +144,17 @@ describe("event wake-ups", () => {
     const recent: Recent = new Map();
     f.put({ id: "1", assigneeAgentId: "a", status: "in_progress" }, t0 - 60 * MIN);
     f.put({ id: "2", parentId: "1", assigneeAgentId: "e", status: "in_review" }, t0 - 60 * MIN);
-    store.grades.file("2", [], { kind: "pr", ref: "" });
+    const grading = fakeGrading({ "2": { state: "open" } });
     const records = fakeRecords([card({ id: "A1", issueId: "2", identifier: "WOR-2", action: "pr" })]);
-    await wakeTick(deps(f, store, records), recent, t0); // the baseline
+    await wakeTick(deps(f, store, records, grading), recent, t0); // the baseline
 
     records.cards[0]!.state = "rejected";
-    store.grades.record("2", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "not merged" }] }, t0 + MIN);
-    for (const at of [5, 10]) expect(await wakeTick(deps(f, store, records), recent, t0 + at * MIN)).toEqual([]);
+    grading.rows["2"] = { state: "needs_revision", updatedAt: iso(t0 + MIN) };
+    for (const at of [5, 10]) expect(await wakeTick(deps(f, store, records, grading), recent, t0 + at * MIN)).toEqual([]);
     expect(f.comments).toHaveLength(0);
 
-    store.grades.record("2", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "not merged" }] }, t0 + 11 * MIN); // the same version again: escalated
-    expect(store.grades.get("2")?.state).toBe("escalated");
-    expect(await wakeTick(deps(f, store, records), recent, t0 + 16 * MIN)).toEqual(["1"]);
+    grading.rows["2"] = { state: "escalated", updatedAt: iso(t0 + 11 * MIN) };
+    expect(await wakeTick(deps(f, store, records, grading), recent, t0 + 16 * MIN)).toEqual(["1"]);
     expect(f.comments[0]!.body).toContain("WOR-2's grade: escalated.");
   });
 

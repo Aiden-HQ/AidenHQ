@@ -5,7 +5,9 @@
 //   GET  /v1/whoami            (run, job or module token) who the bearer is and its granted tools
 //   GET  /v1/agents            (module token) every agent's key, roles and the fields setup records for it, never its tools
 //   POST /c/<connection>/mcp   (run or module token) the tool proxy (proxy.ts)
-//   ANY  /v1/cp/agent/<path>   (module token + caller assertion) cp.ts
+//   ANY  /v1/cp/agent/<path>   (module token + caller assertion) cp.ts; a status change to done passes the finish gate
+//   POST /v1/finish            (the runner's key) the finish gate for one of the runner's own closes (checks.ts)
+//   POST /v1/checks/:task      (a check's module) release its label on a task, or resolve a hold it placed (checks.ts)
 //   POST /v1/writes            (run, module, or job token naming the kind) request a write (writes.ts); with the runner's key, one
 //                              of its kinds (or kernel.apply) with its plan; GET /v1/writes/:id its record (own only; the board
 //                              and the runner: any)
@@ -30,6 +32,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
 import type { Brake } from "./brake.ts";
+import type { Checks } from "./checks.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
@@ -41,7 +44,6 @@ import { CONN_TOOL, type Writes } from "./writes.ts";
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
 /** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
 const DIRECTORY = ["key", "roles", "trial", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
-const SETTINGS = ["grading", "loop_brake"];
 
 /** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it, so the lock can't miss a route. */
 export const ROUTES = [
@@ -52,6 +54,8 @@ export const ROUTES = [
   { method: "POST", path: "/c/:connection/mcp", auth: "bearer" },
   { method: "DELETE", path: "/c/:connection/mcp", auth: "bearer" },
   { method: "ANY", path: "/v1/cp/agent/*", auth: "module+assertion" },
+  { method: "POST", path: "/v1/finish", auth: "runner" },
+  { method: "POST", path: "/v1/checks/:task", auth: "module" },
   { method: "POST", path: "/v1/writes", auth: "bearer" },
   { method: "GET", path: "/v1/writes", auth: "board|runner" },
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
@@ -81,7 +85,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/operator/:op", auth: "operator-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved"], recent: ALL, finished: ["done", "failed", "unknown"] };
@@ -93,7 +97,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, advisories = () => [], accounts, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, advisories = () => [], accounts, checks, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -107,6 +111,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   advisories?: () => unknown[];
   /** 3g: the accounts' routes (auth-api.ts). */
   accounts?: (req: IncomingMessage, res: ServerResponse, group: string, op: string) => Promise<void>;
+  /** 3h: the finish gate (checks.ts). */
+  checks?: Checks;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -142,10 +148,24 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           if (w?.kind !== "module") throw fail(401, "unauthorized", "a module's own token is required");
           const t = grantsFile();
           const agents = Object.fromEntries(Object.entries(t.agents ?? {}).map(([id, g]) => [id, Object.fromEntries(DIRECTORY.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]))]));
-          return send(res, 200, { agents, settings: Object.fromEntries(SETTINGS.map((k) => [k, t[k] ?? "on"])) });
+          // The instance's settings setup writes beside the agents (kill switches, the repos): every top-level string.
+          return send(res, 200, { agents, settings: Object.fromEntries(Object.entries(t).filter(([, v]) => typeof v === "string")) });
         }
         case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);
+        case "POST /v1/finish": {
+          runner(req);
+          if (!checks) throw fail(503, "unavailable", "checks are off");
+          const b = await json(req);
+          if (typeof b.task !== "string" || !["finish_turn", "finish_merges"].includes(b.via)) throw fail(400, "bad_request", "send {task, via: finish_turn|finish_merges}");
+          const f = await checks.finish(b.task.slice(0, 100), { via: b.via });
+          return send(res, 200, f.pass ? { pass: true } : "held" in f ? { pass: false, state: f.state } : { pass: false, reopened: true });
+        }
+        case "POST /v1/checks/:task": {
+          const w = await moduleOf(req);
+          if (!checks) throw fail(503, "unavailable", "checks are off");
+          return send(res, 200, await checks.resolve(w.module!, m[0]!, await json(req)));
+        }
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
       }
       if (hit && /^\/v1\/(channel|cp\/read|brake|wake)/.test(hit.path)) {

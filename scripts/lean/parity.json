@@ -145,7 +145,8 @@
     "workflow": "Graded done, reopen on failed grade",
     "today": [
       "services/runner/test/flow-graded.test.mjs",
-      "services/board/test/grades.test.ts"
+      "modules/grading/test/parity.test.mjs",
+      "modules/grading/test/grades.test.mjs"
     ],
     "next": "grading task.finish check"
   },

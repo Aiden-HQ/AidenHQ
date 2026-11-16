@@ -26,6 +26,7 @@
 import { APPROVAL_MARKER, NOTICE_MARKER, chatAgentMarker, continuedIn, continuedMarker, continuesMarker } from "./chats.js";
 import { RUNNER_MARKER, displayText } from "./board.js";
 import { OPEN, type Comment, type Issue, type Paperclip } from "./paperclip.js";
+import type { Grading } from "./grading.js";
 import type { Records } from "./records.js";
 import type { Store } from "./store.js";
 
@@ -43,7 +44,8 @@ const OPEN_STATUSES = new Set(OPEN.split(","));
 type PaperclipPart = Pick<Paperclip, "me" | "agents" | "openIssues" | "liveRuns" | "recentRuns" | "issue" | "createIssue" | "updateIssue" | "addComment" | "children" | "commentPage">;
 export interface RolloverDeps {
   pc: PaperclipPart;
-  store: Pick<Store, "meta" | "setMeta" | "grades">;
+  store: Pick<Store, "meta" | "setMeta">;
+  grading: Pick<Grading, "grades">;
   records: Pick<Records, "list">;
   log: { info(o: object, m: string): void; warn(o: object, m: string): void };
 }
@@ -206,8 +208,10 @@ export async function rolloverTick(deps: RolloverDeps, now = Date.now()): Promis
     if (!stuck.has(t.id) && !(size && estimate(size) > LIMIT)) continue;
     // A card still waiting, or decided in the last day and not yet applied: its outcome is posted on this task.
     const cards = (await records.list("recent", { task: t.id, limit: 50 })).some((a) => a.state === "pending" || (["approved", "used"].includes(a.state) && a.outcome == null && now - Date.parse(a.createdAt) < 24 * 60 * MIN));
-    if (busy.has(t.id) || cards || store.grades.get(t.id)) {
-      log.warn({ issue: t.identifier, size: size && estimate(size), stuck: stuck.has(t.id), busy: busy.has(t.id), cards, graded: !!store.grades.get(t.id) }, "rollover: task too long, not moved now");
+    // A task with a grade row isn't moved; the grading module unreachable: treated as graded.
+    const graded = await deps.grading.grades([t.id]).then((v) => v.grades[t.id] !== null, () => true); // a row, or unknown: not moved
+    if (busy.has(t.id) || cards || graded) {
+      log.warn({ issue: t.identifier, size: size && estimate(size), stuck: stuck.has(t.id), busy: busy.has(t.id), cards, graded }, "rollover: task too long, not moved now");
       continue;
     }
     try {
@@ -237,13 +241,13 @@ export async function rolloverTick(deps: RolloverDeps, now = Date.now()): Promis
 }
 
 /** Starts the reconciler (main.ts). */
-export function startRollover(pc: Paperclip, store: Store, records: Records, log: RolloverDeps["log"]): void {
+export function startRollover(pc: Paperclip, store: Store, records: Records, grading: Grading, log: RolloverDeps["log"]): void {
   let busy = false;
   const run = async () => {
     if (busy) return;
     busy = true;
     try {
-      await rolloverTick({ pc, store, records, log });
+      await rolloverTick({ pc, store, records, grading, log });
     } catch (err) {
       log.warn({ err: String(err) }, "rollover failed");
     } finally {

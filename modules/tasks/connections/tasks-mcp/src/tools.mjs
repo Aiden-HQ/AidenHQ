@@ -465,8 +465,10 @@ async function describe(a) {
   } catch {}
   return a.title;
 }
-// Graded done: a delegated deliverable is checked against its rubric before it may close. The board keeps the rubric (never
-// the description, which only shows a copy) and the gate.
+// Graded done: a delegated deliverable is checked against its rubric before it may close. The grading module keeps the rubric
+// (never the description, which only shows a copy); its finish check runs in the kernel's finish gate on every move to done
+// (a held close answers 202 {held}, and nothing moves but the hold).
+const GRADING = (process.env.GRADING_URL || "http://grading:8096").replace(/\/$/, "");
 const DELIVERABLES = ["pr", "app", "apply", "file", "report", "none"];
 const GRADING_NOTE = "Held for grading: the grader checks this task against its rubric, then closes it or reopens it with the unmet criteria. Nothing more to do now: end your turn.";
 const gradedAgent = (id) => dirAgents()[id]?.graded === true;
@@ -492,7 +494,7 @@ const PAGE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._~-]/;
 const noFact = (c) => NO_FACT.find(([re], i) => re.test(c) && !(i === 1 && PAGE_PATH.test(c)))?.[1];
 /** The rubric to file for a delegation to `target`, or undefined (not graded); throws when a graded assignee gets no deliverable. */
 function gradeFor(target, rubric, deliverable) {
-  if (!BOARD_TOKEN || gradingOff()) return undefined;
+  if (gradingOff()) return undefined;
   const kind = deliverable?.kind;
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
   const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
@@ -517,8 +519,23 @@ const DELIVERABLE_REF = /^(?:https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[A-Za-z0-9._~
 const noMarkers = (s) => String(s).replace(/<!--|-->/g, "").slice(0, 500);
 /** The description's copy of a filed rubric (the board keeps the one the grader uses). */
 const gradedText = (grade) => (grade ? `\n\nGraded before done (${grade.deliverable.kind}${grade.deliverable.ref ? `: ${grade.deliverable.ref}` : ""}):${grade.rubric.length ? grade.rubric.map((c, n) => `\n${n + 1}. ${c.replace(/<!--|-->/g, "")}`).join("") : ` the standard ${grade.deliverable.kind} criteria.`}` : "");
-/** Files the rubric as the caller; the task exists either way, so a failure is reported, not thrown. */
-const fileGrade = (issueId, grade) => (grade ? boardApi("/internal/grades", { issue: issueId, ...grade }).then(() => ({ graded: true }), (err) => ({ graded: false, grade_error: String(err.message ?? err).slice(0, 200) })) : Promise.resolve({}));
+/** Files the rubric with the grading module as the caller (its assertion); the task exists either way, so a failure is reported, not thrown. */
+async function fileGrade(issueId, grade) {
+  if (!grade) return {};
+  try {
+    const res = await fetch(`${GRADING}/grades`, { method: "POST", headers: { "x-aidenhq-caller": cx().assertion, "content-type": "application/json" }, body: JSON.stringify({ issue: issueId, ...grade }), signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) throw new Error(`grading: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
+    return { graded: true };
+  } catch (err) {
+    return { graded: false, grade_error: String(err.message ?? err).slice(0, 200) };
+  }
+}
+/** A close the finish gate held or reopened (202): its last comment part goes on as a comment (it is evidence), the status is the check's. */
+async function heldClose(issue, f, comment) {
+  if (!f.held && !f.reopened) return undefined;
+  if (comment && f.held) await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: comment });
+  return { ...brief(await api("GET", `/api/issues/${issueRef(issue)}`)), ...(f.held ? { grading: GRADING_NOTE } : { reopened: f.reopened.reason }) };
+}
 const DELIVERABLE_INPUT = {
   type: "object",
   description: "what the task ships, graded before it may close: pr (ref: the repo or PR link), app (ref: the app name), apply, file. report (a diagnosis, research or another read-only answer) and none (a question) are not graded: you read the answer yourself. Required for an assignee whose work is graded (Engineers, the DevOps, Platform and UI/UX Engineers)",
@@ -527,20 +544,6 @@ const DELIVERABLE_INPUT = {
   additionalProperties: false,
 };
 const RUBRIC_INPUT = { type: "array", items: { type: "string" }, description: `3-8 criteria the grader checks from evidence, each naming a fact it is given: ${FACTS}. Never "high quality". Omit for the standard criteria of the deliverable's kind` };
-/**
- * The completion gate: whether closing this task (the fetched issue) may go ahead, or it waits for the grader (the board
- * moves it to in_review). The board unreachable passes unless the assignee's work is graded: an outage never blocks
- * ungraded closes. An answer (a hold, a 403) stands.
- */
-async function gate(issue, via) {
-  try {
-    return await boardApi(`/internal/grades/${issueRef(issue.id)}/gate`, { via });
-  } catch (err) {
-    if (String(err.message ?? "").startsWith("board:") || gradedAgent(issue.assigneeAgentId)) throw err;
-    return { pass: true };
-  }
-}
-
 /** Creates a task assigned to `target` under the caller's current task (or a task assigned to the caller); idempotent per parent and marker. */
 /**
  * What a feedback agent (an app's registry `feedback_to`; setup marks it in the grants table) writes for others starts with
@@ -1205,12 +1208,11 @@ const TOOLS = {
       // Same rule as task_set_status: your part of the user's task stays open for their replies.
       const current = await api("GET", `/api/issues/${issueRef(CURRENT())}`);
       if (await isOwnPart(current)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
-      // A graded task waits for the grader: the result goes on as a comment (it is evidence), the status is the grader's.
-      if (!(await gate(current, "task_finish")).pass) {
-        await api("POST", `/api/issues/${issueRef(CURRENT())}/comments`, { body: await postLeadingParts(CURRENT(), comment) });
-        return { ...brief(await api("GET", `/api/issues/${issueRef(CURRENT())}`)), grading: GRADING_NOTE };
-      }
-      const i = await patchIssue(CURRENT(), { status: "done", comment: await postLeadingParts(CURRENT(), comment) });
+      // A graded task waits for the grader (the kernel's finish gate holds it): the result goes on as a comment instead.
+      const leading = await postLeadingParts(CURRENT(), comment);
+      const i = await patchIssue(CURRENT(), { status: "done", comment: leading });
+      const held = await heldClose(CURRENT(), i, leading);
+      if (held) return held;
       const parent = current.status !== "done" ? await tellParent(i) : undefined;
       return { ...brief(i), ...parent };
     },
@@ -1239,15 +1241,13 @@ const TOOLS = {
         const current = await api("GET", `/api/issues/${issueRef(issue)}`);
         if (await isOwnPart(current)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
         was = current.status;
-        if (status === "done" && !(await gate(current, "task_set_status")).pass) {
-          if (comment) await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: await postLeadingParts(issue, comment) });
-          return { ...brief(await api("GET", `/api/issues/${issueRef(issue)}`)), grading: GRADING_NOTE };
-        }
       }
       const body = { status };
       if (status === "blocked") body.blockedByIssueIds = await blockedByIssueIds(issue, blocked_by);
       if (comment) body.comment = await postLeadingParts(issue, comment);
       const i = await patchIssue(issue, body);
+      const held = status === "done" ? await heldClose(issue, i, body.comment) : undefined;
+      if (held) return held;
       const parent = was && was !== status ? await tellParent(i) : undefined;
       return { ...brief(i), ...parent };
     },

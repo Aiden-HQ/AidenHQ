@@ -99,6 +99,8 @@ export const LEGACY_LINKS = {
   // into Paperclip (no key), and the board's calls to the fast lane.
   "channel-slack": { until: "3g", to: ["sources", "paperclip"] },
   "chat-lane": { until: "3a", to: ["board"] },
+  // 3h: the board reads grade rows from the grading module (its own key) until the board is a module.
+  grading: { until: "4a", to: ["board"] },
   monitoring: { until: "4c", to: ["board"] },
   tasks: { until: "3e", to: ["backplane"] },
   meetings: { until: "4c", to: ["backplane", "sources"] },
@@ -510,6 +512,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const jobcaps = {};
   const engines = {};
   const writes = {};
+  const checks = {};
 
   for (const name of enabled) {
     const { root } = all.get(name);
@@ -534,6 +537,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
     Object.assign(writes, writeKinds(name, def, root, instance.writes ?? {}, writes));
+    Object.assign(checks, checkEntries(name, def));
     for (const [key, a] of Object.entries(def.agents ?? {})) {
       const file = join(root, "agents", key, "AGENTS.md");
       if (!existsSync(file)) fail(`agent ${key}: missing ${relative(productDir, file)}`);
@@ -850,7 +854,7 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   const runAgents = Object.entries(paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
   if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
   if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = runAgents;
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
@@ -875,8 +879,8 @@ export function kernelModuleTable(defs, settings = {}) {
     }
     const e = {
       ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
-      // A channel's, or a job dispatcher's (kernel.jobs): its own generated `<module>_token`.
-      ...((ch != null || roles.includes("kernel.jobs")) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      // A channel's, a job dispatcher's (kernel.jobs), or a check's module (its label and its reads): its own generated `<module>_token`.
+      ...((ch != null || roles.includes("kernel.jobs") || (def.checks ?? []).length) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
@@ -899,6 +903,28 @@ export function reviewerSlot(defs, binding = {}) {
   if (!ownSecrets(def).includes(p.auth)) fail(`module ${name}: providers.reviewer.auth must name one of its own secrets`);
   if (![def.privileged ?? []].flat().includes("reviewer")) fail(`module ${name}: a reviewer (providers.reviewer) needs privileged: [reviewer]`);
   return { module: name, url: p.url, auth_secret: p.auth };
+}
+
+/**
+ * A module's checks (spec §3.5, P5): `[{id, at: write.filed | task.finish, kinds?, agents?, post?, auth?, label?}]`. The kernel
+ * calls the task.finish ones (config/kernel/checks.json, keyed `<module>.<id>`) at `post` with `auth`, one of the module's own
+ * secrets; `label` is the control-plane label a hold adds. A write.filed check without `post` runs in-process for now (3d).
+ */
+export function checkEntries(name, def) {
+  const out = {};
+  for (const c of def.checks == null ? [] : Array.isArray(def.checks) ? def.checks : fail(`module ${name}: checks must be a list`)) {
+    const at = `module ${name}: check ${c?.id}`;
+    if (!c || typeof c !== "object" || !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.id))) fail(`module ${name}: each check has an id (a-z, 0-9, -)`);
+    for (const k of Object.keys(c)) if (!["id", "at", "kinds", "agents", "post", "auth", "label"].includes(k)) fail(`${at}: ${k} is not allowed`);
+    if (!["write.filed", "task.finish"].includes(c.at)) fail(`${at}: at is write.filed or task.finish`);
+    for (const k of ["kinds", "agents"]) if (c[k] != null && !(Array.isArray(c[k]) && c[k].every((x) => typeof x === "string"))) fail(`${at}: ${k} is a list`);
+    if (c.at !== "task.finish") continue;
+    if (!/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c.post ?? "")) fail(`${at}: post must be http://<service>:<port>/<path>`);
+    if (!ownSecrets(def).includes(c.auth)) fail(`${at}: auth must name one of its own secrets`);
+    if (c.label != null && !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.label))) fail(`${at}: label is a label name (a-z, 0-9, -)`);
+    out[`${name}.${c.id}`] = { module: name, at: c.at, url: c.post, auth_secret: c.auth, ...(c.agents ? { agents: c.agents } : {}), ...(c.label ? { label: String(c.label) } : {}) };
+  }
+  return out;
 }
 
 const CARD_FIELDS = ["sentence", "changes", "reads", "cost", "details"];

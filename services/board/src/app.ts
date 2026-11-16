@@ -27,7 +27,7 @@ import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor } from "./settings-change.js";
-import { FileGradeSchema, GateSchema, VerdictSchema, completionGate, gradePassed, gradingOn, gradingReviewPolicy, prRefAllowed } from "./grades.js";
+import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -86,6 +86,8 @@ export interface AppOptions {
   clickhouse?: McpAuth;
   /** Jira sign-in state and sign-in; no banner and no sign-in without it (the jira module is off). */
   jira?: McpAuth;
+  /** The grading module's client (grading.ts); default: built from GRADING_URL and GRADING_BOARD_KEY_FILE. */
+  grading?: Grading;
   /** "internal" mode: the runner's key (secret reviewer_key): its routes (grades, usage, jobs), never agents'. */
   reviewerKey?: string;
   /**
@@ -174,6 +176,9 @@ export function createApp(opts: AppOptions): Server {
   const { paperclip: boardPc, store, log } = opts;
   const mode = opts.mode ?? "lan";
   if (mode !== "internal" && !opts.accounts && !opts.session) throw new Error(`the ${mode} listener needs board accounts`);
+  const grading = opts.grading ?? createGrading();
+  /** The grades of these tasks; the grading module unreachable: undefined, so the caller leaves its graded closes undone. */
+  const gradesOf = (ids: string[]) => grading.grades(ids).catch((err) => (log.warn({ err: String(err) }, "grading module unreachable; not closing graded parts as done"), undefined));
 
   /**
    * Every admin writes as the owner (the board key: agents act on their words, owner decision 2026-11-12). Which account
@@ -385,7 +390,10 @@ export function createApp(opts: AppOptions): Server {
       ownComments.set(part.id, { stamp, at });
       return at;
     };
-    const leftover = await partsToClose(open, known, ctx.assignees, ownCommentAt, (part) => gradePassed(store.grades, part.id));
+    // A part closes done only with a passing grade; the grading module unreachable: none closes done (cancel needs no grade).
+    const candidates = await partsToClose(open, known, ctx.assignees, ownCommentAt);
+    const view = await gradesOf(candidates.filter((c) => c.status === "done").map((c) => c.part.id));
+    const leftover = candidates.filter((c) => c.status === "cancelled" || (view && gradePassed(view, c.part.id)));
     if (!leftover.length) return open;
     const busy = (await working(ctx)).map;
     const gone = new Set<string>();
@@ -814,14 +822,14 @@ export function createApp(opts: AppOptions): Server {
       // them (Paperclip limits concurrent list requests per client).
       const window = (body as { window?: string } | null)?.window === "7d" ? "7d" : "24h";
       const status = await fleetStatus(pc, records);
-      const summary = await statusSummary(pc, store, records, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
+      const summary = await statusSummary(pc, store, records, grading, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
       // `detector` first and a bounded reply: the lists are what get long, and a cut-off payload leaves its open and
       // recovered keys (the block Fleet Ops acts on) unreadable.
       return boundedFleetStatus({ detector: detectorState(store), ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
     // The Agent Coach's reads (coach.ts), for the fleet-audit role: who is due a review (never the caller) and one agent's bounded evidence.
     { method: "POST", path: /^\/internal\/coach\/due$/, handle: async (_m, _b, _u, req) => fleetCall(req, (pc, caller) => coachDue(pc, store, caller), ["fleet-audit"]) },
-    { method: "POST", path: /^\/internal\/coach\/evidence$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc, caller) => coachEvidence(pc, store, records, runOf, parse(z.object({ agent_key: z.string().trim().min(1).max(64) }).strict(), body).agent_key, caller), ["fleet-audit"]) },
+    { method: "POST", path: /^\/internal\/coach\/evidence$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc, caller) => coachEvidence(pc, store, records, grading, runOf, parse(z.object({ agent_key: z.string().trim().min(1).max(64) }).strict(), body).agent_key, caller), ["fleet-audit"]) },
     { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
@@ -919,159 +927,6 @@ export function createApp(opts: AppOptions): Server {
         await requireAgentTool(req, "task_approvals");
         const task = await pc.issue(issue).then((i) => i.id, () => undefined);
         return { approvals: task ? (await cardsOf("recent", { task, limit: 50 })).map(approvalView) : [] };
-      },
-    },
-    // Graded done (grades.ts): the delegating agent files the rubric (write-once, trusted storage); every completion path
-    // asks the gate; the runner grades the waiting rows and records each outcome; the delegator decides an escalation.
-    {
-      method: "POST",
-      path: /^\/internal\/grades$/,
-      handle: async (_m, body, _u, req) => {
-        // Any tool that hands a task to an agent files its rubric: task_delegate, task_create with an assignee, Engineer sub-tasks.
-        const filers = ["task_delegate", "task_propose_rule", "task_create", "task_create_engineer_task"];
-        const agent = await requireAgent(pc, req, (g) => (g.tools?.paperclip_tasks ?? []).some((t) => filers.includes(t)), `only an agent granted one of ${filers.join(", ")} may file a rubric`).catch((err) => {
-          throw err instanceof Refused ? new HttpError(403, err.message) : err;
-        });
-        const b = parse(FileGradeSchema, body);
-        // The grader reads only the task's own PRs; a ref naming another org's repo is refused here too.
-        if (b.deliverable.kind === "pr" && !prRefAllowed(b.deliverable.ref)) throw new HttpError(400, "deliverable.ref: a repo or PR in the agents org or the product repo, or empty for the task's own PRs");
-        const issue = await pc.issue(b.issue);
-        if (issue.createdByAgentId !== agent.id) throw new HttpError(403, "only the agent that delegated a task files its rubric");
-        const r = store.grades.file(issue.id, b.rubric, b.deliverable);
-        if (r.created) log.info({ task: issue.identifier, kind: b.deliverable.kind, criteria: b.rubric.length }, "rubric filed");
-        return { created: r.created, state: r.grade.state };
-      },
-    },
-    {
-      method: "POST",
-      path: /^\/internal\/grades\/([^/]+)\/gate$/,
-      handle: async (m, body, _u, req) => {
-        const { via } = parse(GateSchema, body);
-        // Ungraded (no row) or grading off: pass before any auth or Paperclip call, so the gate never blocks other closes.
-        // Callers send the task's id; an identifier is resolved first.
-        const ref = decodeURIComponent(m[1]!);
-        const id = /^[0-9a-f-]{36}$/i.test(ref) ? ref : (await pc.issue(ref)).id;
-        if (!gradingOn() || !store.grades.get(id)) return { pass: true };
-        const runner = via === "finish_turn" || via === "finish_merges";
-        const agent = runner ? (requireRunner(req, `closes a task by ${via}`), undefined) : await requireAgentTool(req, via);
-        const issue = await pc.issue(decodeURIComponent(m[1]!));
-        // A cancelled task is never graded or moved by a late close: no deliverable is left to check, so its row ends (never
-        // stuck work), and the close is refused before the gate runs and before the patch below (back to in_review, the
-        // grading label) would reopen it. This comes before the delegator's acceptance: closing a cancelled task cancels
-        // it, it does not accept the work.
-        if (issue.status === "cancelled") {
-          store.grades.settle(issue.id, "the task was cancelled before the grader settled it");
-          throw new HttpError(409, "the task is cancelled");
-        }
-        // Only the task's own assignee moves its grade: anyone else closing a graded task is refused, and an ungraded one
-        // passes without touching anything. The one exception: an escalated grade is its delegator's call, and its close
-        // accepts the work in place of a verdict. That delegator is the agent the escalation was addressed to: the one that
-        // filed the task, or the agent on its parent task (the runner's escalation is a note there, main.mjs tellOpenParent,
-        // and wake.ts watches the parent's agent), so the task is closable by whoever it was handed to. Nothing else is
-        // widened: a grade still being graded keeps its assignee-only close.
-        if (agent && issue.assigneeAgentId !== agent.id) {
-          const g = gradingOn() ? store.grades.get(issue.id) : undefined;
-          if (g?.state === "escalated") {
-            // Judged against the delegators saved when it escalated, never today's creator or parent (both can be changed
-            // later). A row that escalated before they were saved falls back to the task's creator only (the backfill in
-            // grades.ts fills those rows in), and a row with no creator matches no one.
-            const delegators = g.delegators?.length ? g.delegators : [issue.createdByAgentId].filter((id): id is string => Boolean(id));
-            if (delegators.includes(agent.id)) {
-              store.grades.accept(issue.id, agent.id);
-              const label = (await pc.labels()).find((l) => l.name === "grading");
-              const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
-              if (label && ids.includes(label.id)) await pc.updateIssue(issue.id, { labelIds: ids.filter((id) => id !== label.id) });
-              log.info({ task: issue.identifier, by: agent.id }, "escalated grade accepted by its delegator");
-              return { pass: true };
-            }
-          }
-          if (g && !(g.state === "satisfied" && issue.status === "done")) throw new HttpError(403, "this task is graded: the grader closes it once its rubric is met (only its assignee finishes it)");
-          return { pass: true };
-        }
-        const r = completionGate(store.grades, issue.id, via, { done: issue.status === "done" });
-        if (r.pass) return r;
-        // A board-key change: Paperclip refuses an agent's move to in_review without a review path; the grader's scheduled
-        // check is that path, so Paperclip doesn't wake the assignee to repair one on a task the grader already owns.
-        const label = (await pc.labels()).find((l) => l.name === "grading");
-        if (!label) log.warn('label "grading" missing in Paperclip (run scripts/paperclip-setup.mjs)');
-        const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
-        const labelIds = label && !ids.includes(label.id) ? [...ids, label.id] : undefined;
-        const executionPolicy = issue.assigneeAgentId && !issue.assigneeUserId ? gradingReviewPolicy(issue.executionPolicy) : undefined;
-        const patch = { ...(issue.status !== "in_review" ? { status: "in_review" } : {}), ...(labelIds ? { labelIds } : {}), ...(executionPolicy ? { executionPolicy } : {}) };
-        if (Object.keys(patch).length) await pc.updateIssue(issue.id, patch);
-        log.info({ task: issue.identifier, via, state: r.state }, "completion held for grading");
-        return r;
-      },
-    },
-    {
-      method: "GET",
-      path: /^\/internal\/grades$/,
-      handle: async (_m, _b, _u, req) => {
-        requireRunner(req, "grades");
-        return { on: gradingOn(), grades: store.grades.due(), resubmitted: store.grades.resubmitted() };
-      },
-    },
-    {
-      // One task's grade state (null: ungraded, or grading off): a sub-task whose grade will speak keeps its progress to itself.
-      method: "GET",
-      path: /^\/internal\/grades\/([0-9a-f-]{36})$/i,
-      handle: async (m, _b, _u, req) => {
-        requireRunner(req, "reads grades");
-        return { state: (gradingOn() && store.grades.get(m[1]!)?.state) || null };
-      },
-    },
-    {
-      // An escalated task finished again: the runner's deliverable version decides whether it goes back to the grader.
-      method: "POST",
-      path: /^\/internal\/grades\/([^/]+)\/resubmit$/,
-      handle: async (m, body, _u, req) => {
-        requireRunner(req, "resubmits grades");
-        const { version } = parse(z.object({ version: z.string().max(200) }).strict(), body);
-        const issue = await pc.issue(decodeURIComponent(m[1]!));
-        const g = store.grades.resubmit(issue.id, version);
-        if (!g) throw new HttpError(404, "no grade for this task");
-        log.info({ task: issue.identifier, state: g.state }, "escalated grade resubmitted");
-        return g;
-      },
-    },
-    {
-      method: "POST",
-      path: /^\/internal\/grades\/([^/]+)\/verdict$/,
-      handle: async (m, body, _u, req) => {
-        requireRunner(req, "records verdicts");
-        const v = parse(VerdictSchema, body);
-        const issue = await pc.issue(decodeURIComponent(m[1]!));
-        if (!store.grades.get(issue.id)) throw new HttpError(404, "no grade for this task");
-        // An escalation is addressed to the agent that filed the task and the agent on its parent task, as of now; fetched
-        // before recording so they are saved in the same write that escalates.
-        const parent = issue.parentId ? await pc.issue(issue.parentId).catch(() => undefined) : undefined;
-        // Cancelled while the pass was running: no verdict, the cancel settles the row (a reopened task is graded again).
-        if (issue.status === "cancelled") return store.grades.settle(issue.id, "the task was cancelled before the grader settled it");
-        const g = store.grades.record(issue.id, v, Date.now(), [issue.createdByAgentId, parent?.assigneeAgentId].filter((x): x is string => Boolean(x)));
-        // Done waiting: the label goes (the runner moves the task on).
-        if (g.state !== "awaiting_evidence") {
-          const label = (await pc.labels()).find((l) => l.name === "grading");
-          const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
-          if (label && ids.includes(label.id)) await pc.updateIssue(issue.id, { labelIds: ids.filter((id) => id !== label.id) });
-        }
-        log.info({ task: issue.identifier, outcome: v.outcome, version: v.version.slice(0, 12), state: g.state, attempts: g.attempts }, "grade recorded");
-        return g;
-      },
-    },
-    {
-      // Grading switched off: the runner let a held task go; its row and the `grading` label go too.
-      method: "POST",
-      path: /^\/internal\/grades\/([^/]+)\/release$/,
-      handle: async (m, _b, _u, req) => {
-        requireRunner(req, "releases grades");
-        if (gradingOn()) throw new HttpError(409, "grading is on");
-        const issue = await pc.issue(decodeURIComponent(m[1]!));
-        const label = (await pc.labels()).find((l) => l.name === "grading");
-        const ids = issue.labelIds ?? (issue.labels ?? []).map((l) => l.id);
-        if (label && ids.includes(label.id)) await pc.updateIssue(issue.id, { labelIds: ids.filter((id) => id !== label.id) });
-        store.grades.release(issue.id);
-        log.info({ task: issue.identifier }, "grade released (grading off)");
-        return { ok: true };
       },
     },
     {
@@ -1333,7 +1188,7 @@ export function createApp(opts: AppOptions): Server {
         return { roster: roster(agents, routines, new Map()) };
       },
     },
-    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, store, records), m[1]!) },
+    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, store, records, grading), m[1]!) },
     {
       // Chats: open ones first, then the 20 newest finished ones; each with its agent and state.
       method: "GET",
@@ -1599,13 +1454,14 @@ export function createApp(opts: AppOptions): Server {
         log.info({ issue: issue.identifier, fields: Object.keys(patch) }, "task updated");
         // Closed before the grader settled it: there is nothing left to grade, so its row ends (a timer catches closes made
         // elsewhere, e.g. a cancel in Paperclip itself).
-        if (update.status === "done" || update.status === "cancelled") store.grades.settle(issue.id, `the task was ${update.status} before the grader settled it`);
+        if (update.status === "done" || update.status === "cancelled") await grading.settle(issue.id, `the task was ${update.status} before the grader settled it`).catch((err) => log.warn({ issue: issue.identifier, err: String(err) }, "couldn't settle the grade of a closed task; the grading module's timer will"));
         // Done or cancelled closes the crew's open parts too, except one an agent is busy with or one waiting on its own trigger.
         if ((update.status === "done" || update.status === "cancelled") && issue.assigneeUserId === ctx.me) {
           const [kids, busy] = await Promise.all([pc.children(issue.id), working(ctx)]);
-          for (const k of kids) {
-            if (["done", "cancelled"].includes(k.status) || waitsOnItsOwn(k) || busy.map.has(k.identifier) || !ctx.assignees.some((a) => a.kind !== "me" && a.key === k.assigneeAgentId)) continue;
-            if (update.status === "done" && !gradePassed(store.grades, k.id)) continue;
+          const open = kids.filter((k) => !["done", "cancelled"].includes(k.status) && !waitsOnItsOwn(k) && !busy.map.has(k.identifier) && ctx.assignees.some((a) => a.kind !== "me" && a.key === k.assigneeAgentId));
+          const view = update.status === "done" ? await gradesOf(open.map((k) => k.id)) : undefined;
+          for (const k of open) {
+            if (update.status === "done" && !(view && gradePassed(view, k.id))) continue;
             await pc.updateIssue(k.id, { status: update.status });
           }
         }

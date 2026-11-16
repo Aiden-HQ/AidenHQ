@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import type { Agent, Paperclip } from "./paperclip.js";
 import type { Store } from "./store.js";
 import { appsApi } from "./fleet.js";
-import { settleClosedGrades } from "./grades.js";
+import type { Grade, Grading } from "./grading.js";
 import { parseRunLog } from "./runs.js";
 import { alertIncidents } from "./monitoring.js";
 import { TOO_LONG } from "./rollover.js";
@@ -178,7 +178,7 @@ const age = (t: string | null | undefined, now: number) => (t ? now - Date.parse
 const mins = (ms: number) => `${Math.round(ms / MIN)} min`;
 
 /** The owner's alert list, as checks. */
-export function checks(pc: Paperclip, store: Pick<Store, "grades" | "meta" | "setMeta" | "refusalsSince">, now = () => Date.now(), env: NodeJS.ProcessEnv = process.env): Record<string, Check> {
+export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "refusalsSince">, grading: Pick<Grading, "stale">, now = () => Date.now(), env: NodeJS.ProcessEnv = process.env, warn?: (o: object, m: string) => void): Record<string, Check> {
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   return {
     async run() {
@@ -267,12 +267,12 @@ export function checks(pc: Paperclip, store: Pick<Store, "grades" | "meta" | "se
       }
       return [...byAgent].filter(([, n]) => n >= SILENT_RUNS).map(([agentId, n]) => ({ key: agentId, reason: `agent ${agentId}: ${n} runs in 24h ended with no tool calls and no output` }));
     },
-    // A graded task waiting on grading, or escalated, for over a day. A task that closed before the grader settled it has
-    // nothing left to grade: its row is settled first (so it stops being stuck work and never raises a flag).
+    // A graded task waiting on grading, or escalated, for over a day (the grading module settles closed tasks first and
+    // answers the due and escalated rows). Module unreachable: no findings, not a page.
     async grade() {
       const t = now();
-      await settleClosedGrades(store.grades, (id) => pc.issue(id), t);
-      return [...store.grades.due(), ...store.grades.escalated()].filter((g) => age(g.updatedAt, t) > DAY_MS).map((g) => ({ key: g.issueId, reason: `graded task ${g.issueId} ${g.state} for ${mins(age(g.updatedAt, t))}` }));
+      const stale = await grading.stale().catch((err) => (warn?.({ err: String(err) }, "fleet-ops: grading module unreachable; no grade findings"), [] as Grade[]));
+      return stale.filter((g) => age(g.updatedAt, t) > DAY_MS).map((g) => ({ key: g.issueId, reason: `graded task ${g.issueId} ${g.state} for ${mins(age(g.updatedAt, t))}` }));
     },
     async app() {
       const t = now();
@@ -335,10 +335,10 @@ let runNow: () => void = () => {};
 export const kickDetector = () => runNow();
 
 /** Starts the detector when the module is on (main.ts). */
-export function startDetector(pc: Paperclip, store: Store, log: { info(o: object, m: string): void; warn(o: object, m: string): void }, env: NodeJS.ProcessEnv = process.env): void {
+export function startDetector(pc: Paperclip, store: Store, grading: Grading, log: { info(o: object, m: string): void; warn(o: object, m: string): void }, env: NodeJS.ProcessEnv = process.env): void {
   const minutes = Number(env.FLEET_OPS_INTERVAL_MINUTES);
   if (!(minutes > 0)) return;
-  const all = checks(pc, store);
+  const all = checks(pc, store, grading, undefined, env, (o, m) => log.warn(o, m));
   let busy = false;
   const run = async () => {
     if (busy || !readFile(env.FLEET_OPS_WEBHOOK_URL_FILE)) return; // not wired yet: setup writes the webhook after compose starts

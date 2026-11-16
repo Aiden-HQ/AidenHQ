@@ -1,4 +1,5 @@
 name: tasks
+requires: [ grading ] # task_delegate files rubrics with it (its network)
 description: "Task tools for every agent: read, create, delegate, comment on and close Paperclip tasks, as the calling agent."
 connections:
   paperclip_tasks:
@@ -21,13 +22,15 @@ services:
       build: ./connections/tasks-mcp
       tmp: 16m
       links: [backplane] # no egress: the kernel's listener, the board's internal API and apps-mcp
+      join: [grading] # rubrics, filed as the caller
       data: ["catalog:/catalog:ro"] # fleet_catalog's static half (scripts/paperclip-setup.mjs writes it)
       env:
         MCP_TOKEN_FILE: ${secrets.tasks_service_key}
-        # The board's internal API (grades, schedules, fleet tools), as the caller (X-AidenHQ-Caller).
+        # The board's internal API (schedules, fleet tools), as the caller (X-AidenHQ-Caller).
         AIDENHQ_BOARD_URL: http://board:3122
         BOARD_INTERNAL_TOKEN_FILE: ${secrets.board_internal_token}
         APPS_MCP_URL: http://apps-mcp:8090
+        GRADING_URL: http://grading:8096
         # advisor_ask, fanout_map: billed to the caller's run.
         AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
         AIDENHQ_CATALOG_FILE: /catalog/catalog.static.json

@@ -1,16 +1,26 @@
-import { describe, expect, it } from "vitest";
-import { GRADER_RETRY_MS, MAX_GRADER_FAILURES, completionGate, gradePassed, settleClosedGrades, type GradeState } from "../src/grades.js";
-import { Store } from "../src/store.js";
+// The grade state machine (moved from the board's grades.test.ts with grades.ts, unchanged but for the harness: grading on
+// is now passed in, as the module reads the kill switch from the kernel).
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { GRADER_RETRY_MS, MAX_GRADER_FAILURES, Grades, completionGate as gate, gradePassed as passed, settleClosedGrades } from "../service/src/grades.ts";
+
+class Store { constructor() { this.grades = new Grades(new DatabaseSync(":memory:")); } }
+const completionGate = (g, id, via, o = {}) => gate(g, id, via, { on: true, ...o });
+const gradePassed = (g, id, on = true) => passed(g, id, on);
+/** vitest's matchers this file used, over node:assert. */
+const partial = (a, e) => { if (e && typeof e === "object" && !Array.isArray(e)) { for (const [k, v] of Object.entries(e)) partial(a?.[k], v); } else if (Array.isArray(e)) { assert.equal(a?.length, e.length); e.forEach((v, i) => partial(a[i], v)); } else assert.deepStrictEqual(a, e); };
+const expect = (a) => ({ toBe: (e) => assert.strictEqual(a, e), toEqual: (e) => assert.deepStrictEqual(a, e), toMatchObject: (e) => partial(a, e), toHaveLength: (n) => assert.equal(a.length, n), toBeUndefined: () => assert.equal(a, undefined) });
 
 describe("graded done", () => {
   it("holds a graded task at the gate, counts distinct rejected versions, and escalates on the third", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     expect(completionGate(grades, "plain", "task_finish")).toEqual({ pass: true });
     expect(grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" }).created).toBe(true);
     expect(grades.file("t", ["something else", "bbb", "ccc"], { kind: "pr", ref: "" }).created).toBe(false);
-    expect(grades.get("t")!.rubric[0]).toBe("merged into main");
+    expect(grades.get("t").rubric[0]).toBe("merged into main");
 
-    const reject = (version: string) => grades.record("t", { version, outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
+    const reject = (version) => grades.record("t", { version, outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
     expect(completionGate(grades, "t", "finish_turn")).toEqual({ pass: false, state: "pending", label: "grading" });
     expect(completionGate(grades, "t", "task_finish")).toMatchObject({ pass: false, state: "pending" });
     expect(grades.record("t", { version: "", outcome: "awaiting_evidence", model: "", criteria: [] }).state).toBe("awaiting_evidence");
@@ -24,26 +34,26 @@ describe("graded done", () => {
     // Finished again: still the owner's until the runner finds a new version.
     expect(completionGate(grades, "t", "task_set_status")).toMatchObject({ pass: false, state: "escalated" });
     expect(grades.resubmitted().map((g) => g.issueId)).toEqual(["t"]);
-    expect(grades.resubmit("t", "sha4")!.state).toBe("pending");
+    expect(grades.resubmit("t", "sha4").state).toBe("pending");
     expect(grades.record("t", { version: "sha4", outcome: "satisfied", model: "glm", criteria: [] }).state).toBe("satisfied");
     expect(completionGate(grades, "t", "finish_merges", { done: true })).toEqual({ pass: true });
   });
 
   it("a needs revision grade is never closed done, and its unmet criteria stay on the task", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
     completionGate(grades, "t", "task_finish");
     const rejected = grades.record("t", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "still a draft" }] });
     expect(rejected.state).toBe("needs_revision");
     expect(completionGate(grades, "t", "finish_turn")).toEqual({ pass: false, state: "needs_revision", label: "grading" });
-    expect(grades.get("t")!.verdicts.at(-1)).toMatchObject({ verdict: "needs_revision", criteria: [{ id: "1", met: "no", evidence: "still a draft" }] });
+    expect(grades.get("t").verdicts.at(-1)).toMatchObject({ verdict: "needs_revision", criteria: [{ id: "1", met: "no", evidence: "still a draft" }] });
   });
 
   it("criteria the grader couldn't verify, with none unmet, go to the delegator at once: no rework, no attempt counted", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
     completionGate(grades, "t", "finish_turn");
-    const crit = (met: string[]) => met.map((m, i) => ({ id: String(i + 1), met: m as "yes" | "no" | "unknown", evidence: "e" }));
+    const crit = (met) => met.map((m, i) => ({ id: String(i + 1), met: m, evidence: "e" }));
     expect(grades.record("t", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: crit(["yes", "unknown", "yes"]) }, Date.now(), ["cos"])).toMatchObject({ state: "escalated", attempts: 0, delegators: ["cos"] });
     // One unmet criterion among the unknowns is still the assignee's to fix.
     grades.file("u", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
@@ -55,7 +65,7 @@ describe("graded done", () => {
   });
 
   it("a board cascade closes a graded task done only with a passing grade", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     expect(gradePassed(grades, "plain")).toBe(true);
     grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
     expect(gradePassed(grades, "t")).toBe(false);
@@ -68,19 +78,19 @@ describe("graded done", () => {
   });
 
   it("a grader pass with no usable criteria is retried, not escalated and never a verdict", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
     completionGate(grades, "t", "task_finish");
     const failed = grades.record("t", { version: "sha1", outcome: "grading_failed", model: "glm", criteria: [] });
     expect(failed.state).toBe("grading_failed");
     expect(grades.escalated()).toEqual([]);
     expect(grades.due()).toEqual([]);
-    expect(grades.due(Date.now() + GRADER_RETRY_MS[0]! + 1).map((g) => g.issueId)).toEqual(["t"]);
+    expect(grades.due(Date.now() + GRADER_RETRY_MS[0] + 1).map((g) => g.issueId)).toEqual(["t"]);
     expect(completionGate(grades, "t", "finish_turn")).toEqual({ pass: false, state: "grading_failed", label: "grading" });
   });
 
   it("escalates a rejected version handed in again unchanged, and passes everything with grading off", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", [], { kind: "report", ref: "" });
     completionGate(grades, "t", "task_finish");
     grades.record("t", { version: "c1", outcome: "needs_revision", model: "glm", criteria: [] });
@@ -90,11 +100,11 @@ describe("graded done", () => {
   });
 
   it("retries a failed grader pass on the 1, 5, 15, 60 minute ladder, then escalates once and stops", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
     completionGate(grades, "t", "task_finish");
     expect(GRADER_RETRY_MS).toEqual([60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000]);
-    const failed = (at: number) => grades.record("t", { version: "sha1", outcome: "grading_failed", model: "glm", criteria: [] }, at);
+    const failed = (at) => grades.record("t", { version: "sha1", outcome: "grading_failed", model: "glm", criteria: [] }, at);
     let at = Date.parse("2026-01-01T00:00:00.000Z");
     let g = failed(at);
     expect(g).toMatchObject({ state: "grading_failed", attempts: 0, failures: 1, failedAt: new Date(at).toISOString() });
@@ -115,26 +125,26 @@ describe("graded done", () => {
   });
 
   it("clears the failure count on a real grade, so the next timeout starts the ladder at 1 minute", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", [], { kind: "report", ref: "" });
     completionGate(grades, "t", "task_finish");
     let at = Date.parse("2026-01-01T00:00:00.000Z");
     for (let i = 0; i < 3; i++) {
       grades.record("t", { version: "c1", outcome: "grading_failed", model: "glm", criteria: [] }, at);
-      at += GRADER_RETRY_MS[i]!;
+      at += GRADER_RETRY_MS[i];
     }
-    expect(grades.get("t")!.failures).toBe(3);
+    expect(grades.get("t").failures).toBe(3);
     const real = grades.record("t", { version: "c2", outcome: "needs_revision", model: "glm", criteria: [] }, at);
     expect(real).toMatchObject({ state: "needs_revision", failures: 0, failedAt: null });
     completionGate(grades, "t", "task_finish");
     const again = grades.record("t", { version: "c2", outcome: "grading_failed", model: "glm", criteria: [] }, at);
     expect(again).toMatchObject({ state: "grading_failed", failures: 1 });
-    expect(grades.due(at + GRADER_RETRY_MS[0]! - 1)).toEqual([]);
-    expect(grades.due(at + GRADER_RETRY_MS[0]!).map((x) => x.issueId)).toEqual(["t"]);
+    expect(grades.due(at + GRADER_RETRY_MS[0] - 1)).toEqual([]);
+    expect(grades.due(at + GRADER_RETRY_MS[0]).map((x) => x.issueId)).toEqual(["t"]);
   });
 
   it("still escalates evidence that never came to the owner", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", [], { kind: "report", ref: "" });
     completionGate(grades, "t", "task_finish");
     expect(grades.record("t", { version: "", outcome: "error", model: "", criteria: [] }).state).toBe("escalated");
@@ -142,7 +152,7 @@ describe("graded done", () => {
   });
 
   it("still escalates cannot_judge on the first pass, with no retry ladder", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", [], { kind: "report", ref: "" });
     completionGate(grades, "t", "task_finish");
     const g = grades.record("t", { version: "c1", outcome: "cannot_judge", model: "glm", criteria: [] });
@@ -152,13 +162,13 @@ describe("graded done", () => {
   });
 
   it("a task cancelled while awaiting evidence settles its row not_graded, with the close as the reason", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
     completionGate(grades, "t", "task_finish");
     grades.record("t", { version: "", outcome: "awaiting_evidence", model: "", criteria: [] });
     expect(grades.due()).toHaveLength(1);
 
-    const row = grades.settle("t", "the task was cancelled before the grader settled it")!;
+    const row = grades.settle("t", "the task was cancelled before the grader settled it");
     expect(row).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });
     // Nothing left for the runner or the owner, and a done task reopened and closed again passes.
     expect(grades.due()).toEqual([]);
@@ -166,39 +176,39 @@ describe("graded done", () => {
     expect(grades.unsettled()).toEqual([]);
     expect(completionGate(grades, "t", "task_set_status", { done: true })).toEqual({ pass: true });
     // A settled row keeps its first reason.
-    expect(grades.settle("t", "some other reason")!.closedReason).toBe("the task was cancelled before the grader settled it");
+    expect(grades.settle("t", "some other reason").closedReason).toBe("the task was cancelled before the grader settled it");
   });
 
   it("settles an escalated row too, and leaves a satisfied verdict alone", () => {
-    const { grades } = new Store(":memory:");
-    for (const [id, outcome] of [["esc", "cannot_judge"], ["ok", "satisfied"]] as const) {
+    const { grades } = new Store();
+    for (const [id, outcome] of [["esc", "cannot_judge"], ["ok", "satisfied"]]) {
       grades.file(id, [], { kind: "report", ref: "" });
       completionGate(grades, id, "task_finish");
       grades.record(id, { version: "c1", outcome, model: "glm", criteria: [] });
     }
     expect(grades.escalated().map((g) => g.issueId)).toEqual(["esc"]);
-    expect(grades.settle("esc", "the task was cancelled before the grader settled it")!.state).toBe("not_graded");
+    expect(grades.settle("esc", "the task was cancelled before the grader settled it").state).toBe("not_graded");
     expect(grades.settle("ok", "the task was cancelled before the grader settled it")).toMatchObject({ state: "satisfied", closedReason: null });
   });
 
   it("the sweep settles every closed task's waiting row and leaves open ones alone", async () => {
-    const { grades } = new Store(":memory:");
-    const status: Record<string, string> = { a: "cancelled", b: "done", c: "in_review", gone: "cancelled" };
+    const { grades } = new Store();
+    const status = { a: "cancelled", b: "done", c: "in_review", gone: "cancelled" };
     for (const id of Object.keys(status)) {
       grades.file(id, [], { kind: "report", ref: "" });
       completionGate(grades, id, "task_finish");
       grades.record(id, { version: "", outcome: "awaiting_evidence", model: "", criteria: [] });
     }
-    const issue = async (id: string) => (id === "gone" ? Promise.reject(new Error("404")) : { status: status[id]! });
+    const issue = async (id) => (id === "gone" ? Promise.reject(new Error("404")) : { status: status[id] });
     const settled = await settleClosedGrades(grades, issue);
     expect(settled.map((g) => g.issueId)).toEqual(["a", "b"]);
     expect(settled[0]).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });
-    expect(grades.get("c")!.state).toBe("awaiting_evidence"); // still waiting: still the runner's
-    expect(grades.get("gone")!.state).toBe("awaiting_evidence"); // unreadable: left for the next sweep
+    expect(grades.get("c").state).toBe("awaiting_evidence"); // still waiting: still the runner's
+    expect(grades.get("gone").state).toBe("awaiting_evidence"); // unreadable: left for the next sweep
   });
 
   it("a needs_revision row on a task closed outside the board settles too, instead of waiting for a revision forever", async () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", ["merged into main"], { kind: "pr", ref: "" });
     completionGate(grades, "t", "task_finish");
     expect(grades.record("t", { version: "c1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "draft" }] }).state).toBe("needs_revision");
@@ -213,13 +223,13 @@ describe("graded done", () => {
   });
 
   it("an open row on a task closed before it was ever finished settles too", async () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", ["merged into main"], { kind: "report", ref: "" });
-    expect(grades.get("t")!.state).toBe("open");
+    expect(grades.get("t").state).toBe("open");
     expect(grades.unsettled().map((g) => g.issueId)).toEqual(["t"]);
     // Its task is still open: the delegation is untouched.
     expect(await settleClosedGrades(grades, async () => ({ status: "in_review" }))).toEqual([]);
-    expect(grades.get("t")!.state).toBe("open");
+    expect(grades.get("t").state).toBe("open");
 
     const settled = await settleClosedGrades(grades, async () => ({ status: "cancelled" }));
     expect(settled.map((g) => g.issueId)).toEqual(["t"]);
@@ -228,7 +238,7 @@ describe("graded done", () => {
   });
 
   it("a task reopened after its row settled is graded again when it finishes", () => {
-    const { grades } = new Store(":memory:");
+    const { grades } = new Store();
     grades.file("t", [], { kind: "report", ref: "" });
     completionGate(grades, "t", "task_finish");
     grades.record("t", { version: "", outcome: "awaiting_evidence", model: "", criteria: [] });
@@ -239,7 +249,7 @@ describe("graded done", () => {
   });
 
   it("the sweep's answer for every grade state: all but satisfied and not_graded settle on a closed task", async () => {
-    const build: Record<GradeState, (g: Store["grades"]) => void> = {
+    const build = {
       open: () => {},
       pending: (g) => completionGate(g, "t", "task_finish"),
       awaiting_evidence: (g) => g.record("t", { version: "", outcome: "awaiting_evidence", model: "", criteria: [] }),
@@ -250,15 +260,15 @@ describe("graded done", () => {
       not_graded: (g) => void g.settle("t", "the task was cancelled before the grader settled it"),
     };
     const settledStates = ["satisfied", "not_graded"];
-    for (const [state, buildIt] of Object.entries(build) as [GradeState, (g: Store["grades"]) => void][]) {
-      const { grades } = new Store(":memory:");
+    for (const [state, buildIt] of Object.entries(build)) {
+      const { grades } = new Store();
       grades.file("t", ["merged into main"], { kind: "report", ref: "" });
       buildIt(grades);
-      expect(grades.get("t")!.state, state).toBe(state);
+      expect(grades.get("t").state, state).toBe(state);
       const settled = await settleClosedGrades(grades, async () => ({ status: "cancelled" }));
       if (settledStates.includes(state)) {
         expect(settled, state).toEqual([]);
-        expect(grades.get("t")!.state, state).toBe(state);
+        expect(grades.get("t").state, state).toBe(state);
       } else {
         expect(settled.map((g) => g.issueId), state).toEqual(["t"]);
         expect(grades.get("t")).toMatchObject({ state: "not_graded", closedReason: "the task was cancelled before the grader settled it" });

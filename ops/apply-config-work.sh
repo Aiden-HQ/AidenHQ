@@ -400,6 +400,12 @@ switchOver() {
     local f; for f in auth.secret auth.db-journal auth.db-wal auth.db-shm auth.db; do [ ! -e "$data/kernel/auth/$f" ] || mv "$data/kernel/auth/$f" "$data/board/$f"; done
     echo "accounts: moved back (data/kernel/auth/ -> data/board/, for this older product)"
   fi
+  # The grade rows move from the board's database to the grading module's (lean-core 3h), once (a marker in its data dir), with
+  # the board stopped so the old board writes nothing mid-move; compose then starts the grading service on them.
+  if [ -f ops/grades-move.mjs ] && [ ! -f "$data/modules/grading/grades/.moved-from-board" ]; then
+    stopBoard
+    echo "grades: $(node ops/grades-move.mjs "$data") (data/board/board.sqlite -> data/modules/grading/grades/)"
+  fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-kernel \
       && systemctl --user restart aidenhq-kernel && echo "kernel unit installed/updated"

@@ -82,6 +82,10 @@
       "source": "./google"
     },
     {
+      "name": "grading",
+      "source": "./grading"
+    },
+    {
       "name": "grafana",
       "source": "./grafana"
     },
