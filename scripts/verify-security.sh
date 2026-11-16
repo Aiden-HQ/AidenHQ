@@ -177,6 +177,15 @@ for c in $containers; do
       [ "$code" = "401" ] && pass "board: local port writes only for a signed-in admin" || fail "board local port took a write from a bare host process ($code)"
       code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'Host: localhost:3120' http://127.0.0.1:3120/api/board)"
       [ "$code" = "401" ] && pass "board: reads need a session" || fail "board answered a read without a session ($code)"
+      # A client-named address without the front door's secret is ignored (and X-Forwarded-For, CF-Connecting-IP always):
+      # five failures "from five addresses" are one pair, the socket's, so the sixth is refused. A made-up email per run.
+      probe="verify-$RANDOM$RANDOM@example.invalid"
+      for i in 1 2 3 4 5 6; do
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Host: localhost:3120' -H 'Origin: http://localhost:3120' -H 'content-type: application/json' -H 'x-aidenhq-board: 1' \
+          -H "x-aidenhq-client-ip: 198.51.100.$i" -H 'x-aidenhq-edge: forged' -H "x-forwarded-for: 198.51.101.$i" -H "cf-connecting-ip: 198.51.102.$i" \
+          http://127.0.0.1:3120/api/auth/sign-in/email -d "{\"email\":\"$probe\",\"password\":\"not-the-password-$i\"}")"
+      done
+      [ "$code" = "403" ] && pass "board: forged client addresses without the front door's secret count as the socket's" || fail "board: a forged client address was believed (sixth failure answered $code, want 403)"
       # 3129: the gate's sign-in listener, loopback only.
       signin_port="$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3129/tcp")}}')"
       if [ "$signin_port" = "null" ]; then

@@ -4,7 +4,7 @@ import { createApp } from "./app.js";
 import { webhookWake, type Manifest } from "./app-access.js";
 import { appsApi } from "./fleet.js";
 import { createSigninServer } from "./signin.js";
-import { startDetector } from "./fleet-ops.js";
+import { queueOwnerLine, startDetector } from "./fleet-ops.js";
 import { backfillEscalatedDelegators, settleClosedGrades } from "./grades.js";
 import { loadConfig } from "./config.js";
 import { pullUsage } from "./costs.js";
@@ -75,7 +75,9 @@ const grafana = cfg.grafana && new McpAuth("Grafana", cfg.grafana.url, cfg.grafa
 const clickhouse = cfg.clickhouse && new McpAuth("ClickHouse", cfg.clickhouse.url, cfg.clickhouse.token, log);
 const jira = cfg.jira && new McpAuth("Jira", cfg.jira.url, cfg.jira.token, log);
 // Board accounts: Better Auth in data/board/auth.db; every board route needs a signed-in admin.
-const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...cfg.allowedHosts, ...cfg.lan.hosts, ...cfg.accounts.signin.hosts], boardUrl: cfg.accounts.boardUrl, gate: () => readGate(cfg.accounts.gateFile), gateAccountsFile: cfg.accounts.gateAccountsFile, gateSecret: cfg.accounts.gateSecret, ownerEmail: cfg.accounts.ownerEmail,
+const accounts = await createAccounts({ dbPath: cfg.accounts.dbPath, hosts: [...cfg.allowedHosts, ...cfg.lan.hosts, ...cfg.accounts.signin.hosts], boardUrl: cfg.accounts.boardUrl, gate: () => readGate(cfg.accounts.gateFile), gateAccountsFile: cfg.accounts.gateAccountsFile, gateSecret: cfg.accounts.gateSecret, edgeSecret: cfg.accounts.edgeSecret, linkTtlHours: cfg.accounts.linkTtlHours, ownerEmail: cfg.accounts.ownerEmail,
+  // Sign-in alerts and new-sign-in notices: the owner-line queue the owner channel collects (/internal/owner/grades).
+  notify: (line) => queueOwnerLine(store, line),
   // Each shared app's manifest at its running commit (apps-mcp), and the app-request routine's webhook (setup writes its files).
   manifest: (app) => appsApi<Manifest>(`/internal/apps/${encodeURIComponent(app)}/manifest`, undefined, { auth: true }),
   wake: webhookWake(process.env.APP_REQUEST_WEBHOOK_URL_FILE ?? "/run/secrets/app_request_webhook_url", process.env.APP_REQUEST_WEBHOOK_SECRET_FILE ?? "/run/secrets/app_request_webhook_secret", log),

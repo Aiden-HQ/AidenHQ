@@ -24,13 +24,23 @@ Accounts use Better Auth inside the board process, stored in its own SQLite file
   never gets the board; the account only opens shared apps.
 - **Credentials.** Passwords are argon2id with a 12-character minimum. An admin session is refused unless TOTP is
   enrolled (except on the enrolment routes). Sessions last 30 days, sliding.
-- **Invites and resets.** An admin invites an account by email and passes on a one-time link (72 hours; a new link for
+- **Invites and resets.** An admin invites an account by email and passes on a one-time link (72 hours, `BOARD_LINK_TTL_HOURS`; a new link for
   the same email kills older ones). No email is sent. Recovery is `ops/setup.sh --reset <email>`, which sends the link
   only to the owner's chat on the owner channel and ends that account's sessions. The operator key can start setup and
   trigger resets; it never creates sessions or decides approvals.
 - **Lockout.** 5 failed sign-ins in 15 minutes pause that (email, listener, address) for 15 minutes; open sessions are
   unaffected. A 20-failure account-wide ceiling applies only on the gate-facing listener, so strangers cannot lock the
   owner out of the board.
+- **Client addresses.** The address every limit counts is the socket's, unless a proxy names the client beside its
+  shared secret: the gate on 3129 (`X-AidenHQ-Gate`, `gate_board_secret`; the gate itself believes CF-Connecting-IP only on
+  cloudflared's unix socket, `data/gate/socket`), the front door on the board listener (`X-AidenHQ-Edge`,
+  `edge_board_secret`). X-Forwarded-For is never read.
+- **Address bans.** 20 failures in 15 minutes from one named address (an IPv6 address's whole /64), across emails, refuse
+  its sign-in steps on that listener for an hour. A socket address is never banned: without a front door every client
+  shares it.
+- **Owner notices.** More than 30 failures in an hour for one account, from any addresses, tell the owner once an hour;
+  nothing locks (an account-wide lock would let anyone lock the owner out). Every new admin session from a new device or
+  address tells the owner the time and address. At most 10 such lines an hour.
 - **Every route needs an admin session**, reads and file downloads included, on the board listeners. The internal
   listener uses bearer tokens.
 - **Every admin is an owner.** Any ready admin writes to Paperclip with the board key, so agents act on their words,
