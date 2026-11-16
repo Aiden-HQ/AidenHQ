@@ -154,17 +154,17 @@ const ALERT = { failures: 30, windowMs: 3_600_000 };
 const UNNAMED = { free: 2, maxMs: 5 * 60_000, busyMs: 10_000, ceiling: 10, hourMs: 3_600_000, inFlight: 4, perMinute: 30 };
 
 /**
- * The tailnet identity `tailscale serve` passes on (Tailscale-User-Login), trusted only on the admin listener, from the host's
- * loopback (where `tailscale serve` connects from), and never beside the front door's secret header (Caddy's path, which
- * strips client copies). The gate's sign-in listener never reads it. Assumes nothing else on the host's loopback forges it:
- * it only decides which limits apply, never who is signed in.
+ * A request `tailscale serve` passed on (it adds Tailscale-User-Login): only on the admin listener it targets, from the host's
+ * loopback (where it connects from), and never beside the front door's secret header (Caddy's path, which strips client
+ * copies); the gate's sign-in listener never reads it. Every such request is the one peer `tailnet`, whatever login it
+ * names, so a forged or varied login makes no new bucket. Only host processes reach that loopback listener (Engineer jobs
+ * are network-jailed), and it decides which limits apply, never who is signed in.
  */
-export function tailnetLogin(req: Pick<IncomingMessage, "headers" | "socket">, listener: Listener): string {
+export function tailnetPeer(req: Pick<IncomingMessage, "headers" | "socket">, listener: Listener): string {
   if (listener !== "admin" || req.headers[EDGE_HEADER] !== undefined) return "";
   const peer = String(req.socket?.remoteAddress ?? "").replace(/^::ffff:/, "");
   if (peer !== "127.0.0.1" && peer !== "::1") return "";
-  const login = String(req.headers["tailscale-user-login"] ?? "").trim().toLowerCase();
-  return /^[\w.+@-]{1,200}$/.test(login) ? `tailnet:${login}` : "";
+  return String(req.headers["tailscale-user-login"] ?? "").trim() ? "tailnet" : "";
 }
 /** At most this many failed-sign-in alerts an hour; new-session notices are never capped (only someone who got in triggers one). */
 const ALERTS_PER_HOUR = 5;
@@ -207,6 +207,8 @@ export function authCore(o: AuthCoreOptions) {
   const lockKey = (email: string, listener: Listener | null | undefined, ip: string) => `${email}|${listener ?? "admin"}|${ip}`;
   /** Unnamed peers' failures (the last hour) and next allowed attempt, per email + listener. */
   const unnamed = new Map<string, { fails: number[]; next: number; busy: number; told: number }>();
+  /** Checks in flight from the tailnet peer, per email (capped like unidentified ones: one per email, `inFlight` in all). */
+  const tailnetBusy = new Map<string, number>();
   /** Unnamed failures across every email, the last minute. */
   let unnamedFails: number[] = [];
   const forget = (email: string) => {
@@ -225,9 +227,15 @@ export function authCore(o: AuthCoreOptions) {
     return u;
   };
   const hold = (n: number) => (n > UNNAMED.free ? Math.min(UNNAMED.maxMs, 1000 * 4 ** (n - UNNAMED.free - 1)) : 0);
-  const refuseIfLocked = async (email: string, ctx: { headers?: Headers }) => {
+  /** Takes a check slot (refused with 429 when none is free) and returns what gives it back. */
+  const refuseIfLocked = async (email: string, ctx: { headers?: Headers }): Promise<(() => void) | undefined> => {
     const now = clock();
     const listener = listenerOf(ctx);
+    if (ipOf(ctx) === "tailnet") {
+      const busy = [...tailnetBusy.values()].filter((t) => t > now).length;
+      if ((tailnetBusy.get(email) ?? 0) > now || busy >= UNNAMED.inFlight) throw new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": "2" });
+      tailnetBusy.set(email, now + UNNAMED.busyMs);
+    }
     if (!isNamed(ctx)) {
       const u = unnamedOf(email, ctx);
       unnamedFails = unnamedFails.filter((t) => now - t < 60_000);
@@ -237,12 +245,12 @@ export function authCore(o: AuthCoreOptions) {
       // The same words as a wrong password: a stranger learns nothing about the account from waiting.
       if (until > now) throw new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": String(Math.ceil((until - now) / 1000)) });
       u.busy = now + UNNAMED.busyMs; // taken before the hash: concurrent attempts are refused, not all checked at once
-      return u;
+      return () => void (u.busy = 0);
     }
     const pair = isNamed(ctx) && (locks.get(lockKey(email, listener, ipOf(ctx))) ?? 0) > now;
     const account = listener === "signin" && (locks.get(lockKey(email, "signin", "*")) ?? 0) > now;
-    if (pair || account) throw new APIError("FORBIDDEN", { message: "too many failed sign-ins: try again in 15 minutes, or ask the owner for a new link" });
-    return undefined;
+    if (pair || account) { tailnetBusy.delete(email); throw new APIError("FORBIDDEN", { message: "too many failed sign-ins: try again in 15 minutes, or ask the owner for a new link" }); }
+    return ipOf(ctx) === "tailnet" ? () => void tailnetBusy.delete(email) : undefined;
   };
 
   /** The per-address ban (memory only): `${listener}|${key}`; only an address a proxy named with its secret counts. */
@@ -259,6 +267,7 @@ export function authCore(o: AuthCoreOptions) {
       if (m.size > 1000) for (const [k, ts] of m) if (ts.every((t) => old(t, win))) m.delete(k);
     for (const m of [locks, bans]) if (m.size > 1000) for (const [k, t] of m) if (t <= now) m.delete(k);
     if (accountFailures.size > 1000) for (const [k, ts] of accountFailures) if (ts.every((f) => old(f.at, ALERT.windowMs))) accountFailures.delete(k);
+    if (tailnetBusy.size > 1000) for (const [k, t] of tailnetBusy) if (t <= now) tailnetBusy.delete(k);
     if (unnamed.size > 1000) for (const [k, u] of unnamed) if (u.busy <= now && u.next <= now && u.fails.every((t) => old(t, UNNAMED.hourMs))) unnamed.delete(k);
   };
   const tell = (line: string) => (o.notify ? o.notify(line) : log.warn({ line }, "no owner channel for sign-in notices"));
@@ -352,7 +361,7 @@ export function authCore(o: AuthCoreOptions) {
         const listener = listenerOf(ctx);
         // A check this hook refuses itself (a spent code, an account without access) never reaches the after hook: the
         // shared peer's turn is handed back here.
-        let held: { busy: number } | undefined;
+        let held: (() => void) | undefined;
         try {
           if (ctx.path === "/sign-in/email") {
             const email = String((ctx.body as { email?: unknown })?.email ?? "").toLowerCase();
@@ -376,7 +385,7 @@ export function authCore(o: AuthCoreOptions) {
             }
           }
         } catch (e) {
-          if (held) held.busy = 0;
+          held?.();
           throw e;
         }
       }),
@@ -417,7 +426,7 @@ export function authCore(o: AuthCoreOptions) {
           const u = unnamedOf(email, ctx);
           u.busy = 0;
           if (!failed) u.next = 0; // the right password: the code step follows at once
-        }
+        } else if (ipOf(ctx) === "tailnet") tailnetBusy.delete(email);
         if (!failed) {
           if (returned instanceof APIError) return;
           log.info({ email, step: ctx.path, listener: listenerOf(ctx) }, "sign-in step passed");
@@ -487,7 +496,7 @@ export function authCore(o: AuthCoreOptions) {
     if (a.cookie) headers.set("cookie", a.cookie);
     for (const k of [...headers.keys()]) if (k.startsWith("x-aidenhq-")) headers.delete(k);
     headers.set(LISTENER_HEADER, listener);
-    const named = (a.trusted ? ipOr(req.headers[CLIENT_IP_HEADER]) : "") || tailnetLogin(req, listener);
+    const named = (a.trusted ? ipOr(req.headers[CLIENT_IP_HEADER]) : "") || tailnetPeer(req, listener);
     headers.set(PEER_HEADER, named || ipOr(req.socket?.remoteAddress) || "unknown");
     if (named) headers.set(NAMED_HEADER, named);
     if (a.body) headers.set("content-type", "application/json");

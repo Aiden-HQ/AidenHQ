@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openAccounts } from "../src/accounts.ts";
 import { createAdmin } from "../src/admin.ts";
-import { authSecret, tailnetLogin } from "../src/auth-rules.ts";
+import { authSecret, tailnetPeer } from "../src/auth-rules.ts";
 import { accountsFile, moveAccounts } from "../src/auth-move.ts";
 import { createChannels } from "../src/channels.ts";
 import { serve } from "./helpers.mjs";
@@ -192,12 +192,14 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
     assert.match(csp(r), /frame-ancestors 'none'/, path);
     assert.equal(r.headers["x-frame-options"], "DENY", path);
   }
-  // The tailnet identity counts only from the host's loopback, on the admin listener, without the front door's header.
+  // tailscale serve's requests are one peer, whatever login they name: only from the host's loopback, on the admin listener,
+  // without the front door's header; never on the gate's sign-in listener (3129).
   const req = (peer, extra = {}) => ({ headers: { "tailscale-user-login": "owner@example.com", ...extra }, socket: { remoteAddress: peer } });
-  assert.equal(tailnetLogin(req("127.0.0.1"), "admin"), "tailnet:owner@example.com");
-  assert.equal(tailnetLogin(req("198.51.100.4"), "admin"), "");
-  assert.equal(tailnetLogin(req("127.0.0.1", { "x-aidenhq-edge": "forged" }), "admin"), "");
-  assert.equal(tailnetLogin(req("127.0.0.1"), "signin"), "");
+  assert.equal(tailnetPeer(req("127.0.0.1"), "admin"), "tailnet");
+  assert.equal(tailnetPeer(req("127.0.0.1", { "tailscale-user-login": "someone-else@example.com" }), "admin"), "tailnet");
+  assert.equal(tailnetPeer(req("198.51.100.4"), "admin"), "");
+  assert.equal(tailnetPeer(req("127.0.0.1", { "x-aidenhq-edge": "forged" }), "admin"), "");
+  assert.equal(tailnetPeer(req("127.0.0.1"), "signin"), "");
 
   // An unidentified stranger (a forged client address and a forged tailnet login, both beside the front door's header):
   // stepped holds, then after 10 failures in the hour no unidentified sign-in for that email, right password or not.
@@ -250,4 +252,12 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
   const frame = await o("GET", "/owner/message");
   assert.match(csp(frame), /frame-ancestors https:\/\/board\.example\.com/);
   assert.equal(frame.headers["x-frame-options"], undefined);
+
+  // Varying the tailnet login makes no new bucket: five failures under five logins lock the one tailnet peer for that email.
+  const third = boardData();
+  moveAccounts(third);
+  const tn = await adminOn(t, third);
+  for (let i = 0; i < 5; i++) assert.equal((await browser(tn.url, HOST, false, { "tailscale-user-login": `login-${i}@example.com` })("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401);
+  const blocked = await browser(tn.url, HOST, false, { "tailscale-user-login": "login-9@example.com" })("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
+  assert.match(blocked.html, /too many failed sign-ins/);
 });
