@@ -54,12 +54,39 @@ function writesOf(grant: unknown, tags: Dict | undefined): string[] {
   return grant.filter((t) => w.includes(t)).map(String);
 }
 
-/** A's namespaced ids renamed into B's (spec A24): `a.kind`, `a-jobcap`, `a_secret` read as B's, so equal authority is no change. */
+/**
+ * A's def with the ids A declares (connections, secrets, write kinds, roles, jobcaps) renamed into B's namespace (spec A24),
+ * so equal authority shows as no change. Only ids A declares under its own prefix (`a.x`, `a-x`, `a_x`) are renamed, through
+ * an explicit map, and only where the manifest names an id; two ids landing on one name, or on another id A declares, is
+ * ambiguous and refused (the apply is refused, never guessed).
+ */
 export function renamed(def: ModuleDef, from: string, to: string): ModuleDef {
-  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  let text = JSON.stringify(def);
-  for (const [a, b] of [[from, to], [from.replace(/-/g, "_"), to.replace(/-/g, "_")]] as const) text = text.replace(new RegExp(`(?<![\\w-])${esc(a)}(?=[._-]|")`, "g"), b);
-  return JSON.parse(text);
+  const s = map(def.secrets), roles = map(def.roles);
+  const declared = new Set([...keys(def.connections), ...ownSecrets(def), ...keys(def.writes), ...list(roles.declares).map((r) => String(isMap(r) ? r.id : r)), ...list(def.jobcaps).map((j) => String(map(j).id))]);
+  const prefixes = [[from, to], [from.replace(/-/g, "_"), to.replace(/-/g, "_")]] as const;
+  const m = new Map<string, string>();
+  for (const x of declared) {
+    const p = prefixes.find(([a]) => x === a || (x.startsWith(a) && /[._-]/.test(x[a.length] ?? "")));
+    if (p) m.set(x, p[1] + x.slice(p[0].length));
+  }
+  const seen = new Map<string, string>();
+  for (const [k, v] of m) {
+    if (seen.has(v) || (declared.has(v) && !m.has(v))) throw new Error(`replacing ${from} with ${to}: ${k} and ${seen.get(v) ?? v} would both be ${v}`);
+    seen.set(v, k);
+  }
+  const r = (x: unknown) => { const t = String(x); const opt = t.endsWith("?") ? "?" : ""; return (m.get(opt ? t.slice(0, -1) : t) ?? t.slice(0, t.length - opt.length)) + opt; };
+  const rk = (o: unknown) => Object.fromEntries(Object.entries(map(o)).map(([k, v]) => [r(k), v]));
+  const out: Dict = structuredClone(def);
+  if (isMap(def.connections)) out.connections = Object.fromEntries(Object.entries(def.connections).map(([k, c]) => [r(k), isMap(c) && c.auth != null ? { ...c, auth: r(c.auth) } : c]));
+  if (isMap(def.writes)) out.writes = rk(def.writes);
+  for (const k of ["generated_secrets", "optional_secrets"]) if (Array.isArray(def[k])) out[k] = (def[k] as unknown[]).map(r);
+  if (isMap(def.secrets)) out.secrets = { ...s, ...(Array.isArray(s.generated) ? { generated: s.generated.map(r) } : {}), ...(Array.isArray(s.provided) ? { provided: s.provided.map((p) => (isMap(p) ? { ...p, name: r(p.name) } : r(p))) } : {}) };
+  if (isMap(def.roles)) out.roles = { ...roles, ...(Array.isArray(roles.declares) ? { declares: roles.declares.map((d) => (isMap(d) ? { ...d, id: r(d.id) } : r(d))) } : {}), ...(Array.isArray(roles.requests) ? { requests: roles.requests.map(r) } : {}) };
+  if (Array.isArray(def.jobcaps)) out.jobcaps = def.jobcaps.map((j) => (isMap(j) ? { ...j, id: r(j.id), ...(j.connection != null ? { connection: r(j.connection) } : {}), ...(j.read_secret != null ? { read_secret: r(j.read_secret) } : {}) } : j));
+  if (isMap(def.agents)) out.agents = Object.fromEntries(Object.entries(def.agents).map(([k, a]) => [k, isMap(a) ? { ...a, ...(isMap(a.connections) ? { connections: rk(a.connections) } : {}), ...(Array.isArray(a.roles) ? { roles: a.roles.map(r) } : {}), ...(Array.isArray(a.jobcaps) ? { jobcaps: a.jobcaps.map(r) } : {}) } : a]));
+  const sv = map(def.services);
+  if (isMap(sv.grants)) out.services = { ...sv, grants: rk(sv.grants) };
+  return out;
 }
 
 /**
@@ -82,6 +109,11 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   }
   const b = base ?? {};
   if (!base && !replacing) review("installed");
+  // Enforcement it drops (a check, its reviewer or executor provider) is authority too: the owner's, as on a remove.
+  const checkIds = (x: Dict) => list(x.checks).map((c) => JSON.stringify(isMap(c) ? c.id ?? c : c));
+  const gone = checkIds(b).filter((c) => !checkIds(head).includes(c));
+  if (gone.length) owner(`drops ${gone.length} check${gone.length === 1 ? "" : "s"}`);
+  for (const k of ["reviewer", "executor"]) if (map(b.providers)[k] && !map(head.providers)[k]) owner(`drops its ${k} provider`);
 
   for (const k of keys(b, head)) {
     if (PLAIN.has(k) || CHECKED.has(k) || eq(b[k], head[k])) continue;
@@ -156,8 +188,17 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   for (const k of keys(hs).filter((k) => !["run", "data", "grants", "workspaces", "models"].includes(k) && !eq(bs[k], hs[k]))) owner(`services: unrecognised key ${id(k)}`);
 
   if (!eq(b.board_env, head.board_env)) owner("changes the board's environment (board_env)");
+  // Isolation: an install is measured from the most restrictive level, so a trusted install says so; agents and apps inherit
+  // the module's unless they set their own.
   const iso = (x: unknown) => ISOLATION_RANK[String(x ?? "trusted")] ?? 3;
-  if (iso(head.isolation) > iso(b.isolation)) owner(`isolation ${id(head.isolation ?? "trusted")}`);
+  const floor = base ? b.isolation : "untrusted";
+  if (iso(head.isolation) > iso(floor)) owner(`isolation ${id(head.isolation ?? "trusted")}`);
+  const apps = (x: Dict) => new Map(list(x.apps).map((a) => [String(map(a).name), map(a)]));
+  const [bap, hap] = [apps(b), apps(head)];
+  for (const [n, a] of hap) {
+    const was = bap.get(n);
+    if (iso(a.isolation ?? head.isolation) > iso(was ? was.isolation ?? b.isolation : base ? head.isolation : "untrusted")) owner(`app ${id(n)}: isolation ${id(a.isolation ?? head.isolation ?? "trusted")}`);
+  }
 
   // Engines: secrets handed to the job as env, and home folders it writes.
   const engines = (x: Dict) => new Map(list(map(x.providers).engine).map((e) => [String(map(e).kind), map(e)]));
@@ -193,7 +234,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     }
     for (const r of added(was.roles, now.roles)) owner(`${at}: role ${id(r)}`);
     const eff = (a: Dict, m: Dict) => a.isolation ?? m.isolation;
-    if (iso(eff(now, head)) > iso(key in ba ? eff(was, b) : head.isolation)) owner(`${at}: isolation ${id(eff(now, head) ?? "trusted")}`);
+    if (iso(eff(now, head)) > iso(key in ba ? eff(was, b) : base ? head.isolation : "untrusted")) owner(`${at}: isolation ${id(eff(now, head) ?? "trusted")}`);
     const caps = (x: Dict) => Number(map(x.caps).day_usd ?? 0);
     if (caps(now) > caps(was)) owner(`${at}: day_usd up to ${id(caps(now))}`);
     for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "caps"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);

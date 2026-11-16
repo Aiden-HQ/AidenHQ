@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { authorityDiff, authorityLines, classifyModules, diffAll, moduleInputs } from "../src/loader/authority.ts";
+import { authorityDiff, authorityLines, classifyModules, diffAll, moduleInputs, renamed } from "../src/loader/authority.ts";
 
 const IMG = `example.com/acme/tool:1.0@sha256:${"a".repeat(64)}`;
 const base = {
@@ -73,6 +73,37 @@ test("a retag is judged by the highest tag on either side: an agent's list grant
   const retag = with_({ connections: { crm: { ...conn, tools: { read: ["crm_search", "crm_note"], write: [] } } }, agents: { closer: { model: "m", connections: { crm: ["crm_search", "crm_note"] } } } });
   const owners = authorityDiff("acme-crm", base, retag, false).changes.filter((c) => c.owner).map((c) => c.what);
   assert.deepEqual(owners, ["connection crm: retags crm_note from write to read", "agent closer: write grant on crm (crm_note)"]);
+});
+
+test("dropping enforcement is the owner's: a check removed, or the reviewer or executor provider gone", () => {
+  const strict = with_({ checks: [{ id: "lint" }, { id: "scan" }], providers: { reviewer: { url: "http://r:1/" }, executor: { url: "http://e:1/" } } });
+  const lines = (head) => authorityDiff("acme-crm", strict, head, false).changes.filter((c) => c.owner).map((c) => c.what);
+  assert.deepEqual(lines(with_({ checks: [{ id: "lint" }], providers: { reviewer: { url: "http://r:1/" }, executor: { url: "http://e:1/" } } })), ["drops 1 check"]);
+  assert.deepEqual(lines(with_({ checks: strict.checks })), ["drops its reviewer provider", "drops its executor provider"]);
+  // The same through a replace: B lacking A's check is the owner's.
+  const d = authorityDiff("crm-b", undefined, { name: "crm-b" }, false, { name: "acme-crm", def: strict });
+  assert.ok(d.changes.some((c) => c.owner && c.what === "drops 2 checks"));
+});
+
+test("an install is measured from untrusted: a trusted module, agent or app says so", () => {
+  const owners = (head) => authorityDiff("acme-x", undefined, head, false).changes.filter((c) => c.owner).map((c) => c.what);
+  assert.deepEqual(owners({ name: "acme-x", isolation: "untrusted" }), []);
+  assert.deepEqual(owners({ name: "acme-x" }), ["isolation trusted"]);
+  assert.deepEqual(owners({ name: "acme-x", isolation: "untrusted", agents: { a: { isolation: "trusted" } }, apps: [{ name: "dash", isolation: "trusted" }] }), ["app dash: isolation trusted", "agent a: isolation trusted"]);
+  // An existing untrusted module whose app moves to trusted.
+  const was = { name: "acme-x", isolation: "untrusted", apps: [{ name: "dash" }] };
+  assert.deepEqual(authorityDiff("acme-x", was, { ...was, apps: [{ name: "dash", isolation: "trusted" }] }, false).changes.filter((c) => c.owner).map((c) => c.what), ["app dash: isolation trusted"]);
+});
+
+test("a replace renames only the ids A declares, and refuses an ambiguous one", () => {
+  // `chan-a-notes` is another module's connection A's agent reads: not A's, so it is never renamed (no regex over the JSON).
+  const a = { name: "chan-a", connections: { "chan-a": { auth: "chan_a_service_key", tools: { read: ["r"], write: [] } } }, agents: { bot: { connections: { "chan-a": "read", "chan-a-notes": "write" } } } };
+  const r = renamed(a, "chan-a", "chan-b");
+  assert.deepEqual(Object.keys(r.connections), ["chan-b"]);
+  assert.equal(r.connections["chan-b"].auth, "chan_b_service_key");
+  assert.deepEqual(r.agents.bot.connections, { "chan-b": "read", "chan-a-notes": "write" });
+  assert.throws(() => renamed({ name: "chan-a", connections: { "chan-a.x": {}, "chan-a-x": {}, "chan-b.x": {} }, writes: {} }, "chan-a", "chan-b"), /would both be chan-b/);
+  assert.throws(() => renamed({ name: "chan-a", generated_secrets: ["chan_a_key", "chan_b_key"] }, "chan-a", "chan-b"), /would both be chan_b_key/);
 });
 
 test("H6: a provided secret named like a model key is still only owner:true (the reviewer rejects it)", () => {
