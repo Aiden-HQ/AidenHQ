@@ -165,7 +165,10 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
     host: { "owner-channel": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL", "OWNER_COMMAND_CHANNEL", "AIDENHQ_GATEWAY_URL"], google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"], jira: ["AIDENHQ_GATEWAY_URL"], tasks: ["AIDENHQ_GATEWAY_URL"], github: ["GITHUB_COMMENT_ORGS"], slack: ["SLACK_CLIENT_ID"] },
   };
   // 2f split owner-channel into channel-telegram, channel-slack and chat-lane: each may keep only a part of what it had.
-  const split = { "channel-telegram": "owner-channel", "channel-slack": "owner-channel", "chat-lane": "owner-channel" };
+  const split = { "channel-telegram": "owner-channel", "channel-slack": "owner-channel", "chat-lane": "owner-channel", grading: "board-grades" };
+  // 3h moved the grade rows out of the board into the grading module: its one link is the pair network to the board, for the
+  // board's reads of those rows, until the board is a module (4a). No root secret, no host variable.
+  was.links["board-grades"] = ["board"];
   const within = (now, before) => Object.entries(now).every(([m, l]) => l.every((x) => (before[m] ?? before[split[m]] ?? []).includes(x)));
   assert.ok(within(Object.fromEntries(Object.entries(LEGACY_LINKS).map(([m, v]) => [m, v.to])), was.links));
   assert.ok(within(LEGACY_SECRETS, was.secrets));

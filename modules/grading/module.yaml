@@ -1,0 +1,46 @@
+name: grading
+description: "Graded done: a delegated task's rubric and grade, the finish check every move to done passes (held for the grader until its rubric is met), and the routes the runner's grader and the board read. Always installed (core requires it)."
+license: AGPL-3.0-only
+# A task.finish check (P5, spec §3.5): the kernel asks POST /check/finish on every move to done (kernel/src/checks.ts); a held
+# task goes to review with the `grading` label, which this module releases (POST /v1/checks/:task) once a verdict is in. The
+# grade loop itself (src/loop.mjs) runs in the host runner, which holds what the grader reads (job state, GitHub through the
+# App); it reaches this service at its container address with grading_runner_key. It reads tasks and the kill switch from
+# the kernel with its own token (kernel.cp-read) and never writes to the control plane itself.
+roles:
+  requests: [ kernel.cp-read ]
+checks:
+  - id: finish
+    at: task.finish
+    post: http://grading:8096/check/finish
+    auth: grading_check_key
+    label: grading
+labels:
+  - { name: grading, color: "#7c3aed" }
+# The board's reads (held parts, wake-ups, rollover, Fleet Ops' stale grades), with its own key, until the board is a module.
+board_env:
+  GRADING_URL: http://grading:8096
+  GRADING_BOARD_KEY_FILE: ${secrets.grading_board_key}
+services:
+  data: true
+  run:
+    grading:
+      build: ./service
+      tmp: 16m
+      port: 8096
+      # The kernel's listener is a host address: reached the way every module with no legacy link reaches it.
+      egress: true
+      links: [ board ] # the board's reads (until the board is a module)
+      data: ["grades:/data"]
+      env:
+        GRADES_DB: /data/grades.sqlite
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+        GRADING_TOKEN_FILE: ${secrets.grading_token}
+        GRADING_CHECK_KEY_FILE: ${secrets.grading_check_key}
+        GRADING_RUNNER_KEY_FILE: ${secrets.grading_runner_key}
+        GRADING_BOARD_KEY_FILE: ${secrets.grading_board_key}
+generated_secrets:
+  - grading_token
+  - grading_check_key
+  - grading_runner_key
+  - grading_board_key
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

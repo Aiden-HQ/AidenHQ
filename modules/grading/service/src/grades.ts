@@ -1,10 +1,7 @@
-// Graded done (wave 1): a delegated task's rubric and grading state, kept here in trusted storage (never the task's
-// editable description), and the one completion gate every path to `done` calls for a task with a row. The board owns
-// this state; the runner claims pending rows, gathers evidence and asks the grader.
-import { readFileSync } from "node:fs";
+// Graded done (wave 1): a delegated task's rubric and grading state, kept here in the grading module's own storage (never
+// the task's editable description), and the completion gate its finish check answers for a task with a row. Moved from the
+// board unchanged (lean-core 3h); the runner still claims pending rows, gathers evidence and asks the grader.
 import type { DatabaseSync } from "node:sqlite";
-import { z } from "zod";
-import type { Events } from "./events.js";
 
 /**
  * open: filed with the delegation, the task not finished yet. pending: a completion path hit the gate, waiting for the
@@ -75,47 +72,43 @@ export const MAX_GRADER_FAILURES = 5;
 /** How long after the `failures`-th failed pass the runner retries it. */
 export const graderRetryDelay = (failures: number) => GRADER_RETRY_MS[Math.min(Math.max(failures, 1), GRADER_RETRY_MS.length) - 1]!;
 
-export const DeliverableSchema = z.object({ kind: z.enum(["pr", "app", "apply", "file", "report"]), ref: z.string().max(500).default("") }).strict();
-/** A delegation's rubric: 3-8 checkable criteria, or none (the grader then uses modules/core/rubrics/<kind>.md). */
-export const FileGradeSchema = z
-  .object({
-    issue: z.string().min(1).max(100),
-    rubric: z.array(z.string().trim().min(3).max(200)).max(8).refine((r) => r.length === 0 || r.length >= 3, "3-8 criteria, or none for the template"),
-    deliverable: DeliverableSchema,
-  })
-  .strict();
-export const GateSchema = z.object({ via: z.enum(["task_finish", "task_set_status", "finish_turn", "finish_merges"]) }).strict();
-/** The runner's outcome of one grading pass: still waiting on evidence, or the grader's verdict on `version` (grading_failed: the grader failed and is retried; error: evidence that never came or every model refused). */
-export const VerdictSchema = z
-  .object({
-    version: z.string().max(200),
-    outcome: z.enum(["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "grading_failed", "error"]),
-    model: z.string().max(100).default(""),
-    criteria: z.array(z.object({ id: z.string().max(20), met: z.enum(["yes", "no", "unknown"]), evidence: z.string().max(1000) }).strict()).max(8).default([]),
-  })
-  .strict();
+/** Where a body breaks the contract: a 400 with its field. */
+export class Invalid extends Error {}
+const bad = (msg: string): never => { throw new Invalid(msg); };
+const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const only = (o: Record<string, unknown>, keys: string[], at: string) => { for (const k of Object.keys(o)) if (!keys.includes(k)) bad(`${at}${k}: not allowed`); };
+const str = (v: unknown, max: number, at: string, min = 0) => (typeof v === "string" && v.length >= min && v.length <= max ? v : bad(`${at}: a string of ${min}-${max} characters`));
+const oneOf = <T extends string>(v: unknown, values: readonly T[], at: string): T => (values.includes(v as T) ? (v as T) : bad(`${at}: one of ${values.join(", ")}`));
 
-/** The kill switch (instance setting `grading`, in the grants table next to `autonomy`): off = every gate passes. Read fresh. */
-export function gradingOn(grantsFile = process.env.AIDENHQ_GRANTS_FILE): boolean {
-  try {
-    return JSON.parse(readFileSync(grantsFile ?? "", "utf8"))?.grading !== "off";
-  } catch {
-    return true;
-  }
+export const KINDS = ["pr", "app", "apply", "file", "report"] as const;
+/** A delegation's rubric: 3-8 checkable criteria, or none (the grader then uses modules/core/rubrics/<kind>.md). */
+export function parseFiling(b: unknown): { issue: string; rubric: string[]; deliverable: Deliverable } {
+  if (!isMap(b)) return bad("send {issue, rubric, deliverable}");
+  only(b, ["issue", "rubric", "deliverable"], "");
+  const rubric = (Array.isArray(b.rubric) ? b.rubric : bad("rubric: a list")).map((c, i) => str(typeof c === "string" ? c.trim() : c, 200, `rubric.${i}`, 3));
+  if (rubric.length > 8 || (rubric.length > 0 && rubric.length < 3)) bad("rubric: 3-8 criteria, or none for the template");
+  const d = isMap(b.deliverable) ? b.deliverable : bad("deliverable: {kind, ref}");
+  only(d, ["kind", "ref"], "deliverable.");
+  return { issue: str(b.issue, 100, "issue", 1), rubric, deliverable: { kind: oneOf(d.kind, KINDS, "deliverable.kind"), ref: d.ref === undefined ? "" : str(d.ref, 500, "deliverable.ref") } };
+}
+const OUTCOMES = ["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "grading_failed", "error"] as const;
+export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"] };
+/** The runner's outcome of one grading pass: still waiting on evidence, or the grader's verdict on `version` (grading_failed: the grader failed and is retried; error: evidence that never came or every model refused). */
+export function parseVerdict(b: unknown): VerdictInput {
+  if (!isMap(b)) return bad("send {version, outcome}");
+  only(b, ["version", "outcome", "model", "criteria"], "");
+  const criteria = b.criteria === undefined ? [] : Array.isArray(b.criteria) && b.criteria.length <= 8 ? b.criteria : bad("criteria: at most 8");
+  return {
+    version: str(b.version, 200, "version"), outcome: oneOf(b.outcome, OUTCOMES, "outcome"), model: b.model === undefined ? "" : str(b.model, 100, "model"),
+    criteria: criteria.map((c, i) => { const m = isMap(c) ? c : bad(`criteria.${i}`); only(m, ["id", "met", "evidence"], `criteria.${i}.`); return { id: str(m.id, 20, `criteria.${i}.id`), met: oneOf(m.met, ["yes", "no", "unknown"] as const, `criteria.${i}.met`), evidence: str(m.evidence, 1000, `criteria.${i}.evidence`) }; }),
+  };
 }
 
-/**
- * Whether a PR deliverable's ref may be filed: none (the task's own PRs), or a repo or PR in the agents org or the product
- * repo (`agents_org`, `product_repo` in the grants table, read fresh). Unknown repos refuse, as tiering does.
- */
-export function prRefAllowed(ref: string, grantsFile = process.env.AIDENHQ_GRANTS_FILE): boolean {
+/** Whether a PR deliverable's ref may be filed: none (the task's own PRs), or a repo or PR in the agents org or the product repo. Unknown repos refuse, as tiering does. */
+export function prRefAllowed(ref: string, t: { agents_org?: string; product_repo?: string }): boolean {
   if (!ref) return true;
   const m = /^(?:https:\/\/github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/pull\/\d+|#\d+)?\/?$/.exec(ref.trim());
   if (!m) return false;
-  let t: { agents_org?: string; product_repo?: string } = {};
-  try {
-    t = JSON.parse(readFileSync(grantsFile ?? "", "utf8")) ?? {};
-  } catch {}
   const [org, repo] = [m[1]!.toLowerCase(), `${m[1]}/${m[2]}`.toLowerCase()];
   return Boolean((t.agents_org && org === t.agents_org.toLowerCase()) || (t.product_repo && repo === t.product_repo.toLowerCase()));
 }
@@ -126,10 +119,10 @@ const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.r
 export const unverifiedOnly = (criteria: { met: string }[]) => criteria.some((c) => c.met === "unknown") && !criteria.some((c) => c.met === "no");
 
 export class Grades {
-  constructor(
-    private db: DatabaseSync,
-    private events?: Events,
-  ) {
+  private events?: { emit: (topic: string, id: string) => void };
+  private db: DatabaseSync;
+  constructor(db: DatabaseSync) {
+    this.db = db;
     db.exec(`CREATE TABLE IF NOT EXISTS grades (
       issue_id TEXT PRIMARY KEY, rubric TEXT NOT NULL, deliverable TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
       state TEXT NOT NULL, verdicts TEXT NOT NULL DEFAULT '[]', failures INTEGER NOT NULL DEFAULT 0, failed_at TEXT,
@@ -286,7 +279,7 @@ export class Grades {
    * cannot_judge, a grader refusal and evidence that never came (error) escalate to the delegator. A grader that failed or returned no usable criteria (grading_failed) is retried on the
    * 1-5-15-60 minute ladder and only escalates after MAX_GRADER_FAILURES passes; any real verdict clears that count.
    */
-  record(issueId: string, v: z.infer<typeof VerdictSchema>, now = Date.now(), delegators?: string[]): Grade {
+  record(issueId: string, v: VerdictInput, now = Date.now(), delegators?: string[]): Grade {
     const set = (state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, at: number) => this.set(issueId, state, attempts, verdicts, failures, failedAt, at, delegators);
     const g = this.get(issueId);
     if (!g) throw new Error("no grade for this task");
@@ -314,7 +307,7 @@ export class Grades {
  * passes, and so does one whose grade is satisfied. Anything else waits for the grader, so a cascade never satisfies a
  * rubric by itself.
  */
-export function gradePassed(grades: Grades, issueId: string, on = gradingOn()): boolean {
+export function gradePassed(grades: Grades, issueId: string, on: boolean): boolean {
   if (!on) return true;
   const g = grades.get(issueId);
   return !g || g.state === "satisfied";
@@ -368,7 +361,7 @@ export function gradingReviewPolicy(policy: Record<string, unknown> | null | und
 }
 
 /** Every way a task reaches done: the tasks bridge's task_finish and task_set_status(done), the runner's finishTurn and finishMerges. */
-export type CompletionPath = z.infer<typeof GateSchema>["via"];
+export type CompletionPath = "task_finish" | "task_set_status" | "finish_turn" | "finish_merges";
 /**
  * pass: the path may close the task as it would have. Otherwise the task goes to in_review with the `grading` label and the
  * row has this state (escalated: it waits for the delegator; grading_failed: the runner retries it).
@@ -381,7 +374,7 @@ export type GateResult = { pass: true } | { pass: false; state: "pending" | "awa
  * again is graded again (each verdict is bound to its deliverable version). An escalated task stays the delegator's: finishing
  * it again only marks it, and the runner sends it back to the grader once there is a new deliverable version.
  */
-export function completionGate(grades: Grades, issueId: string, _via: CompletionPath, { done = false, on = gradingOn() }: { done?: boolean; on?: boolean } = {}): GateResult {
+export function completionGate(grades: Grades, issueId: string, _via: CompletionPath, { done = false, on }: { done?: boolean; on: boolean }): GateResult {
   const g = on ? grades.get(issueId) : undefined;
   // Settled rows: satisfied (graded) and not_graded (closed before the grader settled it) pass a task that is already done.
   if (!g || (done && (g.state === "satisfied" || g.state === "not_graded"))) return { pass: true };

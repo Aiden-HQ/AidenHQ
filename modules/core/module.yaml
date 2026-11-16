@@ -8,6 +8,7 @@ requires:
   - apps-platform
   - ai-reviewer
   - models-openrouter
+  - grading
 settings:
   owner_name:
     required: true
@@ -385,7 +386,6 @@ labels:
   - { name: needs-response, color: "#e11d48" }
   - { name: engineer, color: "#4f46e5" }
   - { name: recurring, color: "#0d9488" }
-  - { name: grading, color: "#7c3aed" }
 company:
   name: ${settings.company_name}
   description: Personal operations control plane

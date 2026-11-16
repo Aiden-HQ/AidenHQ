@@ -10,6 +10,7 @@
 //   config/jobcaps.json        → the kernel (job tokens on /c/<connection>/mcp) and the runner: what jobs may read (modules' jobcaps:)
 //   config/kernel/connections.json → the kernel's tool proxy: each connection's endpoint, service key secret, module and tool tags
 //   config/kernel/writes.json  → the kernel's write kinds (modules' `writes:`): floor, card, args schema, executor, routed tools
+//   config/kernel/checks.json  → the kernel's finish gate: modules' task.finish checks (url, key secret, label, scope)
 //   config/kernel/modules.json → the kernel: modules' kernel roles, privileged entries, own tokens and channels (stamp, settings)
 //   config/exposure           → ops/vm/setup.sh (root) and verify-security: settings.exposure, one word
 //   config/module-data.json    → the apply (ops/lib/generations.sh): each data module's data_version and services digest
@@ -95,6 +96,8 @@ writeFileSync(join(cfgOut, "jobcaps.json"), JSON.stringify(out.jobcaps, null, 2)
 mkdirSync(join(cfgOut, "kernel"), { recursive: true });
 writeFileSync(join(cfgOut, "kernel/connections.json"), JSON.stringify(out.connections, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/writes.json"), JSON.stringify(out.writes, null, 2) + "\n");
+// Always written ({} when no module checks): the kernel's finish gate refuses every close when it is missing.
+writeFileSync(join(cfgOut, "kernel/checks.json"), JSON.stringify(out.checks, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/modules.json"), JSON.stringify(out.kernelModules, null, 2) + "\n");
 writeFileSync(join(cfgOut, "engines.json"), JSON.stringify(out.engines, null, 2) + "\n");
 writeFileSync(join(cfgOut, "exposure"), `${out.exposure}\n`);

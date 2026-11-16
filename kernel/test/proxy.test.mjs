@@ -101,12 +101,12 @@ test("A4: an assertion opens /v1/cp/agent/* only while its call is in flight, an
 test("A5: a module token without services.grants cannot call another connection; the directory never shows tools", async (t) => {
   const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read"] });
   const other = await moduleServer(t, { key: "other-key", tools: ["x"] });
-  const k = await kernel(t, { agents, grants, secrets, settings: { grading: "off" }, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }), other: conn(other.url, "other", { read: ["x"] }) } });
+  const k = await kernel(t, { agents, grants, secrets, settings: { coach: "off", agents_org: "acme" }, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }), other: conn(other.url, "other", { read: ["x"] }) } });
   const r = await k.call("docs", "other-key", { method: "tools/call", params: { name: "doc_read" } });
   assert.deepEqual((await r.json()).error, { code: -32602, message: "no-grant" });
   assert.equal(docs.seen.filter((s) => s.method === "tools/call").length, 0);
   const dir = await fetch(`${k.url}/v1/agents`, { headers: { authorization: "Bearer other-key" } }).then((x) => x.json());
-  assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"] }, "ag-bo": { key: "bo", roles: [], trial: true } }, settings: { grading: "off", loop_brake: "on" } });
+  assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"] }, "ag-bo": { key: "bo", roles: [], trial: true } }, settings: { coach: "off", agents_org: "acme" } });
   assert.equal((await fetch(`${k.url}/v1/agents`, { headers: { authorization: "Bearer run-jwt-ada" } })).status, 401);
   const me = await fetch(`${k.url}/v1/whoami`, { headers: { authorization: "Bearer run-jwt-ada" } }).then((x) => x.json());
   assert.deepEqual(me, { kind: "run", agent: "ag-ada", roles: ["writer"], tools: { docs: ["doc_read", "doc_write"] } });

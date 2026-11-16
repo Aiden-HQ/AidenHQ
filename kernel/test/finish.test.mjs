@@ -1,4 +1,4 @@
-// The finish gate (checks.ts): a module's task.finish check on every move to done, the tasks module's through
+// The finish gate (checks.ts): a module's task.finish check on every move to done, a module acting for an agent through
 // /v1/cp/agent and the runner's through /v1/finish; holds placed as the owner, released or resolved by the check's module.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -6,10 +6,10 @@ import { kernel, moduleServer, readBody, serve } from "./helpers.mjs";
 
 const conn = (url, module, tools) => ({ url: `${url}/mcp`, auth_secret: `${module}_service_key`, module, returns: "trusted", tools: { read: [], write: [], destructive: [], ...tools } });
 const agents = { "run-jwt-ada": { id: "ag-ada", name: "Ada" } };
-const grants = { "ag-ada": { key: "ada", roles: [], tools: { tasks: ["task_finish"] } } };
+const grants = { "ag-ada": { key: "ada", roles: [], tools: { todo: ["task_finish"] } } };
 const TASK = "11111111-1111-1111-1111-111111111111";
 
-/** A kernel with the tasks connection, one finish check answering `verdict(body)`, and a control plane holding one task. */
+/** A kernel with a task connection, one finish check answering `verdict(body)`, and a control plane holding one task. */
 async function setup(t, verdict, { agentsScope, checks, graded = false } = {}) {
   const asked = [];
   const check = await serve(async (req, res) => {
@@ -23,22 +23,22 @@ async function setup(t, verdict, { agentsScope, checks, graded = false } = {}) {
   const issue = { id: TASK, identifier: "WOR-1", companyId: "co", status: "in_progress", assigneeAgentId: "ag-ada", assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null, labelIds: ["lbl-x"], executionPolicy: { mode: "normal" } };
   const writes = [];
   let k;
-  const tasks = await moduleServer(t, { key: "tasks-key", tools: ["task_finish"], answer: async (msg, req) => {
-    const r = await fetch(`${k.url}/v1/cp/agent/api/issues/${msg.params.arguments.task}`, { method: "PATCH", headers: { authorization: "Bearer tasks-key", "x-aidenhq-caller": req.headers["x-aidenhq-caller"], "content-type": "application/json" }, body: JSON.stringify(msg.params.arguments.body) });
+  const todo = await moduleServer(t, { key: "todo-key", tools: ["task_finish"], answer: async (msg, req) => {
+    const r = await fetch(`${k.url}/v1/cp/agent/api/issues/${msg.params.arguments.task}`, { method: "PATCH", headers: { authorization: "Bearer todo-key", "x-aidenhq-caller": req.headers["x-aidenhq-caller"], "content-type": "application/json" }, body: JSON.stringify(msg.params.arguments.body) });
     return { content: [{ type: "text", text: JSON.stringify({ status: r.status, json: await r.json() }) }] };
   } });
   k = await kernel(t, {
-    agents, grants: { "ag-ada": { ...grants["ag-ada"], ...(graded ? { graded: true } : {}) } }, secrets: { tasks_service_key: "tasks-key", grading_check_key: "check-key", grading_token: "grading-tok", other_token: "other-tok" },
-    connections: { tasks: conn(tasks.url, "tasks", { write: ["task_finish"] }) },
-    modules: { modules: { grading: { roles: ["kernel.cp-read"], token: "grading_token" }, other: { roles: ["kernel.cp-read"], token: "other_token" } } },
-    checks: checks ?? ({ "grading.finish": { module: "grading", at: "task.finish", url: `${check.url}/check/finish`, auth_secret: "grading_check_key", label: "grading", ...(agentsScope ? { agents: agentsScope } : {}) } }),
+    agents, grants: { "ag-ada": { ...grants["ag-ada"], ...(graded ? { graded: true } : {}) } }, secrets: { todo_service_key: "todo-key", judge_check_key: "check-key", judge_token: "judge-tok", other_token: "other-tok" },
+    connections: { todo: conn(todo.url, "todo", { write: ["task_finish"] }) },
+    modules: { modules: { judge: { roles: ["kernel.cp-read"], token: "judge_token" }, other: { roles: ["kernel.cp-read"], token: "other_token" } } },
+    checks: checks ?? ({ "judge.finish": { module: "judge", at: "task.finish", url: `${check.url}/check/finish`, auth_secret: "judge_check_key", label: "held", ...(agentsScope ? { agents: agentsScope } : {}) } }),
     onControl: async (req, body, auth) => {
       if (req.method === "GET" && (req.url === `/api/issues/${TASK}` || req.url === "/api/issues/WOR-1")) return { body: issue };
-      if (req.method === "GET" && req.url === "/api/companies/co/labels") return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-grading", name: "grading" }] };
+      if (req.method === "GET" && req.url === "/api/companies/co/labels") return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-held", name: "held" }] };
       if (req.method === "PATCH") { const b = JSON.parse(body); writes.push({ as: auth, body: b }); Object.assign(issue, b); return { body: issue }; }
     },
   });
-  const finish = async (body) => JSON.parse((await (await k.call("tasks", "run-jwt-ada", { method: "tools/call", params: { name: "task_finish", arguments: { task: TASK, body } } })).json()).result.content[0].text);
+  const finish = async (body) => JSON.parse((await (await k.call("todo", "run-jwt-ada", { method: "tools/call", params: { name: "task_finish", arguments: { task: TASK, body } } })).json()).result.content[0].text);
   return { k, asked, writes, issue, finish };
 }
 
@@ -51,7 +51,7 @@ test("a holding check: the move to done isn't forwarded; the owner holds the tas
   assert.equal(asked[0].auth, "Bearer check-key");
   assert.deepEqual(asked[0].body, { task: { id: TASK, identifier: "WOR-1", status: "in_progress", assigneeAgentId: "ag-ada", assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null }, agent: "ag-ada", tool: "task_finish", via: "task_finish" });
   // One write, as the owner (the board key); the agent's own move to done never reached the control plane.
-  assert.deepEqual(writes, [{ as: "board-key", body: { status: "in_review", labelIds: ["lbl-x", "lbl-grading"], executionPolicy: { mode: "normal", monitor: { nextCheckAt: until, notes: "The grader checks this task against its rubric." } } } }]);
+  assert.deepEqual(writes, [{ as: "board-key", body: { status: "in_review", labelIds: ["lbl-x", "lbl-held"], executionPolicy: { mode: "normal", monitor: { nextCheckAt: until, notes: "The grader checks this task against its rubric." } } } }]);
 });
 
 test("a deny refuses the close with its status and reason, and a failed check refuses it too: nothing moves either way", async (t) => {
@@ -67,7 +67,7 @@ test("a deny refuses the close with its status and reason, and a failed check re
     answer = bad;
     r = await finish({ status: "done" });
     assert.equal(r.status, 503, JSON.stringify(bad));
-    assert.match(r.json.error.message, /the finish check grading\.finish failed/);
+    assert.match(r.json.error.message, /the finish check judge\.finish failed/);
   }
   assert.deepEqual(writes, []);
 });
@@ -79,7 +79,7 @@ test("ok passes the agent's own change through as the agent; ok with unlabel dro
   assert.equal(r.status, 200);
   assert.deepEqual(writes, [{ as: "run-jwt-ada", body: { status: "done", comment: "Done." } }]);
   writes.length = 0;
-  Object.assign(issue, { status: "in_review", labelIds: ["lbl-x", "lbl-grading"] });
+  Object.assign(issue, { status: "in_review", labelIds: ["lbl-x", "lbl-held"] });
   answer = { verdict: "ok", unlabel: true };
   await finish({ status: "done" });
   assert.deepEqual(writes, [{ as: "board-key", body: { labelIds: ["lbl-x"] } }, { as: "run-jwt-ada", body: { status: "done" } }]);
@@ -88,7 +88,7 @@ test("ok passes the agent's own change through as the agent; ok with unlabel dro
   assert.equal(asked.length, n, "only a move to done asks the checks");
 });
 
-test("a check scoped to agents is asked only for their tasks", async (t) => {
+test("a check scoped to agents is asked only for their work", async (t) => {
   const { asked, finish } = await setup(t, () => ({ verdict: "deny", reason: "no" }), { agentsScope: ["someone-else"] });
   assert.equal((await finish({ status: "done" })).status, 200);
   assert.equal(asked.length, 0);
@@ -96,7 +96,7 @@ test("a check scoped to agents is asked only for their tasks", async (t) => {
 
 test("/v1/finish: the runner's own closes, with its key only", async (t) => {
   const { k, asked, writes } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
-  assert.equal((await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "tasks-key")).status, 401);
+  assert.equal((await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "todo-key")).status, 401);
   assert.equal((await k.v1("POST", "/v1/finish", { task: TASK, via: "task_finish" }, "the-runners-key")).status, 400);
   const r = await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "the-runners-key");
   assert.deepEqual(r.json, { pass: false, state: "pending" });
@@ -107,10 +107,10 @@ test("/v1/finish: the runner's own closes, with its key only", async (t) => {
 
 test("/v1/checks/:task: only the check's module; release drops its label; ok and reopen only resolve a hold it placed", async (t) => {
   const { k, writes, issue } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
-  const resolve = (body, token = "grading-tok") => k.v1("POST", `/v1/checks/${TASK}`, body, token);
+  const resolve = (body, token = "judge-tok") => k.v1("POST", `/v1/checks/${TASK}`, body, token);
   assert.equal((await resolve({ verdict: "release" }, "other-tok")).status, 403);
   assert.equal((await resolve({ verdict: "ok" })).status, 409, "no hold yet");
-  Object.assign(issue, { labelIds: ["lbl-x", "lbl-grading"] });
+  Object.assign(issue, { labelIds: ["lbl-x", "lbl-held"] });
   assert.equal((await resolve({ verdict: "release" })).status, 200);
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { labelIds: ["lbl-x"] } });
   await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "the-runners-key");
@@ -119,15 +119,15 @@ test("/v1/checks/:task: only the check's module; release drops its label; ok and
   assert.equal((await resolve({ verdict: "reopen" })).status, 409, "the hold was resolved once");
 });
 
-test("grading never fails open: a graded assignee's task with no check covering it, or a checks file that won't load, refuses the close", async (t) => {
-  // No finish check registered (the grading module isn't installed, or compile wrote none): an ungraded agent's close goes
+test("the finish gate never fails open: a graded assignee's task with no check covering it, or a checks file that won't load, refuses the close", async (t) => {
+  // No finish check registered (the check's module isn't installed, or compile wrote none): an ungraded agent's close goes
   // ahead, a graded agent's is refused and nothing moves.
   let s = await setup(t, () => ({ verdict: "ok" }), { checks: {} });
   assert.equal((await s.finish({ status: "done" })).status, 200);
   s = await setup(t, () => ({ verdict: "ok" }), { checks: {}, graded: true });
   let r = await s.finish({ status: "done" });
   assert.equal(r.status, 503);
-  assert.match(r.json.error.message, /grading unavailable: WOR-1's assignee is graded and no finish check covers it/);
+  assert.match(r.json.error.message, /the finish gate is unavailable: WOR-1's assignee is graded and no finish check covers it/);
   assert.deepEqual(s.writes, []);
   // A check scoped to other agents covers nothing here either.
   s = await setup(t, () => ({ verdict: "ok" }), { agentsScope: ["someone-else"], graded: true });
@@ -136,7 +136,7 @@ test("grading never fails open: a graded assignee's task with no check covering 
   s = await setup(t, () => ({ verdict: "ok" }), { checks: () => { throw new SyntaxError("Unexpected end of JSON input"); } });
   r = await s.finish({ status: "done" });
   assert.equal(r.status, 503);
-  assert.match(r.json.error.message, /grading unavailable: the finish checks didn't load \(Unexpected end of JSON input\)/);
+  assert.match(r.json.error.message, /the finish gate is unavailable: the finish checks didn't load \(Unexpected end of JSON input\)/);
   assert.equal((await s.k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "the-runners-key")).status, 503);
   assert.deepEqual(s.writes, []);
 });
@@ -153,6 +153,6 @@ test("checksFile: a missing or unparsable file throws; a map loads and is reread
   assert.throws(read, SyntaxError);
   writeFileSync(f, "[]");
   assert.throws(read, /not a map/);
-  writeFileSync(f, JSON.stringify({ "grading.finish": { module: "grading", at: "task.finish", url: "http://grading:8096/check/finish", auth_secret: "k" } }));
-  assert.deepEqual(Object.keys(read()), ["grading.finish"]);
+  writeFileSync(f, JSON.stringify({ "judge.finish": { module: "judge", at: "task.finish", url: "http://judge:8096/check/finish", auth_secret: "k" } }));
+  assert.deepEqual(Object.keys(read()), ["judge.finish"]);
 });

@@ -44,7 +44,6 @@ import { CONN_TOOL, type Writes } from "./writes.ts";
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
 /** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
 const DIRECTORY = ["key", "roles", "trial", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
-const SETTINGS = ["grading", "loop_brake"];
 
 /** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it, so the lock can't miss a route. */
 export const ROUTES = [
@@ -149,7 +148,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           if (w?.kind !== "module") throw fail(401, "unauthorized", "a module's own token is required");
           const t = grantsFile();
           const agents = Object.fromEntries(Object.entries(t.agents ?? {}).map(([id, g]) => [id, Object.fromEntries(DIRECTORY.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]))]));
-          return send(res, 200, { agents, settings: Object.fromEntries(SETTINGS.map((k) => [k, t[k] ?? "on"])) });
+          // The instance's settings setup writes beside the agents (kill switches, the repos): every top-level string.
+          return send(res, 200, { agents, settings: Object.fromEntries(Object.entries(t).filter(([, v]) => typeof v === "string")) });
         }
         case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);

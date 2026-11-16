@@ -1,10 +1,10 @@
-// P5 checks at task.finish (spec §3.5): the finish gate every move to `done` passes, the tasks module's through
+// P5 checks at task.finish (spec §3.5): the finish gate every move to `done` passes, an agent's own (a module acting for it) through
 // /v1/cp/agent (cp.ts) and the runner's own closes through /v1/finish. A module declares its checks (`checks:`, compiled
 // into config/kernel/checks.json); all that match run in parallel and none sees another's verdict. Any deny refuses the
 // close and moves nothing; any reopen reopens; any hold or pending holds the task in review with the check's label and a
 // scheduled check; otherwise it passes. A check never marks a task done. Fail closed: a check that errors, answers non-2xx
 // or malformed, or takes over 10 s refuses the close, and so do a checks file that is missing or won't load, and a graded
-// agent's task (the grants table's `graded`) that no check covers: grading never fails open. The check's module later
+// agent's task (the grants table's `graded`) that no check covers: the gate never fails open. The check's module later
 // releases its label, or resolves a hold it placed (POST /v1/checks/:task).
 import http from "node:http";
 import { readFileSync, statSync } from "node:fs";
@@ -46,7 +46,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       return Object.entries(registry()).filter(([, c]) => c.at === "task.finish" && c.url);
     } catch (e) {
       log("finish checks didn't load", { err: String((e as Error).message) });
-      throw fail(503, "check_failed", `grading unavailable: the finish checks didn't load (${(e as Error).message}): the task stays as it is`);
+      throw fail(503, "check_failed", `the finish gate is unavailable: the finish checks didn't load (${(e as Error).message}): the task stays as it is`);
     }
   };
 
@@ -60,7 +60,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   async function label(i: Issue, name: string) {
     const r = await owner("GET", `/api/companies/${encodeURIComponent(i.companyId ?? "")}/labels`);
     const l = (Array.isArray(r.json) ? r.json : []).find((x: { name?: string }) => x.name === name) as { id: string } | undefined;
-    if (!l) log(`label "${name}" missing in the control plane (run scripts/paperclip-setup.mjs)`);
+    if (!l) log(`label "${name}" missing in the control plane (run the setup)`);
     return l;
   }
   async function patch(i: Issue, body: Record<string, unknown>) {
@@ -102,7 +102,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const key = i.assigneeAgentId ? agentKey(i.assigneeAgentId) : undefined;
     const mine = all.filter(([, c]) => !c.agents?.length || (key !== undefined && c.agents.includes(key)));
     if (!mine.length) {
-      if (i.assigneeAgentId && graded(i.assigneeAgentId)) throw fail(503, "check_failed", `grading unavailable: ${i.identifier ?? i.id}'s assignee is graded and no finish check covers it: the task stays as it is`);
+      if (i.assigneeAgentId && graded(i.assigneeAgentId)) throw fail(503, "check_failed", `the finish gate is unavailable: ${i.identifier ?? i.id}'s assignee is graded and no finish check covers it: the task stays as it is`);
       return { pass: true };
     }
     const task = { id: i.id, identifier: i.identifier, status: i.status, assigneeAgentId: i.assigneeAgentId ?? null, assigneeUserId: i.assigneeUserId ?? null, createdByAgentId: i.createdByAgentId ?? null, parentId: i.parentId ?? null };
