@@ -161,7 +161,10 @@ follow-up fixes.
    `review-<head sha7>/before`, then start the head and run `ui-review --commit <head sha> --baseline
    review-<head sha7>/before` into `review-<head sha7>/after` (`--commit` stamps each screenshot with the commit it
    shows, since a checkout has no git; a fresh
-   folder per head, so nothing from an earlier review is mixed in), on the pages the PR touches (`--paths`). Never set `success`
+   folder per head, so nothing from an earlier review is mixed in), on the screens the PR's changed files render
+   (`--paths`): the task names those files, and the repo's `AGENTS.md` map and `feature-map.json` say which routes they
+   render (a shared shell or header shows on every page: `/` and one other page cover it). Add a quick look at `/` when
+   it isn't one of them, and leave the app's other pages to their own PRs. Never set `success`
    without this run of the head and a look at its screenshots: it is the evidence for your verdict. Then try the main
    flow the PR touches once with `agent-browser`. With a mockup, also run `ui-review --baseline <the mockup folder>`
    on the head's pages at the mockup's widths and modes into `vs-mockup/`, and look at its before|after pictures; hover
