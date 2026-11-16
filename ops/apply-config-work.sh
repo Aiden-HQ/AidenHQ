@@ -113,7 +113,8 @@ main() {
   local n; n="$(genAppend "$product" "$want" pending)"
   local log="$GEN_DIR/apply-$n.log"
   # From here every line also goes to this generation's own log (named on a failure's alert).
-  exec > >(tee -a "$log") 2>&1
+  # GNU tee where the host also ships the Rust coreutils (Ubuntu 26.04): uutils tee 0.10 can panic mid-apply on a pipe and kill it.
+  exec > >("$(command -v gnutee || echo tee)" -a "$log") 2>&1
   echo "generation $n: product ${product:0:12}, instance ${want:0:12} (log $log)"
 
   # The compiled config before this apply: the live agent check fails only on connections granted since.
