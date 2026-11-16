@@ -225,14 +225,15 @@ export function isAgentSubtask(issue) {
 
 /**
  * Whether an agent's Engineer sub-task runs without the owner's go-ahead: one delegated from a chat, or under a task an
- * agent or routine created (an app incident). `chain`: the sub-task, then each parent up to the root (null: one that
- * couldn't be read).
+ * agent or routine created (an app incident). A routine's run is its own root even when started by hand (the run's task
+ * then carries the owner as creator): its request is the routine's prompt, from config. `chain`: the sub-task, then each
+ * parent up to the root (null: one that couldn't be read).
  */
 export function runsUnasked(chain) {
   const [full] = chain;
   const root = chain.at(-1);
   if (!isAgentSubtask(full) || chain.length < 2 || chain.includes(null) || root.parentId) return false;
-  return Boolean(root.labels?.some((l) => l.name === "chat") || !root.createdByUserId);
+  return Boolean(root.labels?.some((l) => l.name === "chat") || !root.createdByUserId || root.originKind === "routine_execution");
 }
 
 /**

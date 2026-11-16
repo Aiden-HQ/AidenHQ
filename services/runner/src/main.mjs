@@ -666,8 +666,9 @@ async function handleIssue(issue, engineerIds) {
         state.set(`ownreq:${issue.id}`, new Date().toISOString());
         return handleRequest(issue, ""); // the description is the request
       }
-      // Sub-tasks the Researcher created wait quietly for the go-ahead on their parent.
-      if (isAgentSubtask(full)) return;
+      // An agent's sub-task under the owner's own task waits for his go-ahead, and says so once (one log line, one comment).
+      const root = chain.at(-1), why = root ? ` under ${root.identifier}, ${cfg.selfName}'s own task,` : " (its parent tasks couldn't be read)";
+      if (isAgentSubtask(full)) return full.status !== "todo" || state.get(`held:${issue.id}`) ? undefined : (state.set(`held:${issue.id}`, new Date().toISOString()), log("held for the go-ahead", { issue: issue.identifier, root: root?.identifier ?? null }), pc.comment(issue.id, `Waiting for ${cfg.selfName}'s go-ahead: an agent wrote this task${why} so its description is the agent's request, not ${cfg.selfName}'s words. A comment from ${cfg.selfName} on this task starts it.`));
       if (!state.get(`greeted:${issue.id}`)) {
         state.set(`greeted:${issue.id}`, new Date().toISOString());
         await pc.comment(issue.id, "Ready. What would you like me to do, and in which repository? (Or write it in the task description.)");
