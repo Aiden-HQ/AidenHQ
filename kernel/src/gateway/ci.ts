@@ -86,18 +86,24 @@ export async function verifyGithubOidc(jwt: unknown, { orgs, keyFor, now = Date.
   return { repo, pr: Number(pr[1]), runId, attempt } as VerifiedCiClaims;
 }
 
-// What a CI call may send: the chat-completion fields codegenie sends (probed on 0.7.0), nothing that changes where or what
-// OpenRouter runs (no `models` fallbacks, presets, plugins, web search or server tools). The provider block may only steer
-// among providers; the gateway adds ZDR.
-const BODY = new Set(["model", "messages", "stream", "stream_options", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "store", "max_tokens", "max_completion_tokens", "temperature", "top_p", "stop", "seed", "response_format", "provider"]);
+// What a CI call may send. Chat completions: the fields codegenie sends (probed on 0.7.0). Responses: the fields a CLI
+// reviewer sends (probed 2026-11-16: client_metadata, include, input, parallel_tool_calls, prompt_cache_key, reasoning,
+// store, stream, tool_choice, tools; MCP tools come grouped as a `namespace` of functions), with nothing stored upstream. Neither may change where or what the upstream runs (no
+// `models` fallbacks, presets, plugins, web search, server tools or stored conversations). The provider block may only
+// steer among providers; the gateway adds ZDR.
+const CHAT = new Set(["model", "messages", "stream", "stream_options", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "store", "max_tokens", "max_completion_tokens", "temperature", "top_p", "stop", "seed", "response_format", "provider"]);
+const RESPONSES = new Set(["model", "instructions", "input", "stream", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "store", "include", "prompt_cache_key", "client_metadata", "text", "max_output_tokens", "temperature", "top_p", "provider"]);
 const PROVIDER = new Set(["only", "order", "allow_fallbacks", "ignore", "require_parameters", "sort", "quantizations"]);
 
-/** Why a CI call's body is refused, or undefined. `models`: the allowed model ids, exactly. */
-export function ciBodyProblem(body: Record<string, unknown>, models: unknown[]): string | undefined {
+/** Why a CI call's body is refused, or undefined. `models`: the allowed model ids, exactly; `path`: the route's API. */
+export function ciBodyProblem(body: Record<string, unknown>, models: unknown[], path = "chat/completions"): string | undefined {
   if (!models.includes(body.model)) return `model ${String(body.model).slice(0, 80)} isn't one CI code review may use (settings.ci_review_models)`;
-  const extra = Object.keys(body).find((k) => !BODY.has(k));
+  const responses = path === "responses";
+  const extra = Object.keys(body).find((k) => !(responses ? RESPONSES : CHAT).has(k));
   if (extra) return `field ${extra.slice(0, 40)} isn't allowed in a CI call`;
-  if (body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.some((t) => t?.type !== "function"))) return "only function tools are allowed in a CI call";
+  const fn = (t: { type?: unknown; tools?: unknown } | null): boolean => t?.type === "function" || (responses && t?.type === "namespace" && Array.isArray(t.tools) && t.tools.every((x) => x?.type === "function"));
+  if (body.tools !== undefined && (!Array.isArray(body.tools) || !body.tools.every(fn))) return "only function tools are allowed in a CI call";
+  if (responses && body.store !== undefined && body.store !== false) return "a CI call may not store its response upstream (store: false)";
   const p = body.provider;
   if (p !== undefined && (!p || typeof p !== "object" || Array.isArray(p) || Object.keys(p).some((k) => !PROVIDER.has(k)))) return "only provider order and filters are allowed in a CI call";
   return undefined;
