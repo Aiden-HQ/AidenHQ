@@ -905,6 +905,9 @@ function appFeedbackRoutines(paperclip, appDefs, routineTitles) {
   for (const a of appDefs) {
     if (!a?.share?.host || !a.feedback_to) continue;
     const agent = paperclip.agents[a.feedback_to] ?? fail(`app ${a.name}: feedback_to names ${a.feedback_to}, which is not an enabled agent`);
+    // Every Codex agent gets advisor_ask and notify_owner by default; the feedback agent holds only FEEDBACK_TOOLS, so drop them.
+    for (const [c, list] of Object.entries(agent.enabled_tools)) agent.enabled_tools[c] = list.filter((t) => FEEDBACK_TOOLS[c]?.includes(t) || !(c === "paperclip_tasks" && t === "advisor_ask") && !(c === "slack_live" && t === "notify_owner"));
+    for (const c of Object.keys(agent.enabled_tools)) if (!agent.enabled_tools[c].length) delete agent.enabled_tools[c];
     const extra = Object.entries(agent.enabled_tools).flatMap(([c, list]) => list.filter((t) => !FEEDBACK_TOOLS[c]?.includes(t)).map((t) => `${c}.${t}`));
     if (extra.length) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may hold only ${Object.entries(FEEDBACK_TOOLS).map(([c, l]) => `${c}: ${l.join(", ")}`).join("; ")}, not ${extra.join(", ")}`);
     const elsewhere = appDefs.find((b) => b !== a && (b?.api?.callers ?? []).some((c) => (c?.agent ?? c) === a.feedback_to));
