@@ -5,19 +5,38 @@
 #
 #  1. bring the instance repo ($AIDENHQ_INSTANCE_DIR) to main, or exactly <instance sha>;
 #  2. check out the product at the commit instance.yaml pins (`product:`);
-#  3. compile modules + instance, recreate the compose services that moved, rerun the Paperclip setup.
-# Idempotent. Rollback: revert the instance commit, run again. Run it through the entry point (which also checks out the
-# product first, so a product that changed this file takes effect in the same apply):
-#   ops/apply-config.sh [<instance commit sha>]
+#  3. as one generation (spec §5.7.2, ops/lib/generations.sh): validate everything before anything restarts (a staged
+#     compile into config.next/, compose config, the authority diff, image builds, a health baseline); switch (compile,
+#     recreate the compose services that moved, rerun the Paperclip setup); check health; on a failed check, re-apply the
+#     last known good generation once (--generation) and alert. A failed pair is held off until main moves (or --retry).
+# Run it through the entry point (which also checks out the product first, so a product that changed this file takes
+# effect in the same apply):
+#   ops/apply-config.sh [<instance commit sha>] [--retry]      a normal apply; --retry only from the owner's shell
+#   ops/apply-config.sh --generation <n>                       re-apply generation n (the auto-revert runs this)
 set -euo pipefail
 
 main() {
   cd "$(dirname "${BASH_SOURCE[0]}")/.."
   local product_dir; product_dir="$(pwd)"
   requireApplyLock
+  # Sourced before any checkout: these functions stay whatever a checkout below does to the file.
+  . ops/lib/generations.sh
+  local want="" retry=0 gen=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --retry) retry=1 ;;
+      --generation)
+        [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]] || { echo "refusing: --generation takes a generation number" >&2; exit 1; }
+        gen="$2"; shift ;;
+      *)
+        [ -z "$want" ] && [[ "$1" =~ ^[0-9a-f]{40}$ ]] || { echo "refusing: not a full commit sha" >&2; exit 1; }
+        want="$1" ;;
+    esac
+    shift
+  done
+  [ -z "$gen" ] || { [ -z "$want" ] && [ "$retry" = 0 ]; } || { echo "refusing: --generation takes no other argument" >&2; exit 1; }
   set -a; [ -f .env ] && . ./.env; set +a
   local inst="${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env (your instance checkout)}"
-  local want="${1:-}"
 
   # Tracked files must be clean in both checkouts (untracked ones such as compose.override.yaml are left alone).
   for d in "$product_dir" "$inst"; do
@@ -25,12 +44,18 @@ main() {
   done
 
   git -C "$inst" fetch --quiet origin main
+  git fetch --quiet origin main
+  if [ -n "$gen" ]; then applyGeneration; return; fi
+
+  # The instance commit running before this apply (a hand-over carries it, since HEAD has moved by then).
+  local inst_before; inst_before="${AIDENHQ_APPLY_INST_BEFORE:-$(git -C "$inst" rev-parse HEAD)}"
   if [ -n "$want" ]; then
-    [[ "$want" =~ ^[0-9a-f]{40}$ ]] || { echo "refusing: not a full commit sha" >&2; exit 1; }
     [ "$(git -C "$inst" rev-parse origin/main)" = "$want" ] || { echo "refusing: instance origin/main is $(git -C "$inst" rev-parse origin/main), not $want" >&2; exit 1; }
   else
     want="$(git -C "$inst" rev-parse origin/main)"
   fi
+  # After an auto-revert the instance checkout sits detached at the last known good: back onto main before moving it.
+  git -C "$inst" symbolic-ref -q HEAD >/dev/null || git -C "$inst" checkout --quiet main
   git -C "$inst" merge --quiet --ff-only "$want"
   lap instance
 
@@ -38,7 +63,6 @@ main() {
   local product
   product="$(node services/runner/src/apply.ts product-pin "$inst/instance.yaml")"
   [ -n "$product" ] || { echo "refusing: instance.yaml has no full-sha 'product:' line" >&2; exit 1; }
-  git fetch --quiet origin main
   git merge-base --is-ancestor "$product" origin/main || { echo "refusing: product $product is not on origin/main" >&2; exit 1; }
   # `before` is the product this host last applied in full (a failed apply has moved HEAD without restarting anything, so
   # HEAD alone would hide the change from the retry); a re-exec (below) carries it over, since HEAD has already moved by then.
@@ -52,20 +76,191 @@ main() {
   # through the entry point, which re-takes the lock on fd 9 for the new process; the lock is held across the exec, so
   # no other apply can slip in between. Pinned to the instance commit just checked. A script that predates the hand-over
   # (a rollback) can't take `before`, so this one carries on instead.
-  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh \
+  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh \
      && grep -q AIDENHQ_APPLY_BEFORE ops/apply-config-work.sh; then
     echo "the apply's scripts changed: running the new ones"
-    AIDENHQ_APPLY_BEFORE="$before" exec ops/apply-config.sh "$want"
+    local again=("$want"); [ "$retry" = 0 ] || again+=(--retry)
+    AIDENHQ_APPLY_BEFORE="$before" AIDENHQ_APPLY_INST_BEFORE="$inst_before" exec ops/apply-config.sh "${again[@]}"
   fi
+  # Entered through the hand-over of a script that predates generations: the instance had already moved, so the commit that
+  # ran before is the newest one pinning `before`.
+  if [ -n "${AIDENHQ_APPLY_BEFORE:-}" ] && [ -z "${AIDENHQ_APPLY_INST_BEFORE:-}" ]; then inst_before="$(instancePinning "$before")"; fi
   # Host-side Node deps (the compiler/setup and the runner) follow the product's lockfiles.
   for d in scripts services/runner; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
   lap npm
 
+  # Held at the last known good: a pair that failed its health check is not applied again until main moves, unless the
+  # owner asks from their shell (--retry; the runner never passes it).
+  local held
+  if [ "$retry" = 0 ] && held="$(genHeld "$product" "$want")"; then
+    restoreCheckouts
+    echo "refusing: product ${product:0:12} with instance ${want:0:12} failed its health check as generation $held and was reverted; this host stays on the last known good until the instance's main moves (a fix or a revert), or run ops/apply-config.sh --retry from the owner's shell" >&2
+    exit 1
+  fi
+  # The first apply with generations: the pair running now is the last known good to come back to.
+  if [ -z "$(genLkg)" ]; then
+    if [ -n "$inst_before" ] && git -C "$inst" cat-file -e "$inst_before^{commit}" 2>/dev/null; then
+      echo "generation $(genAppend "$before" "$inst_before" good "running when generations started") seeded: product ${before:0:12}, instance ${inst_before:0:12}"
+    else
+      echo "generation: no known-good pair to seed (no instance commit pins product ${before:0:12}): this apply can't auto-revert"
+    fi
+  fi
+  local n; n="$(genAppend "$product" "$want" pending)"
+  local log="$GEN_DIR/apply-$n.log"
+  # From here every line also goes to this generation's own log (named on a failure's alert).
+  exec > >(tee -a "$log") 2>&1
+  echo "generation $n: product ${product:0:12}, instance ${want:0:12} (log $log)"
+
   # The compiled config before this apply: the live agent check fails only on connections granted since.
   local prev_config; prev_config="$(mktemp)"; cp config/paperclip.yaml "$prev_config" 2>/dev/null || true
+  local baseline="$GEN_DIR/apply-$n.baseline" staged=0 why=""
+  : > "$baseline"
+  # 1. Validate the whole generation before anything restarts (a product that predates staging compiles in place, as before).
+  if grep -q AIDENHQ_COMPILE_STAGE scripts/compile.mjs; then
+    staged=1
+    if ! validate; then
+      genMark "$n" refused "$why" "$log"
+      restoreCheckouts
+      rm -f "$prev_config"
+      echo "refusing: $why; nothing was switched or restarted (generation $n refused)" >&2
+      exit 1
+    fi
+  fi
+  lap validate
+
+  # 2. Switch, in a subshell with errexit of its own: a failing step ends the switch and goes to the health verdict.
+  local rc=0
+  set +e
+  ( set -e; switchOver )
+  rc=$?
+  set -e
+  # 3. Health.
+  if [ "$rc" -ne 0 ]; then why="the switch failed (exit $rc)"
+  elif health "$baseline" "$prev_config"; then
+    genMark "$n" good
+    rm -f "$prev_config"
+    echo "generation $n is good: the last known good"
+    echo "apply timing: total $(apply_secs "$apply_t0")s"
+    return 0
+  else why="$HEALTH_WHY"; fi
+  rm -f "$prev_config"
+  # 4. Auto-revert, once: the last known good, re-applied by a child in --generation mode (it never reverts).
+  genMark "$n" failed "$why" "$log"
+  echo "generation $n failed: $why"
+  local lkg; lkg="$(genLkg)"
+  if [ -z "$lkg" ]; then
+    echo "apply alert: generation $n failed ($why) and there is no last known good to revert to; log $log"
+    return 1
+  fi
+  echo "auto-revert: re-applying generation $lkg (product $(genGet "$lkg" product | cut -c1-12), instance $(genGet "$lkg" instance | cut -c1-12))"
+  local rrc=0
+  AIDENHQ_APPLY_BEFORE="$product" AIDENHQ_REVERT_OF="$n" AIDENHQ_HEALTH_BASELINE="$baseline" bash ops/apply-config-work.sh --generation "$lkg" || rrc=$?
+  if [ "$rrc" -eq 0 ]; then
+    echo "apply alert: generation $n failed its health check ($why) and was reverted to generation $lkg; this host stays there until the instance's main moves; log $log"
+  else
+    echo "apply alert: generation $n failed its health check ($why) and the revert to generation $lkg failed too: restore from the drill checkpoint; log $log"
+  fi
+  return 1
+}
+
+# --generation <n>: re-apply a recorded generation (the auto-revert). Product and instance are checked out detached at its
+# shas (the instance's origin/main is not moved), both must be on their origin/main, and the tree is applied in place with
+# today's steps: no staging and no authority diff, since it may predate both. Never hands over, never reverts.
+applyGeneration() {
+  local product instance
+  product="$(genGet "$gen" product)"; instance="$(genGet "$gen" instance)"
+  [[ "$product" =~ ^[0-9a-f]{40}$ ]] && [[ "$instance" =~ ^[0-9a-f]{40}$ ]] || { echo "refusing: no generation $gen with full shas" >&2; exit 1; }
+  git merge-base --is-ancestor "$product" origin/main || { echo "refusing: generation $gen's product $product is not on origin/main" >&2; exit 1; }
+  git -C "$inst" merge-base --is-ancestor "$instance" origin/main || { echo "refusing: generation $gen's instance $instance is not on the instance's origin/main" >&2; exit 1; }
+  # Restarts are keyed on what changed since `before`: the failed generation's product, so its kernel and runner come back.
+  local before="${AIDENHQ_APPLY_BEFORE:-$(git rev-parse HEAD)}"
+  local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
+  git -C "$inst" checkout --quiet --detach "$instance"
+  git checkout --quiet --detach "$product"
+  for d in scripts services/runner; do
+    if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
+  done
+  local m; m="$(genAppend "$product" "$instance" pending "" "${AIDENHQ_REVERT_OF:-}" "$gen")"
+  echo "generation $m: re-applying generation $gen (product ${product:0:12}, instance ${instance:0:12})"
+  local prev_config; prev_config="$(mktemp)"; cp config/paperclip.yaml "$prev_config" 2>/dev/null || true
+  local rc=0 staged=0
+  set +e
+  ( set -e; switchOver )
+  rc=$?
+  set -e
+  local ok=0
+  if [ "$rc" -ne 0 ]; then HEALTH_WHY="the switch failed (exit $rc)"; elif health "${AIDENHQ_HEALTH_BASELINE:-}" "$prev_config"; then ok=1; fi
+  rm -f "$prev_config"
+  if [ "$ok" = 1 ]; then genMark "$m" good; echo "generation $m is good"; return 0; fi
+  genMark "$m" failed "$HEALTH_WHY"
+  echo "generation $m failed: $HEALTH_WHY"
+  return 1
+}
+
+# The newest instance commit on main whose instance.yaml pins this product (or nothing).
+instancePinning() {
+  local c tmp; tmp="$(mktemp)"
+  for c in $(git -C "$inst" rev-list --first-parent --max-count=500 HEAD); do
+    git -C "$inst" show "$c:instance.yaml" > "$tmp" 2>/dev/null || continue
+    [ "$(node services/runner/src/apply.ts product-pin "$tmp" 2>/dev/null)" = "$1" ] && { rm -f "$tmp"; echo "$c"; return 0; }
+  done
+  rm -f "$tmp"
+}
+
+# A refusal before the switch: both checkouts back where the running generation has them, with the host's Node deps.
+restoreCheckouts() {
+  git checkout --quiet --detach "$before"
+  for d in scripts services/runner; do
+    git diff --quiet "$before" "$product" -- "$d/package-lock.json" || npm ci --prefix "$d" --silent || true
+  done
+  if [ -n "${inst_before:-}" ] && [ "$(git -C "$inst" rev-parse HEAD)" != "$inst_before" ]; then git -C "$inst" checkout --quiet --detach "$inst_before"; fi
+}
+
+# The compose files the apply validates: COMPOSE_FILE (or compose's default) with compose.modules.yaml swapped for the staged one.
+stagedComposeFiles() {
+  local files="${COMPOSE_FILE:-compose.yaml:compose.modules.yaml}" sep="${COMPOSE_PATH_SEPARATOR:-:}"
+  [ -n "${COMPOSE_FILE:-}" ] || [ ! -f compose.override.yaml ] || files="$files${sep}compose.override.yaml"
+  printf '%s' "${files//compose.modules.yaml/compose.modules.next.yaml}"
+}
+
+# Step 1 of spec §5.7.2: everything that can refuse, before anything is touched. Sets `why` on a refusal.
+validate() {
+  AIDENHQ_COMPILE_STAGE=1 node scripts/compile.mjs || { why="the staged compile failed"; return 1; }
+  if [ -f config.next/cloudflared.yml ]; then
+    node scripts/edge.mjs check config.next/cloudflared.yml || { why="the staged config/cloudflared.yml targets something other than the gate"; return 1; }
+  fi
+  local files; files="$(stagedComposeFiles)"
+  COMPOSE_FILE="$files" docker compose config -q || { why="docker compose config refused the staged compose files"; return 1; }
+  # The authority diff (kernel/src/loader/authority-cli.ts): one `apply authority:` line per module change. A hand apply is
+  # the owner's own act, so it is printed, not filed; an unreadable diff refuses.
+  if [ -f kernel/src/loader/authority-cli.ts ]; then
+    # Without the instance commit that ran before (none pins `before`), both sides read the instance as it is now.
+    local inst_args=(); [ -z "$inst_before" ] || inst_args=("$inst" "$inst_before" "$want")
+    node kernel/src/loader/authority-cli.ts "$before" "$product" "${inst_args[@]}" || { why="the authority diff could not be computed"; return 1; }
+  fi
+  # Images build beside the running containers (a build never touches one).
+  COMPOSE_FILE="$files" docker compose build || { why="an image failed to build"; return 1; }
+  # The health baseline: only checks passing now count after the switch.
+  scripts/healthcheck.sh > "$baseline" 2>&1 || true
+  echo "health baseline: $(grep -c '^  ok    ' "$baseline" || true) ok, $(grep -c '^  FAIL  ' "$baseline" || true) failing (not counted)"
+}
+
+# The generated files: the staged copy must be exactly what the real compile wrote.
+GENERATED=(paperclip.yaml apps.modules.yaml modules.json computers.json gateway.json jobcaps.json kernel/connections.json engines.json gate.json cloudflared.yml)
+sameAsStaged() {
+  local f
+  cmp -s compose.modules.next.yaml compose.modules.yaml || { echo "compose.modules.yaml differs from the validated one" >&2; return 1; }
+  for f in "${GENERATED[@]}"; do
+    if [ -e "config.next/$f" ] || [ -e "config/$f" ]; then cmp -s "config.next/$f" "config/$f" || { echo "config/$f differs from the validated one" >&2; return 1; }; fi
+  done
+}
+
+# Step 3: the real compile, then today's steps. Runs in a subshell with errexit (main and applyGeneration).
+switchOver() {
   node scripts/compile.mjs
+  if [ "$staged" = 1 ]; then sameAsStaged; rm -rf config.next compose.modules.next.yaml; fi
   # Shared access: the tunnel may only point at the gate (never the board, Paperclip or an app port directly).
   node scripts/edge.mjs check config/cloudflared.yml || { echo "refusing: config/cloudflared.yml targets something other than the gate" >&2; exit 1; }
   lap compile
@@ -147,13 +342,41 @@ main() {
   lap prune
   echo "$product" > "$applied"
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"
-  # The live agent check, last (everything above is applied either way): each connection an agent is granted answers and is
-  # signed in. Fails the apply only when a newly granted one doesn't (scripts/agent-check.mjs).
-  local check=0; node scripts/agent-check.mjs live --since "$prev_config" || check=$?
-  rm -f "$prev_config"
+}
+
+# Step 4 of spec §5.7.2, polled to deadlines (the kernel restarts; services take a while to come up). Fails, with HEALTH_WHY,
+# when the kernel does not answer /healthz in time, when a check that passed in the baseline still FAILs at the deadline
+# (skips and checks already failing in the baseline don't count), or when the live agent check fails (it fails only on
+# connections granted since the previous config).
+health() {
+  local base="$1" prev="$2" deadline name regress out
+  local kurl="${AIDENHQ_KERNEL_HEALTH_URL:-http://10.231.0.1:3130/healthz}" every="${AIDENHQ_HEALTH_INTERVAL_S:-10}"
+  HEALTH_WHY=""
+  deadline=$(( $(date +%s) + ${AIDENHQ_KERNEL_DEADLINE_S:-120} ))
+  until curl -fsS --max-time 5 "$kurl" 2>/dev/null | grep -qx ok; do
+    [ "$(date +%s)" -lt "$deadline" ] || { HEALTH_WHY="the kernel did not answer /healthz within ${AIDENHQ_KERNEL_DEADLINE_S:-120}s"; return 1; }
+    sleep "$every"
+  done
+  if [ -n "$base" ] && [ -s "$base" ]; then
+    deadline=$(( $(date +%s) + ${AIDENHQ_HEALTH_DEADLINE_S:-600} ))
+    while :; do
+      out="$(scripts/healthcheck.sh 2>&1 || true)"
+      regress=""
+      while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        grep -qF -- "  FAIL  $name  " <<< "$out" && regress+="${regress:+, }$name"
+      done <<< "$(sed -n 's/^  ok    //p' "$base")"
+      [ -n "$regress" ] || break
+      [ "$(date +%s)" -lt "$deadline" ] || { HEALTH_WHY="checks that passed before the apply fail now: $regress"; return 1; }
+      echo "health: waiting on $regress"
+      sleep "$every"
+    done
+  fi
+  echo "health: the kernel answers and every check that passed before passes"
+  lap health
+  # The live agent check: each connection an agent is granted answers and is signed in (scripts/agent-check.mjs).
+  if [ -n "$prev" ] && ! node scripts/agent-check.mjs live --since "$prev"; then HEALTH_WHY="the live agent check failed on a newly granted connection"; return 1; fi
   lap agent-check
-  echo "apply timing: total $(apply_secs "$apply_t0")s"
-  return "$check"
 }
 # The lock is held by the process this one inherited it from (ops/apply-config.sh), which opened data/apply.lock at that
 # fixed path before .env was read, locked it and execs this script. This script takes no lock of its own: it checks the
