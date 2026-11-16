@@ -19,7 +19,7 @@ import { classifyModules, diffAll } from "../../../kernel/src/loader/authority.t
  */
 export const GATE_CORE = [
   // One entry per file, so a renamed or moved gate file shows up as a dead entry (gate-coverage.test.mjs).
-  ...["tiers", "review", "merges", "evalgate", "apply", "netjail", "state", "config", "github-app", "git", "main", "engines", "workspace", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
+  ...["tiers", "review-request", "siblings", "merges", "evalgate", "apply", "netjail", "state", "config", "github-app", "git", "main", "engines", "workspace", "files", "agents"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
   // What a job can reach: its sandbox and launch (engines: the bwrap allowlist, writable roots, env), what lands in its
   // workspace and what the runner reads back from it (workspace, files), and the computer box rules (computers).
   /^scripts\/computers\.(mjs|ts)$/,
@@ -29,9 +29,10 @@ export const GATE_CORE = [
   // whole process is in the trusted base (channel-slack's executor posts as the bot).
   /^modules\/channel-[^/]+\//,
   /^kernel\/sdk\//,
-  /^services\/runner\/test\/reviewer-cases\//,
-  /^services\/runner\/scripts\/reviewer-eval\.(mjs|ts)$/,
-  /^modules\/core\/security\//,
+  // The AI reviewer (privileged reviewer, lean-core 3c): its service, its policy, its planted cases and its eval.
+  /^modules\/ai-reviewer\//,
+  // The changed files as the reviewer reads them (synced into the module; the runner imports this copy).
+  /^services\/shared\/review-files\.(mjs|ts)$/,
   // The kernel (the tool proxy, caller identity and assertions, the model gateway) and each module server's copy of the
   // SDK's caller check (scripts/sync-shared.mjs).
   /^kernel\//,
@@ -74,7 +75,8 @@ export const GATE_DIRS = [
   "kernel/",
   "services/computer/",
   "ops/",
-  "modules/core/security/",
+  "modules/ai-reviewer/",
+  "services/shared/review-files.mjs",
   "modules/apps-platform/",
   "services/board/src/approvals.ts",
   "services/board/src/app.ts",
@@ -86,8 +88,8 @@ export const GATE_DIRS = [
 /** Runner files deliberately outside the core. Adding one here is a gate-core change. */
 export const OUTSIDE_GATE = [
   "advise.ts", "answered.ts", "branch.ts", "breaker.ts", "busy.ts", "cards.ts", "describe.ts", "evidence.ts", "gcp.ts", "grade.ts",
-  "images.ts", "intake.ts", "metrics.ts", "notices.ts", "paperclip.ts", "primer.ts", "product-prs.ts", "prompt.ts",
-  "recurring.ts", "repohelper.ts", "repos.ts", "retry.ts", "reviews.ts", "siblings.ts", "thread.ts", "types.ts", "usage.ts",
+  "images.ts", "intake.ts", "metrics.ts", "models.mjs", "notices.ts", "paperclip.ts", "primer.ts", "product-prs.ts", "prompt.ts",
+  "recurring.ts", "repohelper.ts", "repos.ts", "retry.ts", "reviews.ts", "thread.ts", "types.ts", "usage.ts",
 ].map((f) => `services/runner/src/${f}`);
 /** `uncovered: <file>` for a file in a gate dir that no entry matches and OUTSIDE_GATE doesn't list; `dead entry: <source>`
  * for an entry that matches no file. */
@@ -100,7 +102,7 @@ export function coverageProblems(files, core = GATE_CORE, outside = OUTSIDE_GATE
 }
 const GITHUB = /(^|\/)\.github\//;
 /**
- * The owner-approved source exceptions (review.mjs reads them from the base). A record says `approved_by: owner`, and code
+ * The owner-approved source exceptions (review-request.mjs reads them from the base). A record says `approved_by: owner`, and code
  * cannot tell an owner's word from an agent's: only the owner's own tap on a change to this file makes a record one, so a
  * panel-approved PR can never record its own approval.
  */
@@ -327,7 +329,7 @@ export function priorDecisions(records, action, also = [], key, patches, chain) 
   // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
   // same commits may come back once, after the request chain changed (`chain`, its hash now; `requestChain`, its hash
   // when they were unsure). The chain is agent-editable, so that relift happens at most once per content: the re-review
-  // gets `relift` (the first round's note), and unsure again there goes to the owner (review.mjs). Unchanged or unknown
+  // gets `relift` (the first round's note), and unsure again there goes to the owner (the reviewer module). Unchanged or unknown
   // chain, or any other rejection of the content, and it stays rejected. It still counts toward MAX_REJECTS.
   const rejectedSame = key ? since.filter((r) => recordKey(r) === key) : [];
   const [only] = rejectedSame;

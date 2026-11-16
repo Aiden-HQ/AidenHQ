@@ -16,6 +16,8 @@
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
 //   POST /v1/brake/notify      (a channel) may an agent message the owner about a task again (brake.ts)
 //   POST /v1/wake              (a module with role kernel.wake) a labelled wake notice on a task, which wakes its agent
+//   POST /v1/reviews           (the runner's reviewer key) one review by the bound reviewer module → its verdict (reviews.ts)
+//   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
@@ -24,6 +26,7 @@ import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type Module
 import type { Grant, Whoami } from "./identity.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
+import type { Reviews } from "./reviews.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
@@ -56,22 +59,26 @@ export const ROUTES = [
   { method: "GET", path: "/v1/cp/read/*", auth: "module" },
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
   { method: "POST", path: "/v1/wake", auth: "module" },
+  { method: "POST", path: "/v1/reviews", auth: "reviewer-key" },
+  { method: "POST", path: "/v1/reviews/:review", auth: "review-token" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board reads (`?state=`). */
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], recent: ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"] };
 
-async function json(req: IncomingMessage): Promise<any> {
+async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   const chunks: Buffer[] = [];
   let n = 0;
-  for await (const c of req) { n += c.length; if (n > 1_000_000) throw fail(413, "too_large", "too large"); chunks.push(c); }
+  for await (const c of req) { n += c.length; if (n > max) throw fail(413, "too_large", "too large"); chunks.push(c); }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
+  /** 3c: the reviewer slot, and the key its requester (the runner) asks with. */
+  reviews?: Reviews; reviewerKey?: () => string;
   /** 2f: channel tokens and owner messages, the notify brake, and the control plane as the owner (reads, wake notices). */
   channels?: Channels; brake?: Brake; owner?: Api; modules?: () => ModulesFile;
 }) {
@@ -83,7 +90,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   };
   /** The chief of staff's agent id, from the grants table (where owner messages go by default). */
   const cos = () => Object.entries(grantsFile().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0];
-  const isBoard = (req: IncomingMessage) => { const a = Buffer.from(bearer(req)), b = Buffer.from(boardKey()); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
+  const keyIs = (req: IncomingMessage, key: string) => { const a = Buffer.from(bearer(req)), b = Buffer.from(key); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
+  const isBoard = (req: IncomingMessage) => keyIs(req, boardKey());
   const board = (req: IncomingMessage) => { if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); };
   const record = (id: string) => records?.get(id) ?? (() => { throw fail(404, "not_found", `no record ${id}`); })();
   const decided = (r: unknown) => { if (typeof r === "string") throw fail(409, "conflict", r); return r; };
@@ -148,6 +156,19 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             return send(res, 200, { posted: true });
           }
         }
+      }
+      if (hit && hit.path.startsWith("/v1/reviews")) {
+        if (!reviews) throw fail(503, "unavailable", "reviews are off");
+        // A review request carries the whole diff: one past the reviewer's limit is still sent, so its verdict can say how large.
+        if (hit.path === "/v1/reviews") {
+          if (!keyIs(req, reviewerKey())) throw fail(401, "unauthorized", "the runner's reviewer key is required");
+          const b = await json(req, 64_000_000);
+          if (!b.request || typeof b.request !== "object") throw fail(400, "bad_request", "send {request}");
+          return send(res, 200, await reviews.request(b.request));
+        }
+        const b = await json(req);
+        if (!b || typeof b !== "object" || !reviews.verdict(m[0]!, bearer(req), b)) throw fail(404, "not_found", "no review waits for that token");
+        return send(res, 200, { ok: true });
       }
       if (hit && hit.path.startsWith("/v1/writes")) {
         if (!writes || !records) throw fail(503, "unavailable", "records are off");

@@ -60,10 +60,10 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
   Docker build. Run it for every board change.
 - **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts` or `services/shared/source-store.ts`, run
   `node scripts/sync-shared.mjs`; the `scripts` tests fail if the copies drift.
-- **The reviewer eval.** `node services/runner/scripts/reviewer-eval.mjs` runs the AI reviewer against every planted
-  case in `services/runner/test/reviewer-cases/` and must stay at 100%. It needs a paid `OPENROUTER_API_KEY`, so CI
-  doesn't run it. If your PR touches `services/runner/src/tiers.mjs`, `services/runner/src/review.mjs`, the reviewer
-  policy in `modules/core/security/` or the cases, say so in the PR; the maintainer runs it before merging. A reviewer
+- **The reviewer eval.** `node modules/ai-reviewer/scripts/reviewer-eval.mjs` runs the AI reviewer against every planted
+  case in `modules/ai-reviewer/test/reviewer-cases/` and must stay at 100%. It needs a paid `OPENROUTER_API_KEY`, so CI
+  doesn't run it. If your PR touches the `modules/ai-reviewer` module (its service, its policy in `service/security/` or
+  the cases), `services/runner/src/tiers.mjs` or `kernel/src/loader/authority.ts`, say so in the PR; the maintainer runs it before merging. A reviewer
   false reject you hit becomes a new planted case.
 
 ## What a good change looks like

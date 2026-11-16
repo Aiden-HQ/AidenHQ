@@ -56,7 +56,7 @@ from text an agent wrote ([`services/runner/src/tiers.mjs`](../services/runner/s
 
 **Autonomy.** The `autonomy` setting chooses how much of that runs without the owner: `off` (every write is the
 owner's card, after the AI review of Tier 1, whose reject is final; also the pause switch), `tier0` (Tier 0 runs, the reviewer only comments), `full` (the reviewer decides
-Tier 1). Move to `full` only after `services/runner/scripts/reviewer-eval.mjs` scores 100%. See
+Tier 1). Move to `full` only after `modules/ai-reviewer/scripts/reviewer-eval.mjs` scores 100%. See
 [design/approvals.md](design/approvals.md).
 
 **Apps.** Long-running services that agents build, deploy and maintain through `apps-mcp`: dashboards, trackers,

@@ -202,6 +202,9 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
+      -- Sorts and groups over the cost ledger spill to temp files; the container's /tmp is a 16 MB tmpfs, so a 7-day
+      -- ledger query failed with "database or disk is full". Keep temp data in memory.
+      PRAGMA temp_store = MEMORY;
       CREATE TABLE IF NOT EXISTS placements (issue_id TEXT PRIMARY KEY, bucket TEXT NOT NULL, rank REAL NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS seen (issue_id TEXT PRIMARY KEY, seen_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

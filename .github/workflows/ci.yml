@@ -2,7 +2,7 @@
 # Every job runs on our self-hosted runners (modules/ci; docs/operations.md, "CI runners"): one fresh container per job,
 # no Docker (image-scan scans without building). A PR from a fork goes to a GitHub-hosted runner instead, never ours (the
 # runner group, which allows private repositories only, is the real boundary: a PR can edit this file).
-# The AI reviewer's exit test (services/runner/scripts/reviewer-eval.mjs) needs a paid OpenRouter key, so the
+# The AI reviewer's exit test (modules/ai-reviewer/scripts/reviewer-eval.mjs) needs a paid OpenRouter key, so the
 # maintainer runs it by hand for changes to the reviewer, its policy or its cases.
 name: ci
 
@@ -248,7 +248,7 @@ jobs:
           packages=$(cat <<'PACKAGES'
           scripts|npm test|*
           services/runner|(its own job)|services/runner services/computer kernel services/shared modules scripts kernel/sdk fixtures services/board/src/approvals.ts services/board/src/app.ts services/board/src/fleet.ts services/board/src/accounts.ts services/board/src/session.ts
-          services/runner#flows|(its own jobs)|services/runner services/shared modules/engine-codex modules/engine-claude modules/engine-opencode kernel/sdk fixtures/engine-echo|services/runner/src/prompt.ts modules/engine-codex/codex-home/AGENTS.md
+          services/runner#flows|(its own jobs)|services/runner services/shared modules/engine-codex modules/engine-claude modules/engine-opencode modules/ai-reviewer kernel/sdk fixtures/engine-echo|services/runner/src/prompt.ts modules/engine-codex/codex-home/AGENTS.md
           kernel/sdk|(cd ../../services/runner && npm ci) && npm test|kernel/sdk fixtures/engine-echo modules/engine-codex modules/engine-claude modules/engine-opencode
           services/computer|node --test test/*.test.mjs|services/computer services/runner/src services/runner/bin modules/core/design-system modules/design
           kernel|npm ci && npm test && npm run typecheck|kernel services/computer modules/tasks fixtures
@@ -267,6 +267,7 @@ jobs:
           modules/channel-telegram/connections/telegram|npm ci --ignore-scripts && npm test && npm run typecheck|modules/channel-telegram
           modules/chat-lane/connections/lane|npm ci --ignore-scripts && npm test && npm run typecheck|modules/chat-lane
           modules/channel-operator|node --test test/*.test.mjs|modules/channel-operator
+          modules/ai-reviewer|npm test|modules/ai-reviewer kernel services/shared modules/core/templates/app
           modules/primer/connections/primer-mcp|npm ci && npm test && npm run typecheck|modules/primer
           modules/slack/connections/slack-mcp|npm ci && npm test && npm run typecheck|modules/slack
           modules/tasks/connections/tasks-mcp|npm ci && npm test|modules/tasks kernel/sdk

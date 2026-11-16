@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { REPO_ROOT } from "./config.mjs";
 import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, fileEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, rubricNamesFiles, stamp, wordsEvidence } from "./evidence.ts";
-import { MAX_DIFF, reviewerModels } from "./review.mjs";
+import { MAX_DIFF, familyModels } from "./models.mjs";
 
 export { GRADER_MARKER };
 
@@ -30,8 +30,8 @@ export const GRADE_SCHEMA = {
   },
 };
 
-/** The grader models in order: the reviewer's (GPT Luna, then DeepSeek Flash), never the author's own family. */
-export const graderModels = (authorModel = "") => reviewerModels(authorModel);
+/** The grader models in order: GPT Luna, then DeepSeek Flash, never the author's own family. */
+export const graderModels = (authorModel = "") => familyModels(authorModel);
 
 /** The standard criteria for a deliverable kind: the `- ` lines of modules/core/rubrics/<kind>.md. */
 export function template(kind: string, dir: string = join(REPO_ROOT, "modules/core/rubrics")) {

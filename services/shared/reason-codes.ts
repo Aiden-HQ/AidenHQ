@@ -2,8 +2,8 @@
 // the prose reason so the board can show and count them. Plain `as const` lists (no TS enum): Node strips the types.
 //
 // Canonical copy: services/shared/reason-codes.ts. Each consumer holds a byte-identical copy (scripts/sync-shared.mjs);
-// the runner's reviewer keeps its own list in services/runner/src/review.mjs, which scripts/test/reason-codes.test.mjs
-// pins to REVIEW_CODES here.
+// the reviewer module keeps its own list in modules/ai-reviewer/service/src/review.mjs, which
+// modules/ai-reviewer/test/review.test.mjs pins to REVIEW_CODES here.
 //
 // A card's tier rule (services/runner/src/tiers.mjs `rule`, or the board's own for its actions) is a reason code too: those
 // are kebab-case words owned by the classifier, checked by shape (TIER_RULE), not listed here, so a new rule needs no edit.

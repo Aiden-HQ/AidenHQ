@@ -97,11 +97,11 @@ A change is **authority-expanding** when it:
 - changes who can approve, or how an approval, a reviewer verdict or the owner's words are recognised;
 - widens credentials, grants, tools, roles, public access (`access`, `share`, a public port, a sign-in path), where data may
   be sent, or spending (caps, models, budgets);
-- edits the gate's own core: `services/runner/src/tiers.mjs`, `review.mjs`, `merges.mjs`, `main.mjs` and
+- edits the gate's own core: `services/runner/src/tiers.mjs`, `review-request.mjs`, `merges.mjs`, `main.mjs` and
   the other runner files that build what tiering trusts or what a job can reach (`engines.mjs`: its sandbox, mounts and
   env; `workspace.mjs`, `files.mjs`, `agents.mjs`; `scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
-  runs inside a job and what it passes on) and the SDK (`kernel/sdk/`), `modules/core/security/` (this policy), the reviewer's eval cases
-  (`services/runner/test/reviewer-cases/`) and `scripts/reviewer-eval.mjs`, the board's `approvals.ts`, `app.ts`,
+  runs inside a job and what it passes on) and the SDK (`kernel/sdk/`), the AI reviewer module (`modules/ai-reviewer/`: its service, this policy,
+  its eval cases and `scripts/reviewer-eval.mjs`), the board's `approvals.ts`, `app.ts`,
   `fleet.ts`, `accounts.ts` and `session.ts`, the kernel (`kernel/`: the tool proxy, caller identity and the model gateway) and
   each module server's caller check (`aidenhq-sdk/caller.ts`), `scripts/modules.mjs` and `scripts/paperclip-setup.mjs`,
   `services/computer/`, `ops/`, `scripts/verify-security.sh`, `scripts/supply-chain/`,

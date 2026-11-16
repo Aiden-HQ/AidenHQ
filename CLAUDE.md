@@ -55,10 +55,12 @@ The app starter (`modules/core/templates/app/`) is Vite + shadcn: `npm ci && npm
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
 the reviewer eval's case loader).
 
-The AI reviewer's exit test, `node services/runner/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and
-must stay at 100%. It applies to changes to `services/runner/src/tiers.mjs`, `services/runner/src/review.mjs`, the
-reviewer policy (`modules/core/security/`) or `services/runner/test/reviewer-cases/`; the runner's merge queue runs it
-on the PR's exact head and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
+The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the runner asks it through the kernel). Its exit test,
+`node modules/ai-reviewer/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and must stay at 100%. It
+applies to changes to the module (its service, policy `service/security/`, cases `test/reviewer-cases/`, judge),
+`kernel/sdk/src/reviewer.ts`, the tier function (`services/runner/src/tiers.mjs`, `kernel/src/tier.ts`) or the
+authority-diff classifier (`kernel/src/loader/authority.ts`); the runner's merge queue runs it on the PR's exact head
+and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 
 ## Conventions
 
@@ -70,7 +72,7 @@ on the PR's exact head and merges only on a 100% receipt (`services/runner/src/e
   source, never re-enforce it downstream.
   Writes are approval records tiered in code (`services/runner/src/tiers.mjs`): Tier 0 runs, Tier 1 the AI reviewer
   decides, Tier 2 the owner; setting `autonomy`. Every reviewer false reject becomes a planted case in
-  `services/runner/test/reviewer-cases/`.
+  `modules/ai-reviewer/test/reviewer-cases/`.
 - **Cross-agent behaviour goes in `scripts/paperclip-setup.mjs` sections** (approvals, replying, delegating, web),
   not copied into each handbook. Fix behaviour at the source; don't suppress it afterwards.
 - **Source writers:** one bad item never fails a pass (skip only permanent errors, rethrow transient ones); passes
