@@ -62,8 +62,8 @@ export function raiseCapCard(a: { scope: string; agentId: string; subject: strin
   };
 }
 
-/** The product and instance repositories (owner/name), from the host's settings (AIDENHQ_PRODUCT_REPO, AIDENHQ_INSTANCE_REPO). */
-export type Repos = { product?: string; instance?: string };
+/** The product and instance repositories (owner/name, AIDENHQ_PRODUCT_REPO, AIDENHQ_INSTANCE_REPO) and the agents org the fleet's own repos live in. */
+export type Repos = { product?: string; instance?: string; agentsOrg?: string };
 /**
  * A repository as one key, however it is written: owner/name lower-cased, a trailing `.git` and slashes dropped; anything
  * else (more path, odd characters, nothing) is no repository (undefined). Every rule here compares only these keys, and the
@@ -80,7 +80,9 @@ const urlRepo = (url: unknown) => repoKey(/^https:\/\/github\.com\/([^/]+\/[^/]+
  *   reviewer (fails closed, as tiers.mjs's unknown-repos);
  * - a refusal: a push, PR or merge on the instance repo (it changes only through kernel.apply), a merge whose PR URL names
  *   another repo than its `repo`, a repository created over the product's or the instance's name;
- * - the floor: the product repo or a main branch, and a PR that also merges, at least the reviewer;
+ * - the floor: a push, PR or merge runs at once (floor 0) only in the agents org, off its main branch, never on the product
+ *   or instance repo, and never a PR that also merges (today's Tier 0 rules, as far as the args show them; the rest, such as
+ *   green checks on the exact head, the runner's merge queue holds at execution); anything else at least the reviewer;
  * - new module authority (an apply's ownerRequired): the owner decides after the reviewer;
  * - the replacement target, and the veto's content keys (each branch's or PR's patch; "?" when one has none: fails closed).
  */
@@ -97,7 +99,9 @@ export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 |
   if (instance && action !== "apply" && touched.includes(instance)) return refused("the instance repo changes only through apply");
   if (product && action === "create_repo" && touched.includes(product)) return refused("the product repo already exists");
   const unknown = !product || !instance;
-  const floor = unknown ? 2 : touched.includes(product) || branches.some((b) => /^(main|master)$/.test(b.branch)) || args?.merge === true ? 1 : 0;
+  const org = String(repos.agentsOrg ?? "").toLowerCase();
+  const ours = Boolean(org) && touched.every((r) => r!.split("/")[0] === org && r !== product && r !== instance);
+  const floor = unknown ? 2 : !ours || branches.some((b) => /^(main|master)$/.test(b.branch)) || args?.merge === true ? 1 : 0;
   const target = action === "merge" && prs.length ? prs.map((p) => `${urlRepo(p.url)}#${String(p.url).replace(/\/+$/, "").split("/").pop()}`).sort().join(" ")
     : (action === "push" || action === "pr") && branches.length ? branches.map((b) => `${repoKey(b.repo)} ${b.branch}`).sort().join(" ")
     : action === "apply" ? `${repoKey(args.repo)} ${args.branch}` : action === "create_repo" ? repoKey(args.repo) : undefined;
@@ -107,8 +111,8 @@ export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 |
 
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {
-  // A merge and an apply are always read by the reviewer first (floor 1); a push, a PR and a new repo by what they touch.
-  ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: k === "merge" ? 1 : 0, tools: [], args, runner: true } as Kind])),
+  // An apply is always read by the reviewer first (floor 1); a push, a PR, a merge and a new repo by what they touch (runnerFacts).
+  ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: 0, tools: [], args, runner: true } as Kind])),
   "kernel.apply": { module: "kernel", floor: 1, tools: [], args: APPLY_ARGS, runner: true },
   "kernel.raise_cap": { module: "kernel", floor: 2, tools: [], args: RAISE_ARGS },
 };

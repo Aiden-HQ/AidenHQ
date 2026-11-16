@@ -12,7 +12,7 @@
 //   POST /v1/writes/:id/outcome (the kind's executor module, or the runner for its kinds) the outcome of an execute
 //   GET  /v1/writes            (the board's or the runner's key) records by state or task
 //   POST /v1/writes/:id/claim  (the runner's key) an approved record of its kinds, claimed once
-//   POST /v1/writes/:id/review (the runner's reviewer key) a record's review: its tier input and what the reviewer reads (writes.ts)
+//   POST /v1/writes/:id/review (the runner's key) a record's review: its tier input and what the reviewer reads (writes.ts)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop}, GET /v1/channel/notices  (a speaks-as-owner
 //                              channel's token) cards with decision tokens, a token spent, the owner's words, notices (channels.ts)
 //   POST /v1/channel/outbox, GET /v1/channel/outbox  (a channel) a message for the owner handed to another channel; drained by it
@@ -51,7 +51,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
   { method: "POST", path: "/v1/writes/:id/outcome", auth: "module|runner" },
   { method: "POST", path: "/v1/writes/:id/claim", auth: "runner" },
-  { method: "POST", path: "/v1/writes/:id/review", auth: "reviewer-key" },
+  { method: "POST", path: "/v1/writes/:id/review", auth: "runner" },
   { method: "GET", path: "/v1/channel/cards", auth: "module" },
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
   { method: "POST", path: "/v1/channel/owner-message", auth: "module" },
@@ -81,8 +81,8 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
 export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
-  /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads: runner_writes_key) and the one it asks
-   * reviews with (reviewer_key), each its own secret. */
+  /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
+   * and the one its checks before filing ask with (reviewer_key, which the board holds too), each its own secret. */
   reviews?: Reviews; runnerKey?: () => string; reviewerKey?: () => string;
   /** 2f: channel tokens and owner messages, the notify brake, and the control plane as the owner (reads, wake notices). */
   channels?: Channels; brake?: Brake; owner?: Api; modules?: () => ModulesFile;
@@ -226,7 +226,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             return send(res, 200, r);
           }
           case "POST /v1/writes/:id/review": {
-            reviewer(req);
+            runner(req);
             const b = await json(req, 64_000_000);
             if (!b.input || typeof b.input !== "object" || typeof b.input.tier !== "number") throw fail(400, "bad_request", "send {input: {tier, …}, request}");
             return send(res, 200, await writes.review(id, { input: b.input, request: b.request && typeof b.request === "object" ? b.request : {} }));

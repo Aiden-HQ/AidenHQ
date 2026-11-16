@@ -76,7 +76,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   };
   const reviews = { request: reviewer };
   const kw = createWrites({ records: kdb, registry: () => KERNEL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, reviews, autonomy, repos: () => ({ product: "acme/aidenhq", instance: "acme/aidenhq-instance", ...repos }),
-    onTask: { open: async (t) => !["done", "cancelled"].includes(find(t)?.status), notify: async (t, text) => void addComment(find(t).id, text), parent: async (t) => find(t)?.parentId ?? undefined }, replay: async () => ({ ok: false, text: "" }) });
+    onTask: { open: async (t) => !["done", "cancelled"].includes(find(t)?.status), notify: async (t, text) => void notices.push({ task: find(t)?.identifier, text }), parent: async (t) => find(t)?.parentId ?? undefined }, replay: async () => ({ ok: false, text: "" }) });
   const backplane = createBackplane({ whoami: async () => { throw new Error("not here"); }, writes: kw, records: kdb, reviews, runnerKey: () => key("runner_writes_key"), reviewerKey: () => key("reviewer_key"), grantsFile: () => ({}) });
   /** A record as the board once showed it (cards.ts asApproval, the outcome whole, the reviewer's verdict as one entry). */
   const view = (r) => {
@@ -85,6 +85,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     const verdicts = byReviewer ? [{ decision: r.state === "approved" || (["claimed", "done", "failed"].includes(r.state) && r.decided_by?.startsWith("reviewer:")) ? "approve" : ["rejected", "stale"].includes(r.state) ? "reject" : "escalate", code: r.review_code, reason: r.review, model: r.decided_by?.replace(/^reviewer:/, "").split("+")[0] }] : undefined;
     return { ...a, outcome: r.outcome, ...(verdicts ? { verdicts } : {}) };
   };
+  const notices = []; // the kernel's notices on tasks (the owner's rejections, outcomes): kept apart from the thread
   const aliases = new Map(); // a test's own card id → the record it stands for
   const all = () => kdb.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"], 1000).reverse();
   const approvals = {
@@ -99,7 +100,8 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       aliases.set(id, r.id);
     },
   };
-  const autos = { some: (fn) => all().filter((r) => r.tier === 0).map((r) => ({ ...view(r), rule: r.rule })).some(fn), at: (i) => all().filter((r) => r.tier === 0).map((r) => ({ ...view(r), rule: r.rule })).at(i) };
+  const autoRows = () => all().filter((r) => r.tier === 0).map((r) => ({ ...view(r), rule: r.rule, ok: r.outcome?.ok }));
+  const autos = { some: (fn) => autoRows().some(fn), at: (i) => autoRows().at(i) };
   // primer.publish (POST /v1/writes with a job token), with the bearer each request came with.
   const records = new Map();
   const created = []; // tasks the runner filed (POST …/issues), as the board key
@@ -285,7 +287,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     assert.equal(typeof out, "object", String(out));
     return view(kdb.get(r.id));
   };
-  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, kdb, kw, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead };
+  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, kdb, kw, notices, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead };
 }
 
 /**
@@ -413,7 +415,7 @@ ${runnerYaml}`,
     Object.assign(part, partOver);
     // Agents in a computer (`image:` in the module): Paperclip runs them, and a task they get must have a folder of its own.
     const inComputers = computers.map((id) => ({ id, name: id, status: "idle", adapterType: "codex_local", adapterConfig: {}, defaultEnvironmentId: "env-computer", metadata: { setupKey: `aidenhq:${id}` } }));
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated, ownerFallback, config, secrets, repos: { ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated, ownerFallback, config, secrets, repos: { agentsOrg: env.AIDENHQ_GITHUB_AGENTS_ORG ?? "acme", ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 

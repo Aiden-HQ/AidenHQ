@@ -113,12 +113,12 @@ export const cardText = (action: "push" | "pr", args: CardArgs["pr"]): { target:
 /**
  * The plan the runner files a record with, from its classifier's tier (caps applied): the tier, the merit tier (before the
  * caps), how the owner follows the reviewer (tier.ts reviewFirstOf), the panel, and why. Several parts (a merge card's PRs)
- * plan as one card: the owner's at once if any part is (Tier 2 and not reviewed first, or Tier 0 beside others), else the
+ * plan as one card: the owner's at once if any part is (Tier 2 and not reviewed first, or Tier 0 beside higher ones), else the
  * highest tier, review-first if any part is, the panel if any part needs it.
  */
 export function planOf(...ts: Part[]): { tier: 0 | 1 | 2; merit: 0 | 1 | 2 | undefined; reviewFirst: "final" | "owner" | null; panel: boolean; reason: string; rule?: string } {
   const live = ts.filter((t) => !t.reject);
-  const direct = live.some((t) => t.tier === 2 && !t.reviewFirst) || (ts.length > 1 && live.some((t) => t.tier === 0));
+  const direct = live.some((t) => t.tier === 2 && !t.reviewFirst) || (live.some((t) => t.tier === 0) && live.some((t) => t.tier !== 0));
   const tier = direct ? 2 : (Math.max(...ts.map((t) => (t.reject ? 2 : t.tier))) as 0 | 1 | 2);
   const merit = ts.length && ts.every(Boolean) ? (Math.max(...ts.map((t) => (t.reject ? 2 : (t.baseTier ?? t.tier)))) as 0 | 1 | 2) : undefined;
   const rule = highest(ts).rule;

@@ -19,7 +19,7 @@ const TIERS = { meritOwner, routineCapped };
 const tierOf = (c, mode) => autonomyCap(c.wrap ? TIERS[c.wrap[0]](c.t, c.wrap[1]) : c.t, mode);
 const ARGS = { only: [{ repo: "acme/app", branch: "feat/x", sha: "a".repeat(40), patch: "b".repeat(64) }] };
 
-function kernel(mode, reviewer = async () => { throw new Error("no reviewer"); }, repos = { product: "acme/aidenhq", instance: "acme-agents/aidenhq-instance" }) {
+function kernel(mode, reviewer = async () => { throw new Error("no reviewer"); }, repos = { product: "acme/aidenhq", instance: "acme-agents/aidenhq-instance", agentsOrg: "acme" }) {
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "parity-")), "kernel.db"));
   const writes = createWrites({ records, registry: () => KERNEL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, autonomy: () => mode, repos: () => repos,
     reviews: { request: reviewer }, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({ ok: true, text: "" }) });
@@ -128,7 +128,7 @@ test("the owner's veto is content-keyed, replacement is per target, and a card e
 });
 
 test("the kernel decides what the plan only proposes: new module authority, the veto, floors, refusals and the runner's key", async () => {
-  const k = kernel("full");
+  const k = kernel("full", undefined, { product: "acme/aidenhq", instance: "acme-agents/aidenhq-instance", agentsOrg: "acme-agents" });
   const apply = { repo: "acme-agents/aidenhq-instance", branch: "fleet/x", sha: "1".repeat(40), files: ["instance.yaml"], authority: ["engine-claude: secrets anthropic_key (owner)"], ownerRequired: true };
   // A plan claiming Tier 0 for an apply with new module authority: Tier 2, the reviewer first, and its approve never decides it.
   const a = k.writes.fileRunner({ kind: "kernel.apply", task: "i-1", args: apply, plan: { tier: 0, card: applyCard(apply, "diff") } });
@@ -137,8 +137,13 @@ test("the kernel decides what the plan only proposes: new module authority, the 
   // A plain apply and a merge are read by the reviewer at least, whatever the plan says.
   const plain = k.writes.fileRunner({ kind: "kernel.apply", task: "i-1", args: { repo: apply.repo, branch: apply.branch, sha: "2".repeat(40), files: apply.files }, plan: { tier: 0, card: { sentence: "x" } } });
   assert.deepEqual([plain.state, plain.tier], ["review", 1]);
-  const merge = k.writes.fileRunner({ kind: "runner.merge", task: "i-1", args: { prs: [{ repo: "acme-agents/app", number: 1, url: "https://github.com/acme-agents/app/pull/1" }] }, plan: { tier: 0, card: { sentence: "x" } } });
-  assert.equal(merge.state, "review");
+  // A merge runs at once only in the agents org (its checks the merge queue holds at execution); outside it, the reviewer's.
+  const mergeIn = (repo, n) => k.writes.fileRunner({ kind: "runner.merge", task: "i-1", args: { prs: [{ repo, number: n, url: `https://github.com/${repo}/pull/${n}` }] }, plan: { tier: 0, card: { sentence: "x" } } });
+  assert.equal(mergeIn("acme-agents/app", 1).state, "claimed");
+  assert.equal(mergeIn("acme/web", 3).state, "review");
+  assert.equal(mergeIn("acme/aidenhq", 4).state, "review");
+  // A push outside the agents org: at least the reviewer, whatever the plan says.
+  assert.equal(k.writes.fileRunner({ kind: "runner.push", task: "i-1", args: { only: [{ repo: "acme/web", branch: "feat/o", sha: "6".repeat(40) }] }, plan: { tier: 0, card: { sentence: "x" } } }).state, "review");
   // The product repo and a main branch: at least the reviewer; the instance repo: never by push.
   for (const only of [[{ repo: "acme/aidenhq", branch: "fix/y", sha: "3".repeat(40) }], [{ repo: "acme-agents/app", branch: "main", sha: "4".repeat(40) }]]) assert.equal(k.writes.fileRunner({ kind: "runner.push", task: "i-1", args: { only }, plan: { tier: 0, card: { sentence: "x" } } }).state, "review");
   assert.throws(() => k.writes.fileRunner({ kind: "runner.push", task: "i-1", args: { only: [{ repo: "acme-agents/aidenhq-instance", branch: "x", sha: "5".repeat(40) }] }, plan: { tier: 0, card: { sentence: "x" } } }), /only through apply/);
@@ -177,7 +182,7 @@ test("the kernel decides what the plan only proposes: new module authority, the 
   const blind = kernel("full", undefined, {}).writes.fileRunner({ kind: "runner.push", task: "i-5", args: { only: [{ repo: "acme-agents/app", branch: "feat/c", sha: "9".repeat(40) }] }, plan: { tier: 0, card: { sentence: "x" } } });
   assert.deepEqual([blind.state, blind.review_first, blind.rule], ["review", "owner", "unknown-repos"]);
   // Autonomy off: the plan's Tier 0 waits for the owner.
-  assert.equal(kernel("off").writes.fileRunner({ kind: "runner.push", task: "i-3", args: { only: [{ repo: "acme-agents/app", branch: "feat/c", sha: "9".repeat(40) }] }, plan: { tier: 0, card: { sentence: "x" } } }).state, "owner");
+  assert.equal(kernel("off").writes.fileRunner({ kind: "runner.push", task: "i-3", args: { only: [{ repo: "acme/app", branch: "feat/c", sha: "9".repeat(40) }] }, plan: { tier: 0, card: { sentence: "x" } } }).state, "owner");
 });
 
 test("the card contract: every field the runner's card args carry is one the kernel's schema takes", async () => {

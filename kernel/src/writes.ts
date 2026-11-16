@@ -180,16 +180,18 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const proposed = ([0, 1, 2].includes(plan.tier) ? plan.tier : 2) as Tier;
     // A replay of approved commits onto a new base (the runner's rebuild) is carried by those approvals, which the kernel
     // checks: approved by the owner or the reviewer, never stale, on this task, a push or PR on exactly this target.
-    const carried = Array.isArray(plan.carries) && plan.carries.length > 0 && plan.carries.every((id) => {
-      const c = records.get(String(id));
-      return Boolean(c && c.task === task && ["runner.push", "runner.pr"].includes(c.kind) && ["approved", "claimed", "done"].includes(c.state) && c.decided_by && !c.decided_by.startsWith("stale:") && f.target && c.target === f.target);
-    });
+    const carries = Array.isArray(plan.carries) ? plan.carries.map((id) => records.get(String(id))) : [];
+    const carried = carries.length > 0 && carries.every((c) => Boolean(c && c.task === task && ["runner.push", "runner.pr"].includes(c.kind) && ["approved", "claimed", "done"].includes(c.state) && c.decided_by && !c.decided_by.startsWith("stale:") && f.target && c.target === f.target));
+    // A replay the approvals don't carry is refused, never turned into a card: the runner files the request on its own then.
+    if (carries.length && !carried) throw fail(422, "refused", "those approvals don't carry this replay");
+    // The owner's own yes carries a replay whatever the autonomy setting (the runner's approvalStands); the reviewer's doesn't.
+    const ownerCarried = carried && carries.every((c) => !c!.decided_by!.startsWith("reviewer:"));
     let tier = Math.max(proposed, carried ? 0 : k.floor, carried ? 0 : f.floor) as Tier;
     let reviewFirst: ReviewFirst | null = plan.reviewFirst === "owner" || plan.reviewFirst === "final" ? plan.reviewFirst : null;
     let rule = plan.rule && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(plan.rule) ? plan.rule : null;
     let reason = plan.reason ?? "";
     if (tier === 2 && proposed < 2) reviewFirst ??= "final"; // raised by a floor: reviewed first, then the owner's
-    if (autonomy() === "off" && tier === 0) [tier, reviewFirst, rule, reason] = [2, null, "autonomy-off", `autonomy is off (was: ${reason})`];
+    if (autonomy() === "off" && tier === 0 && !ownerCarried) [tier, reviewFirst, rule, reason] = [2, null, "autonomy-off", `autonomy is off (was: ${reason})`];
     if (tier === 1 && autonomy() === "off") reviewFirst ??= "final";
     if (f.ownerRequired) { tier = 2; reviewFirst = reviewFirst === "owner" ? "owner" : "final"; }
     if (f.owner) [tier, reviewFirst, rule, reason] = [2, "owner", "unknown-repos", `the product or instance repo isn't set here, so the owner decides (was: ${reason})`];

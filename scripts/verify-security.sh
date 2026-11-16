@@ -760,7 +760,7 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF 'if (f.ownerRequired) { tier = 2; reviewFirst = reviewFirst === "owner" ? "owner" : "final"; }' kernel/src/writes.ts \
   && grep -qF 'const veto = records.vetoed(task, kind, { digest, content: f.content });' kernel/src/writes.ts \
   && grep -qF 'let tier = Math.max(proposed, carried ? 0 : k.floor, carried ? 0 : f.floor) as Tier;' kernel/src/writes.ts \
-  && grep -qF 'const unknown = !product || !instance;' kernel/src/kinds.ts && grep -qF 'floor: k === "merge" ? 1 : 0' kernel/src/kinds.ts && grep -qF '"kernel.apply": { module: "kernel", floor: 1,' kernel/src/kinds.ts \
+  && grep -qF 'const unknown = !product || !instance;' kernel/src/kinds.ts && grep -qF 'const ours = Boolean(org) && touched.every((r) => r!.split("/")[0] === org && r !== product && r !== instance);' kernel/src/kinds.ts && grep -qF '"kernel.apply": { module: "kernel", floor: 1,' kernel/src/kinds.ts \
   && grep -qF 'let v = codeVerdict(input, model) ?? afterReview(input, await ask(r, b.request ?? {}, model));' kernel/src/writes.ts && grep -qF 'const post = shadowed(v, autonomy());' kernel/src/writes.ts \
   && [ "$(grep -cE 'await requestReview\(|requestReview\(\{' "$rmain")" = 1 ] && ! grep -rqE 'from "[./]*modules/ai-reviewer/' services/runner/src && awk '/^export function reviewRequest\(/,/^}/' services/runner/src/review-request.mjs | grep -F '    panel: Boolean(input.panel || a.panel),' >/dev/null && grep -qF 'const panelMissing = (t.panel || claimed.panel) && !claimed.decidedBy.includes("+");' "$rmain" \
   && grep -qF 'if (v.decision === "approve" && (r.review_first || r.tier === 2' kernel/src/records.ts \

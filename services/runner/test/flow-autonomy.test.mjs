@@ -65,7 +65,7 @@ describe("flow-autonomy", { concurrency: true }, () => {
       assert.ok(githubTip("feat/third"), "on GitHub at once");
       assert.equal(t.paperclip.approvals.size, cards, "nothing filed");
       const row = t.paperclip.autos.at(-1);
-      assert.deepEqual([row?.action, row?.rule, row?.ok, row?.key], ["push", "agents-org-branch", true, "r".repeat(64)]);
+      assert.deepEqual([row?.action, row?.rule, row?.ok], ["push", "agents-org-branch", true]);
     });
 
     it("a PR in our own repos may name our tools (only outside reviewers mustn't see them)", async () => {

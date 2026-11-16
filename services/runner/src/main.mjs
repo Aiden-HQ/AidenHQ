@@ -2181,7 +2181,7 @@ const reviewing = new Set();
  * failed review's backoff and makes it a note under autonomy tier0. A reject's reason is posted on the task here.
  */
 async function runReviews() {
-  if (!keyIn(cfg.reviewerKeyFile)) return; // no key: the kernel refuses every review, so don't gather each poll
+  if (!keyIn(cfg.runnerWritesKeyFile)) return; // no key: the kernel refuses every review, so don't gather each poll
   const { records = [] } = await kernel("GET", "/v1/writes?state=review&limit=200");
   for (const a of records.map(asApproval)) {
     // Cards pin exact commits and digests, so a task's job still running never makes a review unsafe (a card whose branch
@@ -2226,7 +2226,7 @@ async function reviewOne(a) {
   const chain = asked ? await prRequest(await pc.issue(issue.id)).catch(() => "") : "";
   const request = asked ? reviewRequest(a, input, chain, { requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
   const { diff: _d, files: _f, previous: _p, relift: _r, bases: _b, full: _full, ...tierInput } = input;
-  const out = await kernel("POST", `/v1/writes/${a.id}/review`, { input: { ...tierInput, model: LUNA }, request }, { key: cfg.reviewerKeyFile, ms: 46 * 60_000 });
+  const out = await kernel("POST", `/v1/writes/${a.id}/review`, { input: { ...tierInput, model: LUNA }, request }, { ms: 46 * 60_000 });
   if (out.deferred) return void log("review deferred", { approval: a.id, issue: a.identifier, until: new Date(out.deferred).toISOString() });
   if (out.refused) return void log("review refused", { approval: a.id, reason: String(out.refused).slice(0, 200) });
   const post = out.posted;
@@ -2627,8 +2627,8 @@ async function rebaseInCode(issue, pr, why) {
       const re = await replayOnto(path, rec.base, rec.sha, tip, await botIdentity());
       if (!re || (await patchKey(path, rec.base, rec.sha)) !== (await patchKey(path, tip, re.tip))) return null;
       // Its record before anything is pushed, carried by the approval it replays (the kernel checks it); anything else waits.
-      const filed = await fileApproval(issue, { action: "pr", args: { ...args, only: [{ ...b, sha: re.tip, base: tip }] }, ts: [{ tier: 0, rule: "replayed-approval", reason: `the commits of approval ${rec.approval}, replayed by the runner onto a new base with no conflict` }], carries: [rec.approval] });
-      if (filed.state !== "used") return null;
+      const filed = await fileApproval(issue, { action: "pr", args: { ...args, only: [{ ...b, sha: re.tip, base: tip }] }, ts: [{ tier: 0, rule: "replayed-approval", reason: `the commits of approval ${rec.approval}, replayed by the runner onto a new base with no conflict` }], carries: [rec.approval] }).catch(() => undefined);
+      if (filed?.state !== "used") return null;
       replayRecord = filed;
       await git(path, "update-ref", out, re.tip);
       await git(path, "push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${b.branch}:${rec.sha}`, await git(path, "remote", "get-url", "origin"), `${re.tip}:refs/heads/${b.branch}`);
@@ -3022,8 +3022,8 @@ async function agentPublish(ctx, command, args) {
           const args2 = { ...cardArgs, only: branches.map((b, i) => ({ ...b, sha: built.pins.get(pinKey(b.repo, b.branch)), base: built.moves[i].base })) };
           const ids = [...new Set(built.records.map((r) => r.approval))];
           // Its record, carried by those approvals (the kernel checks them): no new card unless the kernel says otherwise.
-          const rec = await fileApproval(ctx.issue, { action: command, args: args2, ts: [{ tier: 0, rule: "replayed-approval", reason: `the commits of approval ${ids.join(", ")}, replayed by the runner onto a new base with no conflict` }], carries: ids });
-          if (rec.state === "used") {
+          const rec = await fileApproval(ctx.issue, { action: command, args: args2, ts: [{ tier: 0, rule: "replayed-approval", reason: `the commits of approval ${ids.join(", ")}, replayed by the runner onto a new base with no conflict` }], carries: ids }).catch((err) => (refusedForGood(err) ? undefined : Promise.reject(err)));
+          if (rec?.state === "used") {
             carried = { ...built, args: args2, rec };
             return built.pins;
           }
