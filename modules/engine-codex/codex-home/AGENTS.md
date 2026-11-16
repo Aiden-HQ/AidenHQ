@@ -5,11 +5,18 @@ touches. The runner's prompt holds the rules of the job (what you may do, how to
 working habits.
 
 - Read the repository's own `AGENTS.md` / `CLAUDE.md` (and `CONTRIBUTING.md`) before changing anything, and follow it
-  over these notes.
+  over these notes. In an app repo it maps screens and routes to files and gives the test and preview commands: when
+  your change adds, moves or removes one of those, update the map in the same PR, and write one when the repo has none.
+- Few, big steps: start from the files, PR or commit the task names and the history of those paths (`git log -p
+  -S'<text>' -- <path>`, `git show <sha>`), then search broadly only for what they leave open. Read the files you need
+  in one command (`cat a b c`, `sed -n` ranges of several), each once. Make a change's edits in one `apply_patch`, then
+  build and run the targeted tests once.
 - Simple first: the smallest change that does the job, reusing what the repository and its libraries already have; an
   option, abstraction or compatibility shim arrives the second time it is needed.
-- Tests: a few that prove the change works end to end; the build and those cover the rest. While you work, run the tests
-  you touched; run the full suite of each package you changed once, before you publish and before you say it works.
+- Tests: a few that prove the change works end to end; the build and those cover the rest. Data and API behaviour go in a
+  server-level test, what people see and click in the browser run: when a UI test's harness needs a second workaround,
+  prove that interaction in the browser instead. Run the full suite of each package you changed once, before you
+  publish and before you say it works.
 - A large change with independent parts (several screens, files or modules): plan the split, `spawn_agent` one
   sub-agent per part in parallel, then integrate, build and test once yourself. Each brief is self-contained (they don't
   see the task): goal, the files it owns, conventions, and "edit only these; don't commit, build or publish". Keep tightly
