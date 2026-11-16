@@ -370,9 +370,10 @@ function checkCounts(checks) {
 function mergeParts(s) {
   return (s.prs ?? []).map((p) => {
     const ref = `${p.repo}#${p.number ?? "?"}`;
+    // The instance repo is refused before anything reads its files: it changes only through apply, whatever it touches.
+    if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`);
     if (p.files?.includes(OWNER_APPROVAL_FILE)) return OWNER_APPROVAL(p.repo);
     if (same(p.repo, s.productRepo)) return productMergePart(p, ref, s);
-    if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`);
     if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
     const friction = mergeFriction(p, ref);
     if (friction) return friction;

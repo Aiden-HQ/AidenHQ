@@ -198,6 +198,10 @@ test("the owner-approval records are the owner's tap, so no PR records its own s
   assert.equal(tierOf(merge({ repo: "acme-agents/roadmap", files: [f] })), 2, "an agents-org merge");
   // Another file beside it changes nothing: the whole change is still the owner's.
   assert.equal(tierOf(prod("pr", { files: ["services/runner/package-lock.json", f] })), 2);
+  // The instance repo is refused before its files are read: a merge of it never becomes an owner approval.
+  const instMerge = merge({ repo: base.instanceRepo, files: [f] });
+  assert.equal(tierOf(instMerge), "reject", "the instance repo's merge");
+  assert.equal(instMerge.rule, "core-repo-merge", "and for the reason it always is");
 });
 
 test("product repo: a bump that quietly edits a gate file is the owner's", () => {
