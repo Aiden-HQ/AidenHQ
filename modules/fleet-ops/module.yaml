@@ -17,8 +17,6 @@ agents:
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1200
-    # The fleet's health is in its own tools: no web search (it was most of the fleet's search fees, 2026-11-16).
-    web_search: disabled
     connections:
       # Reads only: apps, their logs, and the warehouse (src_meta.ingest_run).
       apps: [ app_list, app_status, app_logs, warehouse_query ]
