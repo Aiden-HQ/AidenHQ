@@ -19,7 +19,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
 import type { Brake } from "./brake.ts";
-import { CP_READ_PATHS, isChannel, type Api, type Channels, type ModulesFile } from "./channels.ts";
+import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Whoami } from "./identity.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
@@ -132,7 +132,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           case "POST /v1/wake": {
             if (!w.roles.includes("kernel.wake")) throw fail(403, "forbidden", `${mod} may not post wake notices (role kernel.wake)`);
             const b = await json(req);
-            const task = typeof b.task === "string" ? b.task.slice(0, 100) : "", text = typeof b.text === "string" ? b.text.replace(/<!--|-->/g, "").trim().slice(0, 2000) : "";
+            const task = typeof b.task === "string" ? b.task.slice(0, 100) : "", text = typeof b.text === "string" ? neutral(b.text).trim().slice(0, 2000) : "";
             if (!task || !text) throw fail(400, "bad_request", "send {task, text}");
             const issue = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
             if (issue.status !== 200) throw fail(404, "not_found", `no task ${task}`);

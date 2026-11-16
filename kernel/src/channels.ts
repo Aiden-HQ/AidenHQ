@@ -35,6 +35,9 @@ export function decides(m: ModuleInfo | undefined, card: { kind?: unknown; panel
   return v === "all" || (v === "standard" && card.panel !== true && !["apply", "kernel.apply"].includes(String(card.kind)));
 }
 
+/** Text that can never hold an HTML comment: every `<!` and `-->` is neutralised in place (nothing is deleted, so nothing can rebuild one). */
+export const neutral = (v: string) => v.replace(/<!/g, "‹!").replace(/-->/g, "--›");
+
 /** May this module speak as the owner (a channel)? */
 export const isChannel = (m: ModuleInfo | undefined) => Boolean(m?.channel && m.privileged?.includes("speaks-as-owner"));
 
@@ -133,7 +136,7 @@ export function createChannels({ db, writes, board, owner, modules, log = () => 
     async ownerMessage(module: string, b: { text?: unknown; voice?: unknown; forward?: unknown; task?: unknown; agent?: unknown; note?: unknown }, cos: () => string | undefined) {
       channelOf(module);
       // No HTML comments: the owner's words never carry an AidenHQ marker (a reply, a relay, a wake), whatever was typed or forwarded.
-      const clean = (v: string) => v.replace(/<!--|-->/g, "");
+      const clean = neutral;
       const text = clean(str(b.text, 8000)).trim();
       if (!text) throw fail(400, "bad_request", "send {text}");
       const label = channelId(module);
@@ -172,7 +175,7 @@ export function createChannels({ db, writes, board, owner, modules, log = () => 
       const chat = labels.find((l) => l.name === "chat") ?? (await ok(owner("POST", `/api/companies/${company}/labels`, { name: "chat", color: "#0ea5e9" }), "the chat label"));
       if (agent) {
         const title = text.split("\n")[0]!.replace(/^@\S+(\s+\S+){0,3}?\s*/, "").slice(0, 80) || "New chat";
-        const note = str(b.note, 300).replace(/<!--|-->/g, "");
+        const note = neutral(str(b.note, 300));
         const issue = await ok(owner("POST", `/api/companies/${company}/issues`, { title, description: `${body}${note ? `\n\n${note}` : ""}\n\n<!-- aidenhq-chat-agent:${agent.replace(/[^\w-]/g, "")} -->`, status: "todo", assigneeAgentId: agent, labelIds: [chat.id] }), "a new chat");
         return { task: { id: String(issue.id), identifier: String(issue.identifier ?? "") } };
       }
