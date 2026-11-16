@@ -7,6 +7,10 @@ export const JOB_TOKEN_ENV = "AIDENHQ_JOB_TOKEN";
 const GATEWAY_KEY_ENV = "AIDENHQ_GATEWAY_KEY";
 // Off on OpenRouter, as for Paperclip's Codex agents: ChatGPT connectors, the desktop's browser and computer, OpenAI's
 // image tool, memories across runs, hooks, and plugins fetched from marketplaces (unpinned code).
+// Compact a job's context at 160K tokens: on OpenRouter models Codex knows no window and falls back to 90% of 272K (~245K), and
+// every call re-reads the whole context. Compaction keeps the Codex home's AGENTS.md and the newest 20K tokens of the job's
+// prompts (its brief) and summarises the rest.
+const COMPACT_AT = 160_000;
 const CODEX_OFF = ["apps", "browser_use", "browser_use_external", "in_app_browser", "computer_use", "image_generation", "memories", "hooks", "plugins", "remote_plugin", "recommended_plugins", "plugin_discovery_prefetch", "tool_suggest"];
 
 /**
@@ -21,7 +25,7 @@ export function codexCommand(spec: JobSpec, jobDir: string, base: NodeJS.Process
   const env = (add: Record<string, string>) => ({ ...inherited, ...add });
   const exec = spec.session ? ["codex", "exec", "resume", spec.session] : ["codex", "exec"];
   const search = spec.web ? "live" : "disabled";
-  const model = [...(spec.model.id ? ["-m", spec.model.id] : []), ...(spec.model.effort ? ["-c", `model_reasoning_effort="${spec.model.effort}"`] : [])];
+  const model = [...(spec.model.id ? ["-m", spec.model.id] : []), ...(spec.model.effort ? ["-c", `model_reasoning_effort="${spec.model.effort}"`] : []), "-c", `model_auto_compact_token_limit=${COMPACT_AT}`];
   const provider = (key: string) => ["-c", 'model_provider="or"', "-c", 'model_providers.or.name="OpenRouter"', "-c", `model_providers.or.base_url=${JSON.stringify(spec.model.base_url)}`, "-c", `model_providers.or.env_key="${key}"`, "-c", 'model_providers.or.wire_api="responses"'];
   const off = CODEX_OFF.flatMap((f) => ["-c", `features.${f}=false`]);
   // The workspace holds several clones and isn't a git repository itself.
