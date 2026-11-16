@@ -99,9 +99,9 @@ dumpTo() {
 }
 
 # A logical dump of the warehouse before anything is recreated. The file is created under umask 077 in a 0700 directory,
-# so it is 0600 from the first byte and no other user can read it. A dump an earlier run left keeps its bytes and only has
-# its mode tightened, never a rewrite. A dump that can't be written fails the apply: it is the copy the recreate stands
-# behind.
+# so it is 0600 from the first byte and no other user can read it. A dump an earlier run left is never rewritten, only
+# have its mode tightened; the newest two are kept and the rest removed, so a host applying often doesn't fill its disk
+# with full copies. A dump that can't be written fails the apply: it is the copy the recreate stands behind.
 dump() {
   requireDumpPassword
   [ -d "$secrets/apps/warehouse" ] || { echo "compose: no warehouse on this host: nothing dumped"; return 0; }
@@ -125,6 +125,10 @@ dump() {
   chmod 0600 "$file"
   # Older dumps in the same place, without reading or rewriting them.
   find "$dump_dir" -maxdepth 1 -type f -name "$dump_base*.dump" ! -path "$file" -exec chmod 0600 {} + 2>/dev/null || true
+  # Only the newest two dumps are kept: the one just taken and the one before it. A cleanup that fails is reported, never
+  # fails an apply that already has its dump.
+  find "$dump_dir" -maxdepth 1 -name "$dump_base*.dump" -printf '%T@ %p\n' | sort -rn | tail -n +3 | cut -d' ' -f2- | xargs -r rm -f \
+    || echo "compose: could not remove the older dumps in $dump_dir" >&2
   echo "compose: dumped the warehouse to $file"
 }
 
