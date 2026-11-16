@@ -114,9 +114,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     const t = computeTier({ floor: k.floor, raise, priorVeto: task ? records.vetoed(task, kind) : false, autonomy: autonomy(), panel: k.panel === true });
     if (t.tier > 0 && !task) throw fail(400, "no_task", `${kind} needs approval: pass your current task`);
-    // The same request still open on the task is that record, never a second card that would run twice.
+    // The same request still open on the task is that record, never a second card that would run twice: only while it is
+    // the same requester's and at least as strict (tier and panel). Otherwise it is cancelled and this one is filed.
     const same = t.tier > 0 ? records.open(task, kind, digestOf(base)) : undefined;
-    return same ?? records.file({ ...base, card: { ...card, reason: raise?.reason?.slice(0, 300) ?? "" }, tier: t.tier, panel: t.panel, state: t.tier === 0 ? "claimed" : "review" });
+    const who = (q: Requester) => `${q.kind}|${q.agent}|${q.key}|${q.module ?? ""}`;
+    if (same && same.tier >= t.tier && (same.panel || !t.panel) && who(same.requester) === who(requester)) return same;
+    if (same) records.close(same.id, "cancelled", "replaced by the same request at a stricter tier or from another requester");
+    return records.file({ ...base, card: { ...card, reason: raise?.reason?.slice(0, 300) ?? "" }, tier: t.tier, panel: t.panel, state: t.tier === 0 ? "claimed" : "review" });
   }
 
   async function execute(r: Rec, k: Kind): Promise<void> {

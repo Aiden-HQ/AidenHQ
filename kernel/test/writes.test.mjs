@@ -110,6 +110,18 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   assert.notEqual(refiled[0].id, p.approval);
   assert.equal(refiled[0].targets.commit, "c2");
   await until(() => k.notices.some((n) => n.text.startsWith("**Stale**") && n.text.includes(refiled[0].id)));
+  // An open request re-filed after the owner's no on its kind is never reused at its old tier: it is cancelled and refiled at Tier 2.
+  const open1 = await pending(await tool("post_note", { note: "v" }));
+  const veto = await pending(await tool("post_note", { note: "w" }));
+  const vr = k.records.get(veto.approval);
+  await k.v1("POST", `/v1/writes/${veto.approval}/review`, { digest: vr.digest, decision: "escalate", reason: "r", model: "~acme/model-a" });
+  await k.v1("POST", `/v1/writes/${veto.approval}/decide`, { ...decide, digest: vr.digest, decision: "reject" });
+  const again = await pending(await tool("post_note", { note: "v" }));
+  assert.notEqual(again.approval, open1.approval);
+  assert.equal(again.tier, 2);
+  assert.equal(k.records.get(open1.approval).state, "cancelled");
+  // Another agent's identical request is never folded into it either.
+  assert.equal((await pending(await tool("post_note", { note: "v" }))).approval, again.approval);
   // The owner's no on a kind makes the next request on the task theirs (Tier 2), the reviewer still first.
   const next = k.records.get(refiled[0].id);
   await k.v1("POST", `/v1/writes/${next.id}/review`, { digest: next.digest, decision: "escalate", reason: "r", model: "~acme/model-a" });
