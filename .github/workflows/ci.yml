@@ -107,9 +107,11 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           (cd scripts && npm ci --ignore-scripts)
-          git fetch --no-tags --depth=1 origin "$PR_BASE"
+          # The checkout keeps no credentials: pass the read-only token for this one fetch.
+          git -c "http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags --depth=1 origin "$PR_BASE"
           node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.mjs --check --base "$PR_BASE"
       - name: Test
         env:
