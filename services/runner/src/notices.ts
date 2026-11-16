@@ -49,7 +49,7 @@ export interface SummaryRow {
   job?: string;
   committed?: boolean;
   cards?: unknown[];
-  published?: boolean;
+  published?: boolean; // its PR merged, or its task closed: no "pr" to ask for
   graded?: boolean;
 }
 

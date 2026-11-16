@@ -56,7 +56,13 @@ describe("flow-receipt without a card", () => {
     await t.waitFor("the run-end receipt", () => Boolean(receiptOf(t)));
     assert.match(receiptOf(t), /Reply \*\*pr\*\* here to open all their PRs, or \*\*pr\*\* on a single task for just that one\./);
     assert.doesNotMatch(receiptOf(t), /Already requested/);
-    assert.equal([...t.paperclip.approvals.values()].filter((a) => a.action === "pr").length, 0);
+    assert.equal([...t.paperclip.approvals.values()].filter((a) => a.action === "pr").length, 0, "no pr card was filed");
+    // Committed work with no PR at all: the branch row exists and names none, so nothing is published and the invitation stands.
+    const state = new State(join(t.dir, "state"));
+    const rows = state.branches("part");
+    state.db.close();
+    assert.ok(rows.length > 0, "the run left a branch row");
+    assert.equal(rows.filter((b) => b.pr_url).length, 0, "and no PR on it");
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
