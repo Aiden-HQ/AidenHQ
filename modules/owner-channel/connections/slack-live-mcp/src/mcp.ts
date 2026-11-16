@@ -140,16 +140,19 @@ export function buildServer(store: Store, cfg: NotifyConfig, caller?: NotifyCall
       const due = parseWhen(a.when_local, lane.timezone);
       if (due === undefined) return json({ ok: false, reason: 'when_local must be "YYYY-MM-DD HH:MM" (owner-local) or "in N minutes|hours|days"' });
       if (due < Date.now() - 60_000) return json({ ok: false, reason: `that is in the past (${localShort(lane.timezone, due)})` });
-      const pending = await liveWakes(lane, lane.store.pendingWakes(owner));
-      if (pending.length >= MAX_WAKES)
-        return json({
-          ok: false,
-          reason: `you already have ${MAX_WAKES} pending wakes on open tasks`,
-          pending: pending.length,
-          wakes: pending.map((w) => ({ task: w.task, conversation: w.conversation, due_local: `${localShort(lane.timezone, w.due_at)} (${lane.timezone})` })),
-        });
-      const id = lane.store.addWake(owner, due, a.note, a.conversation ?? null, a.task ?? null);
-      return json({ ok: true, id, due_local: `${localShort(lane.timezone, due)} (${lane.timezone})` });
+      // The check awaits the board, so it and the insert run under the agent's wake lock: two calls can't both pass it.
+      return lane.store.withWakeLock(owner, async () => {
+        const pending = await liveWakes(lane, lane.store.pendingWakes(owner));
+        if (pending.length >= MAX_WAKES)
+          return json({
+            ok: false,
+            reason: `you already have ${MAX_WAKES} pending wakes on open tasks`,
+            pending: pending.length,
+            wakes: pending.map((w) => ({ task: w.task, conversation: w.conversation, due_local: `${localShort(lane.timezone, w.due_at)} (${lane.timezone})` })),
+          });
+        const id = lane.store.addWake(owner, due, a.note, a.conversation ?? null, a.task ?? null);
+        return json({ ok: true, id, due_local: `${localShort(lane.timezone, due)} (${lane.timezone})` });
+      });
     },
   );
   server.registerTool(

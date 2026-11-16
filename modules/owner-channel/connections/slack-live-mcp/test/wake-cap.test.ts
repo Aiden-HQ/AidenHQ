@@ -13,11 +13,15 @@ import { openStore } from "../src/store.js";
 const aria: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", apiKey: "pcp_aria", model: "m", reasoning: "low", deadlineS: 8, prompt: "p", tools: [] };
 const quiet = { info() {}, warn() {} };
 
-async function server(closed: Set<string>) {
+async function server(closed: Set<string>, { slow = false }: { slow?: boolean } = {}) {
   const laneStore = openLaneStore(":memory:");
   laneStore.add("aria", "board", "owner", "hi", 1);
   const lane = { followUp: vi.fn(async () => {}), receive: vi.fn(async () => {}), tick: vi.fn(async () => {}), resume: vi.fn() } as unknown as Lane;
-  const taskIsClosed = async (task: string) => closed.has(task);
+  // `slow` holds each board answer open, so concurrent calls would all read the cap before any of them inserted.
+  const taskIsClosed = async (task: string) => {
+    if (slow) await new Promise((r) => setTimeout(r, 5));
+    return closed.has(task);
+  };
   const s = buildServer(
     openStore(":memory:"),
     { botToken: "", ownerId: "", cooldownMs: 0 },
@@ -80,6 +84,15 @@ describe("the wake cap counts only wakes on open tasks", () => {
     expect(refused.reason).toMatch(/pending wakes on open tasks/);
     expect(refused.wakes).toHaveLength(MAX_WAKES);
     expect(refused.wakes[0]).toMatchObject({ task: "WOR-5245" });
+  });
+
+  it("never takes more than the cap when wake_at calls arrive at once", async () => {
+    const { call, laneStore } = await server(new Set(), { slow: true });
+    for (let i = 0; i < MAX_WAKES - 1; i++) laneStore.addWake("aria", Date.now() + 3600_000, `check ${i}`, null, "WOR-5245");
+
+    const answers = await Promise.all(Array.from({ length: 5 }, (_, i) => call("wake_at", { when_local: "in 1 hour", note: `parallel ${i}`, task: "WOR-5245" })));
+    expect(answers.filter((r) => r.ok)).toHaveLength(1);
+    expect(laneStore.pendingWakes("aria")).toHaveLength(MAX_WAKES);
   });
 
   it("drops a wake that comes due on a finished task, and posts one for a task still open", async () => {

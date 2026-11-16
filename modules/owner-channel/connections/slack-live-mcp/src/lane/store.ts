@@ -10,6 +10,8 @@ export interface Wake { id: number; agent: string; due_at: number; note: string;
 
 export function openLaneStore(path: string) {
   const db = new Database(path);
+  // wake_at's cap is read and then written: per agent, those two run one at a time (the tool's check awaits the board).
+  const wakeLocks = new Map<string, Promise<void>>();
   db.pragma("journal_mode = WAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS lane_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, conversation TEXT, role TEXT, text TEXT, at INTEGER);
@@ -74,6 +76,19 @@ export function openLaneStore(path: string) {
     },
     addWake(agent: string, dueAt: number, note: string, conversation: string | null, task: string | null, now = Date.now()): number {
       return Number(q.wake.run(agent, dueAt, note, conversation, task, now).lastInsertRowid);
+    },
+    /** Runs `fn` after every earlier call for that agent finished: a cap read and its insert never interleave. */
+    async withWakeLock<T>(agent: string, fn: () => Promise<T>): Promise<T> {
+      const run = (wakeLocks.get(agent) ?? Promise.resolve()).then(fn);
+      const tail = run.then(
+        () => {},
+        () => {},
+      );
+      wakeLocks.set(agent, tail);
+      void tail.then(() => {
+        if (wakeLocks.get(agent) === tail) wakeLocks.delete(agent);
+      });
+      return run;
     },
     pendingWakes(agent: string): Wake[] {
       return q.pendingWakes.all(agent) as Wake[];
