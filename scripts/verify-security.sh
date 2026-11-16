@@ -205,7 +205,7 @@ for c in $containers; do
               body="$(curl -s --max-time 10 -X POST -H "Authorization: Bearer $bt" -H 'content-type: application/json' -d "$d" "http://127.0.0.1:3122$p")"
             fi
             # A caller refusal, not the Host guard or a 404: the route was reached and asked who is calling.
-            echo "$body" | grep -qE '"error":"(only |missing agent credential)' || opened="$opened $m $p;"
+            echo "$body" | grep -qE '"error":"(only |missing agent credential|missing caller assertion)' || opened="$opened $m $p;"
           done <<'PROBES'
 POST /internal/approvals/A00000000/claim {}
 POST /internal/approvals/A00000000/outcome {"nonce":"00000000000000000000000000000000","ok":true,"text":"x"}
