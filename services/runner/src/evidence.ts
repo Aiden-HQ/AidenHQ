@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { RUNNER_MARKER } from "./agents.mjs";
 import { patchKey } from "./git.mjs";
 import { GATE_CHECK, findPrs, namedChecks, skippedImageScan } from "./merges.mjs";
-import { MAX_DIFF } from "./review.mjs";
+import { MAX_DIFF } from "./models.mjs";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
 
 /** Marks the grader's own notes on a task, so they never count as the deliverable's evidence. */

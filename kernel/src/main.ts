@@ -20,6 +20,8 @@ import { createIdentity, type Connection, type Grant, type Jobcap } from "./iden
 import { createResolver } from "./net.ts";
 import { createProxy } from "./proxy.ts";
 import { openRecords } from "./records.ts";
+import { createReviews, type ReviewerSlot } from "./reviews.ts";
+import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
@@ -38,7 +40,7 @@ async function runTask(runId: string): Promise<string | undefined> {
   return r.issueId ?? r.contextSnapshot?.issueId ?? undefined;
 }
 // Modules with kernel roles, a privileged entry, a token of their own or a channel (compile).
-const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile, {});
+const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { reviewer?: ReviewerSlot }, {});
 const whoami = createIdentity({
   grants: () => grantsTable().agents ?? {}, connections, modules: () => modulesFile().modules ?? {},
   jobcaps: watched(path.join(configDir, "jobcaps.json"), (j) => j as Record<string, Jobcap>, {}), // runner jobs' reads (compile)
@@ -67,7 +69,9 @@ const ownerApi = asApi(cpApi);
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
 const channels = createChannels({ db: records.db, writes, board: boardApi, owner: ownerApi, modules: modulesFile, log });
 const brake = createBrake({ db: records.db, owner: ownerApi, on: () => grantsTable().loop_brake !== "off" });
-const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
+// The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
+const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
+const backplane = createBackplane({ whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, log }) as never });
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
 setTimeout(() => void writes.reconcile().then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })), 60_000).unref();

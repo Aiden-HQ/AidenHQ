@@ -1,0 +1,24 @@
+name: ai-reviewer
+description: "The AI reviewer: decides Tier 1 requests (approve, reject, or the owner's), one schema-bound model call with no tools, a second reviewer of another family on an unsure or authority-expanding change."
+license: AGPL-3.0-only
+kernel: { reviewer: 1 }
+# reviewer@1 (kernel/sdk/src/reviewer.ts): the kernel sends each review to the service with ai_reviewer_key; the verdict goes
+# back with that review's own token. Its policy (service/security/policy.md) is the product's, never an instance's. Its exit
+# test is scripts/reviewer-eval.mjs over test/reviewer-cases/ (must stay at 100%; a paid key).
+privileged: [ reviewer ]
+providers:
+  reviewer:
+    url: http://ai-reviewer:8095/aidenhq/v1/reviewer
+    auth: ai_reviewer_key
+services:
+  run:
+    ai-reviewer:
+      build: ./service
+      tmp: 16m
+      port: 8095
+      links: [backplane] # no egress: the kernel's listener and the model gateway
+      env:
+        REVIEWER_KEY_FILE: ${secrets.ai_reviewer_key}
+        AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
+generated_secrets:
+  - ai_reviewer_key

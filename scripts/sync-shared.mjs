@@ -3,6 +3,7 @@
 // byte-identical copy; scripts/test/shared.test.mjs fails when one drifts.
 //   kernel/sdk/src/{caller,fence}.ts the caller assertion check and the fence, in every module server (src/aidenhq-sdk/)
 //   kernel/sdk/src/executor.ts       the executor side of write kinds, in each module server with an executor
+//   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
 //   services/shared/source-store.ts  the shared-sources writer side, in every source writer
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
@@ -35,6 +36,8 @@ export const SHARED = {
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
   "kernel/sdk/src/executor.ts": ["services/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/channel-slack/connections/slack/src/aidenhq-sdk/executor.ts"],
+  // The reviewer side of reviewer@1, in the reviewer module's service (its own Docker build context).
+  "kernel/sdk/src/reviewer.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/reviewer.ts"],
   "services/shared/source-store.ts": [
     "modules/channel-slack/connections/slack/src/source-store.ts",
     "modules/github/connections/github-mcp/src/source-store.ts",

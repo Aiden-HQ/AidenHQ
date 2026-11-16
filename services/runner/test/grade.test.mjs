@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
 import { fileEvidence, presentNow, taskMergePrs } from "../src/evidence.ts";
 import { GRADE_SCHEMA, escalationFor, evidencePremise, gather, grade, gradeNote, gradePrompt, graderModels, rubricPaths } from "../src/grade.ts";
-import { DEEPSEEK, LUNA, openRouterAsk } from "../src/review.mjs";
+import { DEEPSEEK, LUNA, openRouterAsk } from "../src/models.mjs";
 
 const pr = ({ state = "OPEN", check = "SUCCESS", head = "h".repeat(40), merge = "m".repeat(40), imageScan = null, files = undefined, title = "fix: a change", body = "" } = {}) => {
   const scan = imageScan ? [{ __typename: "CheckRun", name: "image-scan", status: "COMPLETED", conclusion: imageScan }] : [];
