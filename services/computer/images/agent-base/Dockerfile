@@ -8,6 +8,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git jq ripgrep ffmpeg python3 python3-venv procps less \
     && rm -rf /var/lib/apt/lists/*
 RUN npm i -g @openai/codex@0.166.0 && npm cache clean --force
+# apply_patch as a command: Codex takes `apply_patch <<EOF` as its patch tool only when it is the whole command, so an edit
+# chained with a build (`… EOF` then `&& npm test`) failed with "command not found". The pinned Codex binary runs the same
+# patch tool when called by that name (arg0), so this adds no dependency; the build checks it applies a patch.
+RUN ln -s "$(find "$(npm root -g)/@openai/codex" -path '*/vendor/*/bin/codex' -type f | head -n1)" /usr/local/bin/apply_patch \
+    && cd /tmp && printf 'a\n' > p.txt && printf '*** Begin Patch\n*** Update File: p.txt\n@@\n-a\n+b\n*** End Patch\n' | apply_patch >/dev/null \
+    && grep -qx b p.txt && rm p.txt
+# Codex runs each command in a login shell, and /etc/profile resets PATH, dropping the job's /opt/aidenhq/bin (`aidenhq`,
+# `aidenhq-browse`) and cargo: put them back for login shells.
+RUN echo 'case ":$PATH:" in *:/opt/aidenhq/bin:*) ;; *) PATH="/opt/aidenhq/bin:/opt/rust/cargo/bin:$PATH" ;; esac' > /etc/profile.d/aidenhq-path.sh
 WORKDIR /workspace
 # repo-checkout: a commit of an agents-org repo, placed by the launcher (services/computer/launcher.mjs POST /repo); no credentials.
 COPY --chmod=755 repo-checkout /usr/local/bin/repo-checkout
