@@ -262,7 +262,7 @@ test("builder: true reaches the compiled config (setup adds How we build from it
 
 test("the models the runner and the model tools name in code are priced (the gateway refuses an unpriced one)", () => {
   const priced = YAML.parse(readFileSync(join(product, "modules/models-openrouter/module.yaml"), "utf8")).models.map((m) => m.id);
-  const named = ["services/runner/src/review.mjs", "services/runner/src/intake.ts", "modules/tasks/connections/tasks-mcp/src/models.mjs"]
+  const named = ["modules/ai-reviewer/service/src/review.mjs", "services/runner/src/models.mjs", "services/runner/src/intake.ts", "modules/tasks/connections/tasks-mcp/src/models.mjs"]
     .flatMap((f) => [...readFileSync(join(product, f), "utf8").matchAll(/"(~?(?:deepseek|openai|z-ai|moonshotai|qwen|google|anthropic|x-ai)\/[a-z0-9.-]+)"/g)].map((m) => m[1]));
   assert.ok(named.length >= 4);
   for (const m of named) assert.ok(priced.includes(m), m);
