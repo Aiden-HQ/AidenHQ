@@ -108,10 +108,10 @@ describe("admin sign-in (the kernel's admin listener, auth-rules) behind a front
 
   it("ignores a named address, X-Forwarded-For and CF-Connecting-IP without the front door's secret", async () => {
     const forged = (i: number) => ({ "x-aidenhq-client-ip": `10.7.0.${i}`, "x-aidenhq-edge": "not the secret", "x-forwarded-for": `10.8.0.${i}`, "cf-connecting-ip": `10.9.0.${i}` });
-    // Failures from "five addresses" are the shared peer's: held (429 until its next allowed attempt), never locked, and an
-    // address the front door names still gets in.
-    expect((await guess(OWNER, forged(0))).status).toBe(401);
-    for (let i = 1; i < 5; i++) expect((await guess(OWNER, forged(i))).status).toBe(429);
+    // Failures from "five addresses" are one unidentified peer's: two free, then held (429), and an address the front
+    // door names still gets in.
+    for (let i = 0; i < 3; i++) expect((await guess(OWNER, forged(i))).status).toBe(401);
+    for (let i = 3; i < 5; i++) expect((await guess(OWNER, forged(i))).status).toBe(429);
     expect((await call("/sign-in/email", { email: OWNER, password: PASSWORD }, forged(9))).status).toBe(429);
     expect((await call("/sign-in/email", { email: OWNER, password: PASSWORD }, from("192.0.2.45"))).json.twoFactorRedirect).toBe(true);
   });

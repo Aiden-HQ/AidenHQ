@@ -146,10 +146,26 @@ const BAN = { failures: 20, windowMs: 15 * 60_000, forMs: 3_600_000 };
 /** Per account, every address: more than 30 failures in an hour tell the owner (once an hour); nothing is locked. */
 const ALERT = { failures: 30, windowMs: 3_600_000 };
 /**
- * Unnamed (shared) peers, per email: one check in flight (a stuck one frees itself after `busyMs`), a hold after a failure of
- * at most `maxMs`, and past `ceiling` failures in an hour the owner hears once. Nothing longer: the owner arrives this way too.
+ * Unidentified peers (neither the front door's secret nor a tailnet identity): per email, one check in flight (a stuck one
+ * frees itself after `busyMs`), a stepped hold after the first `free` failures (1 s, x4 each, at most `maxMs`) and past
+ * `ceiling` failures in an hour no unnamed sign-in for that email until the hour is up (the owner hears once). Across every
+ * email: at most `inFlight` checks at once and `perMinute` failures a minute.
  */
-const UNNAMED = { maxMs: 5000, busyMs: 10_000, ceiling: 20, hourMs: 3_600_000 };
+const UNNAMED = { free: 2, maxMs: 5 * 60_000, busyMs: 10_000, ceiling: 10, hourMs: 3_600_000, inFlight: 4, perMinute: 30 };
+
+/**
+ * The tailnet identity `tailscale serve` passes on (Tailscale-User-Login), trusted only on the admin listener, from the host's
+ * loopback (where `tailscale serve` connects from), and never beside the front door's secret header (Caddy's path, which
+ * strips client copies). The gate's sign-in listener never reads it. Assumes nothing else on the host's loopback forges it:
+ * it only decides which limits apply, never who is signed in.
+ */
+export function tailnetLogin(req: Pick<IncomingMessage, "headers" | "socket">, listener: Listener): string {
+  if (listener !== "admin" || req.headers[EDGE_HEADER] !== undefined) return "";
+  const peer = String(req.socket?.remoteAddress ?? "").replace(/^::ffff:/, "");
+  if (peer !== "127.0.0.1" && peer !== "::1") return "";
+  const login = String(req.headers["tailscale-user-login"] ?? "").trim().toLowerCase();
+  return /^[\w.+@-]{1,200}$/.test(login) ? `tailnet:${login}` : "";
+}
 /** At most this many failed-sign-in alerts an hour; new-session notices are never capped (only someone who got in triggers one). */
 const ALERTS_PER_HOUR = 5;
 /** The steps a ban refuses: signing in and claiming a link. Open sessions keep working. */
@@ -169,19 +185,19 @@ export interface AuthCoreOptions {
   /** After a link is claimed (the board re-exports the gate's account map). */
   onPasswordReset?: (user: { id: string; email: string }) => void;
   log: Log;
+  /** The clock (tests). */
+  now?: () => number;
 }
 
 /** Better Auth's options for the accounts file, with the lockout, bans, alerts and TOTP rules, and the per-listener handler. */
 export function authCore(o: AuthCoreOptions) {
   const { log, db } = o;
+  const clock = o.now ?? Date.now;
   /**
    * The lockout, per email + listener + client address (memory only): 5 failed passwords or codes in 15 minutes block new
-   * sign-ins for that pair for 15 minutes. Only an address a proxy named with its secret is locked: an unnamed peer is
-   * shared (every client behind `tailscale serve` or an SSH tunnel arrives as loopback), so a lock there would let a stranger
-   * lock the owner out (the owner's own way in, `tailscale serve` or the gate, arrives the same way). There each email gets
-   * one password or code check in flight at a time and, after a failure, a hold of a few seconds (500 ms, doubling, at most
-   * 5 s); anything else is refused at once (429, Retry-After: 2, the wrong-password words, no hashing). The right password
-   * and code always get through on a retry. Past 20 failures in an hour the owner hears once; nothing more is blocked.
+   * sign-ins for that pair for 15 minutes, for a named peer: an address the front door names with its secret, or the tailnet
+   * login `tailscale serve` passes on (the owner's usual way in). An unidentified peer is shared by everyone behind it, so
+   * it has the UNNAMED limits instead: a stranger there can't hold a named peer, and gets few guesses.
    * Sessions already open stay (nobody can sign the owner out by failing on purpose).
    * The account-wide ceiling (`${email}|signin|*`) is counted and enforced only on the sign-in listener: strangers on the
    * internet can pause an account's sign-ins through the gate, never the owner's own sign-in on the admin listener.
@@ -191,6 +207,8 @@ export function authCore(o: AuthCoreOptions) {
   const lockKey = (email: string, listener: Listener | null | undefined, ip: string) => `${email}|${listener ?? "admin"}|${ip}`;
   /** Unnamed peers' failures (the last hour) and next allowed attempt, per email + listener. */
   const unnamed = new Map<string, { fails: number[]; next: number; busy: number; told: number }>();
+  /** Unnamed failures across every email, the last minute. */
+  let unnamedFails: number[] = [];
   const forget = (email: string) => {
     for (const m of [failures, locks, unnamed]) for (const k of [...m.keys()]) if (k.startsWith(`${email}|`)) m.delete(k);
   };
@@ -200,20 +218,24 @@ export function authCore(o: AuthCoreOptions) {
   const isNamed = (ctx: { headers?: Headers }) => Boolean(ctx.headers?.get(NAMED_HEADER));
   const unnamedOf = (email: string, ctx: { headers?: Headers }) => {
     const k = `${email}|${listenerOf(ctx) ?? "admin"}|unnamed`;
-    const now = Date.now();
+    const now = clock();
     const u = unnamed.get(k) ?? { fails: [], next: 0, busy: 0, told: 0 };
     u.fails = u.fails.filter((t) => now - t < UNNAMED.hourMs);
     unnamed.set(k, u);
     return u;
   };
-  const hold = (n: number) => (n ? Math.min(UNNAMED.maxMs, 500 * 2 ** (n - 1)) : 0);
+  const hold = (n: number) => (n > UNNAMED.free ? Math.min(UNNAMED.maxMs, 1000 * 4 ** (n - UNNAMED.free - 1)) : 0);
   const refuseIfLocked = async (email: string, ctx: { headers?: Headers }) => {
-    const now = Date.now();
+    const now = clock();
     const listener = listenerOf(ctx);
     if (!isNamed(ctx)) {
       const u = unnamedOf(email, ctx);
+      unnamedFails = unnamedFails.filter((t) => now - t < 60_000);
+      const busy = [...unnamed.values()].filter((x) => x.busy > now).length;
+      const until = Math.max(u.fails.length >= UNNAMED.ceiling ? u.fails[0]! + UNNAMED.hourMs : 0, u.next, u.busy > now ? now + 2000 : 0,
+        busy >= UNNAMED.inFlight ? now + 2000 : 0, unnamedFails.length >= UNNAMED.perMinute ? unnamedFails[0]! + 60_000 : 0);
       // The same words as a wrong password: a stranger learns nothing about the account from waiting.
-      if (u.busy > now || u.next > now) throw new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": "2" });
+      if (until > now) throw new APIError("TOO_MANY_REQUESTS", { message: "Invalid email or password" }, { "Retry-After": String(Math.ceil((until - now) / 1000)) });
       u.busy = now + UNNAMED.busyMs; // taken before the hash: concurrent attempts are refused, not all checked at once
       return u;
     }
@@ -313,10 +335,8 @@ export function authCore(o: AuthCoreOptions) {
       max: 200,
       storage: "memory",
       customRules: {
-        // A shared (unnamed) peer is everyone behind the front door: there the per-email guard above stands in, so a stranger
-        // can't spend the address's budget for the owner.
-        "/sign-in/email": (req) => (req.headers.get(NAMED_HEADER) ? { window: 60, max: 20 } : false),
-        "/two-factor/verify-totp": (req) => (req.headers.get(NAMED_HEADER) ? { window: 60, max: 20 } : false),
+        "/sign-in/email": { window: 60, max: 20 },
+        "/two-factor/verify-totp": { window: 60, max: 20 },
         "/two-factor/enable": { window: 60, max: 10 },
         "/reset-password": { window: 60, max: 20 },
       },
@@ -372,7 +392,7 @@ export function authCore(o: AuthCoreOptions) {
           log.info({ account: fresh.user.id }, "authenticator enrolled: other sessions ended");
         }
         const failed = returned instanceof APIError && returned.status === "UNAUTHORIZED";
-        const now = Date.now();
+        const now = clock();
         const ip = ipOf(ctx);
         const ban = failed ? banKey(ctx) : undefined;
         if (ban) {
@@ -437,10 +457,12 @@ export function authCore(o: AuthCoreOptions) {
           const u = unnamedOf(email, ctx);
           u.fails = [...u.fails, now].slice(-UNNAMED.ceiling);
           u.next = now + hold(u.fails.length);
+          unnamedFails.push(now);
           n = u.fails.length;
           if (n >= UNNAMED.ceiling && now - u.told >= UNNAMED.hourMs) {
             u.told = now;
-            alert(email, `🛡 **Sign-in attempts**: ${n} failed sign-ins for ${email} in the last hour from the shared address behind the front door. Nothing is locked; each attempt there waits a few seconds after a failure. If they aren't yours, check Settings → Accounts.`);
+            alert(email, `🛡 **Sign-in held**: ${n} failed sign-ins for ${email} in the last hour from an unidentified address, so unidentified sign-in for it is off until the hour is up. Over the tailnet, or through the front door with its client address, you still sign in. If they aren't yours, check Settings → Accounts.`);
+            log.warn({ email }, "unnamed sign-in held for the hour");
           }
         }
         if (listener === "signin") count(lockKey(email, "signin", "*"), LOCKOUT.accountFailures);
@@ -465,7 +487,7 @@ export function authCore(o: AuthCoreOptions) {
     if (a.cookie) headers.set("cookie", a.cookie);
     for (const k of [...headers.keys()]) if (k.startsWith("x-aidenhq-")) headers.delete(k);
     headers.set(LISTENER_HEADER, listener);
-    const named = a.trusted ? ipOr(req.headers[CLIENT_IP_HEADER]) : "";
+    const named = (a.trusted ? ipOr(req.headers[CLIENT_IP_HEADER]) : "") || tailnetLogin(req, listener);
     headers.set(PEER_HEADER, named || ipOr(req.socket?.remoteAddress) || "unknown");
     if (named) headers.set(NAMED_HEADER, named);
     if (a.body) headers.set("content-type", "application/json");

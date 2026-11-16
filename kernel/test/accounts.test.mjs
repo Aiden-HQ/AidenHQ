@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openAccounts } from "../src/accounts.ts";
 import { createAdmin } from "../src/admin.ts";
-import { authSecret } from "../src/auth-rules.ts";
+import { authSecret, tailnetLogin } from "../src/auth-rules.ts";
 import { accountsFile, moveAccounts } from "../src/auth-move.ts";
 import { createChannels } from "../src/channels.ts";
 import { serve } from "./helpers.mjs";
@@ -64,9 +64,9 @@ function browser(url, host = HOST, https = false, extra = {}) {
 }
 
 /** The kernel's admin listener over accounts in `dir`, with one card of the board's and one kernel record pending. */
-async function adminOn(t, dir) {
+async function adminOn(t, dir, now) {
   const notices = [];
-  const accounts = await openAccounts({ dataDir: dir, hosts: [HOST, FRONT], origins: [`https://${FRONT}`], edgeSecret: () => "edge-secret", notify: (l) => notices.push(l), log: silent });
+  const accounts = await openAccounts({ dataDir: dir, hosts: [HOST, FRONT], origins: [`https://${FRONT}`], edgeSecret: () => "edge-secret", notify: (l) => notices.push(l), log: silent, ...(now ? { now } : {}) });
   const decided = [];
   const card = (a) => ({ identifier: "WOR-7", action: "push", tier: 2, sentence: "Push the fix.", changes: "c", reads: "r", cost: "0", requestedBy: "ada", ...a });
   const board = async (method, path, body) => {
@@ -181,52 +181,54 @@ test("an invited admin's first sign-in through the front door: claim the link, s
 });
 
 // Last: its burst spends Better Auth's per-address limit for the shared loopback peer (module-wide memory) for a minute.
-test("every kernel page refuses a frame except the owner message frame (A7); a stranger's failures never lock the owner out", async (t) => {
+test("every kernel page refuses a frame (A7); unidentified guessing hits its ceiling while the owner over the tailnet signs in; a forged tailnet identity counts for nothing", async (t) => {
   const dir = boardData();
   moveAccounts(dir);
-  const { url } = await adminOn(t, dir);
+  let clock = Date.now();
+  const { url, notices } = await adminOn(t, dir, () => clock);
   const b = browser(url);
   for (const path of ["/auth/sign-in", "/auth/set-password?token=x", "/nope"]) {
     const r = await b("GET", path);
     assert.match(csp(r), /frame-ancestors 'none'/, path);
     assert.equal(r.headers["x-frame-options"], "DENY", path);
   }
-  // Behind the front door every client shares one peer (forged addresses without the front door's secret count as it), the
-  // owner included. 50 bad attempts at once get a handful of password checks, the rest an immediate 429 (Retry-After: 2);
-  // the owner, on that same peer, gets in during the attack by retrying, and again within seconds of it stopping.
-  const stranger = browser(url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.9", "x-aidenhq-edge": "forged" });
-  const named = (ip) => browser(url, HOST, false, { "x-aidenhq-client-ip": ip, "x-aidenhq-edge": "edge-secret" });
-  const retrying = async (who, step) => {
-    const until = Date.now() + 15_000;
-    for (;;) {
-      const pw = await who("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
-      if (pw.status === 303) break;
-      assert.equal(pw.status, 429, pw.html);
-      assert.ok(Date.now() < until, "the owner never got a turn");
-      await new Promise((r) => setTimeout(r, 300));
-    }
-    for (;;) {
-      const code = await who("POST", "/auth/totp", { code: totp(OWNER.b32, step) });
-      if (code.status === 303) return;
-      assert.equal(code.status, 429, code.html);
-      assert.ok(Date.now() < until, "the owner's code never got a turn");
-      await new Promise((r) => setTimeout(r, 300));
-    }
-  };
+  // The tailnet identity counts only from the host's loopback, on the admin listener, without the front door's header.
+  const req = (peer, extra = {}) => ({ headers: { "tailscale-user-login": "owner@example.com", ...extra }, socket: { remoteAddress: peer } });
+  assert.equal(tailnetLogin(req("127.0.0.1"), "admin"), "tailnet:owner@example.com");
+  assert.equal(tailnetLogin(req("198.51.100.4"), "admin"), "");
+  assert.equal(tailnetLogin(req("127.0.0.1", { "x-aidenhq-edge": "forged" }), "admin"), "");
+  assert.equal(tailnetLogin(req("127.0.0.1"), "signin"), "");
+
+  // An unidentified stranger (a forged client address and a forged tailnet login, both beside the front door's header):
+  // stepped holds, then after 10 failures in the hour no unidentified sign-in for that email, right password or not.
+  const stranger = browser(url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.9", "x-aidenhq-edge": "forged", "tailscale-user-login": "owner@example.com" });
+  for (let i = 0; i < 10; i++) {
+    clock += 301_000; // past the longest hold (5 minutes)
+    assert.equal((await stranger("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401, `failure ${i + 1}`);
+  }
+  assert.equal((await stranger("POST", "/auth/sign-in", { email: OWNER.email, password: "too-soon" })).status, 429);
+  clock += 301_000;
+  const held = await stranger("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });
+  assert.equal(held.status, 429);
+  assert.ok(Number(held.headers["retry-after"]) > 60, "held for the rest of the hour");
+  assert.match(held.html, /Invalid email or password/); // nothing said about the account
+  assert.match(notices.join("\n"), /Sign-in held.*owner@example\.com/);
+  // The owner over the tailnet (tailscale serve, from loopback, with the login it passes on) is not held by any of it.
+  const tailnet = (login) => browser(url, HOST, false, { "tailscale-user-login": login });
+  await signIn(tailnet("owner@example.com"), 0);
+
+  // A burst across many emails at once: at most a handful of password checks run (the unidentified in-flight cap), and the
+  // owner over the tailnet signs in meanwhile.
   const [burst] = await Promise.all([
-    Promise.all(Array.from({ length: 50 }, (_, i) => stranger("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` }))),
-    retrying(b, 0),
+    Promise.all(Array.from({ length: 50 }, (_, i) => b("POST", "/auth/sign-in", { email: `guess-${i}@example.com`, password: "wrong-password" }))),
+    signIn(tailnet("owner@example.com"), 1),
   ]);
   const checked = burst.filter((r) => r.status === 401).length;
-  assert.ok(checked >= 1 && checked <= 3, `${checked} password checks`);
+  assert.ok(checked <= 4, `${checked} password checks`);
   assert.equal(burst.filter((r) => r.status === 429).length, 50 - checked);
-  assert.equal(burst.find((r) => r.status === 429).headers["retry-after"], "2");
-  for (const r of burst.filter((x) => x.status === 429)) assert.match(r.html, /Invalid email or password/); // nothing said about the account
-  assert.equal((await b("GET", "/approvals")).status, 200);
-  // The attack stopped: the owner, on the same peer, is in again within the hold (at most 5 s).
-  const after = Date.now();
-  await retrying(browser(url), 1);
-  assert.ok(Date.now() - after < 7000, `${Date.now() - after} ms after the attack`);
+
+  // An address the front door names (with its secret) is locked after five failures; the owner, from another, isn't.
+  const named = (ip) => browser(url, HOST, false, { "x-aidenhq-client-ip": ip, "x-aidenhq-edge": "edge-secret" });
   const attacker = named("198.51.100.7");
   for (let i = 0; i < 5; i++) assert.equal((await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: `wrong-password-${i}` })).status, 401);
   const locked = await attacker("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw });

@@ -12,11 +12,11 @@ export type Step = { ok: boolean; status: number; retryAfter?: string; json: Rec
 export type AdminSession = { account: { id: string; email: string; name: string; role: string; owner: boolean; twoFactorEnabled: boolean }; session: { id: string }; ready: boolean };
 
 /** `origins`: the front door's origin, which a proxy may not pass on as the Host (Better Auth checks each POST's Origin). */
-export async function openAccounts(o: { dataDir: string; hosts: string[]; origins?: string[]; edgeSecret: () => string; notify: (line: string) => void; log: Log }) {
+export async function openAccounts(o: { dataDir: string; hosts: string[]; origins?: string[]; edgeSecret: () => string; notify: (line: string) => void; log: Log; now?: () => number }) {
   const dbPath = o.dataDir === ":memory:" ? ":memory:" : accountsFile(o.dataDir);
   const secret = authSecret(dbPath); // before the file exists: a fresh install makes both, an old file without its secret refuses
   const db = openAuthDb(dbPath);
-  const rules = authCore({ db, secret, hosts: o.hosts, trustedOrigins: () => o.origins ?? [], linkTtlMs: 72 * 3_600_000, notify: o.notify, log: o.log });
+  const rules = authCore({ db, secret, hosts: o.hosts, trustedOrigins: () => o.origins ?? [], linkTtlMs: 72 * 3_600_000, notify: o.notify, log: o.log, ...(o.now ? { now: o.now } : {}) });
   await (await getMigrations(rules.options)).runMigrations();
   const auth = betterAuth(rules.options);
   const https = (req: Pick<IncomingMessage, "headers">) => forwardedProto(req) === "https";

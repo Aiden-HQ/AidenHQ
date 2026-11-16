@@ -66,13 +66,16 @@ gate-facing sign-in listener (3129), app access and account administration open 
   the same email kills older ones). No email is sent. Recovery is `ops/setup.sh --reset <email>`, which sends the link
   only to the owner's chat on the owner channel and ends that account's sessions. The operator key can start setup and
   trigger resets; it never creates sessions or decides approvals.
-- **Lockout.** 5 failed sign-ins in 15 minutes pause that (email, listener, address) for 15 minutes, but only for an
-  address a proxy named with its secret; open sessions are unaffected. An unnamed peer is shared by everyone behind the
-  front door (the owner's own way in too), so it gets one password or code check in flight per email at a time and, after
-  a failure, a hold of a few seconds (500 ms, doubling, at most 5 s); anything else is refused at once (429, Retry-After: 2,
-  the wrong-password words, no hashing). The right password and code always get through on a retry; past 20 failures in an
-  hour the owner hears once, and nothing more is blocked. Better Auth's own per-address limit applies only to named
-  addresses on those steps. A 20-failure account-wide ceiling applies only on the gate-facing listener.
+- **Lockout.** A named peer is an address the front door names with its secret, or the tailnet login `tailscale serve`
+  passes on (`Tailscale-User-Login`, read only on the admin listener, only from the host's loopback and never beside the
+  front door's header; the gate's listener never reads it). 5 failed sign-ins in 15 minutes pause that (email, listener,
+  named peer) for 15 minutes; open sessions are unaffected. An unidentified peer gets hard limits instead: per email, one
+  check in flight, two free failures and then a stepped hold (1 s, x4, at most 5 minutes; 429 at once, Retry-After, the
+  wrong-password words, no hashing), and after 10 failures in an hour no unidentified sign-in for that email until the hour
+  is up (the owner hears once); across every email, at most 4 checks in flight and 30 failures a minute. Unidentified
+  failures never hold a named peer. **Assumption:** nothing on the host's loopback but `tailscale serve` sets
+  `Tailscale-User-Login` (Engineer jobs can't reach the loopback); a forged one only changes which limits apply, never who
+  is signed in. A 20-failure account-wide ceiling applies only on the gate-facing listener.
 - **Client addresses.** The address every limit counts is the socket's, unless a proxy names the client beside its
   shared secret: the gate on 3129 (`X-AidenHQ-Gate`, `gate_board_secret`; the gate itself believes CF-Connecting-IP only on
   cloudflared's unix socket, `data/gate/socket`), the front door on the board listener (`X-AidenHQ-Edge`,

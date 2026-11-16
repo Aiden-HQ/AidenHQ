@@ -47,7 +47,7 @@ describe("board accounts", () => {
       await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
       base[k] = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
     }
-  });
+  }, 30_000);
   afterAll(() => {
     for (const s of [lan, internal, signin]) s.close();
     admin.close();
@@ -176,14 +176,14 @@ describe("board accounts", () => {
     expect((await owner.call("POST", `/api/accounts/${me}/disable`)).status).toBe(403);
   });
 
-  it("holds a shared peer after wrong passwords (429, never a lock), keeps open sessions; a reset link lifts it", async () => {
+  it("holds an unidentified peer after wrong passwords (429), keeps open sessions; a reset link lifts it", async () => {
     const b = browser("admin");
     const open = browser("admin");
     expect((await open.call("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: PASSWORD })).status).toBe(200);
-    // One password check, then the shared peer waits its turn (429 at once, no hashing).
-    expect((await b.call("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: "wrong password!!" })).status).toBe(401);
-    for (let i = 0; i < 4; i++) expect((await b.call("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: "wrong password!!" })).status).toBe(429);
-    // Every client behind the front door shares this peer: it is held (429), not locked; claiming a link lifts the hold.
+    // An unidentified peer: two free failures, then a stepped hold (429 at once, no hashing).
+    for (let i = 0; i < 3; i++) expect((await b.call("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: "wrong password!!" })).status).toBe(401);
+    for (let i = 0; i < 2; i++) expect((await b.call("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: "wrong password!!" })).status).toBe(429);
+    // Held even with the right password; claiming a link lifts the hold.
     expect((await b.call("POST", "/api/auth/sign-in/email", { email: "ann@example.com", password: PASSWORD })).status).toBe(429);
     // Failing on purpose signs nobody out.
     expect((await open.on("lan").call("GET", "/api/session")).json.account?.email).toBe("ann@example.com");

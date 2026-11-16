@@ -531,8 +531,8 @@ kbinds="$(ss -Hltnp 2>/dev/null | awk -v k="pid=${kpid:-none}," 'index($0, k) {p
 [ "$(echo $kbinds)" = "10.231.0.1:3130 127.0.0.1:3120" ] && pass "kernel: the proxy listens on 10.231.0.1:3130 and the admin pages on 127.0.0.1:3120 only" || fail "kernel: listens on ${kbinds:-nothing} (want 10.231.0.1:3130 and 127.0.0.1:3120 only, plus 8201)"
 # The admin listener (lean-core 3a): every page refuses a frame, a form from another origin and a decision without a session;
 # an unknown Host is refused. A client-named address without the front door's secret is ignored (and X-Forwarded-For,
-# CF-Connecting-IP always): attempts "from six addresses" are the shared peer's, which gets one check and then a hold of a
-# few seconds (429 at once, never a lock, so a stranger can't lock the owner out); believed addresses would each be checked.
+# CF-Connecting-IP always): attempts "from six addresses" are one unidentified peer's, which gets two free failures and then
+# a stepped hold (429 at once); believed addresses would each be checked.
 ka="http://127.0.0.1:3120"
 curl -s -m 10 -D - -o /dev/null -H 'Host: 127.0.0.1:3120' "$ka/auth/sign-in" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" \
   && pass "kernel admin: pages refuse frames (frame-ancestors 'none')" || fail "kernel admin: /auth/sign-in can be framed"

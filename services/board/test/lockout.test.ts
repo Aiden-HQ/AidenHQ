@@ -65,11 +65,11 @@ describe("board accounts: the sign-in listener's lockout", () => {
     const wrong = { email: "owner@example.com", password: "wrong password!!" };
     // Without the secret a named address is ignored: five failures from "five addresses" are the shared peer's, which is
     // slowed, never locked (a lock there would lock everyone behind it out).
-    expect((await call("signin", "/.auth/api/sign-in/email", wrong, { "x-aidenhq-client-ip": "10.5.0.0", "x-aidenhq-gate": "not the secret" })).status).toBe(401);
-    for (let i = 1; i < 5; i++) expect((await call("signin", "/.auth/api/sign-in/email", wrong, { "x-aidenhq-client-ip": `10.5.0.${i}`, "x-aidenhq-gate": "not the secret" })).status).toBe(429);
+    for (let i = 0; i < 3; i++) expect((await call("signin", "/.auth/api/sign-in/email", wrong, { "x-aidenhq-client-ip": `10.5.0.${i}`, "x-aidenhq-gate": "not the secret" })).status).toBe(401);
+    for (let i = 3; i < 5; i++) expect((await call("signin", "/.auth/api/sign-in/email", wrong, { "x-aidenhq-client-ip": `10.5.0.${i}`, "x-aidenhq-gate": "not the secret" })).status).toBe(429);
     expect((await call("signin", "/.auth/api/sign-in/email", { email: "owner@example.com", password: PASSWORD }, { "x-aidenhq-client-ip": "10.5.1.1" })).status).toBe(429);
-    // 20 failures through the gate (the one above counts too) pause the account there, never on the admin listener.
-    for (let i = 0; i < 19; i++) expect((await call("signin", "/.auth/api/sign-in/email", wrong, { "x-aidenhq-client-ip": `10.6.0.${i}`, "x-aidenhq-gate": GATE_SECRET })).status).toBe(401);
+    // 20 failures through the gate (the three above count too) pause the account there, never on the admin listener.
+    for (let i = 0; i < 17; i++) expect((await call("signin", "/.auth/api/sign-in/email", wrong, { "x-aidenhq-client-ip": `10.6.0.${i}`, "x-aidenhq-gate": GATE_SECRET })).status).toBe(401);
     expect((await call("signin", "/.auth/api/sign-in/email", { email: "owner@example.com", password: PASSWORD }, { "x-aidenhq-client-ip": "10.6.1.1", "x-aidenhq-gate": GATE_SECRET })).status).toBe(403);
     expect((await call("local", "/api/auth/sign-in/email", { email: "owner@example.com", password: PASSWORD })).json.twoFactorRedirect).toBe(true);
   });
