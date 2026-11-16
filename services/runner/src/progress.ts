@@ -1,6 +1,6 @@
 // A brief naming a commit or branch that no workspace repository has never starts a job (the job watcher's progress stop is
 // the kernel's: kernel/src/progress.ts).
-import { git as taskGit } from "./git.mjs";
+import { git as taskGit } from "../../../modules/codehost-github/src/git.mjs";
 
 /** The commits and branches a brief names: `abc1234` after "commit"/"sha", or `branch` after "on/from/onto branch". */
 export function namedRefs(text: string): { shas: string[]; branches: string[] } {

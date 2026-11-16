@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { git } from "../src/git.mjs";
-import { advance, newQueue } from "../src/merges.mjs";
+import { advance } from "../src/merge-gate.mjs";
+import { newQueue } from "../../engineering/src/merge-queue.mjs";
 import { ensureRepo, keepReviewedHead, pruneReviewedRefs } from "../src/workspace.ts";
 
 const id = ["-c", "user.email=a@b", "-c", "user.name=a"];

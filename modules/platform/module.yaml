@@ -1,0 +1,10 @@
+name: platform
+description: "The product's own gate: what a change to the product repo needs (the gate's core paths, role handbooks, module and compose files by content), the owner-approval records, and the Dependabot pin-only and supply-chain rule for product merges."
+license: AGPL-3.0-only
+# A check (P5, spec §3.5) at write.filed for the code host's pushes, PRs and merges: it raises or denies, never lowers.
+# src/check.mjs; the runner calls it in-process on every git write's tier today, and the kernel dispatches it at
+# write.filed once those kinds are kernel records (lean-core 3b).
+checks:
+  - id: product-gate
+    at: write.filed
+    kinds: [ codehost-github.push, codehost-github.pr, codehost-github.merge ]

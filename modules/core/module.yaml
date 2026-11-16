@@ -8,6 +8,8 @@ requires:
   - apps-platform
   - ai-reviewer
   - models-openrouter
+  - codehost-github
+  - platform
   - grading
 settings:
   owner_name:

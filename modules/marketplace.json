@@ -38,6 +38,10 @@
       "source": "./clickhouse"
     },
     {
+      "name": "codehost-github",
+      "source": "./codehost-github"
+    },
+    {
       "name": "core",
       "source": "./core"
     },
@@ -108,6 +112,10 @@
     {
       "name": "open-loops",
       "source": "./open-loops"
+    },
+    {
+      "name": "platform",
+      "source": "./platform"
     },
     {
       "name": "primer",

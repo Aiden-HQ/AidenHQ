@@ -85,7 +85,8 @@
     "today": [
       "services/runner/test/flow-workspace.test.mjs",
       "services/runner/test/open-pr.test.mjs",
-      "services/runner/test/pr-base.test.mjs"
+      "modules/codehost-github/test/pr-base.test.mjs",
+      "modules/codehost-github/test/stale.test.mjs"
     ],
     "next": "codehost-github executor tests"
   },
@@ -95,7 +96,8 @@
     "today": [
       "services/runner/test/flow-merge-path.test.mjs",
       "services/runner/test/flow-reviewed-heads.test.mjs",
-      "services/runner/test/flow-breaker.test.mjs"
+      "services/runner/test/flow-breaker.test.mjs",
+      "modules/codehost-github/test/stale.test.mjs"
     ],
     "next": "codehost-github + engineering"
   },
@@ -104,7 +106,8 @@
     "workflow": "create_repo in agents org",
     "today": [
       "services/runner/test/tiers.test.mjs",
-      "services/runner/test/runner.test.mjs"
+      "services/runner/test/runner.test.mjs",
+      "modules/codehost-github/test/hardening.test.mjs"
     ],
     "next": "codehost-github"
   },

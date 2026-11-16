@@ -929,6 +929,23 @@ export function checkEntries(name, def) {
 
 const CARD_FIELDS = ["sentence", "changes", "reads", "cost", "details"];
 /**
+ * The module's code revision: a hash of every file under its folder (tests, docs and installed packages aside). A record
+ * keeps its executor's revision, so an executor updated between approval and execution makes it stale (lean-core A9).
+ */
+function moduleRev(root) {
+  const h = createHash("sha256");
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (["node_modules", "dist", "test"].includes(e.name) || e.name.endsWith(".md")) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile()) h.update(`${relative(root, p)}\0`).update(readFileSync(p)).update("\0");
+    }
+  };
+  walk(root);
+  return h.digest("hex").slice(0, 32);
+}
+/**
  * A module's write kinds (spec §5.2; kernel/schemas/writes.json), compiled for the kernel (config/kernel/writes.json) under
  * `<module>.<kind>`: the floor (raised by the instance's `writes.<kind>.floor`, never lowered), the panel flag, the card
  * templates, the args schema, its executor (`providers.executor`) and the tools routed into it (`connection.tool`): write or
@@ -966,7 +983,7 @@ export function writeKinds(name, def, root, instanceWrites = {}, taken = {}) {
       args = JSON.parse(readFileSync(file, "utf8"));
     }
     const floor = Math.max(w.floor, Number(instanceWrites[id]?.floor ?? 0));
-    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth } };
+    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
   }
   return out;
 }

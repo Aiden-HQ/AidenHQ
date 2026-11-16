@@ -5,11 +5,10 @@
 // cache (hardlinked objects), so they are quick and keep every write inside the workspace.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { normalizeRepo } from "./agents.mjs";
-import { readOwn } from "./files.ts";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { normalizeRepo } from "./repos.ts";
 import { SAFE_GIT_ARGS, defaultBranch, git, smallFile } from "./git.mjs";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -28,6 +27,49 @@ const MANIFEST = join(".aidenhq", "branches.json");
 export const workspacePath = (workDir: string, identifier: string) => join(workDir, "tasks", identifier);
 
 /** A refusal whose message is for the user as it stands (the runner posts it on the task). */
+/**
+ * Whether `rel` under the workspace has no symlink on the way (the parts that exist). The workspace is the agent's to write
+ * (the jail's or a box's), so a link in `.aidenhq/…` could point the runner's reads and writes at any host file.
+ */
+export function noLink(workspace: string, rel: string): boolean {
+  let p = workspace;
+  for (const part of rel.split(sep).filter(Boolean)) {
+    p = join(p, part);
+    const st = lstatSync(p, { throwIfNoEntry: false });
+    if (!st) return true;
+    if (st.isSymbolicLink()) return false;
+  }
+  return true;
+}
+
+/**
+ * A workspace file's bytes, read safely (the workspace is the agent's): its folder reached with no link and really where it
+ * should be (real path = the workspace's real path + the folder), the file opened without following a link, checked on the
+ * open descriptor (a regular file of at most `max` bytes, the same inode as the checked path) and read from it. Undefined for
+ * anything else.
+ */
+export function readOwn(workspace: string, rel: string, max = 10 * 1024 * 1024): Buffer | undefined {
+  let fd: number | undefined;
+  try {
+    if (!rel || rel.startsWith("..") || !noLink(workspace, rel)) return undefined;
+    const real = realpathSync(workspace);
+    if (realpathSync(join(workspace, dirname(rel))) !== join(real, dirname(rel))) return undefined;
+    fd = openSync(join(real, rel), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > max) return undefined;
+    const here = lstatSync(join(real, rel));
+    if (here.ino !== st.ino || here.dev !== st.dev) return undefined;
+    const buf = Buffer.alloc(st.size);
+    let n = 0;
+    for (let r; n < st.size && (r = readSync(fd, buf, n, st.size - n, n)); n += r);
+    return buf.subarray(0, n);
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 export class UserError extends Error {}
 
 /**

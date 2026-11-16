@@ -4,6 +4,7 @@ requires:
   - github
   # Any module that provides an engine (engine-codex, engine-claude, engine-opencode): the runner names one per agent.
   - engine
+  - codehost-github
 # The runner starts its Engineers' jobs through the kernel's /v1/jobs with this module's own token (engineering_token).
 roles:
   requests: [ kernel.jobs ]

@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import YAML from "yaml";
-import { classify, dependabotCommits, newGrants } from "../src/tiers.mjs";
+import { classify, newGrants } from "../src/tiers.mjs";
+import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
 import { afterReview, priorDecisions, rejectedSince, routineCap } from "../../../kernel/src/tier.ts";
 import { moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { origins } from "../src/paperclip.ts";
@@ -157,7 +158,7 @@ test("a routine's autonomy caps the tasks its run started; changing it is the ow
 
 test("product repo PRs: platform only, gate files are the owner's", () => {
   assert.equal(tierOf(pub("pr", { repo: base.productRepo }, { requester: { platform: true } })), 1);
-  assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["services/runner/src/merges.mjs"] }, { requester: { platform: true } })), "panel");
+  assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["modules/codehost-github/src/merge-gate.mjs"] }, { requester: { platform: true } })), "panel");
   assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["services/apps-mcp/src/aidenhq-sdk/caller.ts"] }, { requester: { platform: true } })), "panel");
   assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["ops/apply-config.sh"] }, { requester: { platform: true } })), "panel");
   assert.equal(tierOf(pub("pr", { repo: base.productRepo })), "reject", "any other requester");
@@ -173,7 +174,7 @@ test("product repo: branch push, PR and merge are Tier 1 for the Platform Engine
   assert.equal(tierOf(prod("push", { branch: "main" })), "reject", "the default branch");
   assert.equal(tierOf(prod("push", {}, { requester: { platform: false } })), "reject", "another agent's push stays the owner's");
   assert.equal(tierOf(prod("pr", { files: ["services/board/src/tasks.ts", "package-lock.json", "services/runner/src/prompt.mjs"] })), 1, "general code is not gate code");
-  for (const g of ["services/runner/src/tiers.mjs", "modules/ai-reviewer/service/security/policy.md", "scripts/no-shell.mjs", "services/computer/launcher.mjs", "services/computer/plugin/worker.js", "services/computer/images/engineer/Dockerfile", "services/runner/src/main.mjs", "services/runner/src/engines.mjs", "services/runner/src/state.mjs", "services/runner/src/config.mjs", "services/runner/src/github-app.mjs", "scripts/paperclip-setup.mjs", "scripts/modules.mjs", "kernel/src/gateway/lib.ts", "kernel/src/proxy.ts", "scripts/verify-security.sh", "scripts/supply-chain/npm-age.mjs", ".github/workflows/ci.yml", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/bin/engine", "kernel/sdk/src/engine-io.ts"])
+  for (const g of ["services/runner/src/tiers.mjs", "modules/ai-reviewer/service/security/policy.md", "scripts/no-shell.mjs", "services/computer/launcher.mjs", "services/computer/plugin/worker.js", "services/computer/images/engineer/Dockerfile", "services/runner/src/main.mjs", "services/runner/src/engines.mjs", "services/runner/src/state.mjs", "services/runner/src/config.mjs", "modules/codehost-github/src/github-app.ts", "modules/codehost-github/src/merge-gate.mjs", "modules/platform/src/check.mjs", "modules/engineering/src/merge-queue.mjs", "scripts/paperclip-setup.mjs", "scripts/modules.mjs", "kernel/src/gateway/lib.ts", "kernel/src/proxy.ts", "scripts/verify-security.sh", "scripts/supply-chain/npm-age.mjs", ".github/workflows/ci.yml", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/bin/engine", "kernel/sdk/src/engine-io.ts"])
     assert.equal(tierOf(prod("pr", { files: ["package.json", g] })), "panel", g);
   assert.equal(tierOf(prod("pr", { files: ["modules/fleet-ops/agents/fleet-ops/AGENTS.md"] })), 1, "a role holder's handbook");
   assert.equal(tierOf(prod("pr", { files: ["modules/slack/agents/slack-scout/AGENTS.md"] })), 1, "a handbook of an agent without a role");
@@ -190,16 +191,25 @@ test("product repo: branch push, PR and merge are Tier 1 for the Platform Engine
 
 test("the owner-approval records are the owner's tap, so no PR records its own source approval", () => {
   const f = ".github/supply-chain-source-exceptions.yaml";
-  // The file itself: a PR or merge of it is the owner's in the product repo, the agents org and anywhere else, whatever the
-  // requester's line and however green the checks are.
+  // The file on its own: a PR or merge of it is the owner's card in the product repo, the agents org and anywhere else
+  // (that card is how the owner approves a source), never lower.
   assert.equal(tierOf(prod("pr", { files: [f] })), 2);
   assert.equal(prod("pr", { files: [f] }).rule, "owner-approval-record");
   assert.equal(tierOf(pub("pr", { files: [f] })), 2, "an agents-org branch (Tier 0 otherwise)");
   assert.equal(tierOf(pub("pr", { repo: "acme/bor", files: [f] })), 2, "outside the agents org");
-  assert.equal(tierOf(merge({ repo: base.productRepo, files: [f] })), 2, "a product merge");
+  assert.equal(merge({ repo: base.productRepo, files: [f] }, P).rule, "owner-approval-record", "a product merge");
   assert.equal(tierOf(merge({ repo: "acme-agents/roadmap", files: [f] })), 2, "an agents-org merge");
-  // Another file beside it changes nothing: the whole change is still the owner's.
-  assert.equal(tierOf(prod("pr", { files: ["services/runner/package-lock.json", f] })), 2);
+  // Every other refusal still wins: another line's product write, red checks, a moved head, a default branch.
+  assert.equal(merge({ repo: base.productRepo, files: [f] }).rule, "product-merge-requester");
+  assert.equal(tierOf(merge({ repo: base.productRepo, files: [f], checks: [{ name: "t", ok: false }] }, P)), "reject", "red checks");
+  assert.equal(tierOf(merge({ repo: "acme-agents/roadmap", files: [f], headMatches: false })), "reject", "a moved head");
+  assert.equal(tierOf(pub("push", { repo: "acme/bor", branch: "main", files: [f] })), "reject", "a default branch outside the org");
+  // Bundled with any other file it is refused, so one owner tap never approves anything else.
+  for (const other of ["services/runner/package-lock.json", "README.md", "modules/codehost-github/src/plan.mjs"]) {
+    const t = prod("pr", { files: [other, f] });
+    assert.equal(tierOf(t), "reject", other);
+    assert.match(t.reason, /file the source approval on its own/);
+  }
   // The instance repo is refused before its files are read: a merge of it never becomes an owner approval.
   const instMerge = merge({ repo: base.instanceRepo, files: [f] });
   assert.equal(tierOf(instMerge), "reject", "the instance repo's merge");
@@ -213,9 +223,9 @@ test("product repo: a bump that quietly edits a gate file is the owner's", () =>
   assert.equal(t.rule, "gate-core");
   assert.match(t.reason, /review\.mjs/);
   // The gate's own core and anything that can bypass it: the panel.
-  for (const f of ["services/runner/src/git.mjs", "services/runner/src/agents.mjs", "services/runner/src/engines.mjs", "services/runner/src/workspace.mjs", "services/runner/src/files.mjs", "scripts/computers.mjs", "modules/ai-reviewer/test/reviewer-cases/01-x.json", "modules/ai-reviewer/scripts/reviewer-eval.mjs", "services/runner/src/review-request.mjs", "services/board/src/fleet.ts"]) assert.equal(tierOf(prod("pr", { files: [f] })), "panel", f);
+  for (const f of ["modules/codehost-github/src/git.mjs", "modules/codehost-github/src/plan.mjs", "services/runner/src/agents.mjs", "services/runner/src/engines.mjs", "modules/codehost-github/src/workspace.ts", "services/runner/src/files.mjs", "scripts/computers.mjs", "modules/ai-reviewer/test/reviewer-cases/01-x.json", "modules/ai-reviewer/scripts/reviewer-eval.mjs", "services/runner/src/review-request.mjs", "services/board/src/fleet.ts"]) assert.equal(tierOf(prod("pr", { files: [f] })), "panel", f);
   // The TypeScript conversion renames files in place: a gate file keeps its tier as .ts.
-  for (const f of ["services/runner/src/tiers.ts", "services/runner/src/review-request.ts", "services/runner/src/main.ts", "services/runner/src/config.ts", "services/runner/src/agents.ts", "services/runner/src/apply.ts", "kernel/src/netjail.ts", "services/runner/src/state.ts", "services/runner/src/github-app.ts", "services/runner/src/workspace.ts", "services/runner/src/files.ts", "scripts/computers.ts", "scripts/paperclip-setup.ts", "modules/ai-reviewer/scripts/reviewer-eval.ts"]) assert.equal(tierOf(prod("pr", { files: [f] })), "panel", f);
+  for (const f of ["services/runner/src/tiers.ts", "services/runner/src/review-request.ts", "services/runner/src/main.ts", "services/runner/src/config.ts", "services/runner/src/agents.ts", "services/runner/src/apply.ts", "kernel/src/netjail.ts", "services/runner/src/state.ts", "services/runner/src/files.ts", "scripts/computers.ts", "scripts/paperclip-setup.ts", "modules/ai-reviewer/scripts/reviewer-eval.ts"]) assert.equal(tierOf(prod("pr", { files: [f] })), "panel", f);
   assert.equal(tierOf(prod("pr", { files: ["services/runner/src/prompt.ts"] })), 1, "general code is not gate code as .ts either");
   // Primer publishing is the primer.publish record now: the runner's primer.ts only reads the document, general code.
   assert.notEqual(prod("pr", { files: ["services/runner/src/primer.ts"] }).rule, "product-gate");

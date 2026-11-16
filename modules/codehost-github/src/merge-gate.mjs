@@ -1,40 +1,14 @@
-// Merging approved pull requests on the user's word: the PRs a task names, one at a time,
-// a set gap apart, with CI on the base branch watched after each merge. Tier 0 merges in the agents org
-// (owner, 2026-11-12) are an independent queue instead: each PR merges on its own once green (advanceEach). Code decides everything:
-// a PR is merged only when it is open, approved, its checks are green, GitHub says it can merge and
-// the base branch is green. An approved draft is marked ready first: asking for it to be merged says
-// it's ready. Anything else stops the queue with a comment; nothing is ever forced, reverted or merged
-// as an admin. The only GitHub writes here are WRITES and READY_MUTATION below, and a stacked PR's head replayed by the
-// runner (github.rebuild: a git push leased to the approved head).
-import { isAgentSubtask } from "./agents.mjs";
-import { EVAL_WAIT_MINUTES } from "./evalgate.ts";
+// The code host's merge gate (codehost-github): how an approved merge lands. One at a time, a set gap apart, with CI on the
+// base branch watched after each merge; Tier 0 merges in the agents org (owner, 2026-11-12) are an independent queue
+// instead: each PR merges on its own once green (advanceEach). Code decides everything: a PR is merged only when it is
+// open, approved, its checks are green, GitHub says it can merge and the base branch is green. An approved draft is marked
+// ready first: asking for it to be merged says it's ready. Anything else stops the queue with a comment; nothing is ever
+// forced, reverted or merged as an admin. The only GitHub writes here are WRITES and READY_MUTATION below, and a stacked
+// PR's head replayed by the runner (github.rebuild: a git push leased to the approved head). Which PRs are queued, in what
+// order, is engineering's (modules/engineering/src/merge-queue.mjs).
 
-/**
- * Where a finished queue leaves its task: an agent's sub-task whose PRs all merged, with no other open PR of its own
- * (openPrUrls: the task's PRs not known merged), is done; the delegating agent hears it on the parent. The owner's own
- * tasks, a queue that stopped, and a task with another PR still open stay in review.
- */
-export function finishedStatus(issue, queue, openPrUrls = []) {
-  const left = openPrUrls.filter((u) => !queue.prs.some((p) => p.url.toLowerCase() === String(u).toLowerCase()));
-  return queue.state === "done" && !left.length && isAgentSubtask(issue) ? "done" : "in_review";
-}
-
-/** Pull requests named in free text, in order: links, or org/repo#n. Duplicates dropped. */
-export function findPrs(text) {
-  const out = [];
-  const re = /(?:https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+))|(?<![\w./-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#(\d+)\b/g;
-  for (const m of String(text ?? "").replace(/\\(.)/g, "$1").matchAll(re)) {
-    const [org, name, number] = m[1] ? [m[1], m[2], m[3]] : [m[4], m[5], m[6]];
-    const repo = `${org}/${name}`;
-    if (!out.some((p) => p.repo.toLowerCase() === repo.toLowerCase() && p.number === Number(number))) out.push({ repo, number: Number(number), url: `https://github.com/${repo}/pull/${number}` });
-  }
-  return out;
-}
-
-/** A new queue for the PRs, merged in the order given. */
-export function newQueue(prs, { gapMinutes, now = new Date() }) {
-  return { state: "running", gapMinutes, startedAt: now.toISOString(), prs: prs.map((p) => ({ ...p, status: "pending" })) };
-}
+/** How long a product merge waits on its reviewer-eval receipt (the runner's evalgate.ts) before giving up on that PR. */
+export const EVAL_WAIT_MINUTES = 180;
 
 export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $pullRef: String!) {
   repository(owner: $owner, name: $repo) {
@@ -82,6 +56,8 @@ export const WRITES = [
   { method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ },
   // A workflow run whose red jobs all ended on an infrastructure failure: its failed jobs re-run once (infraRetry).
   { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun-failed-jobs$/ },
+  // A workflow run over for 10 minutes with a check still pending (a ghost job): the whole run re-runs once (ghostRetry).
+  { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun$/ },
   // The head is waiting for its design review: written where the runner files and wakes that review.
   { method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/statuses\/[0-9a-f]{7,40}$/ },
 ];
@@ -445,21 +421,47 @@ async function retryInfra(github, repo, number, pr) {
   if (!r) return undefined;
   if (r.wait === "running") return { key: "running" };
   if (r.wait) return { key: "rerun", limit: RERUN_SHOWS_MINUTES };
+  return rerunChecks(github, repo, number, pr.headRefOid, r.rerun);
+}
+
+/** Re-runs the failed jobs of each check's workflow run (the whole run for a ghost), one call per run; undefined when refused (no permission). */
+async function rerunChecks(github, repo, number, head, nodes, key = "rerun") {
   const runs = new Map();
-  for (const n of r.rerun) {
+  for (const n of nodes) {
     const run = n.checkSuite.workflowRun.databaseId;
     runs.set(run, [...(runs.get(run) ?? []), { name: n.name, id: n.databaseId }]);
   }
   for (const [run, checks] of runs) {
     try {
-      await github.rerun(repo, number, { run, checks, head: pr.headRefOid });
+      await github.rerun(repo, number, { run, checks, head, whole: key === "ghost" });
     } catch {
       return undefined;
     }
   }
-  return { key: "rerun", limit: RERUN_SHOWS_MINUTES };
+  return { key, limit: RERUN_SHOWS_MINUTES };
 }
-const RERUN_WAIT = { rerun: "a check that failed for infrastructure reasons is being re-run once", running: "checks are running (one that failed for infrastructure reasons is re-run once they're done)" };
+
+/** Minutes a workflow run may be over before a check of it still pending is a ghost job (never settles by itself). */
+const GHOST_MINUTES = 10;
+/**
+ * Pending checks of the head whose workflow run (`github.run`: { status, updatedAt }) has been over for GHOST_MINUTES
+ * (Aiden-HQ/AidenHQ#141, roadmap-keeper#214): the run is re-run once per check per head, by a whole-run re-run (a ghost job isn't failed, so the failed-jobs re-run skips it). A ghost never
+ * counts as passed; if the re-run doesn't clear it, the stuck limit reports it. Undefined when no check is one.
+ */
+export async function ghostRetry(github, repo, number, pr, now) {
+  const head = pr.headRefOid;
+  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+  const reruns = (await github.reruns(repo, number)) ?? {};
+  const ghosts = [];
+  for (const n of rollup?.contexts?.pageInfo?.hasNextPage ? [] : rollup?.contexts?.nodes ?? []) {
+    const run = n.checkSuite?.workflowRun?.databaseId;
+    if (advisory(n) || n.__typename !== "CheckRun" || n.status === "COMPLETED" || !n.databaseId || !run || reruns[n.name]?.head === head) continue;
+    const r = await github.run(repo, run).catch(() => undefined);
+    if (r?.status === "completed" && now - Date.parse(r.updatedAt) > GHOST_MINUTES * 60_000) ghosts.push(n);
+  }
+  return ghosts.length ? rerunChecks(github, repo, number, head, ghosts, "ghost") : undefined;
+}
+const RERUN_WAIT = { rerun: "a check that failed for infrastructure reasons is being re-run once", ghost: "a check is pending although its workflow run is over, so the run is being re-run once", running: "checks are running (one that failed for infrastructure reasons is re-run once they're done)" };
 
 /**
  * The named checks in a status rollup, advisory ones left out, each { name, ok, pending } (tiering and reviewer-approved merges need at least one,
@@ -766,6 +768,12 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     }
     if (d.do === "stop") return stop(d.why);
     if (d.do === "wait") {
+      const ghost = d.key === "checks" ? await ghostRetry(github, next.repo, next.number, pr, t) : undefined;
+      if (ghost) {
+        const r = waitOn(next, pr, `pr:${next.number}:${pr.headRefOid}:ghost`, `#${next.number}: ${RERUN_WAIT.ghost}`, ghost.limit);
+        if (r !== "next") return r;
+        continue;
+      }
       const r = waitOn(next, pr, `pr:${next.number}:${pr.headRefOid}:${d.key ?? d.why}`, d.why, d.limit);
       if (r !== "next") return r;
       continue;
@@ -820,7 +828,6 @@ export async function advance(queue, { github, now = new Date(), timeoutMinutes 
     done: queue.state,
   };
 }
-
 
 /**
  * What to do with one PR of an independent queue (Tier 0 in the agents org, owner 2026-11-12), from GitHub's view of it and
@@ -967,7 +974,9 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
           }
         }
       } else if (d.do === "wait") {
-        wait(`${pr.headRefOid}:${d.key ?? d.why}`, d.why, d.limit, d.again);
+        const ghost = d.key === "checks" ? await ghostRetry(github, p.repo, p.number, pr, t) : undefined;
+        if (ghost) wait(`${pr.headRefOid}:ghost`, RERUN_WAIT.ghost, ghost.limit);
+        else wait(`${pr.headRefOid}:${d.key ?? d.why}`, d.why, d.limit, d.again);
       }
       else if (d.do === "ready") {
         await github.markReady(pr.id, p.repo);
@@ -1023,21 +1032,6 @@ async function advanceEach(queue, { github, now, timeoutMinutes }) {
   return { queue, say: [...out, summary(queue, headline)], done: queue.state, retier, wake, fixes, turned };
 }
 
-/**
- * An independent queue with these PRs added (their heads bound). It keeps what an earlier independent queue on the task
- * merged, skipped or reported (so its finish still closes the tasks behind them) and, while running, its pending PRs; a PR
- * asked for again (pending or failed) takes its new head. Undefined when every one was merged already.
- */
-export function addEach(existing, prs, { now = new Date() } = {}) {
-  const same = (a, b) => a.repo.toLowerCase() === b.repo.toLowerCase() && a.number === b.number;
-  const old = existing?.independent ? existing.prs : [];
-  const running = existing?.state === "running";
-  const fresh = prs.filter((p) => !old.some((o) => o.status === "merged" && same(o, p)));
-  if (!fresh.length) return undefined;
-  const kept = old.filter((o) => !fresh.some((p) => same(o, p)) && (o.status !== "pending" || running));
-  return { state: "running", independent: true, strict: true, startedAt: (running && existing.startedAt) || now.toISOString(), prs: [...kept, ...fresh.map((p) => ({ ...p, status: "pending" }))] };
-}
-
 /** The table of the queue's PRs. */
 export function summary(queue, headline) {
   const STATUS = { merged: "✅ merged", skipped: "↷ skipped", pending: "waiting", failed: "✗ not merged", escalated: "→ the owner's card" };
@@ -1055,28 +1049,3 @@ function stoppedComment(queue) {
   );
 }
 
-/** The newest queue for a task, with the user's new PRs: replaces pending ones, keeps what's merged. */
-export function startOrResume(existing, prs, { gapMinutes, now = new Date() }) {
-  if (!prs.length) {
-    if (!existing || !existing.prs.some((p) => p.status === "pending")) return undefined;
-    return { ...existing, state: "running", gapMinutes: gapMinutes ?? existing.gapMinutes, reason: undefined, wait: undefined };
-  }
-  const same = (a, b) => a.repo.toLowerCase() === b.repo.toLowerCase() && a.number === b.number;
-  // Only a merged PR (or one someone else merged: skipped) is done. A failed or escalated one asked for again is merged now.
-  const done = (existing?.prs ?? []).filter((p) => p.status === "merged" || p.status === "skipped");
-  const fresh = prs.filter((p) => !done.some((d) => same(d, p)));
-  if (!fresh.length) return undefined;
-  const q = newQueue(fresh, { gapMinutes: gapMinutes ?? existing?.gapMinutes ?? 15, now });
-  // A running queue's PRs still waiting were approved too (WOR-4611: a second merge card on the task dropped #141 from the
-  // first): they keep their place, ahead of the ones the new card adds. A stopped queue's leftovers are the agent's to name
-  // again. An independent queue's waiting PRs are requested again by the caller (requestAutoMerge), so they aren't carried.
-  const carried = existing?.state === "running" && !existing.independent ? existing.prs.filter((p) => p.status === "pending") : [];
-  // One named again takes its new head where it already stood: a card that re-names a waiting PR (a replay) must not push
-  // it behind PRs it was ahead of, or the merge it asked for waits on all of them.
-  const waiting = carried.map((p) => ({ ...(fresh.find((f) => same(f, p)) ?? p), status: "pending" }));
-  const added = fresh.filter((f) => !carried.some((p) => same(p, f))).map((p) => ({ ...p, status: "pending" }));
-  q.prs = [...done, ...waiting, ...added];
-  // Carried-over PRs keep the gating they were approved under: a strict queue's leftovers never merge on a laxer one.
-  if (carried.length && existing.strict) q.strict = true;
-  return q;
-}

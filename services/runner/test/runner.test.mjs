@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { crewNames, findRepos, mentionedRepos, normalizeRepo, parseCommand, repoAllowed, resolveEngine, useEngines } from "../src/agents.mjs";
+import { normalizeRepo } from "../../../modules/codehost-github/src/repos.ts";
+import { crewNames, findRepos, mentionedRepos, parseCommand, repoAllowed, resolveEngine, useEngines } from "../src/agents.mjs";
 import { enginesFile, registry } from "./fakes/engines.mjs";
 import { buildJob } from "../../../kernel/src/sandbox.ts";
 import { staleRoutineRuns } from "../src/recurring.ts";
@@ -664,8 +665,8 @@ describe("recurring tasks: direct pushes", async () => {
 });
 
 describe("task workspaces", async () => {
-  const { ensureRepo, findBranches, branchChanges, signUnsigned, moveOffDefault, carryOver, workspaceRepos, readManifest } = await import("../src/workspace.ts");
-  const { git } = await import("../src/git.mjs");
+  const { ensureRepo, findBranches, branchChanges, signUnsigned, moveOffDefault, carryOver, workspaceRepos, readManifest } = await import("../../../modules/codehost-github/src/workspace.ts");
+  const { git } = await import("../../../modules/codehost-github/src/git.mjs");
   const id = ["-c", "user.email=a@b", "-c", "user.name=a"];
   const setup = async () => {
     const dir = mkdtempSync(join(tmpdir(), "pw-ws-"));
@@ -710,8 +711,8 @@ describe("task workspaces", async () => {
   // A resumed task's workspace kept the empty, read-only `.git` a job's sandbox mounts over the workspace root (its mount
   // point survives the restart): the runner's own git refused every command in the task, so every clone failed.
   it("clears the empty .git a job's sandbox leaves at the workspace root, so the task clones again", async (t) => {
-    const { repairWorkspaceGit, workspaceRepos } = await import("../src/workspace.ts");
-    const { scrubFor, setUntrusted } = await import("../src/git.mjs");
+    const { repairWorkspaceGit, workspaceRepos } = await import("../../../modules/codehost-github/src/workspace.ts");
+    const { scrubFor, setUntrusted } = await import("../../../modules/codehost-github/src/git.mjs");
     const dir = mkdtempSync(join(tmpdir(), "pw-rootgit-"));
     const tasks = join(dir, "tasks");
     const ws = join(tasks, "PEN-9");
@@ -754,14 +755,14 @@ describe("task workspaces", async () => {
   // runner's git refuses the task while it is there; with the mount attached the repair refuses (an explicit, retryable
   // error); once the job's namespace is gone the empty mount point bwrap left is cleared and the task clones again.
   it("repairs a workspace whose root .git is a read-only tmpfs mount point, and reports one still attached", async (t) => {
-    const { repairWorkspaceGit } = await import("../src/workspace.ts");
+    const { repairWorkspaceGit } = await import("../../../modules/codehost-github/src/workspace.ts");
     const dir = mkdtempSync(join(tmpdir(), "pw-tmpfs-"));
     const ws = join(dir, "tasks/PEN-8");
     mkdirSync(join(ws, ".git"), { recursive: true });
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     // A host without unprivileged user namespaces can't show the mount; the repair itself is covered above.
     if (spawnSync("unshare", ["-Ur", "-m", "--", "true"]).status !== 0) return t.skip("no private mount namespace on this host");
-    const moduleUrl = new URL("../src/workspace.ts", import.meta.url).href;
+    const moduleUrl = new URL("../../../modules/codehost-github/src/workspace.ts", import.meta.url).href;
     // Inside the job's namespace the mount is there: git sees no repository, and the mount point can't be removed.
     const inside = spawnSync("unshare", ["-Ur", "-m", "--", "sh", "-c", `mount -t tmpfs -o ro,mode=555 none '${join(ws, ".git")}' && cd '${ws}' && git rev-parse --git-dir; echo "---"; ${JSON.stringify(process.execPath)} -e 'import(${JSON.stringify(moduleUrl)}).then(({ repairWorkspaceGit }) => { try { repairWorkspaceGit(process.argv[1]); console.log("removed"); } catch (err) { console.log(err.message); } })' '${ws}'`], { encoding: "utf8" });
     const output = `${inside.stdout}${inside.stderr}`;
@@ -774,7 +775,7 @@ describe("task workspaces", async () => {
   });
 
   it("never blocks on or follows what the agent plants in its clone's refs: git lists them instead", { timeout: 20_000 }, async () => {
-    const { defaultBranch } = await import("../src/git.mjs");
+    const { defaultBranch } = await import("../../../modules/codehost-github/src/git.mjs");
     const { path, commit } = await setup();
     await git(path, "switch", "-q", "-c", "feat/a");
     await commit(path, "feat: a", "a.txt");
