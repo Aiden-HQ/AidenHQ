@@ -68,6 +68,21 @@ export const policyVersion = (policy) => createHash("sha256").update(policy).dig
 export const readSourceExceptions = (text) =>
   readExceptions(text).filter((e) => String(e.approved_by ?? "").trim().toLowerCase() === "owner" && e.package && e.to);
 
+/** The contents-API path of that file at a base commit: built beside the name it reads, so the ref is always the base reviewed. */
+export const sourceExceptionsUrl = (repo, base) => `repos/${repo}/contents/${encodeURIComponent(SOURCE_EXCEPTIONS_FILE)}?ref=${encodeURIComponent(base)}`;
+
+/** A whole card's read that failed: the reviewer is told so, and gets no records rather than a guessed one. */
+export const unreadSourceExceptions = () => ({ where: `${SOURCE_EXCEPTIONS_FILE} (could not be read)`, records: [] });
+
+/** A card's source records, read from its bases by `read(repo, url)`: each keeps its repo and base, so it covers only that repo's
+ * own change off that base. A base code could not name, or a file it could not read, is no records, so no record ever passes a
+ * new source unread; `where` names only the bases read, so a card with none reads as no exception, not as a failed read. */
+export async function readCardSourceExceptions(bases, read) {
+  const known = bases.filter((b) => b.base);
+  const rows = await Promise.all(known.map((b) => read(b.repo, sourceExceptionsUrl(b.repo, b.base)).catch(() => "").then((text) => readSourceExceptions(text).map((r) => ({ ...r, repo: b.repo, base: b.base })))));
+  return { where: known.map((b) => `${b.repo} ${b.base} ${SOURCE_EXCEPTIONS_FILE}`).join("; "), records: rows.flat() };
+}
+
 /**
  * A combined diff's parts, one per `### <repo> <branch> ... base <branch>` or `### <PR url> base <branch>` heading the
  * runner writes, with the repository and the base branch each names. A heading is the only line at column 0 that starts

@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_DIFF, MAX_FILES, MODEL_CODES, diffSections, fileContext, kernelCardDiff, readSourceExceptions, review, reviewPrompt, sourcesInDiff } from "../src/review.mjs";
+import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_DIFF, MAX_FILES, MODEL_CODES, diffSections, fileContext, kernelCardDiff, readCardSourceExceptions, readSourceExceptions, review, reviewPrompt, sourcesInDiff, unreadSourceExceptions } from "../src/review.mjs";
 import { siblingBlock } from "../src/siblings.ts";
 import { REPO_ROOT } from "../src/config.mjs";
 import { padCase } from "./case-pad.mjs";
@@ -148,6 +148,30 @@ test("a source exception is a record only when it says the owner approved it, fo
   // The source a diff adds is what a record is matched on, so the reviewer is told which record the change reaches for.
   assert.deepEqual([...sourcesInDiff(records, aptSourceDiff)], [0]);
   assert.deepEqual([...sourcesInDiff(records, "+RUN apt-get install -y gh")], [], "the same package from the distro's own source reaches no new source");
+});
+
+test("the review's lookup reads the file at each base commit, and a read that fails is no records", async () => {
+  // main.mjs' cardSources is this lookup, through `gh api` on the URL it builds: never the branch under review, so a change
+  // can never record its own approval. An empty base list is no block; a failed read is no records, and says so.
+  const asked = [];
+  const read = async (repo, url) => {
+    asked.push(url);
+    if (repo === "acme/other") throw new Error("GitHub says 404");
+    return sourceFile([ghRecord]);
+  };
+  const sources = await readCardSourceExceptions([{ repo: "acme/app", base: "main" }, { repo: "acme/app", base: "" }, { repo: "acme/other", base: "release/1.2" }], read);
+  assert.deepEqual(asked, ["repos/acme/app/contents/.github%2Fsupply-chain-source-exceptions.yaml?ref=main", "repos/acme/other/contents/.github%2Fsupply-chain-source-exceptions.yaml?ref=release%2F1.2"], "one read per named base, never for a base code could not name");
+  assert.deepEqual(sources.records.map((r) => [r.package, r.repo, r.base]), [["gh", "acme/app", "main"]], "an unreadable file is no records");
+  assert.equal(sources.where, "acme/app main .github/supply-chain-source-exceptions.yaml; acme/other release/1.2 .github/supply-chain-source-exceptions.yaml");
+  assert.deepEqual(await readCardSourceExceptions([], read), { where: "", records: [] }, "no base (an apply card) reads as no exception, not a failed read");
+  assert.match(unreadSourceExceptions().where, /^\.github\/supply-chain-source-exceptions\.yaml \(could not be read\)$/, "a whole read that failed says so");
+});
+
+test("the records that lookup reads reach the reviewer as its only source exception", async () => {
+  const diff = `### acme/app fix/a (aaaaaaaaaaaa) base main\n${aptSourceDiff}`;
+  const sources = await readCardSourceExceptions([{ repo: "acme/app", base: "main" }], async () => sourceFile([ghRecord]));
+  const v = await review({ card, diff, policy: "p", sources, ask: async (_m, { user }) => (/<<<APPROVED_SOURCE_EXCEPTIONS\nacme\/app main \.github\/supply-chain-source-exceptions\.yaml\n[\s\S]*\[the diff adds this source\][\s\S]*APPROVED_SOURCE_EXCEPTIONS>>>/.test(user) ? ok : no) });
+  assert.deepEqual([v.decision, v.code], ["approve", "in_scope"]);
 });
 
 test("a record read from one base never covers a source change in another repo", async () => {

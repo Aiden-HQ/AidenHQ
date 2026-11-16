@@ -38,7 +38,7 @@ import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, state
 import { checkSignature, record } from "./breaker.ts";
 import YAML from "yaml";
 import { CODE_REJECTS, MAX_REJECTS, afterReview, autonomyCap, classify, dependabotCommits, highest, meritOwner, normalizeApp, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, reviewFirstOf, routineCap, routineCapped, sensitiveTraits } from "./tiers.mjs";
-import { LUNA, SOURCE_EXCEPTIONS_FILE, UNSURE, fileContext, kernelCardDiff, openRouterAsk, openRouterKey, readSourceExceptions, review } from "./review.mjs";
+import { LUNA, UNSURE, fileContext, kernelCardDiff, openRouterAsk, openRouterKey, readCardSourceExceptions, review, unreadSourceExceptions } from "./review.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
@@ -2495,16 +2495,14 @@ async function cardBases({ branches = [], prs = [] } = {}) {
  */
 async function cardSources(bases) {
   if (!bases.length) return undefined;
-  // A base code could not name (a merge card's unreadable PR) is never guessed: no records from it.
-  const known = bases.filter((b) => b.base);
   try {
     const gh = await findRealGh();
-    // Each record keeps the repo and base it was read from: it may only ever cover that repo's own change.
-    const read = async ({ repo, base }) => readSourceExceptions((await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${encodeURIComponent(SOURCE_EXCEPTIONS_FILE)}?ref=${encodeURIComponent(base)}`], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout).map((r) => ({ ...r, repo, base }));
-    return { where: known.map((b) => `${b.repo} ${b.base} ${SOURCE_EXCEPTIONS_FILE}`).join("; "), records: (await Promise.all(known.map((b) => read(b).catch(() => [])))).flat() };
+    // A base code could not name (a merge card's unreadable PR) is never guessed: readCardSourceExceptions skips it.
+    const read = async (repo, url) => (await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", url], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout;
+    return await readCardSourceExceptions(bases, read);
   } catch (err) {
     log("source exceptions unread", { err: String(err.message ?? err).slice(0, 200) });
-    return { where: `${SOURCE_EXCEPTIONS_FILE} (could not be read)`, records: [] };
+    return unreadSourceExceptions();
   }
 }
 
