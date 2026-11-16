@@ -3,9 +3,11 @@
 // into config/kernel/checks.json); all that match run in parallel and none sees another's verdict. Any deny refuses the
 // close and moves nothing; any reopen reopens; any hold or pending holds the task in review with the check's label and a
 // scheduled check; otherwise it passes. A check never marks a task done. Fail closed: a check that errors, answers non-2xx
-// or malformed, or takes over 10 s refuses the close. The check's module later releases its label, or resolves a hold it
-// placed (POST /v1/checks/:task).
+// or malformed, or takes over 10 s refuses the close, and so do a checks file that is missing or won't load, and a graded
+// agent's task (the grants table's `graded`) that no check covers: grading never fails open. The check's module later
+// releases its label, or resolves a hold it placed (POST /v1/checks/:task).
 import http from "node:http";
+import { readFileSync, statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 import type { Resolver } from "./net.ts";
@@ -17,13 +19,36 @@ export type Finish = { pass: true } | { pass: false; held: true; state: string; 
 type Issue = { id: string; identifier?: string; companyId?: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; labelIds?: string[]; labels?: { id: string }[]; executionPolicy?: Record<string, unknown> | null };
 const VERDICTS = ["ok", "hold", "pending", "reopen", "deny"];
 
-export function createChecks({ db, registry, owner, secret, resolver, agentKey = () => undefined, log = () => {} }: {
+/** config/kernel/checks.json, reread when it changes. Missing, unreadable or not a map throws: a load error, never "no checks". */
+export function checksFile(file: string): () => Record<string, Check> {
+  let cache: { mtimeMs: number; size: number; v: Record<string, Check> } | undefined;
+  return () => {
+    const st = statSync(file);
+    if (!cache || cache.mtimeMs !== st.mtimeMs || cache.size !== st.size) {
+      const v = JSON.parse(readFileSync(file, "utf8"));
+      if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("not a map of checks");
+      cache = { mtimeMs: st.mtimeMs, size: st.size, v };
+    }
+    return cache.v;
+  };
+}
+
+export function createChecks({ db, registry, owner, secret, resolver, agentKey = () => undefined, graded = () => false, log = () => {} }: {
   db: DatabaseSync; registry: () => Record<string, Check>; owner: Api; secret: (n: string) => string; resolver: Resolver;
   /** An agent id's key (the grants table), for a check scoped to `agents`. */
-  agentKey?: (id: string) => string | undefined; log?: (msg: string, f?: Record<string, unknown>) => void;
+  agentKey?: (id: string) => string | undefined;
+  /** Whether an agent's work is graded (the grants table): its task closes only through a check. */
+  graded?: (id: string) => boolean; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS check_holds (task TEXT NOT NULL, check_id TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (task, check_id))");
-  const finishing = () => Object.entries(registry()).filter(([, c]) => c.at === "task.finish" && c.url);
+  const finishing = () => {
+    try {
+      return Object.entries(registry()).filter(([, c]) => c.at === "task.finish" && c.url);
+    } catch (e) {
+      log("finish checks didn't load", { err: String((e as Error).message) });
+      throw fail(503, "check_failed", `grading unavailable: the finish checks didn't load (${(e as Error).message}): the task stays as it is`);
+    }
+  };
 
   async function issue(ref: string): Promise<Issue> {
     const r = await owner("GET", `/api/issues/${encodeURIComponent(ref)}`);
@@ -73,10 +98,13 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   /** The finish gate for one task: `agent` and `tool` for an agent's own close, `via` for the runner's. Throws on a deny. */
   async function finish(ref: string, caller: { agent?: string; tool?: string; via: string }): Promise<Finish> {
     const all = finishing();
-    if (!all.length) return { pass: true };
     const i = await issue(ref);
     const key = i.assigneeAgentId ? agentKey(i.assigneeAgentId) : undefined;
     const mine = all.filter(([, c]) => !c.agents?.length || (key !== undefined && c.agents.includes(key)));
+    if (!mine.length) {
+      if (i.assigneeAgentId && graded(i.assigneeAgentId)) throw fail(503, "check_failed", `grading unavailable: ${i.identifier ?? i.id}'s assignee is graded and no finish check covers it: the task stays as it is`);
+      return { pass: true };
+    }
     const task = { id: i.id, identifier: i.identifier, status: i.status, assigneeAgentId: i.assigneeAgentId ?? null, assigneeUserId: i.assigneeUserId ?? null, createdByAgentId: i.createdByAgentId ?? null, parentId: i.parentId ?? null };
     const verdicts = await Promise.all(mine.map(async ([id, c]) => ({ id, c, v: await ask(id, c, { task, agent: caller.agent ?? null, tool: caller.tool ?? null, via: caller.via }) })));
     const deny = verdicts.find((x) => x.v.verdict === "deny");

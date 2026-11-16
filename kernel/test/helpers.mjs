@@ -75,7 +75,8 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner, modules: modulesFile, log: logf });
   const brake = createBrake({ db: records.db, owner, on: () => grantsTable().loop_brake !== "off" });
   // The finish gate (checks.ts) over `checks`, config/kernel/checks.json's shape.
-  const checks = checkTable ? createChecks({ db: records.db, registry: () => checkTable, owner, secret, resolver: createResolver(), log: logf, agentKey: (id) => grants[id]?.key }) : undefined;
+  // `checks` is the table, or a function (to stand for a file that fails to load).
+  const checks = checkTable ? createChecks({ db: records.db, registry: typeof checkTable === "function" ? checkTable : () => checkTable, owner, secret, resolver: createResolver(), log: logf, agentKey: (id) => grants[id]?.key, graded: (id) => grants[id]?.graded === true }) : undefined;
   const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, owner, modules: modulesFile, boardKey: () => secret("gateway_board_key"), runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, controlUrl: cpServer.url, launcherUrl: launcher.url, checks, log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const gw = createGateway({ asCaller, dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), tools: proxy, secret });

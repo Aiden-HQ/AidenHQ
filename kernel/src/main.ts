@@ -25,7 +25,7 @@ import { createAsserter, loadKey } from "./assert.ts";
 import { createBackplane } from "./backplane.ts";
 import { createBrake } from "./brake.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
-import { createChecks, type Check } from "./checks.ts";
+import { checksFile, createChecks } from "./checks.ts";
 import { createAsCaller, createCp } from "./cp.ts";
 import { createIdentity, type Connection, type Grant, type Jobcap } from "./identity.ts";
 import { createAdvisories } from "./loader/advisories.ts";
@@ -138,7 +138,7 @@ jobs.adopt();
 // A restart: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved.
 for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
-const checks = createChecks({ db: records.db, registry: watched(path.join(configDir, "kernel", "checks.json"), (j) => j as Record<string, Check>, {}), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key });
+const checks = createChecks({ db: records.db, registry: checksFile(path.join(configDir, "kernel", "checks.json")), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true });
 const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), operatorKey: () => secret("board_operator_key") }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.

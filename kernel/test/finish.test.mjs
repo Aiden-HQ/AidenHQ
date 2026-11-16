@@ -10,7 +10,7 @@ const grants = { "ag-ada": { key: "ada", roles: [], tools: { tasks: ["task_finis
 const TASK = "11111111-1111-1111-1111-111111111111";
 
 /** A kernel with the tasks connection, one finish check answering `verdict(body)`, and a control plane holding one task. */
-async function setup(t, verdict, { agentsScope } = {}) {
+async function setup(t, verdict, { agentsScope, checks, graded = false } = {}) {
   const asked = [];
   const check = await serve(async (req, res) => {
     const body = JSON.parse((await readBody(req)) || "{}");
@@ -28,10 +28,10 @@ async function setup(t, verdict, { agentsScope } = {}) {
     return { content: [{ type: "text", text: JSON.stringify({ status: r.status, json: await r.json() }) }] };
   } });
   k = await kernel(t, {
-    agents, grants, secrets: { tasks_service_key: "tasks-key", grading_check_key: "check-key", grading_token: "grading-tok", other_token: "other-tok" },
+    agents, grants: { "ag-ada": { ...grants["ag-ada"], ...(graded ? { graded: true } : {}) } }, secrets: { tasks_service_key: "tasks-key", grading_check_key: "check-key", grading_token: "grading-tok", other_token: "other-tok" },
     connections: { tasks: conn(tasks.url, "tasks", { write: ["task_finish"] }) },
     modules: { modules: { grading: { roles: ["kernel.cp-read"], token: "grading_token" }, other: { roles: ["kernel.cp-read"], token: "other_token" } } },
-    checks: { "grading.finish": { module: "grading", at: "task.finish", url: `${check.url}/check/finish`, auth_secret: "grading_check_key", label: "grading", ...(agentsScope ? { agents: agentsScope } : {}) } },
+    checks: checks ?? ({ "grading.finish": { module: "grading", at: "task.finish", url: `${check.url}/check/finish`, auth_secret: "grading_check_key", label: "grading", ...(agentsScope ? { agents: agentsScope } : {}) } }),
     onControl: async (req, body, auth) => {
       if (req.method === "GET" && (req.url === `/api/issues/${TASK}` || req.url === "/api/issues/WOR-1")) return { body: issue };
       if (req.method === "GET" && req.url === "/api/companies/co/labels") return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-grading", name: "grading" }] };
@@ -117,4 +117,42 @@ test("/v1/checks/:task: only the check's module; release drops its label; ok and
   assert.equal((await resolve({ verdict: "ok", comment: "Graded: satisfied." })).status, 200);
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { status: "done", comment: "Graded: satisfied." } });
   assert.equal((await resolve({ verdict: "reopen" })).status, 409, "the hold was resolved once");
+});
+
+test("grading never fails open: a graded assignee's task with no check covering it, or a checks file that won't load, refuses the close", async (t) => {
+  // No finish check registered (the grading module isn't installed, or compile wrote none): an ungraded agent's close goes
+  // ahead, a graded agent's is refused and nothing moves.
+  let s = await setup(t, () => ({ verdict: "ok" }), { checks: {} });
+  assert.equal((await s.finish({ status: "done" })).status, 200);
+  s = await setup(t, () => ({ verdict: "ok" }), { checks: {}, graded: true });
+  let r = await s.finish({ status: "done" });
+  assert.equal(r.status, 503);
+  assert.match(r.json.error.message, /grading unavailable: WOR-1's assignee is graded and no finish check covers it/);
+  assert.deepEqual(s.writes, []);
+  // A check scoped to other agents covers nothing here either.
+  s = await setup(t, () => ({ verdict: "ok" }), { agentsScope: ["someone-else"], graded: true });
+  assert.equal((await s.finish({ status: "done" })).status, 503);
+  // checks.json missing or unparsable: a load error, for every close (graded or not), never "no checks".
+  s = await setup(t, () => ({ verdict: "ok" }), { checks: () => { throw new SyntaxError("Unexpected end of JSON input"); } });
+  r = await s.finish({ status: "done" });
+  assert.equal(r.status, 503);
+  assert.match(r.json.error.message, /grading unavailable: the finish checks didn't load \(Unexpected end of JSON input\)/);
+  assert.equal((await s.k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "the-runners-key")).status, 503);
+  assert.deepEqual(s.writes, []);
+});
+
+test("checksFile: a missing or unparsable file throws; a map loads and is reread when it changes", async () => {
+  const { checksFile } = await import("../src/checks.ts");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const f = join(mkdtempSync(join(tmpdir(), "checks-")), "checks.json");
+  const read = checksFile(f);
+  assert.throws(read, /ENOENT/);
+  writeFileSync(f, "{ not json");
+  assert.throws(read, SyntaxError);
+  writeFileSync(f, "[]");
+  assert.throws(read, /not a map/);
+  writeFileSync(f, JSON.stringify({ "grading.finish": { module: "grading", at: "task.finish", url: "http://grading:8096/check/finish", auth_secret: "k" } }));
+  assert.deepEqual(Object.keys(read()), ["grading.finish"]);
 });
