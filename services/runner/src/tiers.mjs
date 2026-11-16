@@ -87,6 +87,12 @@ export function coverageProblems(files, core = GATE_CORE, outside = OUTSIDE_GATE
  */
 const GATE_CODE = [/^services\/runner\/src\/primer\.(mjs|ts)$/];
 const GITHUB = /(^|\/)\.github\//;
+/**
+ * The owner-approved source exceptions (review.mjs reads them from the base). A record says `approved_by: owner`, and code
+ * cannot tell an owner's word from an agent's: only the owner's own tap on a change to this file makes a record one, so a
+ * panel-approved PR can never record its own approval.
+ */
+export const OWNER_APPROVAL_FILE = ".github/supply-chain-source-exceptions.yaml";
 /** Module agents that hold roles (besides any agent whose grants list roles). */
 const ROLE_AGENTS = new Set(["chief-of-staff", "architect", "fleet-engineer"]);
 
@@ -94,6 +100,8 @@ const T = (tier, rule, reason) => ({ tier, rule, reason });
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });
 const REJECT = (rule, reason) => ({ tier: 2, rule, reason, reject: true });
+/** A change to the owner-approval records: the owner's tap in every repo, so no PR records its own approval. */
+const OWNER_APPROVAL = (repo) => T(2, "owner-approval-record", `it changes ${repo}'s ${OWNER_APPROVAL_FILE}, which holds the owner's source approvals: only the owner's own tap makes a record one`);
 const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 const orgOf = (repo) => String(repo).split("/")[0];
 
@@ -277,6 +285,7 @@ function publishParts(action, s) {
     const inAgents = Boolean(s.agentsOrg) && same(orgOf(b.repo), s.agentsOrg);
     if (same(b.repo, s.instanceRepo)) return REJECT("instance-repo", "the instance repo changes only through apply");
     if (!Array.isArray(b.files)) return REJECT("unknown-files", `couldn't tell which files ${b.repo} \`${b.branch}\` changes; try again`);
+    if (b.files.includes(OWNER_APPROVAL_FILE)) return OWNER_APPROVAL(b.repo);
     if (same(b.repo, s.productRepo)) {
       if (action === "pr" && !s.requester?.platform) return REJECT("product-pr-requester", "only the Platform Engineer (or a task the owner or the Agent Architect made) may open PRs on the product repo");
       if (b.empty || b.branch === b.defaultBranch) return REJECT("product-default-branch", `\`${b.branch}\` is the product repo's default branch: publish a branch and open a PR`);
@@ -361,6 +370,7 @@ function checkCounts(checks) {
 function mergeParts(s) {
   return (s.prs ?? []).map((p) => {
     const ref = `${p.repo}#${p.number ?? "?"}`;
+    if (p.files?.includes(OWNER_APPROVAL_FILE)) return OWNER_APPROVAL(p.repo);
     if (same(p.repo, s.productRepo)) return productMergePart(p, ref, s);
     if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`);
     if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);

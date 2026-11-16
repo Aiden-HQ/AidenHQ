@@ -186,6 +186,20 @@ test("product repo: branch push, PR and merge are Tier 1 for the Platform Engine
   assert.equal(tierOf(pm({}, { requester: { platform: false } })), "reject", "another agent's merge");
 });
 
+test("the owner-approval records are the owner's tap, so no PR records its own source approval", () => {
+  const f = ".github/supply-chain-source-exceptions.yaml";
+  // The file itself: a PR or merge of it is the owner's in the product repo, the agents org and anywhere else, whatever the
+  // requester's line and however green the checks are.
+  assert.equal(tierOf(prod("pr", { files: [f] })), 2);
+  assert.equal(prod("pr", { files: [f] }).rule, "owner-approval-record");
+  assert.equal(tierOf(pub("pr", { files: [f] })), 2, "an agents-org branch (Tier 0 otherwise)");
+  assert.equal(tierOf(pub("pr", { repo: "acme/bor", files: [f] })), 2, "outside the agents org");
+  assert.equal(tierOf(merge({ repo: base.productRepo, files: [f] })), 2, "a product merge");
+  assert.equal(tierOf(merge({ repo: "acme-agents/roadmap", files: [f] })), 2, "an agents-org merge");
+  // Another file beside it changes nothing: the whole change is still the owner's.
+  assert.equal(tierOf(prod("pr", { files: ["services/runner/package-lock.json", f] })), 2);
+});
+
 test("product repo: a bump that quietly edits a gate file is the owner's", () => {
   const files = ["services/whisper/requirements.txt", "services/runner/package-lock.json", "services/runner/src/review.mjs"];
   const t = prod("pr", { files });
