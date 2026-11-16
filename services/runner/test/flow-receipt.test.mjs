@@ -68,6 +68,36 @@ describe("flow-receipt without a card", () => {
   it("never errors or asks for a repository along the way", () => t.noErrors());
 });
 
+describe("flow-receipt with a task whose run left no branch row", () => {
+  // PEN-4's job ended with commits but the runner kept no branch row for them (a workspace the run tidied away):
+  // `every` over nothing is true, so without a row to check it would read as published. The invitation must stay.
+  const norow = {
+    issue: { id: "part2", identifier: "PEN-4", title: "Drop Legacy from infra", status: "in_review", parentId: "parent", assigneeAgentId: "engineer-codex", assigneeUserId: null, createdByUserId: null, createdByAgentId: "assistant", labels: [], description: "" },
+    comments: [],
+  };
+  const t = flow({
+    parent: { createdByUserId: null, createdByAgentId: "assistant", assigneeUserId: "user-1" },
+    part: { createdByUserId: null, createdByAgentId: "assistant", description: "Drop Legacy support in acme/app" },
+    siblings: [norow],
+    step: "commit",
+    setup: ({ dir }) => {
+      const state = new State(join(dir, "state"));
+      const job = state.startJob("part2", "claude", join(dir, "PEN-4.log"));
+      state.finishJob(job, "done", "committed");
+      state.db.close();
+    },
+  });
+
+  it("still invites pr for it", async () => {
+    await t.waitFor("the run-end receipt", () => Boolean(receiptOf(t)));
+    const receipt = receiptOf(t);
+    assert.match(receipt, /Reply \*\*pr\*\* here to open all their PRs, or \*\*pr\*\* on a single task for just that one\./);
+    assert.doesNotMatch(receipt, /No further \*\*pr\*\* reply/);
+  });
+
+  it("never errors or asks for a repository along the way", () => t.noErrors());
+});
+
 describe("flow-receipt with a task whose PR merged at the head its run ended on", () => {
   // PEN-4 is a second Engineer sub-task on the same parent: its run ended on a commit, the PR opened for it merged at exactly
   // that commit (the run-end receipt is posted after that, when the last sibling finishes), and the queue records its head.

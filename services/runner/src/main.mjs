@@ -3897,9 +3897,11 @@ function headsOf(issueId) {
  */
 function publishedAt(issue) {
   if (CLOSED.includes(issue.status)) return true;
+  // No row or head is no evidence (`every` on nothing is true), so both are asked for first.
   const heads = headsOf(issue.id);
+  const rows = state.branches(issue.id);
   const merged = (mergeQueue(issue.id)?.prs ?? []).filter((p) => p.status === "merged");
-  return state.branches(issue.id).every((row) => {
+  return heads.length > 0 && rows.length > 0 && rows.every((row) => {
     const head = heads.find((h) => sameRepo(h.repo, row.repo) && h.branch === row.branch);
     if (!head || !((row.pr_url && row.merged) || row.closed)) return false;
     return row.closed ? row.closed_head === head.sha : merged.some((p) => sameRepo(p.repo, row.repo) && (p.head === head.sha || p.headOid === head.sha));
