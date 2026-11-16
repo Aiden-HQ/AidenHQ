@@ -32,6 +32,8 @@ type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: s
 export type RunnerPlan = {
   tier: Tier; merit?: Tier; reviewFirst?: ReviewFirst | null; panel?: boolean; reason?: string; rule?: string;
   card: Partial<Card>; targets?: { [k: string]: unknown };
+  /** A rebuild's replay of approved commits: those records (approved, on this task, a push or PR on the same target). */
+  carries?: string[];
 };
 export const CONN_TOOL = "conn.tool";
 const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
@@ -176,7 +178,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const open = records.open(task, kind, digest)[0];
     if (open) return open;
     const proposed = ([0, 1, 2].includes(plan.tier) ? plan.tier : 2) as Tier;
-    let tier = Math.max(proposed, k.floor, f.floor) as Tier;
+    // A replay of approved commits onto a new base (the runner's rebuild) is carried by those approvals, which the kernel
+    // checks: approved by the owner or the reviewer, never stale, on this task, a push or PR on exactly this target.
+    const carried = Array.isArray(plan.carries) && plan.carries.length > 0 && plan.carries.every((id) => {
+      const c = records.get(String(id));
+      return Boolean(c && c.task === task && ["runner.push", "runner.pr"].includes(c.kind) && ["approved", "claimed", "done"].includes(c.state) && c.decided_by && !c.decided_by.startsWith("stale:") && f.target && c.target === f.target);
+    });
+    let tier = Math.max(proposed, carried ? 0 : k.floor, carried ? 0 : f.floor) as Tier;
     let reviewFirst: ReviewFirst | null = plan.reviewFirst === "owner" || plan.reviewFirst === "final" ? plan.reviewFirst : null;
     let rule = plan.rule && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(plan.rule) ? plan.rule : null;
     let reason = plan.reason ?? "";
@@ -252,7 +260,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const stale = r.decided_by?.startsWith("stale:");
     await onTask.notify(r.task, stale
       ? `**Closed as stale or a duplicate** (approval ${r.id}, ${action}): not a no on the change. If it is still needed, ask again for its current state.\n\n${MARKER}`
-      : `**Rejected** (approval ${r.id}, ${action}). Don't file it again unchanged; if it isn't clear why, ask what to change.${r.card.rejected ? `\n\n${r.card.rejected}` : ""}\n\n${MARKER}`).catch(() => {});
+      : `**Rejected** (approval ${r.id}, ${action}). Don't file it again unchanged; if it isn't clear why, ask what to change.${r.card.rejected ? `\n\n${r.card.rejected.replaceAll("{{id}}", r.id)}` : ""}\n\n${MARKER}`).catch(() => {});
     const parent = stale ? undefined : await onTask.parent?.(r.task).catch(() => undefined);
     if (parent) await onTask.notify(parent, `**Rejected** on ${r.identifier ?? r.task} (approval ${r.id}, ${action}).\n\n${MARKER}`).catch(() => {});
   }
