@@ -107,8 +107,8 @@ export function fleetSummary(f: Facts, o: { window: "24h" | "7d"; blocked: Issue
 export async function gatherFacts(pc: Paperclip, store: Pick<Store, "usageDaily">, records: Pick<Records, "list">, grading: Pick<Grading, "grades">, now = Date.now()): Promise<Facts> {
   const [from, to] = [new Date(Date.parse(day(now)) - 13 * DAY).toISOString(), new Date(now + 1000).toISOString()];
   const [closed, runs, cards] = await Promise.all([pc.closedSince(from, "500"), pc.recentRuns(200), records.list("recent", { limit: 1000 })]);
-  const grades = await grading.grades(closed.filter((i) => i.status === "done").map((i) => i.id)).then((v) => v.grades, () => ({}) as Record<string, Grade>);
-  return { closed, runs, approvals: cards.filter((a) => a.createdAt > from || (a.decidedAt ?? "") > from), grades: (id) => grades[id], cost: store.usageDaily(from, to) };
+  const grades = await grading.grades(closed.filter((i) => i.status === "done").map((i) => i.id)).then((v) => v.grades, () => ({}) as Record<string, Grade | null>);
+  return { closed, runs, approvals: cards.filter((a) => a.createdAt > from || (a.decidedAt ?? "") > from), grades: (id) => grades[id] ?? undefined, cost: store.usageDaily(from, to) };
 }
 
 /** fleet_status's `summary`: the fleet in a few lists over the window (24h or 7d). */

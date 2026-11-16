@@ -123,7 +123,8 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
     if (method === "POST" && path === "/board/grades") {
       const ids = (body as { ids?: unknown })?.ids;
       if (!Array.isArray(ids) || ids.length > 500) throw new HttpError(400, "send {ids} (at most 500)");
-      return { on: await on(), grades: Object.fromEntries(ids.map((id) => [String(id), grades.get(String(id))]).filter(([, g]) => g)) };
+      // Every id asked about: its row, or null for none (the board reads an id it wasn't answered as unknown).
+      return { on: await on(), grades: Object.fromEntries(ids.map((id) => [String(id), grades.get(String(id)) ?? null])) };
     }
     if (method === "GET" && path === "/board/grades/stale") {
       await settleClosedGrades(grades, (id) => kernel.issue(id));

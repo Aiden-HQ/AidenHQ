@@ -10,7 +10,8 @@ export function fakeGrading(rows: Record<string, Partial<Grade>> = {}, o: { on?:
     down: false,
     async grades(ids: string[]) {
       if (g.down) throw new Error("grading module down");
-      return { on: g.on, grades: Object.fromEntries(ids.filter((id) => g.rows[id]).map((id) => [id, { issueId: id, state: "open", updatedAt: "2026-01-01T00:00:00.000Z", ...g.rows[id] } as Grade])) };
+      // As the module answers: every id asked about, its row or null.
+      return { on: g.on, grades: Object.fromEntries(ids.map((id) => [id, g.rows[id] ? ({ issueId: id, state: "open", updatedAt: "2026-01-01T00:00:00.000Z", ...g.rows[id] } as Grade) : null])) };
     },
     async stale() {
       if (g.down) throw new Error("grading module down");

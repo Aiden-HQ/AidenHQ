@@ -209,7 +209,7 @@ export async function rolloverTick(deps: RolloverDeps, now = Date.now()): Promis
     // A card still waiting, or decided in the last day and not yet applied: its outcome is posted on this task.
     const cards = (await records.list("recent", { task: t.id, limit: 50 })).some((a) => a.state === "pending" || (["approved", "used"].includes(a.state) && a.outcome == null && now - Date.parse(a.createdAt) < 24 * 60 * MIN));
     // A task with a grade row isn't moved; the grading module unreachable: treated as graded.
-    const graded = await deps.grading.grades([t.id]).then((v) => Boolean(v.grades[t.id]), () => true);
+    const graded = await deps.grading.grades([t.id]).then((v) => v.grades[t.id] !== null, () => true); // a row, or unknown: not moved
     if (busy.has(t.id) || cards || graded) {
       log.warn({ issue: t.identifier, size: size && estimate(size), stuck: stuck.has(t.id), busy: busy.has(t.id), cards, graded }, "rollover: task too long, not moved now");
       continue;

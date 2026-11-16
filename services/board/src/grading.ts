@@ -29,15 +29,20 @@ export interface Grade {
   createdAt: string;
   updatedAt: string;
 }
-/** `on`: the grading kill switch (false: every grade check passes); `grades`: the rows that exist, by task id. */
+/**
+ * `on`: the grading kill switch (false: every grade check passes); `grades`: every task asked about, by id: its row, or null
+ * when it has none. An id missing from `grades` is unknown (never asked, or not answered), which is never "ungraded".
+ */
 export interface GradesView {
   on: boolean;
-  grades: Record<string, Grade>;
+  grades: Record<string, Grade | null>;
 }
 export const noGrades: GradesView = { on: true, grades: {} };
 
-/** True when grading is off, the task has no row, or its row is satisfied. */
-export const gradePassed = (view: GradesView, id: string): boolean => !view.on || !view.grades[id] || view.grades[id]!.state === "satisfied";
+/** True when grading is off, the module said the task has no row, or its row is satisfied. Unknown: false (fail closed). */
+export const gradePassed = (view: GradesView, id: string): boolean => !view.on || (Object.hasOwn(view.grades, id) && (view.grades[id] === null || view.grades[id]!.state === "satisfied"));
+/** The module's answer per request: at most this many ids. */
+export const GRADES_BATCH = 500;
 
 export interface Grading {
   grades(ids: string[]): Promise<GradesView>;
@@ -58,7 +63,16 @@ export function createGrading({ url = process.env.GRADING_URL ?? "http://grading
     return (await res.json()) as T;
   }
   return {
-    grades: (ids) => (ids.length ? call("POST", "/board/grades", { ids: ids.slice(0, 500) }) : Promise.resolve(noGrades)),
+    // Every id, in batches the module takes; one failed batch fails the whole read (callers fail closed).
+    grades: async (ids) => {
+      const out: GradesView = { on: true, grades: {} };
+      for (let i = 0; i < ids.length; i += GRADES_BATCH) {
+        const v = await call<GradesView>("POST", "/board/grades", { ids: ids.slice(i, i + GRADES_BATCH) });
+        out.on &&= v.on;
+        Object.assign(out.grades, v.grades);
+      }
+      return out;
+    },
     stale: async () => (await call<{ grades: Grade[] }>("GET", "/board/grades/stale")).grades,
     settle: async (id, reason) => (await call<{ grade: Grade | null }>("POST", `/board/grades/${encodeURIComponent(id)}/settle`, { reason })).grade,
   };
