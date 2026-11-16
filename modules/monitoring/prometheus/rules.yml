@@ -57,6 +57,8 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "{{ $labels.service }}{{ $labels.unit }}{{ $labels.job }} has been down for over 5 minutes"
+      # A planned drain (scripts/fleet-pause.mjs) writes no aidenhq_unit_failed for the units it stopped
+      # (ops/host-metrics.sh), so this fires on a crash only.
       - alert: UnitFailed
         expr: aidenhq_unit_failed == 1
         for: 5m
@@ -67,6 +69,7 @@ groups:
         expr: |
           count(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}) > 0
           and sum(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}) == 0
+          and on() aidenhq_fleet_draining == 0
         for: 10m
         labels: { severity: warning }
         annotations:

@@ -145,9 +145,10 @@ test("the work script is not a second entry point: a marker with no lock on fd 9
 
 test("every script the apply runs from ops/ is 100755 in git, so a checkout runs it", () => {
   // The apply runs these by path, so a lost mode bit is an apply that stops halfway.
-  const out = execFileSync("git", ["ls-files", "-s", "ops/apply-config.sh", "ops/apply-config-work.sh", "ops/compose-recreate.sh"], { cwd: join(here, "../.."), encoding: "utf8" });
+  const scripts = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/compose-recreate.sh", "ops/ci-runner-units.sh"];
+  const out = execFileSync("git", ["ls-files", "-s", ...scripts], { cwd: join(here, "../.."), encoding: "utf8" });
   const modes = Object.fromEntries(out.trim().split("\n").map((l) => { const [mode, , , file] = l.split(/\s+/); return [file, mode]; }));
-  for (const f of ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/compose-recreate.sh"]) assert.equal(modes[f], "100755", `${f} is ${modes[f]}`);
+  for (const f of scripts) assert.equal(modes[f], "100755", `${f} is ${modes[f]}`);
 });
 
 test("a hand-over keeps the lock: the entry point reuses a held fd 9 instead of dropping and retaking it", async () => {

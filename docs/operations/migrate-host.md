@@ -289,7 +289,8 @@ cd ~/aidenhq && node scripts/fleet-pause.mjs pause
 This:
 
 - pauses every active routine in every company;
-- stops the running `aidenhq-ci-runner@*` units, so a job a runner is running gets cancelled (re-run it later);
+- drains the `aidenhq-ci-runner@*` units: an idle one is stopped at once and one running a job is waited for, so the job
+  is not cancelled under it (a job still running at the hour is stopped with the rest);
 - records both in `data/fleet-paused.json`, which the data rsync carries to the new host;
 - waits until three counts reach zero: Paperclip's live runs, the runner's running jobs and agent computers.
 
@@ -459,8 +460,9 @@ Telegram task links and the app links people have.
    node scripts/fleet-pause.mjs resume
    ```
 
-   It reactivates exactly the recorded routines and starts the recorded CI runner units, then deletes the record. Then
-   tell the owner the fleet is back.
+   It reactivates exactly the recorded routines, clears each recorded CI runner unit's start limit and starts it (a stop
+   races the unit's `Restart=always`, and five starts in ten seconds would leave it start-limited and failed), then
+   deletes the record. Then tell the owner the fleet is back.
 
 ## 9. Soak and rollback
 

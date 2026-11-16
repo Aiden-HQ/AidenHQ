@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // Drain the fleet before host maintenance or a move to another host, and bring it back afterwards.
 //   node scripts/fleet-pause.mjs pause [--timeout-minutes 60]
-//       pauses every active routine in every company, stops the running CI runner units (aidenhq-ci-runner@*), then
+//       pauses every active routine in every company, drains and stops the CI runner units (aidenhq-ci-runner@*), then
 //       waits until Paperclip's live runs, the runner's running jobs and agent computers are all zero (exit 1 on timeout;
 //       run it again to keep waiting). Event wakes (Slack, the board's wake-ups) can still start runs; it waits for those.
+//       A runner unit between jobs is stopped at once; one running a job is left to finish it, so a drain does not cancel
+//       the job under it (a job still running at the timeout is stopped with the rest).
 //   node scripts/fleet-pause.mjs resume
-//       reactivates exactly the routines and starts exactly the units pause recorded, then deletes the record.
+//       reactivates exactly the routines and starts exactly the units pause recorded, then deletes the record. Each unit's
+//       start limit is cleared first: stopping one races its Restart=always, and a start-limited unit refuses to start.
 // The record is <data dir>/fleet-paused.json, so it travels with the data dir to a new host. A second pause adds to it.
 // A routine paused this way stays paused through applies (paperclip-setup resumes only the ones it paused itself), except
 // one whose instance config sets a `status:`.
@@ -14,6 +17,19 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+/** `systemctl list-units --plain --no-legend` rows: the unit, its active state and its sub-state. */
+export function listedUnits(text) {
+  return text.split("\n").map((l) => l.trim().split(/\s+/)).filter(([u, , active]) => u && active).map(([unit, _load, active, sub]) => ({ unit, active, sub }));
+}
+
+/** Live CI runner units to stop now, and the ones running a job to wait for. Restart=always keeps an idle instance in
+ * "activating", so "active" means a job is on it; "start" is the job's own container still starting. */
+export function ciDrain(rows) {
+  const up = rows.filter((u) => ["active", "activating", "reloading"].includes(u.active));
+  const busy = up.filter((u) => u.active === "active" || u.sub === "start");
+  return { stop: up.filter((u) => !busy.includes(u)).map((u) => u.unit), wait: busy.map((u) => u.unit) };
+}
 
 /** The record after another pause: earlier entries are kept (they are paused now, so this pass didn't see them as active). */
 export function mergePaused(prev, next) {
@@ -75,14 +91,29 @@ async function main() {
       routines[company] = active.map((r) => r.id);
       console.log(`company ${company}: paused ${active.length} routines`);
     }
-    // Active or activating: with Restart=always an instance sits in "activating (auto-restart)" between jobs.
-    const units = sh("systemctl", ["--user", "list-units", "aidenhq-ci-runner@*", "--all", "--plain", "--no-legend"])
-      .split("\n").map((l) => l.trim().split(/\s+/)).filter(([u, , active]) => u && ["active", "activating", "reloading"].includes(active)).map(([u]) => u);
-    if (units.length) { execFileSync("systemctl", ["--user", "stop", ...units], { stdio: "inherit" }); console.log(`stopped ${units.join(", ")}`); }
+    // Drain: stop each idle unit at once and let one running a job finish rather than cancel it. A job still running at
+    // the timeout is stopped with the rest (the maintenance window comes first).
+    const listed = () => listedUnits(sh("systemctl", ["--user", "list-units", "aidenhq-ci-runner@*", "--all", "--plain", "--no-legend"]));
+    const units = [];
+    const stop = (names) => {
+      const fresh = names.filter((n) => !units.includes(n));
+      if (!fresh.length) return;
+      execFileSync("systemctl", ["--user", "stop", ...fresh], { stdio: "inherit" });
+      units.push(...fresh);
+      console.log(`stopped ${fresh.join(", ")}`);
+    };
+    const until = Date.now() + timeoutMs;
+    for (;;) {
+      const { stop: idle, wait } = ciDrain(listed());
+      stop(idle);
+      if (!wait.length) break;
+      if (Date.now() > until) { console.warn(`timeout: stopping ${wait.join(", ")} with a job still running`); stop(wait); break; }
+      console.log(`waiting for a CI runner unit to finish its job: ${wait.join(", ")}`);
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
     const prev = existsSync(recordPath) ? JSON.parse(readFileSync(recordPath, "utf8")) : undefined;
     writeFileSync(recordPath, JSON.stringify(mergePaused(prev, { pausedAt: new Date().toISOString(), routines, units }), null, 2) + "\n");
     console.log(`recorded in ${recordPath}; waiting for live runs, runner jobs and agent computers to reach zero`);
-    const until = Date.now() + timeoutMs;
     let last = "";
     for (;;) {
       const c = await counts();
@@ -106,8 +137,18 @@ async function main() {
       }
       console.log(`company ${company}: resumed ${ids.length} routines`);
     }
-    if (rec.units?.length) { execFileSync("systemctl", ["--user", "start", ...rec.units], { stdio: "inherit" }); console.log(`started ${rec.units.join(", ")}`); }
-    if (failed) { console.error(`${failed} routines could not be resumed; the record stays at ${recordPath}`); process.exit(1); }
+    if (rec.units?.length) {
+      // reset-failed before start: a drain's stop races each unit's Restart=always, and five starts in ten seconds hit
+      // systemd's start limit, after which `start` refuses with "Start request repeated too quickly" and the unit stays
+      // failed (which pages the fleet). Reset-failed also clears the limit; a unit that isn't failed is not an error.
+      sh("systemctl", ["--user", "reset-failed", ...rec.units]);
+      try { execFileSync("systemctl", ["--user", "start", ...rec.units], { stdio: "inherit" }); } catch { /* each unit is checked below */ }
+      // "activating" is a runner waiting for its next job (Restart=always), which is up; only failed/inactive is down.
+      const down = rec.units.filter((u) => !["active", "activating"].includes(sh("systemctl", ["--user", "is-active", u]).trim()));
+      if (down.length) { failed += down.length; console.error(`not running after start: ${down.join(", ")}`); }
+      else console.log(`started ${rec.units.join(", ")}`);
+    }
+    if (failed) { console.error(`${failed} routines or units could not be resumed; the record stays at ${recordPath}`); process.exit(1); }
     rmSync(recordPath);
     console.log("resumed");
   } else {
