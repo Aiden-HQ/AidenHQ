@@ -2462,6 +2462,15 @@ async function cardSiblings(issue, bases) {
   }
 }
 
+/**
+ * What the reviewer reads from the base, never from the branch under review: the task's merged siblings and the owner's
+ * recorded source approvals. Read once, so both the card's review and the pre-filing check see the same two blocks.
+ */
+async function cardContext(issue, target) {
+  const bases = await cardBases(target);
+  return { siblings: await cardSiblings(issue, bases), sources: await cardSources(bases) };
+}
+
 /** `fn(path, oids, out)` with GitHub's `branches` fetched into the runner's clone (their tips: `oids`); `out` is a spare ref. */
 async function withTrusted(slug, branches, fn) {
   if (!branches.every((b) => BRANCH_NAME.test(b ?? ""))) throw new Error("not a branch name");
