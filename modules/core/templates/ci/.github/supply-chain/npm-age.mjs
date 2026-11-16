@@ -58,6 +58,30 @@ export function changedEntries(prev, next) {
   return out;
 }
 
+// Whether a changed lockfile can be fully checked, one problem per reason; fail closed. changedEntries reads only the
+// `packages` map, so a lockfile it can't read, a pre-v2 one (no `packages`), or a `dependencies` tree naming something
+// `packages` doesn't back would let entries through unchecked. `text` is the file at head, or undefined when git can't show it.
+export function lockProblems(file, text) {
+  let lock;
+  try { lock = JSON.parse(text); } catch { return [`${file}: cannot be parsed as JSON, so its entries can't be age-checked`]; }
+  const v = lock?.lockfileVersion;
+  if (!(Number.isInteger(v) && v >= 2)) return [`${file}: lockfileVersion ${JSON.stringify(v)} is below 2, so its entries can't be age-checked (regenerate it with a current npm)`];
+  const pk = lock.packages;
+  if (!pk || typeof pk !== "object" || Array.isArray(pk) || !Object.keys(pk).length) return [`${file}: no \`packages\` map, so its entries can't be age-checked`];
+  const out = [];
+  const walk = (deps, prefix) => {
+    for (const [name, d] of Object.entries(deps || {})) {
+      const key = `${prefix}node_modules/${name}`;
+      const e = pk[key];
+      if (!e || typeof e !== "object") out.push(`${file}: dependencies entry ${key} has no matching packages entry`);
+      else if (d?.resolved !== undefined && d.resolved !== e.resolved) out.push(`${file}: dependencies entry ${key} resolves to ${String(d.resolved).slice(0, 80)}, not its packages entry's source`);
+      walk(d?.dependencies, `${key}/`);
+    }
+  };
+  walk(lock.dependencies, "");
+  return out.slice(0, 20);
+}
+
 const parse = (v) => {
   const [core, pre] = String(v).split("+")[0].split(/-(.+)/);
   return { n: core.split(".").map(Number), pre };
@@ -132,18 +156,21 @@ async function getJsonWithRetry(url) {
 
 const git = (...a) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 1 << 28 });
 const lockAt = (ref, path) => { try { return JSON.parse(git("show", `${ref}:${path}`)); } catch { return null; } };
+const textAt = (ref, path) => { try { return git("show", `${ref}:${path}`); } catch { return undefined; } };
 
 async function main() {
   const [base, head] = process.argv.slice(2);
   if (!base || !head) throw new Error("usage: npm-age.mjs <base-ref> <head-ref>");
   const files = git("diff", "--name-only", `${base}..${head}`).split("\n").filter((f) => /(^|\/)package-lock\.json$/.test(f));
+  // A lockfile deleted at head has nothing to check; one that is there but can't be fully read fails.
+  const structural = files.flatMap((f) => { const t = textAt(head, f); return t === undefined ? [] : lockProblems(f, t); });
   const changes = files.flatMap((f) => { const next = lockAt(head, f); return next ? changedEntries(lockAt(base, f), next) : []; });
   // Exceptions come from the base commit: a change cannot approve its own exception; it lands in a PR of its own first.
   let exText = "";
   try { exText = git("show", `${base}:.github/supply-chain-exceptions.yaml`); } catch { /* none yet */ }
   // npm's own entries only: a docker or apt entry named like an npm package must not clear it.
   const exceptions = readExceptions(exText).filter((e) => (e.ecosystem || "npm") === "npm");
-  const problems = await check({ changes, exceptions, getJson: getJsonWithRetry });
+  const problems = [...structural, ...await check({ changes, exceptions, getJson: getJsonWithRetry })];
   console.log(`checked ${new Set(changes.map((c) => `${c.name}@${c.version}`)).size} changed lockfile entries in ${files.length} lockfiles`);
   if (problems.length) { console.error(problems.join("\n")); process.exit(1); }
 }

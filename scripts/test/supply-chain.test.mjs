@@ -1,7 +1,8 @@
 // The npm 7-day rule check (scripts/supply-chain/npm-age.mjs): a fixture lockfile diff, a stubbed registry and advisory API.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { changedEntries, check } from "../supply-chain/npm-age.mjs";
+import { readFileSync } from "node:fs";
+import { changedEntries, check, lockProblems } from "../supply-chain/npm-age.mjs";
 
 const now = Date.parse("2026-11-13T00:00:00Z");
 const day = (n) => new Date(now - n * 86400000).toISOString();
@@ -69,4 +70,23 @@ test("fail closed: non-registry, mismatched or integrity-less entries are proble
   assert.equal((await probs({ packages: { "": { name: "app", bundleDependencies: ["tslib"] }, "node_modules/tslib": child } })).length, 1);
   // a parent whose name field overrides the name in its key
   assert.equal((await probs(bundled({ ...parent, name: "other-dep" }))).length, 2, "the renamed parent and its child");
+});
+
+test("npm-age fails closed on a lockfile it can't fully check, and passes the repo's real ones", () => {
+  const pkg = { "": {}, "node_modules/a": { version: "1.0.0", resolved: "https://registry.npmjs.org/a/-/a-1.0.0.tgz", integrity: "sha512-x" } };
+  const good = { lockfileVersion: 3, packages: pkg };
+  assert.deepEqual(lockProblems("package-lock.json", JSON.stringify(good)), []);
+  assert.deepEqual(lockProblems("package-lock.json", JSON.stringify({ ...good, lockfileVersion: 2, dependencies: { a: { version: "1.0.0", resolved: pkg["node_modules/a"].resolved } } })), []);
+  assert.match(lockProblems("x/package-lock.json", "{ not json")[0], /x\/package-lock.json: cannot be parsed/);
+  assert.match(lockProblems("package-lock.json", JSON.stringify({ lockfileVersion: 1, dependencies: {} }))[0], /below 2/);
+  assert.match(lockProblems("package-lock.json", JSON.stringify({ packages: pkg }))[0], /below 2/);
+  assert.match(lockProblems("package-lock.json", JSON.stringify({ lockfileVersion: 3 }))[0], /no `packages` map/);
+  assert.match(lockProblems("package-lock.json", JSON.stringify({ lockfileVersion: 2, packages: pkg, dependencies: { sneaky: { version: "1.0.0" } } }))[0], /node_modules\/sneaky has no matching packages entry/);
+  assert.match(lockProblems("package-lock.json", JSON.stringify({ lockfileVersion: 2, packages: pkg, dependencies: { a: { version: "1.0.0", resolved: "https://evil.example/a.tgz" } } }))[0], /not its packages entry's source/);
+  assert.match(lockProblems("package-lock.json", JSON.stringify({ lockfileVersion: 2, packages: pkg, dependencies: { a: { dependencies: { b: {} } } } }))[0], /node_modules\/a\/node_modules\/b has no matching/);
+  // The product's and the app starter's real lockfiles still pass.
+  const root = new URL("../../", import.meta.url);
+  for (const f of ["scripts/package-lock.json", "services/computer/images/agent-base/app-starter/package-lock.json", "modules/core/templates/app/package-lock.json"]) {
+    assert.deepEqual(lockProblems(f, readFileSync(new URL(f, root), "utf8")), [], f);
+  }
 });
