@@ -116,7 +116,18 @@ export function highest(parts) {
  */
 export function afterReview(input, v) {
   if (!input?.reviewFirst || v.decision !== "approve") return v;
-  return { ...v, decision: "escalate", code: "new_authority", reason: `The AI reviewer approved (${v.model}${v.second ? ` and ${v.second}` : ""}): ${v.reason} New module authority, so the owner decides: ${input.reason}` };
+  const [code, why] = input.autonomyOff ? ["autonomy_off", "Autonomy is off"] : ["new_authority", "New module authority"];
+  return { ...v, decision: "escalate", code, reason: `The AI reviewer approved (${v.model}${v.second ? ` and ${v.second}` : ""}): ${v.reason} ${why}, so the owner decides: ${input.reason}` };
+}
+
+/**
+ * The instance's autonomy off (lean-core decision 5: every install and update is AI-reviewed regardless): the owner decides
+ * every write, but what the reviewer reads with autonomy on it still reads first. Tier 1 becomes review-first (a reject is
+ * final; an approve goes on to the owner with the verdict); Tier 0 waits for the owner's tap. `baseTier`: the merit tier.
+ */
+export function autonomyCap(t, autonomy) {
+  if (autonomy !== "off" || t.reject || t.tier === 2) return t;
+  return t.tier === 0 ? { ...T(2, "autonomy-off", `autonomy is off (was: ${t.reason})`), baseTier: 0 } : { ...t, tier: 2, reviewFirst: true, autonomyOff: true, baseTier: 1 };
 }
 
 /**

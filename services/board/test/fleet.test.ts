@@ -52,12 +52,12 @@ describe("deploy_app files an approval for one exact commit", () => {
     const store = new Store(":memory:");
     const aiden = { id: "cos", name: "Aiden" } as Agent;
     await fleetControl(pc, aiden, ask("0123456"), store);
-    const [a] = store.approvals.pending();
+    const [a] = store.approvals.pending(Date.now(), 1);
     expect(a).toMatchObject({ digest: FULL, args: { name: "warehouse", sha: FULL } });
     expect(a!.sentence).toBe("Deploy app warehouse at 0123456789ab."); // the headline is the board's own words
     expect(a!.details).toContain("Commit message (written by the app's author): fix: the import evil"); // labelled, no bidi override
     await expect(fleetControl(pc, aiden, ask("fffffff"), store)).rejects.toThrow(/no single commit/);
-    expect(store.approvals.pending()).toHaveLength(1);
+    expect(store.approvals.pending(Date.now(), 1)).toHaveLength(1);
     // A change too large (or unreadable) to review goes back to the agent, never to the owner (2026-11-14).
     vi.stubGlobal("fetch", async (url: string) => new Response(JSON.stringify(url.endsWith("/internal/status") ? [] : { sha: FULL, subject: "x", diff: "+x", truncated: true })));
     await expect(fleetControl(pc, aiden, ask("0123456"), store)).rejects.toThrow(/too large/);
@@ -71,11 +71,11 @@ describe("deploy_app files an approval for one exact commit", () => {
     const store = new Store(":memory:");
     const aiden = { id: "cos", name: "Aiden" } as Agent;
     expect(await fleetControl(pc, aiden, ask("0123456"), store)).toMatchObject({ ok: true, reason: "already_applied" });
-    expect(store.approvals.pending()).toHaveLength(0);
+    expect(store.approvals.pending(Date.now(), 1)).toHaveLength(0);
     running = "f".repeat(40);
     await fleetControl(pc, aiden, ask("0123456"), store);
-    // Autonomy off here: the card is the owner's (tier 2), but its base tier on the merits is 1 (no migration).
-    expect(store.approvals.pending()[0]).toMatchObject({ tier: 2, baseTier: 1, requesterId: "cos", panel: false });
+    // Autonomy off here: the reviewer reads it first (tier 1; it may only escalate or reject), its base tier 1 (no migration).
+    expect(store.approvals.pending(Date.now(), 1)[0]).toMatchObject({ tier: 1, baseTier: 1, requesterId: "cos", panel: false });
   });
   it("a deploy that touches a migration or schema file is the panel's: two reviewers must approve it", async () => {
     process.env.APPS_INTERNAL_TOKEN_FILE = `${import.meta.dirname}/fixtures/apps_token`;
@@ -84,7 +84,7 @@ describe("deploy_app files an approval for one exact commit", () => {
     );
     const store = new Store(":memory:");
     await fleetControl(pc, { id: "cos", name: "Aiden" } as Agent, ask("0123456"), store);
-    const [a] = store.approvals.pending();
+    const [a] = store.approvals.pending(Date.now(), 1);
     expect(a).toMatchObject({ panel: true, baseTier: 1 });
   });
 });

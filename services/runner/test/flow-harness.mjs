@@ -167,7 +167,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       const same = open.find((a) => a.digest === digest);
       if (same) return send(same);
       for (const a of open) a.state = "expired";
-      const a = { id: `A${String(approvals.size + 1).padStart(8, "0")}`, issueId, identifier: find(b.issue).identifier, action: b.action, args: b.args, details: b.diff ?? "", digest, state: "pending", replaced: open.length > 0, baseTier: b.baseTier };
+      const a = { id: `A${String(approvals.size + 1).padStart(8, "0")}`, issueId, identifier: find(b.issue).identifier, action: b.action, args: b.args, details: b.diff ?? "", digest, state: "pending", replaced: open.length > 0, baseTier: b.baseTier, tier: b.tier ?? 2 };
       approvals.set(a.id, a);
       return send(a);
     }
@@ -218,6 +218,13 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       if (extra.length) return send({ error: extra.join(", ") }, 400);
       autos.push({ key: req.headers["x-reviewer-key"], ...b });
       return send({ state: "auto" });
+    }
+    // The reviewer's verdicts on a card, recorded only (a test decides what the board would make of them).
+    const verdict = /^\/internal\/approvals\/(A\d{8})\/review$/.exec(path);
+    if (verdict && req.method === "POST") {
+      const a = approvals.get(verdict[1]);
+      (a.verdicts ??= []).push(JSON.parse(body));
+      return send({});
     }
     const approval = /^\/internal\/approvals\/(A\d{8})\/(claim|outcome)$/.exec(path);
     if (approval) {

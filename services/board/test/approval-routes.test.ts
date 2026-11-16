@@ -185,7 +185,7 @@ describe("app_run cards", () => {
     expect((await post("/internal/apps/run-request", { ...run, command: `node a.js ${"x".repeat(500)}` }, "apps-token")).status).toBe(400);
     expect((await post("/internal/apps/run-request", { ...run, command: "node a.js\u202e && evil" }, "apps-token")).status).toBe(400);
     expect((await post("/internal/apps/run-request", { ...run, command: "node a.js\nrm -rf /" }, "apps-token")).status).toBe(400);
-    expect(store.approvals.pending()).toHaveLength(0);
+    expect(store.approvals.pending(Date.now(), 1)).toHaveLength(0);
     const filed = await post("/internal/apps/run-request", run, "apps-token");
     expect(filed.status).toBe(200);
     const a = store.approvals.get(filed.json.approval)!;
@@ -196,7 +196,10 @@ describe("app_run cards", () => {
   });
 
   it("runs once on the owner's tap; the fenced output tail lands on the card and the task", async () => {
-    const id = store.approvals.pending()[0]!.id;
+    // Autonomy off: the reviewer reads it first and may only send it on to the owner.
+    const filed = store.approvals.pending(Date.now(), 1)[0]!;
+    const id = filed.id;
+    expect(store.approvals.review(id, { digest: filed.digest, decision: "escalate", reason: "The AI reviewer approved: fine.", model: "~openai/gpt-luna-latest" }).ok).toBe(true);
     const calls: { url: string; body: any }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       calls.push({ url, body: JSON.parse(String(init.body)) });

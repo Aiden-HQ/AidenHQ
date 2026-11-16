@@ -51,9 +51,16 @@ describe("tiered approvals", () => {
   const decide = (body: object, key: string) => call("POST", "/internal/owner/approvals/decide", body, { "x-owner-key": key });
   const pendingIds = async () => (await call("GET", "/internal/approvals?state=pending", undefined, { "x-owner-key": OWNER })).json.approvals.map((a: any) => a.id);
 
-  it("off: every card is the owner's, whatever tier the runner asks for", async () => {
+  it("off: a Tier 1 card is reviewed first; the reviewer may escalate it to the owner or reject it, never approve it", async () => {
     setAutonomy("off");
-    expect((await file(1)).tier).toBe(2);
+    expect((await file(2)).tier).toBe(2);
+    const one = await file(1);
+    expect(one.tier).toBe(1);
+    expect((await verdict(one.id, { digest: one.digest, decision: "approve" })).status).toBe(409);
+    expect((await verdict(one.id, { digest: one.digest, decision: "escalate", reason: "The AI reviewer approved: fine." })).json).toMatchObject({ tier: 2, review: "The AI reviewer approved: fine." });
+    expect(await pendingIds()).toContain(one.id);
+    const two = await file(1, "pr");
+    expect((await verdict(two.id, { digest: two.digest, decision: "reject", reason: "out of scope" })).json).toMatchObject({ state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest" });
   });
 
   it("only the runner's key files a card or records a Tier 0 run; the internal token alone does neither", async () => {
@@ -93,6 +100,7 @@ describe("tiered approvals", () => {
     setAutonomy("tier0");
     const one = await file(1);
     expect((await verdict(one.id, { digest: one.digest, decision: "approve" })).status).toBe(409);
+    expect((await verdict(one.id, { digest: one.digest, decision: "reject" })).status).toBe(409);
     expect((await verdict(one.id, { digest: one.digest, decision: "escalate", reason: "shadow: would approve" })).json).toMatchObject({ tier: 2, review: "shadow: would approve" });
     expect(await pendingIds()).toContain(one.id);
     expect((await decide({ id: one.id, decision: "reject" }, OWNER)).json).toMatchObject({ state: "rejected", decidedBy: "owner:telegram" });

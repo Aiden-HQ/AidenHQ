@@ -16,6 +16,8 @@ describe("flow-approvals", () => {
     it("files the rebase's push and the merges as approval cards: nothing goes out until the tap, then each runs once", async () => {
       await settled();
       await publish();
+      // The merge is tiered with autonomy off too (its card is review-first when Tier 1): GitHub reads PR #1.
+      writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 1: { branch: "fix/remove-legacy", files: ["legacy.txt"], checks: "SUCCESS" } }));
       step("none");
       await turn("Here's the order: 1. https://github.com/acme/app/pull/1");
       const before = githubTip();

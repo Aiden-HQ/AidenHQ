@@ -125,7 +125,7 @@ const ApprovalRequestSchema = z
     args: z.unknown(),
     /** apply only: the diff the runner showed; it rechecks it against the approved commit before landing. */
     diff: z.string().max(64_000).default(""),
-    /** The runner's tier: 1 (the reviewer's) or 2 (the owner's); 2 when absent, and always 2 while autonomy is off. */
+    /** The runner's tier: 1 (the reviewer's first) or 2 (the owner's); 2 when absent. */
     tier: z.union([z.literal(1), z.literal(2)]).default(2),
     reason: z.string().max(1000).default(""),
     /** classify()'s tier on the request's merits, before the autonomy override (batch approvals); absent when unknown. */
@@ -1067,8 +1067,8 @@ export function createApp(opts: AppOptions): Server {
         if (["cancelled", "done"].includes(task.status)) throw new HttpError(409, `the task is ${task.status}`);
         // "From" on the card is the task's agent, looked up here; never the caller's text.
         const from = engineer ? engineer.name : "an Engineer";
-        // Tier 1 only while autonomy is on: off means every card is the owner's, as before.
-        const tier = autonomy() === "off" ? 2 : b.tier;
+        // The runner's tier as filed: with autonomy off a Tier 1 card is review-first (the reviewer may only escalate or reject it).
+        const tier = b.tier;
         // The requester is the task's agent, looked up here; the base tier is the runner's classify() (its key filed this).
         const a = store.approvals.request({ issueId: task.id, identifier: task.identifier, action: b.action, args, requestedBy: from, tier, reason: b.reason, requesterId: task.assigneeAgentId ?? null, baseTier: b.baseTier ?? null, reasonCode: b.rule ?? null, panel: b.panel === true, ...card(b.action, args, b.action === "apply" ? b.diff : "") });
         log.info({ approval: a.id, task: a.identifier, action: a.action, replaced: a.replaced, tier: a.tier, baseTier: a.baseTier, code: a.reasonCode }, "approval requested");
@@ -1108,14 +1108,16 @@ export function createApp(opts: AppOptions): Server {
     },
     {
       // The AI reviewer's verdict on a Tier 1 card, from the runner with its own key (reviewer_key), which agents never
-      // hold. Only a pending Tier 1 record whose digest matches; approve/reject only while autonomy is full (tier0: it may only
-      // escalate, with its would-be verdict as the note). decided_by is `reviewer:<model>`, from the key and an allowed model.
+      // hold. Only a pending Tier 1 record whose digest matches; approve only while autonomy is full (tier0: it may only
+      // escalate, with its would-be verdict as the note; off: escalate or reject, the owner deciding the rest). decided_by is
+      // `reviewer:<model>`, from the key and an allowed model.
       method: "POST",
       path: /^\/internal\/approvals\/(A[0-9a-f]{8})\/review$/,
       handle: async (m, body, _u, req) => {
         if (!runnerKeyed(req)) throw new HttpError(403, "only the reviewer decides Tier 1");
         const b = parse(ReviewSchema, body);
-        if (b.decision !== "escalate" && autonomy() !== "full") throw new HttpError(409, "autonomy isn't full: the reviewer may only escalate");
+        if (b.decision === "approve" && autonomy() !== "full") throw new HttpError(409, "autonomy isn't full: the reviewer may not approve");
+        if (b.decision === "reject" && autonomy() === "tier0") throw new HttpError(409, "autonomy is tier0: the reviewer may only escalate");
         const r = store.approvals.review(m[1]!, b);
         if (r.ok && b.decision === "escalate") {
           log.info({ approval: r.approval.id, task: r.approval.identifier, model: b.model, code: b.code }, "approval escalated by the reviewer");

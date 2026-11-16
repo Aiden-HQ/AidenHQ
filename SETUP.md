@@ -366,7 +366,8 @@ New agents come from the **Agent Architect**. Open the board's Agents tab and pr
    design in plain words: what it does, what it can read, what it may change later, its schedule. Press
    **Build it**.
 2. The Platform Engineer writes the change. **Tap 1** creates the agent **in trial**: it can only read and report.
-   With the default `autonomy: off` this is an approval card on the board's Approvals page (and in Telegram). Other
+   With the default `autonomy: off` this is an approval card on the board's Approvals page (and in Telegram), after the
+   AI reviewer has read it when it is Tier 1. Other
    `autonomy` settings let some changes apply without you: see [docs/design/approvals.md](docs/design/approvals.md).
 3. The Architect reviews its work during the trial and fixes its handbook. After it passes your examples and two
    clean batches of real work, the Architect proposes graduation.
