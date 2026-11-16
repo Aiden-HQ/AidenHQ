@@ -94,6 +94,10 @@
       "source": "./meetings"
     },
     {
+      "name": "models-openrouter",
+      "source": "./models-openrouter"
+    },
+    {
       "name": "monitoring",
       "source": "./monitoring"
     },

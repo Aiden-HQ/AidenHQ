@@ -329,6 +329,23 @@ function resolveEnabled(all, wanted) {
 const agentsOrg = (settings) => settings.github_agents_org || (settings.instance_name ? `aidenhq-${settings.instance_name}` : "");
 
 /**
+ * config/gateway.json `models`, by id: every enabled module's `models:` entries (spec §5.12). USD per million tokens, each the
+ * least a provider charges; peak (>= 1) the most a call can cost as a multiple of them; max_output the most output tokens.
+ */
+export function modelPrices(defs) {
+  const out = {};
+  for (const [name, def] of Object.entries(defs)) {
+    for (const m of def.models ?? []) {
+      const ok = typeof m?.id === "string" && m.id && ["in", "cached_in", "out"].every((k) => Number.isFinite(m[k]) && m[k] >= 0) && (m.peak ?? 1) >= 1 && Number.isInteger(m.max_output) && m.max_output > 0;
+      if (!ok) fail(`${name}: models entries are {id, in, cached_in, out (USD per million tokens), max_output, peak?}`);
+      if (out[m.id]) fail(`${name}: model ${m.id} is priced twice`);
+      out[m.id] = { in: m.in, cached_in: m.cached_in, out: m.out, peak: m.peak ?? 1, max_output: m.max_output };
+    }
+  }
+  return out;
+}
+
+/**
  * The gateway's CI code review switches (config/gateway.json `ci`, kernel/src/gateway/ci.ts): only the agents org's app repos;
  * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped).
  */
@@ -777,8 +794,12 @@ export function compile(productDir, instanceDir, { revision } = {}) {
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
   // A runner agent's engine (after the overrides that may set it, and its image) is one an enabled module provides.
   for (const [key, a] of Object.entries(paperclip.agents)) if (a.dispatch === "runner" && a.engine && !engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);
-  // The model gateway's switches (config/gateway.json, re-read per call): spend_caps off stops refusals, tracking stays.
-  const gateway = { enforce_caps: String(settings.spend_caps ?? "on") !== "off", ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}) };
+  // The model gateway's prices and CI review (config/gateway.json, re-read per call).
+  const gateway = { models: modelPrices(enabledDefs), ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}) };
+  const named = [...Object.entries(paperclip.agents).flatMap(([key, a]) => grantEntry(key, a, paperclip.routines).models), ...(gateway.ci?.models ?? [])];
+  // Checked once some module prices models (core requires models-openrouter); with none, the gateway refuses every call.
+  const unpriced = Object.keys(gateway.models).length ? [...new Set(named.filter((m) => !gateway.models[m]))] : [];
+  if (unpriced.length) fail(`no declared price for ${unpriced.join(", ")} (a module's models:, e.g. modules/models-openrouter): the gateway refuses a model it can't price`);
   // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });

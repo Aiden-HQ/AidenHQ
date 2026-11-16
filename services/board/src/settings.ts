@@ -88,8 +88,6 @@ export interface Sources {
   grants: Grants | null;
   /** The last line of the grants table's revs.jsonl: the last applied change to any agent. */
   lastRev: { at?: string; product_sha?: string; instance_sha?: string } | null;
-  /** The model gateway's /health `enforcing`; null when it can't be asked. */
-  enforcing: boolean | null;
   /** FLEET_OPS_AUTOPAUSE in the board's environment (fleet-ops module), if set. */
   autopause?: string;
   boardTimezone: string;
@@ -125,18 +123,14 @@ export function settingsView(s: Sources) {
     .map((k) => {
       const d = defs.get(k);
       const e = effective[k];
-      // What the running system reads now, where the board can see it: the grants table, or the gateway for spend_caps.
+      // What the running system reads now, where the board can see it: the grants table.
       // health_autopause: the board's own environment (fleet-ops compose), set at the last apply.
       const live =
         LIVE_IN_GRANTS.includes(k) && s.grants && typeof s.grants[k] === "string"
           ? (s.grants[k] as string)
-          : k === "spend_caps" && s.enforcing !== null
-            ? s.enforcing
-              ? "on"
-              : "off"
-            : k === "health_autopause" && s.autopause
-              ? s.autopause
-              : undefined;
+          : k === "health_autopause" && s.autopause
+            ? s.autopause
+            : undefined;
       return {
         key: k,
         module: d?.module ?? "instance",
@@ -196,7 +190,7 @@ export function settingsView(s: Sources) {
     // What the Agents page offers: the heartbeat hours compile accepts, and every model already in use (a datalist).
     choices: { heartbeatHours: HEARTBEAT_HOURS, models: [...new Set([...Object.values(c.agents ?? {}).flatMap((a) => [a.model, ...(a.models ?? [])]), ...Object.values(c.routines ?? {}).map((r) => r.model)].filter((m): m is string => Boolean(m)))].sort() },
     approvals: { pending: s.pendingApprovals },
-    spend: { enforcing: s.enforcing, defaults: CAPS, pendingRaises: s.pendingRaises },
+    spend: { defaults: CAPS, pendingRaises: s.pendingRaises },
   };
 }
 

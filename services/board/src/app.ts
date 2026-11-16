@@ -1578,23 +1578,10 @@ export function createApp(opts: AppOptions): Server {
 
   const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
 
-  /** The model gateway's /health `enforcing` (spend_caps as the gateway reads it), or null when it doesn't answer. */
-  async function gatewayEnforcing(): Promise<boolean | null> {
-    if (!opts.gateway) return null;
-    try {
-      const r = await fetch(`${opts.gateway.url}/health`, { signal: AbortSignal.timeout(3000) });
-      const j = (await r.json()) as { enforcing?: unknown };
-      return typeof j.enforcing === "boolean" ? j.enforcing : null;
-    } catch {
-      return null;
-    }
-  }
-
   async function settingsData() {
     const pending = store.approvals.pending();
     return settingsView({
       ...readSources(settingsFiles()),
-      enforcing: await gatewayEnforcing(),
       autopause: process.env.FLEET_OPS_AUTOPAUSE || undefined,
       boardTimezone: opts.timezone,
       pendingRaises: pending.filter((a) => a.action === "raise_cap").length,
