@@ -173,7 +173,7 @@ export function createSigninServer(o: { accounts: Accounts; hosts: string[]; gat
       if (path === "/.auth/api/sign-out" && req.method === "POST") await o.accounts.endHandedOff(req);
       if (path.startsWith("/.auth/api/") && BETTER_AUTH.has(path.slice("/.auth/api".length)))
         // Better Auth sees the listener's own host; the browser's Origin (the sign-in host) is one of its trusted origins.
-        return await o.accounts.handle(req, res, path.slice("/.auth/api".length), "signin", url.search, o.hosts[0]);
+        return await o.accounts.handle(req, res, path.slice("/.auth/api".length), url.search, o.hosts[0]);
       if (req.method !== "GET") return json(res, path.startsWith("/.auth/api/") ? 404 : 405, { error: path.startsWith("/.auth/api/") ? "not found" : "method not allowed" });
       const form = FORMS[path as keyof typeof FORMS];
       if (form) return text(res, 200, page(form[0], form[1], safeNext(url.searchParams.get("next"))), "text/html; charset=utf-8");

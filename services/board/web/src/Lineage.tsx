@@ -117,7 +117,7 @@ export function LineageStrip({ refId, title, agent, crew, prefix, href, onSignIn
         <td colSpan={9}>
           <ul className="approval-list">
             {r.approvals.map((a) => (
-              <ApprovalCard key={a.id} a={a} open={(id) => (location.hash = href(id))} decided={load} inline unfold prefix={prefix} />
+              <ApprovalCard key={a.id} a={a} open={(id) => (location.hash = href(id))} inline unfold prefix={prefix} />
             ))}
           </ul>
         </td>

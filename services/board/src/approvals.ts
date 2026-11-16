@@ -378,56 +378,6 @@ const toApproval = (r: Row): Approval => ({
   reviewFirst: (r.review_first as ReviewFirst | null) ?? null,
 });
 
-/** One card as the owner saw it in a batch: its id and the digest of exactly what it runs. */
-export type BatchItem = { id: string; digest: string };
-/** The most cards one batch decides (the board's multiselect and a Telegram list). */
-export const BATCH_MAX = 10;
-export const BatchItemsSchema = z
-  .array(z.object({ id: z.string().regex(/^A[0-9a-f]{8}$/), digest: z.string().regex(/^[0-9a-f]{40}$/) }).strict())
-  .min(1)
-  .max(BATCH_MAX)
-  .refine((xs) => new Set(xs.map((x) => x.id)).size === xs.length, "each card once");
-export type BatchResult = { ok: true; approvals: Approval[] } | { ok: false; reason: string };
-
-/**
- * The instance's `batch_approvals` setting (grants table, read per use): off is the kill switch; every card is then decided
- * on its own, as before.
- */
-export function batchesOn(grantsFile = process.env.AIDENHQ_GRANTS_FILE): boolean {
-  try {
-    return JSON.parse(readFileSync(grantsFile ?? "", "utf8"))?.batch_approvals !== "off";
-  } catch {
-    return true;
-  }
-}
-
-/** How a candidate card is named in a reply: its id, action and distinguishing target. */
-const describeCard = (a: Approval) => `${a.id} (${a.action}) ${a.target || "no target"}`;
-
-/**
- * Whether a typed selector names this card: its id, one of a merge's PR URLs or numbers, or its target (repo and branch).
- * A PR selector only matches a merge card, so "#10" can't match an unrelated target.
- */
-function selectedBy(a: Approval, selector: string): boolean {
-  const s = selector.trim().toLowerCase();
-  if (!s) return false;
-  if (/^a[0-9a-f]{8}$/i.test(s)) return a.id.toLowerCase() === s;
-  const url = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)$/i.exec(s);
-  const repoPr = /^([\w.-]+\/[\w.-]+)#(\d+)$/i.exec(s);
-  const pr = /^(?:pr\s*)?#?\s*(\d+)$/i.exec(s);
-  if (url || repoPr || pr) {
-    if (a.action !== "merge") return false;
-    const prs = (a.args as any)?.prs;
-    if (Array.isArray(prs) && prs.length) {
-      const repo = url ? `${url[1]}/${url[2]}`.toLowerCase() : repoPr?.[1]?.toLowerCase();
-      const number = Number(url?.[3] ?? repoPr?.[2] ?? pr?.[1]);
-      return prs.some((p: any) => Number(p?.number) === number && (!repo || String(p?.repo ?? "").toLowerCase() === repo) && (!url || String(p?.url ?? "").toLowerCase() === s));
-    }
-  }
-  const target = a.target.toLowerCase();
-  return target === s || target.includes(s);
-}
-
 export class Approvals {
   constructor(
     private db: DatabaseSync,
@@ -630,69 +580,6 @@ export class Approvals {
   }
 
   /** Why a card can't be decided in a batch as shown: gone, no longer pending, the reviewer's, or changed since. */
-  private unbatchable(x: BatchItem, now: number): string | undefined {
-    const a = this.get(x.id);
-    if (!a) return `${x.id} doesn't exist`;
-    const s = shown(a, now);
-    if (s !== "pending") return `${a.identifier} (${a.id}) is ${s}`;
-    if (a.tier !== 2) return `${a.identifier} (${a.id}) is with the AI reviewer`;
-    if (a.digest !== x.digest) return `${a.identifier} (${a.id}) changed since it was shown`;
-    return undefined;
-  }
-
-  /**
-   * The owner's decision on several cards at once, exactly as they were shown (id and digest each). All or nothing: if any
-   * card is no longer pending, not the owner's (Tier 2), or changed since, nothing is decided and the reason names each such
-   * card. Each card stays its own record: claimed, applied and reported on its own. `by` is set by the caller's server code.
-   */
-  decideMany(items: BatchItem[], decision: "approve" | "reject", by: string, now = new Date()): BatchResult {
-    const iso = now.toISOString();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const bad = items.map((x) => this.unbatchable(x, now.getTime())).filter((r): r is string => Boolean(r));
-      if (bad.length) {
-        this.db.exec("ROLLBACK");
-        return { ok: false, reason: `nothing was decided: ${bad.join("; ")}` };
-      }
-      const update = this.db.prepare("UPDATE approvals SET state = ?, decided_by = ?, decided_at = ? WHERE id = ? AND state = 'pending' AND tier = 2 AND digest = ? AND expires_at > ?");
-      for (const x of items) if (update.run(decision === "approve" ? "approved" : "rejected", by, iso, x.id, x.digest, iso).changes !== 1) throw new Error(`${x.id} changed while deciding`);
-      this.db.exec("COMMIT");
-    } catch (err) {
-      this.db.exec("ROLLBACK");
-      throw err;
-    }
-    const approvals = items.map((x) => this.get(x.id)!);
-    for (const issue of new Set(approvals.map((a) => a.issueId))) this.changed(issue);
-    return { ok: true, approvals };
-  }
-
-  /**
-   * A typed reply decides an open record on a task. Without a target it acts only when exactly one is open; with a card id
-   * or target (PR link/number, repo+branch) it acts on the one that matches, even when several are open. Several without a
-   * target, or a selector that matches none or several, decides nothing and says which cards are open. It approves only a
-   * request the owner could have seen as it is: one that replaced an earlier request on the task (the agent changed it
-   * after a card went out) needs a tap on its own card, which carries its id. Rejecting is always allowed.
-   */
-  decideByReply(ref: string, decision: "approve" | "reject", by: string, nowOrTarget: Date | string = new Date(), target?: string): { ok: true; approval: Approval } | { ok: false; reason: string } {
-    const now = nowOrTarget instanceof Date ? nowOrTarget : new Date();
-    const pick = (typeof nowOrTarget === "string" ? nowOrTarget : target)?.trim();
-    const asCard = /^A[0-9a-f]{8}$/i.test(ref);
-    const only = asCard ? this.get(ref) : undefined;
-    const open = asCard
-      ? only && only.state === "pending" && Date.parse(only.expiresAt) > now.getTime()
-        ? [only]
-        : []
-      : this.pendingOn(ref, now.getTime());
-    const label = asCard ? only?.identifier ?? ref : ref.toUpperCase();
-    if (!open.length) return { ok: false, reason: asCard ? `no open approval ${ref}` : `nothing on ${label} is waiting for approval` };
-    const candidates = pick ? open.filter((a) => selectedBy(a, pick)) : open;
-    if (!candidates.length) return { ok: false, reason: `no open approval on ${label} matches "${pick}"; open: ${open.map(describeCard).join("; ")}` };
-    if (candidates.length > 1) return { ok: false, reason: `several approvals wait on ${label}; name one by card id or target: ${candidates.map(describeCard).join("; ")}` };
-    const a = candidates[0]!;
-    if (decision === "approve" && a.replaced) return { ok: false, reason: `the request on ${a.identifier} changed after it was first shown; look at the new card and tap Approve there` };
-    return this.decide(a.id, decision, by, now);
-  }
-
   /**
    * approved → used, atomically: a record for exactly one caller, with a nonce only that caller gets. It runs it once and
    * reports the outcome with the nonce (finish), so nobody else can write the outcome on the card.

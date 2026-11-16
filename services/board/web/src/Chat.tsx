@@ -1,9 +1,9 @@
 import { useCallback, useState } from "react";
-import { api } from "./api";
+import { admin } from "./api";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
 import { QUERIES, useQuery } from "./queries";
-import { deciderOf, foldsInChat, outcomeOf, shownDecision } from "./conversation";
+import { deciderOf, foldsInChat, outcomeOf } from "./conversation";
 import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Approval, ChatState } from "./types";
 import { ago } from "./util";
@@ -41,30 +41,17 @@ const OUTCOME: Record<Approval["state"], string> = {
 const TIER_WORDS = ["Tier 0: ran at once", "Tier 1: the AI reviewer decides", "Tier 2: yours to decide"];
 /** Waiting for the owner: a pending Tier 2 card. A pending Tier 1 card is with the AI reviewer. */
 const forOwner = (a: Approval) => a.state === "pending" && a.tier === 2;
-/** The most cards one batch decides (the board refuses more). */
-const BATCH_MAX = 10;
 
 /**
- * One approval card: one sentence, what it reads and changes, the cost, Details, Approve / Reject; the outcome stays here.
+ * One approval card: one sentence, what it reads and changes, the cost, Details; the outcome stays here. A pending card is
+ * decided on the kernel's approval page (a top-level page of its own: the board can't decide), linked from here.
  * An expired card (timed out or replaced by a newer request) folds to one muted line; a tap shows it whole.
  */
-export function ApprovalCard({ a: card, open, decided, inline, prefix = "", unfold, pick, hold }: { a: Approval; open: (identifier: string) => void; decided: () => Promise<void>; inline?: boolean; prefix?: string; unfold?: boolean; pick?: { on: boolean; full: boolean; toggle: () => void }; hold?: boolean }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Approval; open: (identifier: string) => void; inline?: boolean; prefix?: string; unfold?: boolean }) {
   const [unfolded, setUnfolded] = useState(Boolean(unfold));
-  // A tap shows at once (shownDecision); refused, the card goes back to pending with the reason.
-  const [tapped, setTapped] = useState<"approve" | "reject" | null>(null);
-  const a = shownDecision(card, tapped);
-  // In a conversation a decided card is one line; one decided while on screen stays open (it doesn't jump under the tap).
+  // In a conversation a decided card is one line; one decided while on screen stays open.
   const [seenPending] = useState(a.state === "pending");
   const [shown, setShown] = useState(false);
-  const act = async (d: "approve" | "reject") => {
-    setBusy(true);
-    setTapped(d);
-    setError("");
-    await api.decide(a.id, d).then(decided, (e: Error) => (setTapped(null), setError(e.message)));
-    setBusy(false);
-  };
   if (inline && !shown && foldsInChat(a, seenPending)) {
     const o = outcomeOf(a);
     const by = deciderOf(a);
@@ -95,16 +82,11 @@ export function ApprovalCard({ a: card, open, decided, inline, prefix = "", unfo
       </li>
     );
   }
-  // `hold`: this card is an earlier copy while the current one loads; it's decided on fresh server state only.
-  const why = hold ? "Checking it hasn't changed…" : undefined;
-  const buttons = (
+  const buttons = forOwner(a) && (
     <div className="approval-actions">
-      <button className="btn" disabled={busy || hold} title={why} onClick={() => void act("reject")}>
-        Reject
-      </button>
-      <button className="btn primary approve" disabled={busy || hold} title={why} onClick={() => void act("approve")}>
-        Approve
-      </button>
+      <a className="btn primary approve" href={`${admin.url}/approvals/${encodeURIComponent(a.id)}`} target="_blank" rel="noopener noreferrer">
+        Decide on the approval page
+      </a>
     </div>
   );
   const top = !inline && forOwner(a);
@@ -113,7 +95,6 @@ export function ApprovalCard({ a: card, open, decided, inline, prefix = "", unfo
   return (
     <li className={`approval-card ap-${a.outcome ?? a.state}${inline ? " inline" : ""}`}>
       <div className="approval-head">
-        {pick && <input type="checkbox" className="approval-pick" aria-label={`Select ${a.id}`} checked={pick.on} disabled={!pick.on && pick.full} onChange={pick.toggle} />}
         <button className="chat-open" onClick={() => open(a.identifier)}>
           <span className="chat-agent">{a.requestedBy}</span>
           <span className="chat-title">{!inline ? "Open the chat" : a.state === "auto" ? "ran it at once (Tier 0)" : a.tier === 1 && a.state === "pending" ? "asks the AI reviewer" : "asks for your approval"}</span>
@@ -176,7 +157,6 @@ export function ApprovalCard({ a: card, open, decided, inline, prefix = "", unfo
           {text &&<Markdown text={text} prefix={prefix} />}
         </div>
       )}
-      {error && <div className="alert">{error}</div>}
     </li>
   );
 }
@@ -214,28 +194,6 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
   const all = cards ?? [];
   // Only Tier 2 waits for you; Tier 1 (with the reviewer) and Tier 0 runs (audit rows) are history lines.
   const pending = all.filter(forOwner);
-  // Batch: the cards ticked, as shown (id → digest); a card that changed or left drops out of the selection.
-  const [picked, setPicked] = useState<Map<string, string>>(new Map());
-  const [batchBusy, setBatchBusy] = useState(false);
-  // Kept apart from the view's error, which each refetch clears: why a batch was refused stays until the next batch.
-  const [batchError, setBatchError] = useState("");
-  const chosen = pending.filter((a) => picked.get(a.id) === a.digest);
-  const full = chosen.length >= BATCH_MAX;
-  const toggle = (a: Approval) => setPicked((p) => {
-    const next = new Map(p);
-    if (next.get(a.id) === a.digest) next.delete(a.id);
-    else next.set(a.id, a.digest);
-    return next;
-  });
-  const pickAll = () => setPicked(chosen.length ? new Map() : new Map(pending.slice(0, BATCH_MAX).map((a) => [a.id, a.digest])));
-  const decideChosen = async (d: "approve" | "reject") => {
-    if (!window.confirm(`${d === "approve" ? "Approve" : "Reject"} these ${chosen.length} requests?\n\n${chosen.map((a) => `• ${a.identifier}: ${a.sentence}`).join("\n")}`)) return;
-    setBatchBusy(true);
-    setBatchError("");
-    await api.decideBatch(chosen.map((a) => ({ id: a.id, digest: a.digest })), d).then(() => setPicked(new Map()), (e: Error) => setBatchError(e.message));
-    setBatchBusy(false);
-    await load();
-  };
   const f: Filter = filter ?? (pending.length ? "pending" : "all");
   const others = (data?.items ?? []).filter((i) => i.state !== "waiting for approval");
   const past = groups(all.filter((a) => !forOwner(a)));
@@ -268,24 +226,17 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
         <>
           {(f === "pending" || f === "all") && pending.length > 1 && (
             <div className="batch-bar">
-              <label>
-                <input type="checkbox" checked={chosen.length > 0} onChange={pickAll} /> {chosen.length ? `${chosen.length} selected` : `Select ${pending.length > BATCH_MAX ? `the first ${BATCH_MAX}` : "all"}`}
-              </label>
-              <span className="muted small">All or nothing: if any changed since you saw it, nothing is decided.</span>
+              <span className="muted small">Decide several at once on the approval page.</span>
               <span className="spacer" />
-              <button className="btn" disabled={!chosen.length || batchBusy || hold} onClick={() => void decideChosen("reject")}>
-                Reject selected
-              </button>
-              <button className="btn primary approve" disabled={!chosen.length || batchBusy || hold} onClick={() => void decideChosen("approve")}>
-                Approve selected
-              </button>
+              <a className="btn" href={`${admin.url}/approvals`} target="_blank" rel="noopener noreferrer">
+                Open the approval page
+              </a>
             </div>
           )}
-          {batchError && <div className="alert">{batchError}</div>}
           {(f === "pending" || f === "all") && pending.length > 0 && (
             <ul className="approval-list pending-grid">
               {pending.map((a) => (
-                <ApprovalCard key={a.id} a={a} open={open} decided={load} hold={hold} pick={pending.length > 1 ? { on: picked.get(a.id) === a.digest, full, toggle: () => toggle(a) } : undefined} />
+                <ApprovalCard key={a.id} a={a} open={open} />
               ))}
             </ul>
           )}
@@ -323,7 +274,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
               {history.length ? (
                 <ul className="history">
                   {history.map((g) => (
-                    <HistoryRow key={g[0]!.id} group={g} open={open} decided={load} />
+                    <HistoryRow key={g[0]!.id} group={g} open={open} />
                   ))}
                 </ul>
               ) : (
@@ -338,7 +289,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
 }
 
 /** One request in the history: its latest attempt in a line (earlier tries counted), the full cards a tap away. */
-function HistoryRow({ group, open, decided }: { group: Approval[]; open: (identifier: string) => void; decided: () => Promise<void> }) {
+function HistoryRow({ group, open }: { group: Approval[]; open: (identifier: string) => void }) {
   const [shown, setShown] = useState(false);
   const a = group[0]!;
   const o = outcomeOf(a);
@@ -355,7 +306,7 @@ function HistoryRow({ group, open, decided }: { group: Approval[]; open: (identi
       {shown && (
         <ul className="approval-list history-cards">
           {group.map((x) => (
-            <ApprovalCard key={x.id} a={x} open={open} decided={decided} unfold />
+            <ApprovalCard key={x.id} a={x} open={open} unfold />
           ))}
         </ul>
       )}

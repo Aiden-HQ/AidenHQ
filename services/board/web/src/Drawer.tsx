@@ -984,8 +984,6 @@ function Composer({ issue, reload, toast, to, crew = [], moved }: { issue: Issue
       if (text.trim()) {
         const view = await api.comment(issue.id, names.length ? `${text.trimEnd()}\n\nAttached: ${names.map((n) => `\`${n.replace(/`/g, "")}\``).join(", ")}` : text);
         setText("");
-        // An exact "apply WOR-184" / "reject WOR-184" decided the open approval instead of being posted.
-        if (view.approval) toast(view.approval.state === "rejected" ? `Rejected: ${view.approval.sentence}` : `Approved: ${view.approval.sentence} It runs now.`);
         if (view.movedTo && moved) {
           toast(`Sent to ${view.movedTo}`);
           moved(view.movedTo);

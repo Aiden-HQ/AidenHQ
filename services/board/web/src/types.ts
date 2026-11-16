@@ -237,8 +237,6 @@ export interface IssueView extends Omit<Card, "scheduled" | "recurring" | "worki
   crew: (CrewMember & { said: { text: string; at: string } | null })[];
   /** After a reply: the agent's part a message that @-mentioned them went to, instead of this chat. */
   movedTo?: string;
-  /** After an exact typed reply ("apply WOR-184"): the approval it decided, instead of a posted message. */
-  approval?: Approval;
 }
 
 /** An approval card: the exact request, written by the board; the outcome lands on the same card. */

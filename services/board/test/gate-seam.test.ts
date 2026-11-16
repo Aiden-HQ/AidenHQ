@@ -40,7 +40,7 @@ describe("the gate, the sign-in listener and app access", () => {
     const { ensureIdentityKeys } = (await import("../../../scripts/identity.mjs" as string)) as { ensureIdentityKeys: (d: string) => string[] };
     ensureIdentityKeys(dir);
     writeFileSync(accountsFile, JSON.stringify({ accounts: [] }));
-    accounts = await createAccounts({ dbPath: ":memory:", hosts: ["127.0.0.1:0"], boardUrl: "http://localhost:3120", gate: gateInfo, gateAccountsFile: accountsFile, gateSecret: GATE_SECRET, manifest: async (a) => manifests[a] ?? { roles: [] }, feedbackWake: async (...args) => (wakes.push(args), true), log });
+    accounts = await createAccounts({ dbPath: ":memory:", hosts: ["127.0.0.1:0"], adminUrl: "http://localhost:3120", gate: gateInfo, gateAccountsFile: accountsFile, gateSecret: GATE_SECRET, manifest: async (a) => manifests[a] ?? { roles: [] }, feedbackWake: async (...args) => (wakes.push(args), true), log });
     app = createServer((req, res) => (seen.push({ ...req.headers }), res.end("app")));
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
     // The listener's own name is only known once it listens: hosts is read on each request.

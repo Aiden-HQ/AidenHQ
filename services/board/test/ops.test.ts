@@ -1,6 +1,5 @@
 // ops/setup.sh against the board, with exactly the headers its curl calls send (no Origin, no cookie):
-// the first link (operator key, local listener) and --reset (operator key + bearer, internal listener), whose link only
-// the owner channel collects.
+// the first link and --reset (operator key + bearer, internal listener; --reset's link only the owner channel collects).
 import { request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
@@ -17,20 +16,20 @@ const DECIDE = "d".repeat(48);
 describe("ops/setup.sh with board accounts", () => {
   const log = pino({ level: "silent" });
   let accounts: Accounts;
-  let local: Server, internal: Server;
-  const port = { local: 0, internal: 0 };
+  let lan: Server, internal: Server;
+  const port = { lan: 0, internal: 0 };
   beforeAll(async () => {
-    accounts = await createAccounts({ dbPath: ":memory:", hosts: ["localhost:3120"], boardUrl: "https://agents.example.ts.net:8443", ownerEmail: "owner@example.com", log });
+    accounts = await createAccounts({ dbPath: ":memory:", hosts: ["localhost:3121"], adminUrl: "https://agents.example.ts.net:8444", ownerEmail: "owner@example.com", log });
     const common = { paperclip: {} as Paperclip, store: new Store(":memory:"), log, staticDir: "/nonexistent", timezone: "UTC", accounts, operatorKey: OPERATOR };
-    local = createApp({ ...common, allowedHosts: ["localhost:3120"], mode: "local" });
+    lan = createApp({ ...common, allowedHosts: ["localhost:3121"], mode: "lan" });
     internal = createApp({ ...common, allowedHosts: ["127.0.0.1:3122"], mode: "internal", internalToken: TOKEN, gatewayKey: DECIDE });
-    for (const [k, s] of [["local", local], ["internal", internal]] as const) {
+    for (const [k, s] of [["lan", lan], ["internal", internal]] as const) {
       await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
       port[k] = (s.address() as AddressInfo).port;
     }
   });
   afterAll(() => {
-    local.close();
+    lan.close();
     internal.close();
     accounts.close();
   });
@@ -45,17 +44,18 @@ describe("ops/setup.sh with board accounts", () => {
       r.on("error", reject);
       r.end(body === undefined ? undefined : JSON.stringify(body));
     });
-  const board = (path: string, body: unknown) => curl("local", "POST", path, { host: "localhost:3120", "content-type": "application/json", "x-aidenhq-board": "1", "x-operator-key": OPERATOR }, body);
+  const setup = (body: unknown) => curl("internal", "POST", "/internal/accounts/setup", { host: "127.0.0.1:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, "x-operator-key": OPERATOR }, body);
 
   it("prints the owner's first link once, only for settings.owner_email; --reset sends a link only to the owner channel", async () => {
-    expect((await curl("local", "GET", "/api/session", { host: "localhost:3120" })).json.account).toBeNull();
-    expect((await board("/api/accounts/setup", { email: "someone@example.com", name: "X" })).status).toBe(400);
-    const first = await board("/api/accounts/setup", { email: "Owner@example.com", name: "Owner" });
+    expect((await curl("lan", "GET", "/api/session", { host: "localhost:3121" })).json.account).toBeNull();
+    expect((await setup({ email: "someone@example.com", name: "X" })).status).toBe(400);
+    const first = await setup({ email: "Owner@example.com", name: "Owner" });
     expect(first.status).toBe(200);
-    expect(first.json.url).toMatch(/^https:\/\/agents\.example\.ts\.net:8443\/#\/set-password\//);
-    expect((await board("/api/accounts/setup", { email: "owner@example.com", name: "Owner" })).status).toBe(409);
+    // Admin links open on the kernel's admin listener (its front door), where the owner sets a password and enrols.
+    expect(first.json.url).toMatch(/^https:\/\/agents\.example\.ts\.net:8444\/auth\/set-password\?token=/);
+    expect((await setup({ email: "owner@example.com", name: "Owner" })).status).toBe(409);
     // The operator key is no session: a bare host process still reads nothing.
-    expect((await curl("local", "GET", "/api/board", { host: "localhost:3120", "x-operator-key": OPERATOR })).status).toBe(401);
+    expect((await curl("lan", "GET", "/api/board", { host: "localhost:3121", "x-operator-key": OPERATOR })).status).toBe(401);
 
     const reset = (headers: Record<string, string>) => curl("internal", "POST", "/internal/accounts/reset", { host: "127.0.0.1:3122", "content-type": "application/json", ...headers }, { email: "owner@example.com" });
     expect((await reset({ authorization: `Bearer ${TOKEN}` })).status).toBe(403); // the token alone
@@ -65,7 +65,7 @@ describe("ops/setup.sh with board accounts", () => {
     const links = (headers: Record<string, string>) => curl("internal", "GET", "/internal/owner/reset-links", { host: "127.0.0.1:3122", authorization: `Bearer ${TOKEN}`, ...headers });
     expect((await links({ "x-operator-key": OPERATOR })).status).toBe(403);
     const sent = await links({ "x-gateway-key": DECIDE });
-    expect(sent.json.links).toEqual([{ email: "owner@example.com", url: expect.stringMatching(/#\/set-password\//) }]);
+    expect(sent.json.links).toEqual([{ email: "owner@example.com", url: expect.stringMatching(/\/auth\/set-password\?token=/) }]);
     expect((await links({ "x-gateway-key": DECIDE })).json.links).toEqual([]);
   });
 });
