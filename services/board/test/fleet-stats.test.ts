@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fleetSummary, scorecard, type Facts } from "../src/fleet-stats.js";
 import type { Approval } from "../src/records.js";
-import type { Grade } from "../src/grades.js";
+import type { Grade } from "../src/grading.js";
 import type { Issue } from "../src/paperclip.js";
 
 const NOW = Date.parse("2026-11-13T12:00:00Z");

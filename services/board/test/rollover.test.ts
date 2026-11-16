@@ -1,3 +1,4 @@
+import { fakeGrading } from "./fake-grading.js";
 import { describe, expect, it } from "vitest";
 import { continuedIn } from "../src/chats.js";
 import { latest, rolloverTick } from "../src/rollover.js";
@@ -51,7 +52,7 @@ function fake() {
   return { pc, tasks, comments, runs, put, say };
 }
 
-const deps = (f: ReturnType<typeof fake>, store: Store) => ({ pc: f.pc as never, store, records: fakeRecords(), log: { info() {}, warn() {} } });
+const deps = (f: ReturnType<typeof fake>, store: Store) => ({ pc: f.pc as never, store, records: fakeRecords(), grading: fakeGrading(), log: { info() {}, warn() {} } });
 
 describe("task rollover", () => {
   it("moves a chat nearing the input limit to a successor: its open sub-tasks follow, the old one is parked, messages to it go on", async () => {

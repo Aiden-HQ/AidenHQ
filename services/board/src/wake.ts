@@ -30,6 +30,7 @@ import { NOTICE_MARKER } from "./chats.js";
 import { appsApi } from "./fleet.js";
 import { OPEN, REPAIR_SUPPRESSED, REPAIR_SUPPRESSED_WHY, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
 import type { Approval, Records } from "./records.js";
+import type { Grading, GradesView } from "./grading.js";
 import type { Store } from "./store.js";
 
 const MIN = 60_000;
@@ -50,7 +51,8 @@ export interface PrState {
 }
 export interface WakeDeps {
   pc: PaperclipPart;
-  store: Pick<Store, "meta" | "setMeta" | "grades" | "events">;
+  store: Pick<Store, "meta" | "setMeta" | "events">;
+  grading: Pick<Grading, "grades">;
   records: Pick<Records, "list">;
   prStates: (refs: string[]) => Promise<PrState[] | undefined>;
   log: { info(o: object, m: string): void; warn(o: object, m: string): void };
@@ -100,13 +102,13 @@ function prsOf(x: Issue, cards: Approval[]): string[] {
 }
 
 /** The signals for one task: its sub-tasks (others' only) and their grades' outcomes, its own cards and the PRs it names. */
-function signals(task: Issue, kids: Issue[], cards: Approval[], store: WakeDeps["store"], prs: Map<string, PrState>): Map<string, Signal> {
+function signals(task: Issue, kids: Issue[], cards: Approval[], grades: GradesView["grades"], prs: Map<string, PrState>): Map<string, Signal> {
   const out = new Map<string, Signal>();
   const refs = new Set(prsOf(task, cards));
   for (const k of kids) {
     const st = childState(k.status);
     out.set(`child:${k.id}`, { value: st, at: latest(k.completedAt, k.cancelledAt, k.updatedAt), line: (was) => `${k.identifier} is ${was === "done" || was === "cancelled" ? `reopened (${k.status})` : `now ${k.status}`}.` });
-    const g = store.grades.get(k.id);
+    const g = grades[k.id];
     if (g) {
       // A grade sending the work back is the assignee's to act on, not the delegator's: only satisfied and escalated are news.
       // Its own key (not `grade:`), so a cursor saved before this rule is dropped, never read as a change.
@@ -161,6 +163,9 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   const tasks = open.filter((t) => t.assigneeAgentId && watched.has(t.assigneeAgentId) && OPEN_STATUSES.has(t.status) && !t.title.startsWith("Heartbeat: "));
   const ownKids = (t: Issue) => (kidsOf.get(t.id) ?? []).filter((k) => k.assigneeAgentId !== t.assigneeAgentId);
 
+  // The grading module unreachable: no graded: signals this pass (a state is never invented; their cursors stay).
+  const grades = await deps.grading.grades([...new Set(tasks.flatMap(ownKids).map((k) => k.id))]).then((v) => v.grades, (err) => (log.warn({ err: String(err) }, "wake-ups: grading module unreachable; skipping graded signals"), undefined));
+
   const cardsOf = new Map<string, Approval[]>();
   for (const a of await records.list("recent", { limit: 500 })) cardsOf.set(a.issueId, [...(cardsOf.get(a.issueId) ?? []), a]);
   const refs = [...new Set(tasks.flatMap((t) => prsOf(t, cardsOf.get(t.id) ?? [])))].slice(0, 100);
@@ -198,7 +203,7 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   for (const t of tasks) {
     const agent = t.assigneeAgentId!;
     const was = state.cursors[t.id];
-    const sig = signals(t, ownKids(t), cardsOf.get(t.id) ?? [], store, prs);
+    const sig = signals(t, ownKids(t), cardsOf.get(t.id) ?? [], grades ?? {}, prs);
     const next: Record<string, string> = {};
     // A source's first sighting is its baseline; a source that went away (a pruned card, an old closed sub-task) is dropped.
     const changed: [string, Signal][] = [];
@@ -211,6 +216,8 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     }
     // The warehouse didn't answer: its PRs keep their cursors (a merge meanwhile is still news next tick).
     if (!found) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("pr:")) next[k] ??= v;
+    // The grading module didn't answer: its graded: signals keep their cursors.
+    if (!grades) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("graded:")) next[k] ??= v;
     // A closed sub-task leaves the closed list after a while: its cursor stays, so reopening it later is still news.
     for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("child:") && (v === "done" || v === "cancelled")) next[k] ??= v;
     cursors[t.id] = next;
@@ -262,10 +269,11 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
 }
 
 /** Starts the reconciler (main.ts). */
-export function startWake(pc: Paperclip, store: Store, records: Records, log: WakeDeps["log"]): void {
+export function startWake(pc: Paperclip, store: Store, records: Records, grading: Grading, log: WakeDeps["log"]): void {
   const deps: WakeDeps = {
     pc,
     store,
+    grading,
     records,
     log,
     prStates: async (refs) => (await appsApi<{ prs?: PrState[] }>(`/internal/pr-states?${new URLSearchParams(refs.map((r) => ["pr", r]))}`, undefined, { auth: true, timeoutMs: 20_000 })).prs,

@@ -5,7 +5,7 @@ import { createApp } from "./app.js";
 import { appsApi } from "./fleet.js";
 import { appWatchTick, type AppStatus } from "./app-watch.js";
 import { queueOwnerLine, startDetector } from "./fleet-ops.js";
-import { backfillEscalatedDelegators, settleClosedGrades } from "./grades.js";
+import { createGrading } from "./grading.js";
 import { loadConfig } from "./config.js";
 import { pullUsage } from "./costs.js";
 import { McpAuth } from "./mcpauth.js";
@@ -24,6 +24,8 @@ const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
 const store = new Store(cfg.dbPath);
 const paperclip = new Paperclip(cfg.paperclipUrl, cfg.companyId, cfg.boardKey);
+// The grading module owns the grade rows (modules/grading); the board reads them over HTTP.
+const grading = createGrading();
 // The kernel keeps every approval record; the board reads them with the gateway_board_key.
 const records = kernelRecords(cfg.gateway && { url: (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, ""), token: cfg.gateway.token }, log);
 
@@ -41,35 +43,15 @@ function rollover() {
 }
 rollover();
 setInterval(rollover, 60_000).unref();
-/**
- * Every five minutes: a graded task closed before the grader settled it (a cancel in Paperclip itself) has nothing to grade,
- * and an escalated row that saved no delegators gets its task's creator saved.
- */
-async function settleGrades() {
-  try {
-    const settled = await settleClosedGrades(store.grades, (id) => paperclip.issue(id));
-    if (settled.length) log.info({ tasks: settled.map((g) => g.issueId), reason: settled[0]!.closedReason }, "graded rows settled on a closed task");
-  } catch (err) {
-    log.warn({ err: String(err) }, "settling closed grades failed");
-  }
-  try {
-    const filled = await backfillEscalatedDelegators(store.grades, (id) => paperclip.issue(id));
-    if (filled.length) log.info({ tasks: filled.map((g) => g.issueId) }, "escalated grades given their creator as delegator");
-  } catch (err) {
-    log.warn({ err: String(err) }, "backfilling escalated delegators failed");
-  }
-}
-setInterval(() => void settleGrades(), 5 * 60_000).unref();
-void settleGrades();
 // Fleet Ops' detector: only when the fleet-ops module is enabled (it sets FLEET_OPS_INTERVAL_MINUTES).
-startDetector(paperclip, store, log);
+startDetector(paperclip, store, grading, log);
 // The owner's app alerts (app-watch.ts): owner lines a channel collects through the kernel. apps-mcp unreachable: skipped.
 const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: (line) => queueOwnerLine(store, line) }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
 setInterval(appWatch, 2 * 60_000).unref();
 // Event wake-ups for heartbeat agents (wake.ts): on unless the instance setting wake_ups is off.
-startWake(paperclip, store, records, log);
+startWake(paperclip, store, records, grading, log);
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
-startRollover(paperclip, store, records, log);
+startRollover(paperclip, store, records, grading, log);
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent
 // computers' included (the launcher forwards their calls there).
 pullUsage(cfg.gateway, store, log, 60_000, "gateway_usage_pulled_at");
@@ -89,7 +71,7 @@ const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway
 const activity: { runner?: RunnerReport } = {};
 // Open boards hear what agents change in their chats (watch.ts): one look at Paperclip every 2s while any board listens.
 startWatch({ pc: paperclip, events: store.events, records, log, runner: () => activity.runner, session: liveActivity(cfg.sessions) });
-const common = { adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway, records, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
+const common = { grading, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, glean, grafana, clickhouse, jira, accounts, gateway: cfg.gateway, records, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
 // The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));

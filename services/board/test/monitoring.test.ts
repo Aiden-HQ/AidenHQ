@@ -119,7 +119,7 @@ describe("alert recovery", () => {
   const gen12 = { fingerprint: "c0ffee1234567890", n: "12", severity: "warning" };
   const detect = (store: Store) => {
     const fired: { incidents: { key: string }[]; recovered: { key: string }[] }[] = [];
-    const run = () => tick(store, { alert: checks({} as never, store).alert! }, async (b) => (fired.push(b as never), true));
+    const run = () => tick(store, { alert: checks({} as never, store, { stale: async () => [] }).alert! }, async (b) => (fired.push(b as never), true));
     return { fired, run };
   };
 
