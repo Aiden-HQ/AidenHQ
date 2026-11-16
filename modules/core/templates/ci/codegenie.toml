@@ -1,8 +1,0 @@
-# codegenie (the `code-review` CI check). Repo config may set only a few keys; the owner's review rules are in
-# .codegenie/skills/house-rules.md, and the severity gate (critical/high block the merge) is .github/codegenie-gate.mjs.
-[git]
-baseBranch = "main"
-
-[review]
-depth = "normal"
-maxTime = 40

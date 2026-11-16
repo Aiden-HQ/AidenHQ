@@ -2,23 +2,26 @@
 # org's self-hosted runners (one fresh container per job, no Docker).
 # The job names `tests`, `code-review` and `image-scan` are the check names graders and rubrics cite: don't rename them,
 # don't add a matrix.
-# code-review's model key: on AidenHQ's runners none (it spends through the instance's model gateway, below); elsewhere the
-# secret OPENROUTER_API_KEY. Optional variables CODEGENIE_MODEL and QUICK_REVIEW_MODEL (defaults below).
-# Code-review depth: light by default, whatever the size, reviewed by the quick reviewer (.github/quick-review.mjs: one model
-# call over the diff and the changed files); normal when the PR touches a critical path, and deep with the PR's
-# `deep-review` label, both reviewed by codegenie (agentic, many calls). Critical paths are built in (dependency manifests such as package.json, lockfiles by name, .github/, Dockerfiles,
-# binary files, and paths naming auth, security, tokens, sessions or permissions) plus the app's own `.github/code-review-critical`: one glob per
+# code-review's model key: on AidenHQ's runners none (it spends through the instance's model gateway, below, which also
+# names the review model and effort: settings.ci_review_model); elsewhere the secret OPENROUTER_API_KEY and the optional
+# variable CI_REVIEW_MODEL (`<OpenRouter id>:<effort>`, default below).
+# The review: codex with codex review's guidelines (.github/code-review.mjs) on every PR but a tiny one, from an empty
+# directory with its shell off and read-only repo tools as its only tools. Effort: the model's (high), critical paths
+# included; one higher (xhigh) only with the `deep-review` label or text addressed to a reviewer. A critical path is never
+# skipped as tiny.
+# Critical paths are built in (dependency manifests such as package.json, lockfiles by name, .github/, Dockerfiles, binary
+# files, AGENTS.md, and paths naming auth, security, tokens, sessions or permissions) plus the app's own `.github/code-review-critical`: one glob per
 # line (bash pattern: `*` also matches `/`, so `src/server/db/*` covers everything under it), `#` comments allowed. That
 # file is read from the default branch, never the PR, so a PR can't drop its own critical paths (and editing it is itself
-# critical: it is under .github/). package-lock.json (any depth) is left out of the changed-line count and never raises
-# the depth: npm-age.mjs in the supply-chain job validates every entry it changes. Other lockfiles (npm-shrinkwrap.json,
-# pnpm-lock.yaml, yarn.lock, Cargo.lock, ...) have no supply-chain check, so they count and stay critical. Depth is light
-# whatever the size, and the small-change skip counts added plus deleted lines (a deletion can remove a guard).
+# critical: it is under .github/). package-lock.json (any depth) is left out of the changed-line count and never makes a
+# PR critical: npm-age.mjs in the supply-chain job validates every entry it changes. Other lockfiles (npm-shrinkwrap.json,
+# pnpm-lock.yaml, yarn.lock, Cargo.lock, ...) have no supply-chain check, so they count and stay critical. The small-change
+# skip counts added plus deleted lines (a deletion can remove a guard).
 name: ci
 
 on:
   pull_request:
-    # labeled: adding `deep-review` re-runs the review at depth deep.
+    # labeled: adding `deep-review` re-runs the review at the higher effort.
     types: [opened, synchronize, reopened, labeled]
 
 permissions:
@@ -59,8 +62,8 @@ jobs:
           node "$d/pins.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
           exit $status
       # .aidenhq/out/ holds an agent's evidence, left out of the code review: screenshots and reports only, so nothing that
-      # runs can hide there. The list is the code-review job's (and quick-review.mjs OUT_TYPES); changing it is a .github/
-      # change, so critical. Read from the PR's own ci.yml: a PR that edits it gets codegenie's review anyway.
+      # runs can hide there. The list is the code-review job's (and code-review.mjs OUT_TYPES); changing it is a .github/
+      # change, so critical. Read from the PR's own ci.yml: a PR that edits it is reviewed at the higher effort anyway.
       - name: Evidence
         run: |
           bad=$(git diff --name-only --diff-filter=AMR "$BASE_SHA...$HEAD_SHA" -- .aidenhq/out | grep -viE '\.(png|jpe?g|webp|gif|json|txt)$' || true)
@@ -165,13 +168,13 @@ jobs:
           set -f
           GRYPE_DB_CACHE_DIR="$RUNNER_TEMP/grype-db" node "$RUNNER_TEMP/image-scan.mjs" --exceptions "$RUNNER_TEMP/exceptions.yaml" -- $DOCKERFILES
 
-  # Never runs the PR's code: codegenie and the quick reviewer only read it from git objects. Its config and rules come from the base commit
-  # (reviewed code), so a PR can't loosen its own review; the gate comes from the default branch's current tip, so a
-  # gate update protects every open PR at once. Only the PR that first adds CI (no gate on the default branch yet)
+  # Never runs the PR's code: the reviewer only reads it (code-review.mjs, review-tools.mjs). Its scripts and rules come from
+  # the base commit (reviewed code), so a PR can't loosen its own review; the gate comes from the default branch's current
+  # tip, so a gate update protects every open PR at once. Only the PR that first adds CI (no gate on the default branch yet)
   # passes unreviewed; changes under .github/ get a human review anyway.
   code-review:
     runs-on: [self-hosted, aidenhq]
-    timeout-minutes: 90 # a first review (up to ~45 min) and a retry; the Review step stops retrying at 85
+    timeout-minutes: 90 # a first review (up to 40 min) and a retry; the Review step stops retrying at 85
     permissions:
       contents: read
       pull-requests: write
@@ -193,7 +196,7 @@ jobs:
           node-version: 24.x
       # Review only what changed since this PR's last green code review (codegenie-prior.mjs, from the base commit; full
       # when it isn't there yet, or on any doubt): delta, reuse when the patch is the same (a stacked rebase onto a base that only moved forward, or the branch reopened as a new PR), or full. Its own step,
-      # so codegenie never gets the token.
+      # so the reviewer never gets the token.
       - name: Prior review
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -211,13 +214,12 @@ jobs:
       - name: Review
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          MODEL: ${{ vars.CODEGENIE_MODEL || 'openrouter/~deepseek/deepseek-flash-latest' }}
-          # The quick reviewer's model: GPT Luna at medium reasoning answered in 15-55 s for under a cent in the 2026-11-16 eval;
-          # DeepSeek Flash with reasoning often ran on to its 131k-token limit (minutes, no answer). Variable QUICK_REVIEW_MODEL.
-          QUICK_MODEL: ${{ vars.QUICK_REVIEW_MODEL || 'openrouter/~openai/gpt-luna-latest' }}
+          # Off AidenHQ's runners: the model and effort (on them the gateway names both, settings.ci_review_model).
+          CI_REVIEW_MODEL: ${{ vars.CI_REVIEW_MODEL || '~deepseek/deepseek-flash-latest:high' }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          PR_AUTHOR_ASSOC: ${{ github.event.pull_request.author_association }}
-          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          # The PR's request, given to the reviewer fenced as data (code-review.mjs): through env, never the script text.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         # fetch-depth 0 fetched every branch, the PR's head included (app PRs come from branches of the same repo).
         run: |
           set +e
@@ -226,43 +228,41 @@ jobs:
             echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV"
             exit 0
           fi
-          # A delta reviews only the commits since the last green review. codegenie takes one diff (no option to add the
-          # rest of the PR as read-only context); its tools still read any file at the head.
+          # A delta reviews only the commits since the last green review; the reviewer's tools still read any file at the head.
           from="$BASE_SHA"
           [ "${REVIEW_MODE:-}" = delta ] && from="$REVIEW_FROM"
-          # Depth: light by default, whatever the size (a big diff gets more calls through --budget-boost below). Normal
-          # when the diff touches a critical path (see the header) or can't be read. Deep only when asked: the PR's
-          # `deep-review` label.
           # package-lock.json (see the header) is out of both the line count and the critical-path list, and so are an agent's
           # screenshots and reports under .aidenhq/out/ (roadmap-keeper#167 counted 40,230 lines of them): only the types the
-          # tests job's Evidence step allows there (quick-review.mjs OUT_TYPES), so code under .aidenhq/out/ is reviewed.
+          # tests job's Evidence step allows there (code-review.mjs OUT_TYPES), so code under .aidenhq/out/ is reviewed.
           nolock=(':(exclude,glob)**/package-lock.json')
           for t in png jpg jpeg webp gif json txt; do nolock+=(":(exclude,glob).aidenhq/out/**/*.$t"); done
           unreadable=""
           stat=$(git diff --numstat "$from...$HEAD_SHA" -- . "${nolock[@]}") || { stat=""; unreadable=1; }
-          # lines: added plus deleted (the small-change skip below); added: added only (the budget boost). A binary file has
-          # no lines a reviewer reads: 20 in lines (so never a tiny-change skip), none in added (no budget boost).
+          # Added plus deleted lines (the small-change skip below). A binary file has no lines a reviewer reads: 20 (so never
+          # a tiny-change skip).
           lines=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 20; next} {n += $1 + $2} END {print n + 0}')
-          added=$(printf '%s\n' "$stat" | awk '$1 == "-" {next} {n += $1} END {print n + 0}')
           # The app's own list comes from the default branch (as fetched at checkout), never the PR's head.
           # A binary file anywhere else is critical: no reviewer reads it.
           binary=$(printf '%s\n' "$stat" | awk -F'\t' '$1 == "-" {print $3; exit}')
           globs=$(git show "origin/$DEFAULT_BRANCH:.github/code-review-critical" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v -e '^#' -e '^$')
-          critical=""
+          critical=""; codexcfg=""
           # Paths raw and NUL-separated (no quoting of odd names, so a tab or non-ASCII name still matches its glob); a
           # list that fails is critical. Each glob is only a [[ == ]] pattern (set -f: never expanded against files).
           if git -c core.quotePath=false diff --name-only -z --no-renames "$from...$HEAD_SHA" -- . "${nolock[@]}" > "$RUNNER_TEMP/changed-paths"; then
             set -f
             while IFS= read -r -d '' p; do
-              # Lockfiles by name (any *.lock, *-lock.json/yaml, bun.lockb, go.sum, npm-shrinkwrap.json), never a name that only
+              # codex config and AGENTS.md; lockfiles by name (any *.lock, *-lock.json/yaml, bun.lockb, go.sum, npm-shrinkwrap.json), never a name that only
               # contains "lock" (roadmap-keeper#167: "blockstm").
-              if printf '%s' "$p" | grep -qiE 'package\.json|(^|/)([^/]+\.lock|[^/]+-lock\.(json|ya?ml)|bun\.lockb|go\.sum|npm-shrinkwrap\.json)$|\.github/|dockerfile|auth|secur|token|session|permission'; then critical=$p; break; fi
+              if printf '%s' "$p" | grep -qiE '(^|/)\.codex/|(^|/)codex\.toml$|(^|/)AGENTS(\.override)?\.md$|package\.json|(^|/)([^/]+\.lock|[^/]+-lock\.(json|ya?ml)|bun\.lockb|go\.sum|npm-shrinkwrap\.json)$|\.github/|dockerfile|auth|secur|token|session|permission'; then critical=$p; break; fi
               while IFS= read -r g; do
                 case "$g" in ''|'#'*) continue ;; esac
                 if [[ "$p" == $g ]]; then critical=$p; break 2; fi
               done <<< "$globs"
             done < "$RUNNER_TEMP/changed-paths"
             set +f
+            # codex's own config, hooks, skills and instruction overrides: never in an app repo (the reviewer runs from an
+            # empty directory and loads none of them, but nothing else should either): the check fails on them (below).
+            codexcfg=$(tr '\0' '\n' < "$RUNNER_TEMP/changed-paths" | grep -m1 -E '(^|/)\.codex/|(^|/)codex\.toml$|(^|/)AGENTS\.override\.md$')
           else
             critical="(a diff that can't be listed)"
           fi
@@ -272,165 +272,91 @@ jobs:
           [ -n "$critical" ] && depth=normal
           case ",$PR_LABELS," in *,deep-review,*) depth=deep ;; esac
           printf 'REVIEW_DEPTH=%s\nREVIEW_CRITICAL=%s\nREVIEW_COUNTED_LINES=%s\n' "$depth" "$(printf '%s' "$critical" | tr -d '\r\n')" "$lines" >> "$GITHUB_ENV"
-          # A large diff spends codegenie's per-packet call budget before it finishes ("LLM provider call budget
-          # exhausted"), which fails the check without a single finding: scale the budget with the diff's size.
-          boost=1
-          if [ "$added" -gt 6000 ]; then boost=4; elif [ "$added" -gt 2000 ]; then boost=2; fi
-          # Tiny PRs in non-sensitive files (still light: no sensitive path, no deep-review label) skip the review. Only a
-          # whole PR: a delta is always reviewed, or a big PR could skip its review through small follow-up pushes.
+          # Tiny PRs in non-sensitive files (no critical path, no deep-review label) skip the review. Only a whole PR: a delta
+          # is always reviewed, or a big PR could skip its review through small follow-up pushes.
           if [ "${REVIEW_MODE:-full}" = full ] && [ "$depth" = light ] && [ "$lines" -lt 20 ]; then
             echo "::notice::$lines changed lines, no sensitive files: no code review needed."
             echo "CODE_REVIEW_SKIPPED=1" >> "$GITHUB_ENV"
             exit 0
           fi
           echo "Changed lines: $lines, review depth: $depth${critical:+ (touches $critical)}"
+          # The reviewer's scripts and rules: the base commit's. A base without them (an old or stacked base) gets the default
+          # branch's, never a skip; only when the default branch has none either (the one PR that brings the reviewer in) is
+          # the PR not reviewed, like the PR that first adds CI.
+          rv=.github
+          if [ ! -f .github/code-review.mjs ]; then
+            if ! git cat-file -e "origin/$DEFAULT_BRANCH:.github/code-review.mjs" 2>/dev/null; then
+              echo "::notice::The default branch has no .github/code-review.mjs yet: this PR brings the reviewer in, so it is not reviewed."
+              echo "CODE_REVIEW_SKIPPED=1" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            rv="$RUNNER_TEMP/reviewer"; mkdir -p "$rv"
+            for f in code-review.mjs review-tools.mjs code-review-rules.md; do
+              git show "origin/$DEFAULT_BRANCH:.github/$f" > "$rv/$f" 2>/dev/null || rm -f "$rv/$f"
+            done
+            echo "::notice::The base commit has no reviewer: the default branch's reviews it."
+          fi
+          gave_up() { # $1: cause. No review, permanent: the gate fails the check.
+            echo "::error::$1"
+            printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=%s\n' "$1" >> "$GITHUB_ENV"
+            exit 0
+          }
+          [ -z "$codexcfg" ] || gave_up "The PR changes codex config ($codexcfg): .codex/, codex.toml and AGENTS.override.md don't belong in an app repo. Remove it."
           # The model key. On AidenHQ's runners (AIDENHQ_GATEWAY_URL, set on the runner container) the review spends through
           # the instance's model gateway: this job's GitHub OIDC token is traded there for a CI token bound to this repo and
-          # PR, which may call only the review models, under the gateway's CI caps, into its cost ledger; the gateway holds the
-          # OpenRouter key. codegenie has no base-URL option, so a preload sends its OpenRouter calls to the gateway. Without
-          # the gateway: the repo secret. A gateway refusal never falls back to the secret.
-          node_opts=""
+          # PR, which may call only the review models, under the gateway's CI caps, into its cost ledger, with zero data
+          # retention forced; the gateway holds the OpenRouter key and names the model and effort. Without the gateway: the
+          # repo secret (its OpenRouter account must have zero data retention on). A gateway refusal never falls back to it.
+          model="${CI_REVIEW_MODEL%:*}"; effort="${CI_REVIEW_MODEL##*:}"
+          [ "$effort" = "$CI_REVIEW_MODEL" ] && effort=high
+          url=https://openrouter.ai/api/v1; key="${OPENROUTER_API_KEY:-}"
+          unset OPENROUTER_API_KEY
           if [ -n "${AIDENHQ_GATEWAY_URL:-}" ]; then
-            unset OPENROUTER_API_KEY
-            gateway_fail() {
-              echo "::error::The model gateway gave no CI token${1:+: $1}. See the job log."
-              printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=gateway\n' >> "$GITHUB_ENV"
-              exit 0
-            }
             oidc=$(curl -sSf -m 30 --retry 2 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" "${ACTIONS_ID_TOKEN_REQUEST_URL:-}&audience=aidenhq-gateway" | jq -r '.value // empty') || oidc=""
-            [ -n "$oidc" ] || gateway_fail "no GitHub OIDC token (the job needs id-token: write)"
+            [ -n "$oidc" ] || gave_up "The model gateway gave no CI token: no GitHub OIDC token (the job needs id-token: write)."
             echo "::add-mask::$oidc"
             answer=$(curl -sS -m 30 --retry 2 --retry-connrefused -X POST -H "Authorization: Bearer $oidc" -H 'content-type: application/json' \
               -d "{\"head\":\"$HEAD_SHA\"}" "$AIDENHQ_GATEWAY_URL/ci/token") || answer=""
-            tok=$(printf '%s' "$answer" | jq -r '.token // empty' 2>/dev/null) || tok=""
-            [ -n "$tok" ] || gateway_fail "$(printf '%s' "$answer" | jq -r '.error.message // empty' 2>/dev/null | head -c 300)"
-            echo "::add-mask::$tok"
-            export OPENROUTER_API_KEY="$tok" AIDENHQ_CI_GATEWAY_BASE="$AIDENHQ_GATEWAY_URL/api/v1"
-            cat > "$RUNNER_TEMP/codegenie-gateway.mjs" <<'JS'
-          const to = process.env.AIDENHQ_CI_GATEWAY_BASE, from = "https://openrouter.ai/api/v1/", real = globalThis.fetch;
-          globalThis.fetch = (input, init) => {
-            const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-            if (!url.startsWith(from)) return real(input, init);
-            const dest = `${to}/${url.slice(from.length)}`;
-            return real(input instanceof Request ? new Request(dest, input) : dest, init);
-          };
-          JS
-            node_opts="--import=file://$RUNNER_TEMP/codegenie-gateway.mjs"
+            key=$(printf '%s' "$answer" | jq -r '.token // empty' 2>/dev/null) || key=""
+            [ -n "$key" ] || gave_up "The model gateway gave no CI token: $(printf '%s' "$answer" | jq -r '.error.message // empty' 2>/dev/null | head -c 300)"
+            echo "::add-mask::$key"
+            url="$AIDENHQ_GATEWAY_URL/api/v1"
+            m=$(printf '%s' "$answer" | jq -r '.review.model // empty'); e=$(printf '%s' "$answer" | jq -r '.review.effort // empty')
+            [[ "$m" =~ ^[A-Za-z0-9~._/-]{1,120}$ ]] && model="$m"
+            [[ "$e" =~ ^(minimal|low|medium|high|xhigh)$ ]] && effort="$e"
           fi
-          # Light (no critical path, no deep-review label): the quick reviewer, one model call over the diff and the changed
-          # files (.github/quick-review.mjs, from the base commit like everything here; a base without it uses codegenie).
-          # About a minute and a cent, where codegenie's agentic review takes minutes and many calls. Only for a PR by a repo
-          # member or a bot (the org's App): anyone else's gets codegenie. codegenie also takes a diff too large for one call
-          # (exit 3) or one with no findings on many lines (5) at light, and at deep one whose text addresses a reviewer (4).
-          case "$PR_AUTHOR_ASSOC" in OWNER|MEMBER|COLLABORATOR) trusted=1 ;; *) trusted="" ;; esac
-          [ "$PR_AUTHOR_TYPE" = Bot ] && trusted=1
-          if [ "$depth" = light ] && [ -n "$trusted" ] && [ -f .github/quick-review.mjs ]; then
-            OPENROUTER_BASE="${AIDENHQ_CI_GATEWAY_BASE:-}" MODEL="$QUICK_MODEL" REASONING=medium RULES=.codegenie/skills/house-rules.md \
-              node .github/quick-review.mjs "$from" "$HEAD_SHA" > "$RUNNER_TEMP/review.json" 2> "$RUNNER_TEMP/review.err"
+          [ -n "$key" ] || gave_up "No model key: neither AidenHQ's model gateway nor the OPENROUTER_API_KEY secret."
+          # The reviewer and its TypeScript navigation, pinned (it reads the PR through review-tools.mjs only: no shell, nothing
+          # of the PR runs or is installed). Its scripts and the house rules (.github/code-review-rules.md) are the base
+          # commit's, like everything here.
+          npm i -g --no-audit --no-fund --loglevel=error @openai/codex@0.167.0 typescript-language-server@6.0.3 typescript@6.0.3 || gave_up "Couldn't install the reviewer (npm)."
+          review() { # $1: minutes. Sets $code.
+            CI_REVIEW_KEY="$key" CI_REVIEW_URL="$url" MODEL="$model" EFFORT="$effort" DEEP="$( [ "$depth" = deep ] && echo 1)" \
+              TRUSTED_BASE="$BASE_SHA" RULES="$rv/code-review-rules.md" CRITICAL_GLOBS="$globs" REVIEW_LSP="$(npm prefix -g)/bin/typescript-language-server" \
+              REVIEW_MINUTES="$1" node "$rv/code-review.mjs" "$from" "$HEAD_SHA" > "$RUNNER_TEMP/review.json"
             code=$?
-            cat "$RUNNER_TEMP/review.err" >&2
-            case "$code" in
-              3|5) ;;
-              4) depth=deep; echo "REVIEW_DEPTH=deep" >> "$GITHUB_ENV" ;;
-              *)
-                echo "REVIEW_DEPTH=quick" >> "$GITHUB_ENV"
-                printf 'CODEGENIE_EXIT=%s\nCODEGENIE_ATTEMPTS=1\n' "$code" >> "$GITHUB_ENV"
-                if [ "$code" = 0 ]; then echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV"
-                elif [ "$code" = 2 ]; then printf 'CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=gateway refused the quick review\n' >> "$GITHUB_ENV"
-                else printf 'CODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=no-review-output\n' >> "$GITHUB_ENV"; fi
-                exit 0 ;;
-            esac
-          fi
-          # codegenie's own telemetry (events.jsonl) is where a failed run's cause is: its review JSON can carry only "The
-          # underlying cause was not captured" (roadmap-keeper#131, #134). On only for this job, outside the checkout.
-          export CODEGENIE_HOME="$RUNNER_TEMP/codegenie"
-          mkdir -p "$CODEGENIE_HOME"
-          printf '[telemetry]\nenabled = true\nlogLevel = "warn"\nrunDir = "%s"\n' "$RUNNER_TEMP/codegenie-runs" > "$CODEGENIE_HOME/config.toml"
-          review() { # $1: --max-time in minutes. Sets $code; stderr is kept for failure() and still shown in the log.
-            rm -rf "$RUNNER_TEMP/codegenie-runs"
-            NODE_OPTIONS="$node_opts" npx -y @0xsequence/codegenie@0.7.0 review --base "$from" --head "$HEAD_SHA" --model "$MODEL" --depth "$depth" \
-              --format json --ci --no-progress --max-time "$1" --budget-boost "$boost" > "$RUNNER_TEMP/review.json" 2> "$RUNNER_TEMP/review.err"
-            code=$?
-            cat "$RUNNER_TEMP/review.err" >&2
           }
-          # Reads a run: prints "<kind>\t<cause>". kind: ok (it has a verdict), permanent (exit 2: arguments, config or git
-          # refs; a bad key; the provider's usage limit), budget (its call budget ran out; an unexplained failure on an
-          # already boosted diff counts too: #131, #134 at 13-17k lines), too-large (the model's review of an already
-          # boosted diff came back schema-invalid, llm_schema_invalid: roadmap-keeper#161 at 3,091 lines, where retries cost
-          # about 30 minutes more; smaller PRs review reliably) or transient (no review output, a provider error or timeout, anything else). cause goes
-          # into a PR comment, so it is only a fixed class (config, auth, usage-limit, no-review-output, budget, schema,
-          # rate-limit, provider-5xx, timeout, unknown) and codegenie's own error codes, masked; the detail (stderr,
-          # telemetry errors) goes to the job log only, where GitHub masks secrets.
-          # Output with stray lines around codegenie's JSON is cut back to the JSON (#141: exit 0, yet no readable review).
-          failure() {
-            node -e '
-              const fs = require("fs");
-              const [code, file, errFile, runs, boost] = process.argv.slice(1);
-              const read = (f) => { try { return fs.readFileSync(f, "utf8"); } catch { return ""; } };
-              const out = read(file), err = read(errFile);
-              const parse = (s) => { try { return JSON.parse(s); } catch { return undefined; } };
-              let r = parse(out);
-              if (!r) { const json = out.match(/^\{$[\s\S]*^\}$/m)?.[0]; if ((r = json && parse(json))) fs.writeFileSync(file, json); }
-              const ok = code === "0" && Array.isArray(r?.findings) && r.health?.status !== "failed" && !r.coverage?.unavailable;
-              let events = [];
-              try { for (const d of fs.readdirSync(runs)) events.push(...read(`${runs}/${d}/events.jsonl`).split("\n").map(parse).filter(Boolean)); } catch {}
-              events = events.filter((e) => e.level === "error" || e.level === "warn");
-              const said = (e) => [e.data?.errorCode, e.data?.error || e.message, e.data?.context?.providerMessage].filter(Boolean).join(": ");
-              if (!ok) for (const s of new Set(events.map(said))) console.error(`codegenie ${s}`);
-              // Signals: codegenie error codes (fixed words), and the fatal error text (its rendered error, the review
-              // diagnostics, error-level events) for the few headlines it has no code for.
-              const diags = r?.health?.diagnostics ?? [];
-              const codes = [...diags.map((d) => d.code), ...events.flatMap((e) => [e.data?.errorCode, e.data?.context?.reason]), r?.coverage?.budgetStop?.reason]
-                .filter((c) => /^[a-z_]{2,40}$/.test(c ?? ""));
-              const has = (...c) => c.some((x) => codes.includes(x));
-              const fatal = [...err.split("\n").filter((l) => /^[a-z_]+: /.test(l)), ...diags.map((d) => d.reason),
-                ...events.filter((e) => e.level === "error").map(said)].join("\n");
-              const [kind, cls] = ok ? ["ok", ""] : code === "2" || has("invalid_args", "config_error", "not_git_worktree", "git_ref_missing", "diff_parse_failed") ? ["permanent", "config"]
-                : has("auth") || /authentication failed/i.test(fatal) ? ["permanent", "auth"]
-                : has("usage_limit") || /usage limit reached/i.test(fatal) ? ["permanent", "usage-limit"]
-                : r?.coverage?.budgetStopped || has("budget_exhausted", "max_model_calls", "max_budget_tokens") || /budget exhausted/i.test(fatal) ? ["budget", "budget"]
-                : has("llm_schema_invalid") && Number(boost) > 1 ? ["too-large", "schema"]
-                : !Array.isArray(r?.findings) ? ["transient", "no-review-output"]
-                : /\b429\b|rate.?limit/i.test(fatal) ? ["transient", "rate-limit"]
-                : /HTTP 5\d\d|overloaded|bad gateway|service unavailable/i.test(fatal) ? ["transient", "provider-5xx"]
-                : has("timeout", "hard_timeout", "runtime_reserved_tail") || /timed out/i.test(fatal) ? ["transient", "timeout"]
-                : Number(boost) > 1 ? ["budget", "unknown"] : ["transient", "unknown"];
-              const http = fatal.match(/HTTP [1-5]\d\d/)?.[0];
-              const why = [...new Set([...codes, ...(http ? [http] : [])])].slice(0, 4).join(", ");
-              console.log(ok ? "ok\t" : `${kind}\t${cls}${why ? ` (${why})` : ""}`);
-            ' "$code" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/review.err" "$RUNNER_TEMP/codegenie-runs" "$boost"
-          }
-          # No verdict is never a pass: the gate fails it. But one retry here, inside the job, recovers most of them: with
-          # double the budget after a budget stop, else after a short wait. The retry gets a --max-time whose hard stop
-          # (twice it) still ends before the job's timeout, and none when under 10 minutes are left. A diff too large for one
-          # review ends here at once: the gate says to split the PR.
+          # No verdict is never a pass: the gate fails it. One retry after a provider error or timeout, when time is left.
           review 40
           attempts=1
-          IFS=$'\t' read -r kind cause < <(failure)
-          if [ "$kind" = budget ] || [ "$kind" = transient ]; then
-            if [ "$kind" = budget ]; then
-              boost=$((boost * 2))
-              echo "::warning::codegenie ran out of its review budget (${cause:-no cause given}): retrying with --budget-boost $boost."
-            else
-              echo "::warning::codegenie ended without a review (${cause:-no cause given}): retrying in 60 seconds."
+          # Past the review target (2,000 counted lines) one attempt only: no verdict there is the gate's "stopped short"
+          # decision, and a second 40-minute attempt rarely changes it (rk#167, 5,230 lines: none after 25 minutes).
+          if [ "$code" = 1 ] && [ "$lines" -le 2000 ]; then
+            left=$(( (85 * 60 - SECONDS) / 60 - 1 ))
+            if [ "$left" -ge 10 ]; then
+              echo "::warning::The review ended without a verdict: retrying in 60 seconds."
               sleep 60
-            fi
-            left=$(( (85 * 60 - SECONDS) / 120 ))
-            if [ "$left" -ge 5 ]; then
               review $(( left < 40 ? left : 40 ))
               attempts=2
-              IFS=$'\t' read -r kind cause < <(failure)
-            else
-              echo "::warning::Not enough of the job's time is left for a retry."
             fi
           fi
-          [ "$kind" = too-large ] && echo "::warning::codegenie's review came back schema-invalid (${cause}): the diff is too large for one review, so the check ends now."
-          echo "CODEGENIE_EXIT=$code" >> "$GITHUB_ENV"
-          echo "CODEGENIE_ATTEMPTS=$attempts" >> "$GITHUB_ENV"
-          echo "CODEGENIE_FAILURE=$kind" >> "$GITHUB_ENV"
-          [ "$kind" = ok ] || echo "CODEGENIE_CAUSE=$cause" >> "$GITHUB_ENV"
-          # Record marks a head reviewed only when a review actually came out (or a reuse): never a skip.
-          if [ "$kind" = ok ]; then echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV"; fi
+          printf 'CODEGENIE_EXIT=%s\nCODEGENIE_ATTEMPTS=%s\n' "$code" "$attempts" >> "$GITHUB_ENV"
+          case "$code" in
+            0) echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV" ;;
+            2) printf 'CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=the model gateway refused the review\n' >> "$GITHUB_ENV" ;;
+            # The cause goes into a PR comment: a fixed class only; the detail is in this log (code-review.mjs's stderr).
+            *) printf 'CODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=no review output\n' >> "$GITHUB_ENV" ;;
+          esac
       - name: Verdict
         if: ${{ !cancelled() }}
         env:

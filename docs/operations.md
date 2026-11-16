@@ -317,12 +317,9 @@ launcher; a new image applies from the next acquire) and
 
 ## CI runners (modules/ci)
 
-App repos' CI (`modules/core/templates/ci`: jobs `tests` and `code-review`; `code-review` skips codegenie and passes on a
+App repos' CI (`modules/core/templates/ci`: jobs `tests` and `code-review`; `code-review` skips the review and passes on a
 change under 20 added plus deleted lines with no sensitive path; `package-lock.json`, which the supply-chain job validates, is not counted and never makes a path sensitive, while other lockfiles are and do; a head whose patch is unchanged since a green review of the same branch and base ref, on a base that only moved forward, reuses that verdict) runs on our own GitHub Actions runners,
-`runs-on: [self-hosted, aidenhq]`, registered to the agents org. A diff past the review target of 2,000 counted changed
-lines whose review stops for budget or size is decided, not failed: the findings it did report still block, and otherwise
-the check passes naming the count, the reason and the part it didn't read, with the split in counted lines. The product
-repo's CI (`.github/workflows/`) runs on
+`runs-on: [self-hosted, aidenhq]`, registered to the agents org. The product repo's CI (`.github/workflows/`) runs on
 the same kind of runner, registered to the product repo's org (below). Each `aidenhq-ci-runner@<n>` user unit (agents
 org) or `aidenhq-ci-runner@<org>-<n>` unit (another org the App is installed on) runs
 `ops/ci-runner.sh`: it mints a one-hour registration token on the host from the GitHub App
@@ -338,13 +335,27 @@ per runner: 4 CPUs, 8 GB.
 and trades it at the gateway's `POST /ci/token` for an opaque CI token that lives 2 hours. The gateway
 (`kernel/src/gateway/ci.ts`) checks GitHub's signature and that the job is a `pull_request` run of the repo's own
 `.github/workflows/ci.yml` for that PR, on a self-hosted runner in the agents org; each run attempt trades its token
-once. The repo and PR come from that signed token. The CI token works only on the CI listener, only for
-`chat/completions` with the models in `settings.ci_review_models` and no fallbacks, plugins or server tools, under CI's
-own caps (`ci_review_repo_day_usd`, `ci_review_day_usd`; always on; a refusal fails the
-review, no retry). Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job
-sent (advisory): the Costs tab's "App CI code review" line. A PR that touches no critical path gets the quick reviewer
-(`.github/quick-review.mjs`: one call, GPT Luna by default); a critical one gets codegenie, which has no base-URL option,
-so the job loads a small preload that sends its OpenRouter calls to the gateway. Revoke: `settings.ci_review: off` refuses every CI token at once.
+once. The repo and PR come from that signed token, and the answer names the review model and effort
+(`settings.ci_review_model`). The CI token works only on the CI listener, only for `responses` (and `chat/completions`
+for repos on the older template) with `settings.ci_review_model` or `settings.ci_review_models`, no fallbacks, plugins,
+server tools or stored responses, zero data retention forced, under CI's own caps (`ci_review_repo_day_usd`,
+`ci_review_day_usd`; always on; a refusal fails the review, no retry). Each call reserves its worst case before it goes
+out and settles at what was billed (a Responses stream at its `response.completed`); a cut stream keeps its reservation.
+Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job sent (advisory):
+the Costs tab's "App CI code review" line. Revoke: `settings.ci_review: off` refuses every CI token at once.
+The reviewer is codex with codex review's guidelines (`.github/code-review.mjs`, pinned `@openai/codex`), at the model's effort (critical paths
+too), one higher (xhigh) only with the `deep-review` label or text addressed to a reviewer. codex runs with its shell off: the
+runner container can't give it its sandbox (bubblewrap needs user namespaces, which Docker and the host's AppArmor refuse
+there), so its only tools are `.github/review-tools.mjs`, a stdio MCP server that reads the PR's tree and git history
+(diff, log, show, blame, read a file, list files, search; for TypeScript and JavaScript definition, references and
+diagnostics from a pinned typescript-language-server, with no dependencies installed and type acquisition off) and
+nothing else: nothing of the PR runs, writes or connects, and its
+environment holds only the CI token (never the job's GitHub tokens). It runs from an empty directory with a config the
+job writes (hooks, plugins and apps off), so nothing in the PR is loaded as codex config or instructions; a PR that adds
+`.codex/`, `codex.toml` or `AGENTS.override.md` fails the check, and AGENTS.md is a critical path. Its answer must match
+an output schema: anything else is no verdict, which fails the check. Its scripts and the house rules (`.github/code-review-rules.md`) come
+from the base commit. Its brief: the house rules, the app's critical paths and its AGENTS.md (base commit), and the PR's
+title and description fenced as data, so it judges scope. P0 and P1 findings block (critical, high); P2 and P3 are listed.
 A same-repo PR can edit the workflow and spend up to its repo's day cap on the allowed models: the cap and scope are the
 boundary, not the job name. Instances without the gateway (no `AIDENHQ_GATEWAY_URL`) use the repo secret
 `OPENROUTER_API_KEY` instead; where the gateway is on, delete that secret from the app repos (an edited workflow could
@@ -355,10 +366,8 @@ read it).
    the agents org → Settings → Developer settings → GitHub Apps → the App → Permissions), save, then accept the new
    permission on each installation (every org that installed the App is asked). New Apps get it from the manifest.
 2. Agents org → Settings → Actions → Runner groups → Default: allow private repositories (and public if any). No model
-   secret: code review spends through the gateway (above). Optional variables `QUICK_REVIEW_MODEL` (default
-   `openrouter/~openai/gpt-luna-latest`) and `CODEGENIE_MODEL` (default
-   `openrouter/~deepseek/deepseek-flash-latest`; `openrouter/deepseek/deepseek-v4-flash-0731` gets codegenie's DeepSeek
-   routing workaround if the `~` alias misbehaves: add it to `settings.ci_review_models` first).
+   secret: code review spends through the gateway (above), whose `settings.ci_review_model` (default
+   `~deepseek/deepseek-flash-latest:high`) picks the model and effort. Off the gateway: the variable `CI_REVIEW_MODEL`.
 3. Instance repo: add `ci` to `modules:` in `instance.yaml`; deploy (`ops/apply-config.sh`).
 4. On the VM (sudo, once): `sudo install -m0755 ops/vm/computer-net.sh /usr/local/sbin/aidenhq-computer-net && sudo install
    -m0644 ops/units/aidenhq-ci-net.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable
