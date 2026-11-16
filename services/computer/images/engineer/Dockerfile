@@ -10,14 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # gh from GitHub's own apt repository, not Debian's: the base is debian:sid-slim (the browser image), whose gh is 2.46.0-4,
 # with no fix for CVE-2026-48501 (the auth layer sent a github.com token to tuf-repo.github.com, fixed upstream in 2.93.0)
 # and a Go stdlib carrying published advisories. 2.104.0 (2026-11-12) is built with go1.27.4. The keyring is read into /tmp
-# first and written only after its non-expired primary key is exactly the GitHub CLI key: every other key counts, so one
-# added is refused. `signed-by` carries the same fingerprint, for this repository alone, in the vendor's suite matching
-# sid. The repository keeps only the newest build, so the pin moves.
+# first and written only after its primary keys are exactly GitHub's two (the live CLI key and the one that expired
+# 2026-09-05, which the ring still ships): a key added, missing or different is refused.
+# `signed-by` carries the live key's fingerprint, for this repository alone, in the vendor's suite matching sid. The repository keeps only the newest build, so the pin moves.
 RUN mkdir -m 700 -p /tmp/gh-gpg \
     && curl -fsSLo /tmp/gh-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && keys="$(GNUPGHOME=/tmp/gh-gpg gpg --batch --show-keys --with-colons /tmp/gh-keyring.gpg \
-      | awk -F: '$1 == "pub" { p = ($2 != "e"); next } p && $1 == "fpr" { print $10; p = 0 }')" \
-    && [ "$keys" = 7F38BBB59D064DBCB3D84D725612B36462313325 ] \
+      | awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print $10; p = 0 }' | sort | paste -sd, -)" \
+    && [ "$keys" = 2C6106201985B60E6C7AC87323F3D4EA75716059,7F38BBB59D064DBCB3D84D725612B36462313325 ] \
     && install -m 0644 /tmp/gh-keyring.gpg /etc/apt/keyrings/github-cli.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/github-cli.gpg,7F38BBB59D064DBCB3D84D725612B36462313325] https://cli.github.com/packages sid main" \
       > /etc/apt/sources.list.d/github-cli.list \
