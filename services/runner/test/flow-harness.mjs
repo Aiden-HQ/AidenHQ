@@ -372,8 +372,12 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
       mkdirSync(dirname(join(dir, "github", slug)), { recursive: true });
       git(dir, "clone", "-q", "--bare", src, join(dir, "github", `${slug}.git`));
     }
+    // The fakes log and take their steps through FAKE_* settings, baked in here: a job's env is the kernel's allowlist, so
+    // nothing of the runner's environment reaches the engine or the bwrap it runs under.
+    const fakeEnv = { FAKE_LOG: join(dir, "fake.log"), FAKE_STEP: join(dir, "claude-step"), ...Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("FAKE_"))) };
+    const exports = Object.entries(fakeEnv).map(([k, v]) => `export ${k}='${v}'\n`).join("");
     for (const name of ["bwrap", "codex", "claude", "gh"]) {
-      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\nexec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\nexec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
+      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
       chmodSync(join(bin, name), 0o755);
     }
 
@@ -422,7 +426,8 @@ ${runnerYaml}`,
     const engineers = [
       { id: "engineer-claude", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", runnerEngine: true, persona: { name: "Ada" }, privateReads: true } },
       { id: "engineer-codex", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-codex", runnerEngine: true, persona: { name: "Grace" }, privateReads: true } },
-      ...moreEngineers,
+      // Setup marks every engine-run agent (dispatch: runner) runnerEngine: the kernel starts jobs only for those.
+      ...moreEngineers.map((a) => ({ ...a, metadata: { runnerEngine: true, ...a.metadata } })),
     ];
     const parent = { id: "parent", identifier: "PEN-1", title: "Drop Legacy support", status: "todo", assigneeUserId: USER, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Remove Legacy from these repos:\n\n- acme/app\n- acme/infra\n" };
     const part = { id: "part", identifier: "PEN-2", title: "Drop Legacy support", status: "todo", parentId: "parent", assigneeAgentId: "engineer-claude", assigneeUserId: null, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Ada, go ahead and start this on dev please" };

@@ -28,8 +28,8 @@ test("aidenhq advise: the job's own credential on the advisor route, 5 a job acr
   });
   await new Promise((r) => gateway.listen(0, "127.0.0.1", r));
   const dir = mkdtempSync(join(tmpdir(), "advise-"));
-  writeFileSync(join(dir, "secret"), "job-secret");
-  const cfg = { gatewayJobSecretFile: join(dir, "secret"), timeout_minutes: 60, gatewayUrl: `http://127.0.0.1:${gateway.address().port}` };
+  writeFileSync(join(dir, "gateway_job_secret"), "job-secret");
+  const cfg = { secretsDir: dir, timeout_minutes: 60, gatewayUrl: `http://127.0.0.1:${gateway.address().port}` };
   let saved; // the runner's state: what saveTools keeps of the run
   const helper = startRepoHelper(async () => "", () => {}, {
     advise: (ctx, args) => jobAdvise(ctx, args.brief, { cfg, save: (c) => (saved = { ...c.run, advised: c.advised?.advisor ?? c.run.advised }) }),

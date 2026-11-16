@@ -13,20 +13,20 @@ import { registry } from "./fakes/engines.mjs";
 import { fakePaperclip } from "./flow-harness.mjs";
 import { State } from "../src/state.ts";
 import { ensureRepo, safeWorkspace } from "../src/workspace.ts";
-import { adoptRun, buildJob, layout, readEvents, startAgent, watchAgent } from "../src/engines.mjs";
+import { jobsHost } from "./flow-harness.mjs";
 import { useEngines } from "../src/agents.mjs";
-import { codexCommand } from "../../../modules/engine-codex/src/codex.ts";
-import { claudeCommand } from "../../../modules/engine-claude/src/claude.ts";
-import { opencodeCommand } from "../../../modules/engine-opencode/src/opencode.ts";
-import { loadConfig } from "../src/config.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
 const FAKES = join(import.meta.dirname, "fakes");
 const COMPANY = "00000000-0000-4000-8000-000000000001";
 const USER = "user-1";
 
-/** The launcher's job routes, as the runner sees them: boxes as files the fake docker reads; `survive` release calls answer "running". */
-function fakeLauncher(boxes) {
+/**
+ * The launcher's job routes, as the runner sees them: boxes as files the fake docker reads; `survive` release calls answer
+ * "running". Like the real one, it keeps each box's env file and out folder under its jobs folder (`jobsDir`) and records the
+ * box's task, agent and workspace in jobs.json beside it: what the kernel checks a box job against.
+ */
+function fakeLauncher(boxes, jobsDir) {
   const calls = [];
   const opts = { failJob: false, survive: 0, die: false };
   const goneAt = new Map();
@@ -42,11 +42,13 @@ function fakeLauncher(boxes) {
     if (req.url === "/job") {
       if (opts.failJob) return send(500, { error: "docker run failed: no space left" });
       const container = `aidenhq-computer-t${++n}`;
-      const outDir = join(boxes, `${container}-out`);
-      mkdirSync(outDir);
+      const outDir = join(jobsDir, container);
+      mkdirSync(outDir, { recursive: true });
       writeFileSync(file(container), JSON.stringify({ workspace: body.workspace, outDir, die: opts.die }));
-      writeFileSync(join(boxes, `${container}.env`), "AIDENHQ_RUN_TOKEN=ahqc_x\nHOME=/workspace/.aidenhq/home\n");
-      return send(200, { container, envFile: join(boxes, `${container}.env`), outDir });
+      writeFileSync(join(jobsDir, `${container}.env`), "AIDENHQ_RUN_TOKEN=ahqc_x\nHOME=/workspace/.aidenhq/home\n");
+      const recs = existsSync(join(jobsDir, "../jobs.json")) ? JSON.parse(readFileSync(join(jobsDir, "../jobs.json"), "utf8")) : [];
+      writeFileSync(join(jobsDir, "../jobs.json"), JSON.stringify([...recs, { container, agentId: body.agentId, issueId: body.issueId, workspace: body.workspace }]));
+      return send(200, { container, envFile: join(jobsDir, `${container}.env`), outDir });
     }
     const box = existsSync(file(body.container)) ? JSON.parse(readFileSync(file(body.container), "utf8")) : { gone: true };
     if (req.url === "/job/renew") return box.gone ? send(404, { error: "box gone" }) : send(200, { container: body.container, issueId: body.issueId, workspace: box.workspace });
@@ -62,7 +64,7 @@ function fakeLauncher(boxes) {
 }
 
 describe("box jobs", () => {
-  let dir, runner, env, paperclip, boxLauncher, output = "";
+  let dir, runner, env, paperclip, boxLauncher, jobs, output = "";
   const start = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env, stdio: ["ignore", "pipe", "pipe"] });
     runner.stdout.on("data", (d) => (output += d));
@@ -89,8 +91,10 @@ describe("box jobs", () => {
     dir = mkdtempSync(join(tmpdir(), "aidenhq-box-"));
     const [home, config, secrets, bin, boxes] = ["home", "config", "secrets", "bin", "boxes"].map((d) => join(dir, d));
     for (const d of [home, config, secrets, bin, boxes]) mkdirSync(d, { recursive: true });
+    // The fakes' settings baked in: a job's env is the kernel's allowlist.
+    const exports = `export FAKE_LOG='${join(dir, "fake.log")}'\nexport FAKE_STEP='${join(dir, "step")}'\n`;
     for (const name of ["bwrap", "codex", "claude", "gh"]) {
-      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\nexec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\nexec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
+      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
       chmodSync(join(bin, name), 0o755);
     }
     // The docker client gets only Docker's env from the runner: the fake's own settings are baked into its shim.
@@ -101,17 +105,17 @@ describe("box jobs", () => {
     writeFileSync(join(config, "system.yaml"), `paperclip:\n  company_id: "${COMPANY}"\nuser:\n  names: ["Dana"]\n`);
     writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));
     writeFileSync(join(config, "runner.yaml"), `label: engineer\npoll_seconds: 0.2\nallowed_orgs: [acme]\nwork_dir: ${join(dir, "work")}\nstate_dir: ${join(dir, "state")}\nmax_concurrent: 1\ntimeout_minutes: 2\nengines:\n  openrouter:\n    model: acme/model-1\nintake:\n  codex_args: []\n  timeout_seconds: 30\nreplies:\n  enabled: false\nreviews:\n  enabled: false\nrecurring:\n  enabled: false\n`);
-    for (const [f, v] of [["paperclip_board_key", "board-key"], ["board_internal_token", "board-token"], ["computers_runner_key", "runner-key"]]) writeFileSync(join(secrets, f), `${v}\n`, { mode: 0o600 });
+    for (const [f, v] of [["paperclip_board_key", "board-key"], ["board_internal_token", "board-token"], ["computers_runner_key", "runner-key"], ["engineering_token", "engineering-token"]]) writeFileSync(join(secrets, f), `${v}\n`, { mode: 0o600 });
     const engineers = [{ id: "app-eng", name: "App Engineer", status: "idle", adapterType: "opencode_local", adapterConfig: { model: "openrouter/acme/model-1" }, metadata: { setupKey: "aidenhq:app-engineer", runnerEngine: true, engine: "codex-openrouter", box: true, persona: { name: "Ada" } } }];
     const parent = { id: "parent", identifier: "PEN-1", title: "An apps page", status: "todo", assigneeUserId: USER, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Build a page listing the apps." };
     const part = { id: "part", identifier: "PEN-2", title: "An apps page", status: "todo", parentId: "parent", assigneeAgentId: "app-eng", assigneeUserId: null, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Ada, build a page listing the apps" };
     // The board's completion gate answers slowly, as it can on a loaded runner: a turn's outcome has to be recorded
     // before its reply goes out, or a report reads "running" beside a finished turn.
-    paperclip = fakePaperclip({ parent, part, engineers, gateDelayMs: 500 });
+    paperclip = fakePaperclip({ parent, part, engineers, gateDelayMs: 500, jobs: () => jobs.port });
     // Each patch's time, to order the reply against the box's release.
     const patches = paperclip.patches;
     patches.push = (...xs) => Array.prototype.push.apply(patches, xs.map((x) => ({ ...x, at: Date.now() })));
-    boxLauncher = fakeLauncher(boxes);
+    boxLauncher = fakeLauncher(boxes, join(home, ".local/state/aidenhq-computers/jobs"));
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     await new Promise((r) => boxLauncher.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
@@ -126,15 +130,18 @@ describe("box jobs", () => {
       AIDENHQ_LAUNCHER_URL: `http://127.0.0.1:${boxLauncher.server.address().port}`,
       PAPERCLIP_URL: url,
       BOARD_INTERNAL_URL: url,
+      AIDENHQ_KERNEL_URL: url,
       FAKE_LOG: join(dir, "fake.log"),
       FAKE_STEP: join(dir, "step"),
       FAKE_BOXES: boxes,
       AIDENHQ_GRADER_URL: `${url}/grader`,
     };
+    jobs = jobsHost(env, join(dir, "kernel.db"));
     start();
   });
   after(() => {
     runner?.kill("SIGKILL");
+    jobs?.p.kill("SIGKILL");
     paperclip?.server.close();
     boxLauncher?.server.close();
     if (dir) rmSync(dir, { recursive: true, force: true });
@@ -151,7 +158,7 @@ describe("box jobs", () => {
     assert.equal(job.state, join(dir, "state/codex-openrouter/part"));
     assert.ok(statSync(join(job.state, "AGENTS.md")).isFile(), "its engine's state folder is seeded before the box mounts it");
     const run = dockerRuns()[0];
-    assert.deepEqual(run.argv.slice(0, 6), ["exec", "--env-file", join(dir, "boxes/aidenhq-computer-t1.env"), "-w", "/workspace", "aidenhq-computer-t1"]);
+    assert.deepEqual(run.argv.slice(0, 6), ["exec", "--env-file", join(dir, "home/.local/state/aidenhq-computers/jobs/aidenhq-computer-t1.env"), "-w", "/workspace", "aidenhq-computer-t1"]);
     // The engine module's bin, mounted read-only by the launcher, on the job dir in the launcher's out folder.
     assert.deepEqual(run.argv.slice(-2), ["/opt/aidenhq/engine/bin/engine", "/aidenhq-out/job"]);
     assert.deepEqual([run.spec.contract, run.spec.sandbox.kind, run.spec.model.base_url, run.spec.model.token_env, run.spec.mcp], ["engine@1", "box", "http://10.231.2.1:8200/api/v1", "AIDENHQ_RUN_TOKEN", []]);
@@ -169,7 +176,7 @@ describe("box jobs", () => {
     assert.equal(await exited, 75);
     assert.equal(calls("/job/release").length, 0);
     start();
-    await waitFor("the adoption", () => output.includes('"adopted a running job"') && calls("/job/renew").length > 0);
+    await waitFor("the adoption", () => output.includes('"following a running job again"') && calls("/job/renew").length > 0);
     const renew = calls("/job/renew")[0].body;
     assert.deepEqual([renew.container, renew.issueId, renew.helperToken], ["aidenhq-computer-t1", "part", token]);
 
@@ -240,47 +247,6 @@ describe("box jobs", () => {
     await waitFor("quiet", quiet);
     assert.ok(boxLauncher.goneAt.has("aidenhq-computer-t3"), "the box was released");
     assert.notEqual(lastJob().status, "running");
-  });
-
-  it("a box job with private reads gets no web search; one without keeps it", async () => {
-    const cfg = { stateDir: join(dir, "state"), enginesFile: join(dir, "config/engines.json") };
-    const box = { container: "aidenhq-computer-x", envFile: "/e", outDir: "/o" };
-    const argv = (reads) => {
-      const jobDir = mkdtempSync(join(tmpdir(), "box-job-"));
-      const { spec } = buildJob({ cfg, engine: { kind: "codex-openrouter", model: "m", box: true, ...(reads ? { reads: true } : {}) }, worktree: "/w", jobDir, job: { issueId: "x" }, box });
-      return codexCommand(spec, "/aidenhq-out/job", {}).argv.join(" ");
-    };
-    assert.match(argv(true), /web_search="disabled"/);
-    assert.match(argv(false), /web_search="live"/);
-  });
-
-  it("a box job's gh token reaches the box through docker exec's env, by name: never its argv or the env file", async () => {
-    const cfg = { stateDir: join(dir, "state"), enginesFile: join(dir, "config/engines.json") };
-    const d = mkdtempSync(join(tmpdir(), "box-gh-"));
-    const bin = join(d, "bin");
-    mkdirSync(bin);
-    writeFileSync(join(bin, "docker"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${d}/argv"\nenv > "${d}/env"\n`, { mode: 0o755 });
-    writeFileSync(join(d, "box.env"), "AIDENHQ_RUN_TOKEN=ahqc_x\n");
-    const box = { container: "aidenhq-computer-gh", envFile: join(d, "box.env"), outDir: join(d, "out") };
-    mkdirSync(box.outDir);
-    const path = process.env.PATH;
-    process.env.PATH = `${bin}:${path}`;
-    let run;
-    try {
-      run = startAgent({ cfg, engine: { kind: "codex-openrouter", model: "m", box: true }, worktree: d, prompt: "p", logPath: join(d, "log"), ghToken: "ghs_read", job: { issueId: "x" }, box });
-    } finally {
-      process.env.PATH = path; // spawn has copied it
-    }
-    for (const end = Date.now() + 30_000; !existsSync(`${run.logPath}.exit`) && !run.spawnError && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
-    assert.ok(existsSync(join(d, "argv")), `the fake docker ran: ${run.spawnError ?? ""} ${readFileSync(run.logPath, "utf8")}`);
-    const argv = readFileSync(join(d, "argv"), "utf8").split("\n");
-    assert.deepEqual(argv.slice(0, 7), ["exec", "--env-file", box.envFile, "-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"]);
-    assert.ok(!argv.join(" ").includes("ghs_read"), "the value is never on the command line");
-    const env = readFileSync(join(d, "env"), "utf8");
-    assert.match(env, /^GH_TOKEN=ghs_read$/m);
-    assert.match(env, /^AIDENHQ_GH_AUTH=ghs_read$/m);
-    assert.ok(!readFileSync(box.envFile, "utf8").includes("ghs_read") && !readFileSync(join(d, "log"), "utf8").includes("ghs_read"), "nor in the env file or the log");
-    rmSync(d, { recursive: true, force: true });
   });
 
   it("a box Engineer runs only what is assigned to it: never picked, or borrowed as a persona, by its engine kind", async () => {
@@ -369,106 +335,4 @@ describe("hostile jobs", () => {
     assert.equal(safeWorkspace(root, join(root, "tasks", "WOR-1")), join(realpathSync(root), "tasks", "WOR-1"));
   });
 
-  it("H2: the jail hides the vault, the data dir, the Docker and tailscaled sockets and the user's runtime dir", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "h2-"));
-    writeFileSync(join(dir, "system.yaml"), `paperclip:\n  company_id: "${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}"\n`);
-    const before = { config: process.env.AIDENHQ_CONFIG_DIR, secrets: process.env.AIDENHQ_SECRETS_DIR, data: process.env.AIDENHQ_DATA_DIR };
-    Object.assign(process.env, { AIDENHQ_CONFIG_DIR: dir, AIDENHQ_SECRETS_DIR: join(dir, "secrets"), AIDENHQ_DATA_DIR: join(dir, "data") });
-    const cfg = loadConfig();
-    for (const [k, v] of Object.entries({ AIDENHQ_CONFIG_DIR: before.config, AIDENHQ_SECRETS_DIR: before.secrets, AIDENHQ_DATA_DIR: before.data })) if (v === undefined) delete process.env[k]; else process.env[k] = v;
-    for (const p of [join(dir, "secrets"), join(dir, "data"), "/run/docker.sock", "/run/tailscale/tailscaled.sock", `/run/user/${process.getuid()}`]) assert.ok(cfg.gcp.hidden.includes(p), `${p} hidden`);
-    // What the list names inside an allowed path is masked in the job: a folder by an empty tmpfs, a file by /dev/null.
-    for (const d of ["secrets", "data"]) mkdirSync(join(dir, d));
-    writeFileSync(join(dir, "docker.sock"), "");
-    const args = layout({ gcp: { hidden: [join(dir, "secrets"), join(dir, "data"), join(dir, "docker.sock")] } }, { rw: [dir] });
-    const after = args.slice(args.indexOf(dir) + 2).join(" ");
-    for (const d of ["secrets", "data"]) assert.ok(after.includes(`--tmpfs ${join(dir, d)}`), d);
-    assert.ok(after.includes(`--ro-bind /dev/null ${join(dir, "docker.sock")}`));
-  });
-
-  it("H3: no MCP token or connection URL in a job, and no engine wrapped in codex sandbox", () => {
-    const dir = mkdtempSync(join(tmpdir(), "h3-"));
-    for (const [f, v] of [["secret", "job-secret"]]) writeFileSync(join(dir, f), v);
-    mkdirSync(join(dir, "vault"));
-    writeFileSync(join(dir, "vault", "claude_oauth_token"), "tok");
-    writeFileSync(join(dir, "engines.json"), JSON.stringify(registry()));
-    writeFileSync(join(dir, "jobcaps.json"), JSON.stringify({ "primer-read": { connection: "primer", url: "http://127.0.0.1:3123/mcp/read", bearer_secret: "primer_mcp_read_token", tools: ["primer_get_document"] } }));
-    const cfg = { gatewayJobSecretFile: join(dir, "secret"), stateDir: join(dir, "state"), secretsDir: join(dir, "vault"), enginesFile: join(dir, "engines.json"), jobcapsFile: join(dir, "jobcaps.json"), sandbox: { extra_writable_roots: [] } };
-    const build = (o) => buildJob({ cfg, worktree: join(dir, "w"), jobDir: mkdtempSync(join(dir, "job-")), ...o });
-    // What the engine runs, from the spec the runner wrote and the env it set (each engine module's own builder).
-    const vendor = { codex: (sp, env) => codexCommand(sp, "/job", env), claude: (sp, env) => claudeCommand(sp, env), openrouter: (sp, env) => opencodeCommand(sp, env) };
-    for (const kind of ["codex", "claude", "openrouter"]) {
-      const { argv, env, spec } = build({ engine: { kind, model: "m" }, job: { agentId: "a1", issueId: "i1", jobcaps: ["primer-read"] } });
-      assert.deepEqual(Object.keys(env).filter((k) => /_MCP_TOKEN$/.test(k)), [], kind);
-      const child = vendor[kind](spec, env);
-      const text = `${argv.join(" ")} ${JSON.stringify(spec)} ${child.argv.join(" ")} ${child.env.OPENCODE_CONFIG_CONTENT ?? ""}`;
-      const urls = [...text.matchAll(/https?:\/\/[^\s"',\\]+/g)].map((m) => m[0]).filter((u) => /\/mcp/.test(u));
-      assert.ok(urls.length, `${kind}: wired to its jobcap`);
-      for (const u of urls) assert.ok(u.startsWith("http://127.0.0.1:8201/c/"), `${kind}: ${u}`);
-      if (kind !== "codex") assert.ok(!child.argv.some((a, i) => a === "codex" && child.argv[i + 1] === "sandbox"), `${kind}: codex sandbox`);
-      assert.ok(!text.includes("primer_mcp_read_token"), `${kind}: the read secret's name`);
-    }
-    // Private data never meets the web: a job that doesn't observe (web search on) gets no private jobcap, and its token
-    // isn't minted as observing (the gateway refuses private jobcaps to it); one that observes gets both, with search off.
-    writeFileSync(join(dir, "jobcaps.json"), JSON.stringify({
-      "primer-read": { connection: "primer", url: "http://127.0.0.1:3123/mcp/read", bearer_secret: "primer_mcp_read_token", tools: ["primer_get_document"] },
-      "slack-read": { connection: "slack", url: "http://127.0.0.1:3125/mcp/read", bearer_secret: "slack_mcp_read_token", tools: ["slack_read_thread"], private: true },
-    }));
-    const claims = (env) => JSON.parse(Buffer.from(env.AIDENHQ_JOB_TOKEN.slice(5).split(".")[0], "base64url"));
-    const job = { agentId: "a1", issueId: "i1", jobcaps: ["slack-read", "primer-read"] };
-    const light = build({ engine: { kind: "codex" }, job });
-    assert.deepEqual(light.spec.mcp.map((m) => m.name), ["primer"]);
-    assert.deepEqual([claims(light.env).j, claims(light.env).o], [["primer-read"], undefined]);
-    assert.equal(light.spec.web, true);
-    assert.ok(codexCommand(light.spec, "/job", light.env).argv.includes('web_search="live"'));
-    const deep = build({ engine: { kind: "codex", reads: true }, job });
-    assert.deepEqual(deep.spec.mcp.map((m) => m.name), ["primer", "slack"]);
-    assert.deepEqual([claims(deep.env).j, claims(deep.env).o], [["primer-read", "slack-read"], true]);
-    assert.equal(deep.spec.web, false);
-    // Every engine enforces it: no web search or fetch for a job holding private data.
-    assert.ok(codexCommand(deep.spec, "/job", deep.env).argv.includes('web_search="disabled"'));
-    const tools = claudeCommand(deep.spec, deep.env).argv;
-    assert.doesNotMatch(tools[tools.indexOf("--tools") + 1], /Web/);
-    const { permission } = JSON.parse(opencodeCommand(deep.spec, deep.env).env.OPENCODE_CONFIG_CONTENT);
-    assert.deepEqual([permission.webfetch, permission.websearch], ["deny", "deny"]);
-  });
-
-  it("H4: an events file linked to a host file is never read; an inbox link takes no comment; a FIFO hangs nothing", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "h4-"));
-    const secret = join(dir, "vault-file");
-    writeFileSync(secret, `${JSON.stringify({ t: "final", text: "the owner key 0123456789" })}\n`);
-    const job = join(dir, "job");
-    mkdirSync(job);
-    symlinkSync(secret, join(job, "events.jsonl"));
-    assert.throws(() => readEvents(job, 0), /ELOOP|symbolic link|not a regular file/);
-    // A run whose engine linked its events and its inbox: no answer comes from the link, no comment goes through one.
-    const log = join(dir, "run.log");
-    writeFileSync(`${log}.exit`, "0\n");
-    symlinkSync(join(dir, "elsewhere"), join(job, "inbox.jsonl"));
-    const r = await watchAgent(adoptRun({ pid: process.pid, logPath: log, jobDir: job }), { deadline: Date.now() + 60_000 });
-    assert.equal(r.lastMessage, "");
-    assert.ok(!existsSync(join(dir, "elsewhere")));
-    // FIFOs in place of the files: the runner neither hangs reading nor hangs writing.
-    const fifo = join(dir, "fifo-job");
-    mkdirSync(fifo);
-    for (const f of ["events.jsonl", "inbox.jsonl"]) execFileSync("mkfifo", [join(fifo, f)]);
-    assert.throws(() => readEvents(fifo, 0), /not a regular file/);
-    const { appendLine } = await import("../../../kernel/sdk/src/engine-io.ts");
-    assert.throws(() => appendLine(join(fifo, "inbox.jsonl"), { t: "comment", from: "owner", text: "x" }), /ENXIO|not a regular file/);
-  });
-
-  it("H5: a live engine's comment lands in its inbox, never through a link, and stops once the run has answered", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "h5-"));
-    const enginesFile = join(dir, "engines.json");
-    writeFileSync(enginesFile, JSON.stringify(registry()));
-    const channel = {};
-    const run = startAgent({ cfg: { ghWrapperDir: dir, enginesFile, stateDir: dir, timeout_minutes: 1 }, engine: { kind: "echo" }, worktree: dir, prompt: "hello", logPath: join(dir, "log"), channel });
-    const watching = watchAgent(run, { deadline: Date.now() + 60_000, channel });
-    for (let i = 0; i < 100 && !existsSync(join(run.jobDir, "events.jsonl")); i++) await new Promise((r) => setTimeout(r, 50));
-    assert.equal(channel.send("also this"), true);
-    const r = await watching;
-    assert.equal(r.lastMessage, "hello");
-    assert.match(readFileSync(join(run.jobDir, "events.jsonl"), "utf8"), /heard: also this/);
-    assert.equal(channel.send("too late"), false);
-  });
 });

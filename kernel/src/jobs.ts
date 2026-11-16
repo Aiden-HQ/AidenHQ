@@ -310,9 +310,10 @@ export function createJobs({ db, cfg, cp, jobcaps, mayDispatch, log, boxWrap }: 
     if (helper !== undefined && !/^http:\/\/127\.0\.0\.1:([1-9]\d{3,4})$/.test(helper)) throw new JobError(400, "env-refused", "the job's helper is http://127.0.0.1:<port>");
     let cloud: JobRequest["cloud"];
     if (b.cloud && observes(engine) && !box) {
-      const root = insideNoLinks(join(cfg.stateDir, "gcloud"), join(cfg.stateDir, "gcloud", ident), "cloud session");
-      if (resolve(String(b.cloud.root)) !== resolve(join(cfg.stateDir, "gcloud", ident)) && realpathOr(String(b.cloud.root)) !== root) throw new JobError(403, "cloud-refused", `a job's cloud session is its own task's (gcloud/${ident})`);
-      for (const [k, v] of Object.entries(b.cloud.env ?? {})) if (!CLOUD_ENV.has(k) || typeof v !== "string" || !resolve(v).startsWith(root + sep)) throw new JobError(400, "env-refused", `a job's cloud env may not set ${k}`);
+      const named = resolve(join(cfg.stateDir, "gcloud", ident));
+      const root = insideNoLinks(join(cfg.stateDir, "gcloud"), named, "cloud session");
+      if (resolve(String(b.cloud.root)) !== named && realpathOr(String(b.cloud.root)) !== root) throw new JobError(403, "cloud-refused", `a job's cloud session is its own task's (gcloud/${ident})`);
+      for (const [k, v] of Object.entries(b.cloud.env ?? {})) if (!CLOUD_ENV.has(k) || typeof v !== "string" || ![named, root].some((r) => resolve(v).startsWith(r + sep))) throw new JobError(400, "env-refused", `a job's cloud env may not set ${k}`);
       cloud = { root, env: b.cloud.env };
     }
     const id = `j-${randomBytes(8).toString("hex")}`;

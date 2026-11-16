@@ -32,10 +32,13 @@ function sandbox() {
   };
   const slow = engine("slow.mjs", `emit({ t: "session", id: "slow-1" });\nlet n = 0;\nwhile (!existsSync(join(dir, "..", "release"))) { emit({ t: "progress", text: "step " + n++ }); await new Promise((r) => setTimeout(r, 100)); }\nemit({ t: "final", text: "released after " + n });`);
   const envdump = engine("env.mjs", `emit({ t: "final", text: JSON.stringify(process.env) });`);
+  const silent = engine("silent.mjs", `await new Promise((r) => setTimeout(r, 60_000));`);
   const engines = {
     echo: { module: "engine-echo", dir: "fixtures/engine-echo", bin: "fixtures/engine-echo/bin/engine", kind: "echo", live_input: true },
     slow: { module: "test", dir: join(dir, "engines"), bin: slow, kind: "slow" },
     env: { module: "test", dir: join(dir, "engines"), bin: envdump, kind: "env" },
+    silent: { module: "test", dir: join(dir, "engines"), bin: silent, kind: "silent" },
+    codex: { module: "engine-codex", dir: "modules/engine-codex", bin: "modules/engine-codex/bin/engine", kind: "codex" },
   };
   writeFileSync(join(dir, "engines.json"), JSON.stringify(engines));
   writeFileSync(join(dir, "jobcaps.json"), "{}");
@@ -170,6 +173,57 @@ test("a comment reaches a live run while it works; a stop cancels a run", async 
   const v = await finished(jobs, s.id);
   assert.equal(v.state, "cancelled");
   assert.equal(v.cancelled, true);
+});
+
+// A missing program fails the one job with a reason (2026-11-10: bwrap not installed); a run whose log and events stop growing
+// (a model call that never answers, WOR-3640) is stopped as stalled, well before its deadline.
+test("a program that isn't installed ends the job with the reason; a silent run is stopped as stalled", async () => {
+  const { cfg } = sandbox();
+  const jobs = inProcess({ ...cfg, stall_minutes: 0.02 });
+  const path = process.env.PATH;
+  process.env.PATH = "/nonexistent";
+  let j;
+  try {
+    j = await jobs.start("engineering", req({ engine: { kind: "codex" } }));
+  } finally {
+    process.env.PATH = path;
+  }
+  const v = await finished(jobs, j.id);
+  assert.notEqual(v.exit, 0);
+  assert.match(v.final, /couldn't start \S+: ENOENT/);
+  const t0 = Date.now();
+  const s = await jobs.start("engineering", req({ engine: { kind: "silent" } }));
+  const w = await finished(jobs, s.id);
+  assert.equal(w.state, "stalled");
+  assert.ok(w.stalled && w.timedOut);
+  assert.ok(Date.now() - t0 < 30_000, "well before the deadline");
+});
+
+test("a box job's gh token reaches the box through docker exec's env, by name: never its argv, the env file or the log", async () => {
+  const { dir, cfg } = sandbox();
+  const bin = join(dir, "bin");
+  writeFileSync(join(bin, "docker"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${dir}/argv"\nenv > "${dir}/env"\n`, { mode: 0o755 });
+  mkdirSync(join(cfg.boxDir, "aidenhq-computer-gh"), { recursive: true });
+  writeFileSync(join(cfg.boxDir, "aidenhq-computer-gh.env"), "AIDENHQ_RUN_TOKEN=ahqc_x\n");
+  writeFileSync(join(dir, "jobs.json"), JSON.stringify([{ container: "aidenhq-computer-gh", issueId: "task-1", agentId: "agent-1", workspace: join(cfg.workDir, "tasks/PEN-1") }]));
+  const jobs = inProcess(cfg, { agent: async (id) => ({ id, metadata: { runnerEngine: true, box: true } }) });
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  let j;
+  try {
+    j = await jobs.start("engineering", req({ box: { container: "aidenhq-computer-gh" }, env: { GH_TOKEN: "ghs_read" } }));
+  } finally {
+    process.env.PATH = path; // spawn has copied it
+  }
+  await finished(jobs, j.id);
+  const argv = readFileSync(join(dir, "argv"), "utf8").split("\n");
+  assert.deepEqual(argv.slice(0, 7), ["exec", "--env-file", join(cfg.boxDir, "aidenhq-computer-gh.env"), "-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"]);
+  assert.ok(!argv.join(" ").includes("ghs_read"), "the value is never on the command line");
+  const env = readFileSync(join(dir, "env"), "utf8");
+  assert.match(env, /^GH_TOKEN=ghs_read$/m);
+  assert.match(env, /^AIDENHQ_GH_AUTH=ghs_read$/m);
+  assert.ok(!readFileSync(join(cfg.boxDir, "aidenhq-computer-gh.env"), "utf8").includes("ghs_read") && !readFileSync(j.log, "utf8").includes("ghs_read"), "nor in the env file or the log");
+  assert.equal(j.dir, join(cfg.boxDir, "aidenhq-computer-gh/job"), "its job dir is in the box's out folder");
 });
 
 /** A kernel's job half in its own process (fixtures/jobs-host.mjs) over `dir`'s kernel.db. */
