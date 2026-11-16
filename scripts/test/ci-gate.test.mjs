@@ -195,6 +195,10 @@ test("lockfile changes: a swapped source, a spoofed name or an unreadable format
   const sum = (after) => lockSummary([{ path: "package-lock.json", changes: lockChanges(base, after) }]);
   assert.deepEqual(sum(lock({ "node_modules/x/node_modules/a": a })), { text: "", critical: false }, "the same package moved");
   assert.equal(sum(lock({ "node_modules/x/node_modules/a": { ...a, resolved: "https://evil.example.com/a.tgz", integrity: "sha512-E" } })).critical, true, "same version, another source");
+  // An existing path swapped to a version that already exists at another path is still a change.
+  const two = lock({ "node_modules/a": a, "node_modules/x/node_modules/a": { ...a, version: "2.0.0", resolved: "https://registry.example.com/a-2.0.0.tgz", integrity: "sha512-B" } });
+  const swapped = lockSummary([{ path: "package-lock.json", changes: lockChanges(two, lock({ "node_modules/a": { ...a, version: "2.0.0", resolved: "https://registry.example.com/a-2.0.0.tgz", integrity: "sha512-B" }, "node_modules/x/node_modules/a": { ...a, version: "2.0.0", resolved: "https://registry.example.com/a-2.0.0.tgz", integrity: "sha512-B" } })) }]);
+  assert.match(swapped.text, /changed \(1\): a 1\.0\.0 -> 2\.0\.0/);
   assert.match(sum(lock({ "node_modules/a": a, "node_modules/evil": { ...a, name: "a" } })).text, /added \(1\): evil@1\.0\.0/, "an entry's own name field is ignored");
   assert.match(sum(JSON.stringify({ lockfileVersion: 1, dependencies: { a: { version: "1.0.0" } } })).text, /lockfile format \(2\): no packages map, lockfileVersion 3 -> 1/);
   const odd = sum(lock({ "node_modules/a": a, "node_modules/\n::error::x": { version: "1" } }));

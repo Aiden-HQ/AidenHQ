@@ -146,7 +146,8 @@ export function parse(message, events, root) {
  * field is the PR's to set, so it is never trusted): added (a name the old lock didn't have), changed (a new version, or the
  * same version from another `resolved` or `integrity`), removed, scripts (an entry that now has hasInstallScript) and format
  * (no `packages` map, or another lockfileVersion: nothing below can be read from it). The same package at the same version
- * and source moved to another path (hoisting) is nothing. Names and versions are reduced to a plain charset (they reach the
+ * and source moved to a new path (hoisting) is nothing; an existing path that changes is always a change, even to a
+ * version found elsewhere in the tree. Names and versions are reduced to a plain charset (they reach the
  * job log and the reviewer).
  */
 export function lockChanges(before, after) {
@@ -165,7 +166,8 @@ export function lockChanges(before, after) {
   for (const [k, v] of now) {
     const was = old.get(k);
     if (v?.hasInstallScript && !was?.hasInstallScript) out.scripts.push(id(k, v));
-    if (oldSigs.has(sig(k, v))) continue;
+    // The same path is compared with itself first; a match at another path counts only for a new path (hoisting).
+    if (was ? sig(k, was) === sig(k, v) : oldSigs.has(sig(k, v))) continue;
     if (was) out.changed.push(safe(was.version) === safe(v?.version) ? `${id(k, v)} from another source` : `${name(k)} ${safe(was.version)} -> ${safe(v?.version)}`);
     else if (!names.has(name(k))) out.added.push(id(k, v));
     else out.changed.push(`${id(k, v)} (new version or source)`);
