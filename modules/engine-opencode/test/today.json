@@ -1,0 +1,53 @@
+{
+ "openrouter": {
+  "argv": [
+   "opencode",
+   "run",
+   "--format",
+   "json",
+   "--model",
+   "openrouter/z/glm",
+   "--variant",
+   "low",
+   "--session",
+   "sess-1"
+  ],
+  "env": [
+   "AIDENHQ_JOB_TOKEN",
+   "OPENCODE_CONFIG_CONTENT",
+   "OPENROUTER_API_KEY"
+  ],
+  "config": {
+   "permission": {
+    "read": "allow",
+    "edit": "allow",
+    "bash": "allow",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "external_directory": "allow",
+    "doom_loop": "allow"
+   },
+   "autoupdate": false,
+   "share": "disabled",
+   "provider": {
+    "openrouter": {
+     "options": {
+      "baseURL": "http://127.0.0.1:8201/api/v1"
+     }
+    }
+   },
+   "small_model": "openrouter/z/glm",
+   "mcp": {
+    "primer": {
+     "type": "remote",
+     "url": "http://127.0.0.1:8201/c/primer/mcp",
+     "headers": {
+      "Authorization": "Bearer {env:AIDENHQ_JOB_TOKEN}"
+     },
+     "oauth": false,
+     "enabled": true
+    }
+   }
+  }
+ }
+}

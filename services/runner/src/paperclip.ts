@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { RUNNER_MARKER, hasMarker } from "./commands.mjs";
+import { RUNNER_MARKER, hasMarker } from "./agents.mjs";
 
 const OPEN_STATUSES = "backlog,todo,in_progress,in_review,blocked";
 export const ALL_STATUSES = `${OPEN_STATUSES},done,cancelled`;

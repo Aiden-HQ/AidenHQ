@@ -132,6 +132,9 @@ export const CODEX_CONFIG_SCRUB = [
   'exec "$@"',
 ].join("\n");
 
+/** What a runner job's engine runs under in its box (docker exec): the scrub above, then the engine. */
+export const BOX_EXEC_WRAP = CODEX_CONFIG_SCRUB;
+
 /** [command, args] for docker exec: wrapped in the scrub when the exec carries a CODEX_HOME. */
 export function wrapExec(command, args, env) {
   return env?.CODEX_HOME ? ["sh", ["-c", CODEX_CONFIG_SCRUB, "aidenhq-computer", command, ...(args ?? [])]] : [command, args ?? []];

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { RUNNER_MARKER, parseCommand } from "../src/commands.mjs";
+import { RUNNER_MARKER, parseCommand } from "../src/agents.mjs";
 import { authorize, authorizePrompt, describeAction } from "../src/authorize.mjs";
 import { REPLY_MARKER, wordsAround } from "../src/thread.ts";
 

@@ -1,5 +1,5 @@
-// The exact push/pr commands, repository names and engines.
-// Pure functions (unit-tested): no I/O here.
+// The exact push/pr commands, repository names, and which Engineer and engine a task runs on (engine kinds from the compiled
+// registry, config/engines.json: `useEngines`). Pure functions (unit-tested): no I/O here.
 
 export const RUNNER_MARKER = "<!-- aidenhq-runner -->";
 
@@ -102,18 +102,31 @@ export function resolveEngine(directives, cfg, previous) {
   if (raw.includes("/")) return { kind: "codex-openrouter", model: directives.engine.trim() };
   if (!raw && isClaudeModel(model)) return { kind: "claude", model };
   if (!raw && model) return { kind: previous?.kind === "claude" ? "codex" : previous?.kind ?? "codex", model };
+  if (ENGINES_REG[raw]) return { kind: raw, model: model || defaultModel(raw, cfg) }; // any other kind a module provides
   throw new Error(`unknown engine "${directives.engine}" (use codex, codex-openrouter, claude, openrouter, or openrouter:<model>)`);
 }
 
-// The Engineer agents' engine: the one setup recorded (module.yaml `engine:`), else its Paperclip adapter's.
-const ADAPTER_ENGINE = { codex_local: "codex", claude_local: "claude", opencode_local: "openrouter" };
-export const ENGINES = ["codex", "codex-openrouter", "claude", "openrouter"];
-export const engineOf = (agent) => (ENGINES.includes(agent?.metadata?.engine) ? agent.metadata.engine : ADAPTER_ENGINE[agent?.adapterType]);
-/** The OpenRouter engines: their Paperclip model ids are openrouter/<model>. */
-export const openrouterKind = (kind) => kind === "openrouter" || kind === "codex-openrouter";
-// Where the task's effort override is stored in the adapter config.
-const EFFORT_KEY = { codex: "modelReasoningEffort", "codex-openrouter": "modelReasoningEffort", openrouter: "modelReasoningEffort", claude: "effort" };
+// The engine registry (config/engines.json), set once by the runner at start and by tests.
+let ENGINES_REG = {};
+export const useEngines = (reg) => void (ENGINES_REG = reg ?? {});
+/** The engine kinds the enabled modules provide. */
+export const engineKinds = () => Object.keys(ENGINES_REG);
+// The Engineer agents' engine: the one setup recorded (module.yaml `engine:`), else the kind that names its Paperclip adapter.
+export const engineOf = (agent) => (ENGINES_REG[agent?.metadata?.engine] ? agent.metadata.engine : agent?.adapterType ? Object.keys(ENGINES_REG).find((k) => ENGINES_REG[k].adapter === agent.adapterType) : undefined);
+/** The prefix a kind's Paperclip model ids carry (e.g. a router's), or "" when they are plain model names. */
+export const modelPrefix = (kind) => ENGINES_REG[kind]?.model_prefix ?? "";
+/** Where a kind's effort override is stored in the adapter config. */
+const effortKey = (kind) => ENGINES_REG[kind]?.effort_key;
+// A kind's default model: config/runner.yaml engines.<kind>.model; a router kind without one takes the router's.
+const defaultModel = (kind, cfg) => cfg.engines?.[kind]?.model || (modelPrefix(kind) ? cfg.engines?.openrouter?.model : undefined) || undefined;
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+/** How the board names a run's engine: the kind's label ("{model}" filled in), with the model and effort. */
+export function engineLabel(e) {
+  const label = ENGINES_REG[e.kind]?.label ?? e.kind;
+  if (label.includes("{model}")) return label.replace("{model}", e.model ?? "");
+  const details = [e.model, e.effort && `${e.effort} effort`].filter(Boolean).join(", ");
+  return `${label}${details ? ` (${details})` : ""}`;
+}
 
 /**
  * The executor picked on the task in Paperclip: the Engineer agent it's assigned to sets the engine;
@@ -127,14 +140,15 @@ export function pickedEngine(issue, engineers, cfg) {
   const override = issue.assigneeAdapterOverrides?.adapterConfig ?? {};
   const primary = agent.adapterConfig ?? {};
   // opencode ids are provider/model; only OpenRouter models are runnable here.
+  const prefix = modelPrefix(kind);
   const usable = (m) => {
     const v = typeof m === "string" ? m.trim() : "";
-    if (!openrouterKind(kind)) return v;
-    return v.startsWith("openrouter/") ? v.slice("openrouter/".length) : "";
+    if (!prefix) return v;
+    return v.startsWith(prefix) ? v.slice(prefix.length) : "";
   };
-  const fallback = kind === "codex" ? cfg.engines.codex.model : kind === "claude" ? cfg.engines.claude?.model : cfg.engines[kind]?.model || cfg.engines.openrouter.model;
+  const fallback = defaultModel(kind, cfg);
   const model = usable(override.model) || usable(primary.model) || fallback || undefined;
-  const key = EFFORT_KEY[kind];
+  const key = effortKey(kind);
   const effort = key ? String(override[key] ?? primary[key] ?? "").trim().toLowerCase() : "";
   // Private reads come with the Engineer (module.yaml `private_reads: true`), never with an engine or a task.
   // A box Engineer (module.yaml `image:` on a runner agent, setup's metadata.box) runs its jobs in an agent computer (engines.mjs boxCommand).
@@ -151,16 +165,17 @@ const byKind = (engineers) => engineers.filter((a) => a.metadata?.box !== true);
 export function pickerFor(engine, engineers) {
   const agent = byKind(engineers).find((a) => engineOf(a) === engine.kind);
   if (!agent) return undefined;
-  const model = engine.model && openrouterKind(engine.kind) ? `openrouter/${engine.model}` : engine.model;
-  const config = { ...(model && model !== agent.adapterConfig?.model ? { model } : {}), ...(engine.effort && EFFORT_KEY[engine.kind] ? { [EFFORT_KEY[engine.kind]]: engine.effort } : {}) };
+  const model = engine.model ? `${modelPrefix(engine.kind)}${engine.model}` : engine.model;
+  const config = { ...(model && model !== agent.adapterConfig?.model ? { model } : {}), ...(engine.effort && effortKey(engine.kind) ? { [effortKey(engine.kind)]: engine.effort } : {}) };
   return { assigneeAgentId: agent.id, assigneeAdapterOverrides: Object.keys(config).length ? { adapterConfig: config } : null };
 }
 
-/** OpenRouter models offered for the OpenRouter Engineer (config/paperclip.yaml `models`), primary first. */
+/** The router models offered for the first Engineer on a router engine (config/paperclip.yaml `models`), primary first. */
 export function openrouterModels(engineers) {
-  const agent = byKind(engineers).find((a) => a.adapterType === "opencode_local");
+  const agent = byKind(engineers).find((a) => modelPrefix(engineOf(a)));
+  const prefix = modelPrefix(engineOf(agent));
   const ids = [agent?.adapterConfig?.model, ...(Array.isArray(agent?.metadata?.models) ? agent.metadata.models : [])];
-  return [...new Set(ids.filter((m) => typeof m === "string" && m.startsWith("openrouter/")).map((m) => m.slice("openrouter/".length)))];
+  return [...new Set(ids.filter((m) => typeof m === "string" && prefix && m.startsWith(prefix)).map((m) => m.slice(prefix.length)))];
 }
 
 /** The Engineer's board identity for an engine: name and voice, when setup gave it one. */

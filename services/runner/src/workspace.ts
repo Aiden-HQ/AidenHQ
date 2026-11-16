@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { normalizeRepo } from "./commands.mjs";
+import { normalizeRepo } from "./agents.mjs";
 import { readOwn } from "./files.ts";
 import { SAFE_GIT_ARGS, defaultBranch, git, smallFile } from "./git.mjs";
 

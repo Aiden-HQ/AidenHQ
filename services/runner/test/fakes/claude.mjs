@@ -11,11 +11,13 @@ import { log } from "./lib.mjs";
 
 const out = (event) => console.log(JSON.stringify(event));
 const lines = [];
+let prompted = false;
 let closed = false;
 let wake = () => {};
 createInterface({ input: process.stdin })
   .on("line", (line) => {
     lines.push(JSON.parse(line).message.content);
+    if (prompted) log("claude-took", lines.at(-1)); // a message during the run, as it reaches the session
     wake();
   })
   .on("close", () => {
@@ -31,6 +33,7 @@ const take = () => {
 
 await next();
 const prompt = take();
+prompted = true;
 log("claude", { argv: process.argv.slice(2), prompt });
 out({ type: "system", subtype: "init", session_id: "session-1" });
 

@@ -26,16 +26,14 @@ engines:
   codex:
     model: ""                         # empty = your Codex default
   codex-openrouter:                   # the primary engine: Codex on OpenRouter models through the model gateway
-    # model: unset = openrouter.model below
-    home: ~/.local/state/aidenhq-runner/codex-openrouter   # its Codex homes, one per task (sessions, product skills)
+    # model: unset = openrouter.model below. Its Codex homes, one per task: <state_dir>/codex-openrouter/<task> (engine-codex)
   openrouter:                         # opencode on OpenRouter (the fallback); models are listed in config/paperclip.yaml
     model: ~deepseek/deepseek-flash-latest
     key_file: ~/.config/aidenhq/openrouter_key
   claude:                             # "engine: claude" / "use Claude": Claude Code, headless, under bwrap
     model: ""                         # empty = Claude Code's default; or opus, sonnet, haiku, fable, claude-…
-    token_file: ~/.config/aidenhq/claude_oauth_token   # from `claude setup-token` (0600)
-    # Runner-owned Claude Code home: none of your plugins, hooks, MCP servers or claude.ai connectors.
-    config_dir: ~/.local/state/aidenhq-runner/claude
+    # Its token: the vault's claude_oauth_token, from `claude setup-token` (0600). Its own config folder (none of your
+    # plugins, hooks, MCP servers or claude.ai connectors): <state_dir>/claude (engine-claude).
 
 # Jobs read Primer, Grafana, Slack, Glean and ClickHouse through the model gateway's /c/<connection>/mcp with their own
 # token: the agent's `jobcaps:` (modules/<m>/module.yaml), compiled into config/jobcaps.json. Nothing to set here.

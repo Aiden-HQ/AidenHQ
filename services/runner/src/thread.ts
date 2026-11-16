@@ -1,7 +1,7 @@
 // The conversation on a task and where its work stands, for the Engineer's prompt (see
 // docs/design/conversational-engineers.md, What a turn sees): every comment, labelled by who wrote it, and the live
 // state of the task's branches, PRs and merges. So "as I said" and "them" can be understood.
-import { RUNNER_MARKER, hasMarker, stripHidden } from "./commands.mjs";
+import { RUNNER_MARKER, hasMarker, stripHidden } from "./agents.mjs";
 
 /** Marks the runner's posts of the Engineer's own replies, so a fresh session knows them as its own. */
 export const REPLY_MARKER = "<!-- aidenhq-reply -->";

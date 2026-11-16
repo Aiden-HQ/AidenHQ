@@ -319,15 +319,19 @@ const IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /** The runner's job routes (computers_runner_key only). */
 const runnerControl = {
-  async "/job"({ agentId, issueId, identifier, workspace, codexHome, helperPort, helperToken, identity }) {
+  async "/job"({ agentId, issueId, identifier, workspace, engine, state, helperPort, helperToken, identity }) {
     if (typeof agentId !== "string" || !agentId || typeof issueId !== "string" || !issueId) throw fail(400, "agentId and issueId required");
     if (typeof identifier !== "string" || !IDENTIFIER.test(identifier)) throw fail(400, "identifier must be the task's, e.g. PEN-7");
     if (!Number.isInteger(helperPort) || helperPort < 1 || helperPort > 65535 || !HELPER_TOKEN.test(String(helperToken))) throw fail(400, "helperPort and helperToken required");
+    // The job's engine (engine@1): a kind the compiled registry says runs in a box, its module mounted read-only.
+    const entry = (() => { try { return readJson(path.join(configDir, "engines.json"))[engine]; } catch { return undefined; } })();
+    if (typeof engine !== "string" || entry?.box !== true || !/^modules\/[a-z0-9-]+$/.test(entry.dir ?? "")) throw fail(400, `engine ${engine} doesn't run in a box (config/engines.json)`);
     const image = await imageFor(agentId);
-    // Exactly this task's folder and Codex home, real directories with no symlink below the runner's dirs: never the cache
-    // clones, another task's folder or anything a path trick reaches.
+    // Exactly this task's folder and its engine's state folder, real directories with no symlink below the runner's dirs:
+    // never the cache clones, another task's folder or anything a path trick reaches.
     jobFolder(workspace, path.join(CFG.runnerWork, "tasks"), identifier);
-    jobFolder(codexHome, path.join(CFG.runnerState, "codex-openrouter"), issueId.replace(/[^\w.-]/g, "_"));
+    jobFolder(state, path.join(CFG.runnerState, engine), issueId.replace(/[^\w.-]/g, "_"));
+    const codexHome = state;
     // Two executions never share a workspace: the task's last box must be gone first (the runner releases it).
     const before = jobs.byIssue(issueId);
     if (before) throw fail(409, `the task's last box ${before.container} is still up: release it first`);
@@ -343,7 +347,7 @@ const runnerControl = {
     const outDir = path.join(jobEnvDir, name);
     try {
       mkdirSync(outDir, { mode: 0o700 });
-      const mounts = [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${path.join(CFG.runnerWork, ".guard-hooks")}:/opt/aidenhq/hooks:ro`, `${path.join(repo, "services/runner/bin")}:/opt/aidenhq/bin:ro`];
+      const mounts = [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${path.join(CFG.runnerWork, ".guard-hooks")}:/opt/aidenhq/hooks:ro`, `${path.join(repo, "services/runner/bin")}:/opt/aidenhq/bin:ro`, `${path.join(repo, entry.dir)}:/opt/aidenhq/engine:ro`];
       // aidenhq-browse uses the image's own agent-browser and Chrome (the browser image every computer builds on).
       const r = await docker(dockerRunArgs({ name, image, agentId, network: CFG.network, limits: { ...CFG.limits, memory: CFG.jobMemory }, mounts, user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME }));
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);

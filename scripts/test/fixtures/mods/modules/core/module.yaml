@@ -4,7 +4,7 @@ settings:
   timezone: { required: true }
   company_name: { default: work }
 company: { name: "${settings.company_name}", description: Core company }
-codex_args: [--sandbox, read-only]
+requires: [eng]
 labels: [ { name: todo, color: "#000" } ]
 connections:
   tasks: { command: node, tools: { read: [t], write: [t2] } }

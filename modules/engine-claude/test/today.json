@@ -1,0 +1,64 @@
+{
+ "claude": {
+  "argv": [
+   "claude",
+   "-p",
+   "--input-format",
+   "stream-json",
+   "--output-format",
+   "stream-json",
+   "--verbose",
+   "--replay-user-messages",
+   "--permission-mode",
+   "bypassPermissions",
+   "--setting-sources",
+   "",
+   "--strict-mcp-config",
+   "--mcp-config",
+   "{\"mcpServers\":{\"primer\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:8201/c/primer/mcp\",\"headers\":{\"Authorization\":\"Bearer ${AIDENHQ_JOB_TOKEN}\"}}}}",
+   "--tools",
+   "Bash,Read,Edit,Write,NotebookEdit,Task,TaskStop,TaskCreate,TaskUpdate,TaskList,WebFetch,WebSearch",
+   "--model",
+   "opus",
+   "--effort",
+   "low",
+   "--resume",
+   "sess-1"
+  ],
+  "env": [
+   "AIDENHQ_JOB_TOKEN",
+   "CLAUDE_CODE_OAUTH_TOKEN",
+   "CLAUDE_CONFIG_DIR",
+   "DISABLE_AUTOUPDATER",
+   "ENABLE_CLAUDEAI_MCP_SERVERS"
+  ]
+ },
+ "claude-observing": {
+  "argv": [
+   "claude",
+   "-p",
+   "--input-format",
+   "stream-json",
+   "--output-format",
+   "stream-json",
+   "--verbose",
+   "--replay-user-messages",
+   "--permission-mode",
+   "bypassPermissions",
+   "--setting-sources",
+   "",
+   "--strict-mcp-config",
+   "--mcp-config",
+   "{\"mcpServers\":{\"primer\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:8201/c/primer/mcp\",\"headers\":{\"Authorization\":\"Bearer ${AIDENHQ_JOB_TOKEN}\"}},\"slack\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:8201/c/slack/mcp\",\"headers\":{\"Authorization\":\"Bearer ${AIDENHQ_JOB_TOKEN}\"}}}}",
+   "--tools",
+   "Bash,Read,Edit,Write,NotebookEdit,Task,TaskStop,TaskCreate,TaskUpdate,TaskList"
+  ],
+  "env": [
+   "AIDENHQ_JOB_TOKEN",
+   "CLAUDE_CODE_OAUTH_TOKEN",
+   "CLAUDE_CONFIG_DIR",
+   "DISABLE_AUTOUPDATER",
+   "ENABLE_CLAUDEAI_MCP_SERVERS"
+  ]
+ }
+}

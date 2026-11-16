@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 
 import { State } from "../src/state.ts";
 import { readLog } from "./fakes/lib.mjs";
+import { registry } from "./fakes/engines.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
 const FAKES = join(import.meta.dirname, "fakes");
@@ -255,7 +256,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
  * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
-export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], onIssueCreated, setup } = {}) {
+export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, setup } = {}) {
   let dir, runner, runnerEnv, paperclip, output = "";
   const startRunner = () => {
     runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", RUNNER], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -314,6 +315,7 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
     }
 
     writeFileSync(join(config, "system.yaml"), `paperclip:\n  company_id: "${COMPANY}"\nuser:\n  names: ["Dana"]\n`);
+    writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));
     writeFileSync(
       join(config, "runner.yaml"),
       `label: engineer
@@ -355,6 +357,7 @@ ${runnerYaml}`,
     const engineers = [
       { id: "engineer-claude", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", persona: { name: "Ada" }, privateReads: true } },
       { id: "engineer-codex", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-codex", persona: { name: "Grace" }, privateReads: true } },
+      ...moreEngineers,
     ];
     const parent = { id: "parent", identifier: "PEN-1", title: "Drop Legacy support", status: "todo", assigneeUserId: USER, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Remove Legacy from these repos:\n\n- acme/app\n- acme/infra\n" };
     const part = { id: "part", identifier: "PEN-2", title: "Drop Legacy support", status: "todo", parentId: "parent", assigneeAgentId: "engineer-claude", assigneeUserId: null, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Ada, go ahead and start this on dev please" };

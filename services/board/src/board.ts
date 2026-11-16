@@ -20,7 +20,7 @@ export const engineOf = (a: { adapterType?: string; metadata?: { engine?: unknow
 /** The same for an agent in the compiled config (module.yaml fields). */
 export const compiledEngine = (a: { adapter?: string; engine?: string }): Engine | undefined => engineOf({ adapterType: a.adapter, metadata: { engine: a.engine } });
 export const openrouterEngine = (e: Engine | undefined) => e === "openrouter" || e === "codex-openrouter";
-// Where the runner reads the task's effort override (services/runner/src/commands.mjs EFFORT_KEY).
+// Where the runner reads the task's effort override (each engine module's effort_key, read by services/runner/src/agents.mjs).
 const EFFORT_KEY: Record<Engine, string> = { codex: "modelReasoningEffort", "codex-openrouter": "modelReasoningEffort", openrouter: "modelReasoningEffort", claude: "effort" };
 // The efforts each engine takes. opencode's are its model variants: a model without them ignores the setting.
 export const EFFORTS: Record<Engine, string[]> = {

@@ -7,9 +7,10 @@
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
 //   modules/core/design-system/      the design system, in the app starter and the agent computers
 //   modules/core/templates/app/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
+//   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
 //   services/shared/aidenhq-identity.mjs  apps' identity middleware, in the app template
 //   node scripts/sync-shared.mjs
-import { copyFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -57,6 +58,14 @@ export const SHARED = {
     readdirSync(join(repo, "modules/core/design-system/presets")).map((f) => [
       `modules/core/design-system/presets/${f}`,
       [`modules/core/templates/app/src/styles/presets/${f}`, `services/computer/images/agent-base/design-system/presets/${f}`],
+    ]),
+  ),
+  // The SDK's engine side (A9: no npm package yet): a copy in every module that has an sdk/ folder, so an engine runs from its
+  // module folder alone (in a job's sandbox or a computer box). A new module adds the folder; nothing here changes.
+  ...Object.fromEntries(
+    ["types.ts", "engine-io.ts", "progress.ts"].map((f) => [
+      `kernel/sdk/src/${f}`,
+      readdirSync(join(repo, "modules"), { withFileTypes: true }).filter((d) => d.isDirectory() && existsSync(join(repo, "modules", d.name, "sdk"))).map((d) => `modules/${d.name}/sdk/${f}`),
     ]),
   ),
 };

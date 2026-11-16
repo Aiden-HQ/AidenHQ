@@ -1,0 +1,8 @@
+#!/usr/bin/env node
+// A stand-in opencode for the contract kit: the prompt as its last argument, a session (the resumed one when asked).
+const args = process.argv.slice(2);
+const say = (e) => console.log(JSON.stringify(e));
+const sessionID = args.includes("--session") ? args[args.indexOf("--session") + 1] : "ses-1";
+say({ type: "step_start", sessionID });
+say({ type: "text", sessionID, part: { text: "ok" } });
+say({ type: "step_finish", sessionID, part: { tokens: { input: 3, output: 1, reasoning: 1, cache: { read: 2 } } } });

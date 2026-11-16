@@ -86,7 +86,7 @@ Each task gets a runner-owned `CODEX_HOME` at `<state_dir>/codex-openrouter/<tas
 
 - **Persistent, per task.** `exec resume` finds the task's sessions; no task reads another's transcripts.
 - **Not writable by tool calls.** It is not a writable root of Codex's sandbox.
-- **Refreshed every start.** `AGENTS.md` and `skills/` are copied from `services/runner/codex-home/`, and `config.toml`,
+- **Refreshed every start.** `AGENTS.md` and `skills/` are copied from `modules/engine-codex/codex-home/` (the engine's `seed`), and `config.toml`,
   `auth.json`, `hooks.json`, `rules/`, `plugins/` and `.agents/` are removed, so no run leaves instructions, config or
   skills for a later one. The skills' resources come from the product at the same time: the design system
   (`modules/core/design-system/`) and `best-version.mjs`, since a job can no longer read the product checkout.

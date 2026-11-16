@@ -9,10 +9,15 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { readLog } from "./fakes/lib.mjs";
+import { registry } from "./fakes/engines.mjs";
 import { fakePaperclip } from "./flow-harness.mjs";
 import { State } from "../src/state.ts";
 import { ensureRepo, safeWorkspace } from "../src/workspace.ts";
-import { buildCommand, layout } from "../src/engines.mjs";
+import { adoptRun, buildJob, layout, readEvents, startAgent, watchAgent } from "../src/engines.mjs";
+import { useEngines } from "../src/agents.mjs";
+import { codexCommand } from "../../../modules/engine-codex/src/codex.ts";
+import { claudeCommand } from "../../../modules/engine-claude/src/claude.ts";
+import { opencodeCommand } from "../../../modules/engine-opencode/src/opencode.ts";
 import { loadConfig } from "../src/config.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
@@ -94,6 +99,7 @@ describe("box jobs", () => {
     chmodSync(join(bin, "docker"), 0o755);
     writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n");
     writeFileSync(join(config, "system.yaml"), `paperclip:\n  company_id: "${COMPANY}"\nuser:\n  names: ["Dana"]\n`);
+    writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));
     writeFileSync(join(config, "runner.yaml"), `label: engineer\npoll_seconds: 0.2\nallowed_orgs: [acme]\nwork_dir: ${join(dir, "work")}\nstate_dir: ${join(dir, "state")}\nmax_concurrent: 1\ntimeout_minutes: 2\nengines:\n  openrouter:\n    model: acme/model-1\nintake:\n  codex_args: []\n  timeout_seconds: 30\nreplies:\n  enabled: false\nreviews:\n  enabled: false\nrecurring:\n  enabled: false\n`);
     for (const [f, v] of [["paperclip_board_key", "board-key"], ["board_internal_token", "board-token"], ["computers_runner_key", "runner-key"]]) writeFileSync(join(secrets, f), `${v}\n`, { mode: 0o600 });
     const engineers = [{ id: "app-eng", name: "App Engineer", status: "idle", adapterType: "opencode_local", adapterConfig: { model: "openrouter/acme/model-1" }, metadata: { setupKey: "aidenhq:app-engineer", runnerEngine: true, engine: "codex-openrouter", box: true, persona: { name: "Ada" } } }];
@@ -141,11 +147,14 @@ describe("box jobs", () => {
     assert.equal(job.issueId, "part");
     assert.equal(job.identifier, "PEN-2");
     assert.equal(job.workspace, join(dir, "work/tasks/PEN-2"));
-    assert.equal(job.codexHome, join(dir, "state/codex-openrouter/part"));
-    assert.ok(statSync(job.codexHome).isDirectory(), "its Codex home exists before the box mounts it");
+    assert.equal(job.engine, "codex-openrouter");
+    assert.equal(job.state, join(dir, "state/codex-openrouter/part"));
+    assert.ok(statSync(join(job.state, "AGENTS.md")).isFile(), "its engine's state folder is seeded before the box mounts it");
     const run = dockerRuns()[0];
-    assert.deepEqual(run.argv.slice(0, 7), ["exec", "-i", "--env-file", join(dir, "boxes/aidenhq-computer-t1.env"), "-w", "/workspace", "aidenhq-computer-t1"]);
-    assert.ok(run.argv.includes("-o") && run.argv[run.argv.indexOf("-o") + 1] === "/aidenhq-out/last.txt");
+    assert.deepEqual(run.argv.slice(0, 6), ["exec", "--env-file", join(dir, "boxes/aidenhq-computer-t1.env"), "-w", "/workspace", "aidenhq-computer-t1"]);
+    // The engine module's bin, mounted read-only by the launcher, on the job dir in the launcher's out folder.
+    assert.deepEqual(run.argv.slice(-2), ["/opt/aidenhq/engine/bin/engine", "/aidenhq-out/job"]);
+    assert.deepEqual([run.spec.contract, run.spec.sandbox.kind, run.spec.model.base_url, run.spec.model.token_env, run.spec.mcp], ["engine@1", "box", "http://10.231.2.1:8200/api/v1", "AIDENHQ_RUN_TOKEN", []]);
     // Nothing of the runner's env reaches the box: the client has only what Docker needs, the box only the launcher's file.
     assert.ok(!run.clientEnv.some((k) => /^(AIDENHQ|PAPERCLIP|BOARD|GH_|GIT_|OPENROUTER)/.test(k)), run.clientEnv.join(","));
     assert.match(run.prompt, /\/workspace/);
@@ -233,16 +242,20 @@ describe("box jobs", () => {
   });
 
   it("a box job with private reads gets no web search; one without keeps it", async () => {
-    const { buildCommand } = await import("../src/engines.mjs");
-    const cfg = { codexOpenrouterHome: join(dir, "state/codex-openrouter") };
+    const cfg = { stateDir: join(dir, "state"), enginesFile: join(dir, "config/engines.json") };
     const box = { container: "aidenhq-computer-x", envFile: "/e", outDir: "/o" };
-    const argv = (reads) => buildCommand({ cfg, engine: { kind: "codex-openrouter", model: "m", box: true, ...(reads ? { reads: true } : {}) }, job: { issueId: "x" }, box }).argv.join(" ");
+    const argv = (reads) => {
+      const jobDir = mkdtempSync(join(tmpdir(), "box-job-"));
+      const { spec } = buildJob({ cfg, engine: { kind: "codex-openrouter", model: "m", box: true, ...(reads ? { reads: true } : {}) }, worktree: "/w", jobDir, job: { issueId: "x" }, box });
+      return codexCommand(spec, "/aidenhq-out/job", {}).argv.join(" ");
+    };
     assert.match(argv(true), /web_search="disabled"/);
     assert.match(argv(false), /web_search="live"/);
   });
 
   it("a box Engineer runs only what is assigned to it: never picked, or borrowed as a persona, by its engine kind", async () => {
-    const { personaFor, pickerFor } = await import("../src/commands.mjs");
+    const { personaFor, pickerFor } = await import("../src/agents.mjs");
+    useEngines(registry());
     const box = { id: "app-eng", adapterType: "opencode_local", adapterConfig: {}, metadata: { engine: "codex-openrouter", box: true, persona: { name: "Ada" } } };
     const light = { id: "sw-eng", adapterType: "opencode_local", adapterConfig: {}, metadata: { engine: "codex-openrouter", persona: { name: "Linus" } } };
     assert.equal(pickerFor({ kind: "codex-openrouter" }, [box, light]).assigneeAgentId, "sw-eng");
@@ -251,7 +264,7 @@ describe("box jobs", () => {
     assert.equal(personaFor("codex-openrouter", [box, light], light).name, "Linus");
   });
 
-  it("a box's last message that is a link to a host file is never read into the reply", async () => {
+  it("a box's events file that is a link to a host file is never read into the reply", async () => {
     await waitFor("quiet", quiet);
     boxLauncher.opts.die = false;
     step("symlink");
@@ -345,17 +358,24 @@ describe("hostile jobs", () => {
 
   it("H3: no MCP token or connection URL in a job, and no engine wrapped in codex sandbox", () => {
     const dir = mkdtempSync(join(tmpdir(), "h3-"));
-    for (const [f, v] of [["claude", "tok"], ["secret", "job-secret"]]) writeFileSync(join(dir, f), v);
+    for (const [f, v] of [["secret", "job-secret"]]) writeFileSync(join(dir, f), v);
+    mkdirSync(join(dir, "vault"));
+    writeFileSync(join(dir, "vault", "claude_oauth_token"), "tok");
+    writeFileSync(join(dir, "engines.json"), JSON.stringify(registry()));
     writeFileSync(join(dir, "jobcaps.json"), JSON.stringify({ "primer-read": { connection: "primer", url: "http://127.0.0.1:3123/mcp/read", bearer_secret: "primer_mcp_read_token", tools: ["primer_get_document"] } }));
-    const cfg = { claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), gatewayJobSecretFile: join(dir, "secret"), codexOpenrouterHome: join(dir, "homes"), jobcapsFile: join(dir, "jobcaps.json"), sandbox: { extra_writable_roots: [] } };
+    const cfg = { gatewayJobSecretFile: join(dir, "secret"), stateDir: join(dir, "state"), secretsDir: join(dir, "vault"), enginesFile: join(dir, "engines.json"), jobcapsFile: join(dir, "jobcaps.json"), sandbox: { extra_writable_roots: [] } };
+    const build = (o) => buildJob({ cfg, worktree: join(dir, "w"), jobDir: mkdtempSync(join(dir, "job-")), ...o });
+    // What the engine runs, from the spec the runner wrote and the env it set (each engine module's own builder).
+    const vendor = { codex: (sp, env) => codexCommand(sp, "/job", env), claude: (sp, env) => claudeCommand(sp, env), openrouter: (sp, env) => opencodeCommand(sp, env) };
     for (const kind of ["codex", "claude", "openrouter"]) {
-      const { argv, env } = buildCommand({ cfg, engine: { kind, model: "m" }, worktree: join(dir, "w"), lastMessageFile: join(dir, "last"), job: { agentId: "a1", issueId: "i1", jobcaps: ["primer-read"] } });
+      const { argv, env, spec } = build({ engine: { kind, model: "m" }, job: { agentId: "a1", issueId: "i1", jobcaps: ["primer-read"] } });
       assert.deepEqual(Object.keys(env).filter((k) => /_MCP_TOKEN$/.test(k)), [], kind);
-      const text = `${argv.join(" ")} ${env.OPENCODE_CONFIG_CONTENT ?? ""}`;
-      const urls = [...text.matchAll(/https?:\/\/[^\s"',]+/g)].map((m) => m[0]).filter((u) => /\/mcp/.test(u));
+      const child = vendor[kind](spec, env);
+      const text = `${argv.join(" ")} ${JSON.stringify(spec)} ${child.argv.join(" ")} ${child.env.OPENCODE_CONFIG_CONTENT ?? ""}`;
+      const urls = [...text.matchAll(/https?:\/\/[^\s"',\\]+/g)].map((m) => m[0]).filter((u) => /\/mcp/.test(u));
       assert.ok(urls.length, `${kind}: wired to its jobcap`);
       for (const u of urls) assert.ok(u.startsWith("http://127.0.0.1:8201/c/"), `${kind}: ${u}`);
-      if (kind !== "codex") assert.ok(!argv.some((a, i) => a === "codex" && argv[i + 1] === "sandbox"), `${kind}: codex sandbox`);
+      if (kind !== "codex") assert.ok(!child.argv.some((a, i) => a === "codex" && child.argv[i + 1] === "sandbox"), `${kind}: codex sandbox`);
       assert.ok(!text.includes("primer_mcp_read_token"), `${kind}: the read secret's name`);
     }
     // Private data never meets the web: a job that doesn't observe (web search on) gets no private jobcap, and its token
@@ -366,13 +386,59 @@ describe("hostile jobs", () => {
     }));
     const claims = (env) => JSON.parse(Buffer.from(env.AIDENHQ_JOB_TOKEN.slice(5).split(".")[0], "base64url"));
     const job = { agentId: "a1", issueId: "i1", jobcaps: ["slack-read", "primer-read"] };
-    const light = buildCommand({ cfg, engine: { kind: "codex" }, worktree: join(dir, "w"), lastMessageFile: join(dir, "last"), job });
-    assert.ok(!light.argv.some((a) => a.includes("/c/slack/")));
+    const light = build({ engine: { kind: "codex" }, job });
+    assert.deepEqual(light.spec.mcp.map((m) => m.name), ["primer"]);
     assert.deepEqual([claims(light.env).j, claims(light.env).o], [["primer-read"], undefined]);
-    assert.ok(light.argv.includes('web_search="live"'));
-    const deep = buildCommand({ cfg, engine: { kind: "codex", reads: true }, worktree: join(dir, "w"), lastMessageFile: join(dir, "last"), job });
-    assert.ok(deep.argv.some((a) => a.includes("/c/slack/")));
+    assert.equal(light.spec.web, true);
+    assert.ok(codexCommand(light.spec, "/job", light.env).argv.includes('web_search="live"'));
+    const deep = build({ engine: { kind: "codex", reads: true }, job });
+    assert.deepEqual(deep.spec.mcp.map((m) => m.name), ["primer", "slack"]);
     assert.deepEqual([claims(deep.env).j, claims(deep.env).o], [["primer-read", "slack-read"], true]);
-    assert.ok(deep.argv.includes('web_search="disabled"'));
+    assert.equal(deep.spec.web, false);
+    // Every engine enforces it: no web search or fetch for a job holding private data.
+    assert.ok(codexCommand(deep.spec, "/job", deep.env).argv.includes('web_search="disabled"'));
+    const tools = claudeCommand(deep.spec, deep.env).argv;
+    assert.doesNotMatch(tools[tools.indexOf("--tools") + 1], /Web/);
+    const { permission } = JSON.parse(opencodeCommand(deep.spec, deep.env).env.OPENCODE_CONFIG_CONTENT);
+    assert.deepEqual([permission.webfetch, permission.websearch], ["deny", "deny"]);
+  });
+
+  it("H4: an events file linked to a host file is never read; an inbox link takes no comment; a FIFO hangs nothing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "h4-"));
+    const secret = join(dir, "vault-file");
+    writeFileSync(secret, `${JSON.stringify({ t: "final", text: "the owner key 0123456789" })}\n`);
+    const job = join(dir, "job");
+    mkdirSync(job);
+    symlinkSync(secret, join(job, "events.jsonl"));
+    assert.throws(() => readEvents(job, 0), /ELOOP|symbolic link|not a regular file/);
+    // A run whose engine linked its events and its inbox: no answer comes from the link, no comment goes through one.
+    const log = join(dir, "run.log");
+    writeFileSync(`${log}.exit`, "0\n");
+    symlinkSync(join(dir, "elsewhere"), join(job, "inbox.jsonl"));
+    const r = await watchAgent(adoptRun({ pid: process.pid, logPath: log, jobDir: job }), { deadline: Date.now() + 60_000 });
+    assert.equal(r.lastMessage, "");
+    assert.ok(!existsSync(join(dir, "elsewhere")));
+    // FIFOs in place of the files: the runner neither hangs reading nor hangs writing.
+    const fifo = join(dir, "fifo-job");
+    mkdirSync(fifo);
+    for (const f of ["events.jsonl", "inbox.jsonl"]) execFileSync("mkfifo", [join(fifo, f)]);
+    assert.throws(() => readEvents(fifo, 0), /not a regular file/);
+    const { appendLine } = await import("../../../kernel/sdk/src/engine-io.ts");
+    assert.throws(() => appendLine(join(fifo, "inbox.jsonl"), { t: "comment", from: "owner", text: "x" }), /ENXIO|not a regular file/);
+  });
+
+  it("H5: a live engine's comment lands in its inbox, never through a link, and stops once the run has answered", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "h5-"));
+    const enginesFile = join(dir, "engines.json");
+    writeFileSync(enginesFile, JSON.stringify(registry()));
+    const channel = {};
+    const run = startAgent({ cfg: { ghWrapperDir: dir, enginesFile, stateDir: dir, timeout_minutes: 1 }, engine: { kind: "echo" }, worktree: dir, prompt: "hello", logPath: join(dir, "log"), channel });
+    const watching = watchAgent(run, { deadline: Date.now() + 60_000, channel });
+    for (let i = 0; i < 100 && !existsSync(join(run.jobDir, "events.jsonl")); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(channel.send("also this"), true);
+    const r = await watching;
+    assert.equal(r.lastMessage, "hello");
+    assert.match(readFileSync(join(run.jobDir, "events.jsonl"), "utf8"), /heard: also this/);
+    assert.equal(channel.send("too late"), false);
   });
 });

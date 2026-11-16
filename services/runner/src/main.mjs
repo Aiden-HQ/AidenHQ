@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 // AidenHQ runner: turns your comments on Paperclip tasks labelled "engineer" into
-// Codex / Claude Code / OpenRouter coding jobs in runner-owned git worktrees on this machine.
+// coding jobs (an engine module on engine@1) in runner-owned git worktrees on this machine.
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, ENGINES, openrouterKind, repoAllowed, resolveEngine, stripHidden } from "./commands.mjs";
+import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, normalizeRepo, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines } from "./agents.mjs";
 import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { branchCardArgs, cardText } from "./cards.ts";
-import { adoptRun, boxLastFile, codexHome, cowRoot, overlayProblem, removeLayers, gatewayApi, jailProblem, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
+import { adoptRun, cowRoot, engineState, overlayProblem, readEngines, removeLayers, gatewayApi, jailProblem, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, runAlive, startAgent, viaGateway, watchAgent } from "./engines.mjs";
 import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "./git.mjs";
@@ -121,11 +121,8 @@ const running = new Map(); // issueId → { controller, jobId, identifier, start
 const detach = new AbortController();
 const queue = []; // { issue, instructions }
 const metrics = createMetrics(); // the monitoring module's runner metrics (metrics.ts)
-const engineLabel = (e) => {
-  const details = [e.model, e.effort && `${e.effort} effort`].filter(Boolean).join(", ");
-  if (e.kind === "codex-openrouter") return `Codex on OpenRouter${details ? ` (${details})` : ""}`;
-  return e.kind === "codex" ? `Codex${details ? ` (${details})` : ""}` : e.kind === "claude" ? `Claude Code${details ? ` (${details})` : ""}` : `OpenRouter ${e.model}`;
-};
+// The engines the enabled modules provide (config/engines.json): how agents.mjs picks and names them.
+useEngines(readEngines(cfg));
 
 // ------------------------------------------------------------------ polling
 
@@ -3201,14 +3198,14 @@ async function agentApply(ctx) {
 /** `aidenhq engine <claude|codex|codex-openrouter|openrouter> [model]`: this request again, on another engine or model. */
 async function agentEngine(ctx, args) {
   const asked = String(args.engine ?? "").trim().toLowerCase();
-  if (!ENGINES.includes(asked) && asked !== "opencode") throw new UserError(`Name the engine: ${ENGINES.join(", ")}, and optionally a model.`);
+  if (!engineKinds().includes(asked) && asked !== "opencode") throw new UserError(`Name the engine: ${engineKinds().join(", ")}, and optionally a model.`);
   const kind = resolveEngine({ engine: asked }, cfg).kind; // "openrouter": OpenRouter models, on the primary engine for them
   const engineers = await pc.engineerAgents();
   if (!pickerFor({ kind }, engineers)) throw new UserError(`There's no ${kind} Engineer set up.`);
   const raw = String(args.model ?? "").trim();
   let model;
   if (raw) {
-    model = openrouterKind(kind) ? resolveOpenRouterModel(raw, openrouterModels(engineers)) : kind === "claude" ? (isClaudeModel(raw) ? raw.toLowerCase() : undefined) : resolveModelAlias(raw, codexModels());
+    model = modelPrefix(kind) ? resolveOpenRouterModel(raw, openrouterModels(engineers)) : kind === "claude" ? (isClaudeModel(raw) ? raw.toLowerCase() : undefined) : resolveModelAlias(raw, codexModels());
     if (!model) throw new UserError(`"${raw}" isn't a ${kind} model I know.`);
   }
   ctx.engine = resolveEngine({ engine: kind, model }, cfg);
@@ -3519,8 +3516,8 @@ async function startJob({ issue, instructions }) {
     jobId = state.startJob(issue.id, engineLabel(engine), logPath);
     Object.assign(running.get(issue.id), { jobId, logPath, info: { engine: engineLabel(engine), mode: "working", repo: repos.map((r) => r.slug).join(", ").slice(0, 200) } });
     reportActivity();
-    // A saved session can only be continued by the engine that created it (Codex, Claude Code and
-    // opencode sessions are not interchangeable). After a switch the new engine starts fresh, with the
+    // A saved session can only be continued by the engine that created it (engines' sessions are not
+    // interchangeable). After a switch the new engine starts fresh, with the
     // whole conversation on the task and the work already on its branches as context.
     const resumed = Boolean(state.task(issue.id).session_id && state.get(`session_engine:${issue.id}`) === engine.kind);
     // The board shows the Engineer at work; the reply is the next comment.
@@ -3542,7 +3539,8 @@ async function startJob({ issue, instructions }) {
     const brief = typeof assigned?.metadata?.brief === "string" ? assigned.metadata.brief : "";
     const build = typeof assigned?.metadata?.build === "string" ? assigned.metadata.build : "";
     const persona = brief ? undefined : personaFor(engine.kind, engineers, assigned);
-    const agentId = assigned?.id ?? engineers.find((a) => a.adapterType === "opencode_local" && a.metadata?.box !== true)?.id ?? null; // billed to the Engineer (a label-only task: the OpenRouter one)
+    // Billed to the Engineer (a label-only task: the first one on its engine, else on a gateway engine).
+    const agentId = assigned?.id ?? (engineers.find((a) => a.metadata?.box !== true && engineOf(a) === engine.kind) ?? engineers.find((a) => a.metadata?.box !== true && viaGateway(cfg, engineOf(a))))?.id ?? null;
     // The agent's jobcaps (grants table): its reads of connections, through the gateway with the job token. A box job reaches
     // its connections through the launcher instead.
     const jobcaps = engine.box ? [] : jobcapsFor(cfg, engine, readGrants()?.agents?.[agentId]?.jobcaps ?? []);
@@ -3558,7 +3556,7 @@ async function startJob({ issue, instructions }) {
           gcp: { state: gcp.state, detail: gcp.detail, projects: cfg.gcp.projects },
         }
       : undefined;
-    // Comments while it works reach a session that takes them (Claude Code).
+    // Comments while it works reach an engine that takes them (live_input).
     const channel = {};
     Object.assign(running.get(issue.id), { channel, who: persona?.name });
     // The conversation (all of it for a new session, what's new for a resumed one) and where the work stands.
@@ -3573,7 +3571,7 @@ async function startJob({ issue, instructions }) {
     const ghToken = engine.box ? undefined : await jobGhToken(repos).catch((err) => (log("no gh token for the job", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), undefined));
     // A box job: its box first (the task's last one confirmed gone), bound to this task and to the helper token it will use.
     const helperToken = randomBytes(24).toString("hex");
-    if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity });
+    if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity, engine });
     if (stopping) return; // the runner is restarting: the job resumes after it (RESUME_KEY)
     // From here on nothing waits before the run is recorded: a restart either cuts the job before it or adopts the run.
     tools = { issue, workspace, words, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box, agentId };
@@ -3583,10 +3581,10 @@ async function startJob({ issue, instructions }) {
     // The job's gateway credential comes from its agent, task and start time: `aidenhq advise` mints the same one (advise.ts).
     const run = startAgent({ cfg, engine, worktree: workspace, prompt, sessionId, logPath, env: helper.env, gcp, channel, identity, ghToken, job: { agentId, issueId: issue.id, at: startedAt, jobcaps, observing: observes(engine) }, box });
     // What the next runner needs to adopt the run and finish its turn after a restart.
-    tools.run = { pid: run.pid, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, observing: observes(engine), repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
+    tools.run = { pid: run.pid, jobDir: run.jobDir, eventsOffset: 0, token: helper.token, startedAt, sessionId, workspace, engine, tipsBefore, instructions, words, brief: Boolean(brief), who: persona?.name, agentId, jobcaps, observing: observes(engine), repos: running.get(issue.id).info.repo, ...(box ? { box } : {}) };
     state.saveRun(jobId, tools.run);
     running.get(issue.id).pid = run.pid;
-    const watch = watchAgent(run, { engine, sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
+    const watch = watchAgent(run, { sessionId, deadline: startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
     launched = { issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep: box && keepBox(issue, box, helper) };
   } catch (err) {
     if (stopping) return;
@@ -3623,13 +3621,12 @@ const helperPort = () => Number(new URL(repoHelper.url()).port);
 
 /**
  * A box for this turn of a box job: the task's last box released first (confirmed gone: two executions never share a
- * workspace), its Codex home and HOME ready, then POST /job; the task → box link is saved before anything runs in it.
+ * workspace), its engine's state folder and HOME ready, then POST /job; the task → box link is saved before anything runs in it.
  */
-async function startBox({ issue, agentId, workspace, helperToken, identity }) {
+async function startBox({ issue, agentId, workspace, helperToken, identity, engine }) {
   const before = state.get(boxKey(issue.id));
   if (before) await stopBox(issue, { container: before });
-  const home = codexHome(cfg, issue.id);
-  const box = await boxCall("/job", { agentId, issueId: issue.id, identifier: issue.identifier, workspace, codexHome: home, helperPort: helperPort(), helperToken, identity: { name: identity.name, email: identity.email } });
+  const box = await boxCall("/job", { agentId, issueId: issue.id, identifier: issue.identifier, workspace, engine: engine.kind, state: engineState(cfg, engine.kind, issue.id), helperPort: helperPort(), helperToken, identity: { name: identity.name, email: identity.email } });
   state.set(boxKey(issue.id), box.container);
   log("box job started", { issue: issue.identifier, container: box.container });
   return { container: box.container, envFile: box.envFile, outDir: box.outDir };
@@ -3679,7 +3676,8 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     result = await watch;
     keep?.();
     // The runner is restarting: the run goes on (its box too, on its lease), and the next runner finishes this turn.
-    if (result.detached) return;
+    // It goes on from the events read so far (and the session already reported).
+    if (result.detached) return void (tools?.run && state.saveRun(jobId, { ...tools.run, eventsOffset: result.offset ?? tools.run.eventsOffset ?? 0, sessionId: result.sessionId ?? tools.run.sessionId }));
     Object.assign(running.get(issue.id) ?? {}, { finishing: true });
     helper.done();
     // A box job's process may outlive its `docker exec` client (a cancel, a timeout): the box goes, confirmed, before
@@ -3758,8 +3756,8 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     else await reportError(issue, err);
   } finally {
     if (!result?.detached) {
-      // OpenRouter jobs (opencode and Codex) are billed by the model gateway; only the other engines' tokens are self-reported.
-      if (logPath && !viaGateway(engine.kind)) reportUsage(jobUsage(logPath, engine));
+      // Gateway engines' jobs are billed by the model gateway; only the other engines' tokens are self-reported (usage events).
+      if (logPath && !viaGateway(cfg, engine.kind)) reportUsage(jobUsage(logPath, engine, result?.usage));
       gcp?.done();
       await endTurn(issue, tools);
     }
@@ -4479,7 +4477,8 @@ function adoptRuns() {
     const status = existsSync(`${job.log_path}.exit`) ? Number(readFileSync(`${job.log_path}.exit`, "utf8").trim() || NaN) : NaN;
     // Killed by a signal (above 128) while no runner followed it, e.g. a reboot: resumed like a run gone without a status.
     const ended = status >= 0 && status <= 128;
-    if (!run || !(ended || (Number.isNaN(status) && runAlive(run.pid, job.log_path)))) {
+    // A run from before engine@1 (no job dir) is resumed: the drill stops those before a deploy.
+    if (!run?.jobDir || !(ended || (Number.isNaN(status) && runAlive(run.pid, job.log_path)))) {
       state.finishJob(job.id, "interrupted", "restart");
       if (run) lost.push({ issueId: job.issue_id, instructions: run.instructions });
       continue;
@@ -4515,7 +4514,7 @@ function adoptRuns() {
           return resumeInterrupted();
         }
       }
-      const watch = watchAgent(adoptRun({ pid: run.pid, logPath: job.log_path, boxLast: run.box ? boxLastFile(run.box) : undefined }), { engine: run.engine, sessionId: run.sessionId, deadline: run.startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
+      const watch = watchAgent(adoptRun({ pid: run.pid, logPath: job.log_path, jobDir: run.jobDir, offset: run.eventsOffset ?? 0 }), { sessionId: run.sessionId, deadline: run.startedAt + (cfg.timeout_minutes ?? 60) * 60_000, signal: controller.signal, detach: detach.signal, channel, onProgress: progressOf(issue.id) });
       await finishTurn({ issue, workspace: run.workspace, engine: run.engine, jobId: job.id, logPath: job.log_path, tipsBefore: run.tipsBefore, tools, gcp, helper, watch, box: run.box, keep: run.box && keepBox(issue, run.box, helper) });
     })();
   }

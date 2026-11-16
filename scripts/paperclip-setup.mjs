@@ -205,13 +205,11 @@ async function ensureLabels(companyId) {
 // Executors for aidenhq-runner: the assignee picks the engine, Paperclip's per-task
 // model override picks the model. Paperclip never runs them.
 const RUNNER_ADAPTERS = ["codex_local", "claude_local", "opencode_local"];
-const ADAPTER_ENGINE = { codex_local: "codex", claude_local: "claude", opencode_local: "openrouter" };
-// `engine:` on a runner agent picks another engine for its adapter: the OpenRouter models (opencode_local) run on opencode or
-// on Codex through the model gateway (docs/design/codex-openrouter-engine.md).
-const ADAPTER_ENGINES = { codex_local: ["codex"], claude_local: ["claude"], opencode_local: ["openrouter", "codex-openrouter"] };
-const engineOf = (a) => a.engine ?? ADAPTER_ENGINE[a.adapter];
-// Where the runner reads an Engineer's effort in its adapter config (services/runner/src/commands.mjs EFFORT_KEY).
-const EFFORT_KEY = { codex: "modelReasoningEffort", "codex-openrouter": "modelReasoningEffort", openrouter: "modelReasoningEffort", claude: "effort" };
+// The engine kinds the enabled engine modules provide (config/engines.json, written by compile): `engine:` on a runner agent
+// picks one, else the kind that names its adapter; each kind says where its effort lives in the adapter config
+// (services/runner/src/agents.mjs reads the same).
+const ENGINES = (() => { try { return JSON.parse(readFileSync(join(configDir, "engines.json"), "utf8")); } catch { return {}; } })();
+const engineOf = (a) => a.engine ?? Object.keys(ENGINES).find((k) => ENGINES[k].adapter === a.adapter);
 
 /** The crew member's board identity, stored in the agent's metadata for the board and the runner. */
 function personaOf(key, a) {
@@ -273,7 +271,7 @@ function runnerAgentBody(key, a, existing) {
   // A runner agent in a computer (image:) reaches its granted connections from its box, through the launcher's gateway.
   if (a.mcp_servers?.length && !runnerBox(a)) fail(`agent ${key}: runner agents get no MCP servers unless they run in a computer (image: engineer)`);
   if (a.private_reads !== undefined && typeof a.private_reads !== "boolean") fail(`agent ${key}: private_reads is true or false`);
-  if (a.engine !== undefined && !ADAPTER_ENGINES[a.adapter].includes(a.engine)) fail(`agent ${key}: engine for ${a.adapter} is one of ${ADAPTER_ENGINES[a.adapter].join(", ")}`);
+  if (a.engine !== undefined && !ENGINES[a.engine]) fail(`agent ${key}: no enabled engine module provides engine ${a.engine} (config/engines.json)`);
   // A primary model chosen in the Paperclip UI survives re-running setup unless the YAML sets one.
   const model = a.model || existing?.adapterConfig?.model || "";
   if (a.adapter === "opencode_local" && !/^openrouter\/\S+$/.test(model)) fail(`agent ${key}: opencode_local needs model: openrouter/<model>`);
@@ -283,7 +281,11 @@ function runnerAgentBody(key, a, existing) {
   if (!Array.isArray(models) || models.some((m) => typeof m !== "string" || (a.adapter === "opencode_local" && !/^openrouter\/\S+$/.test(m)))) fail(`agent ${key}: models must be a list of model ids${a.adapter === "opencode_local" ? " (openrouter/<model>)" : ""}`);
   if (a.adapter === "codex_local") adapterConfig.dangerouslyBypassApprovalsAndSandbox = false;
   if (a.adapter === "claude_local") adapterConfig.dangerouslySkipPermissions = false;
-  if (a.reasoning_effort) adapterConfig[EFFORT_KEY[engineOf(a)]] = a.reasoning_effort;
+  // A kind whose models carry a prefix (a router's) takes only those ids from its adapter.
+  const prefix = ENGINES[engineOf(a)]?.model_prefix;
+  if (prefix && model && !model.startsWith(prefix)) fail(`agent ${key}: engine ${engineOf(a)} needs model: ${prefix}<model>`);
+  const effortKey = ENGINES[engineOf(a)]?.effort_key;
+  if (a.reasoning_effort && effortKey) adapterConfig[effortKey] = a.reasoning_effort;
   return {
     name: a.name,
     role: "general",

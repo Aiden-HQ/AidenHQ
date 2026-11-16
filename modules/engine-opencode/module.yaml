@@ -1,0 +1,16 @@
+name: engine-opencode
+description: opencode as an engine for runner jobs (kind openrouter), on OpenRouter models through the model gateway; the Engineers' fallback.
+license: AGPL-3.0-only
+kernel: { engine: 1 }
+providers:
+  engine:
+    - kind: openrouter
+      bin: bin/engine
+      label: "OpenRouter {model}"
+      adapter: opencode_local
+      effort_key: modelReasoningEffort
+      model_prefix: openrouter/
+      gateway: true
+      rw: ["~/.local/share/opencode", "~/.local/state/opencode", "~/.cache/opencode", "~/.config/opencode"]
+      # Its gcloud session folder isn't bound (as before engine@1; its env still names it).
+      gcloud: false

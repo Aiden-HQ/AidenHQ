@@ -6,6 +6,7 @@
 //   config/modules.json        → the module catalog (setup adds it to the capabilities catalog)
 //   config/computers.json      → the computer launcher (images by content hash, connections it may proxy; services/computer)
 //   config/gateway.json        → the model gateway (services/gateway): enforce_caps, from settings.spend_caps (the kill switch)
+//   config/engines.json        → the runner: each engine kind's module, bin and data (modules' providers.engine)
 //   config/jobcaps.json        → the model gateway's /c/<connection>/mcp and the runner: what jobs may read (modules' jobcaps:)
 //   config/gate.json, config/cloudflared.yml → the gate and the tunnel (shared access; only with settings.edge, scripts/edge.mjs)
 import { execFileSync } from "node:child_process";
@@ -70,6 +71,7 @@ writeFileSync(join(repo, "config/modules.json"), JSON.stringify(out.catalog, nul
 writeFileSync(join(repo, "config/computers.json"), JSON.stringify(computers, null, 2) + "\n");
 writeFileSync(join(repo, "config/gateway.json"), JSON.stringify(out.gateway, null, 2) + "\n");
 writeFileSync(join(repo, "config/jobcaps.json"), JSON.stringify(out.jobcaps, null, 2) + "\n");
+writeFileSync(join(repo, "config/engines.json"), JSON.stringify(out.engines, null, 2) + "\n");
 if (out.edge) {
   if (out.edge.cloudflared) try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die(e.message); }
   // The board's account map for the gate: the board rewrites it on every account change. It starts

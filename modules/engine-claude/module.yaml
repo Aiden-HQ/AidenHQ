@@ -1,0 +1,18 @@
+name: engine-claude
+description: Claude Code as an engine for runner jobs, headless on your subscription token, taking your comments while it works.
+license: AGPL-3.0-only
+kernel: { engine: 1 }
+providers:
+  engine:
+    - kind: claude
+      bin: bin/engine
+      live_input: true
+      label: Claude Code
+      adapter: claude_local
+      effort_key: effort
+      # Its own config folder under the runner's state dir: none of your plugins, hooks, MCP servers or claude.ai connectors.
+      state: shared
+      # Its own install (the native installer's), read-only in every job it runs.
+      ro: ["~/.local/share/claude"]
+      # From `claude setup-token` (0600 in the vault).
+      secret_env: { CLAUDE_CODE_OAUTH_TOKEN: claude_oauth_token }

@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { crewNames, findRepos, mentionedRepos, normalizeRepo, parseCommand, repoAllowed, resolveEngine } from "../src/commands.mjs";
-import { buildCommand, cowRoot, removeLayers } from "../src/engines.mjs";
+import { crewNames, findRepos, mentionedRepos, normalizeRepo, parseCommand, repoAllowed, resolveEngine, useEngines } from "../src/agents.mjs";
+import { buildJob, cowRoot, removeLayers } from "../src/engines.mjs";
+import { enginesFile, registry } from "./fakes/engines.mjs";
 import { staleRoutineRuns } from "../src/recurring.ts";
 import { firstPrompt, followUpPrompt, latestReport, observeSection } from "../src/prompt.ts";
 import { accessToken, gcpSession } from "../src/gcp.ts";
@@ -16,6 +17,15 @@ const cfg = {
   allowed_orgs: ["initech", "Acme", "example-org"],
   engines: { codex: { model: "" }, openrouter: { model: "z-ai/glm-5.3-flash" } },
 };
+useEngines(registry());
+const ENGINES = enginesFile(mkdtempSync(join(tmpdir(), "pw-engines-")));
+/** One engine@1 job's command, env and spec, in a fresh job dir and state dir, with a vault holding the Claude token. */
+function bj({ cfg: c, ...o }) {
+  const d = mkdtempSync(join(tmpdir(), "pw-job-"));
+  for (const x of ["job", "vault"]) mkdirSync(join(d, x));
+  writeFileSync(join(d, "vault", "claude_oauth_token"), "tok\n");
+  return { ...buildJob({ cfg: { stateDir: join(d, "state"), secretsDir: join(d, "vault"), enginesFile: ENGINES, ...c }, jobDir: join(d, "job"), ...o }), dir: d };
+}
 
 describe("exact commands", () => {
   it("only an exact push or pr is a command; everything else goes to the intake", () => {
@@ -75,23 +85,15 @@ describe("engines and modes", () => {
     assert.deepEqual(resolveEngine({ model: "gpt-6-astra" }, cfg, { kind: "claude", model: "opus" }), { kind: "codex", model: "gpt-6-astra" });
   });
 
-  it("runs Claude Code headless under bwrap alone, without the user's Claude setup", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pw-claude-"));
-    const tokenFile = join(dir, "token");
-    writeFileSync(tokenFile, "tok\n");
-    const c = { ...cfg, claudeTokenFile: tokenFile, claudeConfigDir: join(dir, "home"), sandbox: { extra_writable_roots: [] } };
-    const { argv, env, promptAsArg, rw } = buildCommand({ cfg: c, engine: { kind: "claude", model: "opus" }, worktree: "/w", sessionId: "abc", lastMessageFile: "/x" });
-    assert.deepEqual(argv.slice(0, 2), ["claude", "-p"]);
-    assert.ok(rw.includes(join(dir, "home")));
-    for (const flag of ["--strict-mcp-config", "--setting-sources", "--tools"]) assert.ok(argv.includes(flag), flag);
-    assert.equal(argv[argv.indexOf("--setting-sources") + 1], "");
-    assert.doesNotMatch(argv[argv.indexOf("--tools") + 1], /RemoteTrigger|PushNotification|Cron|SendMessage|Workflow/);
-    assert.deepEqual(argv.slice(-4), ["--model", "opus", "--resume", "abc"]);
+  it("runs Claude Code with its vault token and its own config folder, nothing of the user's", () => {
+    const { env, spec, dir } = bj({ cfg: { ...cfg, sandbox: { extra_writable_roots: [] } }, engine: { kind: "claude", model: "opus" }, worktree: "/w", sessionId: "abc" });
     assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, "tok");
-    assert.equal(env.CLAUDE_CONFIG_DIR, join(dir, "home"));
-    assert.equal(env.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
-    assert.ok(!promptAsArg);
-    assert.throws(() => buildCommand({ cfg: { ...c, claudeTokenFile: join(dir, "missing") }, engine: { kind: "claude" }, worktree: "/w" }), /claude setup-token/);
+    assert.equal(spec.state, join(dir, "state", "claude"));
+    assert.equal(statSync(spec.state).mode & 0o777, 0o700);
+    assert.deepEqual([spec.session, spec.model.id, spec.model.base_url], ["abc", "opus", ""]);
+    assert.throws(() => bj({ cfg: { ...cfg, secretsDir: "/nonexistent" }, engine: { kind: "claude" }, worktree: "/w" }), /isn't set up for the runner: save its token/);
+    // A session id that isn't one never reaches an engine's command line.
+    assert.equal(bj({ cfg, engine: { kind: "claude" }, worktree: "/w", sessionId: "--x; rm" }).spec.session, undefined);
   });
 
   // Jobcaps (config/jobcaps.json): every read goes through the model gateway's /c/<connection>/mcp with the job's own token.
@@ -102,7 +104,7 @@ describe("engines and modes", () => {
       "slack-read": { connection: "slack", url: "http://127.0.0.1:3125/mcp/read", bearer_secret: "slack_mcp_read_token", tools: ["slack_read_thread"] },
       "clickhouse-read": { connection: "clickhouse", url: "http://127.0.0.1:3127/mcp", bearer_secret: "clickhouse_mcp_token", tools: ["run_select_query"], tool_timeout_s: 180 },
     }));
-    return { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "secret"), codexOpenrouterHome: join(dir, "homes"), jobcapsFile: join(dir, "jobcaps.json"), sandbox: { extra_writable_roots: [] }, ...extra };
+    return { ...cfg, openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "secret"), stateDir: join(dir, "state"), jobcapsFile: join(dir, "jobcaps.json"), sandbox: { extra_writable_roots: [] }, ...extra };
   };
 
   it("gives every engine its jobcaps through the gateway, with only the job's token in the environment", () => {
@@ -110,59 +112,50 @@ describe("engines and modes", () => {
     const c = jobcapsCfg(dir);
     const job = { agentId: "eng1", issueId: "i1", jobcaps: ["slack-read", "primer-read"] };
     for (const kind of ["codex", "claude", "openrouter", "codex-openrouter"]) {
-      const { argv, env } = buildCommand({ cfg: c, engine: { kind, model: "m" }, worktree: "/w", lastMessageFile: "/x", job });
+      const { argv, env, spec } = bj({ cfg: c, engine: { kind, model: "m" }, worktree: "/w", job });
       const claims = JSON.parse(Buffer.from(env.AIDENHQ_JOB_TOKEN.slice(5).split(".")[0], "base64url"));
       assert.deepEqual([claims.k, claims.a, claims.i, claims.j], ["agent", "eng1", "i1", ["primer-read", "slack-read"]], kind);
-      assert.ok(!argv.some((a) => a.includes("ahqj_")), `${kind}: token on the command line`);
-      const where = kind === "openrouter" ? env.OPENCODE_CONFIG_CONTENT : argv.join(" ");
-      for (const conn of ["primer", "slack"]) assert.ok(where.includes(`http://127.0.0.1:8201/c/${conn}/mcp`), `${kind} ${conn}`);
-      assert.doesNotMatch(where, /3123|3125|mcp\/read/, kind);
+      assert.ok(!argv.some((a) => a.includes("ahqj_")) && !JSON.stringify(spec).includes("ahqj_"), `${kind}: token on the command line or in job.json`);
+      assert.deepEqual(spec.mcp, ["primer", "slack"].map((n) => ({ name: n, url: `http://127.0.0.1:8201/c/${n}/mcp`, token_env: "AIDENHQ_JOB_TOKEN" })), kind);
+      assert.doesNotMatch(JSON.stringify(spec), /3123|3125|mcp\/read/, kind);
     }
-    const codex = buildCommand({ cfg: c, engine: { kind: "codex" }, worktree: "/w", lastMessageFile: "/x", job }).argv;
-    assert.ok(codex.includes('mcp_servers.slack.bearer_token_env_var="AIDENHQ_JOB_TOKEN"'));
-    assert.ok(codex.includes('shell_environment_policy.exclude=["AIDENHQ_JOB_TOKEN"]'));
-    const claude = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w", job }).argv;
-    const servers = JSON.parse(claude[claude.indexOf("--mcp-config") + 1]).mcpServers;
-    assert.deepEqual(servers.primer, { type: "http", url: "http://127.0.0.1:8201/c/primer/mcp", headers: { Authorization: "Bearer ${AIDENHQ_JOB_TOKEN}" } });
-    // ClickHouse queries outlast Codex's default tool timeout.
-    const ch = buildCommand({ cfg: c, engine: { kind: "codex" }, worktree: "/w", lastMessageFile: "/x", job: { ...job, jobcaps: ["clickhouse-read"] } }).argv;
-    assert.ok(ch.includes("mcp_servers.clickhouse.tool_timeout_sec=180"));
-    // No jobcaps: no MCP servers and no job token (a codex job needs no gateway at all).
-    const none = buildCommand({ cfg: c, engine: { kind: "claude" }, worktree: "/w", job: { issueId: "i2" } });
-    assert.equal(none.argv[none.argv.indexOf("--mcp-config") + 1], '{"mcpServers":{}}');
+    // ClickHouse queries outlast an engine's default tool timeout.
+    assert.equal(bj({ cfg: c, engine: { kind: "codex" }, worktree: "/w", job: { ...job, jobcaps: ["clickhouse-read"] } }).spec.mcp[0].tool_timeout_s, 180);
+    // No jobcaps: no MCP servers and no job token.
+    const none = bj({ cfg: c, engine: { kind: "claude" }, worktree: "/w", job: { issueId: "i2" } });
+    assert.deepEqual(none.spec.mcp, []);
     assert.equal(none.env.AIDENHQ_JOB_TOKEN, undefined);
-    // opencode: the model gateway with the job's own token, never the OpenRouter key.
-    const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "m" }, worktree: "/w", job });
-    assert.match(or.env.OPENROUTER_API_KEY, /^ahqj_/);
-    assert.equal(or.argv[0], "opencode");
+    // A gateway engine: the model gateway with the job's own token, never the OpenRouter key.
+    const or = bj({ cfg: c, engine: { kind: "openrouter", model: "m" }, worktree: "/w", job });
+    assert.match(or.env.AIDENHQ_MODEL_TOKEN, /^ahqj_/);
+    assert.equal(or.spec.model.base_url, "http://127.0.0.1:8201/api/v1");
     assert.ok(!JSON.stringify(or).includes("sk-or-realkey"), "the OpenRouter key is nowhere in the job");
-    assert.equal(JSON.parse(or.env.OPENCODE_CONFIG_CONTENT).provider.openrouter.options.baseURL, "http://127.0.0.1:8201/api/v1");
     assert.match(observeSection("Dana", { clickhouse: true }), /\*\*ClickHouse\*\*.*LIMIT/);
     assert.doesNotMatch(observeSection("Dana", { clickhouse: false, grafana: true }), /ClickHouse/);
   });
 
-  it("runs codex-openrouter as Codex through the model gateway, with the job's token, effort and its own Codex home", () => {
+  it("runs codex-openrouter through the model gateway, with the job's token, effort and its own state folder", () => {
     const dir = mkdtempSync(join(tmpdir(), "cor-"));
     const c = jobcapsCfg(dir);
-    const built = buildCommand({ cfg: c, engine: { kind: "codex-openrouter", model: "~deepseek/deepseek-flash-latest", effort: "medium", reads: true }, worktree: "/w", lastMessageFile: "/x", sessionId: "s1", job: { agentId: "eng1", issueId: "i1", jobcaps: ["primer-read"] } });
-    const { argv, env } = built;
-    assert.deepEqual(argv.slice(0, 4), ["codex", "exec", "resume", "s1"]);
-    for (const a of ['model_provider="or"', 'model_providers.or.base_url="http://127.0.0.1:8201/api/v1"', 'model_providers.or.env_key="AIDENHQ_GATEWAY_KEY"', 'model_providers.or.wire_api="responses"', 'model_reasoning_effort="medium"', 'sandbox_mode="workspace-write"', "features.apps=false", "features.hooks=false", 'shell_environment_policy.exclude=["AIDENHQ_GATEWAY_KEY","AIDENHQ_JOB_TOKEN"]']) assert.ok(argv.includes(a), a);
-    assert.equal(argv[argv.indexOf("-m") + 1], "~deepseek/deepseek-flash-latest");
+    const built = bj({ cfg: c, engine: { kind: "codex-openrouter", model: "~deepseek/deepseek-flash-latest", effort: "medium", reads: true }, worktree: "/w", sessionId: "s1", job: { agentId: "eng1", issueId: "i1", jobcaps: ["primer-read"] } });
+    const { argv, env, spec } = built;
+    assert.deepEqual(spec.model, { base_url: "http://127.0.0.1:8201/api/v1", token_env: "AIDENHQ_MODEL_TOKEN", id: "~deepseek/deepseek-flash-latest", effort: "medium" });
     // The job's own gateway token (kind agent, its Engineer and task), never the OpenRouter key; the same one reads.
-    const claims = JSON.parse(Buffer.from(env.AIDENHQ_GATEWAY_KEY.slice(5).split(".")[0], "base64url"));
+    const claims = JSON.parse(Buffer.from(env.AIDENHQ_MODEL_TOKEN.slice(5).split(".")[0], "base64url"));
     assert.deepEqual([claims.k, claims.a, claims.i], ["agent", "eng1", "i1"]);
-    assert.equal(env.AIDENHQ_JOB_TOKEN, env.AIDENHQ_GATEWAY_KEY);
+    assert.equal(env.AIDENHQ_JOB_TOKEN, env.AIDENHQ_MODEL_TOKEN);
     assert.ok(!JSON.stringify(built).includes("sk-or-realkey"), "the OpenRouter key is nowhere in the job");
     assert.ok(!argv.some((a) => /ahqj_/.test(a)), "no token on the command line");
-    // A Codex home per task, the product's instructions and skills in it, nothing of the host's.
-    assert.equal(env.CODEX_HOME, join(dir, "homes", "i1"));
-    for (const f of ["AGENTS.md", "skills/supply-chain/SKILL.md", "skills/supply-chain/best-version.mjs", "skills/design-system/files/tokens.css"]) assert.ok(existsSync(join(env.CODEX_HOME, f)), f);
-    assert.ok(!existsSync(join(env.CODEX_HOME, "config.toml")));
-    // With private reads, no web search (private data can't leave in a query); a light Engineer keeps the web.
-    assert.ok(argv.includes('web_search="disabled"'));
-    const light = buildCommand({ cfg: c, engine: { kind: "codex-openrouter", model: "m" }, worktree: "/w", lastMessageFile: "/x", job: { issueId: "i2" } });
-    assert.ok(light.argv.includes('web_search="live"'));
+    // A state folder per task, seeded from the engine module and the product, nothing of the host's.
+    assert.equal(spec.state, join(dir, "state", "codex-openrouter", "i1"));
+    for (const f of ["AGENTS.md", "skills/supply-chain/SKILL.md", "skills/supply-chain/best-version.mjs", "skills/design-system/files/tokens.css"]) assert.ok(existsSync(join(spec.state, f)), f);
+    writeFileSync(join(spec.state, "config.toml"), "left by a run");
+    bj({ cfg: c, engine: { kind: "codex-openrouter", model: "m" }, worktree: "/w", job: { issueId: "i1" } });
+    assert.ok(!existsSync(join(spec.state, "config.toml")), "reset before the next run");
+    // With private reads, no web (private data can't leave in a query); a light Engineer keeps the web.
+    assert.equal(spec.web, false);
+    const light = bj({ cfg: c, engine: { kind: "codex-openrouter", model: "m" }, worktree: "/w", job: { issueId: "i2" } });
+    assert.equal(light.spec.web, true);
   });
 });
 
@@ -275,7 +268,7 @@ describe("the prompt's repositories", () => {
 });
 
 describe("executor picker (Engineer agents)", async () => {
-  const { pickedEngine, pickerFor } = await import("../src/commands.mjs");
+  const { pickedEngine, pickerFor } = await import("../src/agents.mjs");
   const engineers = [
     { id: "cx", adapterType: "codex_local", adapterConfig: {} },
     { id: "cl", adapterType: "claude_local", adapterConfig: { model: "claude-opus-5-5" } },
@@ -312,14 +305,8 @@ describe("executor picker (Engineer agents)", async () => {
     assert.deepEqual(pickedEngine(fields, engineers, cfg), { kind: "codex", model: "gpt-6-astra", effort: "high" });
   });
 
-  it("passes the effort to Codex and Claude Code", () => {
-    const codex = buildCommand({ cfg: { ...cfg, sandbox: { extra_writable_roots: [] } }, engine: { kind: "codex", model: "gpt-5.6-sol", effort: "high" }, worktree: "/w", lastMessageFile: "/x" }).argv;
-    assert.ok(codex.includes('model_reasoning_effort="high"'));
-    const dir = mkdtempSync(join(tmpdir(), "pw-claude-"));
-    writeFileSync(join(dir, "token"), "tok\n");
-    const c = { ...cfg, claudeTokenFile: join(dir, "token"), claudeConfigDir: join(dir, "home"), sandbox: { extra_writable_roots: [] } };
-    const claude = buildCommand({ cfg: c, engine: { kind: "claude", model: "opus", effort: "xhigh" }, worktree: "/w", lastMessageFile: "/x" }).argv;
-    assert.equal(claude[claude.indexOf("--effort") + 1], "xhigh");
+  it("passes the effort to the engine", () => {
+    assert.equal(bj({ cfg, engine: { kind: "codex", model: "gpt-5.6-sol", effort: "high" }, worktree: "/w" }).spec.model.effort, "high");
   });
 });
 
@@ -369,7 +356,7 @@ describe("run outcome", async () => {
 });
 
 describe("tasks the user wrote", async () => {
-  const { ownRequest } = await import("../src/commands.mjs");
+  const { ownRequest } = await import("../src/agents.mjs");
   it("uses the description only when the user wrote the task", () => {
     const desc = "Review npm audit CI results in https://github.com/Acme/indexer-gateway-b\n\nUse glm5.3-flash";
     assert.equal(ownRequest({ createdByUserId: "u", createdByAgentId: null, description: desc }), desc);
@@ -437,7 +424,7 @@ describe("review requests handled on GitHub", async () => {
 });
 
 describe("Engineer sub-tasks", async () => {
-  const { isAgentSubtask } = await import("../src/commands.mjs");
+  const { isAgentSubtask } = await import("../src/agents.mjs");
   const { approvalPrompt } = await import("../src/intake.ts");
   it("only agent-created sub-tasks wait for a go-ahead", () => {
     assert.equal(isAgentSubtask({ parentId: "p", createdByAgentId: "assistant", createdByUserId: null }), true);
@@ -1022,7 +1009,7 @@ describe("an Engineer's part of a task", () => {
     assert.doesNotMatch(followUpPrompt({ ...base, crew: { ...crew, others: [] } }), /What the others/);
   });
   it("counts parts the user gave an Engineer, not the Researcher's or other people's", async () => {
-    const { isUserPart } = await import("../src/commands.mjs");
+    const { isUserPart } = await import("../src/agents.mjs");
     const engineers = [{ id: "e1" }];
     assert.equal(isUserPart({ parentId: "p", createdByUserId: "u", assigneeAgentId: "e1" }, engineers), true);
     assert.equal(isUserPart({ parentId: "p", createdByUserId: "u", createdByAgentId: "a", assigneeAgentId: "e1" }, engineers), false);
@@ -1037,7 +1024,7 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     for (const [f, v] of [["claude", "tok"], ["or", "ork"]]) writeFileSync(join(dir, f), v);
     writeFileSync(join(dir, "jobcaps.json"), JSON.stringify({ "grafana-read": { connection: "grafana", url: "http://127.0.0.1:3124/mcp", bearer_secret: "grafana_mcp_token", tools: ["query_prometheus"] } }));
     mkdirSync(join(dir, "gcloud-user"));
-    const c = { ...cfg, claudeTokenFile: join(dir, "claude"), claudeConfigDir: join(dir, "home"), openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), jobcapsFile: join(dir, "jobcaps.json"), gcp: { hidden: [join(dir, "gcloud-user"), join(dir, "not-there")] }, sandbox: { extra_writable_roots: [] } };
+    const c = { ...cfg, openrouterKeyFile: join(dir, "or"), gatewayJobSecretFile: join(dir, "or"), jobcapsFile: join(dir, "jobcaps.json"), gcp: { hidden: [join(dir, "gcloud-user"), join(dir, "not-there")] }, sandbox: { extra_writable_roots: [] } };
     const gcp = { root: join(dir, "job-gcloud"), env: { CLOUDSDK_CONFIG: join(dir, "job-gcloud/config") } };
     mkdirSync(gcp.root);
     return { dir, c, gcp };
@@ -1046,12 +1033,12 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
   it("gives gcloud to an Engineer with private reads, never to a light one; Grafana through its jobcap", () => {
     const { c, gcp } = setup();
     for (const kind of ["codex", "claude"]) {
-      const { argv, env, rw } = buildCommand({ cfg: c, engine: { kind, reads: true }, worktree: "/w", lastMessageFile: "/x", gcp, job: { issueId: "i1", jobcaps: ["grafana-read"] } });
+      const { argv, env, spec } = bj({ cfg: c, engine: { kind, reads: true }, worktree: "/w", gcp, job: { issueId: "i1", jobcaps: ["grafana-read"] } });
       assert.equal(env.CLOUDSDK_CONFIG, gcp.env.CLOUDSDK_CONFIG, kind);
-      assert.ok(argv.join(" ").includes("http://127.0.0.1:8201/c/grafana/mcp"), kind);
-      assert.ok(rw.includes(gcp.root), `${kind}: gcloud dir writable`);
+      assert.equal(spec.mcp[0].url, "http://127.0.0.1:8201/c/grafana/mcp", kind);
+      assert.ok(argv.join(" ").includes(`--bind ${gcp.root} ${gcp.root}`), `${kind}: gcloud dir writable`);
     }
-    const or = buildCommand({ cfg: c, engine: { kind: "openrouter", model: "m" }, worktree: "/w", gcp });
+    const or = bj({ cfg: c, engine: { kind: "openrouter", model: "m" }, worktree: "/w", gcp });
     assert.equal(or.env.CLOUDSDK_CONFIG, undefined);
     assert.ok(!or.argv.some((a) => a.includes(gcp.root)));
   });
@@ -1063,16 +1050,18 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     for (const t of ["WOR-1", "WOR-2"]) mkdirSync(join(tasks, t), { recursive: true });
     mkdirSync(join(tasks, "WOR-1", "gcloud-in-task"));
     const repo = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
-    const jc = { ...c, ghWrapperDir: join(repo, "services/runner/bin"), codexOpenrouterHome: join(dir, "cor"), gcp: { hidden: [join(dir, "gcloud-user"), join(tasks, "WOR-1", "gcloud-in-task")] } };
+    const jc = { ...c, ghWrapperDir: join(repo, "services/runner/bin"), gcp: { hidden: [join(dir, "gcloud-user"), join(tasks, "WOR-1", "gcloud-in-task")] } };
     for (const kind of ["codex", "claude", "openrouter", "codex-openrouter"]) {
-      const { argv } = buildCommand({ cfg: jc, engine: { kind, model: "m" }, worktree: join(tasks, "WOR-1"), lastMessageFile: "/x", job: { issueId: "i1" } });
+      const { argv } = bj({ cfg: jc, engine: { kind, model: "m" }, worktree: join(tasks, "WOR-1"), job: { issueId: "i1" } });
       const sep = argv.indexOf("--die-with-parent");
       const mounts = argv.slice(0, sep);
       assert.equal(mounts[0], "bwrap", kind);
       assert.ok(!mounts.includes("/") , `${kind}: the host's root is not bound`);
       assert.ok(mounts.join(" ").includes(`--bind ${join(tasks, "WOR-1")} ${join(tasks, "WOR-1")}`), `${kind}: its task folder, read-write`);
       assert.ok(!mounts.some((m) => m.startsWith(join(tasks, "WOR-2")) || m === tasks), `${kind}: no sibling task`);
-      assert.ok(!mounts.some((m) => m === repo || (m.startsWith(repo + "/") && !m.startsWith(jc.ghWrapperDir))), `${kind}: of the product checkout only the wrappers`);
+      const engineDir = join(repo, registry()[kind].dir);
+      assert.ok(mounts.join(" ").includes(`--ro-bind ${engineDir} ${engineDir}`), `${kind}: its engine module, read-only`);
+      assert.ok(!mounts.some((m) => m === repo || (m.startsWith(repo + "/") && !m.startsWith(jc.ghWrapperDir) && m !== engineDir)), `${kind}: of the product checkout only the wrappers and its engine module`);
       assert.ok(mounts.join(" ").includes(`--tmpfs ${join(tasks, "WOR-1", "gcloud-in-task")}`), `${kind}: a hidden path inside an allowed one stays masked`);
       assert.ok(!mounts.includes(join(dir, "gcloud-user")), `${kind}: a hidden path outside the allowlist is simply absent`);
     }
@@ -1081,8 +1070,8 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
   // The private bwrap (ops/vm/setup.sh) carries the AppArmor exemption; /usr/bin/bwrap keeps the release's policy.
   it("runs jobs with the configured bwrap, with and without the network jail", () => {
     const { dir, c } = setup();
-    const jc = { ...c, bwrap: "/opt/aidenhq/bwrap/bwrap", codexOpenrouterHome: join(dir, "cor") };
-    const plain = buildCommand({ cfg: jc, engine: { kind: "codex", model: "m" }, worktree: join(dir, "WOR-1"), lastMessageFile: "/x", job: { issueId: "i1" } }).argv;
+    const jc = { ...c, bwrap: "/opt/aidenhq/bwrap/bwrap" };
+    const plain = bj({ cfg: jc, engine: { kind: "codex", model: "m" }, worktree: join(dir, "WOR-1"), job: { issueId: "i1" } }).argv;
     assert.equal(plain[0], "/opt/aidenhq/bwrap/bwrap");
     mkdirSync(join(dir, "bin"));
     writeFileSync(join(dir, "bin/ip"), "#!/bin/sh\necho '1: lo    inet 127.0.0.1/8 scope host lo'\n");
@@ -1090,7 +1079,7 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     const path = process.env.PATH;
     process.env.PATH = `${join(dir, "bin")}:${path}`;
     try {
-      const jailed = buildCommand({ cfg: { ...jc, pasta: "/usr/bin/pasta" }, engine: { kind: "codex", model: "m" }, worktree: join(dir, "WOR-1"), lastMessageFile: "/x", job: { issueId: "i1" } }).argv;
+      const jailed = bj({ cfg: { ...jc, pasta: "/usr/bin/pasta" }, engine: { kind: "codex", model: "m" }, worktree: join(dir, "WOR-1"), job: { issueId: "i1" } }).argv;
       assert.equal(jailed[5], "/opt/aidenhq/bwrap/bwrap"); // netjail.ts <pasta> <ports> <link> <bwrap> …
     } finally {
       process.env.PATH = path;
@@ -1102,9 +1091,9 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     const { dir, c } = setup();
     const browserDir = join(dir, "browser");
     mkdirSync(browserDir);
-    const jc = { ...c, browserDir, codexOpenrouterHome: join(dir, "cor") };
+    const jc = { ...c, browserDir };
     for (const kind of ["codex", "claude", "openrouter", "codex-openrouter"]) {
-      const { argv } = buildCommand({ cfg: jc, engine: { kind, model: "m" }, worktree: join(dir, "WOR-1"), lastMessageFile: "/x", job: { issueId: "i1" } });
+      const { argv } = bj({ cfg: jc, engine: { kind, model: "m" }, worktree: join(dir, "WOR-1"), job: { issueId: "i1" } });
       const mounts = argv.slice(0, argv.indexOf("--die-with-parent")).join(" ");
       assert.ok(mounts.includes(`--ro-bind ${browserDir} ${browserDir}`), kind);
       assert.ok(!mounts.includes(`--bind ${browserDir}`), `${kind}: never writable`);
@@ -1129,7 +1118,7 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
       writeFileSync(join(tasks, t, "f"), t);
     }
     const repo = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
-    const { argv } = buildCommand({ cfg: { ...c, ghWrapperDir: join(repo, "services/runner/bin") }, engine: { kind: "codex" }, worktree: join(tasks, "WOR-1"), lastMessageFile: "/x" });
+    const { argv } = bj({ cfg: { ...c, ghWrapperDir: join(repo, "services/runner/bin") }, engine: { kind: "codex" }, worktree: join(tasks, "WOR-1") });
     const inner = argv.indexOf("--") + 1;
     const run = (path) => spawnSync(argv[0], [...argv.slice(1, inner), "cat", path], { encoding: "utf8" });
     assert.equal(run(join(tasks, "WOR-1", "f")).stdout, "WOR-1");
@@ -1159,7 +1148,7 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     for (const t of ["WOR-1", "WOR-2"]) mkdirSync(join(tasks, t), { recursive: true });
     const cc = { ...c, workDir: dir, sandbox: { extra_writable_roots: [seed] } };
     const sh = (task, cmd) => {
-      const { argv } = buildCommand({ cfg: cc, engine: { kind: "codex" }, worktree: join(tasks, task), lastMessageFile: "/x" });
+      const { argv } = bj({ cfg: cc, engine: { kind: "codex" }, worktree: join(tasks, task) });
       const inner = argv.indexOf("--") + 1;
       return spawnSync(argv[0], [...argv.slice(1, inner), "sh", "-c", cmd], { encoding: "utf8" });
     };
@@ -1185,9 +1174,9 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     chmodSync(join(dir, "bin/ip"), 0o755);
     const path = process.env.PATH;
     process.env.PATH = `${join(dir, "bin")}:${path}`;
-    const claude = buildCommand({ cfg: jc, engine: { kind: "claude", reads: true }, worktree: "/w", loopback, job: { issueId: "i1", jobcaps: ["grafana-read"] } }).argv;
-    const or = buildCommand({ cfg: jc, engine: { kind: "openrouter", model: "m" }, worktree: "/w", loopback }).argv;
-    const codex = buildCommand({ cfg: jc, engine: { kind: "codex" }, worktree: "/w", lastMessageFile: "/x", loopback }).argv;
+    const claude = bj({ cfg: jc, engine: { kind: "claude", reads: true }, worktree: "/w", loopback, job: { issueId: "i1", jobcaps: ["grafana-read"] } }).argv;
+    const or = bj({ cfg: jc, engine: { kind: "openrouter", model: "m" }, worktree: "/w", loopback }).argv;
+    const codex = bj({ cfg: jc, engine: { kind: "codex" }, worktree: "/w", loopback }).argv;
     process.env.PATH = path;
     assert.equal(claude[0], process.execPath);
     assert.ok(claude[1].endsWith("/netjail.ts"));
@@ -1198,7 +1187,7 @@ describe("Grafana and Google Cloud for Engineer jobs", () => {
     const rc = claude.indexOf("/etc/resolv.conf");
     assert.deepEqual(claude.slice(rc - 4, rc), ["--tmpfs", "/run/systemd/resolve", "--ro-bind-data", "5"]);
     const jail = claude.indexOf("aidenhq-jail");
-    assert.equal(claude[jail + 1], "claude"); // the engine itself, after the jail's own setup: bwrap is its boundary
+    assert.deepEqual(claude.slice(jail + 1, jail + 3), [process.execPath, join(fileURLToPath(new URL("../../..", import.meta.url)), "modules/engine-claude/bin/engine")]); // the engine itself, after the jail's own setup: bwrap is its boundary
     // The job's first step: private and reserved ranges, and each of the host's own addresses (a public one too), are unreachable.
     for (const n of ["192.168.0.0/16", "240.0.0.0/4", "10.0.2.7/32", "203.0.113.9/32"]) assert.ok(claude[jail - 1].split(/[ ;]/).includes(n), n);
     // The model gateway's port for its model calls; a job with neither jobcaps nor gateway models gets only its helper.

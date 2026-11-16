@@ -31,13 +31,25 @@ function market(edit) {
 }
 test("unknown marketplace fields are ignored", () => {
   const dir = market((m) => ({ ...m, extra: 1, plugins: m.plugins.map((p) => ({ ...p, version: "1.0.0", tags: ["x"] })) }));
-  assert.deepEqual(enabledOf(compile(dir, inst(["a"]))), ["a", "b", "core"]);
+  assert.deepEqual(enabledOf(compile(dir, inst(["a"]))), ["a", "b", "core", "eng"]);
 });
 test("a module directory missing from the marketplace fails", () =>
   assert.throws(() => compile(market((m) => ({ ...m, plugins: m.plugins.filter((p) => p.name !== "b") })), inst(["a"])), /modules\/b is not in modules\/marketplace.json/));
 test("a remote source fails until unit 5a", () =>
   assert.throws(() => compile(market((m) => ({ ...m, plugins: m.plugins.map((p) => (p.name === "b" ? { name: "b", source: { source: "github", repo: "acme/b" } } : p)) })), inst(["a"])), /remote sources/));
-test("requires pulls dependencies in", () => assert.deepEqual(enabledOf(compile(mods, inst(["a"]))), ["a", "b", "core"]));
+test("requires pulls dependencies in", () => assert.deepEqual(enabledOf(compile(mods, inst(["a"]))), ["a", "b", "core", "eng"]));
+test("engines: the registry lists each kind's module, bin and data; crew args come from the engine module", () => {
+  const out = compile(mods, inst([]));
+  assert.deepEqual(Object.keys(out.engines).sort(), ["codex", "codex-openrouter"]);
+  assert.deepEqual(out.engines["codex-openrouter"], { kind: "codex-openrouter", bin: "modules/eng/bin/engine", gateway: true, box: true, state: "task", seed: [{ from: "bin/engine", to: "x/engine" }], module: "eng", dir: "modules/eng", live_input: false });
+  assert.deepEqual(out.paperclip.codex_args, ["--sandbox", "read-only"]);
+});
+test("engines: two modules with one engine kind fail compile", () =>
+  assert.throws(() => compile(mods, inst(["engdup"])), /two modules declare engine kind codex-openrouter: eng and engdup/));
+test("engines: a runner agent on an engine no enabled module provides fails compile", () => {
+  compile(mods, inst(["engrunner"]));
+  assert.throws(() => compile(mods, inst(["engrunner"], base, { overrides: { agents: { coder: { engine: "nope" } } } })), /agent coder: unknown engine nope \(enabled: codex, codex-openrouter\)/);
+});
 test("missing module is an error", () => assert.throws(() => compile(mods, inst(["nope"])), /unknown module: nope/));
 test("cycle is an error", () => assert.throws(() => compile(mods, inst(["cyc1"])), /module cycle: cyc1 → cyc2 → cyc1/));
 test("duplicate agent key across modules", () => assert.throws(() => compile(mods, inst(["dup1", "dup2"])), /duplicate agent: x/));

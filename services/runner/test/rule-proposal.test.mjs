@@ -3,7 +3,7 @@
 // marker is the tool's own last line, the assignee is the Platform Engineer, the creator's grants let it file tasks.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isRuleProposal } from "../src/commands.mjs";
+import { isRuleProposal } from "../src/agents.mjs";
 
 const grants = (assigneeKey) => ({ agents: { "roadmap-keeper": { key: "roadmap-keeper", tools: { paperclip_tasks: ["task_create"] } }, "engineer-claude": { key: assigneeKey } } });
 const body = "Filed by Roadmap Keeper (agent). This is an agent request, not the owner's words.\n\nChange the rule in acme/app.";
