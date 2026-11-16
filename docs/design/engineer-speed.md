@@ -143,7 +143,7 @@ Searches were 52 of 377 calls (7% of wall time) and plain-text; reads were 56 ca
 | universal-ctags / repo map | small: the task named the files; the `AGENTS.md` map is the repo map | apt | deferred; the map does the job |
 | TypeScript LSP / symbol-search MCP | maybe 5–10 of the `rg` + `sed` pairs | new MCP server and process per job | deferred: thin evidence, real upkeep |
 | git-delta | none (a human pager) | apt | no |
-| A token-backed `gh` (or a PR-files tool) in the box | the 29 one-PR-at-a-time reads of the rewrite-hold check | a credential in the box: a security decision | owner's call, not in this PR |
+| A token-backed `gh` (or a PR-files tool) in the box | the 29 one-PR-at-a-time reads of the rewrite-hold check | a credential in the box: a security decision | done after this PR (owner approved): the runner's read-only App token for the task's repos, as host jobs get |
 
 ## Expected saving for a change like this one
 

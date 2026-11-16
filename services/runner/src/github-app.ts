@@ -172,6 +172,19 @@ export const CREDENTIAL_ARGS = [
 /** git args + env for a command that carries the token. */
 export const withGitToken = (args: string[], env: NodeJS.ProcessEnv, token: string) => ({ args: [...CREDENTIAL_ARGS, ...args], env: { ...env, GIT_CONFIG_NOSYSTEM: "1", AIDENHQ_GIT_TOKEN: token } });
 
+/**
+ * A job's gh token, host or box alike: the App's, read-only (READ), narrowed to the task's repos it covers (`covered`) in the
+ * first such repo's org (one token, one org), and fresh so it lasts an hour (never refreshed: a longer run's gh then fails).
+ * Undefined when it covers none: the job's gh then has no GitHub access at all, never the user's own sign-in.
+ */
+export async function jobGhToken(app: AppClient | null | undefined, slugs: string[], covered: (slug: string) => Promise<unknown>): Promise<string | undefined> {
+  const names: string[][] = [];
+  for (const s of slugs) if (await covered(s)) names.push(s.split("/"));
+  if (!app || !names.length) return undefined;
+  const org = names[0]![0]!;
+  return app.token(org, { repositories: names.filter(([o]) => o!.toLowerCase() === org.toLowerCase()).map(([, n]) => n!), permissions: READ, fresh: true });
+}
+
 /** gh child options: GH_TOKEN for that one process when `app` (the App covering the repo) is set, else the host's gh login. */
 export async function ghOptions(app: AppClient | null | undefined, slug: string | undefined, perms: Record<string, string>, extra: { env?: NodeJS.ProcessEnv; [k: string]: unknown } = {}) {
   if (!app || !slug) return extra; // no App for this repo: the host's gh login, as before
