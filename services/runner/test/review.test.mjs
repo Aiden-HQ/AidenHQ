@@ -125,7 +125,7 @@ const ghRecord = `{ ecosystem: apt, package: gh, from: "Debian sid", to: "https:
 // not counted.
 const ghKeyringRun = [
   "RUN mkdir -p /tmp/gh-gpg && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /tmp/gh-keyring.gpg \\",
-  "+    && keys=\"$(GNUPGHOME=/tmp/gh-gpg gpg --batch --show-keys --with-colons /tmp/gh-keyring.gpg | awk -F: '$1 == \"pub\" { p = ($2 != \"e\" && $2 != \"r\" && $2 != \"d\" && $2 != \"i\"); next } p && $1 == \"fpr\" { print $10; p = 0 }')\" \\",
+  "+    && keys=\"$(GNUPGHOME=/tmp/gh-gpg gpg --batch --show-keys --with-colons /tmp/gh-keyring.gpg | awk -F: '$1 == \"pub\" { p = ($2 != \"e\"); next } p && $1 == \"fpr\" { print $10; p = 0 }')\" \\",
   "+    && [ \"$keys\" = 7F38BBB59D064DBCB3D84D725612B36462313325 ] \\",
   "+    && install -m 0644 /tmp/gh-keyring.gpg /usr/share/keyrings/githubcli-archive-keyring.gpg \\",
   "+    && echo \"deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" >/etc/apt/sources.list.d/github-cli.list \\",

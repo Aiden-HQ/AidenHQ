@@ -9,11 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 # gh from GitHub's own apt repository, not Debian's: the base is debian:sid-slim (the browser image), whose gh is 2.46.0-4,
 # with no fix for CVE-2026-48501 (the auth layer sent a github.com token to tuf-repo.github.com, fixed upstream in 2.93.0)
-# and a Go stdlib carrying published advisories. 2.104.0 (2026-11-12) is built with go1.27.4. The owner approved this one
-# new apt source; .github/supply-chain-source-exceptions.yaml records it. The keyring is read into /tmp first and written
-# only after its non-expired primary key is exactly the GitHub CLI key: every other key counts, so one added is refused;
-# `signed-by` carries the same fingerprint, for this repository alone, in the vendor's suite matching sid. The repository
-# keeps only the newest build, so the pin moves.
+# and a Go stdlib carrying published advisories. 2.104.0 (2026-11-12) is built with go1.27.4. The keyring is read into /tmp
+# first and written only after its non-expired primary key is exactly the GitHub CLI key: every other key counts, so one
+# added is refused. `signed-by` carries the same fingerprint, for this repository alone, in the vendor's suite matching
+# sid. The repository keeps only the newest build, so the pin moves.
 RUN mkdir -m 700 -p /tmp/gh-gpg \
     && curl -fsSLo /tmp/gh-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && keys="$(GNUPGHOME=/tmp/gh-gpg gpg --batch --show-keys --with-colons /tmp/gh-keyring.gpg \
