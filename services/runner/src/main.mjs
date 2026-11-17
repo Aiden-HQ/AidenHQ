@@ -60,6 +60,7 @@ import { createEvalGate } from "./evalgate.ts";
 import { fastChecks } from "../../../kernel/src/fastcheck.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
+import { SETTINGS_LABEL, TypedRefused, allowedPaths, assertOnly, checkTyped, planFiles, typedTaskChanges } from "./typed-change.mjs";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
 
@@ -153,6 +154,8 @@ async function poll() {
   // Writes the user approved first, before anything else the tick reads: an approved card must be claimed and run even
   // when the task list, a merge or a GitHub read fails or is slow this time round. Every poll.
   await runApprovals().catch((err) => log("approvals check failed", { err: String(err.message ?? err).slice(0, 300) }));
+  // The owner's typed settings changes (typed-change.mjs): written here, by code, then carded like any fleet change.
+  await runTypedChanges().catch((err) => log("typed settings changes failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Tasks labelled "engineer" or assigned to an Engineer agent.
   const byId = new Map((await pc.labelledIssues(cfg.label, updatedSince)).map((i) => [i.id, i]));
   const engineers = await pc.engineerAgents().catch(() => []);
@@ -230,6 +233,124 @@ async function poll() {
   }
   state.set("last_poll", now);
   drainQueue();
+}
+
+// ------------------------------------------------------------------ typed settings changes
+
+let typedLabelMissing = 0;
+let instanceWrites = Promise.resolve();
+/** Instance repo writes made here run one at a time (there is no other writer lock on the instance clones). */
+const serialInstance = (fn) => {
+  const run = instanceWrites.then(fn, fn);
+  instanceWrites = run.catch(() => {});
+  return run;
+};
+
+/**
+ * The owner's settings tasks (label settings-change, filed by the board with no assignee): for each, the typed change it
+ * carries is checked again here, written as exactly the files its kinds allow on a fleet/ branch, and filed as the apply card
+ * (showFleetDiff), so tiering, review, apply and the board's progress are the fleet path's. Each task is written once.
+ */
+async function runTypedChanges() {
+  if (!cfg.apply?.repo) return;
+  let tasks;
+  try {
+    tasks = await pc.labelledIssues(SETTINGS_LABEL);
+  } catch (err) {
+    if (!/missing in Paperclip/.test(String(err.message))) throw err;
+    // The board makes the label on its first change: read the labels again, at most once a minute.
+    if (Date.now() - typedLabelMissing > 60_000) (typedLabelMissing = Date.now()), (pc.labels = undefined);
+    return;
+  }
+  for (const t of tasks) {
+    if (t.assigneeAgentId || state.get(`typed:${t.id}`) || running.has(t.id)) continue;
+    await serialInstance(() => writeTypedChange(t)).catch((err) => log("typed settings change failed; tried again next poll", { issue: t.identifier, err: String(err.message ?? err).slice(0, 300) }));
+  }
+}
+
+/** What the typed changes are checked against: the compiled config and the module catalog this host runs. */
+function typedSources() {
+  const dir = process.env.AIDENHQ_CONFIG_DIR ?? join(REPO_ROOT, "config");
+  return { compiled: YAML.parse(readFileSync(join(dir, "paperclip.yaml"), "utf8")) ?? {}, catalog: JSON.parse(readFileSync(join(dir, "modules.json"), "utf8")) };
+}
+
+async function writeTypedChange(t) {
+  if (state.get(`typed:${t.id}`)) return;
+  const issue = await pc.issue(t.id); // the list cuts descriptions short
+  if (issue.assigneeAgentId || CLOSED.includes(issue.status)) return;
+  try {
+    const changes = typedTaskChanges(issue, { runnerMade: runnerMade(issue.id) });
+    if (!changes) return;
+    const src = typedSources();
+    for (const ch of changes) checkTyped(ch, src);
+    const sha = await commitTyped(issue, changes, src);
+    const workspace = state.task(issue.id).workspace;
+    const said = await showFleetDiff(issue, workspace);
+    if (!said) throw new Error("the change was committed but no card came of it");
+    state.set(`typed:${issue.id}`, sha);
+    await pc.comment(issue.id, said);
+    log("typed settings change written", { issue: issue.identifier, sha, kinds: changes.map((c) => c.kind) });
+  } catch (err) {
+    if (!(err instanceof TypedRefused)) throw err;
+    state.set(`typed:${issue.id}`, "refused");
+    await pc.setStatus(issue.id, "cancelled", `**Not written:** ${err.message}.`);
+    log("typed settings change refused", { issue: issue.identifier, err: err.message.slice(0, 300) });
+  }
+}
+
+/**
+ * The commit: built from the instance repo's main with git's plumbing (a private index, no working tree), so only the
+ * planned paths change and nothing in a checkout is followed. Returns the commit on the task's fleet/ branch.
+ */
+async function commitTyped(issue, changes, { compiled }) {
+  state.ensureTask(issue.id, issue.identifier);
+  if (!state.task(issue.id).repo) state.updateTask(issue.id, { repo: cfg.apply.repo });
+  const workspace = await prepareWorkspace(issue, state.task(issue.id));
+  const r = (await workspaceRepos(workspace)).find((x) => x.slug.toLowerCase() === cfg.apply.repo.toLowerCase());
+  if (!r) throw new Error(`${cfg.apply.repo} isn't in the task's workspace`);
+  await git(r.path, "fetch", "--quiet", "origin");
+  const tip = await git(r.path, "rev-parse", "--verify", `refs/remotes/origin/${await defaultBranch(r.path)}^{commit}`);
+  const isInstance = (key) => compiled.agents?.[key]?.module === "instance";
+  const allowed = allowedPaths(changes, isInstance);
+  const texts = new Map();
+  for (const p of allowed) {
+    const entry = await git(r.path, "ls-tree", tip, "--", p);
+    if (!entry) continue;
+    if (!entry.startsWith("100644 blob ")) throw new TypedRefused(`${p} in the instance repo isn't a plain file`);
+    texts.set(p, (await execFileP("git", [...SAFE_GIT_ARGS, "cat-file", "blob", `${tip}:${p}`], { cwd: r.path, env: ISOLATED_ENV, maxBuffer: 8 * 1024 * 1024 })).stdout);
+  }
+  const moduleHandbook = (key) => {
+    const a = compiled.agents?.[key];
+    try {
+      return readFileSync(a.handbook_fork ? join(REPO_ROOT, "modules", a.module, "agents", key, "AGENTS.md") : a.instructions, "utf8");
+    } catch {
+      return undefined;
+    }
+  };
+  const planned = planFiles(changes, { read: (p) => texts.get(p), isInstance, moduleHandbook });
+  assertOnly([...planned.keys()].sort(), allowed);
+  const env = { ...ISOLATED_ENV, ...identityEnv(await botIdentity()), GIT_INDEX_FILE: join(cfg.stateDir, `typed-index-${issue.id}`) };
+  const g = (args, input) =>
+    new Promise((res, rej) => {
+      const c = execFile("git", [...SAFE_GIT_ARGS, ...args], { cwd: r.path, env, maxBuffer: 8 * 1024 * 1024 }, (e, out) => (e ? rej(e) : res(out.trim())));
+      c.stdin.end(input ?? "");
+    });
+  try {
+    await g(["read-tree", tip]);
+    for (const [p, text] of planned) {
+      if (text === null) await g(["update-index", "--force-remove", "--", p]);
+      else await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${p}`]);
+    }
+    const tree = await g(["write-tree"]);
+    const message = `settings: ${changes.map((c) => c.kind).join(", ")} (${issue.identifier})\n\nWritten by the runner from the owner's typed change on ${issue.identifier}; no agent wrote it.`;
+    const sha = await g(["commit-tree", tree, "-p", tip, "-F", "-"], message);
+    // What the commit changes is exactly what the kinds allow, checked on the commit itself.
+    assertOnly((await git(r.path, "diff", "--no-renames", "--name-only", tip, sha)).split("\n").filter(Boolean).sort(), allowed);
+    await git(r.path, "branch", "-f", `fleet/settings-${issue.identifier.toLowerCase()}`, sha);
+    return sha;
+  } finally {
+    rmSync(env.GIT_INDEX_FILE, { force: true });
+  }
 }
 
 // ------------------------------------------------------------------ stale routine runs
@@ -2758,7 +2879,10 @@ async function applyApproved(issue, a) {
   if (bump?.error) throw new UserError(bump.error);
   // What lands must be what the card showed: the same diff (and product move) as approved, recomputed here.
   if ((await fleetDiffText(c, bump)) !== a.details || c.files.join("\n") !== a.args.files.join("\n")) throw new UserError("the change no longer matches the diff that was approved; it needs a new approval");
-  return landFleet(issue, r, a.args.sha, c.files, `approval ${a.id}`, `Applied on ${cfg.selfName}'s approval ${a.id} (${issue.identifier})`);
+  const out = await landFleet(issue, r, a.args.sha, c.files, `approval ${a.id}`, `Applied on ${cfg.selfName}'s approval ${a.id} (${issue.identifier})`);
+  // A typed settings change has no agent to close its task: it is done once live.
+  if (out.ok && state.get(`typed:${issue.id}`)) await pc.setStatus(issue.id, "done").catch((err) => log("couldn't close the settings task", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }));
+  return out;
 }
 
 /** Lands a checked fleet commit on the latest main (no force), then re-applies the instance on this host. */
