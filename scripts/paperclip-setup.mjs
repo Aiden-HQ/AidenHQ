@@ -579,7 +579,8 @@ async function ensureRoutines(companyId, agents) {
       variables: [...new Set([...(r.description ?? "").matchAll(/\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g)].map((m) => m[1]))]
         .filter((v) => !["date", "timestamp"].includes(v))
         .map((name) => ({ name, type: "text", required: false, defaultValue: "" })),
-      catchUpPolicy: "skip_missed",
+      // A lost scheduler tick still fires on the next one (Paperclip enqueues one run per missed tick, at most one for sub-hourly crons); always_enqueue routines already queue every event, so they skip.
+      catchUpPolicy: (r.concurrency ?? "coalesce_if_active") === "always_enqueue" ? "skip_missed" : "enqueue_missed_with_cap",
       // model and reasoning_effort reach its runs as env (the codex-model launcher, or the computer launcher, swaps them in); null clears a removed one.
       env: r.model || r.reasoning_effort ? { ...(r.model ? { AIDENHQ_MODEL: r.model } : {}), ...(r.reasoning_effort ? { AIDENHQ_REASONING_EFFORT: r.reasoning_effort } : {}) } : null,
     };
