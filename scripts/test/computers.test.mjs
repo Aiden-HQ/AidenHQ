@@ -42,7 +42,8 @@ test("not yet in a computer: an agent in trial (its limits run inside the box); 
 
 test("the design module: designer and reviewer run in computers with repo-checkout; only the reviewer may post design-review", () => {
   const dir = inst();
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "design"], settings: { timezone: "Europe/London", owner_name: "Sam", instance_name: "acme", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
+  // With GitHub connected (its modules are out of the default bundle since the on-server code host joined it).
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "design", "github", "codehost-github"], settings: { timezone: "Europe/London", owner_name: "Sam", instance_name: "acme", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
   const r = compile(product, dir);
   const d = r.paperclip.agents["ui-designer"], v = r.paperclip.agents["ui-reviewer"];
   assert.equal(d.image, "agent-base");
@@ -55,6 +56,18 @@ test("the design module: designer and reviewer run in computers with repo-checko
   assert.ok(!r.paperclip.agents.assistant.roles.includes("design-review"));
   assert.equal(computersConfig(r.paperclip, product).agents_org, "aidenhq-acme");
   assert.equal(r.compose.services["github-mcp"].environment.GITHUB_AGENTS_ORG, "aidenhq-acme");
+  assert.deepEqual(computersConfig(r.paperclip, product, BUNDLE).agents_orgs, ["aidenhq-acme", "local"]);
+});
+
+test("the default bundle with the design module and no GitHub: the UI Reviewer reviews this server's changes, and its boxes check out local/*", () => {
+  const dir = inst();
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "design"], settings: { timezone: "Europe/London", owner_name: "Sam", instance_name: "acme", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
+  const r = compile(product, dir);
+  assert.ok(BUNDLE.includes("codehost-local") && !BUNDLE.includes("github") && !BUNDLE.includes("codehost-github"));
+  assert.deepEqual(r.paperclip.agents["ui-reviewer"].roles, ["repo-checkout", "design-review"]);
+  assert.equal(r.paperclip.agents["ui-reviewer"].enabled_tools.github, undefined);
+  assert.equal(r.compose.services["github-mcp"], undefined);
+  assert.ok(computersConfig(r.paperclip, product, r.catalog.filter((m) => m.enabled).map((m) => m.name)).agents_orgs.includes("local"));
 });
 
 test("an unknown image fails compile; a runner agent gets a computer only as a Codex-on-OpenRouter Engineer in the engineer image", () => {
