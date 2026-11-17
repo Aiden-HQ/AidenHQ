@@ -49,7 +49,8 @@ npm test && npm run typecheck
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
 editing `kernel/sdk/src/caller.ts` or `fence.ts`, `services/shared/source-store.ts`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.mjs` (a
-test fails on drift). CI (`.github/workflows/ci.yml`) runs all of the above on every PR.
+test fails on drift). CI (`.github/workflows/ci.yml`) runs the suites a PR touches (map: `.github/ci/areas.json`, read from
+the base; a new top-level path needs a suite there or it runs everything) and all of them on main.
 
 The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
@@ -71,6 +72,9 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 - **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model. Gate
   only real risk (writes, spend, auth and security boundaries, the sandbox, untrusted text); set a default at its
   source, never re-enforce it downstream.
+  A new non-security gate ships in observe mode (`mode: observe` on a module check, `kernel/src/gates.ts`): it logs what it would
+  block (`gate.would_block` events) without blocking; promote it to enforce after reviewing those entries. Security gates
+  (secrets, outbound sends, unapproved merges and pushes, credential scoping; `HARD_GATES`) enforce from day one.
   Writes are kernel records tiered in code (`kernel/src/tier.ts`, the runner's `tiers.mjs` proposing for its kinds, the
   kernel enforcing floors, owner authority and vetoes itself): Tier 0 runs, Tier 1 the AI reviewer
   decides, Tier 2 the owner; setting `autonomy`. Every reviewer false reject becomes a planted case in

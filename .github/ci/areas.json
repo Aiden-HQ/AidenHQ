@@ -1,0 +1,27 @@
+{
+  "everything": [".github", "services/shared", "modules-pin.json"],
+  "markdown": ["SETUP.md", ".claude", "fixtures", "scripts/test/fixtures", "services/computer/images"],
+  "suites": [
+    { "name": "scripts", "run": "npm test", "paths": ["*"] },
+    {
+      "name": "services/runner",
+      "job": "runner-unit",
+      "paths": ["services/runner", "services/computer", "kernel", "scripts", "fixtures", "services/board/src/app.ts", "services/board/src/fleet.ts", "services/board/src/kernel-auth.ts", "services/board/src/session.ts"]
+    },
+    {
+      "name": "services/runner#flows",
+      "job": "runner-flows",
+      "paths": ["services/runner", "kernel/sdk", "kernel/src", "kernel/test/fixtures", "kernel/package-lock.json", "fixtures/engine-echo"],
+      "ignore": ["services/runner/src/prompt.ts"]
+    },
+    { "name": "kernel/sdk", "run": "(cd ../../services/runner && npm ci) && npm test", "paths": ["kernel/sdk", "fixtures/engine-echo"] },
+    {
+      "name": "fixtures/twin",
+      "run": "d=$(mktemp -d) && y=$(cd ../../scripts/node_modules && pwd) && cp -R . \"$d\" && (cd ../../kernel/sdk && npm pack --silent --pack-destination \"$d\") && cd \"$d\" && npm install --no-audit --no-fund && NODE_PATH=\"$y\" npm test",
+      "paths": ["fixtures/twin", "kernel/sdk", "scripts/sdk-pack.mjs"]
+    },
+    { "name": "services/computer", "run": "node --test test/*.test.mjs", "paths": ["services/computer", "services/runner/src", "services/runner/bin"] },
+    { "name": "kernel", "run": "npm ci && npm test && npm run typecheck", "paths": ["kernel", "services/computer", "fixtures"] },
+    { "name": "services/board", "job": "board", "paths": ["services/board", "services/runner/src", "scripts/identity.mjs"] }
+  ]
+}

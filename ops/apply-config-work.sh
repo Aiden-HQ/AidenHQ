@@ -483,8 +483,9 @@ switchOver() {
     systemctl --user disable --now --quiet aidenhq-host-metrics.timer
     rm -f "$units/aidenhq-host-metrics.service" "$units/aidenhq-host-metrics.timer" && systemctl --user daemon-reload && echo "host metrics timer removed (monitoring off)"
   fi
-  # The CI runner units a recorded drain stopped (data/fleet-paused.json, modules/ci): running again after an apply, each
-  # start limit cleared before its start (ops/ci-runner-units.sh).
+  # The CI runner units the config declares (the instances systemd has enabled) that are failed, and the ones a recorded
+  # drain stopped (data/fleet-paused.json, modules/ci): running again after an apply, each start limit cleared before its
+  # start (ops/ci-runner-units.sh).
   ops/ci-runner-units.sh "${AIDENHQ_DATA_DIR:-$PWD/data}"
   lap units
   # Apply-time rebuilds leave images nothing runs any more (content-tagged, so not dangling) and build cache behind: drop

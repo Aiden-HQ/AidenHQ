@@ -82,6 +82,8 @@ test("dropping enforcement is the owner's: a check removed, or the reviewer or e
   const lines = (head) => authorityDiff("acme-crm", strict, head, false).changes.filter((c) => c.owner).map((c) => c.what);
   assert.deepEqual(lines(with_({ checks: [{ id: "lint" }], providers: { reviewer: { url: "http://r:1/" }, executor: { url: "http://e:1/" } } })), ["drops 1 check"]);
   assert.deepEqual(lines(with_({ checks: strict.checks })), ["drops its reviewer provider", "drops its executor provider"]);
+  // A check moved to observe mode no longer enforces: dropped too.
+  assert.deepEqual(lines(with_({ checks: [{ id: "lint" }, { id: "scan", mode: "observe" }], providers: strict.providers })), ["drops 1 check"]);
   // The same through a replace: B lacking A's check is the owner's.
   const d = authorityDiff("crm-b", undefined, { name: "crm-b" }, false, { name: "acme-crm", def: strict });
   assert.ok(d.changes.some((c) => c.owner && c.what === "drops 2 checks"));
