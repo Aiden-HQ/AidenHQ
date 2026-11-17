@@ -89,13 +89,18 @@ jobs:
           '
 
   # The suites this change needs tested that have no job of their own (image-changes' `tests` step; all of them on a push
-  # to main), skipped when there are none. They share one job, four at a time: alone, each spent ~14 s of setup and about
-  # a minute of queue on 1-9 s of tests.
+  # to main), skipped when there are none. They share two jobs, split by weight (below), four suites at a time in each:
+  # alone, each spent ~14 s of setup and about a minute of queue on 1-9 s of tests.
   packages:
+    name: packages (${{ matrix.shard }}/2)
     needs: image-changes
     if: needs.image-changes.outputs.packages == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,7 +127,7 @@ jobs:
       # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.mjs): a stable entry is never
       # removed or reshaped. The scripts suite checks the lock against the code on every run.
       - name: Contract lock
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && matrix.shard == 1
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           GH_TOKEN: ${{ github.token }}
@@ -134,15 +139,25 @@ jobs:
       - name: Test
         env:
           TESTS: ${{ needs.image-changes.outputs.tests }}
+          SHARD: ${{ matrix.shard }}
+          # Seconds each suite took (GitHub-hosted, 2026-11-17), for balancing; a suite not listed counts 30. The selected
+          # suites go heaviest first into the lighter shard.
+          WEIGHTS: '{"scripts": 66, "services/computer": 36, "kernel": 30, "kernel/sdk": 8, "fixtures/twin": 6}'
         run: |
           logs="$RUNNER_TEMP/packages"; mkdir -p "$logs"
-          jq -r '.[] | select(.job == null) | "\(.dir)\t\(.run)"' <<< "$TESTS" > "$logs/list"
+          node -e '
+            const w = JSON.parse(process.env.WEIGHTS), shard = Number(process.env.SHARD) - 1, load = [0, 0], out = [[], []];
+            const suites = JSON.parse(process.env.TESTS).filter((t) => t.job == null).sort((a, b) => (w[b.name] ?? 30) - (w[a.name] ?? 30) || a.name.localeCompare(b.name));
+            for (const t of suites) { const i = load[0] <= load[1] ? 0 : 1; load[i] += w[t.name] ?? 30; out[i].push(`${t.dir}\t${t.run}`); }
+            console.log(out[shard].join("\n"));' > "$logs/list"
+          sed -i "/^\$/d" "$logs/list"
+          echo "Shard $SHARD: $(cut -f1 "$logs/list" | tr '\n' ' ')"
           # One line per package, run in its directory: its output goes to <log>, its exit code to <log>.rc.
           one() { dir="${1%%$'\t'*}"; cmd="${1#*$'\t'}"; log="$logs/$(tr / _ <<< "$dir")"; (cd "$dir" && bash -eo pipefail -c "$cmd") > "$log" 2>&1; echo $? > "$log.rc"; }
           export -f one; export logs
           # scripts/node_modules is read by the scripts suite and the kernel's authority CLI: install it once, here, since two
           # parallel `npm ci` in one directory delete each other's files (ENOTEMPTY, then "Cannot find module yaml").
-          grep -qE '^(scripts|kernel)[[:space:]]' "$logs/list" && (cd scripts && npm ci)
+          grep -qE '^(scripts|kernel|fixtures/twin)[[:space:]]' "$logs/list" && (cd scripts && npm ci)
           # The scripts suite's forks test runs the runner's tier function (services/runner/src/tiers.mjs), which reads its own
           # node_modules: install them too (no services/runner package runs in this job, so nothing races it).
           grep -qE '^scripts[[:space:]]' "$logs/list" && (cd services/runner && npm ci)
