@@ -123,11 +123,29 @@ Paperclip image alone is 17 GB), so it takes far longer than minutes. Two change
     of failing.
   - The prompt hands over the link at the end of stage 1 and tells the user the rest finishes on its own.
 
-**Builder's first spike.** Measure today's time from a bare server to first chat. Find the smallest service set for
-Aiden's reply: the chat lane (`chat-lane`), or Paperclip, whose image dominates the download. Set stage 1 from that. If
-Aiden's chat needs Paperclip, stage 1 includes it and the spike reports the time it costs, with options for the owner.
-The target: link to first reply in two minutes on a 4-core, 8 GB server, with the slower stage 2 hidden behind the
-chat.
+**Aiden's first replies come from the chat lane.** The lane's reply loop calls the kernel's model gateway directly;
+Paperclip doesn't generate those replies. Today, though, the bootstrap is tied to Paperclip (checked with Codex):
+- stock Aiden has no `chat:` block;
+- the lane's config is written by `scripts/paperclip-setup.mjs` from Paperclip agent ids and keys;
+- the board needs a company UUID;
+- `/api/chats` loads Paperclip context before it picks the lane.
+
+So staging containers alone can't deliver a fast first chat. This work:
+- gives Aiden a `chat:` block;
+- lets the lane, the board config and `/api/chats` start from the kernel's own agent identity, with Paperclip context
+  joining once it is up.
+
+The alternative, keeping Paperclip in stage 1, makes its 17 GB image the floor on time to first chat.
+
+**Builder's first spike.** Measure a cold install, bare server to first successful reply, on a 4-core, 8 GB server:
+- infrastructure time, reported separately from human time (buying a server, the authenticator, OpenRouter payment);
+- the transfer and extraction time of each image;
+- whether stage 1 without Paperclip is reachable.
+
+The target is two minutes of infrastructure time from install start to the link working, and seconds from the link to
+the first reply. If the measurement says that can't be reached, the spike reports options; a maintained server image
+with dependencies and images cached is the fallback guarantee. Stage 2 runs as a durable, retrying unit with resource
+limits, so its downloads never starve the chat.
 
 ### Part 2: first-run page (kernel `/setup`)
 
@@ -139,6 +157,14 @@ One short page, in this order:
      user-owned key and writes it to the vault.
    - Fallback: a "paste a key instead" link revealing the existing key field.
    - The help line says how much a typical month costs and that they set the spend limit in OpenRouter.
+   - **Model ready means a real reply.** After the key arrives, the kernel makes one tiny call to Aiden's model. If the
+     account has no credit, the page shows "Add credit in OpenRouter" with a link and a Retry button, never a broken
+     chat later.
+   - The account and authenticator steps already done are kept across the OpenRouter redirect and any failure; a
+     retry never starts over.
+
+The authenticator step explains itself in one line ("an app on your phone, like Google Authenticator, that shows a
+6-digit code"). It shows the QR code and the manual key.
 
 Every other module `setup:` field leaves this page and moves to the wizard. The recovery-key box also moves to the
 wizard. On finish, the kernel signs them in and sends them to the board, which opens the wizard.
@@ -149,50 +175,56 @@ wizard. On finish, the kernel signs them in and sends them to the board, which o
 skipped as a whole. It is reopenable from Settings ("Setup guide"). Its state is stored per instance (board data): each
 step `done | skipped | pending`.
 
-**Steps come from modules.** A module adds a `wizard:` block to `module.yaml`; compile copies it into
-`config/modules.json`, which the board already reads:
+**Steps are module cards.** No step mini-language. A module adds a `card:` block to `module.yaml`; compile copies it
+into `config/modules.json`, which the board already reads:
 
 ```yaml
-wizard:
-  order: 20                       # position in the wizard
-  title: Connect Google
-  why: Aiden reads your calendar and mail to brief you each morning and chase follow-ups. Read-only.
-  kind: oauth | secret | pair | guide   # how the step is completed
-  in_wizard: true                 # false: a card in Settings and for Aiden only (Google)
-  # kind-specific fields (below)
-  done: <a status check the board already exposes, e.g. connection `google` ok>
+card:
+  order: 20
+  title: Aiden on your phone
+  why: Chat with Aiden and approve things from Telegram.
+  wizard: true                    # false: Settings and Aiden only (Google)
+  steps: |                        # short markdown instructions, with links
+    1. In Telegram, open [BotFather](https://t.me/BotFather), send /newbot, pick a name.
+    2. Paste the token below.
+  # The card's paste fields are the module's existing `setup:` secrets.
+  connect: /google/connect        # optional: a sign-in button
+  pair: true                      # optional: show a one-time pairing code after the secrets are saved
 ```
 
-The board renders each `kind` with one generic component. A step appears in the wizard only when its module is on
-and `in_wizard` is true. Cards with `in_wizard: false` (Google) appear only in Settings → Setup guide and when Aiden
-opens them. Modules that are off are offered by Aiden at the end.
+The board renders every card with one component: instructions, then paste fields, then Connect or the pairing code.
+- **Completion** comes from the module's real connection status (the board already reads it). The board stores only
+  "dismissed".
+- **The same card** appears in Settings → Setup guide, and Aiden links to it.
+- **Where a card shows.** A card is in the wizard only when its module is on and `wizard: true`. Modules that are off
+  are offered by Aiden at the end.
+- **Meet Aiden now** is on every wizard screen. The wizard is optional; the tour runs whenever they leave it.
 
-**Step kinds.**
-- `oauth`: one Connect button, which goes to the module's existing connect route (Google: `/google/connect`). Done when
-  the connection reports ok.
-- `secret`: numbered instructions with links (for example "Open BotFather" as a `t.me` link), one paste field
-  validated by the module's existing `setup.pattern`, and Save. Saving needs a new **kernel secret-write endpoint**:
-  - It is admin-only and CSRF-checked, writing only secrets a module declared with `setup:` (the same allowlist `/setup`
-    uses).
-  - It then recreates the consuming module's containers (below).
-  - It is the one new trusted path in this design, and it is a security gate: it enforces from day one.
-- `pair`: after a `secret` (a bot token), the step shows a one-time code and, where the app supports it, a deep link
-  (`https://t.me/<bot>?start=<code>`). The module's service records the chat or user that sends that code as the
-  owner's. Done when paired.
+**Saving a pasted secret** needs a new **kernel secret-write endpoint**:
+- It is admin-only and CSRF-checked, and writes only secrets a module declared with `setup:` (the same allowlist
+  `/setup` uses).
+- It then recreates that module's containers (below).
+- It is the one new trusted path in this design, a security gate that enforces from day one.
+
+**Pairing.** After the secrets are saved, the card shows a one-time code and, where the app supports it, a deep link
+(`https://t.me/<bot>?start=<code>`). The module's service records the chat or user that sends the code as the owner's.
+The card is done when paired.
   - Pairing is security-sensitive: that chat decides approvals and receives account-reset links.
   - Only a signed-in admin with an authenticator can mint a code, through the board, which asks the service.
-  - A code is single-use and expires in 15 minutes.
+  - A code has at least 128 bits of entropy. It is single-use (consumed atomically), expires in 15 minutes, and allows
+    5 wrong attempts per minute.
   - Re-pairing goes the same way. It replaces the old chat, and the old chat gets a "this chat is no longer paired"
     notice.
 
 **The three steps.**
-1. **Save your recovery key** (kernel-provided step, not a module):
+1. **Save your recovery key** (a kernel-provided card, not a module):
    - The step opens a **kernel-rendered** page (`/recovery-key` on the kernel's admin listener). The key never passes
      through the board.
    - The page shows the key once, with Copy and Download, and an "I saved it" tick, which deletes the kernel's readable
      copy.
-   - Skip keeps the readable copy root-only on disk, as today, and leaves a reminder in Settings. "I don't want it"
-     deletes it: the vault still opens with its sealed password, but there is no recovery if that is lost.
+   - Skip keeps the readable copy where unattended setup already puts it: inside the vault, as `vault_recovery_key`,
+     moved out of `/root`. It also leaves a reminder in Settings. "I don't want it" deletes it: the vault still opens
+     with its sealed password, but there is no recovery if that is lost.
 2. **Aiden on your phone** (`channel-telegram`, `secret` then `pair`):
    - The step reads: "In Telegram, open BotFather, send /newbot, choose a name, paste the token here", then "Tap this link
      on your phone".
@@ -221,9 +253,14 @@ wizard counts as skipping the rest.
 the containers of the module that declared that secret (`docker compose up -d --force-recreate <its services>`). It does
 not go through the settings-change path, which routes through the Platform Engineer and an apply card and has no place
 for secrets. This is a new privileged kernel action, so:
-- it is owner-only (a signed-in admin with an authenticator), CSRF-checked and logged;
-- it is limited to secrets a module declared with `setup:`;
-- it enforces from day one.
+- It is owner-only (a signed-in admin with an authenticator), CSRF-checked and logged.
+- The secret's path and its consuming services come only from the compiled module declarations. The caller names a
+  declared secret, never a path or a service.
+- A recreate takes the apply lock, so it never races an apply. A failed restart is shown on the card, never
+  swallowed.
+- A structured secret (Google's client) has a bounded schema, and a save keeps the fields it doesn't set, such as
+  stored refresh tokens.
+- It enforces from day one.
 
 ### Part 3b: guided Google setup (later, not in the wizard)
 
@@ -240,8 +277,12 @@ opened from Settings → Setup guide or by Aiden ("set up Google"). It works lik
    secret).
 4. Then one **Connect Google** button runs the existing `/google/connect` flow.
 
+**Honest effort.** Each card says up front how long it takes and what it needs: "about 2 minutes, needs the Telegram
+app" or "about 5 minutes, a Slack workspace admin may need to approve". Neither channel is presented as a quick
+connect.
+
 **Look.** The board's design system (owner's taste: Stripe polish, Linear crispness, colour, moderate radius, little
-white space). One step per screen, with a progress row of three dots, the "why" in one sentence, and the action as the
+white space). One card per screen, with a progress row of three dots, the "why" in one sentence, and the action as the
 one primary button.
 
 ### Part 4: Aiden's tour
@@ -276,6 +317,17 @@ server.
 - The default bundle carries `codehost-local`. `codehost-github` and `github` leave the bundle and are added through
   Aiden ("connect GitHub").
 
+**Build on what exists.** Setup already creates a local bare repo as the instance repo's remote. The runner already
+clones from `repo_sources` (a slug to a local URL, `services/runner/src/main.mjs:1363`), and the git sandbox already
+blocks direct pushes. `codehost-local` extends these:
+- it reuses `codehost-github/src/{git.mjs,plan.mjs}` for git handling and tiering;
+- it uses existing kernel write records for review;
+- it adds no PR database and no new UI.
+
+A self-hosted forge (Forgejo) was considered and rejected for now. The runner speaks GitHub GraphQL and App tokens, so
+a forge would need an adapter plus a service to maintain. Bare git plus kernel records costs less for agent-only use.
+A forge becomes the choice if people need to collaborate on the code.
+
 **What it does.** The same write kinds and the same gates as GitHub, on bare repos under the data dir:
 - **Push:** to a task branch.
 - **Change request:** the local counterpart of a PR, a kernel write record carrying the diff.
@@ -285,8 +337,19 @@ server.
   reviewer runs on the change exactly as it does on a GitHub PR.
 - **Create repo.**
 
-The apps platform reads app repos from the code host role, not from GitHub URLs. The board shows a change request's diff
-and checks where it shows PRs today.
+The apps platform reads app repos from the code host role. Today `apps-mcp/src/git.ts` hardcodes GitHub URLs, so
+changing module requirements alone isn't enough. The board shows a change request's diff and checks where it shows PRs
+today. Exact-head checks and an atomic merge validation (the head hasn't moved since review) stay essential.
+
+**Opening apps on a bare-IP server.** Building without GitHub doesn't make apps reachable. On a bare IP, minimal-core
+section 4.6 needs a domain or Tailscale to serve apps. Google's redirect needs a name too. Proposal:
+- Give every server a free name automatically, through a wildcard IP-name service: `<ip-with-dashes>.sslip.io`, which
+  resolves to the IP. Apps then get `<app>.<that name>`.
+- Caddy gets real certificates for these names.
+- Unverified, so the builder checks first: Let's Encrypt rate limits for that domain (is it on the Public Suffix
+  List?), whether Google accepts such a redirect URI, and the trust cost of depending on a third-party DNS service.
+- If it fails those checks, the board stays on the IP, and Aiden offers Tailscale or a domain when an app is first
+  built.
 
 **Not in scope.** No git web UI and no remote access for people (it's an agent code host). Upstream contributions to
 AidenHQ keep needing GitHub (`github_bot_token`), offered with "connect GitHub".
@@ -366,7 +429,11 @@ form.
 ## Calls made in writing this (owner to check)
 
 - The AI still asks for the email: many parts read `owner_email`, and asking costs the user nothing.
-- Prebuilt release images and a staged start, to make "a couple of minutes" possible.
+- Prebuilt release images and a staged start, to make "a couple of minutes" possible. Aiden's first chat is decoupled
+  from Paperclip, through the chat lane.
+- Wizard steps are simple module cards (instructions, the existing `setup:` fields, optional Connect or pairing), with
+  completion read from real connection status. "Meet Aiden now" is always one click away.
+- The on-server code host builds on the existing local bare repos and `repo_sources`, not a new forge.
 - `channel-slack` and `google` join the default bundle, idle until connected.
 - A secret save recreates only that module's containers, directly from the kernel; no settings-change path.
 - The recovery key is shown on a kernel page, never through the board.
@@ -376,6 +443,7 @@ form.
 
 ## Unverified: the builder checks these first
 
+- The free per-server name (sslip.io or similar): rate limits, Google redirect acceptance, trust.
 - Which services Aiden's first reply needs (chat lane or Paperclip), and the real time to first chat today.
 - OpenRouter's PKCE flow accepts `http://127.0.0.1:3121/...` (Mac) and a bare-IP HTTPS callback. If not, the paste field
   becomes primary there.
