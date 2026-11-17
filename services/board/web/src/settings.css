@@ -255,3 +255,24 @@ button.st-row-hit:hover { background: var(--hover); }
 @media (prefers-reduced-motion: reduce) {
   .st-shell *, .st-shell *::before, .st-shell *::after { animation: none !important; transition: none !important; }
 }
+
+/* Lane C: the agent page's Handbook tab. */
+.hb { display: grid; gap: 14px; margin-top: 14px; }
+.hb-box { width: 100%; min-height: 220px; resize: vertical; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.hb-box[readonly] { background: var(--col); color: var(--muted); }
+.hb-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hb-head h4 { margin: 0; }
+.hb-badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 5px; background: var(--col); border: 1px solid var(--border-strong); }
+.hb-badge.warn { color: #b45309; border-color: #b45309; }
+.hb-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.hb-diff { margin: 0; padding: 8px 12px; max-height: 320px; overflow: auto; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+.hb-diff .add { background: rgba(34, 197, 94, 0.15); display: block; }
+.hb-diff .del { background: rgba(239, 68, 68, 0.15); display: block; text-decoration: line-through; }
+.hb-part { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.hb-part > header { padding: 6px 12px; background: var(--col); font-size: 12px; color: var(--muted); }
+.hb-part > pre { margin: 0; padding: 10px 12px; white-space: pre-wrap; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.hb-row { display: grid; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.hb-row > div { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.hb-dialog { border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); color: var(--text); padding: 18px 20px; max-width: 460px; }
+.hb-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+.hb-dialog p { margin: 0 0 14px; line-height: 1.5; }

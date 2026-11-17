@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import type { Logger } from "pino";
 import { z } from "zod";
+import { handbook, history } from "./agent-handbook.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { makeRuns } from "./runs.js";
@@ -1195,6 +1196,27 @@ export function createApp(opts: AppOptions): Server {
         if (!agent) throw new HttpError(404, "no such agent");
         const { compiled, catalog } = readSources(settingsFiles());
         return { profile: agentProfile({ agent, agents, routines, effort: compiled?.agents?.[m[1]!]?.reasoning_effort ?? null, catalog }) };
+      },
+    },
+    // The Handbook tab (agent-handbook.ts): main handbook, the owner's rules, the compiled text, the fork's state; and its history.
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/handbook$/,
+      handle: async (m) => {
+        const agent = agentByKey(await pc.agents(), m[1]!);
+        if (!agent) throw new HttpError(404, "no such agent");
+        const { compiled, catalog } = readSources(settingsFiles());
+        const module = typeof agent.metadata?.module === "string" ? agent.metadata.module : "instance";
+        const text = await pc.request<{ content?: string }>("GET", `/api/agents/${encodeURIComponent(agent.id)}/instructions-bundle/file?path=AGENTS.md`).then((r) => String(r.content ?? ""), () => null);
+        return handbook({ key: m[1]!, module, revision: catalog.find((c) => c.name === module)?.revision?.slice(0, 7), compiled: text, dirs: { modules: process.env.BOARD_MODULES_DIR, instance: process.env.BOARD_INSTANCE_DIR } });
+      },
+    },
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/handbook\/history$/,
+      handle: async (m) => {
+        if (!agentByKey(await pc.agents(), m[1]!)) throw new HttpError(404, "no such agent");
+        return history(m[1]!, process.env.BOARD_INSTANCE_DIR);
       },
     },
     {
