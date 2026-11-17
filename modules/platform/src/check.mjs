@@ -83,9 +83,11 @@ export const GATE_CORE = [
   /^kernel\//,
   /(^|\/)aidenhq-sdk\/caller\.ts$/,
   // The apps platform's write kinds (their floors, cards and the tools routed into them), its executor (which raises a
-  // stateful deploy to the reviewer and checks who may change an app) and each module's copy of the SDK's executor side.
-  /^modules\/apps-platform\//,
-  /^services\/apps-mcp\/src\/executor\.ts$/,
+  // stateful deploy to the reviewer and checks who may change an app) and each module's copy of the SDK's executor side. The
+  // module's agent, starter and design system are not gate code.
+  /^modules\/apps-platform\/module\.yaml$/,
+  /^modules\/apps-platform\/schemas\//,
+  /^modules\/apps-platform\/apps-mcp\/src\/executor\.ts$/,
   /(^|\/)aidenhq-sdk\/executor\.ts$/,
   // Primer publishing (primer.publish): its floor, card and routed tools, and the executor that publishes exactly what the
   // record carries.
@@ -128,7 +130,8 @@ export const GATE_DIRS = [
   "modules/platform/",
   "modules/engineering/src/",
   "services/shared/review-files.mjs",
-  "modules/apps-platform/",
+  "modules/apps-platform/module.yaml",
+  "modules/apps-platform/schemas/",
   "services/board/src/app.ts",
   "services/board/src/fleet.ts",
   "services/board/src/kernel-auth.ts",

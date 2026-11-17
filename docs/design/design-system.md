@@ -13,7 +13,7 @@ still read as generic and dated (boxes inside boxes, weak hierarchy, dated contr
 generic classes with no strong defaults. The owner decided that **shadcn/ui + Tailwind** is the default: models produce
 polished, modern UI with it by default (it is what v0, Lovable and Bolt generate), and our tokens stay its theme.
 
-- **Stack:** the app starter (`modules/core/templates/app/`) is Vite + React + TypeScript, Tailwind CSS 4, shadcn/ui
+- **Stack:** the app starter (`modules/apps-platform/starter/`) is Vite + React + TypeScript, Tailwind CSS 4, shadcn/ui
   components generated into `src/components/ui` as source (on Radix primitives via `radix-ui`), and lucide icons. A
   small `node:http` server with no runtime dependencies serves the build, `/api/health` and the app's API, so the image
   carries no `node_modules`. The build step this needs, the reason the first version rejected shadcn, is now accepted.
@@ -28,7 +28,7 @@ polished, modern UI with it by default (it is what v0, Lovable and Bolt generate
   reads `get-nonce`; the Select viewport, which takes a `nonce` prop), so they carry the nonce. Sonner, shadcn's
   default toast, injects an unnonced `<style>` and is replaced by Radix Toast. The lesson behind this: a page broke
   because its `style-src` lacked `'self'`; the starter's test checks the header.
-- **Where it lives:** `modules/core/design-system/` (theme, guidelines, checklist) and the starter. `scripts/sync-shared.mjs`
+- **Where it lives:** `modules/apps-platform/design-system/` (theme, guidelines, checklist) and the starter. `scripts/sync-shared.mjs`
   copies the theme into the starter and both into the agent computers' image (`/opt/aidenhq/design-system`,
   `/opt/aidenhq/app-starter`); a test fails on drift. The catalog is the starter's `/catalog` route.
 - **The old kit** (`components.css`, `kit.js`) is deprecated and kept only while an app still vendors
@@ -68,8 +68,8 @@ polished, modern UI with it by default (it is what v0, Lovable and Bolt generate
 
 | Path | What |
 |---|---|
-| `modules/core/design-system/` | `tokens.css`, `shadcn.css`, `guidelines.md`, `review-checklist.md`, `README.md` (usage + migration); the deprecated kit |
-| `modules/core/templates/app/` | The app starter: Vite + React + shadcn/ui, a `node:http` server, the example dashboard, `/catalog`, one e2e test |
+| `modules/apps-platform/design-system/` | `tokens.css`, `shadcn.css`, `guidelines.md`, `review-checklist.md`, `README.md` (usage + migration); the deprecated kit |
+| `modules/apps-platform/starter/` | The app starter: Vite + React + shadcn/ui, a `node:http` server, the example dashboard, `/catalog`, one e2e test |
 | `services/computer/images/agent-base/ui-review` | The review command (screenshots, axe, vitals, layout, diffs → `report.md`) |
 | `scripts/test/design-system.test.mjs` | Contrast for every palette and mode; the shadcn theme maps onto existing tokens |
 | `modules/design/` | The UI/UX Designer's and the UI Reviewer's handbooks (no scheduled audit: the designer audits an app when it moves to the starter, and on request) |

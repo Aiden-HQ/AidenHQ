@@ -1,5 +1,12 @@
 name: glean
 description: "The organization's Glean: search and documents (reads)."
+requires:
+  - board # its sign-in banner
+# Its sign-in on the board (the board's point, modules/board/schemas/signins.json). Glean permits only this loopback callback shape.
+contributes:
+  board.signins:
+    - { id: glean, label: Glean, status_url: "http://glean-mcp:8085/auth/status", connect_url: /glean/connect, callback: /callback,
+        missing: "The Researcher can't search company knowledge until it is.", stopped: "The Researcher's company search is paused." }
 settings:
   # Your Glean MCP server URL, from Glean's MCP Configurator (admin settings, "Custom" host), e.g.
   # https://acme-be.glean.com/mcp/default. Set it on the board (Settings, Connections); empty: Glean is off.

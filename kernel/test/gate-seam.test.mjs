@@ -1,4 +1,4 @@
-// The real gate (services/gate) in front of the real sign-in listener (3129) and the kernel's app access (ported from
+// The real gate (modules/apps-platform/gate) in front of the real sign-in listener (3129) and the kernel's app access (ported from
 // services/board/test/gate-seam.test.ts). Password mode: sign-in on the my-apps host (pages served by the gate itself), the
 // one-time handoff to an app host, roles and the Access page, in-app requests and the agent's role changes. Access mode:
 // an Access-verified email with no account gets the app's default role.
@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { openAccounts } from "../src/accounts.ts";
 import { FEEDBACK_GAP_MS, routineWake } from "../src/app-access.ts";
 import { createSignin } from "../src/signin.ts";
-import { createGate } from "../../services/gate/gate.ts";
+import { createGate } from "../../modules/apps-platform/gate/gate.ts";
 import { ensureIdentityKeys } from "../../scripts/identity.mjs";
 import { serve } from "./helpers.mjs";
 import { silent } from "./auth-helpers.mjs";

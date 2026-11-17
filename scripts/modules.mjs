@@ -12,6 +12,7 @@ import { generateCompose, ownSecrets } from "../kernel/src/loader/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "../kernel/src/loader/bindings.ts";
 import { MANIFEST_KEYS, moduleName } from "../kernel/src/loader/authority.ts";
 import { hostFetch, marketplaceEntries, OFFICIAL, remoteModules } from "../kernel/src/loader/sources.ts";
+import { compilePoints } from "../kernel/src/loader/points.ts";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
@@ -35,8 +36,8 @@ const ROLES = {
   "platform-engineer": ["platform"], // the agent that makes fleet and product changes: settings changes, rule proposals and Dependabot PRs are filed to it
   "board-writer": ["chief-of-staff"], // board moves and recurring tasks
   "engineer-dispatch": ["chief-of-staff"], // Engineer sub-tasks
-  "app-incidents": ["core"], // change any app with an open incident
-  "app-requests": ["core"], // in-app requests and people roles of every shared app (apps-mcp app_requests, app_role_set)
+  "app-incidents": ["apps-platform"], // change any app with an open incident
+  "app-requests": ["apps-platform"], // in-app requests and people roles of every shared app (apps-mcp app_requests, app_role_set)
   "security-verdict": ["security"], // finding_verdict: apps-mcp records a verdict on a src_security finding
   "ops-key": ["meetings"], // the agent ops-mcp acts as in Paperclip
   architect: ["agent-builder"], // its Platform Engineer tasks may use the trial exception (the runner reads it from the grants table)
@@ -471,6 +472,9 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const enabledDefs = Object.fromEntries(enabled.map((n) => [n, all.get(n).def]));
   const conflicts = conflictProblems(enabledDefs);
   if (conflicts.length) fail(conflicts.join("; "));
+  // Module-owned points (spec §3.6): config/points/<owner>.json, one file for every module that defines any ({} when off).
+  const compiled = compilePoints(enabledDefs, Object.fromEntries(enabled.map((n) => [n, all.get(n).root])));
+  const points = Object.fromEntries([...all.values()].filter((m) => m.def.points).map((m) => [m.name, compiled[m.name] ?? {}]));
   const warnings = [];
 
   // Settings: module defaults, then the instance; required ones must end up set.
@@ -884,7 +888,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const runAgents = Object.entries(paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
   if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
   if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = runAgents;
-  return { paperclip, apps: { apps }, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**

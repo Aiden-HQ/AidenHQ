@@ -180,14 +180,8 @@ export interface Board {
   agentsActive: number;
   /** Google sign-in per account; null when the board can't ask. */
   google: { accounts: GoogleAccount[]; error?: string } | null;
-  /** Glean sign-in; null when the board can't ask. */
-  glean: SignInStatus | null;
-  /** Grafana sign-in, for the Engineers; null when the board can't ask. */
-  grafana: SignInStatus | null;
-  /** ClickHouse sign-in, for the Engineers; null when the board can't ask. */
-  clickhouse: SignInStatus | null;
-  /** Jira sign-in; null when the jira module is off or the board can't ask. */
-  jira: SignInStatus | null;
+  /** The modules' sign-ins (board.signins): each one's banner text and state (null when the board can't ask). */
+  signIns: { id: string; label: string; missing: string; stopped: string; status: SignInStatus | null }[];
 }
 
 /** A sign-in through an MCP proxy (Glean, Grafana, ClickHouse, Jira). */

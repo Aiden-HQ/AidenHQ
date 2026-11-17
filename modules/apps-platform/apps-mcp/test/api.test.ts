@@ -18,7 +18,7 @@ export async function identityFixture() {
   const sign = agentSigner(`${dir}/apps.pem`);
   const kid = JSON.parse(Buffer.from(sign("x", "y", { role: "member", methods: ["GET"] }).split(".")[0]!, "base64url").toString()).kid;
   writeFileSync(`${dir}/keys.json`, JSON.stringify({ keys: [{ ...publicKey.export({ format: "jwk" }), kid, iss: "aidenhq-apps" }] }));
-  const middleware = new URL("../../shared/aidenhq-identity.mjs", import.meta.url).href; // the file every app copies
+  const middleware = new URL("../../../../services/shared/aidenhq-identity.mjs", import.meta.url).href; // the file every app copies
   const { createIdentity } = await import(middleware);
   const identify = (appName: string, req: { method: string; url: string; headers: Record<string, string> }) => createIdentity({ app: appName, keysFile: `${dir}/keys.json` }).identify(req);
   return { sign, identify };

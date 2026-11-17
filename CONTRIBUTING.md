@@ -36,7 +36,7 @@ that commit.
 ## Licence and the CLA
 
 AidenHQ is under the GNU Affero General Public License, version 3 only ([LICENSE](LICENSE)); the app starter
-(`modules/core/templates/app/`) and the design system (`modules/core/design-system/`) are MIT (their own `LICENSE`), so
+(`modules/apps-platform/starter/`) and the design system (`modules/apps-platform/design-system/`) are MIT (their own `LICENSE`), so
 apps built from them carry no AGPL obligations. Every pull request from outside the maintainers must tick the CLA box in the template,
 which means you agree to [CLA.md](CLA.md): you keep your copyright, grant a patent licence, and let the maintainer
 license your contribution under other terms too, including commercial ones. If your employer has rights in your work,
@@ -51,10 +51,10 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 | `scripts` (compiler, setup, `paperclip-tasks-mcp`, shared-code drift) | `npm test` |
 | `services/runner` | `npm test` |
 | `services/computer` | `node --test test/*.test.mjs` |
-| `services/gate` | `npm test && npm run typecheck` |
+| `modules/apps-platform/gate` | `npm test && npm run typecheck` |
 | `services/gateway` | `npm test && npm run typecheck` |
 | `services/board` | `npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build` |
-| `services/apps-mcp`, `modules/*/connections/*`, `modules/security/scanner` | `npm test && npm run typecheck` |
+| `modules/apps-platform/apps-mcp`, `modules/*/connections/*`, `modules/security/scanner` | `npm test && npm run typecheck` |
 
 - **The board's build check.** `npx tsc -p tsconfig.build.json --noEmit` is stricter than vitest and matches the
   Docker build. Run it for every board change.
@@ -72,7 +72,7 @@ Read [CLAUDE.md](CLAUDE.md) first; it is also the guide coding agents follow. In
 
 - **Generic core.** New behaviour is an agent definition, handbook text or a tool, not a special-case branch.
 - **Gates in code.** Writes, approvals and access checks are enforced below the model. Don't move a gate into a
-  prompt. Changes to gate files (`services/runner/src/tiers.mjs`, `kernel/`, `services/gate/`,
+  prompt. Changes to gate files (`services/runner/src/tiers.mjs`, `kernel/`, `modules/apps-platform/gate/`,
   `ops/`, `scripts/paperclip-setup.mjs`) get extra review.
 - **Minimal tests.** A few tests that prove the change works end to end. No tests for obvious code.
 - **Simple.** Less code, no speculative options or compatibility shims.

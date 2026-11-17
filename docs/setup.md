@@ -88,7 +88,7 @@ pause the account on the gate's sign-in only, never on the board.
 
 Optional. Colleagues open a shared app at `https://<app>.<domain>` in a browser, signed in through the organisation's
 Cloudflare Access and identity provider (design: [design/access.md](design/access.md)). The VM keeps
-zero inbound ports: `cloudflared` dials out, and the gate (`services/gate`, reached by `cloudflared` on its unix socket, and on `127.0.0.1:3130`) verifies every request
+zero inbound ports: `cloudflared` dials out, and the gate (`modules/apps-platform/gate`, reached by `cloudflared` on its unix socket, and on `127.0.0.1:3130`) verifies every request
 before it reaches the app. The board and Paperclip are never reachable this way.
 
 ### What the organisation's Cloudflare admins create
@@ -164,7 +164,7 @@ lives there.
 
 Every request carries `X-AidenHQ-Identity`, a 5-minute Ed25519 token for this app ([app identity](design/app-identity.md)):
 the gate signs it for people, apps-mcp for agents. The app verifies it with the shared middleware, the product's
-`modules/core/templates/app/aidenhq-identity.mjs` copied unchanged, which reads the public keys the platform mounts
+`modules/apps-platform/starter/aidenhq-identity.mjs` copied unchanged, which reads the public keys the platform mounts
 (`/run/secrets/AIDENHQ_IDENTITY_KEYS`) and the app's name (`AIDENHQ_APP`), and refuses anything without a valid token.
 `req.user` is `{ sub, email, name, role, kind }`: `sub` is a stable opaque id (`u_…` for people, `agent:<key>` for
 agents); `role` is `member`, `admin` or one of the app's own roles. The gate refuses only `blocked` people and requires

@@ -6,9 +6,9 @@ updates:
   - package-ecosystem: npm
     directories:
       - /scripts
-      - /services/apps-mcp
+      - /modules/apps-platform/apps-mcp
       - /services/board
-      - /services/gate
+      - /modules/apps-platform/gate
       - /services/runner
       - /kernel
       - /modules/security/scanner
@@ -24,7 +24,7 @@ updates:
       - /modules/primer/connections/primer-mcp
       - /modules/slack/connections/slack-mcp
       - /modules/meetings/connections/ops-mcp
-      - /modules/core/templates/app
+      - /modules/apps-platform/starter
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
     open-pull-requests-limit: 5

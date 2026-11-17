@@ -118,6 +118,10 @@
       "state": "experimental",
       "fp": ""
     },
+    "manifest key contributes": {
+      "state": "experimental",
+      "fp": ""
+    },
     "manifest key data_version": {
       "state": "experimental",
       "fp": ""
@@ -163,6 +167,10 @@
       "fp": ""
     },
     "manifest key optional_secrets": {
+      "state": "experimental",
+      "fp": ""
+    },
+    "manifest key points": {
       "state": "experimental",
       "fp": ""
     },

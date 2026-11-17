@@ -65,7 +65,7 @@ mounted at `/run/secrets/<KEY>`, never environment variables. The DevOps Enginee
 
 **Preview deploys.** Each open pull request on an agents-org app's repo (into its deploy branch, from the same repo; the
 newest three per app) also runs from its head as `<app>-pr-<n>`, on its own port on the apps' tailnet node, and the PR
-gets one comment with the URL ([previews.ts](../services/apps-mcp/src/previews.ts)). Nothing waits on a preview: merges
+gets one comment with the URL ([previews.ts](../modules/apps-platform/apps-mcp/src/previews.ts)). Nothing waits on a preview: merges
 and production deploys are unchanged, and previews run in their own loop. PR heads are unmerged code, so a preview gets its
 own empty warehouse schema and login (never the live schema; the app's migrations run there), a random placeholder for
 every other secret, and no connections but the warehouse. It is removed with everything it had (containers, volumes,

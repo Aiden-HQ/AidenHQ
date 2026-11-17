@@ -19,7 +19,7 @@
 // host lists the visitor's apps and serves each app's Access page to its admins; the board decides every change. Sign-in
 // (password mode) is served only on the my-apps host; an app host gets its own host-only __Host- cookie through a one-time
 // handoff. Whatever the gate can't read or check (keys, accounts, sessions) refuses with a 503.
-// Preview hosts (cfg.previews; services/apps-mcp/src/previews.ts): pr-<n>.<host> is the preview of the shared app at
+// Preview hosts (cfg.previews; modules/apps-platform/apps-mcp/src/previews.ts): pr-<n>.<host> is the preview of the shared app at
 // <host> for its pull request n, when apps-mcp's previews file names that preview with a port inside the compiled band.
 // The gate derives everything else itself: the parent's Access audience (its Access application covers *.<host>) and the
 // parent's role for the visitor; an identity token for the preview (so preview code can't replay it at the live app);

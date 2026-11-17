@@ -94,10 +94,10 @@ services:
   # beyond the compose network, and every compose file is resolved and sandboxed in code before it runs.
   apps-mcp:
     <<: *hardening
-    build: ./services/apps-mcp
+    build: ./modules/apps-platform/apps-mcp
     image: aidenhq/apps-mcp:local
     # A recreate (apply) sends SIGTERM and waits this long: apps-mcp finishes the app deploys in flight first
-    # (services/apps-mcp/src/main.ts DRAIN_MS, a little shorter).
+    # (modules/apps-platform/apps-mcp/src/main.ts DRAIN_MS, a little shorter).
     stop_grace_period: 11m
     user: "${PUID:-1000}:${DOCKER_GID:?set DOCKER_GID in .env (getent group docker | cut -d: -f3)}"
     read_only: true
@@ -130,7 +130,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # The apps node's serve config (apps-edge reads it); never the host's tailscaled.
       - ${AIDENHQ_DATA_DIR:-./data}/apps-edge/serve:/edge
-      # Which shared apps' PR previews run, for the gate (services/apps-mcp/src/previews.ts; scripts/edge.mjs).
+      # Which shared apps' PR previews run, for the gate (modules/apps-platform/apps-mcp/src/previews.ts; scripts/edge.mjs).
       - ${AIDENHQ_DATA_DIR:-./data}/previews:/previews
       # The repo at its own path: Docker resolves bind mounts on the host, so paths must match. Holds each app's checkout and
       # data under data/apps, and module apps' source (its origin/main, at the pin). The instance repo likewise (apps.yaml registry, commits pushed with the deploy key).
@@ -139,6 +139,8 @@ services:
       # A local instance repo (ops/setup.sh): the bare repo the checkout pushes to, at the same path. Unused otherwise.
       - ${AIDENHQ_INSTANCE_REMOTE:-/dev/null}:${AIDENHQ_INSTANCE_REMOTE:-/aidenhq-no-local-remote}
       - ${AIDENHQ_DATA_DIR:-./data}/apps-mcp:/data
+      # The warehouse's point (compile): each source module's schema and the views source_new serves.
+      - ${AIDENHQ_CONFIG_DIR:-./config}/points/warehouse.json:/config/points/warehouse.json:ro
       # Read-write, and only this vault dir: apps-mcp writes the DATABASE_URL of `database: warehouse` apps here.
       - ${AIDENHQ_SECRETS_DIR}/apps:/secrets/apps
       # The instance's GitHub App: app_id + key.pem, to read private agents-org app repos with a repo-narrowed token.
@@ -160,7 +162,7 @@ services:
 
   # The apps' own tailnet node (https://${APPS_TS_HOSTNAME}.<tailnet>.ts.net:<port>). The board and Paperclip keep the
   # host's name: a browser sends a host's cookies to every port of it, so an app on that name could read the board's
-  # session. apps-mcp writes this node's serve config (services/apps-mcp/src/tailnet.ts) and joins it to each exposed
+  # session. apps-mcp writes this node's serve config (modules/apps-platform/apps-mcp/src/tailnet.ts) and joins it to each exposed
   # app's own network; it is on no AidenHQ network. Userspace networking: it serves, it never routes. Its key (vault
   # tailscale_apps_authkey: reusable, tagged, pre-authorized; docs/setup.md) is used once, then /state keeps the node.
   apps-edge:
@@ -231,6 +233,8 @@ services:
       - ${AIDENHQ_CONFIG_DIR:-./config}/paperclip.yaml:/config/paperclip.yaml:ro # Settings: settings, agents, connections (no secrets)
       - ${AIDENHQ_DATA_DIR:-./data}/paperclip/instances/default/companies:/paperclip-companies:ro
       - ${AIDENHQ_CONFIG_DIR:-./config}/grants:/grants:ro
+      # The board's points (compile): the modules' sign-ins (board.signins).
+      - ${AIDENHQ_CONFIG_DIR:-./config}/points/board.json:/config/points/board.json:ro
       - ${AIDENHQ_DATA_DIR:-./data}/board:/data/board
       # No accounts file: admins sign in on the kernel, which hands the board its own session (lean 3g).
     secrets:

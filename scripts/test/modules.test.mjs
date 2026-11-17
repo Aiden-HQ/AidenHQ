@@ -251,7 +251,7 @@ test("upstream: off grants no upstream tool; issues grants both; the scrub's ter
   assert.deepEqual(env.GITHUB_OWNER_TERMS.split(",").sort(), ["Ada Lovelace", "Ada", "Lovelace", "Acme Labs", "Acme", "acme", "aidenhq-acme", "acme-co", "upstream-org", "ada.l@acme.example", "ada.l", "acme.example", "jira.acme.example"].sort());
 });
 test("Slack Scout's read grant has no draft tool", () => {
-  const dir = inst(["open-loops", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "e@x" });
+  const dir = inst(["open-loops", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "e@x", product_repo: "acme/aidenhq" });
   const r = compile(repo, dir);
   assert.ok(r.paperclip.agents["slack-scout"].enabled_tools.slack.includes("slack_read_thread"));
   assert.ok(!r.paperclip.agents["slack-scout"].enabled_tools.slack.includes("slack_send_message_draft"));

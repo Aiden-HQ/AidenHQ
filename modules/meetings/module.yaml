@@ -2,6 +2,15 @@ name: meetings
 description: "Meeting memory: transcripts and the Obsidian vault (ops-mcp) published by the Meeting Librarian."
 requires:
   - google
+  - warehouse
+# Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
+contributes:
+  warehouse.sources:
+    - schema: src_meetings
+      about: "src_meetings.meetings / notes (full meeting notes) / changes"
+      views:
+        - { name: meetings, time: ingested_at, tsv: true }
+        - { name: changes, time: observed_at }
 agents:
   meeting-librarian:
     department: intake

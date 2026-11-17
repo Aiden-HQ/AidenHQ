@@ -159,7 +159,7 @@ test("a routine's autonomy caps the tasks its run started; changing it is the ow
 test("product repo PRs: platform only, gate files are the owner's", () => {
   assert.equal(tierOf(pub("pr", { repo: base.productRepo }, { requester: { platform: true } })), 1);
   assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["modules/codehost-github/src/merge-gate.mjs"] }, { requester: { platform: true } })), "panel");
-  assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["services/apps-mcp/src/aidenhq-sdk/caller.ts"] }, { requester: { platform: true } })), "panel");
+  assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/caller.ts"] }, { requester: { platform: true } })), "panel");
   assert.equal(tierOf(pub("pr", { repo: base.productRepo, files: ["ops/apply-config.sh"] }, { requester: { platform: true } })), "panel");
   assert.equal(tierOf(pub("pr", { repo: base.productRepo })), "reject", "any other requester");
 });

@@ -326,6 +326,7 @@ settings:
   channels: [web]
   exposure: $EXPOSURE
 ${AGENTS_ORG:+  github_agents_org: $AGENTS_ORG}
+$(p="$(sed -n 's/^AIDENHQ_PRODUCT_REPO=//p' "$ENVF" | head -1)"; [ -z "$p" ] || echo "  product_repo: $(json "$p")")
 EOF
   echo "apps: []" | write_user_file "$INST/apps.yaml" 644
   as_user mkdir -p "$INST/agents"

@@ -24,7 +24,7 @@ import type { PreviewRow, Store } from "./store.js";
 
 export const PER_APP = 3;
 export const previewName = (app: string, pr: number): string => `${app}-pr-${pr}`;
-/** A shared app's preview host, under its own (services/gate/gate.ts derives it back the same way). */
+/** A shared app's preview host, under its own (modules/apps-platform/gate/gate.ts derives it back the same way). */
 export const previewHost = (host: string, pr: number): string => `pr-${pr}.${host}`;
 
 /** The parent app as its PR's preview runs it (see the top of this file). */

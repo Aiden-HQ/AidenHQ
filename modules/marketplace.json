@@ -18,6 +18,10 @@
       "source": "./apps-platform"
     },
     {
+      "name": "board",
+      "source": "./board"
+    },
+    {
       "name": "channel-operator",
       "source": "./channel-operator"
     },

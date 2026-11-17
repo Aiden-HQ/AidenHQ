@@ -12,7 +12,7 @@ import { compile, grantEntry, TRIAL_WRITE_ALLOWED } from "../modules.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const template = join(product, "modules/agent-builder/templates/pr-review-chaser");
-const owner = { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x" };
+const owner = { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq" }; // product_repo: source modules require the warehouse
 
 /** An instance with agents/<key>/ folders: { key: { yaml (merged over the template; undefined drops a field), md } }. */
 function withAgents(folders, modules = []) {

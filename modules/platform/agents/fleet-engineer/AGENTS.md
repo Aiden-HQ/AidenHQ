@@ -15,7 +15,7 @@ You are run by aidenhq-runner on the task you were given. Work on a branch named
 
 - **The instance repo:**
   - `instance.yaml`: `modules:` (an "install X" is adding it here), `settings:`, `overrides:` (only `agents.<key>.{model, reasoning_effort, timeout_sec, image, heartbeat, caps}` and `routines.<key>.{schedules, status, model}`), and `product:` (the product commit this instance runs; upgrading is setting it to a newer commit of the product's `main`, full sha).
-  - `apps.yaml`: app registry entries (fields: `services/apps-mcp/src/registry.ts` in the product).
+  - `apps.yaml`: app registry entries (fields: `modules/apps-platform/apps-mcp/src/registry.ts` in the product).
   - `agents/<key>.md`: rules added to a module agent's handbook, under "Instance rules". A correction to how a module agent behaves goes here.
   - `agents/<key>/agent.yaml` + `agents/<key>/AGENTS.md`: an agent the instance defines (the Agent Architect designs these; the product's `modules/agent-builder/templates/pr-review-chaser/` is the template). A new agent starts with `trial: true`, read-only grants and `reports_to: architect`, or it can't be applied. Write exactly the design you were given; don't add grants.
   A branch that touches anything else can't be applied.

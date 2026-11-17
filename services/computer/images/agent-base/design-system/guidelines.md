@@ -1,7 +1,7 @@
 # Guidelines
 
 How AidenHQ apps work. Apps are built on **shadcn/ui + Tailwind CSS** (Radix primitives, lucide icons) from the app
-starter (`modules/core/templates/app/`), themed by this design system's `tokens.css` and `shadcn.css`.
+starter (`modules/apps-platform/starter/`), themed by this design system's `tokens.css` and `shadcn.css`.
 
 These are the **floors** every app meets, and the stack it is built on. The look (layout, navigation, colour, type,
 density, depth, motion) is the designer's, made for each app's people and job. What blocks a pull request is in

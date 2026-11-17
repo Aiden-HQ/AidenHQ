@@ -8,8 +8,8 @@
 //   services/shared/source-store.ts  the shared-sources writer side, in every source writer
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
-//   modules/core/design-system/      the design system, in the app starter and the agent computers
-//   modules/core/templates/app/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
+//   modules/apps-platform/design-system/      the design system, in the app starter and the agent computers
+//   modules/apps-platform/starter/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
 //   services/shared/aidenhq-identity.mjs  apps' identity middleware, in the app template
 //   node scripts/sync-shared.mjs
@@ -21,7 +21,7 @@ export const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const SHARED = {
   // Every module server checks the kernel's caller assertion (and fences what it must) with the SDK (lean-core 2a).
   ...Object.fromEntries(["caller.ts", "fence.ts"].map((f) => [`kernel/sdk/src/${f}`, [
-    "services/apps-mcp/src",
+    "modules/apps-platform/apps-mcp/src",
     "services/board/src",
     "modules/github/connections/github-mcp/src",
     "modules/glean/connections/glean-mcp/src",
@@ -38,7 +38,7 @@ export const SHARED = {
     ...(f === "caller.ts" ? ["modules/grading/service/src"] : []),
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
-  "kernel/sdk/src/executor.ts": ["services/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/channel-slack/connections/slack/src/aidenhq-sdk/executor.ts"],
+  "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/channel-slack/connections/slack/src/aidenhq-sdk/executor.ts"],
   // The reviewer side of reviewer@1, in the reviewer module's service (its own Docker build context).
   "kernel/sdk/src/reviewer.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/reviewer.ts"],
   // The changed files' shaping (the runner imports the canonical copy; the eval and the reviewer's verdicts use this one).
@@ -54,7 +54,7 @@ export const SHARED = {
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
   // App identity (docs/design/app-identity.md): the middleware every app copies, from the app template.
-  "services/shared/aidenhq-identity.mjs": ["modules/core/templates/app/aidenhq-identity.mjs"],
+  "services/shared/aidenhq-identity.mjs": ["modules/apps-platform/starter/aidenhq-identity.mjs"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
   "scripts/supply-chain/best-version.mjs": ["modules/core/templates/ci/.github/supply-chain/best-version.mjs"],
   "scripts/supply-chain/pins.mjs": ["modules/core/templates/ci/.github/supply-chain/pins.mjs"],
@@ -64,15 +64,15 @@ export const SHARED = {
   // /opt/aidenhq/design-system. components.css and kit.js are the deprecated plain-CSS kit (its README).
   ...Object.fromEntries(
     ["tokens.css", "shadcn.css", "components.css", "kit.js", "guidelines.md", "review-checklist.md", "README.md", "LICENSE"].map((f) => [
-      `modules/core/design-system/${f}`,
-      [...(f === "tokens.css" || f === "shadcn.css" ? [`modules/core/templates/app/src/styles/${f}`] : []), `services/computer/images/agent-base/design-system/${f}`],
+      `modules/apps-platform/design-system/${f}`,
+      [...(f === "tokens.css" || f === "shadcn.css" ? [`modules/apps-platform/starter/src/styles/${f}`] : []), `services/computer/images/agent-base/design-system/${f}`],
     ]),
   ),
   // The theme presets (one file each): an app imports the one it picks; the starter's catalog imports them all.
   ...Object.fromEntries(
-    readdirSync(join(repo, "modules/core/design-system/presets")).map((f) => [
-      `modules/core/design-system/presets/${f}`,
-      [`modules/core/templates/app/src/styles/presets/${f}`, `services/computer/images/agent-base/design-system/presets/${f}`],
+    readdirSync(join(repo, "modules/apps-platform/design-system/presets")).map((f) => [
+      `modules/apps-platform/design-system/presets/${f}`,
+      [`modules/apps-platform/starter/src/styles/presets/${f}`, `services/computer/images/agent-base/design-system/presets/${f}`],
     ]),
   ),
   // The SDK's engine side (A9: no npm package yet): a copy in every module that has an sdk/ folder, so an engine runs from its
@@ -89,7 +89,7 @@ export const SHARED = {
 // every time; node_modules and dist are never copied.
 export const SHARED_DIRS = {
   // The app starter, so the UI/UX Designer, the UI Reviewer and Engineers in agent computers scaffold from /opt/aidenhq/app-starter.
-  "modules/core/templates/app": ["services/computer/images/agent-base/app-starter"],
+  "modules/apps-platform/starter": ["services/computer/images/agent-base/app-starter"],
 };
 const SKIP = new Set(["node_modules", "dist"]);
 

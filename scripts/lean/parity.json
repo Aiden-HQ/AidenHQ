@@ -172,10 +172,10 @@
     "n": 19,
     "workflow": "App deploy, run, restart, rollback, previews, incidents",
     "today": [
-      "services/apps-mcp/test/deploy.test.ts",
-      "services/apps-mcp/test/run.test.ts",
-      "services/apps-mcp/test/previews.test.ts",
-      "services/apps-mcp/test/checks.test.ts"
+      "modules/apps-platform/apps-mcp/test/deploy.test.ts",
+      "modules/apps-platform/apps-mcp/test/run.test.ts",
+      "modules/apps-platform/apps-mcp/test/previews.test.ts",
+      "modules/apps-platform/apps-mcp/test/checks.test.ts"
     ],
     "next": "apps-platform kinds"
   },
@@ -183,7 +183,7 @@
     "n": 20,
     "workflow": "Shared apps sign-in (gate, 3129)",
     "today": [
-      "services/gate/test/gate.test.mjs",
+      "modules/apps-platform/gate/test/gate.test.mjs",
       "kernel/test/gate-seam.test.mjs"
     ],
     "next": "apps-platform + /auth/handoff"
@@ -192,8 +192,8 @@
     "n": 21,
     "workflow": "Warehouse sources, source_new, people",
     "today": [
-      "services/apps-mcp/test/sources.test.ts",
-      "services/apps-mcp/test/people.test.ts"
+      "modules/apps-platform/apps-mcp/test/sources.test.ts",
+      "modules/apps-platform/apps-mcp/test/people.test.ts"
     ],
     "next": "warehouse + warehouse.sources"
   },

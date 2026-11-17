@@ -23,8 +23,8 @@ Read `CLAUDE.md` at the repo root first: it is the source for layout, convention
 | `scripts/`, `modules/*/module.yaml`, `services/paperclip-tasks-mcp` | `cd scripts && npm test` |
 | `services/runner` | `cd services/runner && npm test` |
 | `services/board` | `npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck` (the Docker build is stricter than vitest) |
-| `services/gate` | `npm test && npm run typecheck` |
+| `modules/apps-platform/gate` | `npm test && npm run typecheck` |
 | `services/computer` | `node --test test/*.test.mjs` |
-| `services/apps-mcp`, `modules/*/connections/*` | `npm test && npm run typecheck` |
+| `modules/apps-platform/apps-mcp`, `modules/*/connections/*` | `npm test && npm run typecheck` |
 
 Commit per meaningful change with a message that says why.

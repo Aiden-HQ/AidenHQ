@@ -394,7 +394,7 @@ test("long file names can't push the context past the budget, and no file is dro
 });
 
 test("the real app-starter lockfiles are byte-identical, and the pair still reaches a verdict", async () => {
-  const names = ["modules/core/templates/app/package-lock.json", "services/computer/images/agent-base/app-starter/package-lock.json"];
+  const names = ["modules/apps-platform/starter/package-lock.json", "services/computer/images/agent-base/app-starter/package-lock.json"];
   const texts = names.map((n) => readFileSync(join(REPO_ROOT, n), "utf8"));
   assert.equal(texts[1], texts[0], "the two copies are byte-identical");
   const files = fileContext(names.map((name, i) => ({ name: `Aiden-HQ/AidenHQ ${name}`, text: texts[i] })));

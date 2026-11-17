@@ -78,7 +78,7 @@ test("no baseline report: nothing can be told apart, so every finding blocks (fa
 
 test("the UI Reviewer's spec scopes the verdict to what the PR changed", () => {
   const handbook = readFileSync(new URL("../../../modules/design/agents/ui-reviewer/AGENTS.md", import.meta.url), "utf8");
-  const checklist = readFileSync(new URL("../../../modules/core/design-system/review-checklist.md", import.meta.url), "utf8");
+  const checklist = readFileSync(new URL("../../../modules/apps-platform/design-system/review-checklist.md", import.meta.url), "utf8");
   // One rule in each: what the PR introduced or regressed blocks, what the base already had does not. The phrases are
   // anchored on the rule itself, not on a whole sentence, so a copy edit to either document doesn't break the check.
   assert.match(handbook, /Judge the diff against its base: a defect the base already had isn't this PR's/);

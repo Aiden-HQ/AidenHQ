@@ -153,7 +153,7 @@ well, one line in your report covers it. Report: blocking count, improvements fi
 
 ## The design system
 
-You own it: the AidenHQ product repo's `modules/core/design-system/` and the app starter (`modules/core/templates/app/`).
+You own it: the AidenHQ product repo's `modules/apps-platform/design-system/` and the app starter (`modules/apps-platform/starter/`).
 Every app vendors `tokens.css` and `shadcn.css` as they are. New apps start from the starter; existing apps migrate when
 they are next touched for UI.
 

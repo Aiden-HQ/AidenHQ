@@ -89,7 +89,7 @@ Each task gets a runner-owned `CODEX_HOME` at `<state_dir>/codex-openrouter/<tas
 - **Refreshed every start.** `AGENTS.md` and `skills/` are copied from `modules/engine-codex/codex-home/` (the engine's `seed`), and `config.toml`,
   `auth.json`, `hooks.json`, `rules/`, `plugins/` and `.agents/` are removed, so no run leaves instructions, config or
   skills for a later one. The skills' resources come from the product at the same time: the design system
-  (`modules/core/design-system/`) and `best-version.mjs`, since a job can no longer read the product checkout.
+  (`modules/apps-platform/design-system/`) and `best-version.mjs`, since a job can no longer read the product checkout.
 - **Nothing from the host leaks in.** Everything is set with `-c`; the host's home is not in the job at all.
 
 The product's `codex-home` contains:
@@ -100,7 +100,7 @@ The product's `codex-home` contains:
 - Codex skills (`skills/<name>/SKILL.md`, Codex's native mechanism, loaded on demand by description):
   `aidenhq-product` (layout, build and test commands, sync-shared, CI),
   `supply-chain` (pinning, the 7-day rule, `best-version.mjs`), and
-  `design-system` (building UI with `modules/core/design-system/`).
+  `design-system` (building UI with `modules/apps-platform/design-system/`).
 
 **MCP servers.** The agent's jobcaps (Primer; the four private reads for an Engineer with `private_reads`), each at the
 model gateway's `/c/<connection>/mcp` with the job token (`AIDENHQ_JOB_TOKEN`), each with `default_tools_approval_mode="approve"` (the same as

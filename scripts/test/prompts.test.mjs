@@ -14,7 +14,7 @@ const template = join(product, "modules/agent-builder/templates/pr-review-chaser
 
 function instance(modules = [], chaser = {}) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@x" } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
   mkdirSync(join(dir, "agents", "chaser"), { recursive: true });
   writeFileSync(join(dir, "agents", "chaser", "agent.yaml"), YAML.stringify({ ...YAML.parse(readFileSync(join(template, "agent.yaml"), "utf8")), ...chaser }));
   writeFileSync(join(dir, "agents", "chaser", "AGENTS.md"), readFileSync(join(template, "AGENTS.md"), "utf8"));

@@ -190,7 +190,7 @@ test("in-app feedback: only feedback_to gets a tier0 routine, and its agent can'
   assert.deepEqual(out.paperclip.agents.feedback.feedback_for, ["roadmap"]);
   // Any tool beyond its allowlist fails, a read included (a private read such as Slack or Drive, the warehouse, an outbound send).
   assert.throws(() => compile(mods, withAgent({ tasks: ["t"] })), /may hold only apps: app_api, app_view; .* not tasks\.t$/);
-  // Another app's API is out of its reach (apps-mcp also refuses it any other app at call time: services/apps-mcp api.test.ts).
+  // Another app's API is out of its reach (apps-mcp also refuses it any other app at call time: modules/apps-platform/apps-mcp api.test.ts).
   assert.throws(() => compile(mods, withAgent({}, { callers: [{ agent: "feedback", paths: ["/api"] }], paths: ["/api"] })), /may call no other app's API \(notes\)/);
   assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, feedback_to: "nobody" }])), /feedback_to names nobody/);
 });

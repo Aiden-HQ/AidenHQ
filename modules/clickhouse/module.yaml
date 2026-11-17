@@ -1,5 +1,12 @@
 name: clickhouse
 description: ClickHouse for the runner's Engineer jobs (loopback MCP).
+requires:
+  - board # its sign-in banner
+# Its sign-in on the board (the board's point, modules/board/schemas/signins.json).
+contributes:
+  board.signins:
+    - { id: clickhouse, label: ClickHouse, status_url: "http://clickhouse-mcp:8088/auth/status", connect_url: /clickhouse/connect, callback: /clickhouse/callback,
+        missing: "The Engineers can't query it until it is.", stopped: "The Engineers can't query it." }
 settings:
   # ClickHouse Cloud's hosted MCP server, e.g. https://mcp.clickhouse.cloud/mcp. Set it on the board (Settings, Connections);
   # empty: ClickHouse is off.

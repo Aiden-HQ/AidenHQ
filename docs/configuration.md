@@ -23,6 +23,8 @@ ships no compose file: compile generates its services from `services:`. `modules
 | `secrets` | `provided` (secrets the module owns but doesn't generate) and `state: true` (its vault dir `modules/<module>/`, read-write). A secret is one module's; a root secret only through the legacy list. |
 | `data_version` | With `services.data: true`: the format of `data/modules/<module>/`, an integer (default 0). The module migrates its own data at startup, forward only, and bumps this with each migration. Compile writes it to `data/modules/<module>/.data_version` before compose starts the module and refuses to start code whose `data_version` is below that marker; an apply snapshots the dir first, and `ops/rollback.sh` puts it back ([operations](operations.md#apply-upgrade-rollback)). |
 | `checks` | Checks (spec §3.5): `[{id, at: write.filed \| task.finish, kinds, agents, post, auth, label}]`. A `task.finish` check is asked by the kernel's finish gate on every move to done (an agent's own through `/v1/cp/agent`, the runner's through `/v1/finish`): `post` is its `http://<service>:<port>/<path>`, `auth` one of the module's own secrets, `label` the label a hold adds. It answers `ok` (optionally `unlabel`), `pending`/`hold` (the kernel puts the task in review as the owner, with the label and a scheduled check), `reopen` or `deny` (the close is refused). Any check failing, `config/kernel/checks.json` missing, or a graded agent's task no check covers refuses the close. The module releases its label, or resolves a hold it placed, with `POST /v1/checks/:task` and its own token. |
+| `points` | Extension points it owns (spec §3.6): `{ <point>: { schema: schemas/<file>.json } }`. Compile writes every contribution to its points to `config/points/<module>.json`, which only its own services mount. First-party points: `warehouse.sources` (a source's schema and the views `source_new` serves), `board.signins` (a vendor sign-in on the board). |
+| `contributes` | `{ "<module>.<point>": [ ... ] }`: entries for another module's point, which needs `requires: [<module>]`. Each entry is validated against that module's schema, so a bad one is a compile error naming the contributor. An `id` is unique per point. |
 | `board_env` | Environment (and its `${secrets.x}`) added to the root board service, until the board is a module. |
 | `privileged` | Entries of the closed list (spec §5.6); `host-metrics` allows `host_mounts` (read-only `/`, `/sys`, `/proc`). |
 | `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
@@ -135,7 +137,7 @@ run `node scripts/sync-shared.mjs`.
   An agent may set `web_search: cached` or `disabled` (module or instance `agent.yaml`); computers inherit both.
 - **`web_view(url, screenshot?, width?)`** and **`app_view(name, path?, screenshot?, width?)`** (apps-mcp, read tools):
   every codex agent is granted both explicitly (`apps: [web_view, app_view]`). One renderer
-  (`services/apps-mcp/src/view.ts`): a one-shot container of the browser image (`services/computer/images/browser`:
+  (`modules/apps-platform/apps-mcp/src/view.ts`): a one-shot container of the browser image (`services/computer/images/browser`:
   agent-browser and its pinned Chrome, ~1.3 GB, built on the host by `ops/computer-images.sh` on every apply; every agent
   computer builds on it, and Engineer jobs on the host use the same build from `ops/vm/setup.sh`), non-root, `--cap-drop
   ALL`, read-only with a `/tmp` tmpfs, 1 GB / 1 CPU / 512 pids, no mounts, secrets or token, at most two at once, 40 s.

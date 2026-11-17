@@ -2,7 +2,7 @@
 
 What every new app's repo starts from: **Vite + React + TypeScript, Tailwind CSS 4 and shadcn/ui** (Radix primitives,
 lucide icons), served by a small Node server with no runtime dependencies. It works like a modern product out of the box and
-meets the design system's floors (the product's `modules/core/design-system/`): a sample top-bar shell, a page header, a summary that counts what the filters show, filters that apply as they change
+meets the design system's floors (the product's `modules/apps-platform/design-system/`): a sample top-bar shell, a page header, a summary that counts what the filters show, filters that apply as they change
 and live in the URL, a sortable table, details in a sheet that Back closes, toasts with Undo, and loading, error, empty,
 no-match and unknown-value states, in light and dark and every palette and preset. Everything beyond that page is a
 library to import from: an app's build carries only what it imports (the e2e test checks the example's bundle).
