@@ -203,8 +203,8 @@ async function poll() {
     await closeSupersededDesignReviews().catch((err) => log("superseded design review sweep failed", { err: String(err.message ?? err).slice(0, 300) }));
   }
   // Merges you asked for, at most once a minute; independent agents-org queues (owner, 2026-11-12) every poll.
-  const minute = Date.now() - lastMergeCheck >= 60_000;
-  if (minute) lastMergeCheck = Date.now();
+  const minute = Date.now() - mergeCheck.last >= 60_000;
+  if (minute) mergeCheck.last = Date.now();
   await advanceMerges({ minute }).catch((err) => log("merge check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Agents-org merge requests (owner, 2026-11-12): Tier 0 starts at once, even during the run; cards wait for its end. Every poll.
   await runAutoMerges().catch((err) => log("auto merges failed", { err: String(err.message ?? err).slice(0, 300) }));
@@ -814,7 +814,7 @@ async function dispatch(job) {
 
 // ------------------------------------------------------------------ merges
 
-let lastMergeCheck = 0;
+const mergeCheck = { last: 0 };
 const mergeQueue = (issueId) => (state.get(`merges:${issueId}`) ? JSON.parse(state.get(`merges:${issueId}`)) : undefined);
 const activeMerges = () => JSON.parse(state.get("merges:active") || "[]");
 function saveMerges(issueId, queue) {
@@ -856,7 +856,7 @@ async function startMerges(issue, { prs = [], gapMinutes, strict = false, each =
     );
   }
   log("merges started", { issue: issue.identifier, prs: pending.length, gap: queue.gapMinutes, each });
-  lastMergeCheck = 0; // start right away
+  mergeCheck.last = 0; // start right away
   reportActivity();
   return true;
 }
