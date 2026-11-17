@@ -62,7 +62,8 @@ test("setup takes account then model", async () => {
   assert.equal(step.status, 200);
   assert.match(step.body, /Connect OpenRouter/);
   assert.match(step.body, /callback_url=http%3A%2F%2Flocalhost%3A3120%2Fsetup%2Fopenrouter/);
-  assert.match(step.body, /<details><summary>Paste a key instead/);
+  assert.match(step.body, /Use your API key[\s\S]*name="openrouter_key"[\s\S]*>Save<\/button>[\s\S]*Connect OpenRouter<\/a>/); // both, as equals
+  assert.match(step.body, /https:\/\/openrouter\.ai\/settings\/keys/);
   const back = await page("GET", `/setup/openrouter?code=c0de&state=${stateOf(step.body)}`);
   assert.equal(back.status, 303, /class="err">[^<]*/.exec(back.body)?.[0]);
   assert.equal(back.location, `${BOARD}/#/welcome`);

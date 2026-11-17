@@ -105,6 +105,7 @@ input,textarea,select{font:inherit;color:var(--text);background:var(--surface);p
 input[type=checkbox]{accent-color:var(--accent);margin-right:6px;vertical-align:middle}
 a.b{display:inline-block;text-decoration:none}button.b,a.b{font:inherit;font-weight:500;padding:8px 14px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:var(--on-accent);cursor:pointer}button.b:hover,a.b:hover{background:var(--accent-hover)}button.r{background:transparent;color:var(--danger);border-color:var(--danger)}button.r:hover{background:var(--danger-soft)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}input:focus-visible,textarea:focus-visible{outline-offset:0;border-color:var(--accent)}
+.pick{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;align-items:start}.pick .card{margin:0}.pick h2{margin:0 0 4px}
 @media(max-width:600px){button.b{min-height:44px}}`;
 
 export function createAdmin(d: Deps) {
@@ -163,19 +164,20 @@ export function createAdmin(d: Deps) {
     const host = String(req.headers.host ?? "").toLowerCase();
     const origin = d.origins().find((o) => new URL(o).host === host || new URL(o).hostname === host); // proxies differ in the Host they pass on
     const callable = origin && (origin.startsWith("https://") || new URL(origin).hostname === "localhost");
+    // Two equal ways: a key the owner already has, and (where OpenRouter can call back) Connect.
     let connect = "";
     if (callable) {
       for (const [k, v] of pkce) if (Date.now() - v.at > 600_000) pkce.delete(k);
       const state = randomBytes(16).toString("base64url");
       const { url, verifier } = d.model!.start(`${origin}/setup/openrouter`, state);
       pkce.set(s.session.id, { verifier, state, at: Date.now() });
-      connect = `<p><a class="b" href="${esc(url)}">Connect OpenRouter</a></p><p class="muted">Sign in to OpenRouter (or make an account) and approve; you come straight back here.</p>`;
-    } else connect = `<p class="muted">Connect OpenRouter needs this page on https or localhost, so paste a key instead: make one at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai/settings/keys</a>.</p>`;
+      connect = `<div class="card"><h2>Connect your account</h2><p class="muted">Sign in to OpenRouter (or make an account) and approve; you come straight back here.</p><a class="b" href="${esc(url)}">Connect OpenRouter</a></div>`;
+    }
     const field = d.firstRun?.fields().find((f) => f.secret === MODEL_KEY);
-    const paste = `<details${callable ? "" : " open"}><summary>Paste a key instead</summary>${form("/setup/model", `<input type="hidden" name="action" value="paste"><label>${esc(field?.label ?? "OpenRouter API key")}<input name="${MODEL_KEY}" type="password" autocomplete="off" maxlength="300" required></label><button class="b">Use this key</button>`, s)}</details>`;
+    const paste = `<div class="card"><h2>Use your API key</h2><p class="muted">Paste a key you have, or make one at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai/settings/keys</a>.</p>${form("/setup/model", `<input type="hidden" name="action" value="paste"><label>${esc(field?.label ?? "OpenRouter API key")}<input name="${MODEL_KEY}" type="password" autocomplete="off" maxlength="300" placeholder="sk-or-…" required></label><button class="b">Save</button>`, s)}</div>`;
     const retry = credit ? `<div class="card"><p>Your OpenRouter account needs credit before agents can run.</p><p><a href="${CREDITS}" target="_blank" rel="noopener">Add credit in OpenRouter</a>, then retry.</p>${form("/setup/model", `<input type="hidden" name="action" value="retry"><button class="b">Retry</button>`, s)}</div>` : "";
-    const has = d.model?.ready() && !credit ? `<p class="muted">A key is already in the vault; connecting replaces it. <a href="${esc(welcome())}">Continue</a></p>` : "";
-    return doc("Connect a model", `<h1>Connect a model</h1><p>Your agents think with AI models on OpenRouter. Connect your OpenRouter account: its key goes into the vault, read only by the kernel's model gateway.</p>${msg}${retry}${has}${credit ? "" : connect}${paste}`, s);
+    const has = d.model?.ready() && !credit ? `<p class="muted">A working key is already in the vault; saving or connecting replaces it. <a href="${esc(welcome())}">Continue</a></p>` : "";
+    return doc("Connect a model", `<h1>Connect a model</h1><p>Your agents think with AI models on OpenRouter. The key goes into the vault, read only by the kernel's model gateway.</p>${msg}${retry}${has}${credit ? "" : `<div class="pick">${paste}${connect}</div>`}`, s);
   };
   /** One 1-token call with the key; saved when it works or only lacks credit (Retry then needs no new key). */
   async function useKey(req: IncomingMessage, res: ServerResponse, s: AdminSession, key: string) {

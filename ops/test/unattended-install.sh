@@ -198,7 +198,7 @@ want(shown.status === 200 && key, "the authenticator key is shown");
 const fin = await call("POST", "/auth/enrol", { csrf: csrfOf(shown.text), code: totp(key) });
 want(fin.status === 303 && fin.location === "/setup/model", "the TOTP code finishes enrolment and leads to the model step");
 const step = await call("GET", "/setup/model");
-want(step.status === 200 && step.text.includes("<details open><summary>Paste a key instead") && !step.text.includes(">Connect OpenRouter</a>"), "on plain-http 127.0.0.1 the paste field leads (OpenRouter calls back only to https or localhost)");
+want(step.status === 200 && step.text.includes('name="openrouter_key"') && !step.text.includes(">Connect OpenRouter</a>"), "on plain-http 127.0.0.1 the key field stands alone (OpenRouter calls back only to https or localhost)");
 const bad = await call("POST", "/setup/model", { csrf: csrfOf(step.text), action: "paste", openrouter_key: "not-a-key" });
 want(bad.status === 400 && /valid OpenRouter API key/.test(bad.text), "a malformed model key is refused");
 const credit = await call("POST", "/setup/model", { csrf: csrfOf(step.text), action: "paste", openrouter_key: modelKey });
