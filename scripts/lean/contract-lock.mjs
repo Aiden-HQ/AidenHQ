@@ -89,10 +89,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const head = existsSync(join(repo, LOCK)) ? JSON.parse(readFileSync(join(repo, LOCK), "utf8")) : { entries: {} };
   if (args.includes("--write")) {
     const entries = {};
-    for (const id of Object.keys(generated).sort()) entries[id] = { ...(head.entries[id] ?? { state: "experimental" }), fp: generated[id] };
+    for (const id of Object.keys(generated)) entries[id] = { ...(head.entries[id] ?? { state: "experimental" }), fp: generated[id] };
     for (const [id, e] of Object.entries(head.entries)) if (e.state === "removed") entries[id] = e;
-    writeFileSync(join(repo, LOCK), `${JSON.stringify({ version: 1, entries }, null, 2)}\n`);
-    console.log(`wrote ${LOCK}: ${Object.keys(entries).length} entries`);
+    // One entry per line, sorted by id: two changes adding different entries merge without a conflict.
+    const lines = Object.keys(entries).sort().map((id) => `    ${JSON.stringify(id)}: ${JSON.stringify(entries[id])}`);
+    writeFileSync(join(repo, LOCK), `{\n  "version": 1,\n  "entries": {\n${lines.join(",\n")}\n  }\n}\n`);
+    console.log(`wrote ${LOCK}: ${lines.length} entries`);
   } else {
     const ref = args.includes("--base") ? args[args.indexOf("--base") + 1] : null;
     let base = null;
