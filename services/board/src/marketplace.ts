@@ -16,11 +16,13 @@ interface Entry {
   marketplace?: string;
   tier?: string;
   source?: { url?: string };
-  /** Optional, from setup flows and the write-kind data other lanes add to the catalog; used when present. */
   setup_flow?: { title?: string };
-  writes?: string[];
+  /** Write kinds it declares (kind → floor, scripts/modules.mjs) and the secret names it mounts. */
+  writes?: Record<string, { floor: number; panel?: boolean }>;
   secrets?: string[];
   setup?: string;
+  /** Its own agents' module.yaml values before the instance's overrides: a grant is "read", "write" or a list of tools. */
+  defaults?: { agents?: Record<string, { connections?: Record<string, "read" | "write" | string[]> }> };
 }
 
 const KINDS = ["agents", "connections", "channels", "apps"] as const;
@@ -36,7 +38,8 @@ function addsOf(m: Entry): string[] {
   if (m.agents?.length) out.push(`${plural(m.agents.length, "agent")}: ${m.agents.join(", ")}`);
   if (m.connections?.length) out.push(`${plural(m.connections.length, "connection")}: ${m.connections.join(", ")}`);
   if (m.apps?.length) out.push(`${plural(m.apps.length, "app")}: ${m.apps.join(", ")}`);
-  if (m.writes?.length) out.push(`needs your tap to: ${m.writes.join(", ")}`);
+  const writes = Object.keys(m.writes ?? {});
+  if (writes.length) out.push(`may ask to: ${writes.join(", ")}`);
   if (m.secrets?.length) out.push(`needs: ${m.secrets.join(", ")}`);
   else if (m.setup) out.push("needs a sign-in or key from you");
   if (m.requires?.length) out.push(`also turns on: ${m.requires.join(", ")}`);
@@ -76,7 +79,13 @@ export function marketplacesOf(catalog: Entry[]) {
   return { marketplaces: [...by.values()] };
 }
 
-/** One agent's tools per connection, with their class and whether the agent holds them now (compile's effective grants). */
+/** The tools its module grants an agent on one connection (module.yaml as written), or null for an agent without one (an instance agent's). */
+function moduleGrant(catalog: Entry[], key: string, connection: string, tools: { read: string[]; write: string[] }): string[] | null {
+  const g = catalog.find((m) => m.defaults?.agents?.[key])?.defaults!.agents![key]!.connections?.[connection];
+  return g === "read" ? tools.read : g === "write" ? [...tools.read, ...tools.write] : Array.isArray(g) ? g : null;
+}
+
+/** One agent's tools per connection, with their class and whether the agent holds them now (compile's effective grants) and by default (its module's). */
 export function agentGrants(compiled: Compiled | null, catalog: Entry[], key: string) {
   const agent = compiled?.agents?.[key];
   if (!agent) return null;
@@ -85,10 +94,11 @@ export function agentGrants(compiled: Compiled | null, catalog: Entry[], key: st
     connections: Object.entries(agent.enabled_tools ?? {}).map(([id, held]) => {
       const t = compiled?.mcp_servers?.[id]?.tools ?? {};
       const classed = [...(t.read ?? []).map((n) => [n, "read"] as const), ...(t.write ?? []).map((n) => [n, "write"] as const), ...(t.destructive ?? []).map((n) => [n, "destructive"] as const)];
+      const byDefault = moduleGrant(catalog, key, id, { read: t.read ?? [], write: t.write ?? [] });
       return {
         id,
         module: moduleOf.get(id) ?? "",
-        tools: classed.map(([name, cls]) => ({ name, class: cls, granted: held.includes(name), default: held.includes(name) })),
+        tools: classed.map(([name, cls]) => ({ name, class: cls, granted: held.includes(name), default: (byDefault ?? held).includes(name) })),
       };
     }),
   };

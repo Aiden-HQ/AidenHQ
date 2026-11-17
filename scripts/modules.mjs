@@ -832,8 +832,6 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
         }
         // A bigger host runs more of one agent's work at once; the computer pool (AIDENHQ_COMPUTERS_MAX) must still cover box agents.
         if (f === "max_parallel" && !(Number.isInteger(v) && v >= 1 && v <= 10)) fail(`override ${kind}.${key}.max_parallel must be 1 to 10`);
-        // What the module had before the instance changed it: the board shows it beside the instance's value (Reset to default).
-        (paperclip.overridden ??= {})[`${kind}.${key}.${f}`] = target[f] ?? null;
         target[f] = v;
       }
     }
