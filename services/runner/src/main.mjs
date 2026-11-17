@@ -29,7 +29,7 @@ import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
-import { staleRef } from "./progress.ts";
+import { staleHead, staleRef } from "./progress.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.ts";
@@ -212,6 +212,8 @@ async function poll() {
   await advanceMerges({ minute }).catch((err) => log("merge check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Agents-org merge requests (owner, 2026-11-12): Tier 0 starts at once, even during the run; cards wait for its end. Every poll.
   await runAutoMerges().catch((err) => log("auto merges failed", { err: String(err.message ?? err).slice(0, 300) }));
+  // A stale line a refused post left queued (a one-shot check's report): said now that the board takes it. Every poll.
+  await deliverStaleNotices().catch((err) => log("stale notices failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Tier 1 cards for the AI reviewer, while autonomy is on. Every poll.
   await runReviews().catch((err) => log("reviews check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Handbook edits to agents in trial: no tap. Every poll.
@@ -956,7 +958,25 @@ async function runAutoMerges() {
       const gone = [];
       const read = [];
       for (const p of todo) {
-        const pr = (await mergeGithub.pr(p.repo, p.number))?.repository?.pullRequest;
+        let pr;
+        try {
+          pr = (await mergeGithub.pr(p.repo, p.number))?.repository?.pullRequest;
+        } catch (err) {
+          // A blip keeps today's retry. Unreadable for good (gone, or no access) and this task stored the number: its stale
+          // line, and only once the task has the line is the request dropped; undelivered, it stays for the next check.
+          const stale = isTransient(err) ? undefined : await staleStoredPr(issueId, { url: p.url, headRefName: undefined });
+          if (!stale) throw err;
+          if (stale.delivered) gone.push(p);
+          continue;
+        }
+        // A stored number that names another change now never becomes a merge request or a card (nor reads as this branch's
+        // merge or close): it is said once, dropped. The identity is checked before anything the PR's state says is believed.
+        // A line the board refused leaves the request queued, never dropped as gone: it is said on the next check.
+        const stale = await staleStoredPr(issueId, { url: p.url, headRefName: pr?.headRefName });
+        if (stale) {
+          if (stale.delivered) gone.push(p);
+          continue;
+        }
         if (pr?.state === "MERGED" || pr?.state === "CLOSED") gone.push(p);
         else if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? "")) throw new UserError(`couldn't read ${p.url} on GitHub`);
         else read.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid, noReview: true });
@@ -1022,6 +1042,86 @@ async function runAutoMerges() {
     }
   }
 }
+
+/**
+ * A PR number the task stored, checked against GitHub before anything acts on it (a merge request, a card, a rebase or a
+ * state report): the repository was recreated once and numbering restarted, so a number kept from before then names another
+ * change now. The task's recorded branch for that url must be the PR's real head branch; when it differs, or the head can't be
+ * read, this says so once on the task and the caller does nothing with the PR. A url this task didn't store is not its stored
+ * number and is left to the caller's own checks.
+ *
+ * `delivered` says whether the task has that line. The marker is written only after the comment lands, so a post the board
+ * refuses leaves it unset and puts the line in the outbox: a caller retires the PR only when the line was delivered, and
+ * otherwise the item stays for the next check or the runner's own poll, which says it again. Nothing is merged meanwhile.
+ */
+async function staleStoredPr(issueId, { url, headRefName }) {
+  const row = state.branches(issueId).find((b) => String(b.pr_url ?? "").toLowerCase() === String(url).toLowerCase());
+  if (!row) return undefined;
+  const why = staleHead(row.branch, headRefName);
+  if (!why) return undefined;
+  const key = stalePrKey(issueId, url);
+  if (state.get(key)) return { why, delivered: true };
+  const line = `The PR number stored on this task for ${url} is stale: ${why}. Nothing was done with it: no rebase request, merge or card.`;
+  // A Paperclip blip is retried here; a post that still fails leaves the line in the outbox, which the runner's own poll posts
+  // from until it lands, so no path's one-shot check loses the task's report.
+  const delivered = await retryTransient(() => pc.comment(issueId, line)).then(
+    () => true,
+    (err) => (log("stale PR note failed", { issue: issueId, pr: url, err: String(err.message ?? err).slice(0, 200) }), false),
+  );
+  if (!delivered) {
+    holdStaleNotice(key, { issueId, url, line });
+    return { why, delivered: false };
+  }
+  state.set(key, new Date().toISOString());
+  dropStaleNotice(key);
+  log("stale stored PR number", { issue: issueId, pr: url, recorded: row.branch, head: headRefName ?? null });
+  return { why, delivered: true };
+}
+
+const STALE_OUTBOX = "stale-pr-outbox";
+const stalePrKey = (issueId, url) => `stale-pr:${issueId}:${String(url).toLowerCase()}`;
+// Retried with a short backoff, so a board that keeps refusing is not hammered.
+const staleNoticeDelay = (tries) => Math.min(60_000, 2_000 * 2 ** tries);
+
+/** A stale line the task doesn't have yet, kept in the outbox until a post lands. */
+function holdStaleNotice(key, notice, tries = 0) {
+  const box = JSON.parse(state.get(STALE_OUTBOX) || "{}");
+  box[key] = { ...notice, tries, nextAt: new Date(Date.now() + staleNoticeDelay(tries)).toISOString() };
+  state.set(STALE_OUTBOX, JSON.stringify(box));
+}
+
+function dropStaleNotice(key) {
+  const box = JSON.parse(state.get(STALE_OUTBOX) || "{}");
+  if (!(key in box)) return;
+  delete box[key];
+  state.set(STALE_OUTBOX, JSON.stringify(box));
+}
+
+/** Every poll: a stale line the board refused is said once it takes it, and only then recorded. */
+async function deliverStaleNotices() {
+  const box = JSON.parse(state.get(STALE_OUTBOX) || "{}");
+  for (const [key, n] of Object.entries(box)) {
+    if (state.get(key) || Date.parse(n.nextAt) > Date.now()) continue;
+    const { tries = 0, nextAt: _, ...notice } = n;
+    const said = await pc.comment(n.issueId, n.line).then(
+      () => true,
+      (err) => (log("stale PR note failed", { issue: n.issueId, pr: n.url, err: String(err.message ?? err).slice(0, 200) }), false),
+    );
+    if (!said) {
+      holdStaleNotice(key, notice, tries + 1);
+      continue;
+    }
+    state.set(key, new Date().toISOString());
+    dropStaleNotice(key);
+    log("stale stored PR number", { issue: n.issueId, pr: n.url, queued: true });
+  }
+}
+
+/** Why a merge was refused on a stored PR number: the line landed, or the task couldn't be told yet (nothing is retired). */
+const staleRefusal = (stored, url) =>
+  stored.delivered
+    ? `Not merged: the PR number stored on this task is stale, so ${url} is not this task's change.`
+    : `Not merged: the PR number stored on this task is stale, but the task couldn't be told just now. ${url} is not this task's change, and nothing was merged; the task is told by the runner's next check.`;
 
 /** Add a request to the task's history (the first turn on a task also takes its own description). */
 function remember(issueId, request) {
@@ -2780,15 +2880,38 @@ async function executeApproval(a) {
 async function mergeAfterPublish(issue, a, out) {
   const prs = [];
   const missing = [];
+  const stale = [];
+  const unsaid = [];
+  const unread = [];
   for (const b of a.args.only) {
     const row = sameRepo(b.repo, cfg.productRepo) ? state.branches(issue.id).find((x) => sameRepo(x.repo, b.repo) && x.branch === b.branch) : undefined;
     const pr = row?.pr_url && !row.merged ? prQueue.findPrs(row.pr_url)[0] : undefined;
-    if (pr) prs.push({ ...pr, head: b.sha, noReview: true });
-    else missing.push(`${b.repo} \`${b.branch}\``);
+    if (!pr) {
+      missing.push(`${b.repo} \`${b.branch}\``);
+      continue;
+    }
+    // The row's url is a stored number: one whose head GitHub can't read, or reads as another branch's, is said stale and
+    // never merged on this approval. A blip is not stale (saying so would skip a live PR's merge on a lie): it is retried,
+    // and one that outlasts the retries is said as not confirmed, never as stale.
+    let real;
+    try {
+      real = (await retryTransient(() => mergeGithub.pr(pr.repo, pr.number)))?.repository?.pullRequest;
+    } catch (err) {
+      if (isTransient(err)) {
+        unread.push(`${b.repo} \`${b.branch}\``);
+        continue;
+      }
+    }
+    const stored = await staleStoredPr(issue.id, { url: pr.url, headRefName: real?.headRefName });
+    if (stored) {
+      (stored.delivered ? stale : unsaid).push(`${b.repo} \`${b.branch}\``);
+      continue;
+    }
+    prs.push({ ...pr, head: b.sha, noReview: true });
   }
   const started = prs.length ? Boolean(await startMerges(issue, { prs, strict: true, during: true })) : false;
-  const said = [prs.length ? (started ? `Merging ${prs.map((p) => p.url).join(", ")} once green on the approved commit.` : "The merge didn't start (said on the task).") : "", missing.length ? `Not merged (no open PR): ${missing.join(", ")}.` : ""].filter(Boolean).join(" ");
-  return { ok: !missing.length && (started || !prs.length), text: `${out.text}\n\n${said}` };
+  const said = [prs.length ? (started ? `Merging ${prs.map((p) => p.url).join(", ")} once green on the approved commit.` : "The merge didn't start (said on the task).") : "", missing.length ? `Not merged (no open PR): ${missing.join(", ")}.` : "", stale.length ? `Not merged (the stored PR number is stale, said above): ${stale.join(", ")}.` : "", unsaid.length ? `Not merged (the stored PR number is stale, but the task couldn't be told just now): ${unsaid.join(", ")}. Nothing was merged; the task is told on the next check.` : "", unread.length ? `Not merged (GitHub couldn't be read just now, so the PR couldn't be confirmed): ${unread.join(", ")}. Ask for the merge again.` : ""].filter(Boolean).join(" ");
+  return { ok: !missing.length && !stale.length && !unsaid.length && !unread.length && (started || !prs.length), text: `${out.text}\n\n${said}` };
 }
 
 /** Outcomes wait here until the kernel takes them (an apply restarts it): kept in state, retried every poll. */
@@ -3301,8 +3424,16 @@ async function agentMerge(ctx, args) {
   const outside = prs.filter((p) => !repoAllowed(normalizeRepo(p.repo), cfg.allowed_orgs));
   if (outside.length) throw new UserError(`Only PRs in ${cfg.allowed_orgs.join(", ")} can be merged: ${outside.map((p) => p.url).join(", ")}.`);
   const gap = Number.isInteger(args.gap) && args.gap >= 0 && args.gap <= 720 ? args.gap : undefined;
-  // Every PR already merged: no card, evidence instead.
-  const read = await Promise.all(prs.map((p) => mergeGithub.pr(p.repo, p.number).then((d) => d?.repository?.pullRequest, () => null)));
+  // Every PR already merged: no card, evidence instead. Only after each is confirmed as the task's own PR (a stored number
+  // that now names another change is said stale, never counted as this task's merged work).
+  const read = await Promise.all(prs.map((p) => mergeGithub.pr(p.repo, p.number).then((d) => d?.repository?.pullRequest, (err) => {
+    if (isTransient(err)) throw err; // a blip is not a stale number
+    return null;
+  })));
+  for (const [i, pr] of read.entries()) {
+    const stored = await staleStoredPr(ctx.issue.id, { url: prs[i].url, headRefName: pr?.headRefName });
+    if (stored) throw new UserError(staleRefusal(stored, prs[i].url));
+  }
   if (read.every((pr) => pr?.state === "MERGED"))
     return alreadyApplied(ctx.issue, "merge", prs.map((p) => p.url).join(","), prs.map((p, i) => `${p.url} is already merged${read[i].mergeCommit?.oid ? ` (merge commit \`${read[i].mergeCommit.oid.slice(0, 12)}\`)` : ""}`).join("; "));
   // Each card is bound to the PR's current head; in the agents org and the product repo the tap (or the reviewer's
@@ -3313,9 +3444,15 @@ async function agentMerge(ctx, args) {
       bound.push({ repo, number, url }); // GitHub's own review gates these
       continue;
     }
-    const head = (await mergeGithub.pr(repo, number))?.repository?.pullRequest?.headRefOid;
-    if (!/^[0-9a-f]{40}$/.test(head ?? "")) throw new UserError(`Couldn't read ${url} on GitHub.`);
-    bound.push({ repo, number, url, head, noReview: true });
+    const pr = await mergeGithub.pr(repo, number).then((d) => d?.repository?.pullRequest, (err) => {
+      if (isTransient(err)) throw err; // a blip: the agent can ask again
+      return undefined;
+    });
+    // This task stored the number, and GitHub can't confirm it (unreadable, or another branch's): said once, nothing merged.
+    const stored = await staleStoredPr(ctx.issue.id, { url, headRefName: pr?.headRefName });
+    if (stored) throw new UserError(staleRefusal(stored, url));
+    if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? "")) throw new UserError(`Couldn't read ${url} on GitHub.`);
+    bound.push({ repo, number, url, head: pr.headRefOid, noReview: true });
   }
   // Tier 0 (agents org, named checks green or running on the exact head) starts at once, each PR merged on its own
   // once green (owner, 2026-11-12); the rest go on one card, as before.
@@ -4522,12 +4659,17 @@ async function leaveFinishedPrs(issue, workspace) {
   for (const b of state.branches(issue.id).filter((b) => b.pr_url && !b.merged)) {
     let pr;
     try {
-      const { stdout } = await execFileP(await findRealGh(), ["pr", "view", b.pr_url, "--json", "state,number,headRefOid"], await gho(b.repo, READ));
+      const { stdout } = await execFileP(await findRealGh(), ["pr", "view", b.pr_url, "--json", "state,number,headRefOid,headRefName"], await gho(b.repo, READ));
       pr = JSON.parse(stdout);
     } catch (err) {
       log("pr state check failed", { issue: issue.identifier, err: String(err.stderr || err.message).slice(0, 300) });
+      // A number GitHub can't be read for at all is stale too (nothing else will ever read it), and the task that stored it
+      // is told once. A blip is not: the next run reads it again.
+      if (!isTransient(err)) await staleStoredPr(issue.id, { url: b.pr_url, headRefName: undefined });
       continue;
     }
+    // Another change's PR under a stored number is left alone: it is neither read as this branch's merged nor reopened.
+    if (await staleStoredPr(issue.id, { url: b.pr_url, headRefName: pr.headRefName })) continue;
     if (pr.state === "OPEN") continue;
     if (pr.state === "CLOSED") {
       // Closed without merging: remembered as closed, so a receipt leaves the finished work out. `pr` still opens a new one:

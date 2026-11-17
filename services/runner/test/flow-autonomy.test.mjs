@@ -85,14 +85,15 @@ describe("flow-autonomy", { concurrency: true }, () => {
       await turn("Add a bit more to it and push.");
       assert.equal(toolRuns().at(-1).code, 0, toolRuns().at(-1).out);
       assert.ok(partComments().slice(n).some((c) => /Merging requested: https:\/\/github.com\/acme\/app\/pull\/8/.test(c)));
-      // This harness's GitHub refuses every read: the request is retried after the run (runner log), never dropped silently.
-      await waitFor("the merge request tried", () => /auto merge failed/.test(t.context()));
+      // This harness's GitHub refuses every read: its stored number can't be confirmed, so it is said stale once (and no merge
+      // is requested on it).
+      await waitFor("the stale line", () => partComments().some((c) => /pull\/8 is stale/.test(c)));
     });
 
     // Owner, 2026-11-12: a Tier 0 merge is GitHub calls, not workspace changes, so it doesn't wait for the run to end.
     it("a Tier 0 merge starts during the run and merges once green, while the agent still works", async () => {
       const { partComments, waitFor, reviews, fakeLog, release, say } = t;
-      await waitFor("the earlier request given up", () => partComments().some((c) => /The merge wasn't requested/.test(c)));
+      await waitFor("the earlier request dropped", () => partComments().some((c) => /pull\/8 is stale/.test(c)));
       // From here GitHub knows PR 8: open, its head the branch's tip, its one check green.
       writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 8: { branch: "feat/third", files: ["third.txt", "more.txt", "again.txt"], checks: "SUCCESS" } }));
       const n = reviews().length;
