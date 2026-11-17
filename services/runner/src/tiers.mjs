@@ -11,7 +11,11 @@ import YAML from "yaml";
 import { classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges } from "../../../kernel/src/loader/authority.ts";
 import { REJECT, T, highest, meritOwner, priorDecisions, priorPart, requestKey, requestPatches, requestTargets, routineCapped } from "../../../kernel/src/tier.ts";
 import { planParts } from "../../../modules/codehost-github/src/plan.mjs";
-import { COMPOSE, GATE_CORE, check, imageRepo } from "../../../modules/platform/src/check.mjs";
+import { COMPOSE, GATE_CORE as MODULES_GATE_CORE, check, imageRepo } from "../../../modules/platform/src/check.mjs";
+import { GATE_CORE as PRODUCT_GATE_CORE } from "./gate-core.mjs";
+
+/** The gate's core: the product's own paths (gate-core.mjs) and the official modules' (their platform check). */
+export const GATE_CORE = [...PRODUCT_GATE_CORE, ...MODULES_GATE_CORE];
 
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });
@@ -65,7 +69,7 @@ function gitParts(action, s) {
   const items = action === "merge" ? s.prs ?? [] : s.branches ?? [];
   const own = planParts(action, s);
   return items.map((item, i) => {
-    const v = check({ kind: `codehost-github.${action}`, args: withDocs(item), facts: { productRepo: s.productRepo, roles: s.roles } });
+    const v = check({ kind: `codehost-github.${action}`, args: withDocs(item), facts: { productRepo: s.productRepo, roles: s.roles, gateCore: PRODUCT_GATE_CORE } });
     const checked = v.verdict === "deny" ? [{ tier: 2, rule: v.rule, reason: v.reason, reject: true }] : v.verdict === "raise" ? [{ tier: v.tier, rule: v.rule, reason: v.reason, ...(v.panel ? { panel: true } : {}) }] : [];
     const mine = own[i] ?? [];
     return highest([...mine.filter((p) => p.reject), ...checked, ...productModuleParts(item, s), ...mine.filter((p) => !p.reject)]);
