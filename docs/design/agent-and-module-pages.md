@@ -110,9 +110,9 @@ A module's one action button follows its state everywhere it is listed (Browse, 
 Installed (or **Update to X** when one is available). A failed or rejected step shows its reason and **Try again**.
 
 **Install** edits `instance.yaml modules` (adds the name, or `{ name, sha }`); the card is the lean-core install card.
-**Turn off** (owner's label) removes it from `modules` through the same review. Its confirm dialog lists what stops (its
+**On / off is a toggle** (owner: green when on, red when off) on each Installed row and in the module page header; the label next to it reads On or Off. Switching it off ("Turn off") removes it from `modules` through the same review. Its confirm dialog lists what stops (its
 agents and routines), what stays (their tasks; its data on disk, so turning it back on resumes) and is refused, with the
-reason, when another installed module requires it. Core modules and dependencies have no Turn off. Deleting a module's
+reason, when another installed module requires it. Core modules and dependencies show no toggle. While a change is in review the toggle shows the requested position, dimmed, with its stage beside it; it settles only when the change is live. Deleting a module's
 data for good is a separate, explicit purge, not part of this work.
 
 **Setup flows** come from `docs/design/guided-setup.md` (other work): a module's `setup_flow:` block, compiled into the
