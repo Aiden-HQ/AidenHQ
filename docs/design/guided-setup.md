@@ -172,11 +172,12 @@ wizard is just three of them in a row. Only modules that can't work without the 
 pairing) have one. Modules that work out of the box have none; their settings get a separate settings page, built in
 other work.
 
-A module adds a `setup_flow:` block to `module.yaml`; compile copies it into `config/modules.json`, which the board
-already reads:
+A module declares it as a board point, `board.setup_flows`, the same way it declares `board.signins` today; compile
+writes it into `config/points/board.json`, which the board already reads. The exact fields are in the plan
+(`docs/superpowers/plans/2026-11-17-guided-setup.md`, Task 1). In outline:
 
 ```yaml
-setup_flow:
+board.setup_flows:
   order: 20
   title: Aiden on your phone
   why: Chat with Aiden and approve things from Telegram.
@@ -405,9 +406,9 @@ The prompt's final message links to it.
 | `ops/setup.sh --unattended`, `ops/apply-config.sh` | parallel pulls instead of builds, progress lines, public exposure default with Caddy (U2), recovery key shown by the kernel |
 | kernel `/setup` | account, authenticator, OpenRouter PKCE (+ paste fallback); recovery key and `github_bot_token` move out |
 | kernel | admin secret-write endpoint for declared `setup:` secrets, recreating that module's containers; `/recovery-key` show-once page |
-| `scripts/modules.mjs`, compile | `setup_flow:` block validated and copied into `config/modules.json` |
+| `scripts/modules.mjs`, compile | `board.setup_flows` point validated and written into `config/points/board.json` |
 | board | `/setup/<module>` flow component, `GET /api/setup-flows`, `/welcome` wizard, welcome note to Aiden at the end |
-| modules needing user setup (list above) | `setup_flow:` blocks and `setup:` fields replacing shell-only setup; Telegram and Slack pairing; Slack and Google join the bundle |
+| modules needing user setup (list above) | `board.setup_flows` points and `setup:` fields replacing shell-only setup; Telegram and Slack pairing; Slack and Google join the bundle |
 | modules: codehost role | new `codehost-local`; `codehost-github` provides `codehost`; engineering requires `codehost`; GitHub modules leave the bundle |
 | apps platform, runner, ci | read repos and run checks through the code host role |
 | modules: chief-of-staff | onboarding tour text in the handbook |
@@ -418,7 +419,7 @@ The prompt's final message links to it.
 1. The install-time spike, then prebuilt images, progress lines, the Caddy front door (U2) and the installer and
    prompt changes: the one-link, two-minute install.
 2. Kernel `/setup` slimmed, with OpenRouter PKCE.
-3. Kernel secret-write endpoint, the `setup_flow:` schema, the board's flow component and route, the wizard with the
+3. Kernel secret-write endpoint, the `board.setup_flows` schema, the board's flow component and route, the wizard with the
    recovery-key step.
 4. The setup flows: Telegram and Slack pairing first (the wizard's), then every other module on the list, in parallel
    lanes.
