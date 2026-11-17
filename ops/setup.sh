@@ -307,6 +307,8 @@ fi
 set_env PUID "$(id -u "$U" 2>/dev/null || echo 1000)"
 set_env PGID "$(id -g "$U" 2>/dev/null || echo 1000)"
 set_env AIDENHQ_SECRETS_DIR "$SECRETS"
+# The host's apply state (generations.jsonl): the board reads it, read-only, for fleet_generation_status.
+set_env AIDENHQ_STATE_DIR "$H/.local/state/aidenhq"
 set_env AIDENHQ_INSTANCE_DIR "$INST"
 set_env AIDENHQ_INSTANCE_REMOTE "$REMOTE"        # apps-mcp mounts it (compose.yaml)
 set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry commits here, not to GitHub

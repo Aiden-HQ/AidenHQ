@@ -113,6 +113,26 @@ describe("internal listener", () => {
     }
   });
 
+  it("serves the host's apply generations only to an agent granted the tool, not to a fleet reader", async () => {
+    const generationsGrants = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
+    writeFileSync(generationsGrants, JSON.stringify({ agents: { ra: { key: "assistant", roles: [], tools: { paperclip_tasks: ["fleet_generation_status"] } }, scout: { key: "scout", roles: ["fleet-read", "fleet-admin"] } } }));
+    const file = join(mkdtempSync(join(tmpdir(), "generations-")), "generations.jsonl");
+    writeFileSync(file, JSON.stringify({ n: 2, at: "2026-01-02T00:00:00Z", product: "b".repeat(40), health: "good", data_versions: { meetings: 3 } }) + "\n");
+    process.env.AIDENHQ_GENERATIONS_FILE = file;
+    try {
+      // A fleet role is not this tool's grant: only an agent naming it on paperclip_tasks may call.
+      expect((await post("/internal/fleet/generation_status", {})).status).toBe(403);
+      process.env.AIDENHQ_GRANTS_FILE = generationsGrants;
+      const res = await post("/internal/fleet/generation_status", {});
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ pin: "b".repeat(40), generations: [{ n: 2, product: "b".repeat(40), health: "good", data_versions: { meetings: 3 } }] });
+      expect((await post("/internal/fleet/generation_status", {}, asAgent("scout"))).status).toBe(403);
+    } finally {
+      delete process.env.AIDENHQ_GENERATIONS_FILE;
+      process.env.AIDENHQ_GRANTS_FILE = grantsFile;
+    }
+  });
+
   it("schedules a move on the user's task, and rejects bad dates", async () => {
     const ok = await post("/internal/issues/PEN-1/schedule", { date: "2099-01-01" });
     expect(ok.status).toBe(400);

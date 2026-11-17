@@ -13,6 +13,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import YAML from "yaml";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/rollback.sh", "kernel/src/loader/data-version.ts"];
@@ -171,6 +172,12 @@ test("a first apply seeds the running pair as the last known good, validates, sw
   assert.ok(r.out.indexOf("apply timing: validate") < r.out.indexOf("apply timing: compose"), r.out);
   assert.match(readFileSync(w.d("state/apply-2.log"), "utf8"), /generation 2 is good/);
   assert.ok(!existsSync(w.d("prod/config.next")), "the staged copy is cleaned up after the switch");
+  // The board mounts this mirror, and it must match the real file after an append and after a mark (which replaces it by
+  // rename). The board mounts its directory, never the file: a bind mount of the file would keep the inode a rename replaces.
+  assert.equal(readFileSync(w.d("state/board/generations.jsonl"), "utf8"), readFileSync(w.d("state/generations.jsonl"), "utf8"));
+  const board = YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")).services.board.volumes.find((v) => String(v).endsWith(":/generations:ro"));
+  assert.ok(board, "the board mounts the generations mirror");
+  assert.match(board, /\/board:\/generations:ro$/, `the mirror's directory, not the file: ${board}`);
 });
 
 // Lean-core 5e: the kernel the instance runs is its own fork (product_fork:) when that descends from the pin; else refused.

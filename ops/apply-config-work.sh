@@ -44,6 +44,9 @@ main() {
   [ -z "$gen" ] || { [ -z "$want" ] && [ "$retry" = 0 ] && [ "$recover" = 0 ]; } || { echo "refusing: --generation takes no other argument" >&2; exit 1; }
   [ "$recover" = 0 ] || { [ -z "$want" ] && [ "$retry" = 0 ]; } || { echo "refusing: --recover takes no other argument" >&2; exit 1; }
   set -a; [ -f .env ] && . ./.env; set +a
+  # The apply generations (ops/lib/generations.sh), read-only into the board; an older .env predates the variable.
+  export AIDENHQ_STATE_DIR="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}"
+  export AIDENHQ_GENERATIONS_MIRROR="${AIDENHQ_GENERATIONS_MIRROR:-$AIDENHQ_STATE_DIR/board/generations.jsonl}"
   local inst="${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env (your instance checkout)}"
 
   # Tracked files must be clean in both checkouts (untracked ones such as compose.override.yaml are left alone).
@@ -457,6 +460,9 @@ switchOver() {
   elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- kernel ops/units/aidenhq-kernel.service; then
     systemctl --user restart aidenhq-kernel && echo "kernel code changed: restarted"
   fi
+  # The board mounts this mirror's directory read-only, so it must exist before compose starts (a first apply on a fresh host).
+  mkdir -p "$(dirname "$AIDENHQ_GENERATIONS_MIRROR")"
+  [ -e "$AIDENHQ_GENERATIONS_MIRROR" ] || : > "$AIDENHQ_GENERATIONS_MIRROR"
   ops/compose-recreate.sh # build what moved, recreate only those services, and clean up what this config dropped
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.mjs prune
