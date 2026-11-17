@@ -73,10 +73,10 @@ interface State {
   at?: string;
 }
 
-const PR_REF = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)|\b([\w.-]+\/[\w.-]+)#(\d+)\b/g;
-/** owner/repo#n refs named in some text (PR links or owner/repo#n). */
+const PR_REF = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)|codehost:([\w.-]+\/[\w.-]+)\/change\/(\d+)|\b([\w.-]+\/[\w.-]+)#(\d+)\b/g;
+/** owner/repo#n refs named in some text (PR links, this server's change requests `codehost:<org>/<name>/change/<n>`, or owner/repo#n). */
 function prRefs(text: string | null | undefined): string[] {
-  return [...String(text ?? "").matchAll(PR_REF)].map((m) => `${(m[1] ?? m[3])!.toLowerCase()}#${m[2] ?? m[4]}`);
+  return [...String(text ?? "").matchAll(PR_REF)].map((m) => `${(m[1] ?? m[3] ?? m[5])!.toLowerCase()}#${m[2] ?? m[4] ?? m[6]}`);
 }
 
 const latest = (...xs: (string | null | undefined)[]) => xs.filter(Boolean).sort().at(-1) ?? undefined;

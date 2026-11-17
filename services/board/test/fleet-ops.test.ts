@@ -132,5 +132,7 @@ describe("stale agents-org PRs", () => {
       { repo: "org/app", number: 11, opened_at: ago(90), draft: true },
     ];
     expect(stalePrs(rows, now)).toEqual([{ key: "org/app#10", reason: "org/app#10 open 90 min without merging" }]);
+    // A change request on this server with a running preview: its link rides on the row.
+    expect(stalePrs([{ repo: "local/app", number: 3, opened_at: ago(90), draft: false, preview_url: "https://apps.example.ts.net:39101" }], now)).toEqual([{ key: "local/app#3", reason: "local/app#3 open 90 min without merging (preview: https://apps.example.ts.net:39101)" }]);
   });
 });

@@ -93,10 +93,11 @@ if (secretsDir && !stage) {
 
 // The grants table's directory exists before compose mounts it (Docker would create a root-owned one setup can't write).
 if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"), "grants"), { recursive: true });
-// Likewise the apps node's state and serve config (compose.yaml apps-edge; apps-mcp writes the serve config). Here, not in
-// apply-config.sh: the apply that brings this in still runs the old script, which then runs this compile.
+// Likewise the apps node's state and serve config (compose.yaml apps-edge; apps-mcp writes the serve config), and the
+// on-server code host's repos (apps-mcp mounts them read-only; the runner, as the host user, creates repos in them). Here,
+// not in apply-config.sh: the apply that brings this in still runs the old script, which then runs this compile.
 const dataDir = resolve(repo, env("AIDENHQ_DATA_DIR") ?? "data");
-if (!stage) for (const d of ["apps-edge/state", "apps-edge/serve", "previews", ...out.dataDirs]) mkdirSync(join(dataDir, d), { recursive: true });
+if (!stage) for (const d of ["apps-edge/state", "apps-edge/serve", "previews", "codehost", ...out.dataDirs]) mkdirSync(join(dataDir, d), { recursive: true });
 // Code never starts on data newer than it (spec §6.4.1): staged, only checked (the apply snapshots the data after this); for
 // real, each data module's marker is set to its data_version before compose starts it.
 try { for (const [m, d] of Object.entries(out.dataModules)) checkDataVersion(m, d.data_version, join(dataDir, "modules", m), !stage); } catch (e) { die(e.message); }
