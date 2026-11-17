@@ -23,15 +23,33 @@ export function declares(pkg: string | undefined): boolean {
 export type FastCheckDeps = {
   cfg: SandboxConfig;
   log: (msg: string, f?: object) => void;
-  limitMs?: number;
+  /** Host git on a task clone (the code host's hardened git). */
+  git: (cwd: string, ...args: string[]) => Promise<string>;
 };
+type Branch = { repo: string; branch: string; path: string; baseRef: string };
+
+/**
+ * Each branch's repo check, on the branch its checkout is at (only that one can run there; another is skipped): the first
+ * refusal, or undefined.
+ */
+export async function fastChecks(d: FastCheckDeps, branches: Branch[]): Promise<string | undefined> {
+  for (const r of branches) {
+    const head = await d.git(r.path, "rev-parse", "HEAD").catch(() => "");
+    const tip = await d.git(r.path, "rev-parse", `refs/heads/${r.branch}`).catch(() => "");
+    if (!head || head !== tip || !declares(await d.git(r.path, "show", `${tip}:package.json`).catch(() => undefined))) continue;
+    const base = await d.git(r.path, "merge-base", r.baseRef, tip).catch(() => r.baseRef);
+    const refused = await fastCheck(d, r.path, base, `${r.repo} \`${r.branch}\``);
+    if (refused) return refused;
+  }
+  return undefined;
+}
 
 /**
  * Runs the declared check in `path` (a task clone at the commit being published), with AIDENHQ_BASE naming the commit it
  * builds on. Resolves undefined (passed, or the sandbox couldn't start) or the refusal for the agent: the check's output,
  * fenced as data and cut to its last lines.
  */
-export async function fastCheck(d: FastCheckDeps, path: string, base: string, label: string): Promise<string | undefined> {
+async function fastCheck(d: FastCheckDeps, path: string, base: string, label: string): Promise<string | undefined> {
   const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp", CI: "1", AIDENHQ_BASE: base };
   const paths = { rw: [path] };
   // The same layout with nothing in it first: a jail that can't start says nothing about the repo.
@@ -42,7 +60,7 @@ export async function fastCheck(d: FastCheckDeps, path: string, base: string, la
     return undefined;
   }
   const [cmd, ...args] = hiding(d.cfg, ["npm", "run", "--silent", FAST_CHECK], [], paths);
-  const limit = d.limitMs ?? LIMIT_MS;
+  const limit = LIMIT_MS;
   const started = Date.now();
   const r = await new Promise<{ code: number | null; out: string; timedOut: boolean; error?: Error }>((done) => {
     let out = "";
@@ -51,9 +69,11 @@ export async function fastCheck(d: FastCheckDeps, path: string, base: string, la
     const keep = (b: Buffer) => void (out = (out + b.toString("utf8")).slice(-TAIL * 4));
     child.stdout.on("data", keep);
     child.stderr.on("data", keep);
+    // Resolved here too: a grandchild holding the pipe open never holds up the publish.
     const timer = setTimeout(() => {
       timedOut = true;
       try { process.kill(-child.pid!, "SIGKILL"); } catch {}
+      done({ code: null, out, timedOut });
     }, limit);
     child.on("error", (error) => (clearTimeout(timer), done({ code: null, out, timedOut, error })));
     child.on("close", (code) => (clearTimeout(timer), done({ code, out, timedOut })));

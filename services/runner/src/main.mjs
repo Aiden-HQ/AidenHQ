@@ -56,7 +56,7 @@ import { createResolver } from "../../../kernel/src/net.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
 import { createEvalGate } from "./evalgate.ts";
-import { declares, fastCheck } from "../../../kernel/src/fastcheck.ts";
+import { fastChecks } from "../../../kernel/src/fastcheck.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
@@ -2880,7 +2880,8 @@ async function agentPublish(ctx, command, args) {
       text,
       check: async (ordered) => {
         // The repo's own fast check (kernel/src/fastcheck.ts), in the job sandbox, before any card: a failure goes back to the agent.
-        if (!state.task(ctx.issue.id)?.engine?.box) await fastChecks(ordered);
+        const refused = ctx.box ? void log("fast check skipped: a computer job", { issue: ctx.issue.identifier }) : await fastChecks({ cfg: evalSandbox, log, git }, ordered);
+        if (refused) throw new UserError(refused);
         // History rewritten in place (replace refs, grafts, shallow) shows one commit and publishes another: refused before tiering.
         await refuseRewritten(ordered);
         const branches = await branchHeads(ordered);
@@ -2952,18 +2953,6 @@ async function agentPublish(ctx, command, args) {
   } catch (err) {
     if (err instanceof AwaitingApproval || err instanceof AlreadyApplied) return err.message;
     throw err;
-  }
-}
-
-/** Each repo's declared fast check on the branch its checkout is at (only that one can run there): the first failure refuses. */
-async function fastChecks(ordered) {
-  for (const r of ordered) {
-    const head = await git(r.path, "rev-parse", "HEAD").catch(() => "");
-    const tip = await git(r.path, "rev-parse", `refs/heads/${r.branch}`).catch(() => "");
-    if (!head || head !== tip || !declares(await git(r.path, "show", `${tip}:package.json`).catch(() => undefined))) continue;
-    const base = await git(r.path, "merge-base", r.baseRef, tip).catch(() => r.baseRef);
-    const refused = await fastCheck({ cfg: evalSandbox, log }, r.path, base, `${r.repo} \`${r.branch}\``);
-    if (refused) throw new UserError(refused);
   }
 }
 
