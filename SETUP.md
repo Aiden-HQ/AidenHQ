@@ -7,7 +7,7 @@ The easy way is one paste. Your own AI coding agent does the install and shows i
 Paste this into your AI coding agent (Claude Code, Codex or similar):
 
 ```text
-Install AidenHQ by following https://aidenhq.ai/prompt.md
+Set up AidenHQ on my server by following https://aidenhq.ai/prompt.md
 ```
 
 It asks where to install (a server you can SSH into, or your Mac) and your email, then installs everything and tells
