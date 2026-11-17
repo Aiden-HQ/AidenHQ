@@ -820,10 +820,11 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
 # A pin bump brings reviewer code too: a product PR moving modules-pin.json, or an apply moving the instance's `aidenhq`
 # marketplace (or the product, so its pin), to a modules commit whose reviewer (the module, plan.mjs, check.mjs by object id)
 # differs lands only on a 100% receipt for that reviewer: the passed modules PR's (keyed by content, so its squash merge needs
-# no second eval), else its own eval of the new commit, in its own namespace: no PR's skip or receipt answers a bump. The apply
-# asks at its card and again right before it lands.
+# no second eval), else its own eval of the new commit, in its own namespace: no PR's skip or receipt answers a bump. A pin
+# that changes the reviewer must name a commit on the modules repo's default branch (merged, so reviewed there) before any
+# receipt counts. The apply asks at its card and again right before it lands.
 grep -qF '      const moved = await bump(judge, lands, `#${pr.number}`);' "$rgate" \
-  && grep -qF 'if (reviewer === (await reviewerAt(path, from.sha)) || passed(reviewer)) return undefined;' "$rgate" \
+  && [ "$(awk '/^  async function bump\(/,/^  }/' "$rgate" | grep -nE 'reviewerAt\(path, from\.sha\)|await merged\(path, to\.sha\)|if \(passed\(reviewer\)\)|await begin\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-24 | tr '\n' '|')" = 'if (reviewer === (await |const unmerged = await m|if (passed(reviewer)) re|return had === "none" ? |' ] \
   && grep -qF '      const key = `eval-bump:${to.sha}`;' "$rgate" && ! grep -qF 'skip: true' "$rgate" \
   && grep -qF 'const REVIEWER_TREE = ["ai-reviewer", "codehost-github/src/plan.mjs", "platform/src/check.mjs"];' "$rgate" \
   && [ "$(awk '/^async function landFleet\(/,/^}/' "$rmain" | grep -nE 'await evalGateApply\(|whileApplying\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-22 | tr '\n' '|')" = 'await evalGateApply(r,|return whileApplying(i|' ] \

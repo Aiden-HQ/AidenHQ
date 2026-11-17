@@ -238,9 +238,13 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     // A modules PR on top of it that touches no reviewer code merges with no eval: that skip vouches for nothing a bump brings.
     const docs = branch(mods, "docs/more", { "README.md": "z\n" });
     assert.deepEqual((await drive(pr(9, "docs/more", docs), 3)).gh.merged, [docs]);
+    sh(mods, "merge", "-q", "--ff-only", "docs/more");
     assert.match((await gate.bump(base, officialOf(instance(docs), root)))?.wait ?? "", /reviewer eval started on `[0-9a-f]{12}`/, "a skip doesn't satisfy a bump");
     const g = await gate.bump(base, officialOf(instance(fresh), root));
     assert.match(g?.wait ?? "", /reviewer eval started/);
+    // A pin to a head the modules repo never merged: refused, whatever it holds.
+    const unmerged = branch(mods, "wip/review", { "ai-reviewer/service/src/review.mjs": "// v6\n" });
+    assert.match((await gate.bump(base, officialOf(instance(unmerged), root)))?.stop ?? "", /isn't on acme\/modules's default branch/);
     const other = await gate.bump(base, officialOf(instance(fresh, "evil/modules"), root));
     assert.match(other?.stop ?? "", /evil\/modules/);
   });

@@ -152,7 +152,7 @@ export type GateDeps = {
   log: (msg: string, f?: object) => void;
   usage: (record: object) => void;
 };
-type Pr = { number: number; headRefOid: string; headRefName: string; baseRefName: string };
+type Pr = { number: number; headRefOid: string; headRefName: string; baseRefName: string; baseRef?: { target?: { oid?: string } } };
 export type Gate = undefined | { wait: string } | { stop: string };
 /** A commit of a modules repository. */
 export type ModulesAt = { repo: string | undefined; sha: string };
@@ -203,6 +203,12 @@ export function createEvalGate(d: GateDeps) {
       if (!(await has())) throw new Error(`${d.modulesRepo} has no commit ${sha.slice(0, 12)}`);
     }
     return path;
+  }
+  /** A pin names only what the modules repo merged: a commit on its default branch (an unmerged head skipped its review). */
+  async function merged(path: string, sha: string): Promise<Gate> {
+    await d.git(path, "fetch", "--quiet", "origin");
+    const ok = await d.git(path, "merge-base", "--is-ancestor", sha, "refs/remotes/origin/HEAD").then(() => true, () => false);
+    return ok ? undefined : { stop: `it pins modules commit \`${sha.slice(0, 12)}\`, which isn't on ${d.modulesRepo}'s default branch: pins name merged commits only` };
   }
   /** One hash of the reviewer's object ids at a modules commit. */
   const reviewerAt = async (path: string, sha: string) => createHash("sha256").update(await d.git(path, "ls-tree", sha, "--", ...REVIEWER_TREE)).digest("hex").slice(0, 32);
@@ -328,7 +334,10 @@ export function createEvalGate(d: GateDeps) {
     try {
       const path = await modulesClone(from.sha, to.sha);
       const reviewer = await reviewerAt(path, to.sha);
-      if (reviewer === (await reviewerAt(path, from.sha)) || passed(reviewer)) return undefined;
+      if (reviewer === (await reviewerAt(path, from.sha))) return undefined;
+      const unmerged = await merged(path, to.sha);
+      if (unmerged) return unmerged;
+      if (passed(reviewer)) return undefined;
       const key = `eval-bump:${to.sha}`;
       const had = onFile(key, apiKey);
       return had === "none" ? await begin(key, to.sha, path, to.sha, from.sha, apiKey) : had;
@@ -351,6 +360,7 @@ export function createEvalGate(d: GateDeps) {
     const key = `eval-pr:${repo.toLowerCase()}:${head}`;
     const had = onFile(key, apiKey);
     if (had !== "none") return had;
+    if (d.state.get(`eval-skip:${repo.toLowerCase()}:${pr.baseRef?.target?.oid}:${head}`)) return undefined;
     if (!/^[\w][\w./-]{0,200}$/.test(pr.baseRefName ?? "") || pr.baseRefName.includes("..") || !Number.isInteger(pr.number)) return { stop: "its base branch can't be read for the reviewer-eval gate" };
     try {
       const path = await d.clone(repo);
@@ -360,7 +370,6 @@ export function createEvalGate(d: GateDeps) {
       if ((await d.git(path, "rev-parse", "refs/aidenhq-eval/head")) !== head) return { wait: `#${pr.number}'s head isn't at \`${head.slice(0, 12)}\` yet` };
       const base = await d.git(path, "rev-parse", "refs/aidenhq-eval/base");
       const skip = `eval-skip:${repo.toLowerCase()}:${base}:${head}`;
-      if (d.state.get(skip)) return undefined;
       const changed = await files(path, base, head);
       if (!product) {
         // A modules PR: its head, judged by its base branch.
@@ -374,7 +383,9 @@ export function createEvalGate(d: GateDeps) {
       if (touchesReviewer(changed)) {
         const notOfficial = official(judge, `#${pr.number}'s base`) ?? official(lands, `#${pr.number}`);
         if (notOfficial) return notOfficial;
-        return await begin(key, head, await modulesClone(judge.sha, lands.sha), lands.sha, judge.sha, apiKey);
+        const mpath = await modulesClone(judge.sha, lands.sha);
+        const unmerged = lands.sha === judge.sha ? undefined : await merged(mpath, lands.sha);
+        return unmerged ?? (await begin(key, head, mpath, lands.sha, judge.sha, apiKey));
       }
       const moved = await bump(judge, lands, `#${pr.number}`);
       if (!moved) d.state.set(skip, "1");
