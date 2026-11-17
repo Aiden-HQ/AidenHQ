@@ -93,6 +93,11 @@ export class State {
     return Boolean(this.db.prepare("SELECT 1 FROM pushed_heads WHERE repo = ? AND branch = ? AND sha = ?").get(String(repo).toLowerCase(), branch, sha));
   }
 
+  /** Every task's branch whose change request (a local one: `codehost:` URL) is open in this state. */
+  localChanges(): any[] {
+    return this.db.prepare("SELECT * FROM branches WHERE pr_url LIKE 'codehost:%' AND (merged IS NULL OR merged = 0)").all();
+  }
+
   branches(issueId: string): any[] {
     return this.db.prepare("SELECT * FROM branches WHERE issue_id = ? ORDER BY repo, branch").all(issueId);
   }

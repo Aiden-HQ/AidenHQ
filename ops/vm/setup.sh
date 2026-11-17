@@ -176,6 +176,20 @@ if [ "$(dpkg-query -W -f='${Version}' gh 2>/dev/null)" != 2.103.3 ]; then
   rm -f /tmp/gh.deb
 fi
 apt-mark hold "${held[@]}" gh
+# gitleaks, the `secrets` check of change requests on this server (codehost-local: the runner runs it in the job jail): the
+# CI template's version, v8.30.1 (released 2026-03-21; sha256s from the release's gitleaks_8.30.1_checksums.txt), checksummed.
+case "$arch" in
+  amd64) gl_sum=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb gl=x64 ;;
+  arm64) gl_sum=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 gl=arm64 ;;
+esac
+if [ "$(/opt/aidenhq/gitleaks/gitleaks version 2>/dev/null)" != 8.30.1 ]; then
+  curl -fsSLo /tmp/gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_$gl.tar.gz"
+  echo "$gl_sum  /tmp/gitleaks.tgz" | sha256sum -c -
+  install -d -m 0755 /opt/aidenhq/gitleaks
+  tar -xzf /tmp/gitleaks.tgz -C /opt/aidenhq/gitleaks gitleaks
+  chown root:root /opt/aidenhq/gitleaks/gitleaks && chmod 0755 /opt/aidenhq/gitleaks/gitleaks
+  rm -f /tmp/gitleaks.tgz
+fi
 # Distro updates, after the holds so they never move a pinned package.
 apt-get -y upgrade
 

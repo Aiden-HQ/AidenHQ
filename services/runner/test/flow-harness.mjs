@@ -357,7 +357,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
  * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
-export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, ownerFallback = false, setup, refuseStart } = {}) {
+export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, ownerFallback = false, setup, refuseStart, kernelRepos = {} } = {}) {
   let dir, runner, runnerEnv, paperclip, jobs, output = "";
   /** The kernel's job half (a test may stop it and start it again: a kernel restart). */
   const startJobs = () => (jobs = jobsHost(runnerEnv, join(dir, "kernel.db")));
@@ -488,7 +488,7 @@ ${runnerYaml}`,
     Object.assign(part, partOver);
     // Agents in a computer (`image:` in the module): Paperclip runs them, and a task they get must have a folder of its own.
     const inComputers = computers.map((id) => ({ id, name: id, status: "idle", adapterType: "codex_local", adapterConfig: {}, defaultEnvironmentId: "env-computer", metadata: { setupKey: `aidenhq:${id}` } }));
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), onIssueCreated, ownerFallback, config, secrets, jobs: () => jobs.port, refuseStart, repos: { agentsOrg: env.AIDENHQ_GITHUB_AGENTS_ORG ?? "acme", ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), onIssueCreated, ownerFallback, config, secrets, jobs: () => jobs.port, refuseStart, repos: { agentsOrg: env.AIDENHQ_GITHUB_AGENTS_ORG ?? "acme", ...kernelRepos, ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 

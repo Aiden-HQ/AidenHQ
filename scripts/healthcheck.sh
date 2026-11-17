@@ -139,7 +139,7 @@ elif echo "$gl_health" | grep -q '"ok":false' && ! echo "$gl_health" | grep -q "
   # Set up but not signed in, or Glean stopped accepting the sign-in.
   check "glean sign-in" sh -c "echo '$(echo "$gl_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'glean-mcp unreachable'; exit 1"
 else
-  printf '  skip  glean (off, or its URL is not set: Settings, Connections)\n'
+  printf '  skip  glean (off, or its address is not set: its setup on the board)\n'
 fi
 
 # Grafana for the runner's Engineer jobs (through the kernel); listing tools signs in without running a query.
@@ -151,7 +151,7 @@ elif echo "$gf_health" | grep -q '"ok":false' && ! echo "$gf_health" | grep -q "
   # Set up but not signed in, or Grafana stopped accepting the sign-in.
   check "grafana sign-in" sh -c "echo '$(echo "$gf_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'grafana-mcp unreachable'; exit 1"
 else
-  printf '  skip  grafana (off, or its URL is not set: Settings, Connections)\n'
+  printf '  skip  grafana (off, or its address is not set: its setup on the board)\n'
 fi
 
 # ClickHouse for the runner's Engineer jobs (through the kernel); listing tools signs in without running a query.
@@ -163,7 +163,7 @@ elif echo "$ch_health" | grep -q '"ok":false' && ! echo "$ch_health" | grep -q "
   # Set up but not signed in, or ClickHouse stopped accepting the sign-in.
   check "clickhouse sign-in" sh -c "echo '$(echo "$ch_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'clickhouse-mcp unreachable'; exit 1"
 else
-  printf '  skip  clickhouse (off, or its URL is not set: Settings, Connections)\n'
+  printf '  skip  clickhouse (off, or its address is not set: its setup on the board)\n'
 fi
 
 gh_health="$(curl -s -m 10 "$(svc github-mcp 8086)/healthz" 2>&1)"
@@ -171,10 +171,10 @@ if echo "$gh_health" | grep -q '"ok":true'; then
   gh_whoami() {
     local out
     if ! out="$(mcp_as github github_whoami '{}')"; then
-      case "$out" in refused*) echo "$out" ;; *) echo "$(printf '%s' "$out" | tail -1) (if GitHub rejected the token: run scripts/github-auth.sh)" ;; esac
+      case "$out" in refused*) echo "$out" ;; *) echo "$(printf '%s' "$out" | tail -1) (if GitHub rejected the token: paste a new one in the GitHub setup on the board)" ;; esac
       return 1
     fi
-    printf '%s' "$out" | grep -q '"login"' || { echo 'GitHub rejected the token: run scripts/github-auth.sh'; return 1; }
+    printf '%s' "$out" | grep -q '"login"' || { echo 'GitHub rejected the token: paste a new one in the GitHub setup on the board'; return 1; }
   }
   if probe_key github; then check "github (whoami)" gh_whoami
   else skip "github (whoami) (no agent is granted github_whoami, or setup hasn't keyed one yet: ops/apply-config.sh)"; fi

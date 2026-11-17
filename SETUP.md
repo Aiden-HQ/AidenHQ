@@ -317,18 +317,16 @@ Slack has two parts, both served by one Slack app.
 1. [org admin] In the same app's settings, open **Agents** in the sidebar and turn **Slack Model Context Protocol
    (MCP) Server** on. The manifest can't do this, and without it every call fails with "App is not enabled for Slack
    MCP server access".
-2. Put the app's Client ID (Basic Information) in `.env` as `SLACK_CLIENT_ID=...`.
-3. Add `slack` to `modules:` in `instance.yaml` and apply.
-4. The sign-in calls back to `http://localhost:3118` on the server, so forward that port from your laptop first:
-   `ssh -N -L 3118:127.0.0.1:3118 <you>@<host>`. Then run `cd ~/aidenhq && scripts/slack-auth.sh` on the server and
-   open the URL it prints [human].
+2. Add `slack` to `modules:` in `instance.yaml` and apply.
+3. Open the board's Slack setup (`#/setup/slack`) [human]: add the board's `/slack/callback` address to the app's Redirect
+   URLs, paste the app's Client ID (Basic Information) and press Connect.
 
 **Check:** `docker compose logs --tail 20 channel-slack-slack` shows no token errors, and
 `scripts/healthcheck.sh | grep slack` shows `ok  slack read (own profile)`.
 
 ### Others (optional)
 
-GitHub reads (`scripts/github-auth.sh`), Glean, Jira, Grafana, ClickHouse and Primer: see
+GitHub reads, Glean, Jira, Grafana and ClickHouse: open the module's setup on the board (`#/setup/<module>`). Primer: see
 [docs/setup.md](docs/setup.md#connecting-accounts) and [docs/USAGE.md](docs/USAGE.md#connect-jira). Each one is a
 module you add to `modules:`, plus a sign-in.
 

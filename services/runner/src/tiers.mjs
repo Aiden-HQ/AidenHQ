@@ -21,7 +21,7 @@ const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLower
 
 /**
  * The tier of one request. `s` is the verified state:
- * - every action: { agentsOrg, productRepo, instanceRepo, requester: { platform }, records (the task's approval records,
+ * - every action: { agentsOrg, agentsOrgs (one per enabled code host: the GitHub agents org, local), productRepo, instanceRepo, requester: { platform }, records (the task's approval records,
  *   from the board: earlier decisions, see priorDecisions), also (the actions the request also carries), routineAutonomy }
  * - routineAutonomy: the cap of the routine whose run the task chain started from (routineCap); absent when none
  * - connections: each connection's tool tags from the compiled config ({ name: { tools: { read, write, destructive } } })
@@ -47,7 +47,7 @@ function onMerits(action, s) {
   if (action === "raise_cap") return T(2, "raise-cap", "raising a spend cap is the owner's");
   if (["cancelled", "done"].includes(s.taskStatus)) return REJECT("closed-task", `the task is ${s.taskStatus}: a leftover request runs nothing`);
   // Fail closed: without knowing which repos are the product and the instance, nothing can be told apart from them.
-  if (!s.productRepo || !s.instanceRepo || !s.agentsOrg) return T(2, "unknown-repos", "the product repo, instance repo or agents org isn't known here");
+  if (!s.productRepo || !s.instanceRepo || ![s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean).length) return T(2, "unknown-repos", "the product repo, instance repo or agents org isn't known here");
   const t = highest(action === "push" || action === "pr" || action === "merge" ? gitParts(action, s) : action === "close" || action === "create_repo" ? planParts(action, s).flat() : action === "apply" ? applyParts(s) : []);
   // Earlier decisions on this task (owner, 2026-11-14; replaced "sticky"): the owner's own no holds until they say yes; the
   // reviewer's no holds for the same content and bounds the retries.

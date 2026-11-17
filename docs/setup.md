@@ -38,11 +38,11 @@ an `ops/setup.sh` host.
 | Account | How |
 |---|---|
 | Google (Calendar, Drive, Gmail) | On an `ops/setup.sh` host: Connect Google on the board. By hand: `scripts/google-auth.sh <client.json>` with a Desktop-app OAuth client, once per account (`--email`, `--primary`). |
-| Slack (read) | Set `SLACK_CLIENT_ID` in `.env`, then `scripts/slack-auth.sh` (callback on `localhost:3118`). |
-| GitHub (read) | `gh auth login`, then `scripts/github-auth.sh`. |
-| Primer | Set its URL on the board (Settings, Connections), then `scripts/primer-auth.sh`. |
+| Slack (read) | Open its setup on the board (`#/setup/slack`): paste the Slack app's Client ID and press Connect. |
+| GitHub (read) | Open its setup on the board (`#/setup/github`) and paste a read-only token. |
+| Primer | Open its setup on the board (`#/setup/primer`): paste its MCP address and press Connect. |
 | gcloud | `scripts/gcloud-auth.sh`. |
-| Glean, Jira, Grafana, ClickHouse | Set the URL on the board (Settings, Connections) and approve the change, then press Connect on the loopback board (below). Grafana with `grafana_source: local` needs no sign-in. |
+| Glean, Jira, Grafana, ClickHouse | Open the module's setup on the board (`#/setup/<module>`): paste the address (Glean, Grafana, ClickHouse), then press Connect. Jira's site URL stays the `jira_url` setting. Grafana with `grafana_source: local` needs no sign-in. |
 
 Sign-ins started on the board (Google, Glean, Jira, Grafana Cloud, ClickHouse) return to the board's loopback address, so start
 them there: on your laptop run `ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 <you>@<host>`, sign in at
