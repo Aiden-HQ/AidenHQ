@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/rollback.sh", "kernel/src/loader/data-version.ts"];
+const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "kernel/src/loader/data-version.ts"];
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" } }).trim();

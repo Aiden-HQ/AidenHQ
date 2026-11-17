@@ -25,6 +25,7 @@ function checkout() {
   copyFileSync(work, join(dir, "ops/apply-config-work.sh"));
   copyFileSync(lockLib, join(dir, "ops/lib/apply-lock.sh"));
   copyFileSync(genLib, join(dir, "ops/lib/generations.sh"));
+  copyFileSync(join(here, "../../ops/lib/progress.sh"), join(dir, "ops/lib/progress.sh"));
   for (const f of ["ops/apply-config.sh", "ops/apply-config-work.sh"]) chmodSync(join(dir, f), 0o755);
   writeFileSync(join(dir, "bin/docker"), "#!/usr/bin/env bash\nprintf 'docker %s\\n' \"$*\" >> \"$DOCKER_LOG\"\nexit 0\n");
   chmodSync(join(dir, "bin/docker"), 0o755);
