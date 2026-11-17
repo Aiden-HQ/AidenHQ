@@ -4,6 +4,7 @@
 import { cfg, log } from "./main/context.ts";
 import "./main/poll.ts";
 import { reportActivity } from "./main/activity.ts";
+import "./main/watch.ts";
 import { adoptRuns, loop, saveMetrics, shutdown } from "./main/unsplit.ts";
 
 // ------------------------------------------------------------------ main

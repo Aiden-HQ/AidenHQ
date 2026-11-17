@@ -2,7 +2,8 @@ import { join } from "node:path";
 import { pruneReviewedRefs } from "../../../../modules/codehost-github/src/workspace.ts";
 import { board, cfg, log, pc, queue, running, state } from "./context.ts";
 import { closeStaleRoutineRuns, startRecurringRuns } from "./activity.ts";
-import { RESUME_KEY, REVIEWED_RETENTION_DAYS, advanceMerges, closeReviewedTasks, closeSupersededDesignReviews, dispatchReplies, drainQueue, handleIssue, mergeCheck, reportError, resumeInterrupted, runApprovals, runAutoMerges, runGrades, runReviews, runTrialEdits, stopping, watchProductPrs } from "./unsplit.ts";
+import { REVIEWED_RETENTION_DAYS, closeReviewedTasks, closeSupersededDesignReviews, watchProductPrs } from "./watch.ts";
+import { RESUME_KEY, advanceMerges, dispatchReplies, drainQueue, handleIssue, mergeCheck, reportError, resumeInterrupted, runApprovals, runAutoMerges, runGrades, runReviews, runTrialEdits, stopping } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ polling
 
