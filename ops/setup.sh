@@ -14,6 +14,9 @@
 #                                                      prints (AIDENHQ_SSH_TUNNEL=...), never a public port.
 #                                                      --kernel-token-file: a read token for a private kernel repo, used
 #                                                      only for setup's fetch of it, never written into the checkout.
+#                                                      AIDENHQ_EXPOSURE=public: the board on this host's public IPv4
+#                                                      over HTTPS (Caddy, scripts/front-door.mjs; AIDENHQ_PUBLIC_IP, else
+#                                                      the default route's), no tailnet. A rerun keeps the compiled mode.
 #   sudo ops/setup.sh --config person.env --restore backups/aidenhq-….tar.gz
 #                                                      a new VM from a backup (scripts/backup.sh)
 #   sudo ops/setup.sh --config person.env --link       only the owner's one-time setup link, while no owner account exists
@@ -170,8 +173,12 @@ elif [ "$DRY" = 0 ]; then
   [ "$(ugit -C "$REPO" rev-parse HEAD)" = "$(basename "$SRC")" ] || die "the checkout ($REPO) isn't at $(basename "$SRC"), the commit this copy is"
 fi
 
+# Public (settings.exposure: public, from AIDENHQ_EXPOSURE or this checkout's last compile): Caddy serves the board on this
+# host's public IPv4, so no tailnet.
+PUBLIC=0 PUBLIC_IP=""
+case "${AIDENHQ_EXPOSURE:-$(head -c 32 "$REPO/config/exposure" 2>/dev/null | tr -d '[:space:]')}" in public) PUBLIC=1; NO_TS=1 ;; esac
 # The board's address on the tailnet: the link, Google's redirect and the apps all hang off it.
-BOARD_HOST="$(cfg BOARD_HOST)"
+BOARD_HOST="$(cfg BOARD_HOST)"; [ "$PUBLIC" = 0 ] || BOARD_HOST=""
 if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ] && command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
   BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
 fi
@@ -237,7 +244,7 @@ fi
 say "System packages, Docker, gVisor, Tailscale"
 # The exposure mode this setup builds (settings.exposure, written into a new instance.yaml): the tailnet, or without
 # Tailscale an SSH tunnel to loopback. The machine step opens the host firewall for it (ops/vm/public-fw.sh).
-EXPOSURE=tailscale; [ "$NO_TS" = 0 ] || EXPOSURE=local
+EXPOSURE=tailscale; [ "$NO_TS" = 0 ] || EXPOSURE=local; [ "$PUBLIC" = 0 ] || EXPOSURE=public
 run env AIDENHQ_EXPOSURE="$EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
 # The runner's engines on the host: Codex (the primary engine, codex-openrouter) and opencode (the fallback) (engines.mjs).
 command -v codex >/dev/null || run npm install -g --silent @openai/codex@0.166.0
@@ -272,6 +279,14 @@ if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8446"; else ADMIN_U
 say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
 # The machine step installs node; everything after it needs it.
 [ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
+# Public: both on the host's public IPv4 through Caddy, the admin listener on its own port (compile checks .env agrees).
+if [ "$PUBLIC" = 1 ]; then
+  PUBLIC_IP="${AIDENHQ_PUBLIC_IP:-$(sed -n 's/^AIDENHQ_PUBLIC_IP=//p' "$ENVF" 2>/dev/null | tail -1)}"
+  if [ -z "$PUBLIC_IP" ] && [ "$DRY" = 1 ]; then PUBLIC_IP="<this host's public IPv4>"
+  elif [ -z "$PUBLIC_IP" ]; then PUBLIC_IP="$(node "$SRC/scripts/front-door.mjs" detect)" || die "exposure public needs this host's public IPv4 (above): set AIDENHQ_PUBLIC_IP"; fi
+  BOARD_URL="https://$PUBLIC_IP"; ADMIN_URL="https://$PUBLIC_IP:8446"
+  say "Public: board $BOARD_URL, sign-in and approvals $ADMIN_URL (Caddy, a Let's Encrypt certificate for the IP)"
+fi
 
 # ---------------------------------------------------------------- 2. the product (its main is what may run here)
 if ! ugit -C "$REPO" remote get-url origin >/dev/null 2>&1; then
@@ -309,16 +324,20 @@ set_env AIDENHQ_INSTANCE_REMOTE "$REMOTE"        # apps-mcp mounts it (compose.y
 set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry commits here, not to GitHub
 set_env VAULT_FOLDERS ""
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
-set_env BOARD_LAN_HOSTS "${BOARD_HOST:-127.0.0.1:3121,localhost:3121}"
+set_env BOARD_LAN_HOSTS "${BOARD_HOST:-${PUBLIC_IP:+$PUBLIC_IP,}127.0.0.1:3121,localhost:3121}"
 set_env BOARD_LAN_URL "$BOARD_URL"
 set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
+# Public: Caddy's address (compile writes config/Caddyfile for it), and one-time links last 24 hours (decision D9).
+[ "$PUBLIC" = 0 ] || set_env AIDENHQ_PUBLIC_IP "$PUBLIC_IP"
+set_env AIDENHQ_LINK_TTL_HOURS "$( [ "$PUBLIC" = 0 ] || echo 24)"
 # Apps get their own tailnet node and name (compose.yaml apps-edge), never the board's: browsers send a name's cookies
 # to every port of it. Without Tailscale there is no apps node yet.
 if [ -n "$BOARD_HOST" ]; then
   set_env APPS_TS_HOSTNAME "aidenhq-$U-apps"
   set_env APPS_URL_BASE "https://aidenhq-$U-apps.${BOARD_HOST#*.}"
 fi
-set_env BOARD_GOOGLE_CONNECT 1                   # Connect Google from the board (the company's Web-app client)
+# Connect Google from the board (the company's Web-app client); Google refuses a bare IP as a redirect, so not in public.
+set_env BOARD_GOOGLE_CONNECT "$( [ "$PUBLIC" = 1 ] || echo 1)"
 grep -q '^WORK_COMPANY_ID=.' "$ENVF" 2>/dev/null || set_env WORK_COMPANY_ID pending   # known after Paperclip's setup
 if [ ! -f "$REPO/config/runner.yaml" ]; then
   # The runner changes only this person's local instance repo; it clones it from the VM, not GitHub.
@@ -464,6 +483,10 @@ else
   as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --force-recreate board"
 fi
 [ -z "$BOARD_HOST" ] || { run tailscale serve --bg --https=443 http://127.0.0.1:3121; run tailscale serve --bg --https=8446 http://127.0.0.1:3120; }
+# Public: the machine step ran before this apply compiled the `caddy` service, so it kept 443 and 8446 closed; open them now.
+if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ] && ! grep -qx 'EXPOSURE=public' /etc/default/aidenhq-public-fw 2>/dev/null; then
+  run env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
+fi
 say "Runner, model gateway and run pruning (user units)"
 as_user mkdir -p "$H/.config/systemd/user"
 # Where the units find this checkout (their default is ~/aidenhq).
@@ -498,7 +521,7 @@ if [ -n "$RESTORE" ]; then as_user touch "$marker"   # a restored AidenHQ has ha
 fi
 
 echo
-if [ -n "$(cfg GOOGLE_CLIENT_ID)" ]; then
+if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && [ "$PUBLIC" = 0 ]; then
   echo "Once, in the company's Google OAuth app (Web application), add the redirect URI:"
   echo "  $BOARD_URL/google/callback"
 else
@@ -506,7 +529,7 @@ else
 fi
 [ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."
 if [ "$UNATTENDED" = 0 ] && [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
-if [ -z "$BOARD_HOST" ]; then
+if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then
   tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 $U@$(hostname -f 2>/dev/null || hostname)"
   echo "The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first and leave it open:"
   echo "  $tunnel"
@@ -514,6 +537,6 @@ if [ -z "$BOARD_HOST" ]; then
 fi
 if [ "$UNATTENDED" = 1 ]; then setup_link   # last: its AIDENHQ_SETUP_URL line ends the output
 else
-  echo "Done. Send $OWNER_NAME this link ($( [ -n "$BOARD_HOST" ] && echo 'their laptop must be on the tailnet' || echo 'through the tunnel' ); one use; a new one: --reset $OWNER_EMAIL):"
+  echo "Done. Send $OWNER_NAME this link ($( [ -n "$BOARD_HOST" ] && echo 'their laptop must be on the tailnet' || { [ "$PUBLIC" = 1 ] && echo 'it opens from anywhere'; } || echo 'through the tunnel' ); one use; a new one: --reset $OWNER_EMAIL):"
   owner_link
 fi
