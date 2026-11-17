@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { officialRepo } from "../../../scripts/official-repo.mjs";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -56,7 +57,8 @@ export function loadConfig() {
   // The instance's GitHub App, from the vault; the agents org (where it may create repos): AIDENHQ_GITHUB_AGENTS_ORG,
   // else the instance's settings (github_agents_org, or aidenhq-<instance_name>).
   const inst = env.AIDENHQ_INSTANCE_DIR && join(expand(env.AIDENHQ_INSTANCE_DIR), "instance.yaml");
-  const agentsOrg = env.AIDENHQ_GITHUB_AGENTS_ORG || agentsOrgOf(inst && existsSync(inst) ? parseYaml(readFileSync(inst, "utf8"))?.settings : undefined);
+  const instance = inst && existsSync(inst) ? parseYaml(readFileSync(inst, "utf8")) : undefined;
+  const agentsOrg = env.AIDENHQ_GITHUB_AGENTS_ORG || agentsOrgOf(instance?.settings);
   const githubApp = { appIdFile: join(secrets, "github-app", "app_id"), keyFile: join(secrets, "github-app", "key.pem") };
   const appOn = existsSync(githubApp.appIdFile) && existsSync(githubApp.keyFile);
   const allowed = [...(cfg.allowed_orgs ?? [])];
@@ -80,6 +82,8 @@ export function loadConfig() {
     // The product repo (owner/name): AIDENHQ_PRODUCT_REPO (setup records it; the kernel reads only that), else this
     // checkout's origin. Tiering treats it apart.
     productRepo: env.AIDENHQ_PRODUCT_REPO || productRepoOf(REPO_ROOT),
+    // The official modules repository: part of the product (the reviewer's scope, the grader's repos).
+    modulesRepo: officialRepo(instance, REPO_ROOT),
     /** GitHub token that adds deploy keys (modules/codehost-github/src/repos.ts); optional, never in an agent's sandbox. */
     githubAdminTokenFile: join(secrets, "github_admin_token"),
     repoAccessScript: join(REPO_ROOT, "ops/vm/add-deploy-key.sh"),

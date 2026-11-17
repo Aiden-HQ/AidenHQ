@@ -2,7 +2,7 @@
 # The public interface's firewall. On a host with a public address, everything that arrives on that interface is dropped
 # except replies, the ICMP that keeps connections working, DHCP replies and the ports the exposure mode needs
 # (settings.exposure, docs/design/access.md):
-#   public      tcp 22, 443 (Caddy, the HTTPS front door; port 80 stays closed)
+#   public      tcp 22, 443, 8446 (Caddy, the HTTPS front door: the board on 443, sign-in on 8446; 80 stays closed)
 #   tailscale   tcp 22, udp 41641 (Tailscale's direct connections); also when EXPOSURE is unset, as before the setting
 #   cloudflare  tcp 22 (the tunnel dials out)
 #   local       tcp 22 (an SSH tunnel to loopback)
@@ -29,7 +29,7 @@ IF="${PUBLIC_IF:?set PUBLIC_IF to the public interface}"
 
 mode="${EXPOSURE:-tailscale}"
 case "$mode" in
-  public) open="tcp/22 tcp/443" ;;
+  public) open="tcp/22 tcp/443 tcp/8446" ;;
   tailscale) open="tcp/22 udp/41641" ;;
   cloudflare|local) open="tcp/22" ;;
   *) echo "EXPOSURE '$mode' is not public, tailscale, cloudflare or local: SSH only" >&2; mode=unknown; open="tcp/22" ;;

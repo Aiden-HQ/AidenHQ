@@ -221,6 +221,7 @@ test("the grading module: its finish check, its token, the board's key, tasks on
   assert.deepEqual(r.checks["grading.finish"], { module: "grading", at: "task.finish", url: "http://grading:8096/check/finish", auth_secret: "grading_check_key", label: "grading" });
   assert.equal(r.kernelModules.modules.grading.token, "grading_token");
   assert.deepEqual(r.kernelModules.modules.grading.roles, ["kernel.cp-read"]);
+  assert.deepEqual(r.kernelModules.services.grading, ["grading-grading"], "the services the kernel recreates for its setup secrets");
   const g = r.compose.services["grading-grading"];
   assert.ok(g && !g.ports && !JSON.stringify(g).includes("paperclip_board_key"), "no published port, no control-plane key");
   assert.equal(r.compose.services.board.environment.GRADING_URL, "http://grading:8096");
@@ -274,7 +275,8 @@ test("the default bundle compiles without the slack module", () => {
   const r = compile(product, pinst([], owner));
   assert.equal(r.compose.services["slack-mcp"], undefined);
   assert.ok(r.compose.services["channel-telegram-telegram"] && r.compose.services["chat-lane-lane"]);
-  assert.equal(r.paperclip.mcp_servers.slack_live, undefined, "channel-slack is optional");
+  // channel-slack joined the bundle (set up from the board): its connection is declared, but it needs no secret to compile.
+  assert.ok(r.paperclip.mcp_servers.slack_live?.setup, "channel-slack is in the bundle and says how to set it up");
   assert.ok(r.compose.secrets.telegram_notify_bot_token, "channel-telegram declares its secrets");
   assert.deepEqual(Object.keys(r.compose.services["channel-telegram-whisper"].networks), ["mod-channel-telegram", "mod-channel-telegram-egress"]);
 });

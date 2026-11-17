@@ -17,7 +17,7 @@ const RUN_TOKEN_ENV = "AIDENHQ_RUN_TOKEN";
 
 /** The images, and the image each builds FROM (services/computer/images/<name>/Dockerfile). `browser` is the one browser image
  * (agent-browser and its pinned Chrome): every computer builds on it and apps-mcp renders its views in it, so it is always built. */
-const IMAGES = { browser: null, "agent-base": "browser", engineer: "agent-base" };
+export const COMPUTER_IMAGES = { browser: null, "agent-base": "browser", engineer: "agent-base" };
 /** The images an agent may name. */
 const AGENT_IMAGES = ["agent-base", "engineer"];
 
@@ -39,8 +39,8 @@ export function imageTags(productDir, names) {
   const tags = {};
   const add = (name) => {
     if (tags[name]) return tags[name];
-    if (!(name in IMAGES)) throw new Error(`unknown image ${name} (known: ${Object.keys(IMAGES).join(", ")})`);
-    const base = IMAGES[name] ? add(IMAGES[name]) : "";
+    if (!(name in COMPUTER_IMAGES)) throw new Error(`unknown image ${name} (known: ${Object.keys(COMPUTER_IMAGES).join(", ")})`);
+    const base = COMPUTER_IMAGES[name] ? add(COMPUTER_IMAGES[name]) : "";
     const hash = createHash("sha256").update(base).update(dirHash(join(productDir, "services/computer/images", name))).digest("hex").slice(0, 12);
     return (tags[name] = `aidenhq/computer-${name}:${hash}`);
   };

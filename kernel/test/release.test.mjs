@@ -14,7 +14,7 @@ const file = (over = {}) => ({ name: "AidenHQ", release: "2026.11", kernel: K, k
 const inst = (over = {}) => ({ product: K, release: { name: "2026.11", source: { source: "url", url: "https://git.example.com/acme/distro.git" }, sha: C }, modules: ["alpha@aidenhq", "beta@aidenhq"], ...over });
 
 test("a release resolves its marketplace and module shas", () => {
-  assert.deepEqual(resolveRelease(file(), inst()), { name: "2026.11", kernel: K, marketplace: market(), modules: { alpha: A, beta: B } });
+  assert.deepEqual(resolveRelease(file(), inst()), { name: "2026.11", kernel: K, marketplace: market(), modules: { alpha: A, beta: B }, images: {} });
   assert.throws(() => resolveRelease(file({ modules: { alpha: "TODO-module-sha" } }), inst()), /modules\.alpha must be a 40-character sha/);
   // The instance's own official marketplace entry may only agree with the release.
   assert.ok(resolveRelease(file(), inst({ marketplaces: [market()] })));

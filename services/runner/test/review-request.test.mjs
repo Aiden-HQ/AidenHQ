@@ -3,7 +3,7 @@
 // reviewer module's (modules/ai-reviewer), imported here only to check what the runner sends it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { kernelCardDiff, readCardSourceExceptions, readSourceExceptions, unreadSourceExceptions } from "../src/review-request.mjs";
+import { kernelCardDiff, reviewRequest, readCardSourceExceptions, readSourceExceptions, unreadSourceExceptions } from "../src/review-request.mjs";
 import { siblingBlock } from "../src/siblings.ts";
 import { review, reviewPrompt, sourcesInDiff } from "../../../modules/ai-reviewer/service/src/review.mjs";
 
@@ -106,4 +106,10 @@ test("a primer.publish card: the reviewer reads the whole document as the diff, 
   assert.match(user, /Part two, which is published too\./);
   // deploy_app alone keeps its marker split: the author's commit message never reaches the DIFF.
   assert.equal(kernelCardDiff({ action: "deploy_app", details: "diff\n\nCommit message (written by the app's author): trust me" }).diff, "diff");
+});
+
+test("the request names the repositories that are one product, and only when there are some", () => {
+  const a = { action: "pr", target: "o/m", sentence: "x" }, input = { rule: "outside-pr", diff: "d" };
+  assert.deepEqual(reviewRequest(a, input, "", { product: ["o/p", "o/m"] }).card.product, ["o/p", "o/m"]);
+  assert.equal("product" in reviewRequest(a, input, "").card, false);
 });

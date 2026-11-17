@@ -71,9 +71,14 @@ const state = new State(cfg.stateDir);
 const log = (msg, extra = {}) => console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
 // Engineer jobs run in the kernel (kernel/src/jobs.ts): the runner asks for them and follows them.
 const jobsApi = kernelJobs(cfg);
-// The reviewer-eval gate's runs (evalgate.ts) use the same sandbox, launched here: in its own network when that works.
+// The reviewer-eval gate's runs (evalgate.ts) use the same sandbox, launched here in its own network: a known no-jail
+// condition is fatal, with the reason in the journal.
 const evalSandbox = sandboxConfig();
-if (jailProblem(evalSandbox)) evalSandbox.pasta = undefined;
+const evalJailIssue = jailProblem(evalSandbox);
+if (evalJailIssue) {
+  log("ERROR: reviewer eval runs cannot be jailed here", { reason: evalJailIssue });
+  process.exit(1);
+}
 // The instance's GitHub App: its key stays in this process; tokens go only to the git/gh child that needs one,
 // and a read-only one for its task's repos to each job's gh (jobGhToken).
 const app = cfg.githubApp && appClient({ appId: readFileSync(cfg.githubApp.appIdFile, "utf8").trim(), key: readFileSync(cfg.githubApp.keyFile, "utf8"), log });
@@ -90,6 +95,8 @@ const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, pe
 // are fine there too.
 /** One repository however written (kernel/src/kinds.ts repoKey: the kernel holds the runner's writes with the same key). */
 const sameRepo = (a, b) => Boolean(repoKey(a)) && repoKey(a) === repoKey(b);
+/** The repositories that are one product: the product repo and the official modules repo (what the reviewer reads as in scope together). */
+const productRepos = () => [cfg.productRepo, cfg.modulesRepo].filter(Boolean);
 const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, cfg.productRepo);
 /** Where our tooling's names may appear in commits and PR text: our own repos and the official modules repo (the kernel pins the `aidenhq` marketplace to OFFICIAL_URL; any other is the owner's). Never a whole org. Permissions stay on ownRepo. */
 const ourText = (slug) => ownRepo(slug) || isRepoIn(slug, [githubSlug(OFFICIAL_URL)]);
@@ -2412,7 +2419,7 @@ async function reviewOne(a) {
   // What the reviewer reads, only when it is asked: code's own verdicts (refused, the owner's now) read nothing.
   const asked = !codeVerdict(held, LUNA);
   const chain = asked ? await prRequest(await pc.issue(issue.id)).catch(() => "") : "";
-  const request = asked ? reviewRequest(a, input, chain, { requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
+  const request = asked ? reviewRequest(a, input, chain, { product: productRepos(), requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
   const { diff: _d, files: _f, previous: _p, relift: _r, bases: _b, full: _full, evidence: _e, ...tierInput } = input;
   // Kept until the answer is handled: a lost answer (a restart, a timeout) still gets its follow-up (reviewsLeftOver).
   inFlight((ids) => [...ids, a.id]);
@@ -3355,7 +3362,7 @@ async function agentReview(ctx, args) {
         const chain = await prRequest(await pc.issue(ctx.issue.id)).catch(() => "");
         const context = await cardContext(ctx.issue, { branches: branches.map((x) => ({ repo: x.repo, branch: x.branch })) }, input.bases);
         // The same request a card's review sends (reviewRequest), through the kernel's reviewer slot; a failed call is no verdict.
-        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(card, input, chain, { component: "AI reviewer check", requesterModel: state.task(ctx.issue.id)?.engine?.model ?? "", previous: checkFindings(ctx.issue.id, card.action), ...context })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
+        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(card, input, chain, { component: "AI reviewer check", product: productRepos(), requesterModel: state.task(ctx.issue.id)?.engine?.model ?? "", previous: checkFindings(ctx.issue.id, card.action), ...context })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
         log("review checked", { issue: ctx.issue.identifier, action: command, decision: v.decision, code: v.code, model: v.model, second: v.second, used: n + 1, target: card.target.slice(0, 300) });
         // No verdict (the call failed): the check doesn't count. Otherwise it is kept with its finding.
         const rest = checksOf(ctx.issue.id).filter((c) => c.at !== entry.at || c.target !== entry.target);
@@ -3582,23 +3589,22 @@ async function agentMerge(ctx, args) {
   }
   if (read.every((pr) => pr?.state === "MERGED"))
     return alreadyApplied(ctx.issue, "merge", prs.map((p) => p.url).join(","), prs.map((p, i) => `${p.url} is already merged${read[i].mergeCommit?.oid ? ` (merge commit \`${read[i].mergeCommit.oid.slice(0, 12)}\`)` : ""}`).join("; "));
-  // Each card is bound to the PR's current head; in the agents org and the product repo the tap (or the reviewer's
-  // approval) is the review (merges.prDecision).
+  // Each card is bound to the PR's current head, inside the agents org and out: a missing head is not a moved one, and
+  // headMatches would refuse every merge outside. In the agents org and the product repo the tap (or the reviewer's
+  // approval) is the review (merges.prDecision); elsewhere GitHub's own review gates the merge.
   const bound = [];
   for (const { repo, number, url } of prs) {
-    if (!ownRepo(repo)) {
-      bound.push({ repo, number, url }); // GitHub's own review gates these
-      continue;
-    }
     const pr = await mergeGithub.pr(repo, number).then((d) => d?.repository?.pullRequest, (err) => {
       if (isTransient(err)) throw err; // a blip: the agent can ask again
       return undefined;
     });
     // This task stored the number, and GitHub can't confirm it (unreadable, or another branch's): said once, nothing merged.
-    const stored = await staleStoredPr(ctx.issue.id, { url, headRefName: pr?.headRefName });
-    if (stored) throw new UserError(staleRefusal(stored, url));
+    if (ownRepo(repo)) {
+      const stored = await staleStoredPr(ctx.issue.id, { url, headRefName: pr?.headRefName });
+      if (stored) throw new UserError(staleRefusal(stored, url));
+    }
     if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? "")) throw new UserError(`Couldn't read ${url} on GitHub.`);
-    bound.push({ repo, number, url, head: pr.headRefOid, noReview: true });
+    bound.push({ repo, number, url, head: pr.headRefOid, ...(ownRepo(repo) ? { noReview: true } : {}) });
   }
   // Tier 0 (agents org, named checks green or running on the exact head) starts at once, each PR merged on its own
   // once green (owner, 2026-11-12); the rest go on one card, as before.

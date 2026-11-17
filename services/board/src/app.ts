@@ -35,7 +35,10 @@ import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
+import { fleetGenerationStatus } from "./generations.js";
 import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
+import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
+import { welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
@@ -89,6 +92,10 @@ export interface AppOptions {
   google?: GoogleAuth;
   /** The modules' sign-ins through their MCP proxies (board.signins, config.ts): a banner and a Connect each. */
   signIns?: SignIn[];
+  /** The modules' setup flows (board.setup_flows, setup-flows.ts), with each pair token read from the vault; fetchImpl stands in for fetch to the module's pairing endpoint. */
+  setupFlows?: { flows: (SetupFlowPoint & { token?: string })[]; fetchImpl?: typeof fetch };
+  /** The first-run wizard's finished marker (data/board/welcome-sent): present means the welcome was sent. */
+  welcomeMarker?: string;
   /** The grading module's client (grading.ts); default: built from GRADING_URL and GRADING_BOARD_KEY_FILE. */
   grading?: Grading;
   /** "internal" mode: the runner's key (secret reviewer_key): its routes (grades, usage, jobs), never agents'. */
@@ -831,6 +838,9 @@ export function createApp(opts: AppOptions): Server {
       // recovered keys (the block Fleet Ops acts on) unreadable.
       return boundedFleetStatus({ detector: detectorState(store), ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
+    // fleet_generation_status (generations.ts): the current pin and the last 20 applies, newest first. Its own grant, not a
+    // fleet role's: granted to nobody until an agent names it on paperclip_tasks.
+    { method: "POST", path: /^\/internal\/fleet\/generation_status$/, handle: async (_m, _b, _u, req) => requireAgentTool(req, "fleet_generation_status").then(() => fleetGenerationStatus()) },
     // The Agent Coach's reads (coach.ts), for the fleet-audit role: who is due a review (never the caller) and one agent's bounded evidence.
     { method: "POST", path: /^\/internal\/coach\/due$/, handle: async (_m, _b, _u, req) => fleetCall(req, (pc, caller) => coachDue(pc, store, caller), ["fleet-audit"]) },
     { method: "POST", path: /^\/internal\/coach\/evidence$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc, caller) => coachEvidence(pc, store, records, grading, runOf, parse(z.object({ agent_key: z.string().trim().min(1).max(64) }).strict(), body).agent_key, caller), ["fleet-audit"]) },
@@ -1110,6 +1120,8 @@ export function createApp(opts: AppOptions): Server {
   // Where OAuth sign-ins must start: the loopback board, reached from a laptop through an SSH tunnel (docs/setup.md).
   const TUNNEL = "http://127.0.0.1:3121 through ssh -N -L 3121:127.0.0.1:3121 <you>@<host> from your laptop";
   const googleViaBoard = mode === "lan" && !!opts.lan?.googleConnect && !!opts.lan.url.startsWith("https://");
+  /** Where the board's sign-ins return for a request to `host`: its https address when Connect runs there, else the request's own. */
+  const signInOrigin = (host: string) => (googleViaBoard ? opts.lan!.url : `http://${host}`);
 
   // ------------------------------------------------------------------ Settings (settings.ts)
 
@@ -1815,7 +1827,7 @@ export function createApp(opts: AppOptions): Server {
 
   /** Account administration on the board: any admin, and never the owner's account. The kernel acts as that admin's session. */
   const RoleSchema = z.enum(["admin", "user"]);
-  const accountRoutes: { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession) => Promise<unknown> }[] = [
+  const accountRoutes: { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession, host: string) => Promise<unknown> }[] = [
     { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => opts.accounts!.call("list", who) },
     // Your own signed-in browsers.
     { method: "GET", path: /^\/api\/accounts\/sessions$/, handle: async (_m, _b, who) => opts.accounts!.call("sessions", who) },
@@ -1828,7 +1840,29 @@ export function createApp(opts: AppOptions): Server {
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/role$/, handle: async (m, body, who) => opts.accounts!.call("role", who, { id: m[1]!, role: parse(z.object({ role: RoleSchema }).strict(), body).role }) },
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/(disable|enable)$/, handle: async (m, _b, who) => opts.accounts!.call(m[2]!, who, { id: m[1]! }) },
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/link$/, handle: async (m, _b, who) => opts.accounts!.call("link", who, { id: m[1]! }) },
+    ...(opts.accounts && opts.welcomeMarker
+      ? welcomeRoutes({
+          accounts: opts.accounts,
+          store,
+          flows: opts.setupFlows?.flows ?? [],
+          marker: opts.welcomeMarker,
+          post: (text) => {
+            const chats = routes.find((r) => r.method === "POST" && r.path.test("/api/chats"))!;
+            return perRequest.run({ session: OPERATOR }, () => chats.handle([] as unknown as RegExpMatchArray, { text }, undefined as never, undefined as never)) as Promise<{ identifier: string }>;
+          },
+        })
+      : []),
     // App admins (docs/design/access.md, Per-app roles): every shared app, its admins and default; name or remove one.
+    ...(opts.setupFlows?.flows.length && opts.accounts
+      ? setupFlowRoutes({
+          ...opts.setupFlows,
+          accounts: opts.accounts,
+          store,
+          signedIn: async (id) => (await signInStates()).find((x) => x.id === id)?.status?.state === "ok",
+          connected: connectionSignedIn,
+          boardUrl: signInOrigin,
+        })
+      : []),
     { method: "GET", path: /^\/api\/app-admins$/, handle: async (_m, _b, who) => opts.accounts!.call("app_admins", who) },
     {
       method: "POST",
@@ -1860,7 +1894,7 @@ export function createApp(opts: AppOptions): Server {
     const a = accountRoutes.find((r) => r.method === req.method && r.path.test(path));
     if (a) {
       const body = req.method === "GET" ? undefined : await readJson(req);
-      send(res, 200, JSON.stringify(await a.handle(path.match(a.path)!, body, who)), "application/json");
+      send(res, 200, JSON.stringify(await a.handle(path.match(a.path)!, body, who, String(req.headers.host ?? "").toLowerCase())), "application/json");
       return true;
     }
     // A ready admin: writes as the owner (the board key); `authored` records which account it was.
@@ -1905,6 +1939,12 @@ export function createApp(opts: AppOptions): Server {
     return s?.role === "admin";
   };
   const isConnect = (path: string) => path === "/google/connect" || (opts.signIns ?? []).some((s) => s.connect === path);
+  /** A connect path's connection (a setup flow's connect_url): signed in, or undefined when the board serves no such path. */
+  async function connectionSignedIn(path: string): Promise<boolean | undefined> {
+    if (path === "/google/connect") return opts.google ? !!(await opts.google.status())?.accounts.some((a) => a.state === "ok") : undefined;
+    const s = (opts.signIns ?? []).find((x) => x.connect === path);
+    return s ? (await s.auth.status())?.state === "ok" : undefined;
+  }
 
   /**
    * Connect a Google account, or reconnect an expired one: /google/connect sends the browser to Google's
@@ -1916,7 +1956,7 @@ export function createApp(opts: AppOptions): Server {
   async function handleGoogle(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (!opts.google) throw new HttpError(404, "Google sign-in isn't set up on the board (no google_auth_token)");
     if (!googleViaBoard && !loopbackPort(req.headers.host)) throw new HttpError(403, `connect Google from ${TUNNEL}`);
-    const callback = googleViaBoard ? `${opts.lan!.url}/google/callback` : `http://${String(req.headers.host).toLowerCase()}/google/callback`;
+    const callback = `${signInOrigin(String(req.headers.host).toLowerCase())}/google/callback`;
     try {
       if (url.pathname === "/google/connect") {
         const account = url.searchParams.get("account") || undefined;

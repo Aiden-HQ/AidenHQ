@@ -30,6 +30,7 @@ import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
 import { CardView, GearIcon, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
+import { SetupFlow } from "./SetupFlow";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
 import { dayDate, matches } from "./util";
@@ -47,7 +48,7 @@ const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage }
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "setup"; module: string };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -118,6 +119,8 @@ function parseRoute(): Route {
   // #/approvals, #/activity, ...: deep links to a tab.
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
+  const setup = /^setup\/([a-z0-9-]{1,63})$/.exec(h);
+  if (setup) return { kind: "setup", module: setup[1]! };
   if (h === "brief") return { kind: "brief" };
   if (h === "help") return { kind: "help" };
   return { kind: "board" };
@@ -778,6 +781,7 @@ export function App() {
       )}
       {route.kind === "run" && <Suspense fallback={null}><RunPage key={route.id} id={route.id} onClose={() => (history.length > 1 ? history.back() : go("#/"))} onSignIn={signInNeeded} /></Suspense>}
       {route.kind === "help" && <Help />}
+      {route.kind === "setup" && <SetupFlow key={route.module} module={route.module} onDone={() => go("#/")} onSignIn={signInNeeded} />}
       {creating && (
         <NewTask
           board={board}

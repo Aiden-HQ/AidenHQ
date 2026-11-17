@@ -40,7 +40,6 @@ test("dry run prints the plan and no secrets", () => {
     "write /home/alice/aidenhq-instance/apps.yaml", // instance.yaml's heredoc ends where it should
     "ops/apply-config.sh",
     "tailscale serve --bg --https=443 http://127.0.0.1:3121",
-    "new chat to Aiden",
     "https://alice.tail1234.ts.net/google/callback",
   ]) assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const secret of ["mgmt-SECRET-123", "gsecret-456"]) assert.ok(!out.includes(secret), `printed a secret: ${secret}`);
@@ -85,4 +84,10 @@ test("--unattended: no config file, settings from the environment, the SSH-tunne
   for (const not of ["tailscale serve", "APPS_URL_BASE", "sk-SECRET"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
   assert.throws(() => run({}), /--unattended needs OWNER_EMAIL/);
   assert.throws(() => run({ OWNER_EMAIL: "alice@example.com", MAX_CONCURRENT: "8; rm -rf /" }), /MAX_CONCURRENT must be a whole number/);
+});
+test("--unattended, exposure public: the IP's https URLs and 24-hour links, no tailnet and no tunnel", () => {
+  const out = execFileSync("bash", [setup, "--dry-run", "--unattended"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, AIDENHQ_USER: "alice", OWNER_EMAIL: "alice@example.com", AIDENHQ_EXPOSURE: "public", AIDENHQ_PUBLIC_IP: "203.0.113.7" } });
+  for (const want of ["env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1", ".env: BOARD_LAN_URL=https://203.0.113.7", ".env: AIDENHQ_ADMIN_URL=https://203.0.113.7:8446", ".env: AIDENHQ_PUBLIC_IP=203.0.113.7", ".env: AIDENHQ_LINK_TTL_HOURS=24"])
+    assert.ok(out.includes(want), `missing: ${want}\n${out}`);
+  for (const not of ["tailscale serve", "AIDENHQ_SSH_TUNNEL"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
 });

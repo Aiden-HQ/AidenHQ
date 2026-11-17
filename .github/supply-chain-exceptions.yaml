@@ -41,3 +41,4 @@ exceptions:
   - { ecosystem: npm, package: @better-auth/telemetry, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
   - { ecosystem: npm, package: better-auth, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
   - { ecosystem: npm, package: jose, version: 6.2.17, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
+  - { ecosystem: docker, package: caddy, version: 2.11.9, advisory: GHSA-mgcc-cww5-fp2q, reason: "owner-approved 2026-11-17: 2.11.9 (released 2026-11-05; digest re-pushed 2026-11-16) fixes the high go-jose JWK parsing DoS that 2.11.8 carries; Caddy is the public HTTPS front door (U2, #316)" }

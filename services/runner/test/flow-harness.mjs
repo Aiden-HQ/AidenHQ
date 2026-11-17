@@ -17,6 +17,7 @@ import { REQUEST_FIELDS } from "../../../kernel/sdk/src/reviewer.ts";
 import { reviewWith } from "../../../modules/ai-reviewer/service/src/server.mjs";
 import { readLog } from "./fakes/lib.mjs";
 import { registry } from "./fakes/engines.mjs";
+import { fakeJail } from "./fakes/jail.mjs";
 import { openRecords } from "../../../kernel/src/records.ts";
 import { createWrites } from "../../../kernel/src/writes.ts";
 import { createBackplane } from "../../../kernel/src/backplane.ts";
@@ -419,6 +420,7 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
       writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
       chmodSync(join(bin, name), 0o755);
     }
+    fakeJail(bin, join(dir, "fake.log"));
 
     writeFileSync(join(config, "system.yaml"), `paperclip:\n  company_id: "${COMPANY}"\nuser:\n  names: ["Dana"]\n`);
     writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));

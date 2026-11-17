@@ -113,10 +113,20 @@ export function hiding(cfg: SandboxConfig, argv: string[], loopback: string[] = 
   return [cfg.bwrap, ...mounts, "--die-with-parent", "--", ...argv];
 }
 
-/** Why jobs can't get their own network here (no pasta, or a trial job failed), or undefined when they can. */
+/** A known no-jail condition: every link candidate overlaps a host network, so a job can't get its own network. */
+class NoFreeLink extends Error {}
+
+/** Why jobs can't get their own network here (no pasta, no free link, or a trial job failed), or undefined when they can. */
 export function jailProblem(cfg: SandboxConfig) {
   if (!cfg.pasta) return "pasta is not installed (sudo apt-get install -y passt)";
-  const [cmd, ...args] = hiding(cfg, ["true"]);
+  let argv: string[];
+  try {
+    argv = hiding(cfg, ["true"]);
+  } catch (e) {
+    if (e instanceof NoFreeLink) return e.message;
+    throw e;
+  }
+  const [cmd, ...args] = argv;
   const r = spawnSync(cmd!, args, { encoding: "utf8", timeout: 20000 });
   return r.status === 0 ? undefined : `a trial job failed (exit ${r.status ?? r.signal}): ${(r.stderr || r.error?.message || "").trim().slice(0, 300)}`;
 }
@@ -172,7 +182,7 @@ function jailed({ pasta, bwrap }: SandboxConfig, masks: string[], loopback: stri
   const host = hostIPv4();
   const nets = [...host, ...hostRoutes()];
   const link = LINKS.find((l) => nets.every((a) => !overlaps(`${l}.0`, 24, a.address, a.prefix)));
-  if (!link) throw new Error("no free subnet for the job's network link: every candidate overlaps a host network");
+  if (!link) throw new NoFreeLink("no free subnet for the job's network link: every candidate overlaps a host network");
   const unreachable = [...BLOCKED, ...host.filter((a) => !a.address.startsWith("127.")).map((a) => `${a.address}/32`)];
   const inner = `for n in ${unreachable.join(" ")}; do PATH="/usr/sbin:/sbin:$PATH" ip route add unreachable "$n" || exit 1; done; exec setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all -- "$@"`;
   return [

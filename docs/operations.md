@@ -57,7 +57,7 @@ container is recreated again on the next apply rather than trusted. A container 
 this was added) is recreated once, then recorded, and a record written for a service the step started is what keeps the
 retry after a daemon race from starting it a second time.
 
-Each phase prints one line, `apply timing: <phase> <seconds>s`, and a total; setup prints its own sections on one
+Each phase prints one line, `apply timing: <phase> <seconds>s`, and a total; run by the installer (`AIDENHQ_PROGRESS_BASE` set), setup and the apply also print `AIDENHQ_PROGRESS=<n>/<total> <percent>% <step> ~<minutes left>` as each phase starts (`ops/lib/progress.sh`; the phase tables, with estimated seconds, sit in `ops/setup.sh` and `ops/apply-config-work.sh`); setup prints its own sections on one
 `setup timing:` line. A cached image build costs a few seconds; a changed one is the real build (the board's tsc and vite
 build is about 17s). Setup's Paperclip calls run four at a time.
 
@@ -112,6 +112,17 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   routes directly, the bridge (Telegram replies, its daily chat) through `GET /internal/successor/:id` (decide key only).
   Not moved while a run or a card is on it, nor graded, runner Engineer or agent-made tasks; the detector names such a task
   in its "runs failed" flag.
+
+- The Maintainer (`services/board/src/maintainer.ts`): every `maintainer_poll_minutes` (default 5; the board reads
+  `MAINTAINER_POLL_MINUTES`) the board asks
+  github-mcp for the product issues labelled since its cursor and fires the "Maintainer: issue" webhook once per trusted
+  issue, with `{{number}}` and `{{title}}`. A label from anyone else is logged once and starts nothing. Cursor and fired
+  issues are in the board's store (meta `maintainer_issues`), so a restart repeats and skips none. It reads the host's
+  `generations.jsonl` read-only (`AIDENHQ_STATE_DIR`, its mirror in `board/` mounted at `/generations`) for the
+  `fleet_generation_status` tool: the current pin (the newest generation that got past validation) and the last 20
+  generations, newest first. The watcher is off until a module supplies `MAINTAINER_ISSUES_TOKEN_FILE` (github-mcp's
+  internal read's own token) and the routine's `MAINTAINER_WEBHOOK_URL_FILE`/`_SECRET_FILE`, as `board_env` does for
+  Fleet Ops.
 
 - Monitoring (module `monitoring`, [docs/design/monitoring.md](design/monitoring.md)): Prometheus, node-exporter, cAdvisor,
   Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `DiskNearlyFull`

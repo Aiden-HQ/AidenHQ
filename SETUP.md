@@ -33,7 +33,7 @@ other connections, board account recovery and shared access for colleagues.
 | A Tailscale auth key for the server (`TS_AUTHKEY`). Optional: you can run `sudo tailscale up` by hand instead | [org admin] Tailscale | step 3 |
 | A Tailscale auth key for the apps node (`TS_APPS_AUTHKEY`): reusable, pre-approved, tagged (for example `tag:aidenhq-apps` under `tagOwners`). Optional: without it, agent-built apps run but nobody can reach them | [org admin] Tailscale | step 3 |
 | An OpenRouter **management (provisioning) key**, or a normal OpenRouter API key you made yourself | OpenRouter account admin | step 3 |
-| A Google OAuth client of type *Web application*, with the Calendar, Drive and Gmail APIs enabled. Not needed to finish step 3: without it, add `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` to `person.env` later and run setup again | [org admin] Google Workspace | step 3, step 7 |
+| Optional: a Google OAuth client of type *Web application*, with the Calendar, Drive and Gmail APIs enabled. Without it, the board's Google setup (`#/setup/google`, about 10 minutes) walks you through making one and takes the id and secret from a paste box | [org admin] Google Workspace | step 3, step 7 |
 | Read access to the AidenHQ product repo on GitHub (to clone it or fork it) | the repo owner | step 2 |
 | Optional, later: Cloudflare Access, a tunnel and DNS records, to share apps with people outside your tailnet | [org admin] Cloudflare | [docs/setup.md](docs/setup.md#shared-access-apps-for-people-beyond-the-tailnet) |
 
@@ -193,7 +193,7 @@ shell doesn't have it yet (setup restarts your systemd user manager itself, so t
 
 ## 4. Finish the secrets
 
-1. **Vault recovery key** [human] (an unattended install shows it once on the first-run page instead, and keeps no copy): copy `/root/aidenhq-vault-recovery.txt` (64 hex characters) into your password
+1. **Vault recovery key** [human] (an unattended install shows it once on `/recovery-key` after the owner signs in instead, and keeps no copy): copy `/root/aidenhq-vault-recovery.txt` (64 hex characters) into your password
    manager over your own SSH session (`sudo cat /root/aidenhq-vault-recovery.txt`), then
    `sudo shred -u /root/aidenhq-vault-recovery.txt`. This key is the only way in if the TPM state is lost.
 2. **Reboot test** [human]: `sudo reboot`, SSH back in, and run the vault and container checks from step 3 again.
@@ -270,7 +270,7 @@ read -rs V && printf '%s' "$V" > ~/.config/aidenhq/<name> && chmod 600 ~/.config
 
 ### Google (Calendar, Drive, Gmail)
 
-1. [org admin] In the Google OAuth client from step 0, add the redirect URI setup printed:
+1. Without `GOOGLE_CLIENT_ID` in `person.env`, open the board's `#/setup/google` and follow it. With it, [org admin] add the redirect URI setup printed to that client:
    `https://<board-host>/google/callback`.
 2. On the board, open Connections and press **Connect Google**. Sign in and approve the read-only scopes [human].
    Repeat for each Google account you want connected.

@@ -1,0 +1,4 @@
+name: board
+description: owner of the setup_flows point (the schema is a copy of the modules repo's)
+points:
+  setup_flows: { schema: schemas/setup_flows.json }
