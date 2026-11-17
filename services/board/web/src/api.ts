@@ -33,6 +33,14 @@ export class SignInRequired extends Error {
 }
 
 /** One module's setup flow as GET /api/setup-flows returns it (services/board/src/setup-flows.ts). */
+/** The first-run wizard (Welcome.tsx): what to show a new owner, from the board. */
+export interface WelcomeState {
+  finished: boolean;
+  modelReady: boolean;
+  recoveryKeyWaiting: boolean;
+  wizard: string[];
+}
+
 export interface SetupFlowView {
   module: string;
   order: number;
@@ -137,6 +145,8 @@ export const api = {
   setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/dismiss`, {}),
   setupPair: (module: string) => call<{ code: string; link?: string }>("POST", `/api/setup-flows/${module}/pair`, {}),
   setupPaired: (module: string) => call<{ paired: boolean }>("GET", `/api/setup-flows/${module}/pair`),
+  welcome: () => call<WelcomeState>("GET", "/api/welcome"),
+  welcomeFinish: (done: string[], skipped: string[]) => call<{ ok: boolean; identifier?: string }>("POST", "/api/welcome/finish", { done, skipped }),
   modules: () => call<{ modules: ModuleRow[]; advisories: Advisory[] }>("GET", "/api/modules"),
   settings: () => call<SettingsData>("GET", "/api/settings"),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),

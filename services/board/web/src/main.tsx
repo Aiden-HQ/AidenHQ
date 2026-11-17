@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { WelcomeGate } from "./Welcome";
 import { preloadBoot } from "./queries";
 import "./styles.css";
 
@@ -19,6 +20,8 @@ window.addEventListener("vite:preloadError", (e) => {
 preloadBoot();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <WelcomeGate>
+      <App />
+    </WelcomeGate>
   </StrictMode>,
 );

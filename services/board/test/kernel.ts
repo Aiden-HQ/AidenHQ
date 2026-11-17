@@ -16,6 +16,8 @@ export async function fakeKernel(): Promise<{
   /** The kernel-side session ends (a sign-out, disable or reset there). */
   end: (token: string) => void;
   calls: { path: string; body: any }[];
+  /** Answers for other account ops by path (a status and a body); anything unlisted is a 404. */
+  ops: Record<string, [number, unknown]>;
   close: () => void;
 }> {
   const codes = new Map<string, { account: FakeAccount; origin: string; state: string }>();
@@ -23,6 +25,7 @@ export async function fakeKernel(): Promise<{
   const accounts = new Map<string, FakeAccount>();
   const calls: { path: string; body: any }[] = [];
   const saved: Record<string, boolean> = {};
+  const ops: Record<string, [number, unknown]> = {};
   const server: Server = createServer(async (req, res) => {
     let text = "";
     for await (const c of req) text += c;
@@ -59,6 +62,7 @@ export async function fakeKernel(): Promise<{
         return a ? send(200, { accounts: [...accounts.values()], me: a.id }) : send(401, { error: { message: "sign in" } });
       }
     }
+    if (ops[String(req.url)]) return send(ops[String(req.url)]![0], ops[String(req.url)]![0] < 400 ? ops[String(req.url)]![1] : { error: { message: "refused" } });
     send(404, { error: { message: "no such route" } });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -78,6 +82,7 @@ export async function fakeKernel(): Promise<{
     },
     end: (token) => void sessions.delete(token),
     calls,
+    ops,
     close: () => server.close(),
   };
 }

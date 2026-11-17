@@ -1,5 +1,6 @@
 import pino from "pino";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createKernelAuth } from "./kernel-auth.js";
 import { createApp } from "./app.js";
 import { appsApi } from "./fleet.js";
@@ -73,7 +74,7 @@ const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway
 const activity: { runner?: RunnerReport } = {};
 // Open boards hear what agents change in their chats (watch.ts): one look at Paperclip every 2s while any board listens.
 startWatch({ pc: paperclip, events: store.events, records, log, runner: () => activity.runner, session: liveActivity(cfg.sessions) });
-const common = { grading, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, accounts, gateway: cfg.gateway, records, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
+const common = { grading, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
 // The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));

@@ -140,11 +140,6 @@ set_env() { # KEY VALUE: sets KEY in .env (replacing a commented or old line, el
 }
 json() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }   # a JSON string, without node (a dry run has none)
 read_secret() { [ -s "$SECRETS/$1" ] && cat "$SECRETS/$1" || true; }
-board() { # METHOD PATH [JSON]: the board's internal listener, with the operator's key (the welcome chat)
-  # The keys go in on stdin (-H @-), never in argv where other processes could read them.
-  printf 'x-operator-key: %s\nauthorization: Bearer %s\n' "$(read_secret board_operator_key)" "$(read_secret board_internal_token)" \
-    | curl -sS -X "$1" "http://127.0.0.1:3122$2" -H 'host: 127.0.0.1:3122' -H 'content-type: application/json' -H @- ${3:+--data "$3"} "${@:4}"
-}
 operator() { # OP [JSON]: the kernel's accounts (its backplane, POST /v1/operator/<op>) with the operator's key: setup link, resets
   printf 'x-operator-key: %s\n' "$(read_secret board_operator_key)" \
     | curl -sS -X POST "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/v1/operator/$1" -H 'content-type: application/json' -H @- ${2:+--data "$2"} "${@:3}"
@@ -429,9 +424,8 @@ if [ -z "$(read_secret openrouter_key)" ]; then
   else die "set OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_KEY) in $CONFIG"; fi
 fi
 # Fail now on a rejected key, not after an apply that waits minutes per agent. (A dry run only says what it would check.)
-HAS_KEY=1
 if [ "$DRY" = 1 ]; then echo "  + check the OpenRouter key against openrouter.ai (GET /api/v1/key); stop if it is rejected"
-elif [ -z "$(read_secret openrouter_key)" ]; then HAS_KEY=0
+elif [ -z "$(read_secret openrouter_key)" ]; then :   # no key yet: the board asks for the model on first sign-in
 else as_user AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.mjs" check || die "the OpenRouter key was rejected (see above)"; fi
 if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && ! grep -q '"client_id"' "$SECRETS/modules/google/google_oauth.json" 2>/dev/null; then
   say "Google: the company OAuth app behind Connect"
@@ -498,18 +492,9 @@ if [ "$ci_n" -gt 0 ]; then
 fi
 
 # ---------------------------------------------------------------- 8. the first ten minutes
+# Aiden's welcome is the board's first-run wizard's last step; a restored AidenHQ has had it (its marker).
 marker="$REPO/data/board/welcome-sent"
 if [ -n "$RESTORE" ]; then as_user touch "$marker"   # a restored AidenHQ has had its welcome
-elif [ ! -e "$marker" ]; then
-  say "Aiden's welcome chat"
-  text="Welcome"$'\n\n'"[setup] $OWNER_NAME's AidenHQ is new. Start the first chat with a new owner (your handbook)."
-  if [ "$DRY" = 1 ]; then echo "  + board: new chat to Aiden, \"Welcome\""
-  elif [ "$HAS_KEY" = 0 ]; then say "Aiden's welcome waits for the model key (a rerun of setup with it sends it)"
-  else
-    for _ in $(seq 60); do curl -fsS -o /dev/null http://127.0.0.1:3121/healthz 2>/dev/null && break; sleep 2; done
-    board POST /internal/owner/welcome "{\"text\":$(json "$text")}" -f >/dev/null
-    as_user touch "$marker"
-  fi
 fi
 
 echo
