@@ -73,3 +73,32 @@ for (const [org, own] of [["acme", true], ["acme-agents", false]]) {
     });
   });
 }
+
+// A repo's fast check (kernel/src/fastcheck.ts) runs in the sandbox before a card: a failing one files nothing and the agent
+// reads why; a passing one, or none declared, files the card as before.
+describe("flow-pr-base, the repo's fast check", { concurrency: 1 }, () => {
+  const t = flow({ grants: { autonomy: "off", agents: {} } });
+  const pkg = (cmd) => `{"scripts":{"aidenhq:fast-check":"${cmd}"}}`;
+
+  it("refuses on a failing check, files on a passing one, and skips a repo that declares none", async () => {
+    await t.settled();
+    t.step(`write feat/checked package.json ${pkg("echo src/a.ts:1 error TS2322 && exit 1")}\naidenhq pr acme/app feat/checked`);
+    await t.turn("Open a PR for the checked change.");
+    let out = t.toolRuns().at(-1).out;
+    assert.match(out, /fast check[\s\S]*failed \(exit 1\)[\s\S]*```\nsrc\/a\.ts:1 error TS2322\n```/, out);
+    assert.equal(t.paperclip.approvals.size, 0, "no card for a failing check");
+
+    t.step(`write feat/checked package.json ${pkg("echo all good")}\naidenhq pr acme/app feat/checked`);
+    await t.turn("Fixed: open the PR.");
+    out = t.toolRuns().at(-1).out;
+    assert.match(out, /Waiting for .*approval/, out);
+    assert.equal(t.paperclip.approvals.size, 1);
+
+    t.step("new feat/plain\naidenhq pr acme/app feat/plain");
+    await t.turn("Open a PR for the plain change.");
+    out = t.toolRuns().at(-1).out;
+    assert.match(out, /Waiting for .*approval/, out);
+    assert.equal(t.paperclip.approvals.size, 2);
+    t.noErrors();
+  });
+});
