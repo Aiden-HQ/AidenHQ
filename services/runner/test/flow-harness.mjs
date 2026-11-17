@@ -96,6 +96,8 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const failRead = new Map();
   // The statuses a task's next comment posts refuse with, in order: a 503 blip, or a 422 the board would repeat.
   const failComment = new Map();
+  // A post whose text matches refuses, `times` times ({ text, status, times }): one line the board won't take, others fine.
+  const refuseComment = new Map();
   const held = [];
   const passed = [];
   const attached = [];
@@ -260,6 +262,11 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       if (req.method === "GET" && path.endsWith("/comments")) return send(comments.get(i.id));
       if (req.method === "GET" && path.endsWith("/attachments")) return send([]);
       if (req.method === "POST" && path.endsWith("/comments")) {
+        const only = refuseComment.get(i.id);
+        if (only?.times && JSON.parse(body).body.includes(only.text)) {
+          only.times -= 1;
+          return send({ error: `refused ${only.status}` }, only.status);
+        }
         const refuse = failComment.get(i.id)?.shift();
         if (refuse) return send({ error: `refused ${refuse}` }, refuse);
         addComment(i.id, JSON.parse(body).body);
@@ -342,7 +349,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     assert.equal(typeof out, "object", String(out));
     return view(kdb.get(r.id));
   };
-  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, kdb, kw, notices, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead, failComment, refuseStart };
+  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, kdb, kw, notices, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead, failComment, refuseComment, refuseStart };
 }
 
 /**

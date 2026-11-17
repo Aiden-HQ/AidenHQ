@@ -11,10 +11,10 @@ import { State } from "../src/state.ts";
 
 const url = (n) => `https://github.com/acme/app/pull/${n}`;
 
-const scenario = (name, body, { env = {} } = {}) =>
+const scenario = (name, body, { env = {}, grants = { autonomy: "off", agents: {} } } = {}) =>
   describe(`flow-stale-pr: ${name}`, { concurrency: 1 }, () => {
     const t = flow({
-      grants: { autonomy: "off", agents: {} },
+      grants,
       env: { AIDENHQ_PRODUCT_REPO: "acme/app", AIDENHQ_GITHUB_AGENTS_ORG: "acme-agents", ...env },
       runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n",
     });
@@ -47,6 +47,13 @@ const scenario = (name, body, { env = {} } = {}) =>
       state.db.close();
       return r;
     };
+    /** One of the runner's own state values. */
+    const stateValue = (key) => {
+      const state = new State(join(t.dir, "state"));
+      const v = state.get(key);
+      state.db.close();
+      return v;
+    };
     const stale = (n) => t.partComments().filter((c) => new RegExp(`pull/${n} is stale`).test(c));
     const merged = () => t.fakeLog().filter((e) => e.kind === "gh" && e.data.some((a) => /pulls\/\d+\/merge$/.test(a)));
     const mergeCards = () => [...t.paperclip.approvals.values()].filter((a) => a.action === "merge");
@@ -61,7 +68,7 @@ const scenario = (name, body, { env = {} } = {}) =>
       git(seed, "commit", "-qm", `feat: ${branch}`);
       git(seed, "push", "-q", "origin", branch);
     };
-    body({ t, setPrs, restart, stored, askMerge, row, stale, merged, mergeCards, onGithub });
+    body({ t, setPrs, restart, stored, askMerge, row, stale, merged, mergeCards, onGithub, stateValue });
   });
 
 scenario("a merge request", ({ t, setPrs, stored, stale, merged, mergeCards }) => {
@@ -118,12 +125,12 @@ scenario("a merge request", ({ t, setPrs, stored, stale, merged, mergeCards }) =
   it("a post the board refuses is not recorded as sent: the next check says it", async () => {
     stored("feat/ours", url(27));
     setPrs({});
-    t.paperclip.failComment.set("part", [422, 422, 422]); // every post this turn makes
+    t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 3 }); // the stale line, every time
     t.step("none\naidenhq merge https://github.com/acme/app/pull/27");
     await t.turn("Merge it.");
     assert.equal(t.toolRuns().at(-1).code, 1, "nothing is merged on an unconfirmed number");
     assert.equal(stale(27).length, 0, "a post the board refuses is not recorded as sent");
-    t.paperclip.failComment.set("part", []);
+    t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 0 });
     t.step("none\naidenhq merge https://github.com/acme/app/pull/27");
     await t.turn("Try again.");
     assert.equal(stale(27).length, 1, "said once the board takes it");
@@ -139,6 +146,86 @@ scenario("a merge request", ({ t, setPrs, stored, stale, merged, mergeCards }) =
     assert.equal(stale(14).length, 0);
   });
 
+  it("a transient read failure is not reported stale, and the PR is still merged on the next try", async () => {
+    stored("feat/ours", url(30));
+    setPrs({ 30: { branch: "feat/ours", files: ["x.txt"], checks: "SUCCESS" } });
+    writeFileSync(join(t.dir, "pr-read-failures.json"), JSON.stringify({ n: 1 }));
+    const before = mergeCards().length;
+    t.step("none\naidenhq merge https://github.com/acme/app/pull/30");
+    await t.turn("Merge it.");
+    assert.equal(t.toolRuns().at(-1).code, 1, "the read failed: the agent asks again");
+    assert.equal(stale(30).length, 0, "a blip is never a stale number");
+    assert.equal(JSON.parse(readFileSync(join(t.dir, "pr-read-failures.json"), "utf8")).n, 0, "the blip was hit");
+    t.step("none\naidenhq merge https://github.com/acme/app/pull/30");
+    await t.turn("Merge it again.");
+    assert.equal(t.toolRuns().at(-1).code, 0, t.toolRuns().at(-1).out);
+    assert.equal(mergeCards().length, before + 1, "its own PR is merged as before");
+    assert.equal(stale(30).length, 0);
+  });
+
+  it("never errors or asks for a repository along the way", () => t.noErrors());
+});
+
+// A matching-branch PR is acted on exactly as before: a conflict still asks for its rebase (the product watcher reads the
+// head branch first), never a stale line.
+scenario(
+  "a matching stored PR on a conflicting head",
+  ({ t, setPrs, stored, restart, stale }) => {
+    it("still asks for its rebase, and is never called stale", async () => {
+      await t.settled();
+      stored("fix/remove-legacy", url(34));
+      setPrs({ 34: { branch: "fix/remove-legacy", files: ["chains.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } });
+      await restart();
+      await t.waitFor("the rebase ask", () => t.partComments().some((c) => /now conflicts with `main`/.test(c)));
+      assert.equal(stale(34).length, 0);
+      await t.waitFor("the rebase run", () => t.claudeRuns().some((r) => /Rebase the PR's branch onto `origin\/main`/.test(r.prompt)));
+    });
+    it("never errors or asks for a repository along the way", () => t.noErrors());
+  },
+  { grants: { autonomy: "off", agents: { "engineer-claude": { key: "fleet-engineer", roles: ["platform-engineer"] } } } },
+);
+
+// The notice is delivered before the request is retired: a board that refuses every post leaves the request queued, and the
+// next pass says it and only then drops it. Nothing is merged in the meantime.
+scenario("the automatic merges, with the notice refused", ({ t, setPrs, restart, stored, askMerge, stateValue }) => {
+  const stale = (n) => t.partComments().filter((c) => new RegExp(`pull/${n} is stale`).test(c));
+  const merged = () => t.fakeLog().filter((e) => e.kind === "gh" && e.data.some((a) => /pulls\/\d+\/merge$/.test(a)));
+  it("keeps the request queued while the line is undelivered, then says it and drops it", async () => {
+    stored("feat/ours", url(28));
+    askMerge(28, url(28));
+    setPrs({});
+    t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 6 });
+    await restart();
+    await t.waitFor("the pass to try the line", () => t.paperclip.refuseComment.get("part").times < 6);
+    await t.idle(800);
+    assert.equal(stale(28).length, 0, "the board refused it: nothing is recorded as sent");
+    assert.equal(merged().length, 0, "and nothing is merged");
+    assert.equal(JSON.parse(stateValue("auto_merges") ?? "{}")?.part?.prs?.length, 1, "still queued for the next pass");
+    t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 0 });
+    await restart();
+    await t.waitFor("the stale line", () => stale(28).length === 1);
+    await t.idle(800);
+    assert.equal(stale(28).length, 1, "once");
+    assert.equal(JSON.parse(stateValue("auto_merges") ?? "{}")?.part, undefined, "dropped once the task has the line");
+    assert.equal(merged().length, 0);
+  });
+  it("never errors or asks for a repository along the way", () => t.noErrors());
+});
+
+// A GitHub read that blips is retried, never called stale: the request stays and the PR merges once the read works.
+scenario("the automatic merges, with a GitHub blip", ({ t, setPrs, restart, stored, askMerge }) => {
+  const stale = (n) => t.partComments().filter((c) => new RegExp(`pull/${n} is stale`).test(c));
+  const mergeCards = () => [...t.paperclip.approvals.values()].filter((a) => a.action === "merge");
+  it("is retried, not reported as stale, and the merge goes ahead", async () => {
+    stored("feat/ours", url(29));
+    askMerge(29, url(29));
+    setPrs({ 29: { branch: "feat/ours", files: ["x.txt"], checks: "SUCCESS" } });
+    writeFileSync(join(t.dir, "pr-read-failures.json"), JSON.stringify({ n: 1 }));
+    await restart();
+    await t.waitFor("the merge card", () => mergeCards().length === 1);
+    assert.equal(JSON.parse(readFileSync(join(t.dir, "pr-read-failures.json"), "utf8")).n, 0, "the blip was hit, then retried");
+    assert.equal(stale(29).length, 0, "a blip is never a stale number");
+  });
   it("never errors or asks for a repository along the way", () => t.noErrors());
 });
 
@@ -191,7 +278,7 @@ scenario("the automatic merges", ({ t, setPrs, restart, stored, askMerge, stale,
   it("never errors or asks for a repository along the way", () => t.noErrors());
 });
 
-scenario("the finished-PR check", ({ t, setPrs, stored, row, stale, onGithub }) => {
+scenario("the finished-PR check", ({ t, setPrs, stored, restart, row, stale, onGithub }) => {
   it("a stored number GitHub can't read is said stale once, and the branch is left open", async () => {
     await t.settled();
     stored("feat/ours", url(18));
@@ -224,6 +311,35 @@ scenario("the finished-PR check", ({ t, setPrs, stored, row, stale, onGithub }) 
     await t.turn("Look again.");
     await t.waitFor("the merge read", () => row("feat/landed").merged === 1);
     assert.equal(stale(20).length, 0);
+  });
+
+  it("a stale line the board refuses leaves the marker unset, and the next pass says it", async () => {
+    await t.settled();
+    stored("feat/later", url(35));
+    setPrs({});
+    t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 4 });
+    t.step("none");
+    await t.turn("Look again.");
+    await t.idle(1200);
+    assert.equal(stale(35).length, 0, "the board refused it: nothing is recorded as sent");
+    assert.equal(row("feat/later").merged, 0, "not read as merged");
+    t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 0 });
+    await restart();
+    await t.waitFor("the stale line", () => stale(35).length === 1);
+    await t.idle(800);
+    assert.equal(stale(35).length, 1, "once the board takes it");
+  });
+
+  it("a transient read failure is retried, not reported as stale", async () => {
+    onGithub("feat/landed-later");
+    stored("feat/landed-later", url(32));
+    setPrs({ 32: { branch: "feat/landed-later", files: ["x.txt"], checks: "SUCCESS", merged: true } });
+    writeFileSync(join(t.dir, "pr-view-failures.json"), JSON.stringify({ n: 1 }));
+    t.step("none");
+    await t.turn("Look again.");
+    await t.idle(1200);
+    assert.equal(stale(32).length, 0, "a blip is never a stale number");
+    assert.equal(JSON.parse(readFileSync(join(t.dir, "pr-view-failures.json"), "utf8")).n, 0, "the blip was hit, then retried");
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
@@ -276,6 +392,28 @@ scenario("a published PR's merge after its card", ({ t, setPrs, stored, stale, m
     await t.waitFor("the card's outcome", () => Boolean(t.paperclip.approvals.get(card.id)?.outcome));
     assert.ok(!t.paperclip.approvals.get(card.id).outcome.ok);
     assert.match(stale(25)[0], /its head branch is `fix\/theirs`, not the task's `feat\/third`/);
+    assert.equal(merged().length, 0);
+  });
+
+  it("a stale line the board refuses does not merge, and the runner's poll delivers it once the board takes it", async () => {
+    await t.settled();
+    stored("feat/fourth", url(33));
+    setPrs({ 33: { branch: "feat/fourth", files: ["x.txt"], checks: "PENDING" } });
+    t.step("fourth\naidenhq pr acme/app feat/fourth");
+    await t.turn("Ship it.");
+    setPrs({}); // the number can't be read any more
+    // Only the stale line is refused, every time this card's merge tries it: nothing else on the task is held up by it.
+    t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 5 });
+    const card = t.paperclip.decide("pr", "approved");
+    await t.waitFor("the card's outcome", () => Boolean(t.paperclip.approvals.get(card.id)?.outcome));
+    const outcome = t.paperclip.approvals.get(card.id).outcome;
+    assert.ok(!outcome.ok, outcome.text);
+    assert.equal(stale(33).length, 0, "the board refused it: nothing is recorded as sent");
+    assert.equal(merged().length, 0, "nothing is merged");
+    // The card is a one-shot check, so the refused line waits in the runner's outbox for the poll to say it.
+    t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 0 });
+    await t.waitFor("the queued line", () => stale(33).length === 1, 60_000);
+    assert.match(stale(33)[0], /GitHub couldn't read its head branch/);
     assert.equal(merged().length, 0);
   });
 
