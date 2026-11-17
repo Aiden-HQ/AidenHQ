@@ -1,5 +1,5 @@
 // Modules > Browse: every module across the instance's marketplaces, with one action button that follows its state.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
 import { RowsSkeleton } from "./SettingsConnections";
 import { SetupButton } from "./SetupButton";
@@ -50,6 +50,12 @@ function BrowseRow({ m }: { m: BrowseModule }) {
   const filed = useFiled((c) => c.kind === "module" && c.name === m.name);
   const [asking, setAsking] = useState(false);
   const live = m.installed || filed?.stage === "applied";
+  // An install that goes live while the owner is still here opens its setup flow (owner's call, the design's "Setup flows").
+  const was = useRef(filed?.stage);
+  useEffect(() => {
+    if (m.setupFlow && filed?.stage === "applied" && was.current && IN_FLIGHT.includes(was.current)) location.hash = `#/setup/${m.name}`;
+    was.current = filed?.stage;
+  }, [filed?.stage, m.name, m.setupFlow]);
   return (
     <>
       {asking && <InstallCard m={m} onClose={() => setAsking(false)} />}

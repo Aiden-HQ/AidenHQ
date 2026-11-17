@@ -200,5 +200,4 @@ export const api = {
   resolveMarketplace: (repo: string) => call<{ sha: string; date: string }>("POST", "/api/marketplaces/resolve", { repo }),
   marketplaces: () => call<{ marketplaces: MarketplaceRow[] }>("GET", "/api/marketplaces"),
   agentGrants: (key: string) => call<{ connections: GrantConnection[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/grants`),
-  setupFlows: () => call<unknown>("GET", "/api/setup-flows"),
 };

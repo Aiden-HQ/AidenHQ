@@ -1,5 +1,5 @@
 // A module's setup flow entry point (docs/design/guided-setup.md): "Set up" while its flow isn't done, a quiet "Run setup again"
-// once it is. GET /api/setup-flows comes from the guided-setup work; until it lands (404) this renders nothing.
+// once it is. GET /api/setup-flows (services/board/src/setup-flows.ts); a module without a flow renders nothing.
 import { useEffect, useState } from "react";
 import { api } from "./api";
 
