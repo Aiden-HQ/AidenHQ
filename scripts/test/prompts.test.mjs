@@ -8,6 +8,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile, promptEntries } from "../modules.mjs";
+import { sizesReport } from "../handbook.mjs";
 import { BUNDLE } from "./bundle.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -42,4 +43,13 @@ test("a prompt with an unknown field or test fails compile", () => {
   assert.equal(promptEntries("model-tools", YAML.parse(readFileSync(join(root, "module.yaml"), "utf8")), root).length, 2);
   assert.throws(() => promptEntries("model-tools", { prompts: [{ id: "advisor", file: "prompts/advisor.md", when: { agents: ["x"] } }] }, root), /prompt advisor: unknown when\.agents/);
   assert.throws(() => promptEntries("model-tools", { prompts: [{ id: "advisor", file: "prompts/advisor.md", order: "early" }] }, root), /order of first, normal or last/);
+});
+
+test("compile --sizes reports each crew agent's handbook bytes by section", () => {
+  const dir = instance();
+  const { paperclip: p } = compile(product, dir);
+  const out = sizesReport(p, { repo: product, instanceDir: dir });
+  assert.match(out, /^chief-of-staff \d+$/m);
+  assert.match(out, /^ +\d+ {2}approvals$/m);
+  assert.doesNotMatch(out, /^fleet-engineer /m); // runner Engineers get the runner's prompt
 });

@@ -16,6 +16,7 @@
 //   config/module-data.json    → the apply (ops/lib/generations.sh): each data module's data_version and services digest
 //   config/points/<module>.json → that module's own services only: the contributions to its points (spec §3.6)
 //   config/gate.json, config/cloudflared.yml → the gate and the tunnel (shared access; only with settings.edge, scripts/edge.mjs)
+// `--sizes`: compile, print each crew agent's handbook bytes per section (scripts/handbook.mjs) and write nothing.
 // Staging (`--stage`, or AIDENHQ_COMPILE_STAGE=1; ops/apply-config-work.sh validates a generation with it before anything
 // restarts): the same files go to config.next/ and compose.modules.next.yaml, and nothing else on the host is touched (no
 // secrets, keys, data dirs or account files are created). The apply then compiles for real and checks the two agree.
@@ -29,6 +30,7 @@ import { computersConfig } from "./computers.mjs";
 import { checkIngress } from "./edge.mjs";
 import { ensureIdentityKeys } from "./identity.mjs";
 import { report, staticCheck } from "./agent-check.mjs";
+import { sizesReport } from "./handbook.mjs";
 import { checkDataVersion } from "../kernel/src/loader/data-version.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -53,6 +55,10 @@ try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encodi
 
 let out, computers;
 try { out = compile(repo, instanceDir, { revision }); computers = computersConfig(out.paperclip, repo); } catch (e) { die(e.message); }
+if (process.argv.includes("--sizes")) {
+  try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die(e.message); }
+  process.exit(0);
+}
 // The pre-launch agent check (scripts/agent-check.mjs): before anything is written, so a failing agent never launches.
 if (report("agent-check", staticCheck(out.paperclip))) die("the agent check failed (above); fix the agent");
 
