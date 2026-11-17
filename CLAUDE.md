@@ -20,7 +20,7 @@ never in this file.
 ## Layout
 
 - `modules/<name>/`: `module.yaml` (its containers under `services:`; compile generates their compose), plus
-  `agents/<key>/AGENTS.md` handbooks, `connections/<svc>/` MCP servers and `apps/<app>/`. `modules/core` is always installed.
+  `agents/<key>/AGENTS.md` handbooks, `connections/<svc>/` MCP servers and `apps/<app>/`. The instance lists its modules (`modules/marketplace.json` `bundle` is the default set); the kernel's own settings are `kernel/settings.json`.
 - `kernel/`: the `aidenhq-kernel` host service (the model gateway and the tool proxy in front of every connection: grants,
   caller assertions, fencing) and the module SDK (`kernel/sdk`).
 - `services/`: `board` (owner UI and approvals), `runner` (host coding jobs and git gates),

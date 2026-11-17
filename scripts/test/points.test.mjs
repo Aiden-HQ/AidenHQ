@@ -8,12 +8,13 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
 import { compilePoints } from "../../kernel/src/loader/points.ts";
+import { BUNDLE } from "./bundle.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("the source modules' warehouse.sources compile to exactly what apps-mcp's tests read", () => {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  const modules = ["channel-slack", "github", "google", "jira", "meetings", "security"];
+  const modules = [...BUNDLE, "channel-slack", "github", "google", "jira", "meetings", "security"];
   writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq", owner_slack_user_id: "U1", jira_url: "https://acme.atlassian.net" } }));
   mkdirSync(join(dir, "agents"));
   const r = compile(repo, dir);

@@ -59,3 +59,5 @@ agents:
 prompts:
   - { id: delegating, file: prompts/delegating.md }
   - { id: delegating-design, file: prompts/delegating-design.md, when: { modules: [ design ] }, unless: { fields: { module: design } } }
+labels:
+  - { name: engineer, color: "#4f46e5" }

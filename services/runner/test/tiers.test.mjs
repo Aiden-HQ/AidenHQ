@@ -28,7 +28,7 @@ const merge = (p = {}, over = {}) => classify("merge", { ...base, prs: [{ repo: 
 const PIN_A = "a".repeat(40);
 const PIN_B = "b".repeat(40);
 const inst = (settings = {}, extra = "") => `product: ${PIN_A}\nmodules: [core]\nsettings:\n  owner_name: Sam\n  slack_post_channels: [C1]\n${Object.entries(settings).map(([k, v]) => `  ${k}: ${JSON.stringify(v)}\n`).join("")}${extra}`;
-const apply = (files, b, h, over = {}) => classify("apply", { ...base, files, base: b, head: h, pin: null, roles: { "chief-of-staff": ["fleet-admin"] }, ownerStarted: true, trialNoTap: true, ...over });
+const apply = (files, b, h, over = {}) => classify("apply", { ...base, files, base: b, head: h, pin: null, roles: { "chief-of-staff": ["fleet-admin"], architect: ["architect"] }, ownerStarted: true, trialNoTap: true, ...over });
 const def = (o) => Object.entries(o).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join("\n");
 /** "reject", 0, 1, "panel" (Tier 1 and a second reviewer) or 2 (the owner). */
 const tierOf = (t) => (t.reject ? "reject" : t.panel ? "panel" : t.tier);

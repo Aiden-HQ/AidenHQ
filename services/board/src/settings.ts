@@ -110,7 +110,7 @@ export function readSources(files: { compiled?: string; catalog?: string; grants
 }
 
 /** Settings the board, the runner or the gateway re-read per use from the grants table (the rest take an apply to change). */
-const LIVE_IN_GRANTS = ["autonomy", "grading", "live_updates", "batch_approvals", "wake_ups", "loop_brake", "dup_guard", "coach"];
+const LIVE_IN_GRANTS = ["autonomy"];
 
 export function settingsView(s: Sources) {
   const c = s.compiled ?? {};

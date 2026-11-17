@@ -1,7 +1,7 @@
 // End to end (see flow-harness.mjs), the merge path's two re-approval traps (owner, 2026-11-13). A clean rebase of an
 // approved product PR publishes on that approval: the runner replays the approved commits onto GitHub's main in its own
 // clone and pushes its own result, and only when the agent's rebase is exactly that, commit for commit. Anything else gets
-// a new card: a forged origin/main, the same hunk moved to another block, a swapped non-UTF-8 byte, an extra commit and its
+// a new card bound to GitHub's own main (a forged origin/main is never the reviewed base): the same hunk moved to another block, a swapped non-UTF-8 byte, an extra commit and its
 // revert. A branch that moves while an approved card publishes doesn't ride along. And a PR stacked on another in the same
 // approved merge queue is replayed onto main, retargeted and merged by the queue once its parent merged.
 //
@@ -22,8 +22,7 @@ const policy = (allowed) => [0, 1].map((i) => `# block ${i}\n\nx1\nx2\nx3\nallow
 const scenario = (name, body, { trustedBaseUnread = 0 } = {}) =>
   describe(`flow-merge-path: ${name}`, { concurrency: 1 }, () => {
     const t = flow({
-      // dup_guard off: its fetch would also reset a forged origin/main in the workspace; the replay must hold without it.
-      grants: { autonomy: "off", dup_guard: "off", agents: { "engineer-claude": { key: "fleet-engineer", roles: ["platform-engineer"] } } },
+      grants: { autonomy: "off", agents: { "engineer-claude": { key: "fleet-engineer", roles: ["platform-engineer"] } } },
       env: { AIDENHQ_PRODUCT_REPO: "acme/app", AIDENHQ_GITHUB_AGENTS_ORG: "acme-agents" },
     });
     const prs = {};
@@ -73,8 +72,23 @@ const scenario = (name, body, { trustedBaseUnread = 0 } = {}) =>
       await t.waitFor("the push", () => tip(branch) === sha);
       return sha;
     };
-    /** `forged`: the workspace's origin/main isn't GitHub's: refused outright, with no card to approve. Else a new card, and nothing new on GitHub. */
-    const refused = async (branch, step, { forged = false } = {}) => {
+    /**
+     * A forged origin/main (the `forge` step: a hidden commit under the agent's rebase) never becomes the reviewed base: the
+     * new card is bound to GitHub's own main, the forged commit is not beneath that base (so any of its changes sit inside
+     * the reviewed range, on the card), and the workspace's origin/main is GitHub's again.
+     */
+    const notForged = (step) => {
+      const ws = t.fakeLog().filter((e) => e.kind === "workspace").at(-1).data.repo;
+      const real = git(join(t.dir, "github/acme/app.git"), "rev-parse", "main");
+      const forged = git(ws, "rev-parse", "hidden");
+      const b = [...t.paperclip.approvals.values()].at(-1).args.only[0];
+      assert.equal(b.base, real, `${step}: the card's reviewed base is GitHub's main${t.context()}`);
+      assert.notEqual(b.base, forged, `${step}: never the forged ref`);
+      assert.throws(() => git(ws, "merge-base", "--is-ancestor", forged, b.base), `${step}: the forged commit is not beneath the reviewed range`);
+      assert.equal(git(ws, "rev-parse", "refs/remotes/origin/main"), real, `${step}: the refresh replaced the forged origin/main`);
+    };
+    /** Main has moved: a new card (the duplicate guard refreshes the workspace's origin/main from GitHub first), and nothing new on GitHub. */
+    const refused = async (branch, step) => {
       const was = tip(branch);
       const cards = t.paperclip.approvals.size;
       const errors = (t.output.match(/rebuild refused/g) ?? []).length;
@@ -82,9 +96,9 @@ const scenario = (name, body, { trustedBaseUnread = 0 } = {}) =>
       await t.turn(`main moved: publish ${branch} again.`);
       // Refused because the agent's commits aren't the replay, not because something failed along the way.
       assert.equal((t.output.match(/rebuild refused/g) ?? []).length, errors, `${step}: compared, not errored${t.context()}`);
-      if (forged) assert.match(t.toolRuns().at(-1).out, /would include commits nobody sees/, `${step}${t.context()}`);
-      assert.equal(t.paperclip.approvals.size, cards + (forged ? 0 : 1), `${step}: ${forged ? "no card" : "a new card"}${t.context()}`);
+      assert.equal(t.paperclip.approvals.size, cards + 1, `${step}: a new card${t.context()}`);
       assert.equal(tip(branch), was, `${step}: nothing published without it`);
+      if (step.startsWith("forge ")) notForged(step);
     };
     const h = { t, prs, setPrs, merged, tip, restart, onGithub, moveMain, approved, refused };
 
@@ -96,7 +110,7 @@ const scenario = (name, body, { trustedBaseUnread = 0 } = {}) =>
   });
 
 describe("flow-merge-path", { concurrency: true }, () => {
-  scenario("a clean rebase publishes the runner's replay of the approved commits, and merges it; a forged origin/main gets no card", async ({ t, prs, setPrs, merged, tip, restart, onGithub, moveMain, approved, refused }) => {
+  scenario("a clean rebase publishes the runner's replay of the approved commits, and merges it", async ({ t, prs, setPrs, merged, tip, restart, onGithub, moveMain, approved, refused }) => {
     await t.settled();
     onGithub("main", { "policy.txt": policy(-1) }, { message: "policy" });
     const first = await approved("feat/third", 14, "third");
@@ -117,9 +131,9 @@ describe("flow-merge-path", { concurrency: true }, () => {
     s.db.close();
     assert.ok(queue.prs.some((p) => p.number === 14 && p.status === "pending" && p.head === rebased), "its merge is queued, bound to the replayed commit");
 
-    // A forged origin/main hiding a change gets no card.
+    // A stale workspace origin/main is refreshed from GitHub's, so the moved main gets a new card.
     moveMain();
-    await refused("feat/third", "forge feat/third", { forged: true });
+    await refused("feat/third", "forge feat/third");
 
     // The replayed PR merges at the runner's commit once green.
     prs[14].checks = "SUCCESS";
@@ -163,16 +177,15 @@ describe("flow-merge-path", { concurrency: true }, () => {
     assert.ok(!t.partComments().some((c) => /Asking for one rebase/.test(c)), "no rebase request");
   });
 
-  scenario("a first publish over a forged origin/main, an unreadable main and a replace ref are refused before any card", async ({ t, tip, setPrs, onGithub, moveMain, refused }) => {
+  scenario("a first publish over a moved main gets a new card; an unreadable main and a replace ref are refused before any card", async ({ t, tip, setPrs, onGithub, moveMain, refused }) => {
     await t.settled();
     onGithub("main", { "policy.txt": policy(-1) }, { message: "policy" });
     setPrs(); // the fake gh answers GitHub's default-branch read only with a github-prs.json beside it
     moveMain();
-    // A first publish over a forged origin/main (a hidden commit under the reviewed one) is refused before any card, so
-    // no approval can ever cover the hidden commit.
+    // A first publish over a moved main: the workspace's origin/main is refreshed from GitHub's before the card.
     t.step("new feat/launder");
     await t.turn("Start feat/launder.");
-    await refused("feat/launder", "forge feat/launder", { forged: true });
+    await refused("feat/launder", "forge feat/launder");
 
     // GitHub's main can't be read: refused (try again), never back to the workspace's own origin/main.
     writeFileSync(join(t.dir, "default-branch-down"), "");

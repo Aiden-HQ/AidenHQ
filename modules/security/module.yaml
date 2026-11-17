@@ -1,5 +1,8 @@
 name: security
 description: "Security Watch (CVE scans of everything we run, verified with the web, fix tasks) and the Red Teamer (attacks our own apps and agents, reports with a proof of concept, never patches)."
+roles:
+  declares:
+    - { id: security-verdict, description: "finding_verdict: apps-mcp records a verdict on a src_security finding." }
 requires:
   - warehouse
 # Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).

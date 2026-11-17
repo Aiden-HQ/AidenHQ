@@ -59,11 +59,6 @@
     { "name": "a graded task to cancel", "op": "file", "task": "WOR-5", "as": "cos", "rubric": [], "deliverable": { "kind": "file", "ref": "" } },
     { "name": "closing a cancelled task is refused and settles its row", "op": "close", "task": "WOR-5", "as": "eng", "via": "task_finish", "set": { "status": "cancelled" } },
     { "name": "a graded Engineer task", "op": "file", "task": "WOR-6", "as": "cos", "rubric": [], "deliverable": { "kind": "pr", "ref": "" } },
-    { "name": "the runner's turn end is held for grading", "op": "close", "task": "WOR-6", "via": "finish_turn" },
-    { "name": "release refuses while grading is on", "op": "release", "task": "WOR-6" },
-    { "name": "grading off: a graded close passes", "op": "close", "task": "WOR-6", "as": "eng", "via": "task_finish", "grading": "off" },
-    { "name": "grading off: the runner's list says so", "op": "list" },
-    { "name": "grading off: the runner releases the held task", "op": "release", "task": "WOR-6" },
-    { "name": "grading back on", "op": "state", "task": "WOR-6", "grading": "on" }
+    { "name": "the runner's turn end is held for grading", "op": "close", "task": "WOR-6", "via": "finish_turn" }
   ]
 }

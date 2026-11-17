@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.mjs";
 
-async function call(name, args, { finish, gradingDown = false, assignee = "cos", grading = "on", feedback } = {}) {
+async function call(name, args, { finish, gradingDown = false, assignee = "cos", feedback } = {}) {
   const seen = { created: [], filed: [], patches: [], comments: [] };
   const handler = (req, res) => {
     let body = "";
@@ -30,7 +30,7 @@ async function call(name, args, { finish, gradingDown = false, assignee = "cos",
   };
   const agents = { cos: { key: "chief-of-staff", roles: [], ...(feedback ? { feedback_for: feedback } : {}) }, eng: { key: "engineer-openrouter", roles: [], graded: true } };
   const board = gradingDown ? (req) => req.socket.destroy() : handler;
-  const r = await bridge({ handler, board, agents, settings: { grading }, agent: "cos", task: "cur" }).call(name, args);
+  const r = await bridge({ handler, board, agents, agent: "cos", task: "cur" }).call(name, args);
   return { r, text: r.result?.content?.[0]?.text ?? "", ...seen };
 }
 
@@ -119,7 +119,7 @@ test("a finish check that fails refuses the close: an error, and no comment", as
   assert.deepEqual(down.comments, []);
 });
 
-test("task_create handing work to a graded agent is graded as a delegation is; grading off files and requires nothing", async () => {
+test("task_create handing work to a graded agent is graded as a delegation is", async () => {
   const create = { title: "Fix the total", description: "Show VAT on the totals page of acme/app.", marker: "fix:vat", assignee: "Linus" };
   const missing = await call("task_create", create);
   assert.equal(missing.r.result?.isError, true);
@@ -130,11 +130,6 @@ test("task_create handing work to a graded agent is graded as a delegation is; g
   assert.equal(ok.r.result?.isError, undefined, ok.text);
   assert.deepEqual(ok.filed, [{ issue: "new", rubric: [], deliverable: { kind: "pr", ref: "acme/app" }, as: "caller" }]);
   assert.match(ok.created[0].description, /Graded before done \(pr: acme\/app\): the standard pr criteria\./);
-
-  const off = await call("task_create", create, { grading: "off" });
-  assert.equal(off.r.result?.isError, undefined, off.text);
-  assert.equal(off.created.length, 1);
-  assert.equal(off.filed.length, 0);
 });
 
 test("a feedback agent's delegations and comments carry the untrusted app-feedback mark; others' don't", async () => {

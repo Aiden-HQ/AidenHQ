@@ -60,6 +60,7 @@ test("a new write kind, privileged entry, secret, role, write tool, services.gra
     "isolation toward trusted": [with_({ isolation: "trusted" }), with_({ isolation: "untrusted" })],
     "model spend": with_({ services: { ...base.services, models: { day_usd: 5 } } }),
     "unrecognised key": with_({ hooks: ["x"] }),
+    "a default grant": with_({ default_grants: [{ tools: ["crm.crm_write"] }] }),
   };
   for (const [what, v] of Object.entries(owners)) {
     const [head, b] = Array.isArray(v) ? v : [v, base];

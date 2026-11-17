@@ -1,5 +1,9 @@
 name: coach
 description: "The Agent Coach: reviews other agents' outcomes (output quality, misses, inputs, behaviour, feedback) and files fixes through the usual tiers."
+roles:
+  declares:
+    - { id: fleet-read, description: "The board's fleet status only (never fleet_control or relaying the owner's words)." }
+    - { id: fleet-audit, description: "Read any agent's evidence (the board's coach routes) and keep a review log (tasks bridge coach_*)." }
 agents:
   coach:
     department: agents

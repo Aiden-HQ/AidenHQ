@@ -17,7 +17,7 @@ const roadmap = { name: "roadmap", repo: "acme/roadmap", owner: "a", description
 
 function inst(settings, apps) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [], settings: { timezone: "Europe/London", owner_email: "Owner@Acme.com", ...settings } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["core"], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "Owner@Acme.com", ...settings } }));
   writeFileSync(join(dir, "apps.yaml"), YAML.stringify({ apps }));
   mkdirSync(join(dir, "agents"));
   return dir;

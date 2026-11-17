@@ -1,4 +1,4 @@
-// The swap test (lean 4c, spec §8.7): each essential module (core's requires closure, and the warehouse) replaced by a stub that keeps only
+// The swap test (lean 4c, spec §8.7): each enabled module replaced by a stub that keeps only
 // its public contract (manifest identity, settings, connections and their tools, points, write kinds, providers, secrets)
 // still compiles with every other module: nothing reaches into another module's agents, services or files.
 import { test } from "node:test";
@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
+import { BUNDLE } from "./bundle.mjs";
 
 const repo = fileURLToPath(new URL("../..", import.meta.url));
 const CONTRACT = ["name", "description", "requires", "provides", "conflicts", "settings", "connections", "points", "writes", "providers", "generated_secrets", "optional_secrets", "secrets", "company", "departments", "labels", "privileged", "kernel", "roles"];
@@ -26,8 +27,8 @@ test("each essential module swapped for a stub of its contract: the rest compile
     for (const f of ["compose.yaml", "kernel", "services", "scripts", "fixtures"]) symlinkSync(join(repo, f), join(prod, f));
     const inst = mkdtempSync(join(tmpdir(), "inst-"));
     mkdirSync(join(inst, "agents"));
-    writeFileSync(join(inst, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["warehouse"], settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@example.com", product_repo: "acme/aidenhq" } }));
-    const essential = compile(prod, inst).catalog.filter((m) => m.enabled).map((m) => m.name);
+    writeFileSync(join(inst, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE], settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@example.com", product_repo: "acme/aidenhq" } }));
+    const essential = compile(prod, inst).catalog.filter((m) => m.enabled && m.name !== "kernel").map((m) => m.name);
     assert.ok(essential.includes("apps-platform") && essential.includes("warehouse") && essential.includes("board"));
     const failed = {};
     for (const m of essential) {

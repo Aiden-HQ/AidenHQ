@@ -133,7 +133,7 @@ export interface Department {
   id: string;
   name: string;
   description?: string;
-  /** Its place in the registry (modules/core/module.yaml `departments:`, then the instance's). */
+  /** Its place in the registry (kernel/defaults.json `departments`, then the instance's). */
   order: number;
 }
 const GENERAL: Department = { id: "general", name: "General", order: 1_000 };

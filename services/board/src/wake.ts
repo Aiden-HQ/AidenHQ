@@ -22,9 +22,8 @@
  * Paperclip's suppressed disposition repairs leave such holds on tasks; each tick releases them (the run did nothing).
  * Cursors advance only once the notice is posted. The notice is on the agent's own task and nothing here reads comments,
  * so a wake never causes another. At most 4 wakes per agent per hour, and each counts against the task's daily limit
- * (brake.ts). Kill switch: instance setting `wake_ups: off`.
+ * (brake.ts).
  */
-import { readFileSync } from "node:fs";
 import { takeWake } from "./brake.js";
 import { NOTICE_MARKER } from "./chats.js";
 import { appsApi } from "./fleet.js";
@@ -56,7 +55,6 @@ export interface WakeDeps {
   records: Pick<Records, "list">;
   prStates: (refs: string[]) => Promise<PrState[] | undefined>;
   log: { info(o: object, m: string): void; warn(o: object, m: string): void };
-  grantsFile?: string;
 }
 
 /** One watched thing's state: a cursor `value`, when it changed if known, and the notice line for a change from `was`. */
@@ -73,15 +71,6 @@ interface State {
   seen?: Record<string, string>;
   /** Last good tick, for the closed sub-tasks window. */
   at?: string;
-}
-
-/** The instance's `wake_ups` setting (grants table, read per tick). */
-export function wakeUpsOn(grantsFile = process.env.AIDENHQ_GRANTS_FILE): boolean {
-  try {
-    return JSON.parse(readFileSync(grantsFile ?? "", "utf8"))?.wake_ups !== "off";
-  } catch {
-    return true;
-  }
 }
 
 const PR_REF = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)|\b([\w.-]+\/[\w.-]+)#(\d+)\b/g;
@@ -143,7 +132,6 @@ export type Recent = Map<string, number[]>;
 
 /** One pass. Returns the task ids it woke. */
 export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now()): Promise<string[]> {
-  if (!wakeUpsOn(deps.grantsFile)) return [];
   const { pc, store, records, log } = deps;
   const routines = await pc.routines();
   const agents = await pc.agents(); // one at a time: Paperclip limits a client's concurrent list requests
@@ -239,7 +227,7 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
       continue;
     }
     // The loop brake (brake.ts): the board's own wakes on this task today are used up; the change stays news for tomorrow.
-    if (!takeWake(store, t.id, "board", now, deps.grantsFile)) {
+    if (!takeWake(store, t.id, "board", now)) {
       log.warn({ issue: t.identifier, agent }, "wake-up held: the task's daily limit");
       continue;
     }

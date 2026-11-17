@@ -8,13 +8,14 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
+import { BUNDLE } from "./bundle.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const product = join(here, "../..");
 const template = join(product, "modules/agent-builder/templates/pr-review-chaser");
 
 function instance(agents = {}, modules = [], dir = mkdtempSync(join(tmpdir(), "inst-")), settings = {}, overrides = undefined) {
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", ...settings }, ...(overrides ? { overrides } : {}) }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, ...modules], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq", ...settings }, ...(overrides ? { overrides } : {}) }));
   mkdirSync(join(dir, "agents"));
   for (const [key, yaml] of Object.entries(agents)) {
     mkdirSync(join(dir, "agents", key));
@@ -47,7 +48,6 @@ test("heartbeat compiles to one staggered 4-hourly routine per opted-in agent on
   assert.equal(minutes.size, keys.length, "staggered");
   assert.ok(!Object.keys(r.paperclip.routines).some((k) => k.startsWith("catch-up-")));
   assert.ok(!r.paperclip.routines["heartbeat-assistant"]);
-  assert.equal(r.paperclip.wake_ups, "on");
   assert.ok(r.paperclip.agents["chief-of-staff"].enabled_tools.paperclip_tasks.includes("task_approvals"));
 });
 
@@ -64,6 +64,6 @@ test("heartbeat cadence: the instance setting, an agent's hours, an override", (
   assert.throws(() => compile(product, instance({ chaser: { heartbeat: true } })), /chaser: heartbeat needs paperclip_tasks: task_approvals/);
   const mods = join(here, "fixtures/mods");
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ modules: ["runnerheartbeat"], settings: { timezone: "UTC", owner_email: "o@x" } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ modules: ["core", "runnerheartbeat"], settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@x" } }));
   assert.throws(() => compile(mods, dir), /eng: a runner-dispatched agent can't have a heartbeat/);
 });

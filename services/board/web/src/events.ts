@@ -1,7 +1,7 @@
 // Live updates: one shared EventSource on /api/events (the server's events.ts). Views subscribe by event name and refetch
 // through their usual routes; events carry names and ids only. Polling stays as the fallback: while the stream is live
 // (a ping or event in the last minute) views reconcile once a minute; otherwise they poll at their old pace. A stream that
-// is refused (signed out, the live_updates setting off) or buffered by a proxy is simply never live.
+// is refused (signed out) or buffered by a proxy is simply never live.
 import { useEffect, useRef } from "react";
 
 export type EventName = "approvals" | "chat" | "progress" | "grades" | "fleet" | "tasks";

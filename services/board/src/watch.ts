@@ -5,7 +5,7 @@
 import type { Logger } from "pino";
 import type { RunnerReport } from "./activity.js";
 import type { SessionActivity } from "./codex-activity.js";
-import { liveUpdatesOn, type Events } from "./events.js";
+import type { Events } from "./events.js";
 import type { Issue, LiveRun, Paperclip } from "./paperclip.js";
 import type { Records } from "./records.js";
 
@@ -91,8 +91,8 @@ export function startWatch(o: {
   }
 
   async function tick() {
-    // Nobody listening (or the setting off): forget, and start fresh with the next board.
-    if (!o.events.open || !liveUpdatesOn()) return void ((state = null), (cards = undefined));
+    // Nobody listening: forget, and start fresh with the next board.
+    if (!o.events.open) return void ((state = null), (cards = undefined));
     if (busy) return;
     busy = true;
     try {

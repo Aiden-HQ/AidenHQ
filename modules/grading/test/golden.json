@@ -176,7 +176,6 @@
  },
  {
   "step": "the runner lists the waiting row",
-  "on": true,
   "due": [
    "11111111-1111-1111-1111-111111111111"
   ],
@@ -939,7 +938,6 @@
  },
  {
   "step": "the runner sees the resubmission",
-  "on": true,
   "due": [],
   "resubmitted": [
    "11111111-1111-1111-1111-111111111111"
@@ -1657,159 +1655,5 @@
     }
    }
   ]
- },
- {
-  "step": "release refuses while grading is on",
-  "status": 409,
-  "error": "grading is on",
-  "row": {
-   "issueId": "66666666-6666-6666-6666-666666666666",
-   "rubric": [],
-   "deliverable": {
-    "kind": "pr",
-    "ref": ""
-   },
-   "attempts": 0,
-   "state": "pending",
-   "verdicts": [],
-   "failures": 0,
-   "failedAt": null,
-   "delegators": null,
-   "closedReason": null
-  },
-  "patches": []
- },
- {
-  "step": "grading off: a graded close passes",
-  "close": "pass",
-  "row": {
-   "issueId": "66666666-6666-6666-6666-666666666666",
-   "rubric": [],
-   "deliverable": {
-    "kind": "pr",
-    "ref": ""
-   },
-   "attempts": 0,
-   "state": "pending",
-   "verdicts": [],
-   "failures": 0,
-   "failedAt": null,
-   "delegators": null,
-   "closedReason": null
-  },
-  "patches": []
- },
- {
-  "step": "grading off: the runner's list says so",
-  "on": false,
-  "due": [
-   "66666666-6666-6666-6666-666666666666"
-  ],
-  "resubmitted": [],
-  "row": {
-   "issueId": "11111111-1111-1111-1111-111111111111",
-   "rubric": [
-    "merged into main",
-    "checks green on the head",
-    "the page shows the total"
-   ],
-   "deliverable": {
-    "kind": "pr",
-    "ref": "acme/app"
-   },
-   "attempts": 3,
-   "state": "satisfied",
-   "verdicts": [
-    {
-     "version": "a",
-     "model": "glm",
-     "verdict": "needs_revision",
-     "criteria": [
-      {
-       "id": "1",
-       "met": "no",
-       "evidence": "not merged"
-      }
-     ]
-    },
-    {
-     "version": "b",
-     "model": "glm",
-     "verdict": "satisfied",
-     "criteria": [
-      {
-       "id": "1",
-       "met": "yes",
-       "evidence": "merged"
-      }
-     ]
-    },
-    {
-     "version": "c",
-     "model": "glm",
-     "verdict": "needs_revision",
-     "criteria": [
-      {
-       "id": "1",
-       "met": "no",
-       "evidence": "red"
-      }
-     ]
-    },
-    {
-     "version": "d",
-     "model": "glm",
-     "verdict": "needs_revision",
-     "criteria": [
-      {
-       "id": "1",
-       "met": "no",
-       "evidence": "red again"
-      }
-     ]
-    },
-    {
-     "version": "e",
-     "model": "glm",
-     "verdict": "cannot_judge",
-     "criteria": []
-    },
-    {
-     "version": "e",
-     "model": "",
-     "verdict": "accepted",
-     "by": "cos",
-     "criteria": []
-    }
-   ],
-   "failures": 0,
-   "failedAt": null,
-   "delegators": null,
-   "closedReason": null
-  },
-  "patches": []
- },
- {
-  "step": "grading off: the runner releases the held task",
-  "body": {
-   "ok": true
-  },
-  "row": null,
-  "patches": [
-   {
-    "task": "WOR-6",
-    "patch": {
-     "labelIds": []
-    }
-   }
-  ]
- },
- {
-  "step": "grading back on",
-  "body": {
-   "state": null
-  },
-  "row": null,
-  "patches": []
  }
 ]

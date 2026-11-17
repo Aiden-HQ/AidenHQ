@@ -17,7 +17,7 @@ writeFileSync(
   files.compiled,
   stringify({
     owner_name: "Sam",
-    settings: { owner_name: { value: "Sam", set: true }, autonomy: { value: "off", set: false }, agent_check: { value: "on", set: false }, heartbeat_hours: { value: 6, set: true } },
+    settings: { owner_name: { value: "Sam", set: true }, autonomy: { value: "off", set: false }, ci_review: { value: "on", set: false }, heartbeat_hours: { value: 6, set: true } },
     mcp_servers: {
       glean: { url: "http://glean-mcp:8085/mcp", bearer_token_env_var: "AIDENHQ_GLEAN_MCP_TOKEN", setup: "Set GLEAN_MCP_URL.", tools: { read: ["search"], write: [] } },
       apps: { url: "http://apps-mcp:8090/mcp", tools: { read: ["app_list"], write: ["app_deploy"] } },
@@ -33,7 +33,7 @@ writeFileSync(
 writeFileSync(
   files.catalog,
   JSON.stringify([
-    { name: "core", enabled: true, connections: ["apps", "paperclip_tasks"], revision: "a".repeat(40), settings: { autonomy: { default: "off", values: ["off", "tier0", "full"], doc: "Tiered approvals." }, agent_check: { default: "on", values: ["on", "off"] }, heartbeat_hours: { default: 4 } } },
+    { name: "core", enabled: true, connections: ["apps", "paperclip_tasks"], revision: "a".repeat(40), settings: { autonomy: { default: "off", values: ["off", "tier0", "full"], doc: "Tiered approvals." }, ci_review: { default: "on", values: ["on", "off"] }, heartbeat_hours: { default: 4 } } },
     { name: "glean", enabled: true, connections: ["glean"], settings: {} },
     { name: "grafana", enabled: true, connections: [], settings: {}, setup: "Set GRAFANA_URL." },
   ]),
@@ -86,8 +86,8 @@ describe("settings routes", () => {
     const autonomy = d.settings.find((s: { key: string }) => s.key === "autonomy");
     // Compiled off (the default) but the grants table says full: the board shows both, so a half-done apply is visible.
     expect(autonomy).toMatchObject({ module: "core", value: "off", set: false, live: "full", values: ["off", "tier0", "full"], doc: "Tiered approvals.", switch: false });
-    expect(d.settings.find((s: { key: string }) => s.key === "agent_check")).toMatchObject({ switch: true, value: "on" });
-    expect(d.settings.find((s: { key: string }) => s.key === "agent_check").live).toBeUndefined(); // read only at compile: nothing live to show
+    expect(d.settings.find((s: { key: string }) => s.key === "ci_review")).toMatchObject({ switch: true, value: "on" });
+    expect(d.settings.find((s: { key: string }) => s.key === "ci_review").live).toBeUndefined(); // read only at compile: nothing live to show
     const aiden = d.agents.find((a: { key: string }) => a.key === "chief-of-staff");
     expect(aiden).toMatchObject({ name: "Aiden", heartbeatHours: 6, caps: { day_usd: 60, run_usd: 2 }, routines: [{ key: "daily-brief", schedules: [{ label: "weekday morning" }] }] });
     expect(d.instance).toMatchObject({ product: "a".repeat(40), instance: "b".repeat(40), lastChangeAt: "2026-11-13T06:00:00Z", boardTimezone: "Europe/London" });

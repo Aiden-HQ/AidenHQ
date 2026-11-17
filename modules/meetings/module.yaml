@@ -1,5 +1,8 @@
 name: meetings
 description: "Meeting memory: transcripts and the Obsidian vault (ops-mcp) published by the Meeting Librarian."
+roles:
+  declares:
+    - { id: ops-key, description: "The agent ops-mcp acts as in Paperclip." }
 requires:
   - google
   - warehouse

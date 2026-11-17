@@ -65,7 +65,7 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
   if (ch.kind === "module") {
     const m = catalog.find((x) => x.name === ch.name);
     if (!m) throw new ChangeRefused(`there is no module ${ch.name}`);
-    if (ch.name === "core") throw new ChangeRefused("core is always on");
+    if (ch.name === "kernel") throw new ChangeRefused("the kernel is always on");
     if (Boolean(m.chosen) === ch.on) throw new ChangeRefused(`${ch.name} is already ${ch.on ? "on" : "off"}`);
     return ch;
   }

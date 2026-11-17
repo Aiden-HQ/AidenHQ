@@ -12,7 +12,7 @@ import { parse } from "yaml";
 import { acceptedFor, bases, ignored, readAccepted, readExceptions } from "../supply-chain/image-scan.mjs";
 
 const root = join(import.meta.dirname, "../..");
-const files = [".github/workflows/ci.yml", "modules/core/templates/ci/.github/workflows/ci.yml"];
+const files = [".github/workflows/ci.yml", "modules/ci/template/.github/workflows/ci.yml"];
 const findStep = (file) => parse(readFileSync(join(root, file), "utf8")).jobs["image-changes"].steps.find((s) => s.id === "find").run;
 
 test("image-changes (the product's CI and the app template's) selects every changed image, FROM an ARG included", (t) => {

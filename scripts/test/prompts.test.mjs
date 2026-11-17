@@ -8,13 +8,14 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile, promptEntries } from "../modules.mjs";
+import { BUNDLE } from "./bundle.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const template = join(product, "modules/agent-builder/templates/pr-review-chaser");
 
 function instance(modules = [], chaser = {}) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, ...modules], settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
   mkdirSync(join(dir, "agents", "chaser"), { recursive: true });
   writeFileSync(join(dir, "agents", "chaser", "agent.yaml"), YAML.stringify({ ...YAML.parse(readFileSync(join(template, "agent.yaml"), "utf8")), ...chaser }));
   writeFileSync(join(dir, "agents", "chaser", "AGENTS.md"), readFileSync(join(template, "AGENTS.md"), "utf8"));

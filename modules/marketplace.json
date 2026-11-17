@@ -58,10 +58,6 @@
       "source": "./codehost-github"
     },
     {
-      "name": "core",
-      "source": "./core"
-    },
-    {
       "name": "design",
       "source": "./design"
     },
@@ -161,5 +157,27 @@
       "name": "warehouse",
       "source": "./warehouse"
     }
+  ],
+  "bundle": [
+    "agent-builder",
+    "ai-reviewer",
+    "apps-platform",
+    "board",
+    "channel-telegram",
+    "chat-lane",
+    "chief-of-staff",
+    "coach",
+    "codehost-github",
+    "engine-codex",
+    "engineering",
+    "fleet-ops",
+    "github",
+    "grading",
+    "memory",
+    "model-tools",
+    "models-openrouter",
+    "platform",
+    "tasks",
+    "warehouse"
   ]
 }

@@ -111,7 +111,7 @@ const channels = createChannels({ db: records.db, records, writes, board: boardA
 const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });
 setInterval(() => void advisories.tick(), 10 * 60_000).unref();
 setTimeout(() => void advisories.tick(), 30_000).unref();
-const brake = createBrake({ db: records.db, owner: ownerApi, on: () => grantsTable().loop_brake !== "off" });
+const brake = createBrake({ db: records.db, owner: ownerApi });
 // Jobs: the sandbox as configured here. Without a network jail that works, jobs would share the host's network (every loopback
 // service): loudly, so scripts/verify-security.sh and the journal both say so. Build caches without overlay support are shared.
 const sandbox = sandboxConfig(env);

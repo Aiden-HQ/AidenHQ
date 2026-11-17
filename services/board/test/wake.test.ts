@@ -1,6 +1,3 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../src/store.js";
 import { card, fakeRecords } from "./fake-records.js";
@@ -46,7 +43,7 @@ function fake() {
 }
 
 function deps(f: ReturnType<typeof fake>, store: Store, records = fakeRecords(), grading = fakeGrading()) {
-  return { pc: f.pc as never, store, records, grading, prStates: async () => [], log: { info() {}, warn() {} }, grantsFile: "/nonexistent" };
+  return { pc: f.pc as never, store, records, grading, prStates: async () => [], log: { info() {}, warn() {} } };
 }
 
 describe("event wake-ups", () => {
@@ -175,7 +172,7 @@ describe("event wake-ups", () => {
     expect(f.comments[0]!.body).toContain("WOR-3 is now cancelled.");
   });
 
-  it("wakes on a merged PR the task names, and wake_ups: off means off", async () => {
+  it("wakes on a merged PR the task names", async () => {
     const f = fake();
     const store = new Store(":memory:");
     const recent: Recent = new Map();
@@ -186,10 +183,6 @@ describe("event wake-ups", () => {
     merged = iso(t0 + MIN);
     expect(await wakeTick(d, recent, t0 + 5 * MIN)).toEqual(["1"]);
     expect(f.comments[0]!.body).toContain("PR org/repo#7 is merged.");
-    const off = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-    writeFileSync(off, JSON.stringify({ wake_ups: "off" }));
-    merged = null; // (a reopen would be news)
-    expect(await wakeTick({ ...d, grantsFile: off }, recent, t0 + 10 * MIN)).toEqual([]);
   });
 
   it("releases the hold Paperclip's suppressed disposition repair leaves, so the task's own wakes work again", async () => {

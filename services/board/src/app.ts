@@ -20,7 +20,6 @@ import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, a
 import { detectorState, kickDetector, staleSources, takeOwnerLines } from "./fleet-ops.js";
 import { AlertsSchema, metricsText, receiveAlerts } from "./monitoring.js";
 import { kernelRecords, type Approval, type Records } from "./records.js";
-import { liveUpdatesOn } from "./events.js";
 import { wakeCheck } from "./brake.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
@@ -1742,9 +1741,8 @@ export function createApp(opts: AppOptions): Server {
     return perRequest.run({ session }, async () => {
       const file = req.method === "GET" ? /^\/api\/issues\/([^/]+)\/files\/([0-9a-f-]{36})$/.exec(path) : null;
       if (file) return download(res, decodeURIComponent(file[1]!), file[2]!);
-      // Live updates (events.ts): an event stream, behind the same gate; with the setting off the client keeps polling.
+      // Live updates (events.ts): an event stream, behind the same gate.
       if (req.method === "GET" && path === "/api/events") {
-        if (!liveUpdatesOn()) throw new HttpError(404, "live updates are off");
         return store.events.stream(req, res, SECURITY_HEADERS);
       }
       const route = routes.find((r) => r.method === req.method && r.path.test(path));

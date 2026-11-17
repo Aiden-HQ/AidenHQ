@@ -310,7 +310,9 @@ fi
 # ---------------------------------------------------------------- 5. the instance repo: local git, no GitHub
 if [ ! -d "$INST/.git" ]; then
   say "Instance repo $INST (origin: $REMOTE)"
-  mods="$(printf '%s' "$MODULES" | tr ',' ' ' | xargs -n1 2>/dev/null | sed 's/.*/"&"/' | paste -sd, -)"
+  # The default bundle (modules/marketplace.json `bundle`), then the modules asked for: the instance lists every module it runs.
+  mods="$(awk '/"bundle"/{f=1} f{print} f&&/]/{exit}' "$REPO/modules/marketplace.json" | tr -d ' \n' | sed 's/.*\[//; s/\].*//')"
+  for m in $(printf '%s' "$MODULES" | tr ',' ' '); do case ",$mods," in *",\"$m\","*) ;; *) mods="$mods,\"$m\"" ;; esac; done
   as_user git init --quiet --bare -b main "$REMOTE"
   as_user git -C "$REMOTE" config receive.denyNonFastForwards true
   as_user git clone --quiet "$REMOTE" "$INST"

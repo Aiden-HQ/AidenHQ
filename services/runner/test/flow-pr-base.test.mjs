@@ -1,16 +1,13 @@
 // End to end (see flow-harness.mjs): a branch stacked on a base that was squash-merged and deleted opens its PR into the
-// repository's default branch, not into the dead base (which GitHub refuses, or turns into a PR that can never merge). A
-// head with nothing of its own gets one plain sentence naming the base, never GitHub's raw GraphQL text.
+// repository's default branch, not into the dead base (which GitHub refuses, or turns into a PR that can never merge).
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
-import { State } from "../src/state.ts";
 
 describe("flow-pr-base", () => {
-  // dup_guard off: a head already on main is the point of the second case, so the guard must not answer for it.
-  const t = flow({ grants: { autonomy: "off", dup_guard: "off", agents: {} }, env: { FAKE_PR_CREATE: "1" } });
+  const t = flow({ grants: { autonomy: "off", agents: {} }, env: { FAKE_PR_CREATE: "1" } });
   let seeds = 0;
   /** A commit on the fake GitHub, made from a scratch clone: `files` on `branch` (new from `from` when given). */
   const onGithub = (branch, files, { from, message = "change" } = {}) => {
@@ -46,38 +43,6 @@ describe("flow-pr-base", () => {
     const args = creates()[0];
     assert.equal(baseArg(args), "main", `the PR opens into main, not the deleted base: ${args.join(" ")}`);
     assert.ok(args.includes("--head") && args[args.indexOf("--head") + 1] === "feat/stacked");
-  });
-
-  it("a head with no commits relative to its base gets one plain sentence naming the base", async () => {
-    // The first case's publish may still be finishing: its results table must not be read as this one's.
-    await t.waitFor("quiet", () => !t.running());
-    // The stack lands on main by another route, and its base branch is deleted: a PR would carry nothing.
-    const seed = onGithub("feat/landed-base", { "landed-base.txt": "base\n" }, { from: "main", message: "feat: landed base" });
-    onGithub("feat/landed", { "landed.txt": "landed\n" }, { from: "feat/landed-base", message: "feat: landed change" });
-    git(seed, "fetch", "-q", "origin");
-    git(seed, "switch", "-q", "main");
-    git(seed, "merge", "-q", "--no-ff", "--no-edit", "origin/feat/landed");
-    git(seed, "push", "-q", "origin", "main");
-    git(seed, "push", "-q", "origin", "--delete", "feat/landed-base");
-    // The branch is on GitHub already (this task pushed it before), so it is one of the task's branches to publish.
-    const state = new State(join(t.dir, "state"));
-    state.saveBranch("part", { repo: "acme/app", branch: "feat/landed", base: "feat/landed-base" });
-    state.updateBranch("part", "acme/app", "feat/landed", { pushed: 1 });
-    state.db.close();
-    t.step("stale feat/landed\naidenhq pr acme/app feat/landed");
-    const n = t.partComments().length;
-    await t.turn("Ship the stacked change.");
-    t.paperclip.decide("pr", "approved");
-    // This branch's own results row (a branch listing also names it), not an earlier table that landed after `n`.
-    const said = (c) => /\| `feat\/landed` \| ⚠️ not opened:/.test(c);
-    await t.waitFor("the results", () => t.partComments().slice(n).some(said));
-    const results = t.partComments().slice(n).find(said);
-    assert.match(results, /not opened: its base `feat\/landed-base` is gone or already has every commit on `feat\/landed`/);
-    assert.match(results, /so a PR would carry nothing/);
-    assert.doesNotMatch(results, /Head sha can't be blank|No commits between|Base ref must be a branch|GraphQL/);
-    assert.ok(!creates().some((a) => a[a.indexOf("--head") + 1] === "feat/landed"), "no PR attempted for it");
-    // The reason is one line of the results table, not a raw GitHub error.
-    assert.match(results, /\| `feat\/landed` \| ⚠️ not opened: [^|\n]+ \|/);
   });
 
   it("never errors along the way", () => t.noErrors());

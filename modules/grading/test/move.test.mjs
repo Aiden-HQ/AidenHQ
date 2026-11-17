@@ -14,7 +14,7 @@ test("the board's rows and resubmission marks move once; a second run moves noth
   const board = new DatabaseSync(join(data, "board", "board.sqlite"));
   const old = new Grades(board);
   old.file("held", ["merged into main", "checks green", "page shows it"], { kind: "pr", ref: "" });
-  completionGate(old, "held", "task_finish", { on: true });
+  completionGate(old, "held", "task_finish");
   old.file("esc", [], { kind: "file", ref: "" });
   old.record("esc", { version: "v", outcome: "cannot_judge", model: "m", criteria: [] }, Date.now(), ["cos"]);
   old.markResubmitted("esc");
@@ -24,7 +24,7 @@ test("the board's rows and resubmission marks move once; a second run moves noth
   assert.equal(moved.get("held").state, "pending");
   assert.deepEqual(moved.get("esc").delegators, ["cos"]);
   assert.deepEqual(moved.resubmitted().map((g) => g.issueId), ["esc"]);
-  moved.release("held");
+  moved.db.prepare("DELETE FROM grades WHERE issue_id = ?").run("held");
   assert.equal(moveGrades(data), "done");
   assert.equal(moved.get("held"), undefined);
   assert.equal(moveGrades(mkdtempSync(join(tmpdir(), "grades-fresh-"))), "fresh");

@@ -22,6 +22,6 @@ export function moduleStates(catalogJson: string) {
     requires: m.requires,
     marketplace: m.marketplace ?? "aidenhq",
     tier: m.tier ?? "official",
-    state: (m.name === "core" ? "core" : !m.enabled ? "off" : m.chosen ? "on" : "dependency") as ModuleState,
+    state: (m.name === "kernel" ? "core" : !m.enabled ? "off" : m.chosen ? "on" : "dependency") as ModuleState,
   }));
 }

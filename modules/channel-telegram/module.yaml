@@ -76,3 +76,7 @@ optional_secrets:
 generated_secrets:
   - telegram_service_key
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
+# Every crew agent can reply to and ask the owner (notify_owner, the "Asking the owner" section), except in trial or in an
+# untrusted module, where write tools stay off.
+default_grants:
+  - { tools: [ telegram.notify_owner ], when: { fields: { adapter: codex_local } }, unless: { fields: { trial: true, isolation: untrusted } } }

@@ -225,16 +225,4 @@ describe("flow-graded", { concurrency: true }, () => {
       assert.equal(paperclip.grades.get("part").state, "satisfied");
     });
   });
-
-  describe("flow-graded: the kill switch lets held tasks go", () => {
-    const t = flow(held("off", { rubric, deliverable: { kind: "file", ref: "" }, state: "pending" }, { gradingOff: true }));
-
-    it("closes the held task as finished and drops its row", async () => {
-      const { waitFor, paperclip } = t;
-      await waitFor("released", () => !paperclip.grades.has("part"));
-      assert.equal(paperclip.issues.get("part").status, "done");
-      assert.ok(paperclip.comments.get("parent").some((c) => /PEN-2 is done \(grading is off/.test(c.body)), "the parent is told");
-      assert.equal(paperclip.graderCalls.length, 0);
-    });
-  });
 });

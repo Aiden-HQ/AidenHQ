@@ -64,7 +64,7 @@ const gitEnv = {
 };
 
 /** A Paperclip with one parent task (the user's) and one part of it for Ada. */
-export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gradingOff = false, gateDelayMs = 0, onIssueCreated, ownerFallback = false, config, secrets, repos = {}, jobs }) {
+export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gateDelayMs = 0, onIssueCreated, ownerFallback = false, config, secrets, repos = {}, jobs }) {
   const gradeLog = [];
   const graderCalls = [];
   const graderAnswers = [];
@@ -257,17 +257,16 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       const { task } = JSON.parse(body);
       const g = grades.get(find(task)?.id);
       if (gateDelayMs) await new Promise((r) => setTimeout(r, gateDelayMs));
-      if (gradingOff || !g || g.state === "satisfied") return send({ pass: true });
+      if (!g || g.state === "satisfied") return send({ pass: true });
       if (!["pending", "awaiting_evidence", "grading_failed", "escalated"].includes(g.state)) Object.assign(g, { state: "pending", updatedAt: new Date().toISOString() });
       return send({ pass: false, state: g.state });
     }
     const gradeOne = /^\/internal\/grades\/([^/]+)$/.exec(path);
-    if (gradeOne && req.method === "GET") return send({ state: (!gradingOff && grades.get(find(decodeURIComponent(gradeOne[1]))?.id)?.state) || null });
-    const gradeRoute = /^\/internal\/grades\/([^/]+)\/(verdict|release)$/.exec(path);
+    if (gradeOne && req.method === "GET") return send({ state: grades.get(find(decodeURIComponent(gradeOne[1]))?.id)?.state || null });
+    const gradeRoute = /^\/internal\/grades\/([^/]+)\/(verdict)$/.exec(path);
     if (gradeRoute) {
       const id = find(decodeURIComponent(gradeRoute[1]))?.id;
       const g = grades.get(id);
-      if (gradeRoute[2] === "release") return send({ ok: grades.delete(id) });
       const stamp = (state) => Object.assign(g, { state, updatedAt: new Date().toISOString() });
       const v = JSON.parse(body);
       gradeLog.push(v);
@@ -281,7 +280,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     }
     // The board's retry window for a failed grading pass is a minute; the fake shortens it so a flow can see the retry.
     const retryDue = (g) => (g.state === "grading_failed" ? Date.now() - Date.parse(g.updatedAt) >= 2000 : false);
-    if (path === "/internal/grades" && req.method === "GET") return send({ on: grades.size > 0 && !gradingOff, grades: [...grades.values()].filter((g) => ["pending", "awaiting_evidence"].includes(g.state) || retryDue(g)), resubmitted: [] });
+    if (path === "/internal/grades" && req.method === "GET") return send({ grades: [...grades.values()].filter((g) => ["pending", "awaiting_evidence"].includes(g.state) || retryDue(g)), resubmitted: [] });
     if (path === "/grader" && req.method === "POST") {
       graderCalls.push(JSON.parse(body));
       const next = graderAnswers.shift();
@@ -319,7 +318,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
  * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
-export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, gradingOff, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, ownerFallback = false, setup } = {}) {
+export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, ownerFallback = false, setup } = {}) {
   let dir, runner, runnerEnv, paperclip, jobs, output = "";
   /** The kernel's job half (a test may stop it and start it again: a kernel restart). */
   const startJobs = () => (jobs = jobsHost(runnerEnv, join(dir, "kernel.db")));
@@ -449,7 +448,7 @@ ${runnerYaml}`,
     Object.assign(part, partOver);
     // Agents in a computer (`image:` in the module): Paperclip runs them, and a task they get must have a folder of its own.
     const inComputers = computers.map((id) => ({ id, name: id, status: "idle", adapterType: "codex_local", adapterConfig: {}, defaultEnvironmentId: "env-computer", metadata: { setupKey: `aidenhq:${id}` } }));
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), gradingOff, onIssueCreated, ownerFallback, config, secrets, jobs: () => jobs.port, repos: { agentsOrg: env.AIDENHQ_GITHUB_AGENTS_ORG ?? "acme", ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), onIssueCreated, ownerFallback, config, secrets, jobs: () => jobs.port, repos: { agentsOrg: env.AIDENHQ_GITHUB_AGENTS_ORG ?? "acme", ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 

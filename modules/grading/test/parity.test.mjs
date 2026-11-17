@@ -58,7 +58,6 @@ test("grading parity: the golden script through the kernel's finish gate and the
   for (const s of script.steps) {
     patches = [];
     if (s.set) Object.assign(byRef(s.task), s.set);
-    if (s.grading) settings = { ...settings, grading: s.grading };
     let r;
     if (s.op === "file") r = await call("POST", "/grades", { "x-aidenhq-caller": assertion(s.as, s.tool ?? "task_delegate") }, { issue: s.task, rubric: s.rubric, deliverable: s.deliverable });
     if (s.op === "close") {
@@ -68,7 +67,6 @@ test("grading parity: the golden script through the kernel's finish gate and the
     }
     if (s.op === "verdict") r = await call("POST", `/internal/grades/${s.task}/verdict`, runner, s.verdict);
     if (s.op === "resubmit") r = await call("POST", `/internal/grades/${s.task}/resubmit`, runner, { version: s.version });
-    if (s.op === "release") r = await call("POST", `/internal/grades/${s.task}/release`, runner, {});
     if (s.op === "list") r = await call("GET", "/internal/grades", runner);
     if (s.op === "state") r = await call("GET", `/internal/grades/${byRef(s.task).id}`, runner);
     out.push({ step: s.name, ...normalize(s, r), row: row(grades.get(byRef(s.task ?? "WOR-1").id)), patches });
@@ -81,7 +79,7 @@ test("grading parity: the golden script through the kernel's finish gate and the
 function normalize(s, r) {
   if (r.status >= 300) return { status: r.status, error: r.json?.error ?? null };
   if (s.op === "close") return { close: r.json.pass ? "pass" : `held:${r.json.state}` };
-  if (s.op === "list") return { on: r.json.on, due: r.json.grades.map((g) => g.issueId), resubmitted: r.json.resubmitted.map((g) => g.issueId) };
+  if (s.op === "list") return { due: r.json.grades.map((g) => g.issueId), resubmitted: r.json.resubmitted.map((g) => g.issueId) };
   if (s.op === "verdict" || s.op === "resubmit") return { state: r.json.state };
   return { body: r.json };
 }

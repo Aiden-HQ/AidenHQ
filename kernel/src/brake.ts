@@ -1,7 +1,7 @@
 // The notify brake (POST /v1/brake/notify; spec §2.5, lean-core 2f): an agent may send at most NOTIFY_LIMIT notify_owner
 // messages about one task since the owner last wrote there (and UTC midnight), so a looping agent can't flood the owner. A
 // decision is never held back (it still counts). Channels ask before they send; the count lives here, so every channel shares
-// it. Kill switch: the instance setting `loop_brake: off`. The owner's last message is read as the owner (the board key);
+// it. The owner's last message is read as the owner (the board key);
 // unreadable, nothing is limited (fail open, as the channel's own brake did).
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
@@ -12,11 +12,11 @@ export const NOTIFY_LIMIT = 5;
 export const isOwnerComment = (c: { body?: string; authorType?: string | null; authorAgentId?: string | null }) =>
   !(c.authorType === "agent" || c.authorAgentId) && (!String(c.body ?? "").includes("<!-- aidenhq-") || String(c.body).includes("<!-- aidenhq-from:"));
 
-export function createBrake({ db, owner, on, now = Date.now }: { db: DatabaseSync; owner: Api; on: () => boolean; now?: () => number }) {
+export function createBrake({ db, owner, now = Date.now }: { db: DatabaseSync; owner: Api; now?: () => number }) {
   db.exec("CREATE TABLE IF NOT EXISTS notify_brake (task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS notify_brake_task ON notify_brake (task, agent, at);");
   return async function notify(b: { task?: unknown; agent?: unknown; decision?: unknown }): Promise<{ allow: boolean; note?: string }> {
     const task = typeof b.task === "string" ? b.task.slice(0, 100) : "", agent = typeof b.agent === "string" ? b.agent.slice(0, 100) : "";
-    if (!task || !on()) return { allow: true };
+    if (!task) return { allow: true };
     const t = now();
     const day = Date.parse(new Date(t).toISOString().slice(0, 10));
     db.prepare("DELETE FROM notify_brake WHERE at < ?").run(day - 86_400_000);

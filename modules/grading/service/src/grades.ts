@@ -81,7 +81,7 @@ const str = (v: unknown, max: number, at: string, min = 0) => (typeof v === "str
 const oneOf = <T extends string>(v: unknown, values: readonly T[], at: string): T => (values.includes(v as T) ? (v as T) : bad(`${at}: one of ${values.join(", ")}`));
 
 export const KINDS = ["pr", "app", "apply", "file", "report"] as const;
-/** A delegation's rubric: 3-8 checkable criteria, or none (the grader then uses modules/core/rubrics/<kind>.md). */
+/** A delegation's rubric: 3-8 checkable criteria, or none (the grader then uses modules/grading/rubrics/<kind>.md). */
 export function parseFiling(b: unknown): { issue: string; rubric: string[]; deliverable: Deliverable } {
   if (!isMap(b)) return bad("send {issue, rubric, deliverable}");
   only(b, ["issue", "rubric", "deliverable"], "");
@@ -226,13 +226,6 @@ export class Grades {
     return this.get(issueId);
   }
 
-  /** Grading switched off: the runner let the task go, and its row goes (filed again only with a new delegation). */
-  release(issueId: string): void {
-    this.db.prepare("DELETE FROM grades WHERE issue_id = ?").run(issueId);
-    this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
-    this.events?.emit("grades", issueId);
-  }
-
   /**
    * The task closed before the grader settled its row (cancelled, or done another way): there is nothing left to grade, so
    * the row ends `not_graded` with the reason. A satisfied row keeps its verdict; a row already settled keeps its first
@@ -307,8 +300,7 @@ export class Grades {
  * passes, and so does one whose grade is satisfied. Anything else waits for the grader, so a cascade never satisfies a
  * rubric by itself.
  */
-export function gradePassed(grades: Grades, issueId: string, on: boolean): boolean {
-  if (!on) return true;
+export function gradePassed(grades: Grades, issueId: string): boolean {
   const g = grades.get(issueId);
   return !g || g.state === "satisfied";
 }
@@ -369,13 +361,13 @@ export type CompletionPath = "task_finish" | "task_set_status" | "finish_turn" |
 export type GateResult = { pass: true } | { pass: false; state: "pending" | "awaiting_evidence" | "needs_revision" | "grading_failed" | "escalated"; label: "grading" };
 
 /**
- * The completion gate, idempotent. A task without a rubric or with grading switched off passes, and so does a satisfied one
+ * The completion gate, idempotent. A task without a rubric passes, and so does a satisfied one
  * that is already done (another path closing it again). Satisfied is not sticky: a satisfied task reopened and finished
  * again is graded again (each verdict is bound to its deliverable version). An escalated task stays the delegator's: finishing
  * it again only marks it, and the runner sends it back to the grader once there is a new deliverable version.
  */
-export function completionGate(grades: Grades, issueId: string, _via: CompletionPath, { done = false, on }: { done?: boolean; on: boolean }): GateResult {
-  const g = on ? grades.get(issueId) : undefined;
+export function completionGate(grades: Grades, issueId: string, _via: CompletionPath, { done = false }: { done?: boolean } = {}): GateResult {
+  const g = grades.get(issueId);
   // Settled rows: satisfied (graded) and not_graded (closed before the grader settled it) pass a task that is already done.
   if (!g || (done && (g.state === "satisfied" || g.state === "not_graded"))) return { pass: true };
   if (g.state === "pending" || g.state === "awaiting_evidence" || g.state === "grading_failed") return { pass: false, state: g.state, label: "grading" };

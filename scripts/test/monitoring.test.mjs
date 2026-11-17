@@ -9,11 +9,12 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
+import { BUNDLE } from "./bundle.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
 function instance(modules, settings = {}) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@example.com", ...settings } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, ...modules], settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@example.com", product_repo: "acme/aidenhq", ...settings } }));
   mkdirSync(join(dir, "agents"));
   return dir;
 }

@@ -73,7 +73,7 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   const boardCalls = [];
   const boardApi = async (method, path, body) => (boardCalls.push({ method, path, body }), board(method, path, body));
   const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner, modules: modulesFile, log: logf });
-  const brake = createBrake({ db: records.db, owner, on: () => grantsTable().loop_brake !== "off" });
+  const brake = createBrake({ db: records.db, owner });
   // The finish gate (checks.ts) over `checks`, config/kernel/checks.json's shape.
   // `checks` is the table, or a function (to stand for a file that fails to load).
   const checks = checkTable ? createChecks({ db: records.db, registry: typeof checkTable === "function" ? checkTable : () => checkTable, owner, secret, resolver: createResolver(), log: logf, agentKey: (id) => grants[id]?.key, graded: (id) => grants[id]?.graded === true }) : undefined;

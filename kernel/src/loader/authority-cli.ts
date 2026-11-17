@@ -17,7 +17,6 @@ const YAML = createRequire(join(repo, "scripts/package.json"))("yaml") as { pars
 // The product whose commits are read: this checkout, or AIDENHQ_PRODUCT_DIR (tests).
 const product = process.env.AIDENHQ_PRODUCT_DIR ?? repo;
 const SHA = /^[0-9a-f]{40}$/;
-const DEFAULT_MODULE = "core";
 
 const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe"] });
 const yaml = (text: string) => (YAML.parse(text) ?? {}) as Record<string, unknown>;
@@ -49,7 +48,7 @@ function main(argv: string[]) {
     const changed = from === to ? [] : git(product, "diff", "--name-only", "--no-renames", from!, to!, "--", "modules").split("\n").filter(Boolean);
     // Third-party modules (instance.yaml marketplaces:) are fetched at their pinned shas through the host's credential helper.
     const sides = withRemote({ baseInstance, headInstance, baseDefs, headDefs, changed }, { ...hostFetch(repo), parse: YAML.parse });
-    const lines = authorityLines([...marketplaceChanges(baseInstance, headInstance), ...diffAll(moduleInputs({ ...sides, always: [DEFAULT_MODULE] }))]);
+    const lines = authorityLines([...marketplaceChanges(baseInstance, headInstance), ...diffAll(moduleInputs({ ...sides, always: [] }))]);
     for (const l of lines.length ? lines : ["none"]) console.log(`apply authority: ${l}`);
     return 0;
   } catch (e) {

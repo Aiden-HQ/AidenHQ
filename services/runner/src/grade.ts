@@ -33,8 +33,8 @@ export const GRADE_SCHEMA = {
 /** The grader models in order: GPT Luna, then DeepSeek Flash, never the author's own family. */
 export const graderModels = (authorModel = "") => familyModels(authorModel);
 
-/** The standard criteria for a deliverable kind: the `- ` lines of modules/core/rubrics/<kind>.md. */
-export function template(kind: string, dir: string = join(REPO_ROOT, "modules/core/rubrics")) {
+/** The standard criteria for a deliverable kind: the `- ` lines of modules/grading/rubrics/<kind>.md. */
+export function template(kind: string, dir: string = join(REPO_ROOT, "modules/grading/rubrics")) {
   const file = join(dir, `${kind}.md`);
   if (!/^[a-z]+$/.test(kind) || !existsSync(file)) return [];
   return readFileSync(file, "utf8").split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim());

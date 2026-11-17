@@ -1,5 +1,9 @@
 name: design
 description: "The UI/UX Designer (mockups the Engineer builds from, the design system, design advice, an audit when an app moves to the starter) and the UI Reviewer (screenshot reviews of UI PRs: the design-review check)."
+roles:
+  declares:
+    - { id: design-review, description: "The design-review commit status on agents-org PRs (github-mcp commit_status_set)." }
+  requests: [ repo-checkout ]
 requires:
   - github
 agents:

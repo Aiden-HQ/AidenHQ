@@ -26,7 +26,7 @@ const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name 
 /** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
 const PLAIN = new Set(["name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "settings", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
 /** Checked below, field by field. */
-const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces"]);
+const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation). Others are new authority. */
@@ -151,6 +151,8 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   const [br, hr] = [map(b.roles), map(head.roles)];
   for (const r of added(br.declares, hr.declares)) owner(`declares role ${id(r)}`);
   for (const r of added(br.requests, hr.requests)) owner(`requests role ${id(r)}`);
+  // A default grant hands its tools to every agent its tests match: any change to them is the owner's.
+  if (!eq(b.default_grants ?? [], head.default_grants ?? [])) owner("changes its default grants (tools every matching agent gets)");
 
   const [bc, hc] = [map(b.connections), map(head.connections)];
   for (const c of keys(hc)) {

@@ -1,4 +1,4 @@
-// App CI code review through the gateway (the `code-review` job of modules/core/templates/ci, on the self-hosted runners of
+// App CI code review through the gateway (the `code-review` job of modules/ci/template, on the self-hosted runners of
 // modules/ci): who may get a CI token, and what a CI model call may send. lib.ts issues and checks the tokens.
 //
 // A job proves itself with GitHub Actions' OIDC token (permission `id-token: write`, audience CI_AUDIENCE), checked here

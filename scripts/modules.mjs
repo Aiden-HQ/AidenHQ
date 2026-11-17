@@ -29,25 +29,12 @@ export const ROUTINE_AUTONOMY = ["off", "tier0", "full"];
 export const routineAutonomyDefault = (r) => (r.webhook ? "tier0" : "full");
 // The Codex launcher (services/paperclip-tasks-mcp/codex-model, mounted at /opt/aidenhq) for agents with a per-routine model.
 const CODEX_MODEL_COMMAND = "/opt/aidenhq/codex-model";
+// The kernel's own settings (kernel/settings.json) and what every instance has beside its modules (kernel/defaults.json): the
+// company's description, the department registry and the secrets the kernel and the host services generate.
+const kernelJson = (f) => JSON.parse(readFileSync(new URL(`../kernel/${f}`, import.meta.url), "utf8"));
+const KERNEL_SETTINGS = kernelJson("settings.json");
+const KERNEL_DEFAULTS = kernelJson("defaults.json");
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
-// Roles (checked by the services: board fleet tools, tasks bridge, apps-mcp, setup) and the modules allowed to grant each.
-const ROLES = {
-  "fleet-admin": ["chief-of-staff"], // the board's fleet tools and relaying the owner's words; the Chief of Staff: never paused, never passed to by an agent
-  "platform-engineer": ["platform"], // the agent that makes fleet and product changes: settings changes, rule proposals and Dependabot PRs are filed to it
-  "board-writer": ["chief-of-staff"], // board moves and recurring tasks
-  "engineer-dispatch": ["chief-of-staff"], // Engineer sub-tasks
-  "app-incidents": ["apps-platform"], // change any app with an open incident
-  "app-requests": ["apps-platform"], // in-app requests and people roles of every shared app (apps-mcp app_requests, app_role_set)
-  "security-verdict": ["security"], // finding_verdict: apps-mcp records a verdict on a src_security finding
-  "ops-key": ["meetings"], // the agent ops-mcp acts as in Paperclip
-  architect: ["agent-builder"], // its Platform Engineer tasks may use the trial exception (the runner reads it from the grants table)
-  librarian: ["librarian"], // read every handbook, decide proposed identity links, hand rule proposals to the Platform Engineer (tasks bridge, apps-mcp)
-  "fleet-read": ["fleet-ops", "coach"], // the board's fleet status only (never fleet_control or relaying the owner's words)
-  "fleet-audit": ["coach"], // read any agent's evidence (the board's coach routes) and keep a review log (tasks bridge coach_*)
-  "repo-checkout": ["agent-builder", "design"], // a commit of an agents-org repo placed in its computer (services/computer/launcher.mjs POST /repo)
-  "design-review": ["design"], // the design-review commit status on agents-org PRs (github-mcp commit_status_set)
-  "product-issues": ["fleet-ops"], // product bugs as issues on the product repo, as the GitHub App (github-mcp github_app_issue)
-};
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
 const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "builder", "department", "chat"];
@@ -332,7 +319,7 @@ function discover(productDir, instance, fetch) {
 }
 
 /**
- * core + the instance's modules, closed over `requires`, in name order with core first. A virtual capability (a name some
+ * The instance's modules, closed over `requires`, in name order. A virtual capability (a name some
  * module `provides`) never enables a module: the instance lists its provider, and the binding check below needs one enabled.
  */
 function resolveEnabled(all, wanted) {
@@ -345,8 +332,8 @@ function resolveEnabled(all, wanted) {
     for (const dep of all.get(name).def.requires ?? []) if (!virtual.has(String(dep))) visit(dep, [...path, name]);
     enabled.add(name);
   };
-  for (const name of ["core", ...wanted]) visit(name, []);
-  return [...enabled].sort((a, b) => (a === "core" ? -1 : b === "core" ? 1 : a.localeCompare(b)));
+  for (const name of wanted) visit(name, []);
+  return [...enabled].sort((a, b) => a.localeCompare(b));
 }
 
 /** The agents org: github_agents_org, else aidenhq-<instance_name> (services/runner/src/config.mjs agrees). */
@@ -464,7 +451,6 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
   const all = discover(productDir, instance, fetch);
-  if (!all.has("core")) fail("modules/core is missing");
   const problems = capabilityProblems(Object.fromEntries([...all].map(([n, m]) => [n, m.def])));
   if (problems.length) fail(problems.join("; "));
   const chosen = (instance.modules ?? []).map(moduleName);
@@ -477,12 +463,13 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const points = Object.fromEntries([...all.values()].filter((m) => m.def.points).map((m) => [m.name, compiled[m.name] ?? {}]));
   const warnings = [];
 
-  // Settings: module defaults, then the instance; required ones must end up set.
+  // Settings: the kernel's and the modules' defaults, then the instance; required ones must end up set.
+  const declaredSettings = [["the kernel", KERNEL_SETTINGS], ...enabled.map((n) => [n, all.get(n).def.settings ?? {}])];
   const settings = {};
-  for (const name of enabled) for (const [k, d] of Object.entries(all.get(name).def.settings ?? {})) if (d && "default" in d) settings[k] = d.default;
+  for (const [, defs] of declaredSettings) for (const [k, d] of Object.entries(defs)) if (d && "default" in d) settings[k] = d.default;
   Object.assign(settings, instance.settings ?? {});
-  for (const name of enabled) {
-    for (const [k, d] of Object.entries(all.get(name).def.settings ?? {})) {
+  for (const [name, defs] of declaredSettings) {
+    for (const [k, d] of Object.entries(defs)) {
       if (d?.required && settings[k] == null) fail(`setting ${k} is required by ${name}`);
       // `values`: the allowed values (a list setting must hold at least one, each allowed).
       if (d?.values && settings[k] != null) {
@@ -503,9 +490,6 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   if (Array.isArray(settings.exposure)) fail("settings.exposure: one of public, tailscale, cloudflare or local, not a list");
   settings.exposure ??= "tailscale";
 
-  // settings.owner_email is the owner's account (the only one setup creates, ops/setup.sh); the kernel reads it from
-  // config/kernel/modules.json (owner.email). Checked here, after the modules' own required settings.
-  if (!settings.owner_email) fail("settings.owner_email is required (the owner's board account)");
 
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
   settings.agents_org = agentsOrg(settings); // the only org github-mcp's commit_status_set may write to
@@ -513,14 +497,13 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
   // sets, with whether instance.yaml sets it. Snapshotted before the derived keys below; never a secret-looking key.
-  const shownSettings = Object.fromEntries([...new Set([...enabled.flatMap((n) => Object.keys(all.get(n).def.settings ?? {})), ...Object.keys(instance.settings ?? {})])]
+  const shownSettings = Object.fromEntries([...new Set([...declaredSettings.flatMap(([, defs]) => Object.keys(defs)), ...Object.keys(instance.settings ?? {})])]
     .filter((k) => !/token|secret|password/i.test(k) && settings[k] !== undefined)
     .map((k) => [k, { value: settings[k], set: Object.hasOwn(instance.settings ?? {}, k) }]));
   // Derived for upstream contributions (spec §6.9): the owner-data scrub's literals (ownerTerms).
-  settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, enabled.map((n) => all.get(n).def.settings ?? {}));
+  settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, declaredSettings.map(([, defs]) => defs));
 
-  const core = substitute(all.get("core").def, settings);
-  const paperclip = { company: core.company, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), grading: String(settings.grading ?? "on"), live_updates: String(settings.live_updates ?? "on"), batch_approvals: String(settings.batch_approvals ?? "on"), dup_guard: String(settings.dup_guard ?? "on"), coach: String(settings.coach ?? "on"), wake_ups: String(settings.wake_ups ?? "on"), loop_brake: String(settings.loop_brake ?? "on"), settings: shownSettings, labels: [], mcp_servers: {}, codex_args: [], agents: {}, routines: {} };
+  const paperclip = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, codex_args: [], agents: {}, routines: {} };
   const apps = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a) => a.name);
@@ -588,6 +571,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     }
     // A secret is one module's own: two modules claiming one name would let either mount the other's.
     for (const sec of ownSecrets(def)) {
+      if (KERNEL_DEFAULTS.generated_secrets.includes(sec)) fail(`module ${name} declares the secret ${sec}, which is the kernel's`);
       if (secretOwner[sec] && secretOwner[sec] !== name) fail(`modules ${secretOwner[sec]} and ${name} both declare the secret ${sec}`);
       secretOwner[sec] = name;
     }
@@ -654,10 +638,10 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // Paperclip's crew adapter args come from the engine module that contributes them.
   for (const e of Object.values(engines)) if (e.crew?.adapter === "codex_local") paperclip.codex_args = e.crew.args;
 
-  // Departments: where the board's Agents page lists each agent. One registry, core's `departments:` then the instance's
+  // Departments: where the board's Agents page lists each agent. One registry, the kernel's (kernel/defaults.json) then the instance's
   // own (instance.yaml `departments:`); an agent's `department:` must name one, and without one it is `general`. Setup
   // stores the resolved entry (id, name, description, order) in the agent's metadata for the board.
-  const departments = [...(core.departments ?? []), ...(instance.departments ?? [])];
+  const departments = [...KERNEL_DEFAULTS.departments, ...(instance.departments ?? [])];
   if (!departments.some((d) => d?.id === "general")) departments.push({ id: "general", name: "General" });
   const deptIds = new Set();
   for (const d of departments) {
@@ -673,6 +657,14 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     a.department = { id, name: d.name.trim(), ...(d.description ? { description: String(d.description).trim() } : {}), order };
   }
 
+  // Roles (spec §3.1 `roles`): each module declares the roles it checks, and its agents hold those or the ones it requests.
+  const rolesOf = (m) => ({ declares: [all.get(m)?.def.roles?.declares ?? []].flat().map((d) => String(d?.id ?? d)), requests: [all.get(m)?.def.roles?.requests ?? []].flat().map(String) });
+  const roleOwner = {};
+  for (const name of enabled) for (const r of rolesOf(name).declares) roleOwner[r] = roleOwner[r] ? fail(`role ${r}: declared by ${roleOwner[r]} and ${name}`) : name;
+  const defaultGrants = enabled.flatMap((name) => [all.get(name).def.default_grants ?? []].flat().map((g) => {
+    if ((g.tools ?? []).some((t) => !Object.hasOwn(all.get(name).def.connections ?? {}, t.split(".")[0]))) fail(`module ${name}: default_grants name only its own connections' tools (connection.tool)`);
+    return { when: g.when ?? {}, unless: g.unless ?? {}, tools: g.tools ?? [] };
+  }));
   // Grants: `connection: read | write | [tools]` resolve to tool lists (Codex scoping and the grants table setup writes).
   // A grant to a connection that isn't enabled fails, unless marked optional as `name?`.
   for (const [key, a] of Object.entries(paperclip.agents)) {
@@ -694,22 +686,14 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
       tools[name] = list.filter((t) => !(upstreamOff && (c.upstream ?? []).includes(t)));
       if (!tools[name].length) delete tools[name];
     }
-    // Every Codex agent can reply to and ask the owner (notify_owner, the "Asking the owner" shared section), except in
-    // trial or in an untrusted module, where write tools stay off.
-    const untrusted = a.isolation === "untrusted" || all.get(a.module)?.def.isolation === "untrusted";
-    if (a.adapter === "codex_local" && !a.trial && !untrusted && paperclip.mcp_servers.telegram && !tools.telegram?.includes("notify_owner")) tools.telegram = [...(tools.telegram ?? []), "notify_owner"];
-    // Every Codex agent can consult the advisor (owner decision, wave 1), except in a computer, which can't reach the model
-    // gateway yet; settings.model_tools: off drops both model tools.
-    if (a.adapter === "codex_local" && !a.image && paperclip.mcp_servers.paperclip_tasks &&!tools.paperclip_tasks?.includes("advisor_ask")) tools.paperclip_tasks = [...(tools.paperclip_tasks ?? []), "advisor_ask"];
-    if (String(settings.model_tools ?? "on") === "off" && tools.paperclip_tasks) tools.paperclip_tasks = tools.paperclip_tasks.filter((t) => t !== "advisor_ask" && t !== "fanout_map");
-    // Memory (wave 1, item 6): every Codex agent can note a fact for the Librarian (memory_note); its curated memory.md in the
-    // instance repo is compiled into its handbook. settings.agent_memory: off is the kill switch: no tool, no memory section.
-    if (String(settings.agent_memory ?? "on") === "off") tools.paperclip_tasks = tools.paperclip_tasks?.filter((t) => t !== "memory_note");
-    else {
-      if (a.adapter === "codex_local" && !a.image && paperclip.mcp_servers.paperclip_tasks && !tools.paperclip_tasks?.includes("memory_note")) tools.paperclip_tasks = [...(tools.paperclip_tasks ?? []), "memory_note"];
-      const memory = memoryOf(instanceDir, key, warnings);
-      if (memory) a.memory = memory;
+    // Default grants (a module's `default_grants:`, on its own connections, by the same tests as prompts): e.g. notify_owner
+    // for every crew agent out of trial and untrusted modules, advisor_ask and memory_note while model-tools and memory are on.
+    for (const g of defaultGrants) if (promptApplies(g, { ...a, enabled_tools: tools }, enabled)) for (const t of g.tools) {
+      const [c, tool] = t.split(".");
+      if (!tools[c]?.includes(tool)) tools[c] = [...(tools[c] ?? []), tool];
     }
+    const memory = memoryOf(instanceDir, key, warnings);
+    if (memory) a.memory = memory;
     delete a.connections;
     // jobcaps: [<id>] (`<id>?`: only when its module is on): the agent's runner jobs read through the gateway with their token.
     if (a.jobcaps != null) {
@@ -729,8 +713,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     if (a.chat != null) a.chat = chatBlock(key, a.chat, tools);
     a.roles = a.roles ?? [];
     for (const r of a.roles) {
-      if (!ROLES[r]) fail(`${key}: unknown role ${r} (known: ${Object.keys(ROLES).join(", ")})`);
-      if (!ROLES[r].includes(a.module)) fail(`${key}: module ${a.module} may not grant ${r}`);
+      if (!roleOwner[r]) fail(`${key}: unknown role ${r} (declared: ${Object.keys(roleOwner).join(", ")})`);
+      if (roleOwner[r] !== a.module && !rolesOf(a.module).requests.includes(r)) fail(`${key}: module ${a.module} may not grant ${r} (declare it, or list it under roles.requests)`);
     }
     // In trial (tap 1): read-only but for reporting on its own tasks, and reporting to the Agent Architect, which reviews its
     // work. A definition may also declare `trial_writes:`, the channel and lane writes it keeps before tap 2. The agent then gets
@@ -853,7 +837,9 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   if (new Set(prompts.map((p) => p.id)).size !== prompts.length) fail("two prompts share an id");
   paperclip.prompts = Object.fromEntries(prompts.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}) }]));
   for (const a of Object.values(paperclip.agents)) if (a.adapter === "codex_local" && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
-  const catalog = [...all.values()].map(({ name, root, def, marketplace, tier, sha, source }) => ({
+  // The kernel first, always on (the board's Settings lists its settings as the kernel's), then every module.
+  const kernelEntry = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
+  const catalog = [kernelEntry, ...[...all.values()].map(({ name, root, def, marketplace, tier, sha, source }) => ({
     name, description: def.description ?? "", enabled: enabled.includes(name), chosen: chosen.includes(name), requires: def.requires ?? [],
     agents: Object.keys(def.agents ?? {}), routines: Object.keys(def.routines ?? {}), connections: Object.keys(def.connections ?? {}),
     apps: (def.apps ?? []).map((a) => a.name), ...(sha ? { revision: sha } : revision ? { revision } : {}),
@@ -862,18 +848,18 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     // The board's Settings: each setting's default, allowed values and the comment above it in module.yaml; `setup`, how to set
     // up a module that serves the runner rather than agents' connections (Grafana, ClickHouse).
     settings: settingDefs(join(root, "module.yaml"), def), ...(def.setup ? { setup: String(def.setup).trim() } : {}),
-  }));
+  }))];
   // Secrets of channels the owner may not use: created empty when missing so compose starts (compile.mjs).
   const optionalSecrets = enabled.flatMap((name) => all.get(name).def.optional_secrets ?? []);
   // Host-only tokens a module needs: created random when missing (compile.mjs).
-  const generatedSecrets = enabled.flatMap((name) => all.get(name).def.generated_secrets ?? []);
+  const generatedSecrets = [...KERNEL_DEFAULTS.generated_secrets, ...enabled.flatMap((name) => all.get(name).def.generated_secrets ?? [])];
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
   // A runner agent's engine (after the overrides that may set it, and its image) is one an enabled module provides.
   for (const [key, a] of Object.entries(paperclip.agents)) if (a.dispatch === "runner" && a.engine && !engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);
   // The model gateway's prices and CI review (config/gateway.json, re-read per call).
   const gateway = { models: modelPrices(enabledDefs), ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}) };
   const named = [...Object.entries(paperclip.agents).flatMap(([key, a]) => grantEntry(key, a, paperclip.routines).models), ...(gateway.ci?.models ?? [])];
-  // Checked once some module prices models (core requires models-openrouter); with none, the gateway refuses every call.
+  // Checked once some module prices models (the default bundle has models-openrouter); with none, the gateway refuses every call.
   const unpriced = Object.keys(gateway.models).length ? [...new Set(named.filter((m) => !gateway.models[m]))] : [];
   if (unpriced.length) fail(`no declared price for ${unpriced.join(", ")} (a module's models:, e.g. modules/models-openrouter): the gateway refuses a model it can't price`);
   // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
