@@ -234,9 +234,9 @@ The builder confirms the list module by module: a module whose only inputs have 
 - It then recreates that module's containers (below).
 - It is the one new trusted path in this design, a security gate that enforces from day one.
 
-**Pairing.** After the secrets are saved, the card shows a one-time code and, where the app supports it, a deep link
+**Pairing.** After the secrets are saved, the flow shows a one-time code and, where the app supports it, a deep link
 (`https://t.me/<bot>?start=<code>`). The module's service records the chat or user that sends the code as the owner's.
-The card is done when paired.
+The flow is done when paired.
   - Pairing is security-sensitive: that chat decides approvals and receives account-reset links.
   - Only a signed-in admin with an authenticator can mint a code, through the board, which asks the service.
   - A code has at least 128 bits of entropy. It is single-use (consumed atomically), expires in 15 minutes, and allows
