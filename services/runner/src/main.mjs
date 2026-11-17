@@ -4534,7 +4534,8 @@ function adoptRuns() {
         );
         const now = live ? undefined : await jobsApi.get(run.kernelJob).catch(() => undefined);
         if (!live && !(now && now.state === "done")) {
-          await jobsApi.stop(run.kernelJob).catch(() => {});
+          // Stopped and waited out: the kernel holds one running job per task, so the resume can't start until this one has ended.
+          await followJob(jobsApi, run.kernelJob, { signal: AbortSignal.abort() });
           helper.done();
           await stopBox(issue, run.box).catch((err) => log("box release failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 300) }));
           state.finishJob(job.id, "interrupted", "box gone");
