@@ -78,12 +78,19 @@ class Refusal extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-const CSS = `body{font:15px/1.5 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#1b1f24}main{max-width:760px;margin:0 auto;padding:16px}
-header{display:flex;gap:12px;align-items:center;padding:10px 16px;background:#1b1f24;color:#fff}header a,header button{color:#fff;background:none;border:0;font:inherit;cursor:pointer;text-decoration:none}
-header form{margin-left:auto}.card{background:#fff;border:1px solid #d8dde3;border-radius:6px;padding:12px 14px;margin:10px 0}
-.muted{color:#5b6570;font-size:13px}.err{color:#b42318}.ok{color:#067647}pre{white-space:pre-wrap;background:#f0f2f5;padding:8px;border-radius:4px;font-size:13px}
-input,textarea,select{font:inherit;padding:6px 8px;border:1px solid #c5ccd3;border-radius:4px;width:100%;box-sizing:border-box}label{display:block;margin:8px 0}
-button.b{font:inherit;padding:6px 14px;border-radius:4px;border:1px solid #1b1f24;background:#1b1f24;color:#fff;cursor:pointer}button.r{background:#fff;color:#b42318;border-color:#b42318}`;
+const CSS = `:root{color-scheme:light dark;--bg:#f9f9fb;--surface:#fff;--surface-2:#f0f0f3;--line:#d9d9e0;--text:#1c2024;--muted:#60646c;--accent:#3b3be8;--accent-hover:#2c2cd6;--on-accent:#fff;--link:#3b3be8;--danger:#ce2c31;--danger-soft:#feebec;--ok:#2a7e3b}
+@media(prefers-color-scheme:dark){:root{--bg:#111113;--surface:#18191b;--surface-2:#212225;--line:#2e3135;--text:#edeef0;--muted:#b0b4ba;--accent:#4f4ff0;--accent-hover:#6363f5;--link:#a9abff;--danger:#ff9592;--danger-soft:#3b1219;--ok:#70e086}}
+*{box-sizing:border-box}body{font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;margin:0;background:var(--bg);color:var(--text)}main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:22px;line-height:1.25;margin:16px 0 12px}h2{font-size:16px;margin:24px 0 8px}a{color:var(--link)}
+header{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--line)}header b{margin-right:8px;color:var(--accent)}header a,header button{color:var(--text);background:none;border:0;font:inherit;cursor:pointer;text-decoration:none;padding:4px 0}header a:hover,header button:hover{color:var(--link)}
+header form{margin-left:auto}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0;overflow-wrap:anywhere}
+.muted{color:var(--muted);font-size:13px}.err{color:var(--danger);background:var(--danger-soft);border-radius:6px;padding:8px 10px}.ok{color:var(--ok)}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface-2);padding:8px;border-radius:6px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;margin:4px 0 8px}
+code{background:var(--surface-2);padding:1px 4px;border-radius:4px;overflow-wrap:anywhere}
+input,textarea,select{font:inherit;color:var(--text);background:var(--surface);padding:8px 10px;border:1px solid var(--line);border-radius:6px;width:100%}label{display:block;margin:8px 0}
+input[type=checkbox]{accent-color:var(--accent);margin-right:6px;vertical-align:middle}
+button.b{font:inherit;font-weight:500;padding:8px 14px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:var(--on-accent);cursor:pointer}button.b:hover{background:var(--accent-hover)}button.r{background:transparent;color:var(--danger);border-color:var(--danger)}button.r:hover{background:var(--danger-soft)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}input:focus-visible,textarea:focus-visible{outline-offset:0;border-color:var(--accent)}
+@media(max-width:600px){button.b{min-height:44px}}`;
 
 export function createAdmin(d: Deps) {
   const log = d.log ?? (() => {});
