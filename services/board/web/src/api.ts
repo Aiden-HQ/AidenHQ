@@ -1,4 +1,4 @@
-import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
+import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -114,6 +114,9 @@ export const api = {
   },
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
   modules: () => call<{ modules: ModuleRow[]; advisories: Advisory[] }>("GET", "/api/modules"),
+  module: (name: string) => call<ModuleDetail>("GET", `/api/modules/${encodeURIComponent(name)}`),
+  /** Installed modules whose setup flow isn't done (docs/design/guided-setup.md); a 404 means no flows. */
+  setupFlows: () => call<{ flows?: { module: string }[] }>("GET", "/api/setup-flows"),
   settings: () => call<SettingsData>("GET", "/api/settings"),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
   /** Files a settings change as the Platform Engineer's task; its commit becomes an apply card. */

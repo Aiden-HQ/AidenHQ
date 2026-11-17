@@ -345,6 +345,27 @@ export interface ModuleRow {
   marketplace: string;
   tier: string;
   state: "core" | "on" | "dependency" | "off";
+  /** Enabled modules that require this one (why a dependency is on). */
+  neededBy: string[];
+  connections: string[];
+  routines: string[];
+  apps: string[];
+  settings: Record<string, unknown>;
+  revision: string | null;
+  /** The short sha instance.yaml pins this module at; null: it follows its marketplace. */
+  pinned: string | null;
+  source: { url: string; path: string } | null;
+  setup: string | null;
+}
+
+/** GET /api/modules/:name (services/board/src/app.ts). */
+export interface ModuleDetail {
+  module: ModuleRow;
+  agents: AgentProfile[];
+  ongoing: TaskRow[];
+  authority: { connections: string[]; writes: { kind: string; tier?: number }[]; secrets: string[] };
+  neededBy: string[];
+  requires: string[];
 }
 
 /** The Costs tab (src/costs.ts). */
@@ -695,3 +716,6 @@ export interface SettingsData {
   approvals: { pending: number };
   spend: { defaults: Record<string, number>; pendingRaises: number };
 }
+
+// Lane D: the pin change (lane A's schema, settings-change.ts).
+export type PinChange = { kind: "pin"; name: string; sha: string | null };
