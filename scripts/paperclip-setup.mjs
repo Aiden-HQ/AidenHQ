@@ -579,7 +579,8 @@ async function ensureRoutines(companyId, agents) {
       variables: [...new Set([...(r.description ?? "").matchAll(/\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g)].map((m) => m[1]))]
         .filter((v) => !["date", "timestamp"].includes(v))
         .map((name) => ({ name, type: "text", required: false, defaultValue: "" })),
-      catchUpPolicy: "skip_missed",
+      // A routine that must run once a day (the daily brief) sets `catch_up: true`: a scheduler tick Paperclip lost still fires it on the next one.
+      catchUpPolicy: r.catch_up ? "enqueue_missed_with_cap" : "skip_missed",
       // model and reasoning_effort reach its runs as env (the codex-model launcher, or the computer launcher, swaps them in); null clears a removed one.
       env: r.model || r.reasoning_effort ? { ...(r.model ? { AIDENHQ_MODEL: r.model } : {}), ...(r.reasoning_effort ? { AIDENHQ_REASONING_EFFORT: r.reasoning_effort } : {}) } : null,
     };
