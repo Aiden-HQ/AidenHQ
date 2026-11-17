@@ -328,7 +328,7 @@ Slack has two parts, both served by one Slack app.
 
 ### Others (optional)
 
-GitHub reads (`scripts/github-auth.sh`), Glean, Jira, Grafana, ClickHouse and Primer: see
+GitHub reads, Glean, Jira, Grafana and ClickHouse: open the module's setup on the board (`#/setup/<module>`). Primer: see
 [docs/setup.md](docs/setup.md#connecting-accounts) and [docs/USAGE.md](docs/USAGE.md#connect-jira). Each one is a
 module you add to `modules:`, plus a sign-in.
 
