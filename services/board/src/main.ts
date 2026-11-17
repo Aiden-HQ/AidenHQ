@@ -51,10 +51,10 @@ const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/in
 setInterval(appWatch, 2 * 60_000).unref();
 // Event wake-ups for heartbeat agents (wake.ts).
 startWake(paperclip, store, records, grading, log);
-// The Maintainer's issue wake-up (maintainer.ts): off until setup has written the routine's webhook.
-const maintainer = maintainerWake();
-if (maintainer) startMaintainer({ issues: maintainerIssues(), fire: maintainer, store, log });
-else log.info({}, "maintainer issue watcher off: its routine webhook is not written yet");
+// The Maintainer's issue wake-up (maintainer.ts): off until its module supplies the webhook and github-mcp's token.
+const [maintainer, issues] = [maintainerWake(), maintainerIssues()];
+if (maintainer && issues) startMaintainer({ issues, fire: maintainer, store, log });
+else log.info({}, "maintainer issue watcher off: MAINTAINER_WEBHOOK_URL_FILE or MAINTAINER_ISSUES_TOKEN_FILE is not set");
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
 startRollover(paperclip, store, records, grading, log);
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent

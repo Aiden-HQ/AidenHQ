@@ -1,5 +1,8 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { maintainerTick, startMaintainer, type MaintainerBatch, type MaintainerIssue } from "../src/maintainer.js";
+import { maintainerIssues, maintainerTick, maintainerWake, startMaintainer, type MaintainerBatch, type MaintainerIssue } from "../src/maintainer.js";
 
 const kv = () => {
   const m = new Map<string, string>();
@@ -97,6 +100,15 @@ describe("the Maintainer's issue watcher", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("is off until a module supplies github-mcp's token and the routine's webhook", () => {
+    const dir = mkdtempSync(join(tmpdir(), "maintainer-"));
+    expect(maintainerIssues({})).toBeUndefined();
+    expect(maintainerIssues({ MAINTAINER_ISSUES_TOKEN_FILE: join(dir, "absent") })).toBeUndefined();
+    expect(maintainerWake({ MAINTAINER_WEBHOOK_URL_FILE: join(dir, "absent"), MAINTAINER_WEBHOOK_SECRET_FILE: join(dir, "absent") })).toBeUndefined();
+    writeFileSync(join(dir, "token"), "t".repeat(32));
+    expect(typeof maintainerIssues({ MAINTAINER_ISSUES_TOKEN_FILE: join(dir, "token") })).toBe("function");
   });
 
   it("a refused webhook holds the cursor and is retried, without delivering the earlier ones again", async () => {

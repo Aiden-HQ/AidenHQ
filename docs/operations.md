@@ -120,7 +120,9 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   issues are in the board's store (meta `maintainer_issues`), so a restart repeats and skips none. It reads the host's
   `generations.jsonl` read-only (`AIDENHQ_STATE_DIR`, one file mounted at `/generations/generations.jsonl`) for the
   `fleet_generation_status` tool: the current pin (the newest generation that got past validation) and the last 20
-  generations, newest first.
+  generations, newest first. The watcher is off until a module supplies `MAINTAINER_ISSUES_TOKEN_FILE` (github-mcp's
+  internal read's own token) and the routine's `MAINTAINER_WEBHOOK_URL_FILE`/`_SECRET_FILE`, as `board_env` does for
+  Fleet Ops.
 
 - Monitoring (module `monitoring`, [docs/design/monitoring.md](design/monitoring.md)): Prometheus, node-exporter, cAdvisor,
   Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `DiskNearlyFull`

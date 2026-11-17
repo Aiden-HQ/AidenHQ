@@ -93,10 +93,19 @@ export async function maintainerTick(d: { issues: (since: string) => Promise<Mai
   return count;
 }
 
-/** github-mcp's internal read on the compose network, with the token the two share and nothing else holds. */
-export function maintainerIssues(env: NodeJS.ProcessEnv = process.env): (since: string) => Promise<MaintainerBatch> {
+/**
+ * github-mcp's internal read on the compose network, with the token it shares with this board only. Undefined until the
+ * module that runs it mounts that token: the watcher is off, rather than failing every tick.
+ */
+export function maintainerIssues(env: NodeJS.ProcessEnv = process.env): ((since: string) => Promise<MaintainerBatch>) | undefined {
   const url = (env.MAINTAINER_ISSUES_URL ?? "http://github-mcp:8086/internal/maintainer/issues").replace(/\/+$/, "");
-  const tokenFile = env.MAINTAINER_ISSUES_TOKEN_FILE ?? "/run/secrets/maintainer_issues_token";
+  const tokenFile = env.MAINTAINER_ISSUES_TOKEN_FILE;
+  if (!tokenFile) return undefined;
+  try {
+    readFileSync(tokenFile);
+  } catch {
+    return undefined;
+  }
   return async (since) => {
     const token = readFileSync(tokenFile, "utf8").trim();
     const res = await fetch(`${url}?since=${encodeURIComponent(since)}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
