@@ -7,8 +7,8 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { git } from "../../../modules/codehost-github/src/git.mjs";
 
-// Agents the instance defines itself live in agents/<key>/ (agent.yaml + AGENTS.md).
-export const APPLY_PATHS = /^(instance\.yaml|apps\.yaml|agents\/[\w.-]+\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md))$/;
+// Agents the instance defines itself live in agents/<key>/ (agent.yaml + AGENTS.md); owner/profile.md is how the owner works.
+export const APPLY_PATHS = /^(instance\.yaml|apps\.yaml|agents\/[\w.-]+\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md)|owner\/profile\.md)$/;
 
 /** Files a change touches outside what apply may land. */
 export const strayFiles = (files: string[]) => files.filter((f) => !APPLY_PATHS.test(f));

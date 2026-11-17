@@ -840,6 +840,9 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   for (const a of Object.values(paperclip.agents)) if (a.adapter === "codex_local" && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
   // The owner's standing outcomes (instance.yaml `outcomes:`): every crew handbook lists them, and tasks name the one they serve.
   paperclip.outcomes = outcomesOf(instance.outcomes, paperclip.agents);
+  // How the owner works (owner/profile.md): every crew handbook and the chat lane carry it.
+  const profile = profileOf(instanceDir, warnings);
+  if (profile) paperclip.owner_profile = profile;
   // The kernel first, always on (the board's Settings lists its settings as the kernel's), then every module.
   const kernelEntry = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
   const catalog = [kernelEntry, ...[...all.values()].map(({ name, root, def, marketplace, tier, sha, source }) => ({
@@ -1138,14 +1141,17 @@ decide it on its merits. Before you close, read the new items once more and hand
 
 /** An agent's curated memory (agents/<key>/memory.md in the instance repo, written only through the Librarian's apply), at most MEMORY_MAX bytes: longer is cut at a line end, with a warning. */
 export const MEMORY_MAX = 4096;
-export function memoryOf(instanceDir, key, warnings = []) {
-  const file = join(instanceDir, "agents", key, "memory.md");
+export const memoryOf = (instanceDir, key, warnings = []) => cappedFile(instanceDir, `agents/${key}/memory.md`, warnings, "the Librarian should prune it");
+/** The owner's working style (owner/profile.md in the instance repo, through the same apply), at most MEMORY_MAX bytes too. */
+export const profileOf = (instanceDir, warnings = []) => cappedFile(instanceDir, "owner/profile.md", warnings, "keep it to how the owner works");
+function cappedFile(instanceDir, path, warnings, fix) {
+  const file = join(instanceDir, path);
   if (!existsSync(file)) return "";
   let text = readFileSync(file, "utf8").trim();
   if (Buffer.byteLength(text) > MEMORY_MAX) {
     let cut = text;
     while (Buffer.byteLength(cut) > MEMORY_MAX) cut = cut.slice(0, Math.max(cut.lastIndexOf("\n"), 0));
-    warnings.push(`agents/${key}/memory.md is over ${MEMORY_MAX} bytes: only its first lines are used; the Librarian should prune it`);
+    warnings.push(`${path} is over ${MEMORY_MAX} bytes: only its first lines are used; ${fix}`);
     text = cut;
   }
   return text;
