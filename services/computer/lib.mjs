@@ -1,7 +1,7 @@
 // The computer launcher's logic, kept free of Docker so it can be tested: run tokens, the env an exec gets, the Codex
 // config the box gets, the `docker run` line and the model call's hand-off to the gateway. launcher.mjs wires it up.
 import { randomBytes } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
+import { mkdirSync, realpathSync, statSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 
@@ -253,6 +253,16 @@ export function jobFolder(given, root, name) {
   return real;
 }
 
+/**
+ * A job box's bind mounts. The guard hooks folder is made here, as the launcher's user (the runner's): a missing bind source
+ * is created by Docker as root, and the runner then can't write its pre-push hook into it (EACCES on every repo command).
+ */
+export function jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork, repo, engineDir }) {
+  const hooks = path.join(runnerWork, ".guard-hooks");
+  mkdirSync(hooks, { recursive: true });
+  return [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, "services/runner/bin")}:/opt/aidenhq/bin:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`];
+}
+
 /** Where a job box's runner bits are: the guard hooks, the `aidenhq` commands, the HOME (outside every clone). */
 export const JOB_HOME = "/workspace/.aidenhq/home";
 const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -299,7 +309,7 @@ export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }) {
  */
 export async function serveHelper(req, res, { tokens, jobs, retryForMs = 120_000, retryEveryMs = 2000 }) {
   const reply = (status, text) => res.writeHead(status, { "content-type": "text/plain; charset=utf-8" }).end(text);
-  const m = /^\/helper\/([a-z]+)$/.exec(req.url ?? "");
+  const m = /^\/helper\/([a-z][a-z-]*)$/.exec(req.url ?? "");
   if (req.method !== "POST" || !m || !HELPER_COMMANDS.includes(m[1])) return reply(404, "not found");
   const token = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
   const binding = () => {

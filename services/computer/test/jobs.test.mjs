@@ -1,11 +1,11 @@
 // Runner jobs in a computer (docs/design/sandboxing.md, the strong tier): the boundary scenarios of the launcher's side.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { JOB_ENV_NAMES, Jobs, LEASE_MS, Tokens, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, serveHelper, stale } from "../lib.mjs";
+import { JOB_ENV_NAMES, Jobs, LEASE_MS, Tokens, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, stale } from "../lib.mjs";
 import { startRepoHelper } from "../../runner/src/repohelper.ts";
 
 const keys = { plugin: "plugin-key", runner: "runner-key", progress: "progress-key" };
@@ -120,7 +120,7 @@ test("a job box's env file holds only the allowlisted names: the run's token, it
 test("the helper proxy: only a live job's run token, only the runner's commands, always to the helper bound to that job", async (t) => {
   // A fake runner: its real helper (startRepoHelper), with a push that records what reached the runner's tiering.
   const pushes = [];
-  const helper = startRepoHelper(async () => "cloned", () => {}, { push: async (ctx, args) => (pushes.push({ issue: ctx.issue.id, args }), "pushed: tier 1") });
+  const helper = startRepoHelper(async () => "cloned", () => {}, { push: async (ctx, args) => (pushes.push({ issue: ctx.issue.id, args }), "pushed: tier 1"), "create-repo": async () => "created" });
   const port = await helper.listening;
   const bound = helper.register({ issue: { id: "iss-1" } });
   // Another helper that must never be reached, whatever the body names.
@@ -141,9 +141,17 @@ test("the helper proxy: only a live job's run token, only the runner's commands,
   assert.equal(pushes.length, 1);
   assert.equal(pushes[0].issue, "iss-1", "the bound job's context, not one the box names");
   assert.equal(decoyHits.length, 0);
+  assert.deepEqual(await call("create-repo", { name: "hello" }), [200, "created"], "a hyphenated command reaches the helper");
   assert.equal((await call("shell", {}))[0], 404);
   assert.equal((await call("push", {}, "ahqc_unknown"))[0], 401);
   tokens.revoke("job-box");
   assert.equal((await call("push", {}))[0], 401, "a revoked token is refused");
   assert.equal(pushes.length, 1);
+});
+
+test("a job's mounts: the guard hooks folder exists, made by us, before Docker could make it as root", () => {
+  const work = mkdtempSync(join(tmpdir(), "work-"));
+  const mounts = jobMounts({ resolvConf: "/r", workspace: "/w", outDir: "/o", codexHome: "/c", runnerWork: work, repo: "/repo", engineDir: "modules/engine-codex" });
+  assert.ok(mounts.includes(`${join(work, ".guard-hooks")}:/opt/aidenhq/hooks:ro`));
+  assert.equal(statSync(join(work, ".guard-hooks")).uid, process.getuid());
 });
