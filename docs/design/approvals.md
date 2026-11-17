@@ -22,8 +22,11 @@ agent, never to the owner.
 - **Earlier decisions (replaced "sticky", 2026-11-14).** The owner's rejection of an action on a task is a veto: every
   later request of it there is the owner's until they approve one. The reviewer's rejection holds for exactly that content
   (the same commits are refused by code, under any branch name); changed content is reviewed afresh with every earlier
-  note on the task attached; after three reviewer rejections on the task since the owner's last yes (a rejected change
-  approved later no longer counts), the action is parked with a note to the agent. Code's own refusals (moved, unreadable, too large) never count; a card closed because its head moved is stored `stale`, not `rejected`. `tiers.mjs` `priorDecisions`; the board keeps
+  note on the task attached; after three reviewer rejections on one branch or PR since the owner's last yes (a rejected
+  change approved later no longer counts), that branch or PR is parked with a note to the agent, and the task's other
+  branches are still reviewed on their own merits. A rejection is counted on the branch it was raised against, by its name
+  or by the change's content key (a rebased or renamed resubmission keeps its budget); an action that names no branch or PR
+  (an apply, a module digest) has the task as its target. Code's own refusals (moved, unreadable, too large) never count; a card closed because its head moved is stored `stale`, not `rejected`. `tiers.mjs` `priorDecisions`; the board keeps
   its own check of the owner's veto.
 - **A rejected head stays inspectable.** A `pr` card's head is reviewed before anything is pushed, so a rejection that
   held to its content would otherwise have nothing left to read: the runner keeps each reviewed head in its cache clone as

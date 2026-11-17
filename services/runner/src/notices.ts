@@ -62,9 +62,10 @@ export function summaryKind(rows: SummaryRow[]): NoticeKind {
 
 /**
  * What follows a card the AI reviewer rejected on a runner Engineer's task. The Engineer is dispatched with the note
- * (`dispatch`): nobody else wakes it, since its task wakes no Paperclip agent. At MAX_REJECTS reviewer rejections the
- * runner stops: the task is parked and the delegator is told, never the Engineer. Two reviewers unsure may mean the brief
- * is the fix, which is the delegator's: it is told too. A card whose head moved (stale) needs nothing: a newer one follows.
+ * (`dispatch`): nobody else wakes it, since its task wakes no Paperclip agent. At MAX_REJECTS reviewer rejections of that
+ * branch or PR the runner stops sending it back, and the delegator is told, never the Engineer (another branch of the task
+ * is still reviewed on its own). Two reviewers unsure may mean the brief is the fix, which is the delegator's: it is told
+ * too. A card whose head moved (stale) needs nothing: a newer one follows.
  */
 export function afterRejection({ code, rejects, maxRejects, unsure }: { code: string | null | undefined; rejects: number; maxRejects: number; unsure: string }): { dispatch: boolean; tell?: NoticeKind } {
   if (code === "stale_head") return { dispatch: false };

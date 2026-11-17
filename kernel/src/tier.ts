@@ -173,7 +173,21 @@ export function recordKey(r: Prior): string | undefined {
   return r.digest ? `digest:${r.digest}` : undefined;
 }
 
-/** Reviewer rejections a task's retries are bounded by: past this many (since the owner's last yes), the action is parked. */
+/**
+ * Where a request is aimed, for MAX_REJECTS: every branch (`repo|branch`) or PR (`repo#number`) it changes, and a label for
+ * the agent. A request of an action that names neither (apply, create_repo, a module digest) has the task as its target.
+ */
+export function requestTargets(action: string, s: any): { keys: string[]; label: string } | undefined {
+  const branches = action === "push" || action === "pr" ? (s?.branches ?? []).filter((b: any) => b?.repo && b?.branch) : [];
+  if (branches.length) return { keys: branches.map((b: any) => `${String(b.repo).toLowerCase()}|${b.branch}`), label: `branch${branches.length > 1 ? "es" : ""} ${branches.map((b: any) => `\`${b.branch}\``).join(", ")}` };
+  const prs = action === "merge" ? (s?.prs ?? []).filter((p: any) => p?.repo && p?.number !== undefined) : [];
+  if (prs.length) return { keys: prs.map((p: any) => `${String(p.repo).toLowerCase()}#${p.number}`), label: `PR${prs.length > 1 ? "s" : ""} ${prs.map((p: any) => `#${p.number}`).join(", ")}` };
+  return undefined;
+}
+/** The targets a record was raised against (its card's args), for a rejection to be counted on. */
+const recordTargets = (r: Prior): string[] => requestTargets(r.action, { branches: r.args?.only, prs: r.args?.prs })?.keys ?? [];
+
+/** Reviewer rejections one target's retries are bounded by: past this many (since the owner's last yes), it is parked. */
 export const MAX_REJECTS = 3;
 /** Rejections code made without judging the change (it moved, couldn't be read, too large): they are never findings. */
 export const CODE_REJECTS = ["refused_by_code", "stale_head", "check_failed", "too_large", "files_not_shown", "no_diff", "reviewer_failed"];
@@ -186,26 +200,35 @@ const decided = (r: Prior) => ["approved", "used", "expired", "rejected"].includ
  * request also carries; only decided records, never a Tier 0 one):
  * - ownerVeto: the owner's latest decision on it was a no (their later yes withdraws that), or the owner rejected exactly
  *   this content and hasn't approved that same content since (an approval of other content doesn't lift it).
- * - rejects: the AI reviewer's rejections on the task since the owner's last yes, task-wide (any branch, PR or name),
- *   except those whose exact content was approved later. At MAX_REJECTS the action is parked.
+ * - rejects: the AI reviewer's rejections since the owner's last yes that were raised against one of the branches or PRs
+ *   `targets` names (tier.ts requestTargets; a rejection of another branch's change counts here when its content key is this
+ *   request's, so a rebased or renamed resubmission stays on the branch's budget), except those whose exact content was
+ *   approved later; without `targets` (an action that names neither) the task is the target, as before. At MAX_REJECTS that
+ *   branch or PR is parked, and a different branch of the task is reviewed on its own merits.
  * - same: one of those rejected exactly this content (requestKey): it stays rejected (its note). Two reviewers' unsure
  *   lifts once, after the request chain changed (`chain`: the current chain's hash).
  * - relift: that lift's earlier note: the re-review's unsure goes to the owner, not back to the agent.
  * - findings: every one of those notes, attached to the next review.
  */
-export function priorDecisions(records: Prior[], action: string, also: string[] = [], key?: string, patches?: string | null, chain?: string) {
+export function priorDecisions(records: Prior[], action: string, also: string[] = [], key?: string, patches?: string | null, chain?: string, targets?: { keys: string[]; label: string }) {
   const want = [action, ...(also ?? [])];
   const mine = (records ?? []).filter((r) => decided(r) && carried(r).some((x) => want.includes(x))).sort((a, b) => String(a.decidedAt ?? "").localeCompare(String(b.decidedAt ?? "")));
   const lastOwner = mine.filter(byOwner).at(-1);
   const ownerYes = mine.filter((r) => byOwner(r) && r.state !== "rejected").at(-1);
   const approvedLater = (r: Prior) => mine.some((y) => y.state !== "rejected" && String(y.decidedAt) > String(r.decidedAt) && recordKey(y) !== undefined && recordKey(y) === recordKey(r));
-  const since = mine.filter((r) => r.state === "rejected" && r.decidedBy!.startsWith("reviewer:") && !CODE_REJECTS.includes(r.reviewCode ?? "") && (!ownerYes || String(r.decidedAt) > String(ownerYes.decidedAt)) && !approvedLater(r));
+  const judged = mine.filter((r) => r.state === "rejected" && r.decidedBy!.startsWith("reviewer:") && !CODE_REJECTS.includes(r.reviewCode ?? "") && (!ownerYes || String(r.decidedAt) > String(ownerYes.decidedAt)) && !approvedLater(r));
+  // The retry bound is per target: a rejection raised against another branch or PR of the task never spends this one's budget.
+  // A record belongs to this request's targets by name, or by the change's content key (a rebased or renamed resubmission).
+  const asked = typeof patches === "string" ? patches.split(",").filter(Boolean) : [];
+  const mineOnTarget = (r: Prior) => recordTargets(r).some((k) => targets!.keys.includes(k)) || (r.args?.only ?? r.args?.prs ?? []).some((x: any) => typeof x?.patch === "string" && asked.includes(x.patch));
+  const onTarget = targets?.keys.length ? judged.filter(mineOnTarget) : judged;
   // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
   // same commits may come back once, after the request chain changed (`chain`, its hash now; `requestChain`, its hash
   // when they were unsure). The chain is agent-editable, so that relift happens at most once per content: the re-review
   // gets `relift` (the first round's note), and unsure again there goes to the owner (the reviewer module). Unchanged or unknown
-  // chain, or any other rejection of the content, and it stays rejected. It still counts toward MAX_REJECTS.
-  const rejectedSame = key ? since.filter((r) => recordKey(r) === key) : [];
+  // chain, or any other rejection of the content, and it stays rejected. It still counts toward MAX_REJECTS (on the branch
+  // it was raised against). Content is judged task-wide: this is about what was written, not where it was aimed.
+  const rejectedSame = key ? judged.filter((r) => recordKey(r) === key) : [];
   const [only] = rejectedSame;
   const lifted = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
   const sameOne = lifted ? undefined : rejectedSame[0];
@@ -214,7 +237,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
   const sameContent = (r: Prior) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, relift: lifted ? only!.review || "no note" : undefined, rejects: since.length, findings: since.map((r) => r.review).filter(Boolean) as string[] };
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, relift: lifted ? only!.review || "no note" : undefined, rejects: onTarget.length, findings: judged.map((r) => r.review).filter(Boolean) as string[], ...(targets?.keys.length ? { scope: targets.label } : {}) };
 }
 
 /** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */
@@ -222,7 +245,7 @@ export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Par
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
   if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this change on this task (its note: ${String(p.same).slice(0, 400)}). Fix what it found and ask again with the changed commits`);
-  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on this task, so it isn't reviewed again here. Report what it found to whoever asked for this work`);
+  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here. A different branch or PR of the task is reviewed on its own; report what it found to whoever asked for this work`);
   return undefined;
 }
 
