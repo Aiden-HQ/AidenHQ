@@ -24,17 +24,14 @@ export function probeConfig(adapterType, adapterConfig, { codexArgs = [], harnes
 }
 
 /**
- * Waits on Paperclip's check of a new or reconfigured agent: "verified" once it leaves preparing/verifying, "failed" at the
- * first failed probe (Paperclip records lifecycleError and tries again by itself a minute later, so waiting longer only
- * waits out its retry timer), "timeout" after `ms`. A config change clears lifecycleError, so an error seen here is this
- * attempt's. `get` reads the agent.
+ * Waits on Paperclip's check of a new or reconfigured agent, up to `ms`: true once it leaves preparing/verifying. A failed
+ * probe (lifecycleError) is waited through: Paperclip tries again by itself a minute later, and a new key's first call can
+ * fail. `get` reads the agent.
  */
 export async function awaitVerified(get, { ms = 180_000, every = 2_000, sleep = (t) => new Promise((r) => setTimeout(r, t)) } = {}) {
   for (let waited = 0; ; waited += every) {
-    const a = await get();
-    if (!["preparing", "verifying"].includes(a.lifecycleState)) return "verified";
-    if (a.lifecycleError) return "failed";
-    if (waited >= ms) return "timeout";
+    if (!["preparing", "verifying"].includes((await get()).lifecycleState)) return true;
+    if (waited >= ms) return false;
     await sleep(every);
   }
 }

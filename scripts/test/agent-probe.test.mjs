@@ -16,17 +16,16 @@ test("an OpenCode runner agent's check runs opencode on the model gateway with t
   assert.deepEqual(cx.extraArgs, ["--sandbox", "read-only"]);
 });
 
-// Without a model key Paperclip's probe can only fail and it retries by itself every minute: setup used to wait 3 minutes
-// for each of 9 agents in turn (27 minutes of a first install). It stops at the first failed probe.
-test("the wait for Paperclip's check ends at its first failed probe, not after 3 minutes", async () => {
+// Setup waited 3 minutes for each of 9 agents in turn (27 minutes of a first install); now they wait side by side, and a
+// probe Paperclip failed and retried still ends verified.
+test("the wait for Paperclip's check rides out a failed probe and ends when the agent is verified", async () => {
   const { awaitVerified } = await import("../agent-probe.mjs");
   let slept = 0;
   const sleep = async (t) => { slept += t; };
   const states = (...xs) => { let i = 0; return async () => xs[Math.min(i++, xs.length - 1)]; };
-  assert.equal(await awaitVerified(states({ lifecycleState: "verifying" }, { lifecycleState: "verifying", lifecycleError: "The execution test did not pass." }), { sleep }), "failed");
-  assert.equal(slept, 2000);
-  assert.equal(await awaitVerified(states({ lifecycleState: "preparing" }, { lifecycleState: "ready" }), { sleep }), "verified");
+  assert.equal(await awaitVerified(states({ lifecycleState: "verifying", lifecycleError: "The execution test did not pass." }, { lifecycleState: "verifying" }, { lifecycleState: "ready" }), { sleep }), true);
+  assert.equal(slept, 4000);
   slept = 0;
-  assert.equal(await awaitVerified(states({ lifecycleState: "verifying" }), { sleep, ms: 10_000 }), "timeout");
+  assert.equal(await awaitVerified(states({ lifecycleState: "verifying" }), { sleep, ms: 10_000 }), false);
   assert.equal(slept, 10_000);
 });

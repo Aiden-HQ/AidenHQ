@@ -4,7 +4,7 @@
 // secret; never a path or a service. Values are never logged, echoed or put on a command line.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { SetupField } from "./admin.ts";
 import { fail } from "./proxy.ts";
@@ -106,10 +106,19 @@ export function composeRecreate({ dir, composeFile, docker = "docker", flock = "
  * left its agents unverified, and this run checks them (each scoped as soon as Paperclip verifies it). Fire and forget: a
  * failure is in the log, and the next apply runs setup again anyway.
  */
-export function agentSetup({ dir, log, node = process.execPath, flock = "flock", wait = 600 }: { dir: string; log: string; node?: string; flock?: string; wait?: number }) {
+export function agentSetup({ dir, log, warn, node = process.execPath, flock = "flock", wait = 600 }: { dir: string; log: string; warn: (msg: string, o: object) => void; node?: string; flock?: string; wait?: number }) {
   return () => {
-    mkdirSync(path.dirname(log), { recursive: true });
-    const out = openSync(log, "a", 0o600);
-    spawn(flock, ["-w", String(wait), path.join(dir, "data", "apply.lock"), node, path.join(dir, "scripts", "paperclip-setup.mjs")], { cwd: dir, detached: true, stdio: ["ignore", out, out] }).unref();
+    let out: number | undefined;
+    try {
+      mkdirSync(path.dirname(log), { recursive: true });
+      out = openSync(log, "a", 0o600);
+      const child = spawn(flock, ["-w", String(wait), path.join(dir, "data", "apply.lock"), node, path.join(dir, "scripts", "paperclip-setup.mjs")], { cwd: dir, detached: true, stdio: ["ignore", out, out] });
+      child.on("error", (e) => warn("agent setup didn't start", { err: e.message }));
+      child.unref();
+    } catch (e) {
+      warn("agent setup didn't start", { err: (e as Error).message });
+    } finally {
+      if (out !== undefined) closeSync(out);
+    }
   };
 }

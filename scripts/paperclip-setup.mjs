@@ -331,15 +331,15 @@ async function dropOldOpenRouterSecret() {
   }
 }
 
-// Paperclip's check of a new or reconfigured agent is a Codex hello probe (up to 45 s) through the model gateway. Without a model
-// key it can only fail, so setup doesn't wait for it: the agent stays unverified (Paperclip shows it paused, never working)
+// Paperclip's check of a new or reconfigured agent is a Codex hello probe (up to 45 s) through the model gateway; a failure is
+// retried a minute later. Without a model key it can only fail, so setup doesn't wait for it: the agent stays unverified (Paperclip shows it paused, never working)
 // until the kernel's model step saves a key that works and runs this setup again (kernel/src/main.ts verifyAgents).
 const modelKey = Boolean(readSecret("openrouter_key"));
 async function verified(id, name) {
   if (!modelKey) return false;
-  const r = await awaitVerified(async () => (await api("GET", `/api/agents/${id}`)).json);
-  if (r !== "verified") console.warn(`! ${name}: Paperclip's check ${r === "failed" ? "failed (Configuration in Paperclip shows why)" : "is still running after 3 min"}; it is verified on the next setup run`);
-  return r === "verified";
+  const ok = await awaitVerified(async () => (await api("GET", `/api/agents/${id}`)).json);
+  if (!ok) console.warn(`! ${name}: not verified by Paperclip after 3 min (its Configuration page shows why); the next setup run checks it again`);
+  return ok;
 }
 
 // The owner watches a Codex agent's plan live on the board (services/board/src/codex-activity.ts reads update_plan calls).
@@ -392,8 +392,8 @@ async function ensureAgents(companyId, fleetIssues) {
     const adapterConfig = body.adapterType === "opencode_local" ? { ...body.adapterConfig, env: {} } : body.adapterConfig;
     await api("PATCH", `/api/agents/${agent.id}`, { name: body.name, title: body.title, runner: "legacy", adapterConfig, runtimeConfig: body.runtimeConfig, metadata: body.metadata, budgetMonthlyCents: body.budgetMonthlyCents });
   };
-  // An agent that is new, still verifying or paused by setup is handled whole, each on its own (side by side: each new one
-  // waits out its own Paperclip probe): created or verified on the probe's unscoped config, scoped as soon as its probe ends,
+  // An agent that is new, still verifying or paused by setup is handled whole, each on its own (side by side, so the whole
+  // wait is about one agent's, not the sum): created or verified on the probe's unscoped config, scoped as soon as its probe ends,
   // and only then resumed. An unverified agent can't run (Paperclip keeps it paused), so scoping it right after its own probe
   // means no agent ever runs unscoped. One that isn't verified keeps its scoped config and is checked again by the next run.
   // Rare after the first apply.
@@ -407,7 +407,8 @@ async function ensureAgents(companyId, fleetIssues) {
       await verified(p.agent.id, a.name);
     } else if (["preparing", "verifying"].includes(p.agent.lifecycleState)) {
       if (!modelKey) return; // nothing to check it with yet: it keeps its scoped config (below)
-      await api("PATCH", `/api/agents/${p.agent.id}`, { adapterConfig: unscoped });
+      // Checked as a new agent is: on the probe's config, outside any computer (ensureComputers below sets its environment again).
+      await api("PATCH", `/api/agents/${p.agent.id}`, { adapterConfig: unscoped, ...(p.agent.defaultEnvironmentId ? { defaultEnvironmentId: null } : {}) });
       if (await verified(p.agent.id, a.name)) step(`Verified agent ${a.name}`);
     } else if (!resume) return;
     await scope(p);
