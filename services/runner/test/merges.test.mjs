@@ -902,11 +902,11 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
   });
 
   // Owner, 2026-11-15: the breaker on identical failures counts the code's failures only. A red head's fix names the checks
-  // that were the environment's (timed out, never started, a runner that died), and the breaker leaves them out.
+  // that were the environment's (cancelled, never started, a runner that died), and the breaker leaves them out.
   it("a red head's fix names its environmental checks for the breaker to leave out", async () => {
     const H = "4567".repeat(10);
     const run = (name, conclusion, databaseId) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion, databaseId, checkSuite: { workflowRun: { databaseId: 100 + databaseId } } });
-    const nodes = [run("tests", "FAILURE", 1), run("lint", "TIMED_OUT", 2), run("image-scan", "FAILURE", 3), run("build", "FAILURE", 4), run("ci-required", "FAILURE", 5), run("deploy", "FAILURE", 6), run("docs", "FAILURE", 7)];
+    const nodes = [run("tests", "FAILURE", 1), run("lint", "CANCELLED", 2), run("image-scan", "FAILURE", 3), run("build", "FAILURE", 4), run("ci-required", "FAILURE", 5), run("deploy", "FAILURE", 6), run("docs", "FAILURE", 7)];
     const gh = fakeGithub({ 1: own(1, { headRefOid: H, mergeStateStatus: "UNSTABLE", ...head({ state: "FAILURE", contexts: { nodes } }) }) });
     gh.jobs = {
       tests: { steps: [{ name: "Run tests" }], annotations: [{ annotation_level: "failure", message: "Process completed with exit code 1." }] },
