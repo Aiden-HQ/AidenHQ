@@ -82,25 +82,34 @@ export function applyCardArgs(b: { r: { repo: string; branch: string }; sha: str
 
 /** A card's text: the target in a line, what happens, what changes where, and the details the owner and the reviewer read. */
 export type CardText = { target: string; sentence: string; changes: string; reads: string; cost: string; details: string };
-/** The card for one of the runner's git kinds, from its args alone (never the agent's prose; a PR's text is its own field). */
+/** A repository of codehost-local's org (local/<name>): a bare repo on this server, its PRs change requests. */
+const onServer = (repo: string) => repo.toLowerCase().startsWith("local/");
+/**
+ * The card for one of the runner's git kinds, from its args alone (never the agent's prose; a PR's text is its own field).
+ * Worded per code host: GitHub's PRs, or this server's change requests when every repository on the card is local/*.
+ */
 export function cardOf(action: "push" | "pr" | "merge" | "create_repo", args: any): CardText {
   const base = { reads: "Nothing new.", cost: "No model cost." };
   if (action === "push" || action === "pr") {
     const list = (args.only as BranchArg[]).map((b) => `${b.repo} ${b.branch} at ${b.sha.slice(0, 12)}`);
-    const text = action === "pr" && args.text ? `\n\nPR title: ${args.text.title}\n\n${args.text.body}` : "";
+    const local = (args.only as BranchArg[]).every((b) => onServer(b.repo));
+    const text = action === "pr" && args.text ? `\n\n${local ? "Change" : "PR"} title: ${args.text.title}\n\n${args.text.body}` : "";
     const n = `${list.length} branch${list.length === 1 ? "" : "es"}`;
     const merge = action === "pr" && args.merge === true;
-    const sentence = action === "push" ? `Push ${n} to GitHub.` : merge ? `Push and open (or update) a PR for ${n}, then merge each PR once its checks are green.` : `Push and open (or update) a draft PR for ${n}.`;
+    const sentence = action === "push" ? `Push ${n} to ${local ? "this server" : "GitHub"}.` : merge ? `Push and open (or update) a PR for ${n}, then merge each PR once its checks are green.` : `Push and open (or update) a draft ${local ? "change request" : "PR"} for ${n}.`;
     const then = merge ? "\nThen merges each PR at exactly this commit, once every named check is green on it and its base branch is green." : "";
     return { ...base, target: list.join(", ").slice(0, 500), sentence, changes: `${list.join("\n")}${then}`, details: `${list.join("\n")}${then}${text}` };
   }
   if (action === "merge") {
     const prs = args.prs as MergePrArg[];
     const urls = prs.map((p) => p.url);
-    const lines = prs.map((p) => `${p.url}${p.head ? ` at ${p.head.slice(0, 12)}` : ""}${p.noReview ? " (your tap is its only review)" : " (also needs GitHub approval)"}`);
-    return { ...base, target: urls.join(", ").slice(0, 500), sentence: `Merge ${urls.length} pull request${urls.length === 1 ? "" : "s"}, one at a time${args.gap ? `, ${args.gap} minutes apart` : ""}.`, changes: `Merges, in this order, only at these commits and with green checks:\n${lines.join("\n")}`, details: lines.join("\n") };
+    const local = prs.every((p) => onServer(p.repo));
+    const lines = prs.map((p) => `${p.url}${p.head ? ` at ${p.head.slice(0, 12)}` : ""}${onServer(p.repo) ? "" : p.noReview ? " (your tap is its only review)" : " (also needs GitHub approval)"}`);
+    return { ...base, target: urls.join(", ").slice(0, 500), sentence: `Merge ${urls.length} ${local ? "change" : "pull"} request${urls.length === 1 ? "" : "s"}, one at a time${args.gap ? `, ${args.gap} minutes apart` : ""}.`, changes: `Merges, in this order, only at these commits and with green checks:\n${lines.join("\n")}`, details: lines.join("\n") };
   }
-  const what = `Creates the private repository ${args.repo} (with a README) through the instance's GitHub App. It adds a repository to the agents org; nothing else changes.`;
+  const what = onServer(args.repo)
+    ? `Creates the repository ${args.repo} (with a README) on this server. It adds a repository to the agents org; nothing else changes.`
+    : `Creates the private repository ${args.repo} (with a README) through the instance's GitHub App. It adds a repository to the agents org; nothing else changes.`;
   return { ...base, target: args.repo, sentence: `Create the repository ${args.repo}.`, changes: what, details: what };
 }
 

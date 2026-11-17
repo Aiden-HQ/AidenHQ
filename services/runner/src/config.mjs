@@ -43,6 +43,15 @@ function productRepoOf(dir) {
   }
 }
 
+/** Whether the compiled module catalog (config/modules.json) has `name` enabled; false when it can't be read. */
+function enabledIn(file, name) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8")).some((m) => m?.name === name && m.enabled === true);
+  } catch {
+    return false;
+  }
+}
+
 /** Runner configuration: config/runner.yaml (or the example) plus .env and system.yaml. */
 export function loadConfig() {
   const env = { ...loadEnv(process.env.AIDENHQ_ENV_FILE ?? join(REPO_ROOT, ".env")), ...process.env };
@@ -64,12 +73,21 @@ export function loadConfig() {
   const allowed = [...(cfg.allowed_orgs ?? [])];
   if (appOn && agentsOrg && !allowed.some((o) => o.toLowerCase() === agentsOrg.toLowerCase())) allowed.push(agentsOrg); // the agents org is the runner's to change
   const stateDir = expand(cfg.state_dir ?? "~/.local/state/aidenhq-runner");
+  // The on-server code host (codehost-local, enabled in the compiled catalog): its org `local` is an agents org too, and
+  // its bare repos live under <data dir>/codehost (docs/design/codehost-local.md).
+  const dataDir = resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data"));
+  const localHost = enabledIn(join(configDir, "modules.json"), "codehost-local");
+  if (localHost && !allowed.some((o) => o.toLowerCase() === "local")) allowed.push("local");
   const gcpCredentials =expand(cfg.gcp?.credentials ?? join(secrets, "gcloud/application_default_credentials.json"));
   return {
     ...cfg,
     allowed_orgs: allowed,
     githubApp: appOn ? githubApp : undefined,
     agentsOrg,
+    // One agents org per enabled code host: tiering (tiers.mjs, plan.mjs) and the kernel (kinds.ts) take the list.
+    agentsOrgs: [...(agentsOrg ? [agentsOrg] : []), ...(localHost ? ["local"] : [])],
+    localHost,
+    dataDir,
     file,
     companyId,
     selfName,
@@ -113,6 +131,6 @@ export function loadConfig() {
     workDir: expand(cfg.work_dir ?? "~/aidenhq-work"),
     stateDir,
     // The monitoring module's textfile directory (node-exporter reads it): the runner's metrics (metrics.ts).
-    metricsFile: join(resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data")), "modules", "monitoring", "textfile", "runner.prom"),
+    metricsFile: join(dataDir, "modules", "monitoring", "textfile", "runner.prom"),
   };
 }
