@@ -46,6 +46,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
+          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           # a new branch or a force push has no usable before: compare with the default branch
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
@@ -306,16 +308,21 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
+          # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
+          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
           fi
           d="$RUNNER_TEMP/ci"; mkdir -p "$d"
           export BASE="$base" HEAD="$HEAD_SHA" HEAD_MAP=.github/ci/areas.json MAP="$d/areas.json"
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
-            export ALL="a push to main"; cp .github/ci/select.mjs .github/ci/areas.json "$d/"
-          elif ! { git show "$PR_BASE:.github/ci/select.mjs" > "$d/select.mjs" && git show "$PR_BASE:.github/ci/areas.json" > "$d/areas.json"; } 2>/dev/null; then
-            export ALL="the base has no suite map"; cp .github/ci/select.mjs .github/ci/areas.json "$d/"
+          # the suite map and selector come from the PR's base, or from main for a merge train (its tree holds the PRs' own edits);
+          # only a push to main uses its own tree
+          src="$PR_BASE"
+          case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then export ALL="a push to main or a merge train"; fi
+          if [ -z "$src" ] || ! { git show "$src:.github/ci/select.mjs" > "$d/select.mjs" && git show "$src:.github/ci/areas.json" > "$d/areas.json"; } 2>/dev/null; then
+            export ALL="${ALL:-the base has no suite map}"; cp .github/ci/select.mjs .github/ci/areas.json "$d/"
           fi
           out=$(node "$d/select.mjs")
           tests=$(jq -c .tests <<< "$out")
@@ -326,6 +333,8 @@ jobs:
       - id: find
         run: |
           set -f # DOCKERFILES is split on spaces below, never globbed
+          # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
+          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
@@ -382,13 +391,16 @@ jobs:
           sudo install -m 0755 "$RUNNER_TEMP/grype" /usr/local/bin/grype
       - name: Scan (no build)
         run: |
-          # On a pull request the scanner and its exceptions come from the base commit, so a PR can't run its own code here
-          # or loosen its own scan; a base without the scanner fails closed. A push to main runs main's own.
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            git show "$PR_BASE:scripts/supply-chain/image-scan.mjs" > "$RUNNER_TEMP/image-scan.mjs" \
+          # On a pull request the scanner and its exceptions come from the base commit, on a merge train from main (its tree holds
+          # the PRs' own edits), so no PR can run its own code here or loosen its own scan; a base without the scanner fails
+          # closed. A push to main runs main's own.
+          src="$PR_BASE"
+          case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
+          if [ -n "$src" ]; then
+            git show "$src:scripts/supply-chain/image-scan.mjs" > "$RUNNER_TEMP/image-scan.mjs" \
               || { echo "::error::the base commit has no scripts/supply-chain/image-scan.mjs: the PR that adds the scanner can't run it"; exit 1; }
-            git show "$PR_BASE:.github/image-scan-exceptions.yaml" > "$RUNNER_TEMP/exceptions.yaml" 2>/dev/null || : > "$RUNNER_TEMP/exceptions.yaml"
-            git show "$PR_BASE:.github/image-scan-accepted.yaml" > "$RUNNER_TEMP/accepted.yaml" 2>/dev/null || : > "$RUNNER_TEMP/accepted.yaml"
+            git show "$src:.github/image-scan-exceptions.yaml" > "$RUNNER_TEMP/exceptions.yaml" 2>/dev/null || : > "$RUNNER_TEMP/exceptions.yaml"
+            git show "$src:.github/image-scan-accepted.yaml" > "$RUNNER_TEMP/accepted.yaml" 2>/dev/null || : > "$RUNNER_TEMP/accepted.yaml"
           else
             cp scripts/supply-chain/image-scan.mjs "$RUNNER_TEMP/image-scan.mjs"
             cp .github/image-scan-exceptions.yaml "$RUNNER_TEMP/exceptions.yaml"
