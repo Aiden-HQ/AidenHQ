@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import YAML from "yaml";
 import { classify, newGrants } from "../src/tiers.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
-import { afterReview, priorDecisions, rejectedSince, requestTargets, routineCap } from "../../../kernel/src/tier.ts";
+import { afterReview, priorDecisions, priorPart, rejectedSince, requestTargets, routineCap } from "../../../kernel/src/tier.ts";
 import { moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { origins } from "../src/paperclip.ts";
 
@@ -91,7 +91,7 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   assert.equal(at(xyP, SHA("c"), { patch: undefined }).rule, "owner-veto", "no patch key, and the owner rejected something here: theirs");
   // A rejection is counted on the branch it was raised against (MAX_REJECTS), not the task: three on `feat/x` park that
   // branch, and a different, never-reviewed branch of the same task is still reviewed on its own merits.
-  const onBranch = (shas, branch) => shas.map((sha, i) => ({ ...rec("rejected", "reviewer:~openai/gpt-luna-latest", sha, i + 1), args: { only: [{ repo: "acme-agents/roadmap", branch, sha, patch: pk(sha) }] } }));
+  const onBranch = (shas, branch, at0 = 1) => shas.map((sha, i) => ({ ...rec("rejected", "reviewer:~openai/gpt-luna-latest", sha, at0 + i), args: { only: [{ repo: "acme-agents/roadmap", branch, sha, patch: pk(sha) }] } }));
   const parked = onBranch([SHA("a"), SHA("b"), SHA("c")], "feat/x");
   assert.equal(at(parked).rule, "retries-exhausted", "three rejections on this branch park it");
   assert.match(at(parked).reason, /rejected this action 3 times on branch `feat\/x`/, "the refusal names the branch, not the task");
@@ -115,8 +115,8 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   const card = { only: [{ repo: "Acme/Roadmap", branch: "feat/x" }] };
   const verified = { branches: [{ repo: "acme/roadmap", branch: "feat/x" }] };
   assert.deepEqual(requestTargets("pr", card), requestTargets("pr", verified), "the same target from a card and from a request");
-  assert.deepEqual(requestTargets("pr", card)?.keys, ["acme/roadmap|feat/x"], "case-insensitive repo, the branch exactly");
-  assert.deepEqual(requestTargets("merge", { prs: [{ repo: "acme/roadmap", number: 7 }] })?.keys, ["acme/roadmap#7"], "a PR's number");
+  assert.deepEqual(requestTargets("pr", card)?.targets.map((t) => t.key), ["acme/roadmap|feat/x"], "case-insensitive repo, the branch exactly");
+  assert.deepEqual(requestTargets("merge", { prs: [{ repo: "acme/roadmap", number: 7 }] })?.targets.map((t) => t.key), ["acme/roadmap#7"], "a PR's number");
   assert.equal(requestTargets("apply", { files: [] }), undefined, "an action that names no branch or PR: the task");
   // The rejection follow-up counts a card from its own args: a third rejection on `feat/x` parks that branch, and the same
   // branch's earlier rejections are not what a sibling's card is counted with (main.mjs rejectedFollowUp).
@@ -124,6 +124,15 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   const rejections = [1, 2, 3].map((i) => ({ ...rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA(String(i)), i), args: { only: [{ repo: "acme/roadmap", branch: "feat/x", sha: SHA(String(i)), patch: pk(SHA(String(i))) }] } }));
   assert.equal(priorDecisions(rejections, "pr", [], undefined, undefined, undefined, requestTargets("pr", third.args)).rejects, 3, "three on this branch: parked");
   assert.equal(priorDecisions(rejections, "pr", [], undefined, undefined, undefined, requestTargets("pr", { only: [{ repo: "acme/roadmap", branch: "feat/sibling", sha: SHA("d") }] })).rejects, 0, "the sibling's card counts none of them");
+  // Counted per target, not summed: one rejection each on three branches is three rejections, no branch past its own bound.
+  const spread = ["feat/a", "feat/b", "feat/c"].map((branch, i) => ({ ...rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA(String(i + 1)), i + 1), args: { only: [{ repo: "acme-agents/roadmap", branch, sha: SHA(String(i + 1)) }] } }));
+  for (const branch of ["feat/a", "feat/b", "feat/c"]) assert.equal(tierOf(at(spread, SHA("9"), { branch })), 0, `${branch} is not parked by the others' rejections`);
+  assert.equal(priorDecisions(spread, "pr", [], undefined, undefined, undefined, requestTargets("pr", { branches: [{ repo: "acme-agents/roadmap", branch: "feat/a" }, { repo: "acme-agents/roadmap", branch: "feat/b" }, { repo: "acme-agents/roadmap", branch: "feat/c" }] })).rejects, 1, "a three-branch request reports the busiest branch's count, not the sum");
+  // But a multi-branch request containing a parked branch is parked: its branch `feat/b` has three, the other two one each.
+  const withParked = [...spread, ...onBranch([SHA("d"), SHA("e")], "feat/b", 6)];
+  const multi = requestTargets("pr", { branches: [{ repo: "acme-agents/roadmap", branch: "feat/b" }, { repo: "acme-agents/roadmap", branch: "feat/a" }] });
+  assert.equal(priorDecisions(withParked, "pr", [], undefined, undefined, undefined, multi).rejects, 3, "the parked branch's own count");
+  assert.equal(priorPart(priorDecisions(withParked, "pr", [], undefined, undefined, undefined, multi))?.rule, "retries-exhausted", "one parked branch parks a request that carries it");
   assert.equal(at(three).rule, "retries-exhausted", "parked after three");
   assert.equal(at(three.map((r) => ({ ...r, reviewCode: "refused_by_code" }))).rule, "agents-org-branch", "code's refusals (moved, unreadable) never count");
   // The reproduction: a judged rejection, a card closed for its moved head, then another card: two judged rejections, not parked.
