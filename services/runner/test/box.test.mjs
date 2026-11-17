@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { readLog } from "./fakes/lib.mjs";
 import { registry } from "./fakes/engines.mjs";
+import { fakeJail } from "./fakes/jail.mjs";
 import { fakePaperclip } from "./flow-harness.mjs";
 import { State } from "../src/state.ts";
 import { ensureRepo, safeWorkspace } from "../../../modules/codehost-github/src/workspace.ts";
@@ -97,6 +98,7 @@ describe("box jobs", () => {
       writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
       chmodSync(join(bin, name), 0o755);
     }
+    fakeJail(bin, join(dir, "fake.log"));
     // The docker client gets only Docker's env from the runner: the fake's own settings are baked into its shim.
     writeFileSync(join(dir, "secret"), "the owner key 0123456789\n");
     writeFileSync(join(bin, "docker"), `#!/bin/sh\nFAKE_SECRET="${join(dir, "secret")}" FAKE_LOG="${join(dir, "fake.log")}" FAKE_STEP="${join(dir, "step")}" FAKE_BOXES="${boxes}" exec "${process.execPath}" "${join(FAKES, "docker.mjs")}" "$@"\n`);
