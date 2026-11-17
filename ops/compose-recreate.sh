@@ -168,6 +168,11 @@ recordSecretState() {
 # Whether one service has to be recreated: not running, or its container was built from another image, or its resolved
 # compose config differs from the one it was started with (compose records that hash on the container itself), or a
 # mounted secret's content changed since this container started.
+#
+# The image is compared by its platform manifest, as compose records it on the container (com.docker.compose.image), not
+# by the image's top-level id: on the containerd image store that id is the image index, and every build, cached or not,
+# writes a new index (a fresh provenance attestation), so comparing it recreated every built service on every apply. The
+# service's own image comes from the model: `config --images <service>` lists its dependencies' images too.
 moved() {
   local service="$1" id
   id="$(docker compose ps -a -q "$service" 2>/dev/null | head -1)"
@@ -178,10 +183,10 @@ moved() {
   digest="$(secretDigest "$service")" || exit 1
   BEFORE_DIGESTS[$service]="$digest"
   local image want have
-  image="$(docker compose config --images "$service" 2>/dev/null | head -1)"
+  image="$(jq -r --arg service "$service" '.services[$service].image // empty' <<< "$model")"
   if [ -n "$image" ]; then
-    want="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || true)"
-    have="$(docker inspect -f '{{.Image}}' "$id" 2>/dev/null || true)"
+    want="$(docker image inspect --platform "$platform" -f '{{.Id}}' "$image" 2>/dev/null || true)"
+    have="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.image"}}' "$id" 2>/dev/null || true)"
     [ -n "$want" ] && [ "$want" = "$have" ] || return 0
   fi
   local now then
@@ -247,6 +252,7 @@ desired="$(docker compose config --services | sort -u)"
 # Before anything is built, dumped or removed.
 [ -n "$desired" ] || { echo "compose: docker compose config lists no services: nothing built, dumped or removed" >&2; exit 1; }
 model="$(docker compose config --format json)"
+platform="$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')"
 
 RECREATED=()
 dump

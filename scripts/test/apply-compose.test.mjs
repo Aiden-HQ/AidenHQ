@@ -40,7 +40,14 @@ case "$1" in
       *"config --hash"*)
         s=$(printf '%s' "\${@: -1}")
         if [ "$s" = "*" ]; then cat "$dir/hashes" 2>/dev/null; else awk -v s="$s" '$1 == s {print}' "$dir/hashes" 2>/dev/null; fi ;;
-      *"config --format json"*) cat "$dir/model.json" 2>/dev/null ;;
+      *"config --format json"*)
+        # The model, with each service's image from its image-<service> file.
+        m=$(cat "$dir/model.json" 2>/dev/null || echo '{}')
+        for f in "$dir"/image-*; do
+          [ -f "$f" ] || continue
+          m=$(jq --arg s "\${f##*/image-}" --arg i "$(cat "$f")" '.services[$s].image = $i' <<< "$m")
+        done
+        printf '%s\n' "$m" ;;
       *"compose ps -a -q"*)
         s=$(printf '%s' "\${@: -1}"); cat "$dir/psid-$s" 2>/dev/null ;;
       *"compose ps -a --format"*)
@@ -73,10 +80,14 @@ case "$1" in
     case "$*" in
       *'{{.Name}}'*) cat "$dir/name-$id" 2>/dev/null ;;
       *'{{.State.Running}}'*) cat "$dir/running-$id" 2>/dev/null ;;
-      *'{{.Image}}'*) cat "$dir/imageof-$id" 2>/dev/null ;;
+      *'com.docker.compose.image'*) cat "$dir/imageof-$id" 2>/dev/null ;;
       *'config-hash'*) cat "$dir/hashof-$id" 2>/dev/null ;;
     esac ;;
-  image) id=$(printf '%s' "\${@: -1}" | tr '/:' '__'); cat "$dir/imageid-$id" 2>/dev/null ;;
+  image)
+    # --platform answers the platform manifest (platformid-*) when the test sets one apart from the index id.
+    id=$(printf '%s' "\${@: -1}" | tr '/:' '__')
+    if [ -f "$dir/platformid-$id" ]; then cat "$dir/platformid-$id"; else cat "$dir/imageid-$id" 2>/dev/null; fi ;;
+  version) echo linux/amd64 ;;
   rm)
     id=$(printf '%s' "\${@: -1}")
     if [ -f "$dir/rm-$id" ]; then cat "$dir/rm-$id"; exit 1; fi ;;
@@ -224,6 +235,23 @@ test("only the services whose image or config moved are recreated, and every ser
   assert.doesNotMatch(ups[0], /board/, `board is not recreated: ${ups[0]}`);
   assert.match(r.out, /compose: board kept/);
   assert.match(r.out, /compose: paperclip recreated/);
+});
+
+test("a rebuild that writes a new image index but the same platform image recreates nothing", async () => {
+  // The containerd image store: a cached build writes a fresh index (a new provenance attestation) over the same platform
+  // manifest, which is what compose recorded on the container.
+  const f = fixture({ containers, services: ["board"], hashes: { board: "h-board" } });
+  writeFileSync(join(f.dir, "psid-board"), "board1\n");
+  writeFileSync(join(f.dir, "image-board"), "aidenhq/board:local\n");
+  writeFileSync(join(f.dir, "imageid-aidenhq_board_local"), "sha256:index-rebuilt\n");
+  writeFileSync(join(f.dir, "platformid-aidenhq_board_local"), "sha256:board-amd64\n");
+  writeFileSync(join(f.dir, "imageof-board1"), "sha256:board-amd64\n");
+  writeFileSync(join(f.dir, "hashof-board1"), "h-board\n");
+  writeFileSync(join(f.dir, "state-board"), "running\n");
+  const r = await apply(f);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(recreates(r).length, 0, r.calls);
+  assert.match(r.out, /compose: board kept/);
 });
 
 test("an empty service list builds, dumps and removes nothing", async () => {
