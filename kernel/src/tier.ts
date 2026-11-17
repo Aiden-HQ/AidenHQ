@@ -253,11 +253,6 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, relift: lifted ? only!.review || "no note" : undefined, rejects, findings: judged.map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
 }
 
-/** How many rejections the branch, PR or task a request names has: `s` is a card's args or the request's verified state. */
-export function parkedRejects(records: Prior[], action: string, s: any): number {
-  return priorDecisions(records, action, [], undefined, undefined, undefined, requestTargets(action, s)).rejects;
-}
-
 /** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */
 export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Part | undefined {
   if (!p) return undefined;

@@ -62,18 +62,12 @@ export function summaryKind(rows: SummaryRow[]): NoticeKind {
 
 /**
  * What follows a card the AI reviewer rejected on a runner Engineer's task. The Engineer is dispatched with the note
- * (`dispatch`): nobody else wakes it, since its task wakes no Paperclip agent. At MAX_REJECTS reviewer rejections of that
- * branch or PR the runner stops sending it back, and the delegator is told, never the Engineer (another branch of the task
- * is still reviewed on its own). Two reviewers unsure may mean the brief is the fix, which is the delegator's: it is told
- * too. A card whose head moved (stale) needs nothing: a newer one follows.
+ * (`dispatch`): nobody else wakes it, since its task wakes no Paperclip agent. At MAX_REJECTS reviewer rejections the
+ * runner stops: the task is parked and the delegator is told, never the Engineer. Two reviewers unsure may mean the brief
+ * is the fix, which is the delegator's: it is told too. A card whose head moved (stale) needs nothing: a newer one follows.
  */
 export function afterRejection({ code, rejects, maxRejects, unsure }: { code: string | null | undefined; rejects: number; maxRejects: number; unsure: string }): { dispatch: boolean; tell?: NoticeKind } {
   if (code === "stale_head") return { dispatch: false };
   if (rejects >= maxRejects) return { dispatch: false, tell: "parked" };
   return { dispatch: true, ...(code === unsure ? { tell: "decision" } : {}) };
-}
-
-/** The delegator's notice that a rejection parked a card: the branch or PR it was raised against, never the whole task. */
-export function parkedNotice({ identifier, title, action, maxRejects, label }: { identifier: string; title: string; action: string; maxRejects: number; label?: string }): string {
-  return `**${label ? `${label} of ${identifier} is parked` : `${identifier} is parked`}:** the AI reviewer rejected its ${action} ${maxRejects} times, so the runner stops sending it back (its notes are on ${identifier}): ${title}. Its other branches are still reviewed on their own. Narrow or rewrite the request and reopen it with that, or cancel it.`;
 }
