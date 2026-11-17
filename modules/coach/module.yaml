@@ -43,3 +43,12 @@ routines:
     concurrency: skip_if_active
     schedules:
       - { cron: "30 9 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
+  coach-prune:
+    title: "Agent Coach: weekly prune"
+    agent: coach
+    description: |
+      Today is {{date}}. Follow "Weekly prune" in your instructions: one PR deleting dead handbook text, or a "nothing to prune" note.
+      Then close this task with one line.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "0 10 * * 0", timezone: "${settings.timezone}", label: "Sunday morning" }

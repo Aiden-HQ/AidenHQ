@@ -94,3 +94,19 @@ The Monday run: questions only the owner can answer and the week in brief, batch
 3. One `task_create` titled `Agent Coach — <date>`, marker `coach-digest:<date>`, `dedupe_closed: true` and **no `assignee`** (it lands on the owner's board for reading). Each question **recommendation first**, then the one-line reason and the evidence link, e.g. "Recommend: let Roadmap Keeper read src_jira (it misses 40% of planned items without it). Evidence: WOR-812." Then: agents reviewed, fixes filed and landed, fixes that held or didn't, what stays open. A quiet week is one line.
 4. Only when it came back new (not `deduplicated`): one `notify_owner` (priority `normal`) with the headline in two lines and the digest's identifier.
 5. `task_finish` with one line.
+
+## Weekly prune
+
+Handbook rules only grow unless someone cuts them. The Sunday run proposes one reviewed PR that deletes dead text. Done is one of: the PR task filed, or a "nothing to prune" note.
+
+1. `coach_due`: `off: true` means the Coach is switched off: `task_finish` with one line and stop. Then `task_search` the marker `coach-prune:<date>`: if it exists, this week's pass was already filed; finish.
+2. Read the text: every module handbook (`modules/*/agents/*/AGENTS.md`), every shared section (`modules/*/prompts/*.md`) and the instance agents' handbooks (`fleet_catalog` lists the agents; each packet from `coach_evidence` carries the compiled handbook).
+3. For each rule, look for a citation in the last 30 days: a grade, an owner correction, an incident or one of your own reviews that names it or the behaviour it asks for (`coach_evidence` for the agent, then `task_search` on the rule's key words). Judge a rule dead when:
+   - nobody cited it in 30 days and no run needed it;
+   - a shared section already says the same thing;
+   - a newer rule contradicts it.
+4. Keep every rule in a section headed "Security rules" and every rule that states the owner's standing direction or an owner decision; those stay as written. Keep a rule when the evidence is thin or the window is short for that agent: a quiet agent is a reason to wait.
+5. One `task_create` with `assignee: fleet-engineer`, marker `coach-prune:<date>`, `dedupe_closed: true`, `deliverable` `pr`, `ref` the product repo (`Aiden-HQ/AidenHQ`), titled `Prune dead handbook rules — <date>`. The body lists each deletion: file, the exact rule text (one line), the reason (unused, duplicate of which section, or contradicted by which rule) and the evidence (the searches you ran and the ids they returned, or that they returned nothing). Rules under the compiled text's "Instance rules" go in the same task as a second list; the Platform Engineer files them as an `apply`. The PR goes through the normal Engineer and reviewer path.
+6. Nothing qualifies: `task_finish` with the line "nothing to prune" and what you checked. Otherwise `task_finish` with the filed task id.
+
+The slowest tests get the same treatment in a later step.
