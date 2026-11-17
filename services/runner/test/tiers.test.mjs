@@ -89,18 +89,40 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   assert.equal(at(xyP, SHA("c"), { patch: P("1") }).rule, "owner-veto", "X rebased onto a new main");
   assert.equal(tierOf(at(xyP, SHA("c"), { patch: P("3") })), 0, "other content");
   assert.equal(at(xyP, SHA("c"), { patch: undefined }).rule, "owner-veto", "no patch key, and the owner rejected something here: theirs");
+  // A rejection is counted on the branch it was raised against (MAX_REJECTS), not the task: three on `feat/x` park that
+  // branch, and a different, never-reviewed branch of the same task is still reviewed on its own merits.
+  const onBranch = (shas, branch) => shas.map((sha, i) => ({ ...rec("rejected", "reviewer:~openai/gpt-luna-latest", sha, i + 1), args: { only: [{ repo: "acme-agents/roadmap", branch, sha, patch: pk(sha) }] } }));
+  const parked = onBranch([SHA("a"), SHA("b"), SHA("c")], "feat/x");
+  assert.equal(at(parked).rule, "retries-exhausted", "three rejections on this branch park it");
+  assert.match(at(parked).reason, /rejected this action 3 times on branch `feat\/x`/, "the refusal names the branch, not the task");
+  assert.equal(tierOf(at(parked, SHA("d"), { branch: "feat/sibling" })), 0, "a sibling branch is still reviewed");
+  // The same for a merge (a PR's number is its target) and for the pre-filing check, which reads priorDecisions the same way.
+  const onPr = (numbers) => numbers.map((n, i) => ({ action: "merge", args: { prs: [{ repo: "acme-agents/roadmap", number: n, url: `u${n}`, head: SHA(String(i + 1)) }] }, state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest", decidedAt: `2026-11-14T0${i + 2}:00:00Z`, review: "note" }));
+  const other = { prs: [{ repo: "acme-agents/roadmap", number: 2, head: SHA("d"), files: ["src/a.ts"], headMatches: true, checks: [{ name: "test", ok: true }], ownHead: true }] };
+  assert.equal(merge({}, { ...other, records: onPr([1, 1, 1]) }).rule, "agents-org-merge", "three rejections on PR #1 leave PR #2 reviewed");
+  assert.equal(merge({}, { ...other, records: onPr([2, 2, 2]) }).rule, "retries-exhausted", "three on this PR park it");
+  assert.equal(at(onBranch([SHA("a"), SHA("b"), SHA("c")], "feat/sibling"), SHA("d"), { branch: "feat/sibling" }).rule, "retries-exhausted", "its own rejections park it, under its own commits");
+  // A rejection follows its branch's budget by content too: one raised on `feat/x` for exactly the change now resubmitted
+  // under another name counts on that branch (two more there park it; without it, only two rejections and a fresh review).
+  const renamedOne = onBranch([SHA("a")], "feat/x");
+  const hereTwo = onBranch([SHA("b"), SHA("c")], "feat/renamed");
+  assert.equal(at([...renamedOne, ...hereTwo], SHA("d"), { branch: "feat/renamed", patch: pk(SHA("a")) }).rule, "retries-exhausted", "the same change under another name keeps its budget");
+  assert.equal(tierOf(at([...renamedOne, ...hereTwo.slice(1)], SHA("d"), { branch: "feat/renamed", patch: pk(SHA("a")) })), 0, "two rejections here are not parked");
   const three = [1, 2, 3].map((i) => rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA(String(i)), i));
+  assert.equal(at(three, SHA("f"), { branch: "feat/other" }).rule, "agents-org-branch", "a task-targeted action elsewhere never parks a branch");
   assert.equal(at(three).rule, "retries-exhausted", "parked after three");
   assert.equal(at(three.map((r) => ({ ...r, reviewCode: "refused_by_code" }))).rule, "agents-org-branch", "code's refusals (moved, unreadable) never count");
   // The reproduction: a judged rejection, a card closed for its moved head, then another card: two judged rejections, not parked.
   const judgedStaleJudged = [rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("a"), 1), rec("stale", "reviewer:~openai/gpt-luna-latest", SHA("b"), 2, { reviewCode: "stale_head" }), rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("c"), 3)];
   assert.equal(tierOf(at(judgedStaleJudged, SHA("d"))), 0, "a stale card spends no review slot");
   assert.equal(at([...judgedStaleJudged, rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("d"), 4)], SHA("e")).rule, "retries-exhausted", "three judged rejections still park");
-  // The count is task-wide: only the owner's yes, or a later approval of a rejected change's exact content, clears it; a
+  // Within one branch's budget only the owner's yes, or a later approval of a rejected change's exact content, clears it; a
   // Tier 0 audit row or an approval of other content never does, and a renamed branch doesn't start a new budget.
   assert.equal(at([...three, rec("approved", "reviewer:~openai/gpt-luna-latest", SHA("9"), 4)]).rule, "retries-exhausted", "an approval of other content");
   assert.equal(at([...three, rec("auto", "auto:agents-org-branch", SHA("9"), 4)]).rule, "retries-exhausted", "a Tier 0 audit row");
-  assert.equal(at(three, SHA("f"), { branch: "feat/renamed" }).rule, "retries-exhausted", "a renamed branch");
+  // Renaming is no escape hatch and no accident: the same change under a new name keeps its budget (above, by patch key),
+  // while a new branch with new commits is a sibling of `feat/x` and gets its own.
+  assert.equal(tierOf(at(three, SHA("f"), { branch: "feat/renamed" })), 0, "a new name and new commits: its own budget");
   assert.equal(at([...three, rec("approved", "owner:board", SHA("9"), 4)]).rule, "agents-org-branch", "the owner's yes");
   assert.equal(at([...three, rec("approved", "reviewer:~openai/gpt-luna-latest", SHA("3"), 4)]).rule, "agents-org-branch", "a rejected change later approved no longer counts");
   assert.equal(at([rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("f"), 1)], SHA("f"), { branch: "feat/renamed" }).rule, "rejected-content", "the same commit under another branch name");
