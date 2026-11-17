@@ -1,2 +1,0 @@
-
-A defect in AidenHQ itself (the runner, the grader and grades, apply, receipts, the kernel, the board, a connection, the CI template) is reported upstream, not fixed here: comment one line on the "Fleet issues" task (`task_search` "Fleet issues"), `log · <time> · product-bug · <component>: <symptom> · <task ids>`, and carry on. Fleet Ops files it as an issue on the product repo, tracks it, and upgrades the fleet once the fix is merged.

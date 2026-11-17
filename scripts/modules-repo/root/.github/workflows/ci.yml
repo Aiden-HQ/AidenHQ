@@ -2,7 +2,7 @@
 # job checks out the product (Aiden-HQ/AidenHQ main, read with the AIDENHQ_PRODUCT_READ secret: a fine-grained token with
 # read access to that repository only) and this repository at its modules/ path, the layout the product had before 5b.
 # Each package runs as it did in the product's CI. The supply-chain rules (pins, the 7-day age) run from the product's
-# scripts against this repository.
+# scripts against this repository. Jobs run on our self-hosted runners, for our own pushes and pull requests only.
 name: ci
 
 on:
@@ -19,7 +19,9 @@ concurrency:
 
 jobs:
   supply-chain:
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    # Our own pushes and pull requests only: a fork's pull request runs nothing (it could edit this file to reach our runners).
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, aidenhq]
     timeout-minutes: 10
     env:
       PR_BASE: ${{ github.event.pull_request.base.sha }}
@@ -55,7 +57,9 @@ jobs:
           exit $status
 
   packages:
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    # Our own pushes and pull requests only: a fork's pull request runs nothing (it could edit this file to reach our runners).
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, aidenhq]
     timeout-minutes: 30
     strategy:
       fail-fast: false
