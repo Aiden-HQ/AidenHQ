@@ -1,7 +1,6 @@
 # Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used.
-# Every job runs on our self-hosted runners (modules/ci; docs/operations.md, "CI runners"): one fresh container per job,
-# no Docker (image-scan scans without building). A PR from a fork goes to a GitHub-hosted runner instead, never ours (the
-# runner group, which allows private repositories only, is the real boundary: a PR can edit this file).
+# Every job runs on a GitHub-hosted runner (this repository is public, so it costs nothing). The self-hosted runners
+# (modules/ci) serve the private agents-org repositories only.
 # The AI reviewer's exit test (modules/ai-reviewer/scripts/reviewer-eval.mjs) needs a paid OpenRouter key, so the
 # maintainer runs it by hand for changes to the reviewer, its policy or its cases.
 name: ci
@@ -23,7 +22,7 @@ jobs:
   # be 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the
   # base) covers them; and every one of them is pinned (scripts/supply-chain/pins.mjs).
   supply-chain:
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
@@ -60,7 +59,7 @@ jobs:
   # interpolated into the script: it is untrusted text.
   pr-title:
     if: github.event_name == 'pull_request'
-    runs-on: ${{ github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       pull-requests: read
@@ -91,7 +90,7 @@ jobs:
   packages:
     needs: image-changes
     if: needs.image-changes.outputs.packages == 'true'
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,10 +105,14 @@ jobs:
           ref: ${{ steps.modules-pin.outputs.sha }}
           path: modules
           persist-credentials: false
-      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.mjs): a stable entry is never
@@ -149,7 +152,7 @@ jobs:
   runner-unit:
     needs: image-changes
     if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/runner')
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,10 +167,14 @@ jobs:
           ref: ${{ steps.modules-pin.outputs.sha }}
           path: modules
           persist-credentials: false
-      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
@@ -179,7 +186,7 @@ jobs:
     name: runner-flows (${{ matrix.shard }}/2)
     needs: image-changes
     if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/runner#flows')
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -198,10 +205,14 @@ jobs:
           ref: ${{ steps.modules-pin.outputs.sha }}
           path: modules
           persist-credentials: false
-      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
@@ -227,7 +238,7 @@ jobs:
   board:
     needs: image-changes
     if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/board')
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -242,10 +253,14 @@ jobs:
           ref: ${{ steps.modules-pin.outputs.sha }}
           path: modules
           persist-credentials: false
-      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
@@ -257,7 +272,7 @@ jobs:
   # Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed dependency manifest
   # or lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the scan, never skips it.
   image-changes:
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
@@ -275,7 +290,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
@@ -336,12 +350,12 @@ jobs:
   # vulnerability that has a fix. Nothing is built and no PR code runs (a build would run the PR's RUN steps on our
   # runner): scripts/supply-chain/image-scan.mjs reads each Dockerfile as text and passes grype only digest-pinned
   # references. Not covered: packages RUN steps install, so only base-image and lock-file changes are proven here. It is
-  # the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change. grype is baked
-  # into the runner image (modules/ci/runner), the security module's pin.
+  # the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change. grype is
+  # installed below, at the version the security module pins.
   image-scan:
     needs: image-changes
     if: needs.image-changes.outputs.dockerfiles != ''
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       DOCKERFILES: ${{ needs.image-changes.outputs.dockerfiles }}
@@ -352,10 +366,18 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      - name: Install grype
+        env:
+          GRYPE_VERSION: 0.121.3 # released 2026-11-09
+          GRYPE_SHA256: e9da18cc1429e786722e32161288103600efffd8e483c90761f90485bd1bec85 # grype_0.121.3_linux_amd64.tar.gz
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/grype.tgz" "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          echo "${GRYPE_SHA256}  $RUNNER_TEMP/grype.tgz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/grype.tgz" -C "$RUNNER_TEMP" grype
+          sudo install -m 0755 "$RUNNER_TEMP/grype" /usr/local/bin/grype
       - name: Scan (no build)
         run: |
           # On a pull request the scanner and its exceptions come from the base commit, so a PR can't run its own code here
@@ -388,7 +410,7 @@ jobs:
   ci-required:
     if: always()
     needs: [supply-chain, pr-title, image-changes, packages, runner-unit, runner-flows, board, image-scan]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - env:

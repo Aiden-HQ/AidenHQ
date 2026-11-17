@@ -32,6 +32,7 @@ export function jobsHost(env, db) {
   let log = "";
   p.stderr.on("data", (d) => (log += d));
   const port = new Promise((res, rej) => { p.stdout.once("data", (d) => res(Number(String(d).trim()))); p.once("exit", (c) => rej(new Error(`the jobs host exited (${c}): ${log}`))); });
+  port.catch(() => {}); // a host stopped by teardown before it printed its port is not an unhandled rejection
   return { p, port, log: () => log };
 }
 
