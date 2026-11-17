@@ -27,7 +27,7 @@ describe("internal listener", () => {
     issue: async () => issue,
     companyId: "co",
   } as unknown as Paperclip;
-  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40) });
+  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), reviewerKey: "r".repeat(40) });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -50,6 +50,15 @@ describe("internal listener", () => {
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
     call("POST", path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...asAgent("ra"), ...headers });
 
+
+  it("a typed settings change is read back only with the runner's key, never the token alone", async () => {
+    store.setMeta("settings-change:i9", JSON.stringify([{ kind: "unfork", agent: "scout" }]));
+    const get = (path: string, headers: Record<string, string> = {}) => call("GET", path, undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...headers });
+    expect((await get("/internal/settings-changes/i9")).status).toBe(403);
+    const ok = await get("/internal/settings-changes/i9", { "x-reviewer-key": "r".repeat(40) });
+    expect([ok.status, await ok.json()]).toEqual([200, { changes: [{ kind: "unfork", agent: "scout" }] }]);
+    expect((await get("/internal/settings-changes/other", { "x-reviewer-key": "r".repeat(40) })).status).toBe(404);
+  });
 
   it("needs the token and an allowed host", async () => {
     expect((await post("/internal/issues/PEN-1/schedule", { clear: true }, { authorization: "Bearer nope" })).status).toBe(401);

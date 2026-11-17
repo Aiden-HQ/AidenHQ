@@ -7,7 +7,7 @@
 //   services/shared/review-files.mjs  the changed files as the reviewer reads them, in the reviewer module's service
 //   services/shared/source-store.ts  the shared-sources writer side, in every source writer
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
-//   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
+//   services/shared/url-setting.ts   the URL setting check, in the board and the runner (the compiler imports the original)
 //   modules/apps-platform/design-system/      the design system, in the app starter and the agent computers
 //   modules/apps-platform/starter/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
@@ -52,7 +52,7 @@ export const SHARED = {
     "modules/security/scanner/src/source-store.ts",
   ],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
-  "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
+  "services/shared/url-setting.ts": ["services/board/src/url-setting.ts", "services/runner/src/url-setting.ts"],
   // App identity (docs/design/app-identity.md): the middleware every app copies, from the app template.
   "services/shared/aidenhq-identity.mjs": ["modules/apps-platform/starter/aidenhq-identity.mjs"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).

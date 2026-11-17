@@ -8,6 +8,8 @@ import { promisify } from "node:util";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import type { Logger } from "pino";
 import { z } from "zod";
+import { handbook, history } from "./agent-handbook.js";
+import { PauseSchema, setAgentPaused } from "./agent-pause.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { makeRuns } from "./runs.js";
@@ -24,9 +26,10 @@ import { kernelRecords, type Approval, type Records } from "./records.js";
 import { wakeCheck } from "./brake.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
-import { moduleStates } from "./modules.js";
+import { moduleAuthority, moduleStates } from "./modules.js";
+import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
-import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor } from "./settings-change.js";
+import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
@@ -72,6 +75,8 @@ export interface AppOptions {
    * kernel's admin listener, 3120). "internal": the tasks bridge, the runner and the kernel, with a bearer token, /internal/ only.
    */
   mode?: "lan" | "internal";
+  /** GitHub's REST API for a marketplace's newest pinnable commit (tests: a fake). */
+  fetch?: typeof fetch;
   /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in, and the approval page where every card is decided. */
   adminUrl?: string;
   /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
@@ -182,6 +187,7 @@ export function createApp(opts: AppOptions): Server {
   const mode = opts.mode ?? "lan";
   if (mode !== "internal" && !opts.accounts && !opts.session) throw new Error(`the ${mode} listener needs board accounts`);
   const grading = opts.grading ?? createGrading();
+  const resolveCommit = createResolver(opts.fetch ?? fetch);
   /** The grades of these tasks; the grading module unreachable: undefined, so the caller leaves its graded closes undone. */
   const gradesOf = (ids: string[]) => grading.grades(ids).catch((err) => (log.warn({ err: String(err) }, "grading module unreachable; not closing graded parts as done"), undefined));
 
@@ -1059,6 +1065,17 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
+      // A typed settings change as the owner filed it (POST /api/settings/change): the runner's to write, so only its key reads it.
+      method: "GET",
+      path: /^\/internal\/settings-changes\/([^/]+)$/,
+      handle: async (m, _b, _u, req) => {
+        requireRunner(req, "reads the typed settings changes");
+        const kept = store.meta(`settings-change:${decodeURIComponent(m[1]!)}`);
+        if (!kept) throw new HttpError(404, "no typed change for that task");
+        return { changes: JSON.parse(kept) };
+      },
+    },
+    {
       // Model usage Paperclip doesn't see (the runner's Engineer jobs and AI reviewer): one record per job or call, deduped by key.
       method: "POST",
       path: /^\/internal\/usage$/,
@@ -1207,6 +1224,40 @@ export function createApp(opts: AppOptions): Server {
         if (!agent) throw new HttpError(404, "no such agent");
         const { compiled, catalog } = readSources(settingsFiles());
         return { profile: agentProfile({ agent, agents, routines, effort: compiled?.agents?.[m[1]!]?.reasoning_effort ?? null, catalog }) };
+      },
+    },
+    // The Handbook tab (agent-handbook.ts): main handbook, the owner's rules, the compiled text, the fork's state; and its history.
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/handbook$/,
+      handle: async (m) => {
+        const agent = agentByKey(await pc.agents(), m[1]!);
+        if (!agent) throw new HttpError(404, "no such agent");
+        const { compiled, catalog } = readSources(settingsFiles());
+        const module = typeof agent.metadata?.module === "string" ? agent.metadata.module : "instance";
+        const text = await pc.request<{ content?: string }>("GET", `/api/agents/${encodeURIComponent(agent.id)}/instructions-bundle/file?path=AGENTS.md`).then((r) => String(r.content ?? ""), () => null);
+        return handbook({ key: m[1]!, module, revision: catalog.find((c) => c.name === module)?.revision?.slice(0, 7), compiled: text, dirs: { modules: process.env.BOARD_MODULES_DIR, instance: process.env.BOARD_INSTANCE_DIR } });
+      },
+    },
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/handbook\/history$/,
+      handle: async (m) => {
+        if (!agentByKey(await pc.agents(), m[1]!)) throw new HttpError(404, "no such agent");
+        return history(m[1]!, process.env.BOARD_INSTANCE_DIR);
+      },
+    },
+    {
+      method: "POST",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/pause$/,
+      handle: async (m, body) => {
+        const agent = agentByKey(await pc.agents(), m[1]!);
+        if (!agent) throw new HttpError(404, "no such agent");
+        const ask = parse(PauseSchema, body);
+        const done = await setAgentPaused(pc, agent, ask);
+        log.info({ agent: m[1], paused: ask.paused, stop: Boolean(ask.stop), stopped: done.stopped }, ask.paused ? "agent paused" : "agent resumed");
+        store.events.emit("fleet");
+        return done;
       },
     },
     {
@@ -1453,13 +1504,53 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     // Read-only module catalog (compiled config/modules.json), for Settings > Modules.
+    // One module's page (web/src/ModulePage.tsx): its row, its agents, their open work, what it may do and who needs it.
+    {
+      method: "GET",
+      path: /^\/api\/modules\/(?!browse$)([a-z0-9-]+)$/,
+      handle: async (m) => {
+        const text = readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8");
+        const module = moduleStates(text).find((r) => r.name === m[1]);
+        if (!module) throw new HttpError(404, "no such module");
+        const ctx = await context();
+        const [routines, open, live, runs, awaiting] = await Promise.all([pc.routines().catch(() => []), pc.openIssues(), pc.liveRuns(), pc.recentRuns(100), records.awaiting().catch(() => new Set<string>())]);
+        const { compiled, catalog } = readSources(settingsFiles());
+        const chat = ctx.labels.find((l) => l.name === "chat");
+        const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);
+        const mine = module.agents.flatMap((key) => { const a = agentByKey(ctx.agents, key); return a ? [{ key, a }] : []; });
+        const tasks = mine.map(({ a }) => splitTasks(open, a.id, chat?.id, (i) => chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents));
+        const ongoing = tasks.flatMap((t) => [...t.needs, ...t.ongoing]).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        return {
+          module,
+          agents: mine.map(({ key, a }) => agentProfile({ agent: a, agents: ctx.agents, routines, effort: compiled?.agents?.[key]?.reasoning_effort ?? null, catalog })),
+          ongoing,
+          authority: moduleAuthority(text, module.name),
+          neededBy: module.neededBy,
+          requires: module.requires,
+        };
+      },
+    },
     { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")), advisories: await records.advisories().catch(() => []) }) },
+    // Browse, marketplaces and an agent's grants (lane E, src/marketplace.ts), read from the compiled catalog and config.
+    { method: "GET", path: /^\/api\/modules\/browse$/, handle: async (_m, _b, url) => browseModules(readSources(settingsFiles()).catalog, url.searchParams.get("q") ?? "", url.searchParams.get("kind") ?? "") },
+    { method: "GET", path: /^\/api\/marketplaces$/, handle: async () => marketplacesOf(readSources(settingsFiles()).catalog, resolveCommit) },
+    // The commit a marketplace would be pinned at (the newest 7+ days old), for the owner to see before filing add or update.
+    { method: "POST", path: /^\/api\/marketplaces\/resolve$/, handle: async (_m, body) => resolveCommit(parse(z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }).strict(), body).repo).catch((e) => Promise.reject(e instanceof CommitUnreadable ? new HttpError(422, e.message) : e)) },
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/grants$/,
+      handle: async (m) => {
+        const { compiled, catalog } = readSources(settingsFiles());
+        return agentGrants(compiled, catalog, m[1]!) ?? Promise.reject(new HttpError(404, "no such agent"));
+      },
+    },
     // Settings (web/src/Settings.tsx): the compiled config, read-only, with what the board can see live. Edits go through git.
     { method: "GET", path: /^\/api\/settings$/, handle: async () => settingsData() },
     { method: "GET", path: /^\/api\/settings\/connections$/, handle: async (_m, _b, url) => connectionsData(url.searchParams.has("fresh")) },
     {
-      // A settings change (a connection's URL, a switch, an agent's model, effort or heartbeat): checked here, then filed as
-      // the owner's task for the Platform Engineer, whose commit becomes the tiered apply card (docs/design/settings-changes.md).
+      // A typed settings change (docs/design/settings-changes.md): checked here, filed as the owner's own task with no
+      // assignee, and kept here by task id. The runner reads it back with its key (/internal/settings-changes/:id), checks it
+      // again, writes exactly its files and files the apply card on the task.
       method: "POST",
       path: /^\/api\/settings\/change$/,
       handle: async (_m, body) => {
@@ -1472,12 +1563,11 @@ export function createApp(opts: AppOptions): Server {
           throw e;
         }
         const ctx = await context();
-        const engineer = ctx.agents.find((a) => holdsRole(a.id, "platform-engineer") && a.status !== "terminated");
-        if (!engineer) throw new HttpError(409, "there is no Platform Engineer to make the change");
         const label = await labelNamed(ctx, SETTINGS_LABEL, "#7048e8");
-        const { title, description } = taskFor(changes, compiled, catalog.filter((m) => m.chosen).map((m) => m.name));
-        const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", assigneeAgentId: engineer.id, labelIds: [label.id] });
-        log.info({ issue: issue.identifier, changes: changes.map((c) => (c.kind === "setting" ? c.key : c.kind === "module" ? `module ${c.name}` : c.kind === "caps" ? `${c.agent}.caps` : `${c.agent}.${c.field}`)) }, "settings change filed");
+        const { title, description } = taskFor(changes, compiled);
+        const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", labelIds: [label.id] });
+        store.setMeta(`settings-change:${issue.id}`, JSON.stringify(changes));
+        log.info({ issue: issue.identifier, changes: changes.map((c) => c.kind) }, "settings change filed");
         return { identifier: issue.identifier };
       },
     },
@@ -1496,7 +1586,8 @@ export function createApp(opts: AppOptions): Server {
         const changes = (
           await Promise.all(
             full.map(async (i) => {
-              const items = changesOf(i.description);
+              const kept = store.meta(`settings-change:${i.id}`);
+              const items = kept ? (JSON.parse(kept) as Change[]) : changesOf(i.description);
               return items ? [{ identifier: i.identifier, title: i.title, createdAt: i.createdAt, items, ...stageOf(i.status, await records.list("recent", { task: i.identifier, limit: 50 })) }] : [];
             }),
           )

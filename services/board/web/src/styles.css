@@ -1576,3 +1576,12 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
 .ap-id { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
 .ap-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ap-from { color: var(--muted); font-size: 12px; }
+
+/* Lane E: Modules Browse and Marketplaces, agent grants. */
+.br-bar, .br-add { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 16px clamp(16px, 3vw, 44px); }
+.br-search { flex: 1; min-width: 200px; padding: 7px 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; }
+.br-add .muted { flex-basis: 100%; margin: 0; font-size: 12px; }
+.br-adds, .br-tools { margin: 6px 0; padding-left: 18px; font-size: 13px; }
+.br-tools { list-style: none; padding: 0; }
+.br-tools li { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+.br-tools label { flex: 1; }

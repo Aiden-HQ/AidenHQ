@@ -1,5 +1,6 @@
-import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
+import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
+import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -137,6 +138,8 @@ export const api = {
   /** The fleet without run history: the Agents page's first paint. */
   roster: () => call<{ roster: RosterAgent[] }>("GET", "/api/agents/roster"),
   agentProfile: (key: string) => call<{ profile: AgentProfile }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}`),
+  /** Lane B: pause or resume an agent now; `stop` also cancels its live runs. */
+  pauseAgent: (key: string, body: { paused: boolean; stop?: boolean }) => call<{ status: string; stopped: number }>("POST", `/api/agents/by-key/${encodeURIComponent(key)}/pause`, body),
   agentOpenTasks: (key: string) => call<{ needs: TaskRow[]; ongoing: TaskRow[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?view=open`),
   agentHistory: (key: string, opts: { q?: string; status?: "done" | "cancelled"; offset?: number } = {}) => {
     const p = new URLSearchParams({ view: "history", ...(opts.q ? { q: opts.q } : {}), ...(opts.status ? { status: opts.status } : {}), ...(opts.offset ? { offset: String(opts.offset) } : {}) });
@@ -151,6 +154,8 @@ export const api = {
   welcome: () => call<WelcomeState>("GET", "/api/welcome"),
   welcomeFinish: (done: string[], skipped: string[]) => call<{ ok: boolean; identifier?: string }>("POST", "/api/welcome/finish", { done, skipped }),
   modules: () => call<{ modules: ModuleRow[]; advisories: Advisory[] }>("GET", "/api/modules"),
+  module: (name: string) => call<ModuleDetail>("GET", `/api/modules/${encodeURIComponent(name)}`),
+  /** Installed modules whose setup flow isn't done (docs/design/guided-setup.md); a 404 means no flows. */
   settings: () => call<SettingsData>("GET", "/api/settings"),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
   /** Files a settings change as the Platform Engineer's task; its commit becomes an apply card. */
@@ -187,4 +192,12 @@ export const api = {
   merge: (ref: string, into: string) => call<{ merged: string; into: string; files: number }>("POST", `/api/issues/${encodeURIComponent(ref)}/merge`, { into }),
   handOver: (ref: string, from: string, to: string) => call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/handover`, { from, to }),
   models: (assignee: string) => call<Models>("GET", `/api/models/${assignee}`),
+  // Lane C: the agent page's Handbook tab.
+  handbook: (key: string) => call<import("./AgentHandbook").HandbookData>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/handbook`),
+  handbookHistory: (key: string) => call<import("./AgentHandbook").HandbookHistory>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/handbook/history`),
+  // Lane E: Browse, marketplaces, an agent's grants, and the setup flows other work adds (a 404 means none).
+  browse: (q: string, kind: string) => call<{ modules: BrowseModule[] }>("GET", `/api/modules/browse?${new URLSearchParams({ q, kind })}`),
+  resolveMarketplace: (repo: string) => call<{ sha: string; date: string }>("POST", "/api/marketplaces/resolve", { repo }),
+  marketplaces: () => call<{ marketplaces: MarketplaceRow[] }>("GET", "/api/marketplaces"),
+  agentGrants: (key: string) => call<{ connections: GrantConnection[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/grants`),
 };

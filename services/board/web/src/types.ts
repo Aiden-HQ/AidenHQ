@@ -345,6 +345,27 @@ export interface ModuleRow {
   marketplace: string;
   tier: string;
   state: "core" | "on" | "dependency" | "off";
+  /** Enabled modules that require this one (why a dependency is on). */
+  neededBy: string[];
+  connections: string[];
+  routines: string[];
+  apps: string[];
+  settings: Record<string, unknown>;
+  revision: string | null;
+  /** The short sha instance.yaml pins this module at; null: it follows its marketplace. */
+  pinned: string | null;
+  source: { url: string; path: string } | null;
+  setup: string | null;
+}
+
+/** GET /api/modules/:name (services/board/src/app.ts). */
+export interface ModuleDetail {
+  module: ModuleRow;
+  agents: AgentProfile[];
+  ongoing: TaskRow[];
+  authority: { connections: string[]; writes: { kind: string; tier?: number }[]; secrets: string[]; prompts: { id: string; file: string }[]; readme: string | null };
+  neededBy: string[];
+  requires: string[];
 }
 
 /** The Costs tab (src/costs.ts). */
@@ -632,7 +653,16 @@ export type SettingChange =
   | { kind: "setting"; key: string; value: unknown }
   | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat"; value: string | number | boolean }
   | { kind: "caps"; agent: string; value: Partial<Record<"run_usd" | "task_usd" | "day_usd", number>> }
-  | { kind: "module"; name: string; on: boolean };
+  | { kind: "module"; name: string; on: boolean }
+  | { kind: "routine"; routine: string; field: "schedules"; value: { cron: string; timezone?: string; label?: string }[] }
+  | { kind: "routine"; routine: string; field: "status"; value: "active" | "paused" }
+  | { kind: "routine"; routine: string; field: "model"; value: string }
+  | { kind: "rules"; agent: string; text: string }
+  | { kind: "handbook"; agent: string; text: string }
+  | { kind: "unfork"; agent: string }
+  | { kind: "pin"; name: string; sha: string | null }
+  | { kind: "marketplace"; op: "add" | "update" | "remove"; name: string; source?: { source: "github"; repo: string }; sha?: string }
+  | { kind: "grants"; agent: string; connection: string; tools: string[] | null };
 export type ChangeStage = "working" | "waiting" | "applying" | "applied" | "failed" | "rejected" | "closed";
 export interface FiledChange {
   identifier: string;
@@ -675,11 +705,13 @@ export interface AgentSettings {
   models: string[];
   effort: string;
   heartbeatHours: number | null;
-  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; status?: string; webhook?: boolean }[];
+  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; status?: string; webhook?: boolean; /** The module's own value where the instance overrides it. */ defaults?: Record<string, unknown> }[];
   trial: boolean;
   graded: boolean;
   roles: string[];
   caps: Record<string, number>;
+  /** The module's own model, reasoning_effort and heartbeat where the instance overrides them. */
+  defaults?: Record<string, unknown>;
   connections: string[];
   /** A heartbeat may be turned on (not a runner agent, and it has the tools). */
   canHeartbeat: boolean;
@@ -696,4 +728,30 @@ export interface SettingsData {
   choices: { heartbeatHours: number[]; models: string[] };
   approvals: { pending: number };
   spend: { defaults: Record<string, number>; pendingRaises: number };
+}
+
+// Lane D: the pin change (lane A's schema, settings-change.ts).
+// Lane E: GET /api/modules/browse, /api/marketplaces and /api/agents/by-key/:key/grants (services/board/src/marketplace.ts).
+export interface BrowseModule {
+  name: string;
+  description: string;
+  marketplace: string;
+  tier: string;
+  adds: string[];
+  installed: boolean;
+  setupFlow?: { title: string };
+}
+export interface MarketplaceRow {
+  name: string;
+  source: string;
+  sha: string;
+  modules: number;
+  newer: boolean;
+  /** The newest commit at least 7 days old: what Add and Update pin. */
+  latest?: { sha: string; date: string };
+}
+export interface GrantConnection {
+  id: string;
+  module: string;
+  tools: { name: string; class: "read" | "write" | "destructive"; granted: boolean; default: boolean }[];
 }

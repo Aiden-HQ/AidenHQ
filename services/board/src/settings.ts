@@ -15,7 +15,7 @@ export const HEARTBEAT_TOOLS = ["task_list", "task_comments", "task_approvals", 
 /** The fleet default spend caps (scripts/modules.mjs CAPS): an agent's own caps in the grants table override them. */
 const CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
 
-interface SettingDef {
+export interface SettingDef {
   default?: unknown;
   values?: unknown[];
   required?: boolean;
@@ -32,6 +32,8 @@ interface CatalogEntry {
   revision?: string;
   settings?: Record<string, SettingDef>;
   setup?: string;
+  /** Its own agents' and routines' module.yaml values, before the instance's overrides (scripts/modules.mjs). */
+  defaults?: { agents?: Record<string, Record<string, unknown>>; routines?: Record<string, Record<string, unknown>> };
 }
 interface Schedule {
   cron?: string;
@@ -49,6 +51,8 @@ interface CompiledRoutine {
 interface CompiledAgent {
   name?: string;
   module?: string;
+  /** Set when the instance forked this module agent's handbook (the module blob it was copied from). */
+  handbook_fork?: string;
   adapter?: string;
   /** A runner Engineer's engine, when not its adapter's (module.yaml `engine:`). */
   engine?: string;
@@ -143,11 +147,16 @@ export function settingsView(s: Sources) {
 
   const hours = Number(effective.heartbeat_hours?.value ?? 4);
   const grantsByKey = new Map(Object.values(s.grants?.agents ?? {}).map((g) => [g.key, g]));
+  /** The module's own value (module.yaml as written) for each field it sets on one agent or routine: what Reset goes back to. */
+  const defaultsOf = (kind: "agents" | "routines", key: string, fields: string[]) => {
+    const own = s.catalog.find((m) => m.defaults?.[kind]?.[key])?.defaults?.[kind]?.[key] ?? {};
+    return Object.fromEntries(fields.filter((f) => own[f] !== undefined).map((f) => [f, f === "schedules" ? ((own[f] as Schedule[]) ?? []).map((x) => ({ cron: x.cron ?? "", ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : own[f]]));
+  };
   const agents = Object.entries(c.agents ?? {}).map(([key, a]) => {
     const g = grantsByKey.get(key);
     const routines = Object.entries(c.routines ?? {})
       .filter(([, r]) => r.agent === key)
-      .map(([rk, r]) => ({ key: rk, title: r.title ?? rk, schedules: (r.schedules ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })), ...(r.model ? { model: r.model } : {}), ...(r.status ? { status: r.status } : {}), ...(r.webhook ? { webhook: true } : {}) }));
+      .map(([rk, r]) => ({ key: rk, title: r.title ?? rk, schedules: (r.schedules ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })), ...(r.model ? { model: r.model } : {}), ...(r.status ? { status: r.status } : {}), ...(r.webhook ? { webhook: true } : {}), defaults: defaultsOf("routines", rk, ["schedules", "status", "model"]) }));
     return {
       key,
       name: a.name ?? key,
@@ -168,6 +177,7 @@ export function settingsView(s: Sources) {
       graded: Boolean(g?.graded),
       roles: a.roles ?? [],
       caps: { ...CAPS, ...(g?.caps ?? {}) },
+      defaults: defaultsOf("agents", key, ["model", "reasoning_effort", "heartbeat"]),
       connections: Object.keys(a.enabled_tools ?? {}),
     };
   });

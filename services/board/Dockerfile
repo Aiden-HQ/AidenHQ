@@ -13,8 +13,9 @@ ENV NODE_ENV=production
 # Node 24.22.2 ships npm 11.19.1, whose bundled undici 6.28.0 and brace-expansion 5.0.9 carry published
 # advisories; npm 11.21.2 bundles undici 6.29.1 and brace-expansion 5.0.12 at the paths the scanner reads.
 RUN npm install -g npm@11.21.2 && npm cache clean --force
-# pdftotext: attached PDFs get a text version the agents can read.
-RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils && rm -rf /var/lib/apt/lists/*
+# pdftotext: attached PDFs get a text version the agents can read. git: the Handbook tab's history of the mounted instance repo
+# (src/agent-handbook.ts; it reads with safe.directory set, as the mount's owner isn't the board's user).
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils git && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

@@ -11,7 +11,7 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets, subnetFor } from "../kernel/src/loader/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "../kernel/src/loader/bindings.ts";
 import { MANIFEST_KEYS, moduleName } from "../kernel/src/loader/authority.ts";
-import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, onFork, remoteModules } from "../kernel/src/loader/sources.ts";
+import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, marketplacesOf, OFFICIAL, onFork, onOfficialMain, pinsOf, remoteModules, sourceOf } from "../kernel/src/loader/sources.ts";
 import { effective } from "../kernel/src/loader/release.ts";
 import { compilePoints } from "../kernel/src/loader/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
@@ -20,7 +20,9 @@ const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
 // caps: the agent's spend caps (grantEntry); not agent-safe (services/runner/src/tiers.mjs), so changing them is the owner's.
 // autonomy: a routine's cap on approvals (ROUTINE_AUTONOMY); changing it is always the owner's (tiers.mjs).
-const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "caps", "graded", "heartbeat", "max_parallel"], routines: ["schedules", "status", "model", "autonomy"] };
+// handbook_fork: a module agent's handbook is the instance's agents/<key>/AGENTS.md (the module blob it was copied from);
+// connections: the agent's grants, per connection over its module's (merged before grants resolve, below).
+const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "caps", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections"], routines: ["schedules", "status", "model", "autonomy"] };
 /**
  * A routine's `autonomy`: the cap on approvals for tasks its runs start (the run task and what it delegates), the stricter of
  * it and the instance's `autonomy` (services/runner/src/tiers.mjs). The default `full` adds no cap (owner, 2026-11-13), except
@@ -312,7 +314,23 @@ function discover(productDir, instance, fetch) {
   // computed tier that is never official.
   const parse = (t) => YAML.parse(t);
   const forks = forksOf(instance).filter((x) => x.target !== "kernel" && out.has(x.target));
-  const resolved = forks.length ? effective(instance, fetch) : instance; // on top of what the release (if any) resolves to
+  const pins = pinsOf(instance).filter((p) => p.marketplace === OFFICIAL);
+  const resolved = forks.length || pins.length ? effective(instance, fetch) : instance; // on top of what the release (if any) resolves to
+  // An official module pinned at its own commit (instance.yaml `modules: - { id, sha }`): its folder in the official
+  // repository at that sha; the others follow the marketplace.
+  for (const p of pins) {
+    if (!out.has(p.name)) fail(`modules: ${p.name} is pinned but the official marketplace has no such module`);
+    const pinFile = () => JSON.parse(readFileSync(join(productDir, "modules-pin.json"), "utf8"));
+    const w = marketplacesOf(resolved).find((m) => m.name === OFFICIAL)?.at ?? sourceOf({ source: "github", repo: pinFile().repo }, "modules-pin.json", undefined, pinFile().sha, true);
+    const at = { ...w, path: join(w.path, p.name), sha: p.sha };
+    const r = checkout(at, fetch);
+    const def = readYaml(join(r, "module.yaml"));
+    if (def.name !== p.name) fail(`${p.name}: its module.yaml at ${p.sha.slice(0, 12)} names ${def.name}`);
+    if (def.apps != null || Object.values(def.services?.run ?? {}).some((s) => s?.build != null)) fail(`${p.name}: apps and service builds from a per-module pin aren't supported yet; pin the marketplace`);
+    // Official only when the sha is on the official repository's main; otherwise a computed tier, as a fork's.
+    const tier = onOfficialMain(at, fetch) ? "official" : fetch.kit?.(r, def, at) ? "conformant" : "declared";
+    out.set(p.name, { ...out.get(p.name), root: r, def, tier, sha: p.sha, pinned: p.sha, source: { url: at.url, path: at.path } });
+  }
   for (const k of forks) {
     const at = onFork(forkBase(resolved, k, productDir, { ...fetch, parse }), k, fetch);
     const r = checkout(at, fetch);
@@ -324,7 +342,8 @@ function discover(productDir, instance, fetch) {
   for (const r of remoteModules(instance, { ...fetch, parse: (t) => YAML.parse(t) })) {
     if (out.has(r.name)) fail(`${r.name}@${r.marketplace}: a module named ${r.name} is already installed from ${out.get(r.name).marketplace}`);
     if (r.def.apps != null || Object.values(r.def.services?.run ?? {}).some((s) => s?.build != null)) fail(`${r.name}@${r.marketplace}: apps and service builds from a remote source aren't supported yet`);
-    out.set(r.name, { name: r.name, root: r.root, def: r.def, marketplace: r.marketplace, tier: r.tier, sha: r.at.sha, source: { url: r.market.url, path: r.market.path } });
+    const pinned = pinsOf(instance).find((p) => p.name === r.name && p.marketplace === r.marketplace)?.sha;
+    out.set(r.name, { name: r.name, root: r.root, def: r.def, marketplace: r.marketplace, tier: r.tier, sha: r.at.sha, source: { url: r.market.url, path: r.market.path }, ...(pinned ? { pinned } : {}) });
   }
   for (const m of out.values()) {
     const unknown = Object.keys(m.def).filter((k) => !MANIFEST_KEYS.has(k) && k !== "compose");
@@ -425,6 +444,13 @@ function substitute(value, settings, compose = false) {
   if (Array.isArray(value)) return value.map((v) => substitute(v, settings, compose));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substitute(v, settings, compose)]));
   return value;
+}
+
+/** A module's own agent and routine values as the compiled config would have them without overrides (settings substituted; a module whose settings aren't set keeps them raw). */
+function moduleDefaults(def, settings) {
+  let d = def;
+  try { d = substitute(def, settings); } catch { /* a disabled module's settings may be unset */ }
+  return { agents: d.agents ?? {}, routines: Object.fromEntries(Object.entries(d.routines ?? {}).map(([k, { when: _w, ...r }]) => [k, r])) };
 }
 
 const isolationOf = (v, where, allowed = PROFILES) => {
@@ -741,6 +767,20 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   }));
   // Grants: `connection: read | write | [tools]` resolve to tool lists (Codex scoping and the grants table setup writes).
   // A grant to a connection that isn't enabled fails, unless marked optional as `name?`.
+  // The instance's grants override (overrides.agents.<key>.connections): per connection over the module's grants, before they
+  // resolve (a key replaces the module's optional `key?` too). An instance agent's grants are its agent.yaml's.
+  for (const [key, o] of Object.entries(instance.overrides?.agents ?? {})) {
+    if (o?.connections == null) continue;
+    const a = paperclip.agents[key] ?? fail(`unknown agent: ${key}`);
+    if (a.module === "instance") fail(`override overrides.agents.${key}.connections: an instance agent's grants are in agents/${key}/agent.yaml`);
+    if (typeof o.connections !== "object" || Array.isArray(o.connections)) fail(`override overrides.agents.${key}.connections: a map of connection: read | write | [tools]`);
+    const conns = { ...(a.connections ?? {}) };
+    for (const [c, g] of Object.entries(o.connections)) {
+      delete conns[`${c}?`];
+      conns[c] = g;
+    }
+    a.connections = conns;
+  }
   for (const [key, a] of Object.entries(paperclip.agents)) {
     if (a.reports_to && !paperclip.agents[a.reports_to]) fail(`${key}: reports_to ${a.reports_to}, which is not enabled`);
     const tools = {};
@@ -845,6 +885,14 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
       const target = paperclip[kind][key] ?? fail(`unknown ${kind.slice(0, -1)}: ${key}`);
       for (const [f, v] of Object.entries(fields ?? {})) {
         if (!OVERRIDABLE[kind].includes(f)) fail(`override not allowed: ${kind}.${key}.${f}`);
+        if (kind === "agents" && f === "connections") continue; // merged before grants resolved, above
+        if (kind === "agents" && f === "handbook_fork") {
+          if (target.module === "instance") fail(`override agents.${key}.handbook_fork: an instance agent's handbook is already the instance's`);
+          if (!/^[0-9a-f]{40}$/.test(String(v))) fail(`override agents.${key}.handbook_fork must be the module blob sha it was copied from`);
+          const fork = join(instanceDir, "agents", key, "AGENTS.md");
+          if (!existsSync(fork)) fail(`override agents.${key}.handbook_fork: missing agents/${key}/AGENTS.md`);
+          target.instructions = fork;
+        }
         // A bigger host runs more of one agent's work at once; the computer pool (AIDENHQ_COMPUTERS_MAX) must still cover box agents.
         if (f === "max_parallel" && !(Number.isInteger(v) && v >= 1 && v <= 10)) fail(`override ${kind}.${key}.max_parallel must be 1 to 10`);
         target[f] = v;
@@ -918,15 +966,24 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   if (profile) paperclip.owner_profile = profile;
   // The kernel first, always on (the board's Settings lists its settings as the kernel's), then every module.
   const kernelEntry = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
-  const catalog = [kernelEntry, ...[...all.values()].map(({ name, root, def, marketplace, tier, sha, source }) => ({
+  const catalog = [kernelEntry, ...[...all.values()].map(({ name, root, def, marketplace, tier, sha, source, pinned }) => ({
     name, description: def.description ?? "", enabled: enabled.includes(name), chosen: chosen.includes(name), requires: def.requires ?? [],
     agents: Object.keys(def.agents ?? {}), routines: Object.keys(def.routines ?? {}), connections: Object.keys(def.connections ?? {}),
     apps: (def.apps ?? []).map((a) => a.name), ...(sha ? { revision: sha } : revision ? { revision } : {}),
     // Where it comes from and its computed tier (spec §6.5): Settings > Modules and the advisories read them.
-    marketplace, tier, ...(source ? { source } : {}),
+    marketplace, tier, ...(source ? { source } : {}), ...(pinned ? { pinned } : {}),
     // The board's Settings: each setting's default, allowed values and the comment above it in module.yaml; `setup`, how to set
     // up a module that serves the runner rather than agents' connections (Grafana, ClickHouse).
     settings: settingDefs(join(root, "module.yaml"), def), ...(def.setup ? { setup: String(def.setup).trim() } : {}),
+    // For the board's module and agent pages: what the module may write (kind → floor, the instance's raise included), the
+    // secret names it mounts, its handbook sections, the start of its README, and its own defaults for every agent and
+    // routine it declares (module.yaml as written, before instance overrides: what "reset to default" goes back to).
+    writes: Object.fromEntries(Object.entries(writes).filter(([, w]) => w.module === name).map(([k, w]) => [k, { floor: w.floor, ...(w.panel ? { panel: true } : {}) }])),
+    secrets: ownSecrets(def),
+    ...(def.setup_flow != null ? { setup_flow: def.setup_flow } : {}),
+    prompts: promptEntries(name, def, root).map((p) => ({ id: p.id, file: relative(root, p.file) })),
+    ...(existsSync(join(root, "README.md")) ? { readme: readFileSync(join(root, "README.md"), "utf8").slice(0, 4096) } : {}),
+    defaults: moduleDefaults(def, settings),
   }))];
   // Secrets of channels the owner may not use: created empty when missing so compose starts (compile.mjs).
   const optionalSecrets = enabled.flatMap((name) => all.get(name).def.optional_secrets ?? []);

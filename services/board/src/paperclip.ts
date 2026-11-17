@@ -265,6 +265,16 @@ export class Paperclip {
     return raw.map((r) => ({ id: r.id, status: r.status, wakeCommentId: r.contextSnapshot?.wakeCommentId ?? r.contextSnapshot?.commentId ?? null }));
   }
 
+  pauseAgent(id: string): Promise<unknown> {
+    this.cache.clear();
+    return this.request("POST", `/api/agents/${encodeURIComponent(id)}/pause`, {});
+  }
+
+  resumeAgent(id: string): Promise<unknown> {
+    this.cache.clear();
+    return this.request("POST", `/api/agents/${encodeURIComponent(id)}/resume`, {});
+  }
+
   cancelRun(runId: string): Promise<unknown> {
     this.cache.delete("live-runs");
     return this.request("POST", `/api/heartbeat-runs/${encodeURIComponent(runId)}/cancel`, {});

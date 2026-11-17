@@ -200,3 +200,27 @@ test("5b: the tree id at the new sha equals the recorded one → empty diff; the
   assert.deepEqual(marketplaceChanges(base, { ...base, marketplaces: [{ name: "aidenhq", source: { source: "url", url: OFFICIAL_URL }, sha: mods.sha }] }), []);
   assert.deepEqual(marketplaceChanges(base, at(mods.sha))[0].changes.map((c) => c.owner), [true]);
 });
+
+test("a per-module pin is official only on the official repository's main; one off it is the owner's, as a fork", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { onOfficialMain } = await import("../src/loader/sources.ts");
+  const dir = mkdtempSync(join(tmpdir(), "official-"));
+  const g = (...a) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a]).toString().trim();
+  g("init", "-q", "-b", "main");
+  writeFileSync(join(dir, "a"), "1");
+  g("add", "a"), g("commit", "-qm", "a");
+  const onMain = g("rev-parse", "HEAD");
+  g("checkout", "-qb", "pr");
+  writeFileSync(join(dir, "a"), "2");
+  g("commit", "-qam", "b");
+  const offMain = g("rev-parse", "HEAD");
+  const f = { cacheDir: mkdtempSync(join(tmpdir(), "cache-")) };
+  assert.equal(onOfficialMain({ url: dir, path: "", sha: onMain, owned: true }, f), true);
+  assert.equal(onOfficialMain({ url: dir, path: "", sha: offMain, owned: true }, f), false);
+  const d = authorityDiff("crm", { name: "crm" }, { name: "crm" }, false, undefined, { base: undefined, head: `aidenhq pinned at ${offMain.slice(0, 12)}, unreviewed: not on its main (tier declared)` });
+  assert.ok(d.changes.some((c) => c.owner && /unreviewed/.test(c.what)));
+  assert.equal(authorityDiff("crm", { name: "crm" }, { name: "crm" }, false, undefined, { head: `aidenhq pinned at ${onMain.slice(0, 12)}` }).changes.some((c) => c.owner), false);
+});

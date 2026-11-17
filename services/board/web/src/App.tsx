@@ -24,6 +24,7 @@ import { ApprovalsView } from "./Chat";
 import { clearCache, load, peek, setAccount } from "./cache";
 import { subscribe } from "./events";
 import type { AgentTab } from "./AgentPage";
+import type { ModuleTab } from "./ModulePage";
 import { QUERIES, VIEW_CHUNKS, prefetchView, useQuery } from "./queries";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
@@ -42,12 +43,13 @@ const CostsView = lazy(() => VIEW_CHUNKS.costs().then((m) => ({ default: m.Costs
 const CrewView = lazy(() => VIEW_CHUNKS.agents().then((m) => ({ default: m.CrewView })));
 const ModulesView = lazy(() => VIEW_CHUNKS.modules().then((m) => ({ default: m.ModulesView })));
 const AgentPage = lazy(() => VIEW_CHUNKS.agentPage().then((m) => ({ default: m.AgentPage })));
+const ModulePage = lazy(() => VIEW_CHUNKS.modulePage().then((m) => ({ default: m.ModulePage })));
 const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage })));
 /** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "setup"; module: string };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "setup"; module: string };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -98,7 +100,7 @@ function parseRoute(): Route {
     return { kind: "task", ref, ...(focus ? { focus } : {}) };
   }
   // #/agents/<key>[/overview|chats|settings] opens an agent's page. The old #/settings/agents lands on the Agents list.
-  const agent = /^agents\/([a-z0-9-]+)(?:\/(overview|chats|settings))?$/.exec(h);
+  const agent = /^agents\/([a-z0-9-]+)(?:\/(overview|chats|handbook|settings))?$/.exec(h);
   if (agent) return { kind: "agent", key: agent[1]!, tab: (agent[2] as AgentTab | undefined) ?? "overview" };
   if (h === "settings/agents") return { kind: "view", view: "agents" };
   // #/r/<run id> opens a run's trace.
@@ -106,6 +108,9 @@ function parseRoute(): Route {
   // #/c/ starts a new chat; #/c/WOR-12 opens that chat in the chat workspace.
   if (h === "c" || h.startsWith("c/")) return { kind: "chat", ref: h.slice(2).split("?")[0] || null };
   if (h === "settings/modules" || h === "modules") return { kind: "view", view: "modules" };
+  // #/modules/<name>[/<tab>] opens a module's page.
+  const mod = /^modules\/([a-z0-9-]+)(?:\/(overview|contents|settings|changes))?$/.exec(h);
+  if (mod) return { kind: "module", name: mod[1]!, tab: (mod[2] as ModuleTab | undefined) ?? "overview" };
   // #/settings/<category> opens Settings there; the old tabs (#/connections, #/accounts) are categories now.
   if (h === "settings" || h.startsWith("settings/")) {
     const cat = h.slice("settings/".length);
@@ -273,6 +278,7 @@ export function App() {
       if (r.kind === "chat") setView("chat");
       if (r.kind === "view") setView(r.view);
       if (r.kind === "agent") setView("agents");
+      if (r.kind === "module") setView("modules");
       if (r.kind === "settings") setView("settings");
     };
     hash();
@@ -691,7 +697,8 @@ export function App() {
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} />}
       {view === "activity" && <Suspense fallback={<PageLoading />}><ActivityView onSignIn={signInNeeded} /></Suspense>}
       {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: local, google: googleConnect }} />}
-      {view === "modules" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} /></Suspense>}
+      {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} /></Suspense>}
+      {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}

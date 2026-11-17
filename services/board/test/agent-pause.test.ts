@@ -1,0 +1,57 @@
+import { request } from "node:http";
+import type { AddressInfo } from "node:net";
+import pino from "pino";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createApp } from "../src/app.js";
+import type { Paperclip } from "../src/paperclip.js";
+import { Store } from "../src/store.js";
+
+const calls: string[] = [];
+const pc = {
+  agents: async () => [{ id: "keeper", name: "Roadmap Keeper", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:roadmap-keeper", module: "instance" } }],
+  liveRuns: async () => [{ id: "run1", status: "running", agentId: "keeper", issueId: "i1" }, { id: "run2", status: "running", agentId: "other", issueId: "i2" }],
+  issue: async (id: string) => ({ id, status: "in_progress", executionBlocker: null }),
+  pauseAgent: async (id: string) => void calls.push(`pause ${id}`),
+  resumeAgent: async (id: string) => void calls.push(`resume ${id}`),
+  cancelRun: async (id: string) => void calls.push(`cancel ${id}`),
+  releaseCancelledRun: async (_i: unknown, id: string) => void calls.push(`release ${id}`),
+} as unknown as Paperclip;
+
+describe("POST /api/agents/by-key/:key/pause", () => {
+  let role: "admin" | "member" | null = "admin";
+  const app = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => (role ? { accountId: "owner", role: role as "admin" } : null) });
+  let port = 0;
+  beforeAll(async () => {
+    await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
+    port = (app.address() as AddressInfo).port;
+  });
+  afterAll(() => app.close());
+  const post = (path: string, body: unknown) =>
+    new Promise<{ status: number; body: any }>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, method: "POST", path, headers: { host: "localhost:3120", "content-type": "application/json", "x-aidenhq-board": "1", origin: "http://localhost:3120" } }, (res) => {
+        let text = "";
+        res.on("data", (c) => (text += c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: text ? JSON.parse(text) : null }));
+      });
+      req.on("error", reject);
+      req.end(JSON.stringify(body));
+    });
+
+  it("pauses, stops only that agent's live runs on request, and resumes", async () => {
+    calls.length = 0;
+    expect((await post("/api/agents/by-key/roadmap-keeper/pause", { paused: true })).body).toEqual({ status: "paused", stopped: 0 });
+    expect((await post("/api/agents/by-key/roadmap-keeper/pause", { paused: true, stop: true })).body).toEqual({ status: "paused", stopped: 1 });
+    expect((await post("/api/agents/by-key/roadmap-keeper/pause", { paused: false })).body.status).toBe("idle");
+    expect(calls).toEqual(["pause keeper", "pause keeper", "cancel run1", "release run1", "resume keeper"]);
+    expect((await post("/api/agents/by-key/nobody/pause", { paused: true })).status).toBe(404);
+  });
+
+  it("refuses a signed-out or non-admin caller", async () => {
+    calls.length = 0;
+    role = null;
+    expect((await post("/api/agents/by-key/roadmap-keeper/pause", { paused: true })).status).toBe(401);
+    role = "member";
+    expect((await post("/api/agents/by-key/roadmap-keeper/pause", { paused: true })).status).toBe(403);
+    expect(calls).toEqual([]);
+  });
+});

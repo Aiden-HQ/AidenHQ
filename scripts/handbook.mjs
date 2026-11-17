@@ -5,6 +5,7 @@ import { join, sep } from "node:path";
 import { section } from "./prompts.mjs";
 import { frontmatter, sourcesSection } from "./modules.mjs";
 import { computerSection } from "./computers.mjs";
+import { defaultCache } from "../kernel/src/loader/sources.ts";
 
 /** A file that must resolve (symlinks followed) inside dir; anything else throws. */
 export function readInside(dir, path, what) {
@@ -15,12 +16,16 @@ export function readInside(dir, path, what) {
 }
 
 /**
- * An agent's own handbook (compiled by scripts/compile.mjs): its module's agents/<key>/AGENTS.md without the frontmatter,
+ * An agent's own handbook (compiled by scripts/compile.mjs): its module's agents/<key>/AGENTS.md (or the instance's fork of
+ * it) without the frontmatter,
  * plus the instance's agents/<key>.md under "## Instance rules" when there is one.
  */
 export function readInstructions(cfg, a, { repo, instanceDir = "" }) {
   // An instance agent's handbook is its folder's AGENTS.md in the instance repo (agents/<key>/AGENTS.md).
-  const mod = a.module === "instance" ? join(instanceDir, "agents") : a.module && /^[a-z0-9-]+$/.test(a.module) ? join(repo, "modules", a.module, "agents") : "";
+  // A forked module agent's (handbook_fork) is the instance's agents/<key>/AGENTS.md too.
+  // A module read from the sources cache (a per-module pin, a third-party module) has its handbook in the fetched tree.
+  const trees = join(defaultCache(), "trees");
+  const mod = a.module === "instance" || a.handbook_fork ? join(instanceDir, "agents") : String(a.instructions).startsWith(trees + sep) ? trees : a.module && /^[a-z0-9-]+$/.test(a.module) ? join(repo, "modules", a.module, "agents") : "";
   // Handbooks say "the owner"; one line names them.
   const owner = cfg.owner_name ? `This AidenHQ belongs to ${cfg.owner_name}: wherever this handbook says "the owner", it means ${cfg.owner_name}.\n\n` : "";
   // Where agent-built repos live: handbooks say "the agents org".

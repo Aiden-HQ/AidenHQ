@@ -12,7 +12,7 @@ export type ModuleDef = Dict;
 export type Change = { what: string; owner: boolean };
 export type ModuleDiff = { module: string; changes: Change[]; code: boolean };
 /** `origin`: where a third-party module comes from on each side (marketplace, sha, computed tier), for the card. */
-export type ModuleInput = { base?: ModuleDef; head?: ModuleDef; codeChanged: boolean; textChanged?: boolean; replacing?: { name: string; def: ModuleDef }; origin?: { base?: string; head?: string } };
+export type ModuleInput = { base?: ModuleDef; head?: ModuleDef; codeChanged: boolean; textChanged?: boolean; replacing?: { name: string; def: ModuleDef }; origin?: { base?: string; head?: string }; conns?: Dict };
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 const map = (v: unknown): Dict => (isMap(v) ? v : {});
@@ -107,7 +107,7 @@ export function renamed(def: ModuleDef, from: string, to: string): ModuleDef {
  * What `head` hands out that `base` did not. `base` undefined: an install (diffed against nothing); `head` undefined: a
  * remove. `replacing`: B replaces A in this change, so B is diffed against A's def renamed into B's namespace.
  */
-export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing?: { name: string; def: ModuleDef }, origin: { base?: string; head?: string } = {}): ModuleDiff {
+export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing?: { name: string; def: ModuleDef }, origin: { base?: string; head?: string } = {}, conns: Dict = {}): ModuleDiff {
   const changes: Change[] = [];
   const owner = (what: string) => changes.push({ what, owner: true });
   const review = (what: string) => changes.push({ what, owner: false });
@@ -122,8 +122,10 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     return { module: name, changes, code: false };
   }
   const b = base ?? {};
-  if (!base && !replacing) review(`installed${origin.head ? ` from ${origin.head}` : ""}`);
-  else if (origin.head && origin.head !== origin.base) review(`now from ${origin.head}`);
+  // Code from off the official repository's main (sources.ts onOfficialMain: "unreviewed") is the owner's, as a fork is.
+  const from = origin.head && /, unreviewed:/.test(origin.head) ? owner : review;
+  if (!base && !replacing) from(`installed${origin.head ? ` from ${origin.head}` : ""}`);
+  else if (origin.head && origin.head !== origin.base) from(`now from ${origin.head}`);
   // Enforcement it drops (a check, its reviewer or executor provider) is authority too: the owner's, as on a remove. A check
   // moved to observe mode (gates.ts) no longer enforces, so it counts as dropped.
   const checkIds = (x: Dict) => list(x.checks).filter((c) => !(isMap(c) && c.mode === "observe")).map((c) => JSON.stringify(isMap(c) ? c.id ?? c : c));
@@ -231,13 +233,16 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
 
   // Agents: a write or destructive grant, a role, an isolation toward trusted, or an unknown field is the owner's.
   // A grant is judged by the highest tag a tool has on either side: a tool that was a write still counts as one when retagged.
+  // Another module's connection is judged by its tags on either side of the change (`conns`, moduleInputs); unknown fails closed.
   const tags = (c: string) => {
-    const [x, y] = [map(map(bc[c.replace(/\?$/, "")]).tools), map(map(hc[c.replace(/\?$/, "")]).tools)];
+    const n = c.replace(/\?$/, "");
+    const own = isMap(bc[n]) || isMap(hc[n]);
+    const [x, y] = own ? [map(map(bc[n]).tools), map(map(hc[n]).tools)] : [map(map(map(conns[n]).base).tools), map(map(map(conns[n]).head).tools)];
     const destructive = [...list(x.destructive), ...list(y.destructive)];
     const write = [...list(x.write), ...list(y.write)].filter((t) => !destructive.includes(t));
     return { read: [...list(x.read), ...list(y.read)].filter((t) => !write.includes(t) && !destructive.includes(t)), write, destructive };
   };
-  const known = (c: string) => isMap(hc[c.replace(/\?$/, "")]) || isMap(bc[c.replace(/\?$/, "")]);
+  const known = (c: string) => isMap(hc[c.replace(/\?$/, "")]) || isMap(bc[c.replace(/\?$/, "")]) || isMap(conns[c.replace(/\?$/, "")]);
   const [ba, ha] = [map(b.agents), map(head.agents)];
   for (const key of keys(ha)) {
     const [was, now] = [map(ba[key]), map(ha[key])];
@@ -309,6 +314,10 @@ export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDe
   const before = new Set(enabledModules(a.baseInstance, a.baseDefs, a.always));
   const after = new Set(enabledModules(a.headInstance, a.headDefs, a.always));
   const files = (m: string) => a.changed.filter((f) => f.startsWith(`modules/${m}/`));
+  // Every connection's tags on each side, so an agent's grant on another module's connection is judged by them.
+  const tagsOf = (defs: Record<string, ModuleDef>) => Object.fromEntries(Object.values(defs).flatMap((d) => Object.entries(map(d?.connections))));
+  const [bt, ht] = [tagsOf(a.baseDefs), tagsOf(a.headDefs)];
+  const conns = Object.fromEntries(keys(bt, ht).map((c) => [c, { base: bt[c], head: ht[c] }]));
   const listedBefore = new Set(list(a.baseInstance.modules).map(moduleName));
   const listedAfter = new Set(list(a.headInstance.modules).map(moduleName));
   const out: Record<string, ModuleInput> = {};
@@ -317,7 +326,7 @@ export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDe
     const base = before.has(m) ? a.baseDefs[m] : undefined;
     const head = after.has(m) ? a.headDefs[m] : undefined;
     if (!fs.length && before.has(m) === after.has(m) && eq(base, head) && a.origins?.base[m] === a.origins?.head[m]) continue;
-    const input: ModuleInput = { base, head, codeChanged: Boolean(head) && fs.some((f) => f !== `modules/${m}/module.yaml` && !f.endsWith(".md")), textChanged: fs.length > 0 };
+    const input: ModuleInput = { base, head, codeChanged: Boolean(head) && fs.some((f) => f !== `modules/${m}/module.yaml` && !f.endsWith(".md")), textChanged: fs.length > 0, conns };
     const origin = { base: base && a.origins?.base[m], head: head && a.origins?.head[m] };
     if (origin.base || origin.head) input.origin = origin;
     if (!base && head) {
@@ -332,7 +341,37 @@ export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDe
 }
 
 /** The authority diff of every module input. */
-export const diffAll = (inputs: Record<string, ModuleInput>) => Object.entries(inputs).map(([m, i]) => authorityDiff(m, i.base, i.head, i.codeChanged, i.replacing, i.origin));
+export const diffAll = (inputs: Record<string, ModuleInput>) => Object.entries(inputs).map(([m, i]) => authorityDiff(m, i.base, i.head, i.codeChanged, i.replacing, i.origin, i.conns));
+
+/**
+ * Module defs as an instance runs them: each agent's `overrides.agents.<key>.connections` merged per connection over its
+ * module's grants (a key replaces the module's `key?` too), as the compiler does before resolving grants. So a grants
+ * override is diffed by authorityDiff like any module grant change. An override on an agent no module defines is refused.
+ */
+export function withGrantOverrides(defs: Record<string, ModuleDef>, instance: Dict): Record<string, ModuleDef> {
+  const out = { ...defs };
+  // The module the compiler takes the agent from: one enabled on this side (two defining it don't compile).
+  const enabled = enabledModules(instance, defs);
+  for (const [key, o] of Object.entries(map(map(instance.overrides).agents))) {
+    if (map(o).connections == null) continue;
+    if (!isMap(map(o).connections)) throw new Error(`overrides.agents.${key}.connections must be a map`);
+    const found = enabled.filter((n) => isMap(map(out[n]?.agents)[key]));
+    if (found.length !== 1) throw new Error(`overrides.agents.${key}.connections: ${found.length ? `modules ${found.join(", ")} all define` : "no enabled module defines"} agent ${key}`);
+    const m = found[0]!;
+    const def = out[m]!;
+    const a = map(map(def.agents)[key]);
+    const conns = { ...map(a.connections) };
+    for (const [c, g] of Object.entries(map(map(o).connections))) {
+      delete conns[`${c}?`];
+      conns[c] = g;
+    }
+    out[m] = { ...def, agents: { ...map(def.agents), [key]: { ...a, connections: conns } } };
+  }
+  return out;
+}
+
+/** The connections overrides of every agent, as one comparable value. */
+export const grantOverrides = (instance: Dict) => Object.fromEntries(Object.entries(map(map(instance.overrides).agents)).filter(([, o]) => map(o).connections != null).map(([k, o]) => [k, map(o).connections]));
 
 /**
  * instance.yaml `marketplaces:` changes (spec §5.7, §6.4): a new marketplace, or one moved to another repository or folder,

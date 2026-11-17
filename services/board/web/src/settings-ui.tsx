@@ -1,6 +1,6 @@
 // Settings' building blocks, shared by every page: the page header, grouped rows that open in place, controls (switch,
 // segmented choice), and the one way a change leaves the page: a preview of the exact instance.yaml lines, filed as the
-// Platform Engineer's task, then followed on the row (task, card, applying, live). Nothing here applies anything.
+// owner's own task the runner writes, then followed on the row (task, card, applying, live). Nothing here applies anything.
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { SignInRequired, api } from "./api";
 import type { ChangeStage, FiledChange, SettingChange } from "./types";
@@ -143,7 +143,7 @@ export function ChangeProgress({ f, after }: { f: FiledChange; after?: ReactNode
   const stopped = f.stage === "failed" || f.stage === "rejected" || f.stage === "closed";
   const line =
     f.stage === "working"
-      ? "The Platform Engineer is writing the change."
+      ? "The runner is writing the change."
       : f.stage === "waiting"
         ? f.tier === 1
           ? "With the AI reviewer, or you when autonomy is off."
@@ -222,7 +222,7 @@ export function ChangePreview({ items, was, onDone, onCancel, note }: { items: S
         })}
       </dl>
       <p className="st-preview-note">
-        {note ?? whoDecides(items[0]!)} The Platform Engineer commits it and it lands as an apply card; nothing changes before that.
+        {note ?? whoDecides(items[0]!)} The runner commits it and it lands as an apply card; nothing changes before that.
       </p>
       {error && (
         <p className="st-error" role="alert">

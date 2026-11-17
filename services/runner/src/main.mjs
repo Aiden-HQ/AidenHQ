@@ -11,7 +11,7 @@ import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
-import { authorityLines, diffAll, forkChanges, marketplaceChanges, moduleInputs } from "../../../kernel/src/loader/authority.ts";
+import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
 import { OFFICIAL_URL, forksOf, hostFetch, officialSides, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
 import { effective } from "../../../kernel/src/loader/release.ts";
 import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
@@ -61,6 +61,7 @@ import { fastChecks } from "../../../kernel/src/fastcheck.ts";
 import { localCheckRuns } from "../../../modules/codehost-local/src/checks.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
+import { SETTINGS_LABEL, TypedRefused, allowedPaths, assertOnly, checkTyped, planFiles, typedTaskChanges } from "./typed-change.mjs";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
 import { host as githubCodehost } from "../../../modules/codehost-github/src/host.mjs";
 import { LOCAL_ORG, changeUrl, host as localCodehost, parseChangeUrl } from "../../../modules/codehost-local/src/host.mjs";
@@ -181,6 +182,8 @@ async function poll() {
   // Writes the user approved first, before anything else the tick reads: an approved card must be claimed and run even
   // when the task list, a merge or a GitHub read fails or is slow this time round. Every poll.
   await runApprovals().catch((err) => log("approvals check failed", { err: String(err.message ?? err).slice(0, 300) }));
+  // The owner's typed settings changes (typed-change.mjs): written here, by code, then carded like any fleet change.
+  await runTypedChanges().catch((err) => log("typed settings changes failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Tasks labelled "engineer" or assigned to an Engineer agent.
   const byId = new Map((await pc.labelledIssues(cfg.label, updatedSince)).map((i) => [i.id, i]));
   const engineers = await pc.engineerAgents().catch(() => []);
@@ -260,6 +263,134 @@ async function poll() {
   }
   state.set("last_poll", now);
   drainQueue();
+}
+
+// ------------------------------------------------------------------ typed settings changes
+
+let typedLabelMissing = 0;
+let instanceWrites = Promise.resolve();
+/** Instance repo writes made here run one at a time (there is no other writer lock on the instance clones). */
+const serialInstance = (fn) => {
+  const run = instanceWrites.then(fn, fn);
+  instanceWrites = run.catch(() => {});
+  return run;
+};
+
+/**
+ * The owner's settings tasks (label settings-change, filed by the board with no assignee): for each, the typed change it
+ * carries is checked again here, written as exactly the files its kinds allow on a fleet/ branch, and filed as the apply card
+ * (showFleetDiff), so tiering, review, apply and the board's progress are the fleet path's. Each task is written once.
+ */
+async function runTypedChanges() {
+  if (!cfg.apply?.repo) return;
+  let tasks;
+  try {
+    tasks = await pc.labelledIssues(SETTINGS_LABEL);
+  } catch (err) {
+    if (!/missing in Paperclip/.test(String(err.message))) throw err;
+    // The board makes the label on its first change: read the labels again, at most once a minute.
+    if (Date.now() - typedLabelMissing > 60_000) (typedLabelMissing = Date.now()), (pc.labels = undefined);
+    return;
+  }
+  for (const t of tasks) {
+    if (t.assigneeAgentId || state.get(`typed:${t.id}`) || running.has(t.id)) continue;
+    await serialInstance(() => writeTypedChange(t)).catch((err) => log("typed settings change failed; tried again next poll", { issue: t.identifier, err: String(err.message ?? err).slice(0, 300) }));
+  }
+}
+
+/** What the typed changes are checked against: the compiled config and the module catalog this host runs. */
+function typedSources() {
+  const dir = process.env.AIDENHQ_CONFIG_DIR ?? join(REPO_ROOT, "config");
+  return { compiled: YAML.parse(readFileSync(join(dir, "paperclip.yaml"), "utf8")) ?? {}, catalog: JSON.parse(readFileSync(join(dir, "modules.json"), "utf8")) };
+}
+
+async function writeTypedChange(t) {
+  if (state.get(`typed:${t.id}`)) return;
+  const issue = await pc.issue(t.id);
+  if (issue.assigneeAgentId || CLOSED.includes(issue.status)) return;
+  try {
+    if (!boardApi) throw new Error("the board isn't reachable (no board token): typed changes wait for it");
+    // The change as the board stored it when the owner filed it, read with the runner's key: never the description.
+    const stored = await boardApi.get(`/internal/settings-changes/${encodeURIComponent(issue.id)}`).then((r) => r.changes, (err) => {
+      if (!/→ 404/.test(String(err.message))) throw err;
+      return null;
+    });
+    // The board stores it right after filing the task: a moment's gap is waited out, a task it never stored is refused.
+    if (!stored && Date.now() - Date.parse(issue.createdAt) < 10 * 60_000) return;
+    const changes = typedTaskChanges(issue, { owner: await pc.me(), stored, runnerMade: runnerMade(issue.id) });
+    const src = typedSources();
+    for (const ch of changes) checkTyped(ch, src);
+    const sha = await commitTyped(issue, changes, src);
+    const workspace = state.task(issue.id).workspace;
+    const said = await showFleetDiff(issue, workspace);
+    // A card filed, or a Tier 0 landing queued, is the change written. A read that failed ("try again") or a card that
+    // couldn't be filed is tried again next poll; any other refusal is final and closes the task with its reason.
+    if (!said || /Couldn't file the approval card|try again/.test(said)) throw new Error(`no card yet: ${said.split("\n")[0].slice(0, 200) || "nothing said"}`);
+    if (!/^\*\*(Fleet change|Runs at once|Handbook edit to an agent in trial)/.test(said)) throw new TypedRefused(said.replace(/\*\*/g, "").split("\n")[0].slice(0, 500).replace(/\.$/, ""));
+    state.set(`typed:${issue.id}`, sha);
+    await pc.comment(issue.id, said);
+    log("typed settings change written", { issue: issue.identifier, sha, kinds: changes.map((c) => c.kind) });
+  } catch (err) {
+    if (!(err instanceof TypedRefused)) throw err;
+    state.set(`typed:${issue.id}`, "refused");
+    await pc.setStatus(issue.id, "cancelled", `**Not written:** ${err.message}.`);
+    log("typed settings change refused", { issue: issue.identifier, err: err.message.slice(0, 300) });
+  }
+}
+
+/**
+ * The commit: built from the instance repo's main with git's plumbing (a private index, no working tree), so only the
+ * planned paths change and nothing in a checkout is followed. Returns the commit on the task's fleet/ branch.
+ */
+async function commitTyped(issue, changes, { compiled }) {
+  state.ensureTask(issue.id, issue.identifier);
+  if (!state.task(issue.id).repo) state.updateTask(issue.id, { repo: cfg.apply.repo });
+  const workspace = await prepareWorkspace(issue, state.task(issue.id));
+  const r = (await workspaceRepos(workspace)).find((x) => x.slug.toLowerCase() === cfg.apply.repo.toLowerCase());
+  if (!r) throw new Error(`${cfg.apply.repo} isn't in the task's workspace`);
+  await git(r.path, "fetch", "--quiet", "origin");
+  const tip = await git(r.path, "rev-parse", "--verify", `refs/remotes/origin/${await defaultBranch(r.path)}^{commit}`);
+  const isInstance = (key) => compiled.agents?.[key]?.module === "instance";
+  const allowed = allowedPaths(changes, isInstance);
+  const texts = new Map();
+  for (const p of allowed) {
+    const entry = await git(r.path, "ls-tree", tip, "--", p);
+    if (!entry) continue;
+    if (!entry.startsWith("100644 blob ")) throw new TypedRefused(`${p} in the instance repo isn't a plain file`);
+    texts.set(p, (await execFileP("git", [...SAFE_GIT_ARGS, "cat-file", "blob", `${tip}:${p}`], { cwd: r.path, env: ISOLATED_ENV, maxBuffer: 8 * 1024 * 1024 })).stdout);
+  }
+  const moduleHandbook = (key) => {
+    const a = compiled.agents?.[key];
+    try {
+      return readFileSync(a.handbook_fork ? join(REPO_ROOT, "modules", a.module, "agents", key, "AGENTS.md") : a.instructions, "utf8");
+    } catch {
+      return undefined;
+    }
+  };
+  const planned = planFiles(changes, { read: (p) => texts.get(p), isInstance, moduleHandbook });
+  assertOnly([...planned.keys()].sort(), allowed);
+  const env = { ...ISOLATED_ENV, ...identityEnv(await botIdentity()), GIT_INDEX_FILE: join(cfg.stateDir, `typed-index-${issue.id}`) };
+  const g = (args, input) =>
+    new Promise((res, rej) => {
+      const c = execFile("git", [...SAFE_GIT_ARGS, ...args], { cwd: r.path, env, maxBuffer: 8 * 1024 * 1024 }, (e, out) => (e ? rej(e) : res(out.trim())));
+      c.stdin.end(input ?? "");
+    });
+  try {
+    await g(["read-tree", tip]);
+    for (const [p, text] of planned) {
+      if (text === null) await g(["update-index", "--force-remove", "--", p]);
+      else await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${p}`]);
+    }
+    const tree = await g(["write-tree"]);
+    const message = `settings: ${changes.map((c) => c.kind).join(", ")} (${issue.identifier})\n\nWritten by the runner from the owner's typed change on ${issue.identifier}; no agent wrote it.`;
+    const sha = await g(["commit-tree", tree, "-p", tip, "-F", "-"], message);
+    // What the commit changes is exactly what the kinds allow, checked on the commit itself.
+    assertOnly((await git(r.path, "diff", "--no-renames", "--name-only", tip, sha)).split("\n").filter(Boolean).sort(), allowed);
+    await git(r.path, "branch", "-f", `fleet/settings-${issue.identifier.toLowerCase()}`, sha);
+    return sha;
+  } finally {
+    rmSync(env.GIT_INDEX_FILE, { force: true });
+  }
 }
 
 // ------------------------------------------------------------------ stale routine runs
@@ -2138,7 +2269,8 @@ async function dependabotPr(repo, number, pr) {
 
 /** The instance change as tiering sees it: every changed file (and the agent.yaml of each handbook) at `baseRev` and at the change. */
 async function applyTierState(b, bump, baseRev = b.base) {
-  const paths = [...new Set([...b.files, ...definitionsOf(b.files)])];
+  // instance.yaml beside any handbook: whether it is a module agent's fork (overrides.agents.<key>.handbook_fork) is read there.
+  const paths = [...new Set([...b.files, ...definitionsOf(b.files), ...(b.files.some((f) => /^agents\/[^/]+\/AGENTS\.md$/.test(f)) ? ["instance.yaml"] : [])])];
   const at = async (rev) => Object.fromEntries((await Promise.all(paths.map(async (p) => [p, await git(b.r.path, "show", `${rev}:${p}`).catch(() => undefined)]))).filter(([, t]) => t !== undefined));
   const [base, head] = [await at(baseRev), await at(b.sha)];
   return { sha: b.sha, files: b.files, base, head, pin: bump && !bump.error ? { forward: Boolean(bump.forward), back: Boolean(bump.back) } : null, ...(await moduleTierState(base["instance.yaml"], head["instance.yaml"])) };
@@ -2153,7 +2285,7 @@ async function moduleTierState(baseText, headText) {
   if (baseText === undefined || headText === undefined) return {};
   try {
     const [bi, hi] = [YAML.parse(baseText) ?? {}, YAML.parse(headText) ?? {}];
-    if (["product", "modules", "marketplaces", "release", "product_fork"].every((k) => JSON.stringify(bi[k] ?? null) === JSON.stringify(hi[k] ?? null))) return {};
+    if (["product", "modules", "marketplaces", "release", "product_fork"].every((k) => JSON.stringify(bi[k] ?? null) === JSON.stringify(hi[k] ?? null)) && JSON.stringify(grantOverrides(bi)) === JSON.stringify(grantOverrides(hi))) return {};
     const [from, to] = [String(bi.product ?? ""), String(hi.product ?? "")];
     if (![from, to].every((x) => /^[0-9a-f]{40}$/.test(x))) return { modulesError: "the product pin isn't a full commit on both sides" };
     // The official modules by folder tree id (the product's ./modules, or the `aidenhq` marketplace from 5b); third-party
@@ -2162,7 +2294,9 @@ async function moduleTierState(baseText, headText) {
     // A release supplies the official marketplace, read at its distro sha on both sides (product: off the release's kernel
     // fails closed here): the change is classified by the modules it resolves to. A fork sits on top of what it resolves to.
     const [eb, eh] = [effective(bi, fetch), effective(hi, fetch)];
-    const sides = withRemote({ baseInstance: eb, headInstance: eh, ...officialSides(eb, eh, from, to, REPO_ROOT, fetch) }, fetch);
+    const read = withRemote({ baseInstance: eb, headInstance: eh, ...officialSides(eb, eh, from, to, REPO_ROOT, fetch) }, fetch);
+    // Each side's agent grants overrides folded into its module defs: the authority diff judges them like module grants.
+    const sides = { ...read, baseDefs: withGrantOverrides(read.baseDefs, bi), headDefs: withGrantOverrides(read.headDefs, hi) };
     return { modules: moduleInputs({ ...sides, always: [] }), marketplaces: [...marketplaceChanges(eb, eh), ...forkChanges(bi, hi)], effective: { base: eb, head: eh } };
   } catch (err) {
     return { modulesError: String(err.message ?? err).split("\n")[0].slice(0, 200) };
@@ -2811,7 +2945,14 @@ async function applyApproved(issue, a) {
   if (bump?.error) throw new UserError(bump.error);
   // What lands must be what the card showed: the same diff (and product move) as approved, recomputed here.
   if ((await fleetDiffText(c, bump)) !== a.details || c.files.join("\n") !== a.args.files.join("\n")) throw new UserError("the change no longer matches the diff that was approved; it needs a new approval");
-  return landFleet(issue, r, a.args.sha, c.files, `approval ${a.id}`, `Applied on ${cfg.selfName}'s approval ${a.id} (${issue.identifier})`);
+  const out = await landFleet(issue, r, a.args.sha, c.files, `approval ${a.id}`, `Applied on ${cfg.selfName}'s approval ${a.id} (${issue.identifier})`);
+  await closeTyped(issue, out);
+  return out;
+}
+
+/** A typed settings change has no agent to close its task: it is done once live (a card's apply or a Tier 0 landing). */
+async function closeTyped(issue, out) {
+  if (out.ok && state.get(`typed:${issue.id}`)) await pc.setStatus(issue.id, "done").catch((err) => log("couldn't close the settings task", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }));
 }
 
 /**
@@ -2911,7 +3052,9 @@ async function runTrialEdits() {
         // Its record first: an apply is read by the AI reviewer at least (the kernel's floor), so it lands once approved.
         const rec = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), ts: [t] });
         if (rec.state !== "used") { await pc.comment(issueId, waitingFor(rec, issue)); continue; }
-        await reportOutcome(rec.id, await landFleet(issue, b.r, b.sha, b.files, `Tier 0: ${t.reason}`, `Tier 0 change (${issue.identifier}): ${t.rule}`, guard));
+        const out = await landFleet(issue, b.r, b.sha, b.files, `Tier 0: ${t.reason}`, `Tier 0 change (${issue.identifier}): ${t.rule}`, guard);
+        await reportOutcome(rec.id, out);
+        await closeTyped(issue, out);
         continue;
       }
       if (!trialNoTap(await pc.issue(issueId), readGrants()) || !trialHandbookOnly(b.files, (await agentTexts(b)).base)) throw new UserError("it's no longer a handbook-only edit to an agent in trial, so it needs a tap");

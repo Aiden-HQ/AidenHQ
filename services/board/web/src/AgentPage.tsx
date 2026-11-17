@@ -4,16 +4,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Scorecard } from "./Agents";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
+import { load } from "./cache";
 import { agentOpenQuery, agentProfileQuery, QUERIES, useQuery } from "./queries";
-import { AgentDetails } from "./SettingsAgents";
-import { ChangesScope } from "./settings-ui";
+import { AgentHandbook } from "./AgentHandbook";
+import { AgentSettings } from "./AgentSettings";
 import { SkeletonLines } from "./Skeleton";
-import type { AgentProfile, SettingsData, TaskRow } from "./types";
+import type { AgentProfile, TaskRow } from "./types";
 import { ago } from "./util";
 import "./settings.css";
 
-export type AgentTab = "overview" | "chats" | "settings";
-const TABS: [AgentTab, string][] = [["overview", "Overview"], ["chats", "Chats"], ["settings", "Settings"]];
+export type AgentTab = "overview" | "chats" | "handbook" | "settings";
+const TABS: [AgentTab, string][] = [["overview", "Overview"], ["chats", "Chats"], ["handbook", "Handbook"], ["settings", "Settings"]];
 
 const tone = (state: string) => (state === "failed" ? "failed" : state === "working" || state === "queued" ? "working" : state.startsWith("waiting") ? "needs" : "");
 const Pill = ({ state }: { state: string }) => <span className={`pill${tone(state) ? ` pill-${tone(state)}` : ""}`}>{state}</span>;
@@ -49,6 +50,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
         <span className="spacer" />
         <a className="btn" href={chat}>Chat</a>
         <a className="btn primary" href={chat}>Give it a task</a>
+        <PauseButton agentKey={agentKey} paused={profile.status === "paused"} name={profile.name} onSignIn={onSignIn} />
       </header>
       <div className="st-seg" role="tablist">
         {TABS.map(([t, name]) => (
@@ -64,7 +66,8 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
         </>
       )}
       {tab === "chats" && <ChatsTab profile={profile} onSignIn={onSignIn} />}
-      {tab === "settings" && <SettingsTab agentKey={agentKey} onSignIn={onSignIn} />}
+      {tab === "handbook" && <AgentHandbook agentKey={agentKey} onSignIn={onSignIn} />}
+      {tab === "settings" && <AgentSettings agentKey={agentKey} onSignIn={onSignIn} />}
     </main>
   );
 }
@@ -167,19 +170,45 @@ function ChatsTab({ profile, onSignIn }: { profile: AgentProfile; onSignIn: () =
   );
 }
 
-/** Today's editor from Settings > Agents and models, inside the change context that page provides. */
-function SettingsTab({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void }) {
-  const [data, setData] = useState<SettingsData | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    void api.settings().then(setData, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
-  }, [onSignIn]);
-  const a = data?.agents.find((x) => x.key === agentKey);
+/** Pause asks what to do with a running task: let it finish, or stop it now. Resume when paused. */
+function PauseButton({ agentKey, paused, name, onSignIn }: { agentKey: string; paused: boolean; name: string; onSignIn: () => void }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const send = async (body: { paused: boolean; stop?: boolean }) => {
+    setBusy(true);
+    try {
+      const r = await api.pauseAgent(agentKey, body);
+      setNote(body.stop ? (r.stopped ? `Stopped ${r.stopped} running task${r.stopped === 1 ? "" : "s"}.` : "Nothing was running in Paperclip; an Engineer job already under way finishes.") : "");
+      setAsking(false);
+      const p = agentProfileQuery(agentKey);
+      void load(p.key, p.fetch, p.persist, true).catch(() => {});
+      void load(QUERIES.roster.key, QUERIES.roster.fetch, QUERIES.roster.persist, true).catch(() => {});
+    } catch (e) {
+      if (e instanceof SignInRequired) onSignIn();
+      else setNote((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (paused) return <button className="btn" disabled={busy} onClick={() => void send({ paused: false })}>Resume</button>;
   return (
-    <ChangesScope onSignIn={onSignIn}>
-      <section className="st-embedded">
-        {error ? <p className="fleet-empty">Couldn't load settings: {error}</p> : !data ? <SkeletonLines lines={4} /> : a ? <AgentDetails a={a} data={data} /> : <p className="fleet-empty">This agent has no settings in the compiled config yet.</p>}
-      </section>
-    </ChangesScope>
+    <>
+      <button className="btn" onClick={() => setAsking(true)}>Pause</button>
+      {note && <span className="muted" role="status">{note}</span>}
+      {asking && (
+        <div className="drawer-backdrop center" onPointerDown={(e) => e.target === e.currentTarget && setAsking(false)}>
+          <div className="help" role="dialog" aria-modal="true" aria-label={`Pause ${name}`}>
+            <h2>Pause {name}?</h2>
+            <p>It takes no new work while paused. What about what it is doing now?</p>
+            <div className="ap-bar">
+              <button className="btn primary" disabled={busy} onClick={() => void send({ paused: true })}>Let it finish</button>
+              <button className="btn" disabled={busy} onClick={() => void send({ paused: true, stop: true })}>Stop it now</button>
+              <button className="btn" disabled={busy} onClick={() => setAsking(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
