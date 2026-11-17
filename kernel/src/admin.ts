@@ -113,6 +113,7 @@ export function createAdmin(d: Deps) {
   const csrf = (s: AdminSession) => createHmac("sha256", d.accounts.secret).update(`csrf:${s.session.id}`).digest("hex");
   const proto = (req: IncomingMessage) => (String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]!.trim().toLowerCase() === "https" ? "https" : "http");
 
+  const boardOrigin = () => { const u = d.boardUrl?.(); return u ? ` ${new URL(u).origin}` : ""; };
   function send(res: ServerResponse, status: number, html: string, frame?: string[], extra: Record<string, string | string[]> = {}) {
     res.writeHead(status, {
       "content-type": "text/html; charset=utf-8",
@@ -121,7 +122,8 @@ export function createAdmin(d: Deps) {
       // same-origin, not no-referrer: under no-referrer a browser posts these forms with Origin: null, which the check refuses.
       "referrer-policy": "same-origin",
       ...(frame ? {} : { "x-frame-options": "DENY" }),
-      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors ${frame?.length ? frame.join(" ") : "'none'"}`,
+      // A form that succeeds redirects to the board's welcome: browsers apply form-action to that redirect too.
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${boardOrigin()}; base-uri 'none'; frame-ancestors ${frame?.length ? frame.join(" ") : "'none'"}`,
       ...extra,
     }).end(html);
   }

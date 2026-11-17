@@ -51,6 +51,8 @@ test("setup takes account then model", async () => {
   assert.equal(form.status, 200);
   // A browser posts these forms with Origin: null under no-referrer, which the origin check refuses.
   assert.equal(form.headers["referrer-policy"], "same-origin");
+  // ...and a form's redirect to the board's welcome (another origin) is allowed by form-action.
+  assert.match(form.headers["content-security-policy"], new RegExp(`form-action 'self' ${new URL(BOARD).origin};`));
   assert.ok(!form.body.includes("secret_"), "no module keys on the account form");
   const made = await page("POST", "/setup", { token, email: "owner@example.com", name: "Owner", password: PASSWORD });
   assert.equal(made.location, "/auth/enrol");
