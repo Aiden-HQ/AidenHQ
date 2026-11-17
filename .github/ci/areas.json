@@ -1,6 +1,6 @@
 {
   "everything": [".github", "services/shared", "modules-pin.json"],
-  "markdown": ["SETUP.md", ".claude", "fixtures", "scripts/test/fixtures", "services/computer/images"],
+  "markdown": ["SETUP.md", "docs/setup.md", ".claude", "fixtures", "scripts/test/fixtures", "services/computer/images"],
   "suites": [
     { "name": "scripts", "run": "npm test", "paths": ["*"] },
     {

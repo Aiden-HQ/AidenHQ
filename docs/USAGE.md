@@ -9,7 +9,7 @@ pushes things to you. You rarely need to open anything else.
 |---|---|
 | Your Telegram bot or Slack DM with Aiden | Everything day to day: asks, forwards, answers, decisions |
 | The board (`https://<board-host>`, on your tailnet) | Reviewing: today's tasks, chase drafts, approvals, longer threads with an agent |
-| Paperclip (`http://localhost:3100` through an SSH port-forward; see [SETUP.md](../SETUP.md)) | Inspecting the fleet: org chart, runs, costs, routines |
+| Paperclip (`http://localhost:3100` through an SSH port-forward; see [setup](setup.md)) | Inspecting the fleet: org chart, runs, costs, routines |
 
 ## Daily rhythm
 

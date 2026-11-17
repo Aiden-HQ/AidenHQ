@@ -385,7 +385,7 @@ It is the largest piece of this design. Changes to `plan.mjs` and the tier funct
 the eval must stay at 100%.
 
 Until it lands, the GitHub modules stay in the bundle, idle. That already works: installs run today with no GitHub App
-or token until SETUP.md step 8. So steps 1 to 5 of the order don't wait on it.
+or token until docs/setup.md step 8. So steps 1 to 5 of the order don't wait on it.
 
 ### Part 5: the "Getting started" page
 

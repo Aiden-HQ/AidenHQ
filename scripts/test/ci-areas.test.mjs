@@ -23,7 +23,7 @@ test("an unknown path, CI itself or the map selects everything", () => {
   for (const f of ["ops/apply-config.sh", "compose.yaml", ".github/ci/areas.json", ".github/workflows/ci.yml", "modules-pin.json"]) {
     assert.deepEqual(suitesFor(map, ["docs/x.md", f]).names, every, f);
   }
-  assert.deepEqual(suitesFor(map, ["SETUP.md"]).names, ["scripts"], "Markdown the tests read counts");
+  assert.deepEqual(suitesFor(map, ["SETUP.md", "docs/setup.md"]).names, ["scripts"], "Markdown the tests read counts");
 });
 
 test("a rebased head re-runs only the suites main's new commits also touch", () => {

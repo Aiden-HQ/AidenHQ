@@ -80,7 +80,7 @@ find "$AIDENHQ_SECRETS_DIR" -maxdepth 1 -type f -exec chmod 0600 {} + # files on
 # Modules' own vault dirs (secrets.state: read-write at the service's /state): sign-ins and rotating tokens.
 for m in slack primer glean grafana clickhouse jira; do mkdir -p "$AIDENHQ_SECRETS_DIR/modules/$m" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules/$m"; done
 mkdir -p "$AIDENHQ_SECRETS_DIR/apps" && chmod 0700 "$AIDENHQ_SECRETS_DIR/apps"   # <app>.env files for apps-mcp
-# The GitHub App's key (SETUP.md step 8, optional): compose mounts the folder, and Docker can't create it inside the vault.
+# The GitHub App's key (docs/setup.md step 8, optional): compose mounts the folder, and Docker can't create it inside the vault.
 mkdir -p "$AIDENHQ_SECRETS_DIR/github-app" && chmod 0700 "$AIDENHQ_SECRETS_DIR/github-app"
 
 # apps-mcp runs as your uid with the docker group (the Docker socket); apps reach the warehouse over a shared network.
