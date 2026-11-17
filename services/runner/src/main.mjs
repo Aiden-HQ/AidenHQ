@@ -6,6 +6,7 @@ import "./main/poll.ts";
 import { reportActivity } from "./main/activity.ts";
 import "./main/watch.ts";
 import "./main/dispatch.ts";
+import "./main/merge.ts";
 import { adoptRuns, loop, saveMetrics, shutdown } from "./main/unsplit.ts";
 
 // ------------------------------------------------------------------ main

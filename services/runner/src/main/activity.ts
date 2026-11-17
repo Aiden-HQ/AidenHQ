@@ -1,6 +1,7 @@
 import { ACTIVITY_QUERY, activityComment, activitySearches, formatRepo, staleRoutineRuns } from "../recurring.ts";
 import { board, boardApi, cfg, execFileP, log, pc, queue, running, state } from "./context.ts";
-import { activeMerges, findRealGh, mergeQueue, runnerKey } from "./unsplit.ts";
+import { activeMerges, mergeQueue } from "./merge.ts";
+import { findRealGh, runnerKey } from "./unsplit.ts";
 
 /** A routine run that ended blocked stays open forever; once a later run of that routine succeeds, it's moot: cancel it. */
 async function closeStaleRoutineRuns() {

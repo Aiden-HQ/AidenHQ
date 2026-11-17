@@ -4,7 +4,8 @@ import { board, cfg, log, pc, queue, running, state } from "./context.ts";
 import { closeStaleRoutineRuns, startRecurringRuns } from "./activity.ts";
 import { REVIEWED_RETENTION_DAYS, closeReviewedTasks, closeSupersededDesignReviews, watchProductPrs } from "./watch.ts";
 import { dispatchReplies, drainQueue, handleIssue } from "./dispatch.ts";
-import { RESUME_KEY, advanceMerges, mergeCheck, reportError, resumeInterrupted, runApprovals, runAutoMerges, runGrades, runReviews, runTrialEdits, stopping } from "./unsplit.ts";
+import { advanceMerges, mergeCheck, runAutoMerges } from "./merge.ts";
+import { RESUME_KEY, reportError, resumeInterrupted, runApprovals, runGrades, runReviews, runTrialEdits, stopping } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ polling
 
