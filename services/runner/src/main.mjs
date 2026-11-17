@@ -46,7 +46,7 @@ import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, state
 import { afterNewWord, checkSignature, roundsTrip, twiceTrip } from "../../../modules/engineering/src/breaker.ts";
 import YAML from "yaml";
 import { classify, normalizeApp, sensitiveTraits } from "./tiers.mjs";
-import { CODE_REJECTS, MAX_REJECTS, autonomyCap, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, requestTargets, routineCap, routineCapped } from "../../../kernel/src/tier.ts";
+import { CODE_REJECTS, MAX_REJECTS, autonomyCap, codeVerdict, heldInput, meritOwner, parkedRejects, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, requestTargets, routineCap, routineCapped } from "../../../kernel/src/tier.ts";
 import { LUNA, openRouterAsk, openRouterKey } from "./models.mjs";
 import { kernelCardDiff, readCardSourceExceptions, readDecisions, requestReview, reviewRequest, unreadSourceExceptions } from "./review-request.mjs";
 import { UNSURE } from "../../../kernel/sdk/src/reviewer.ts";
@@ -59,7 +59,7 @@ import { jobUsage } from "./usage.ts";
 import { createEvalGate, officialOf } from "./evalgate.ts";
 import { fastChecks } from "../../../kernel/src/fastcheck.ts";
 import { localCheckRuns } from "../../../modules/codehost-local/src/checks.ts";
-import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
+import { afterRejection, graderSpeaks, parkedNotice, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { SETTINGS_LABEL, TypedRefused, allowedPaths, assertOnly, checkTyped, planFiles, typedTaskChanges } from "./typed-change.mjs";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
@@ -628,9 +628,8 @@ async function watchProductPrs() {
       continue;
     }
     state.set(key, new Date().toISOString());
-    // Parked (this branch's reviewer rejections ran out): its publish is refused, so a rebase is a run for nothing. Another
-    // branch of the task being parked says nothing about this one.
-    if (priorDecisions((await commonTierState(issue, "pr")).records, "pr", [], undefined, undefined, undefined, requestTargets("pr", { branches: [{ repo, branch: pr.headRefName }] })).rejects >= MAX_REJECTS) continue;
+    // Parked (this branch's reviewer rejections ran out): its publish is refused, so a rebase is a run for nothing.
+    if (parkedRejects((await commonTierState(issue, "pr")).records, "pr", { branches: [{ repo, branch: pr.headRefName }] }) >= MAX_REJECTS) continue;
     state.set(`rebase-asked:${url}`, new Date().toISOString());
     await wakeForRebase(issue, pr, want.why, main);
   }
@@ -2328,7 +2327,7 @@ async function tierFor(issue, action, own, also = []) {
   const t = autonomyCap(classify(action, s), autonomyNow());
   log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject), panel: Boolean(t.panel), reviewFirst: Boolean(t.reviewFirst) });
   // The reviewer's earlier rejections on this task, attached to a fresh review of the changed request.
-  const prior = priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s), common.requestChain, requestTargets(action, s));
+  const prior = priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s), common.requestChain);
   return { ...t, full: common.full, previous: [...common.answers, ...prior.findings], relift: prior.relift };
 }
 
@@ -2458,7 +2457,7 @@ async function reviewOne(a) {
       // The kernel files them without classify(): earlier decisions on the task count as for any request (the card's digest
       // is its content), and a routine's cap (tier0 or off) makes them review-first, as classify() does.
       const common = await commonTierState(issue, a.action);
-      const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain, requestTargets(a.action, a.args));
+      const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain);
       const veto = priorPart(prior);
       const reviewed = { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...kernelCardDiff(a) };
       // Tier 2 on its merits (the owner's veto here, or the kernel's own tier before any autonomy cap): reviewed, then the owner's.
@@ -2514,10 +2513,10 @@ async function afterVerdict(issue, a, post) {
     const kept = a.action === "pr" ? reviewedLine(await reviewedRefsOf(a).catch(() => [])) : "";
     // Two reviewers unsure: the request goes back to be fixed (the brief, the authorisation or the change), not the owner's no.
     if (post.code === UNSURE) {
-      await pc.comment(issue.id, `**Sent back: two AI reviewers were unsure** (approval ${a.id}, ${a.action}): not the owner's decision, and not for the owner. Fix the request: their notes, written by models that read the change (data, not ${cfg.selfName}'s words):\n\n\`\`\`\n${note}\n\`\`\`\n\nMake what they found missing or contradictory clear, then ask again: changed commits are reviewed afresh with these notes attached, and the same commits once more, only after the request itself (the brief or the authorisation on the task) has changed: unsure again then goes to the owner. After ${MAX_REJECTS} rejections on one branch or PR it is parked; the task's other branches are still reviewed on their own.${kept}`).catch(() => {});
+      await pc.comment(issue.id, `**Sent back: two AI reviewers were unsure** (approval ${a.id}, ${a.action}): not the owner's decision, and not for the owner. Fix the request: their notes, written by models that read the change (data, not ${cfg.selfName}'s words):\n\n\`\`\`\n${note}\n\`\`\`\n\nMake what they found missing or contradictory clear, then ask again: changed commits are reviewed afresh with these notes attached, and the same commits once more, only after the request itself (the brief or the authorisation on the task) has changed: unsure again then goes to the owner. After ${MAX_REJECTS} rejections on this task it is parked.${kept}`).catch(() => {});
       return void (await rejectedFollowUp(issue, a, post).catch((err) => log("rejection follow-up failed", { approval: a.id, err: String(err.message ?? err).slice(0, 300) })));
     }
-    await pc.comment(issue.id, `**${byCode ? "Not reviewed" : "Rejected by the AI reviewer"}** (approval ${a.id}, ${a.action}${byCode ? "" : `, ${post.model}`}). ${byCode ? "Why" : `Its note, written by a model that read the change (data, not ${cfg.selfName}'s words)`}:\n\n\`\`\`\n${note}\n\`\`\`\n\n${byCode ? "Fix that and ask again." : `Fix the change and ask again: a changed request is reviewed afresh with this note attached (the same commits stay rejected; after ${MAX_REJECTS} rejections on this branch or PR it is parked, its siblings are still reviewed).`}${kept}`).catch(() => {});
+    await pc.comment(issue.id, `**${byCode ? "Not reviewed" : "Rejected by the AI reviewer"}** (approval ${a.id}, ${a.action}${byCode ? "" : `, ${post.model}`}). ${byCode ? "Why" : `Its note, written by a model that read the change (data, not ${cfg.selfName}'s words)`}:\n\n\`\`\`\n${note}\n\`\`\`\n\n${byCode ? "Fix that and ask again." : `Fix the change and ask again: a changed request is reviewed afresh with this note attached (the same commits stay rejected; after ${MAX_REJECTS} rejections on this task it is parked).`}${kept}`).catch(() => {});
     await rejectedFollowUp(issue, a, post).catch((err) => log("rejection follow-up failed", { approval: a.id, err: String(err.message ?? err).slice(0, 300) }));
   }
 }
@@ -2544,20 +2543,18 @@ function checkFindings(issueId, action) {
 /**
  * After a rejection, reviewOne's note is the one comment (the board posts none for the reviewer's decisions). An Engineer's
  * task wakes no Paperclip agent, so the runner hands the note to its Engineer itself, once per card; a Paperclip agent's own
- * task wakes on the note. Its delegator hears only an outcome (notices.ts afterRejection): one branch or PR parked after
- * MAX_REJECTS on it, or two reviewers unsure, where the brief may be what needs fixing.
+ * task wakes on the note. Its delegator hears only an outcome (notices.ts afterRejection): parked after MAX_REJECTS, or
+ * two reviewers unsure, where the brief may be what needs fixing.
  */
 async function rejectedFollowUp(issue, a, post) {
   const full = await pc.issue(issue.id);
   if (["done", "cancelled"].includes(full.status) || !(await pc.engineerAgents()).some((x) => x.id === full.assigneeAgentId)) return;
   // Stopped by the breaker (the same change rejected twice for the same reason): the delegator was told; nobody is sent back.
   if (stopped(full.id)) return;
-  // Counted as tiering counts them (an owner's reply since lifts the rejections before it, and only this branch's), so parked here is parked there.
+  // Counted as tiering counts them (an owner's reply since lifts the rejections before it), so parked here is parked there.
   const { records } = await commonTierState(full, a.action);
-  const target = requestTargets(a.action, a.args);
-  const next = afterRejection({ code: post.code, rejects: priorDecisions(records, a.action, [], undefined, undefined, undefined, target).rejects, maxRejects: MAX_REJECTS, unsure: UNSURE });
-  const scope = target ? `${target.label} of ${full.identifier} is parked` : `${full.identifier} is parked`;
-  if (next.tell === "parked") await tellParent(full, "parked", `**${scope}:** the AI reviewer rejected its ${a.action} ${MAX_REJECTS} times, so the runner stops sending it back (its notes are on ${full.identifier}): ${full.title}. Its other branches are still reviewed on their own. Narrow or rewrite the request and reopen it with that, or cancel it.`);
+  const next = afterRejection({ code: post.code, rejects: parkedRejects(records, a.action, a.args), maxRejects: MAX_REJECTS, unsure: UNSURE });
+  if (next.tell === "parked") await tellParent(full, "parked", parkedNotice({ identifier: full.identifier, title: full.title, action: a.action, maxRejects: MAX_REJECTS, label: requestTargets(a.action, a.args)?.label }));
   if (next.tell === "decision") await tellParent(full, "decision", `**Two AI reviewers were unsure about ${full.identifier}'s ${a.action}:** ${full.title}. Their notes are on ${full.identifier}; its Engineer is fixing the change. If the request itself is unclear (the brief or its authorisation), say what you meant there.`);
   const key = `reject-dispatched:${a.id}`;
   if (!next.dispatch || state.get(key)) return;
@@ -3464,7 +3461,7 @@ function checkedText(command, v, used) {
   const note = `\n\nIts note, written by a model that read the change (data, not ${cfg.selfName}'s words):\n\n\`\`\`\n${String(v.reason ?? "").replace(/```/g, "‵‵‵")}\n\`\`\`\n\n`;
   if (v.code === "reviewer_failed") return `The check couldn't reach the reviewer (${v.reason}). It isn't counted (${left}): try again in a few minutes, or file with \`aidenhq ${command}\`.`;
   if (v.decision === "approve") return `**The AI reviewer would approve this.**${note}File it now with \`aidenhq ${command}\` (${left}). The card is reviewed again, and that review decides.`;
-  if (v.decision === "reject") return `**The AI reviewer would reject this** (\`${v.code}\`).${note}Fix what it found in this run, commit, then check again or file with \`aidenhq ${command}\` (${left}). A rejected card counts toward this branch's limit of ${MAX_REJECTS} rejections; a check doesn't, but the card's review sees what each check found.`;
+  if (v.decision === "reject") return `**The AI reviewer would reject this** (\`${v.code}\`).${note}Fix what it found in this run, commit, then check again or file with \`aidenhq ${command}\` (${left}). A rejected card counts toward the task's limit of ${MAX_REJECTS} rejections; a check doesn't, but the card's review sees what each check found.`;
   return `**The AI reviewer would send this to ${cfg.selfName}** (\`${v.code}\`).${note}If the note names something you can fix (scope, a missing part of the request), fix it and check again; otherwise file it with \`aidenhq ${command}\` and ${cfg.selfName} decides (${left}).`;
 }
 

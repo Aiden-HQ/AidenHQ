@@ -72,3 +72,8 @@ export function afterRejection({ code, rejects, maxRejects, unsure }: { code: st
   if (rejects >= maxRejects) return { dispatch: false, tell: "parked" };
   return { dispatch: true, ...(code === unsure ? { tell: "decision" } : {}) };
 }
+
+/** The delegator's notice that a rejection parked a card: the branch or PR it was raised against, never the whole task. */
+export function parkedNotice({ identifier, title, action, maxRejects, label }: { identifier: string; title: string; action: string; maxRejects: number; label?: string }): string {
+  return `**${label ? `${label} of ${identifier} is parked` : `${identifier} is parked`}:** the AI reviewer rejected its ${action} ${maxRejects} times, so the runner stops sending it back (its notes are on ${identifier}): ${title}. Its other branches are still reviewed on their own. Narrow or rewrite the request and reopen it with that, or cancel it.`;
+}
