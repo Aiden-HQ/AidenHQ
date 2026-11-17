@@ -1,0 +1,6 @@
+name: flowbad
+description: names a secret it does not declare with setup
+requires: [board]
+contributes:
+  board.setup_flows:
+    - { order: 10, title: Phone, why: Aiden on your phone., effort: about 2 minutes, steps: "1. Paste.", secrets: [not_declared] }

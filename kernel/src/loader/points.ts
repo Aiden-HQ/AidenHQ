@@ -10,7 +10,7 @@ type Def = { requires?: unknown; points?: unknown; contributes?: unknown };
 /** By owner module, then point: the contributions, each tagged with its contributing `module`, in module-name order. */
 export type Points = { [owner: string]: { [point: string]: { [k: string]: unknown }[] } };
 
-const NAME = /^[a-z][a-z0-9-]{0,40}$/;
+const NAME = /^[a-z][a-z0-9_-]{0,40}$/;
 
 /** Compiles the enabled modules' points (`defs` by name, `roots` their folders). Throws on the first problem, naming its module. */
 export function compilePoints(defs: { [name: string]: Def }, roots: { [name: string]: string }): Points {
@@ -22,7 +22,7 @@ export function compilePoints(defs: { [name: string]: Def }, roots: { [name: str
     const root = roots[name] ?? "";
     for (const [p, v] of Object.entries(def.points as { [k: string]: { schema?: unknown } })) {
       const file = String(v?.schema ?? "");
-      if (!NAME.test(p)) throw new Error(`module ${name}: point ${p} needs a name (a-z, 0-9, -)`);
+      if (!NAME.test(p)) throw new Error(`module ${name}: point ${p} needs a name (a-z, 0-9, _, -)`);
       if (Object.keys(v ?? {}).some((k) => k !== "schema") || !/^schemas\/[\w.-]+\.json$/.test(file) || !existsSync(join(root, file))) throw new Error(`module ${name}: point ${p} is { schema: schemas/<file>.json }, a file in the module`);
       schemas[`${name}.${p}`] = JSON.parse(readFileSync(join(root, file), "utf8"));
       (out[name] ??= {})[p] = [];

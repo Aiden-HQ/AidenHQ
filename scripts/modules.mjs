@@ -457,6 +457,28 @@ function put(target, key, value, kind) {
 }
 
 /**
+ * board.setup_flows (modules/board/schemas/setup_flows.json): one flow per module, naming only that module's own `setup:` secrets
+ * and board.signins. A flow with `pair_url` gets the module's generated `<module>_pair_token` (its secret's name in the flow, never
+ * its value): mounted on the board (`board_env`), and the module's service reads it as `${secrets.<module>_pair_token}`.
+ */
+export function setupFlows(defs, compiled) {
+  const flows = compiled.board?.setup_flows ?? [];
+  for (const f of flows) {
+    const where = `module ${f.module}: setup_flows`;
+    if (flows.filter((x) => x.module === f.module).length > 1) fail(`${where}: one flow per module`);
+    const declared = [defs[f.module].secrets?.provided ?? []].flat().filter((p) => p?.setup != null).map((p) => p.name);
+    for (const s of f.secrets ?? []) if (!declared.includes(s)) fail(`${where} names a secret without setup: ${s} (give it \`setup:\` under secrets.provided)`);
+    if (f.signin != null && !(compiled.board.signins ?? []).some((x) => x.module === f.module && x.id === f.signin)) fail(`${where}: signin ${f.signin} is not one of its board.signins`);
+    if (f.pair_url == null) continue;
+    const token = `${f.module.replace(/-/g, "_")}_pair_token`;
+    const def = defs[f.module];
+    def.generated_secrets = [...new Set([...(def.generated_secrets ?? []), token])];
+    def.board_env = { ...def.board_env, [`${token.toUpperCase()}_FILE`]: `\${secrets.${token}}` };
+    f.pair_token = token;
+  }
+}
+
+/**
  * compile(productDir, instanceDir, { revision }) → { paperclip, apps, compose, catalog, warnings, edge }.
  * productDir holds modules/<name>/module.yaml; instanceDir holds instance.yaml, agents/<key>.md additions to a module
  * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
@@ -475,6 +497,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   if (conflicts.length) fail(conflicts.join("; "));
   // Module-owned points (spec §3.6): config/points/<owner>.json, one file for every module that defines any ({} when off).
   const compiled = compilePoints(enabledDefs, Object.fromEntries(enabled.map((n) => [n, all.get(n).root])));
+  setupFlows(enabledDefs, compiled);
   const points = Object.fromEntries([...all.values()].filter((m) => m.def.points).map((m) => [m.name, compiled[m.name] ?? {}]));
   const warnings = [];
 
