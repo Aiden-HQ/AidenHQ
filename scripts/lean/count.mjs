@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Lean-core ratchet counters (spec §9): kernel and SDK lines, the trusted base, vendor and module names in the kernel and
+// Lean-core counters (spec §9): kernel and SDK lines, the trusted base, vendor and module names in the kernel and
 // in today's core, kernel settings and kill switches. Counts tracked files only, so the Mac, CI and the host agree.
-// scripts/test/lean.test.mjs fails when any number grows past scripts/lean/baseline.json.
+// Optional helper, run by hand: shows where the counters stand. Nothing in CI reads it.
 //   node scripts/lean/count.mjs [--json]
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -84,8 +84,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const repo = fileURLToPath(new URL("../..", import.meta.url));
   const m = measure(repo);
   if (process.argv.includes("--json")) console.log(JSON.stringify(m, null, 2));
-  else {
-    const base = JSON.parse(readFileSync(join(repo, "scripts/lean/baseline.json"), "utf8"));
-    for (const [k, v] of Object.entries(m)) console.log(`${k.padEnd(14)} ${String(v).padStart(7)}  (baseline ${base[k]})`);
-  }
+  else for (const [k, v] of Object.entries(m)) console.log(`${k.padEnd(14)} ${String(v).padStart(7)}`);
 }
