@@ -22,6 +22,7 @@ export async function fakeKernel(): Promise<{
   const sessions = new Map<string, FakeAccount>();
   const accounts = new Map<string, FakeAccount>();
   const calls: { path: string; body: any }[] = [];
+  const saved: Record<string, boolean> = {};
   const server: Server = createServer(async (req, res) => {
     let text = "";
     for await (const c of req) text += c;
@@ -41,6 +42,12 @@ export async function fakeKernel(): Promise<{
       case "/v1/auth/session": {
         const a = sessions.get(body.token);
         return a ? send(200, { account: a, session: { id: `s-${a.id}`, expiresAt: new Date(Date.now() + 3_600_000).toISOString() } }) : send(401, { error: { message: "no session" } });
+      }
+      case "/v1/accounts/save_secret":
+      case "/v1/accounts/setup_status": {
+        if (!sessions.get(body.token)) return send(401, { error: { message: "sign in" } });
+        if (req.url!.endsWith("save_secret")) return body.value === "bad" ? send(400, { error: { message: "that doesn't look like a bot token" } }) : (saved[body.secret] = true, send(200, { ok: true, restarted: [body.module] }));
+        return send(200, { secrets: { ...saved } });
       }
       case "/v1/auth/sign_out":
         sessions.delete(body.token);
