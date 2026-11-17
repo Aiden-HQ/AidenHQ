@@ -49,7 +49,8 @@ npm test && npm run typecheck
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
 editing `kernel/sdk/src/caller.ts` or `fence.ts`, `services/shared/source-store.ts`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.mjs` (a
-test fails on drift). CI (`.github/workflows/ci.yml`) runs all of the above on every PR.
+test fails on drift). CI (`.github/workflows/ci.yml`) runs the suites a PR touches (map: `.github/ci/areas.json`, read from
+the base; a new top-level path needs a suite there or it runs everything) and all of them on main.
 
 The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
