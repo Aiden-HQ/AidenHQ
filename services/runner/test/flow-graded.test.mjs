@@ -191,17 +191,21 @@ describe("flow-graded", { concurrency: true }, () => {
   });
 
   // WOR-3582: a runner comment on a finished task reopens it in Paperclip (it posts as a user), which woke the parent's agent,
-  // sent its closed task back through grading and looped. A finished parent hears nothing.
+  // sent its closed task back through grading and looped. A finished parent hears nothing: the delegator gets a task of its own.
   describe("flow-graded: a finished parent is not reopened by an escalation", () => {
     const d = delegated("done-parent");
     const t = flow(held("done-parent", { rubric: [], deliverable: { kind: "pr", ref: "" }, state: "awaiting_evidence", updatedAt: new Date(Date.now() - 2 * 86_400_000).toISOString() }, { parent: { ...d.parent, status: "done" } }));
 
-    it("escalates the part and leaves the parent alone", async () => {
+    it("escalates the part, leaves the parent alone and files a decision task for the delegator", async () => {
       const { waitFor, paperclip } = t;
       await waitFor("the escalation", () => paperclip.grades.get("part")?.state === "escalated");
+      await waitFor("the decision task", () => [...paperclip.issues.values()].some((i) => /^Decision needed: /.test(i.title) && i.assigneeAgentId === "assistant"));
+      const task = [...paperclip.issues.values()].find((i) => /^Decision needed: /.test(i.title));
+      assert.match(task.description, /needs your decision[\s\S]*escalated to the delegator[\s\S]*Decide on PEN-\d+ itself/);
+      await waitFor("its wake", () => (paperclip.comments.get(task.id) ?? []).some((c) => /Start now/.test(c.body)));
       await t.idle(300);
       assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /needs your decision/.test(c.body)), "no comment on the finished parent");
-      assert.ok(t.partComments().some((c) => /Graded: escalated to the delegator/.test(c)), "the note stays on the part");
+      assert.ok(!t.partComments().some((c) => /needs your decision/.test(c)), "no note on the part, which would wake only its assignee");
       assert.equal(paperclip.issues.get("parent").status, "done");
     });
   });

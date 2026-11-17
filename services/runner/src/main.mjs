@@ -1476,20 +1476,43 @@ function gradeDeps(issue) {
 
 /**
  * A notice about a sub-task for its parent (notices.ts): an outcome is posted there, which wakes the delegator; progress is
- * not (it is on the sub-task already). Only an open parent hears it: Paperclip reopens a done or cancelled task on any
+ * not (it is on the sub-task already). Only an open parent hears it (an escalation with none goes to the delegator, askDelegator): Paperclip reopens a done or cancelled task on any
  * user-authored comment (the runner's included), which would wake its agent and send finished work round again (WOR-3582).
  * The asking agent's own chat, handed to the owner while it waited for a tap, is given back first so the outcome wakes it.
  * True when it was posted.
  */
 async function tellParent(issue, kind, text) {
-  if (!wakesParent(kind) || !issue.parentId) return false;
-  const p = await pc.issue(issue.parentId).catch(() => undefined);
-  if (!p || ["done", "cancelled"].includes(p.status)) return false;
+  if (!wakesParent(kind)) return false;
+  const p = issue.parentId ? await pc.issue(issue.parentId).catch(() => undefined) : undefined;
+  if (!p || ["done", "cancelled"].includes(p.status)) return kind === "escalated" && (await askDelegator(issue, text));
   // Only the asking agent's own chat (its id in the chat's end-anchored marker), and only while it sits with the owner.
   const chatAgent = /<!-- aidenhq-chat-agent:([A-Za-z0-9_-]+) -->\s*$/.exec(p.description ?? "")?.[1];
   if (!p.assigneeAgentId && p.assigneeUserId && issue.createdByAgentId && chatAgent === issue.createdByAgentId && isAgentSubtask(issue))
     await pc.api("PATCH", `/api/issues/${encodeURIComponent(p.id)}`, { assigneeAgentId: issue.createdByAgentId, assigneeUserId: null, status: "todo" }).catch(() => {});
   await pc.comment(p.id, text);
+  return true;
+}
+
+
+/**
+ * An escalated grade with no open parent to hear it (none, or already closed): a note on the task itself would wake only its
+ * assignee, who cannot decide it, and one on the closed parent would reopen it. The delegator gets a task of its own, filed
+ * assigned and started by one comment (as the design review's is: Paperclip never dispatches an assigned task on arrival).
+ * Once per distinct note. False when the delegator is not a live agent: the caller then keeps its note on the task.
+ */
+async function askDelegator(issue, text) {
+  const to = issue.createdByAgentId;
+  if (!to || !(await pc.agents().catch(() => [])).some((a) => a.id === to && a.status !== "paused")) return false;
+  const marker = `escalation:${issue.id}:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
+  const task = await pc.api("POST", `/api/companies/${pc.company}/issues`, {
+    title: `Decision needed: ${issue.identifier}`, status: "todo", priority: "medium", assigneeAgentId: to, assigneeUserId: null, allowDuplicate: true, ...OWN_FOLDER,
+    description: `${text}\n\nDecide on ${issue.identifier} itself (it is not this task): close it to accept the work, or reopen it with what to change. Then close this task.\n\n<!-- source:${marker} -->`,
+    idempotencyKey: `pw-${createHash("sha256").update(marker).digest("hex").slice(0, 32)}`,
+  });
+  if (task.deduplicated) return true;
+  state.set(`runner-made:${task.id}`, new Date().toISOString());
+  await pc.comment(task.id, `Start now: ${issue.identifier}'s grade escalated to you and waits for your decision.`).catch(() => {});
+  log("escalation sent to its delegator", { task: issue.identifier, delegator: to, issue: task.identifier });
   return true;
 }
 
