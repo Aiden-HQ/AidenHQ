@@ -13,6 +13,8 @@ export interface Agent {
   /** The agent's one-line routing description (setup writes it from the agent definition). */
   title?: string | null;
   status: string;
+  /** The agent it reports to (the org chart). */
+  reportsTo?: string | null;
   adapterType: string;
   adapterConfig?: Record<string, unknown>;
   metadata?: { setupKey?: string; module?: unknown; trial?: unknown; models?: unknown; persona?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; department?: unknown } | null;
@@ -288,6 +290,15 @@ export class Paperclip {
 
   closedSince(since: string, limit = "100"): Promise<Issue[]> {
     return this.list("done,cancelled", since, limit);
+  }
+
+  /**
+   * One agent's finished tasks, newest first. Paperclip's list has no assignee filter the board trusts (see children()) and
+   * only `updatedSince`, so this reads the company's newest finished tasks and keeps the agent's own: older ones than the
+   * newest 500 company-wide are out of reach.
+   */
+  async closedFor(agentId: string): Promise<Issue[]> {
+    return (await this.list("done,cancelled")).filter((i) => i.assigneeAgentId === agentId);
   }
 
   private list(status: string, updatedSince?: string, limit = "500"): Promise<Issue[]> {

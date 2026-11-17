@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import type { Logger } from "pino";
 import { z } from "zod";
+import { agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { makeRuns } from "./runs.js";
 import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunContext, type RunnerReport, type TaskRef, type Working } from "./activity.js";
@@ -1182,6 +1183,37 @@ export function createApp(opts: AppOptions): Server {
     { method: "GET", path: /^\/api\/agents\/roster$/, handle: async () => {
         const [agents, routines] = await Promise.all([pc.agents(), pc.routines().catch(() => [])]);
         return { roster: roster(agents, routines, new Map()) };
+      },
+    },
+    // One agent's page (web/src/AgentPage.tsx): its profile, then its tasks. Registered before the uuid routes; a key is never a uuid.
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)$/,
+      handle: async (m) => {
+        const [agents, routines] = await Promise.all([pc.agents(), pc.routines().catch(() => [])]);
+        const agent = agentByKey(agents, m[1]!);
+        if (!agent) throw new HttpError(404, "no such agent");
+        const { compiled, catalog } = readSources(settingsFiles());
+        return { profile: agentProfile({ agent, agents, routines, effort: compiled?.agents?.[m[1]!]?.reasoning_effort ?? null, catalog }) };
+      },
+    },
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/tasks$/,
+      handle: async (m, _b, url) => {
+        const ctx = await context();
+        const agent = agentByKey(ctx.agents, m[1]!);
+        if (!agent) throw new HttpError(404, "no such agent");
+        const [live, runs] = await Promise.all([pc.liveRuns(), pc.recentRuns(100)]);
+        const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);
+        if (url.searchParams.get("view") === "history") {
+          // A cancelled task shows as failed only when its last run failed.
+          const stateOf = (i: Issue) => (i.status === "cancelled" && ["failed", "timed_out"].includes(lastRun(i)?.status ?? "") ? "failed" : "done");
+          return historyPage(await pc.closedFor(agent.id), agent.id, url.searchParams.get("q") ?? "", url.searchParams.get("before") ?? undefined, stateOf, ctx.agents);
+        }
+        const [open, awaiting] = await Promise.all([pc.openIssues(), records.awaiting().catch(() => new Set<string>())]);
+        const chat = ctx.labels.find((l) => l.name === "chat");
+        return splitTasks(open, agent.id, chat?.id, (i) => chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents);
       },
     },
     { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, store, records, grading), m[1]!) },
