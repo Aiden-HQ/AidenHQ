@@ -44,9 +44,9 @@ only. See [docs/architecture.md](docs/architecture.md).
 
 - **Concepts:** [docs/concepts.md](docs/concepts.md) explains Aiden, crews, modules, connections, grants, apps, the
   warehouse, the runner and the approval tiers in one page.
-- **Set up your own instance:** [SETUP.md](SETUP.md) walks a person or Claude Code from a fresh Ubuntu VM to a working
-  instance, with a check after every step (in Claude Code, ask it to "set up AidenHQ": the `setup-aidenhq` skill walks
-  it). Each person runs their own server, instance repo and keys.
+- **Set up your own instance:** [SETUP.md](SETUP.md): paste one prompt into your AI coding agent and open the link it
+  prints. [docs/setup.md](docs/setup.md) is the manual path, with a check after every step (in Claude Code, ask it to
+  "set up AidenHQ": the `setup-aidenhq` skill walks it). Each person runs their own server, instance repo and keys.
 - **Contribute:** [CONTRIBUTING.md](CONTRIBUTING.md). Contributors have read access: fork the repo and open a pull
   request; the maintainer reviews and merges.
 
@@ -102,9 +102,9 @@ Your configuration lives in a separate private **instance repo**: `instance.yaml
 | | |
 |---|---|
 | [docs/concepts.md](docs/concepts.md) | The building blocks in one page |
-| [SETUP.md](SETUP.md) | Install your own instance, step by step |
+| [SETUP.md](SETUP.md) | Install your own instance: the one-prompt install |
 | [docs/USAGE.md](docs/USAGE.md) | How to use it day to day |
-| [docs/setup.md](docs/setup.md) | Setup reference: by-hand install, connections, shared access |
+| [docs/setup.md](docs/setup.md) | Manual setup, step by step, and reference: connections, shared access |
 | [docs/configuration.md](docs/configuration.md) | Modules, the instance repo, settings, grants, the compile pipeline |
 | [docs/architecture.md](docs/architecture.md) | Components, data flow and trust boundaries |
 | [docs/core-components.md](docs/core-components.md) | Our core components and what each adds over Paperclip |

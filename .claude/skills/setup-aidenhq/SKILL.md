@@ -1,29 +1,29 @@
 ---
 name: setup-aidenhq
-description: Walk a person through installing their own AidenHQ instance from SETUP.md, running the setup scripts and each step's Check. Use when asked to "set up AidenHQ", "install my instance", "install AidenHQ on my server" or "walk me through SETUP.md".
+description: Walk a person through installing their own AidenHQ instance from the manual setup (docs/setup.md), running the setup scripts and each step's Check. Use when asked to "set up AidenHQ", "install my instance", "install AidenHQ on my server" or "walk me through docs/setup.md".
 ---
 
 # Set up AidenHQ
 
-SETUP.md is the only source of steps and checks. This skill drives it; it does not restate it. Read the section
-before you run it, and if SETUP.md and this skill ever disagree, SETUP.md wins.
+docs/setup.md is the only source of steps and checks. This skill drives it; it does not restate it. Read the section
+before you run it, and if docs/setup.md and this skill ever disagree, docs/setup.md wins.
 
 ## Rules
 
-- Do one SETUP.md section at a time, in order. Run the commands the section gives and then its **Check**, exactly as
+- Do one docs/setup.md section at a time, in order. Run the commands the section gives and then its **Check**, exactly as
   written there. Never invent a check of your own.
-- A failed Check stops the walk. Show the person the output, diagnose from SETUP.md and
-  [docs/setup.md](../../../docs/setup.md), fix, re-run the Check. Do not continue past a failure.
+- A failed Check stops the walk. Show the person the output, diagnose from docs/setup.md and
+  the reference sections of it, fix, re-run the Check. Do not continue past a failure.
 - Never run `sudo`, and never run or open pairing links, OAuth consent pages or one-time setup links. Steps marked
-  **[human]** and **[org admin]** in SETUP.md's intro are the person's: give the exact command or URL and wait.
+  **[human]** and **[org admin]** in its intro are the person's: give the exact command or URL and wait.
 - Never print secrets (keys, `person.env` contents, the vault recovery key, setup links beyond handing them over).
 - Ask only for decisions only the person can make, with AskUserQuestion: multiple choice, recommended option first,
-  room for their own answer. Do not ask what SETUP.md or the machine already answers.
+  room for their own answer. Do not ask what docs/setup.md or the machine already answers.
 - Commands run on the server. If you are on a laptop, run them over `ssh <you>@<host>`.
 
 ## Walk
 
-1. **Orient.** Read [SETUP.md](../../../SETUP.md) top to bottom once. Ask (multiple choice) where the server will
+1. **Orient.** Read [docs/setup.md](../../../docs/setup.md) top to bottom once. Ask (multiple choice) where the server will
    run (own hypervisor or cloud as in section 1 option A, Proxmox as option B) and which modules to install; ask
    for free-text only where there is no sensible choice: the Linux user, host address, instance name, GitHub agents
    org name, the company name.

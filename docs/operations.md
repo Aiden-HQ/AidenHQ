@@ -421,7 +421,7 @@ runners some weeks after a newer release, so bump when the org's runners page wa
 
 **Scale.** One unit per concurrent job: `systemctl --user enable --now aidenhq-ci-runner@3`, or `disable --now` one to
 shrink. Every unit is up to 4 CPUs and 8 GB while it runs a job, whichever org it serves: keep the total at 2-4 on a VM of
-the size SETUP.md suggests (e.g. 2 for the product org, 1-2 for the agents org). The enabled instances are what the config
+the size docs/setup.md suggests (e.g. 2 for the product org, 1-2 for the agents org). The enabled instances are what the config
 declares runs, and an apply starts every declared one that systemd reports failed: `Restart=always` alone reaches systemd's
 start limit and leaves a unit failed with nothing to clear it, so `ops/ci-runner-units.sh` resets and starts those (and the
 ones a drain record names) after everything else. A drain (`node scripts/fleet-pause.mjs pause`) stops them without
