@@ -175,6 +175,11 @@ describe("prompts", () => {
     assert.match(p, /Instructions from Dana \(authoritative\)\n\n[^\n]*\n\nFind the cause\./);
   });
 
+  it("names the instance's agents org for a new app repository (local/<name> on an instance with no GitHub)", () => {
+    const p = firstPrompt({ user: "Dana", task: { identifier: "PEN-4", title: "Build hello" }, workspace: "/w", repos: [], instructions: "Build it.", orgs: ["local"] });
+    assert.match(p, /in the agents org \(on this instance: `local`, e\.g\. `aidenhq create-repo local\/<name>`; `local\/<name>` is a repository on this server\)/);
+  });
+
   it("labels an agent-delegated task's request as the agent's and never repeats the task text", () => {
     const description = "Drop Legacy support in acme/late";
     const p = firstPrompt({

@@ -87,6 +87,8 @@ export function loadConfig() {
     // One agents org per enabled code host: tiering (tiers.mjs, plan.mjs) and the kernel (kinds.ts) take the list.
     agentsOrgs: [...(agentsOrg ? [agentsOrg] : []), ...(localHost ? ["local"] : [])],
     localHost,
+    // GitHub is a code host unless the catalog has codehost-local on and codehost-github off (an instance with no GitHub).
+    githubHost: !localHost || enabledIn(join(configDir, "modules.json"), "codehost-github"),
     dataDir,
     file,
     companyId,

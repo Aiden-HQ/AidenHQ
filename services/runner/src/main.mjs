@@ -54,7 +54,7 @@ import { fileContext } from "../../shared/review-files.mjs";
 import { GRADE_SCHEMA, GRADER_MARKER, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { createGradeLoop } from "../../../modules/grading/src/loop.mjs";
 import { createResolver } from "../../../kernel/src/net.ts";
-import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
+import { ALREADY_APPLIED, guardBranch, localPullRequest } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
 import { createEvalGate, officialOf } from "./evalgate.ts";
 import { fastChecks } from "../../../kernel/src/fastcheck.ts";
@@ -560,6 +560,7 @@ const trialNoTap = (issue, grants) => trialNoTapBy(issue, grants, runnerMade(iss
  * that conflicts with the default branch (or went red while behind it) wakes its task, at most once per half hour.
  */
 async function watchProductPrs() {
+  if (!cfg.githubHost) return; // the product repo is on GitHub: with no GitHub code host, there is nothing to watch
   const repo = cfg.productRepo;
   const pe = Object.entries(readGrants()?.agents ?? {}).find(([, a]) => (a?.roles ?? []).includes("platform-engineer"))?.[0];
   if (!repo || !pe) return;
@@ -1723,8 +1724,9 @@ function gradeDeps(issue) {
       return [...(mergeQueue(issue.id)?.prs ?? []).filter((p) => p.status === "merged"), ...asked, ...cards.flatMap((a) => a.args?.prs ?? [])];
     },
     ownRepo,
-    pr: (repo, number) => mergeGithub.pr(repo, number),
-    diff: async (repo, number) => (await execFileP(await findRealGh(), ["api", "-H", "Accept: application/vnd.github.diff", `repos/${repo}/pulls/${number}`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }))).stdout,
+    // A change request on this server is read from its refs and checks receipt; a GitHub PR through the App.
+    pr: (repo, number) => (isLocal(repo) ? localPrRead(repo, number) : mergeGithub.pr(repo, number)),
+    diff: async (repo, number) => (isLocal(repo) ? localHost.diff(repo, number) : (await execFileP(await findRealGh(), ["api", "-H", "Accept: application/vnd.github.diff", `repos/${repo}/pulls/${number}`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }))).stdout),
     app: async (name) => (/^[a-z0-9-]{1,63}$/.test(name) ? (await boardApi.get(`/internal/grades/app/${name}`)).app : null),
     appOfRepo: async (repo) => (await boardApi.get(`/internal/grades/app-of/${repo}`)).app,
     // Every deploy of one exact commit, over apps-mcp's whole deploy table (the status row's list is bounded).
@@ -1891,10 +1893,13 @@ function drainQueue() {
 
 // ------------------------------------------------------------------ jobs
 
+/** How a repository is named: org/name, with this instance's agents orgs as the examples (local/<name>: this server's). */
+const REPO_FORM = () => `name it as <org>/<name>${cfg.agentsOrgs.length ? `, such as ${cfg.agentsOrgs.map((o) => `\`${o}/<name>\``).join(" or ")}` : ""}`;
+
 /** The task's main repository, for a task that has none yet: the others join its workspace. */
 async function setMainRepo(issue, slug) {
   const repo = normalizeRepo(slug);
-  if (!repo) throw new UserError(`\`${slug}\` isn't a GitHub repository I can read.`);
+  if (!repo) throw new UserError(`\`${slug}\` isn't a repository I can read: ${REPO_FORM()}.`);
   if (!repoAllowed(repo, cfg.allowed_orgs) && !(await publicRepo(repo.slug))) {
     throw new UserError(`\`${repo.slug}\` is outside your orgs (${cfg.allowed_orgs.join(", ")}) and isn't a public GitHub repository, so I can't work in it.`);
   }
@@ -2717,7 +2722,7 @@ async function cardSources(bases) {
   if (!bases.length) return undefined;
   try {
     // A base code could not name (a merge card's unreadable PR) is never guessed: readCardSourceExceptions skips it.
-    return await readCardSourceExceptions(bases, ghRaw);
+    return await readCardSourceExceptions(bases, repoRaw);
   } catch (err) {
     log("source exceptions unread", { err: String(err.message ?? err).slice(0, 200) });
     return unreadSourceExceptions();
@@ -2741,7 +2746,18 @@ async function cardSiblingRows(issue, bases) {
 }
 
 /** One file's raw text from GitHub's contents API (`url` names the ref), read with the repo's narrowed token. */
-const ghRaw = async (repo, url) => (await execFileP(await findRealGh(), ["api", "-H", "Accept: application/vnd.github.raw", url], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout;
+/**
+ * One file's text by its contents URL (`repos/<repo>/contents/<path>?ref=<ref>`): a repo on this server from its bare repo,
+ * any other through GitHub.
+ */
+const repoRaw = async (repo, url) => {
+  if (isLocal(repo)) {
+    const m = /^repos\/[^/]+\/[^/]+\/contents\/([^?]+)\?ref=(.+)$/.exec(url);
+    if (!m) throw new Error(`not a contents URL: ${url}`);
+    return localHost.read(repo, decodeURIComponent(m[2]), decodeURIComponent(m[1]));
+  }
+  return (await execFileP(await findRealGh(), ["api", "-H", "Accept: application/vnd.github.raw", url], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout;
+};
 
 /**
  * The scope of a review (what the reviewer judges the change against), and the merged-sibling table. The chain stays whole,
@@ -2787,7 +2803,7 @@ async function reviewScope(issue, chain, bases) {
 async function cardContext(issue, target, known, chain = "") {
   const bases = known ?? (await cardBases(target));
   // The decisions digest (readDecisions): from the instance repo's default branch, whatever the card's base; unread is none.
-  const decisions = await readDecisions(cfg.apply?.repo, githubDefault, ghRaw).catch((err) => void log("decisions unread", { err: String(err.message ?? err).slice(0, 200) }));
+  const decisions = await readDecisions(cfg.apply?.repo, githubDefault, repoRaw).catch((err) => void log("decisions unread", { err: String(err.message ?? err).slice(0, 200) }));
   const { scope, siblings } = await reviewScope(issue, chain, bases);
   return { scope, siblings, sources: await cardSources(bases), decisions };
 }
@@ -3673,7 +3689,7 @@ async function agentReset(ctx) {
 /** `aidenhq cleanup`: remove the workspace when the run ends (branches stay in the runner's copies). */
 async function agentCleanup(ctx) {
   ctx.cleanup = true;
-  return "The workspace is removed when your run ends, unless it has uncommitted changes. Its branches are kept in the runner's copies of the repositories, and pushed ones are on GitHub.";
+  return "The workspace is removed when your run ends, unless it has uncommitted changes. Its branches are kept in the runner's copies of the repositories, and pushed ones are on their code host.";
 }
 
 /** `aidenhq merge`: PRs for the merge queue, as an approval record; the queue starts on the user's tap. */
@@ -3932,7 +3948,7 @@ async function startJob({ issue, instructions }) {
     const candidates = named.filter((c) => !missing.includes(c));
     if (missing.length) {
       log("named repos missing", { issue: issue.identifier, repos: missing });
-      instructions = `(Runner note: ${missing.map((m) => `\`${m}\``).join(", ")} ${missing.length === 1 ? "is" : "are"} named here but ${missing.length === 1 ? "doesn't" : "don't"} exist on GitHub, so ${missing.length === 1 ? "it isn't" : "they aren't"} in the workspace. Naming a repository never creates it. Only when this task asks you to build a new app in a new repository, \`aidenhq create-repo <org/name>\` asks for it on an approval card.)\n\n${instructions}`;
+      instructions = `(Runner note: ${missing.map((m) => `\`${m}\``).join(", ")} ${missing.length === 1 ? "is" : "are"} named here but ${missing.length === 1 ? "doesn't" : "don't"} exist on their code host, so ${missing.length === 1 ? "it isn't" : "they aren't"} in the workspace. Naming a repository never creates it. Only when this task asks you to build a new app in a new repository, \`aidenhq create-repo <org/name>\` asks for it on an approval card.)\n\n${instructions}`;
     }
     let task = state.task(issue.id);
     if (!task.repo && candidates.length) task = await setMainRepo(issue, candidates[0]);
@@ -4011,7 +4027,7 @@ async function startJob({ issue, instructions }) {
     const seen = engine.box ? { workspace: "/workspace", repos: repos.map((r) => ({ ...r, path: r.path.replace(workspace, "/workspace") })) } : { workspace, repos };
     const prompt = resumed
       ? followUpPrompt({ user: cfg.selfName, instructions, ...seen, branches, files, primer, crew, observe, thread, stand, brief })
-      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, observe, thread, stand, team: crewNames(engineers), brief, build });
+      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, observe, thread, stand, team: crewNames(engineers), brief, build, orgs: cfg.agentsOrgs });
     const tipsBefore = await branchTips(workspace);
     const identity = await botIdentity();
     const ghToken = await jobGhToken(app, repos.map((r) => r.slug), appFor).catch((err) => (log("no gh token for the job", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), undefined));
@@ -4492,7 +4508,7 @@ async function runCommand(issue, task, command) {
     const kept = state.branches(issue.id).length;
     for (const b of state.branches(issue.id)) state.deleteBranch(issue.id, b.repo, b.branch);
     state.updateTask(issue.id, { workspace: null, session_id: null });
-    return void (await pc.comment(issue.id, `Removed the workspace.${kept ? " Its branches are kept in the runner's copies of the repositories, and pushed ones are on GitHub." : ""}`));
+    return void (await pc.comment(issue.id, `Removed the workspace.${kept ? " Its branches are kept in the runner's copies of the repositories, and pushed ones are on their code host." : ""}`));
   }
   // Publishing takes minutes for many branches (a push and a PR description each): it shows on the
   // board as the Engineer's work in progress, holds back new runs, and "stop" ends it between branches.
@@ -4740,6 +4756,14 @@ async function localBranchPr(repo, branch) {
   const list = (await localHost.changes(repo)).filter((c) => c.branch === branch);
   const c = list.find((x) => x.state === "open") ?? list[0];
   return c ? { existing: true, pr: { number: c.number, baseRefName: c.into, headRefName: c.branch, headRefOid: c.head, state: c.state.toUpperCase() } } : { existing: false };
+}
+
+/** A local change in the PR read the grader takes (evidence.ts localPullRequest). */
+async function localPrRead(slug, n) {
+  const c = await localHost.readChange(slug, n);
+  const checks = await localHost.checks(slug, c.head, { change: n, base: c.base });
+  const mergedAt = c.merged ? await git(cfg.workDir, "--git-dir", localHost.bare(slug), "log", "-1", "--format=%cI", c.merged).catch(() => "") : "";
+  return localPullRequest(c, checks, LOCAL_REQUIRED, mergedAt);
 }
 
 /** `aidenhq status` for a local change: its state and the checks receipt on its head. */
@@ -5076,7 +5100,7 @@ async function agentAdvise(ctx, args) {
 /** `aidenhq-repo <org/name>` from a running job: clone another repository into its workspace. */
 const repoHelper = startRepoHelper(async ({ issue, workspace, box }, raw) => {
   const repo = normalizeRepo(raw);
-  if (!repo) throw new Error(`\`${raw}\` isn't a GitHub repository (use org/name).`);
+  if (!repo) throw new Error(`\`${raw}\` isn't a repository name: ${REPO_FORM()}.`);
   if (!repoAllowed(repo, cfg.allowed_orgs) && !(await publicRepo(repo.slug))) throw new Error(`${repo.slug} is outside ${cfg.allowed_orgs.join(", ")} and isn't a public repository I can read.`);
   // The run's own sandbox masks the workspace's root `.git` mount point: the same repair the runner makes before a
   // turn, so a clone in a turn that began before it still works.

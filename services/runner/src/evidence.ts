@@ -117,6 +117,26 @@ export async function presentNow(deliverable: any, deps: any) {
   return { present: false, facts: [] };
 }
 
+/**
+ * A change request on this server (codehost-local's readChange) in the PR read prEvidence and presentNow take (merges.PR_QUERY's
+ * data): its state, head, base and words, its merge commit, and its checks receipt on the head as the named checks, a required
+ * one with no entry yet still running. `mergedAt`: the merge commit's date.
+ */
+export function localPullRequest(c: any, checks: { name: string; ok: boolean; pending: boolean }[], required: string[], mergedAt = "") {
+  const state = (x: { ok: boolean; pending: boolean } | undefined) => (!x || x.pending ? "PENDING" : x.ok ? "SUCCESS" : "FAILURE");
+  const names = [...new Set([...required, ...checks.map((x) => x.name)])];
+  const nodes = names.map((name) => ({ __typename: "StatusContext", context: name, state: state(checks.find((x) => x.name === name)) }));
+  return {
+    repository: {
+      pullRequest: {
+        number: c.number, url: c.url, state: c.state === "open" ? "OPEN" : c.state === "merged" ? "MERGED" : "CLOSED", title: c.title ?? "", body: c.body ?? "",
+        headRefOid: c.head, baseRefName: c.into, mergeCommit: c.merged ? { oid: c.merged } : null, mergedAt: c.merged ? mergedAt : null,
+        commits: { nodes: [{ commit: { oid: c.head, statusCheckRollup: { contexts: { nodes } } } }] }, history: { nodes: [] },
+      },
+    },
+  };
+}
+
 /** All the graded PRs' titles and descriptions: the grader fences a data block at 20,000 characters. */
 const PR_TEXT_TOTAL = 20_000;
 
