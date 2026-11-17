@@ -10,8 +10,8 @@ import { fileURLToPath } from "node:url";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "../../ops/host-metrics.sh");
 
-/** A checkout with a data dir and a fake `systemctl` whose `list-units` prints `units`. */
-function checkout(units, record) {
+/** A checkout with a data dir and a fake `systemctl` whose `list-units` prints `units`, `list-unit-files` prints `enabled`. */
+function checkout(units, record, enabled = []) {
   const dir = mkdtempSync(join(tmpdir(), "host-metrics-"));
   for (const d of ["data/modules/monitoring/textfile", "bin"]) mkdirSync(join(dir, d), { recursive: true });
   writeFileSync(join(dir, "ops-script"), "");
@@ -20,13 +20,21 @@ function checkout(units, record) {
   writeFileSync(
     join(dir, "bin/systemctl"),
     `#!/usr/bin/env bash
-case "$*" in *" list-units "*) cat "$UNITS" ;; esac
+case "$*" in
+  *" list-units "*) cat "$UNITS" ;;
+  *" list-unit-files "*)
+    pats=(); for a in "$@"; do case "$a" in --*|list-unit-files|--user) ;; *) pats+=("$a") ;; esac; done
+    while read -r line; do
+      for p in "\${pats[@]}"; do case "\${line%% *}" in $p) echo "$line"; break ;; esac; done
+    done < "$ENABLED" ;;
+esac
 exit 0
 `,
   );
   writeFileSync(join(dir, "bin/docker"), "#!/usr/bin/env bash\nexit 0\n");
   for (const f of ["systemctl", "docker"]) chmodSync(join(dir, "bin", f), 0o755);
   writeFileSync(join(dir, "units"), units.join("\n") + "\n");
+  writeFileSync(join(dir, "enabled"), enabled.map((u) => `${u} enabled`).join("\n") + "\n");
   return dir;
 }
 
@@ -34,7 +42,7 @@ function metrics(dir) {
   return new Promise((resolve) => {
     execFile("bash", [script], {
       cwd: dir,
-      env: { ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, AIDENHQ_DATA_DIR: join(dir, "data"), UNITS: join(dir, "units") },
+      env: { ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, AIDENHQ_DATA_DIR: join(dir, "data"), UNITS: join(dir, "units"), ENABLED: join(dir, "enabled") },
     }, (error, stdout, stderr) => {
       const file = join(dir, "data/modules/monitoring/textfile/units.prom");
       resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}`, prom: existsSync(file) ? readFileSync(file, "utf8") : "" });
@@ -76,4 +84,15 @@ test("a unit that failed outside the recorded drain still reads 1, and one line 
   const r = await metrics(checkout(ciUnits, '{"pausedAt":"t","routines":{},"units":["aidenhq-ci-runner@1.service"]}'));
   assert.equal(value(r.prom, "aidenhq_unit_failed", 'scope="user",unit="aidenhq-ci-runner@1.service"'), 0);
   assert.equal(value(r.prom, "aidenhq_unit_failed", 'scope="user",unit="aidenhq-ci-runner@4.service"'), 1);
+});
+
+test("a declared unit reads 1, a unit the host has disabled has no declared series, and the state metrics are unchanged", async () => {
+  const r = await metrics(checkout(ciUnits, undefined, ["aidenhq-ci-runner@1.service", "aidenhq-runner.service", "docker.service"]));
+  assert.equal(value(r.prom, "aidenhq_unit_declared", 'scope="user",unit="aidenhq-ci-runner@1.service"'), 1);
+  assert.equal(value(r.prom, "aidenhq_unit_declared", 'scope="user",unit="aidenhq-runner.service"'), 1);
+  assert.equal(value(r.prom, "aidenhq_unit_declared", 'scope="user",unit="aidenhq-ci-runner@4.service"'), undefined, "a disabled unit is not declared");
+  assert.equal(value(r.prom, "aidenhq_unit_declared", 'scope="system",unit="aidenhq-ci-runner@1.service"'), undefined, "declared is user scope only");
+  assert.equal(value(r.prom, "aidenhq_unit_declared", 'scope="user",unit="docker.service"'), undefined, "only the AidenHQ units are declared");
+  assert.equal(value(r.prom, "aidenhq_unit_failed", 'scope="user",unit="aidenhq-ci-runner@1.service"'), 1);
+  assert.equal(value(r.prom, "aidenhq_unit_active", 'scope="user",unit="aidenhq-runner.service"'), 1);
 });

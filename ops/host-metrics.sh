@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The monitoring module's host metrics (docs/design/monitoring.md), as node-exporter textfiles in data/modules/monitoring/textfile:
 #   units.prom       AidenHQ's systemd units, user (runner, gateway, CI runners, computers) and system (aidenhq-ci-net, ...):
-#                    active and failed. No privileges: `systemctl [--user] list-units` reads them as the owner's user.
+#                    active, failed, and the user units systemd has enabled (declared). No privileges: `systemctl [--user]
+#                    list-units` and `list-unit-files` read them as the owner's user.
 #   generations.prom the newest apply generation (ops/lib/generations.sh): 1 when it failed its health check (and was
 #                    auto-reverted) or was refused at validation, with its reason and log; the ApplyFailed alert reads it.
 #   containers.prom  every compose container and computer box: running, restart count, health, and its cgroup id, so cAdvisor's per-cgroup
@@ -37,6 +38,8 @@ write() { # name: atomic, so node-exporter never reads half a file
   echo "# TYPE aidenhq_unit_active gauge"
   echo "# HELP aidenhq_unit_failed 1 when the AidenHQ systemd unit has failed."
   echo "# TYPE aidenhq_unit_failed gauge"
+  echo "# HELP aidenhq_unit_declared 1 while systemd has the AidenHQ unit enabled (declared): the set an apply keeps running."
+  echo "# TYPE aidenhq_unit_declared gauge"
   echo "# HELP aidenhq_fleet_draining 1 while a planned drain is recorded (data/fleet-paused.json): the CI runner units are stopped on purpose."
   echo "# TYPE aidenhq_fleet_draining gauge"
   echo "aidenhq_fleet_draining $([ -f "$data/fleet-paused.json" ] && echo 1 || echo 0)"
@@ -49,6 +52,13 @@ write() { # name: atomic, so node-exporter never reads half a file
         echo "aidenhq_unit_failed{scope=\"$scope\",unit=\"$unit\"} $([ "$active" = failed ] && ! is_paused "$unit" && echo 1 || echo 0)"
       done
   done
+  # The declared set: the enabled user units above. A per-unit `is-enabled` reads a unit systemd unloaded after a stop as absent, which
+  # would look like a retirement; `list-unit-files` reads the unit files, so a stopped unit still counts as declared.
+  systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-*' 'prune-*' 2>/dev/null \
+    | awk '{print $1}' | clean | while read -r unit; do
+      [ -n "$unit" ] || continue
+      echo "aidenhq_unit_declared{scope=\"user\",unit=\"$unit\"} 1"
+    done
 } | write units.prom
 
 # Compose containers and agent computer boxes (docker run, no compose labels).
