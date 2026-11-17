@@ -3817,8 +3817,8 @@ async function agentCreateRepo(ctx, args) {
 
 /** What a create_repo card does, for the reviewer: exactly the one repository, nothing else. */
 const createRepoText = (slug) => isLocal(slug)
-  ? `Create a new repository on this server: ${slug}\n- a bare repository in the agents org ${LOCAL_ORG}, with the product's app starter committed on main\n- created by the runner; no code, settings or access change anywhere else`
-  : `Create a new GitHub repository: ${slug}\n- private, in the agents org ${slug.split("/")[0]}, with the product's app starter committed on its default branch\n- created by the instance's GitHub App; no other code, settings or access change anywhere else`;
+  ? `Create a new app repository on this server: ${slug}\n- a bare repository in the agents org ${LOCAL_ORG}, created from the app starter\n- created by the runner; no code, settings or access change anywhere else`
+  : `Create a new GitHub app repository: ${slug}\n- private, in the agents org ${slug.split("/")[0]}, created from the app starter\n- created by the instance's GitHub App; no code, settings or access change anywhere else`;
 
 /** An approved create_repo card: the repo is created (or already there) and remembered for the task's next run, which it starts. */
 async function createRepoApproved(issue, a) {
