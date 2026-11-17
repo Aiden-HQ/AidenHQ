@@ -7,7 +7,7 @@ import { ChangesScope } from "./settings-ui";
 import { SkeletonLines } from "./Skeleton";
 import type { SettingsData } from "./types";
 
-/** The agent page's Settings tab (lane B: routines, caps, pause; lane E: grants via AgentGrants). */
+/** The agent page's Settings tab (lane B: model, effort, heartbeat, routines, caps, recent changes; lane E: grants via AgentGrants). */
 export function AgentSettings({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void }) {
   const [data, setData] = useState<SettingsData | null>(null);
   const [error, setError] = useState("");

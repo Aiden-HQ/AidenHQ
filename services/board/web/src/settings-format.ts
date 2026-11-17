@@ -78,6 +78,7 @@ export function changeLines(ch: SettingChange, was: unknown): { path: string; fr
   if (ch.kind === "setting") return { path: `settings.${ch.key}`, from: yamlValue(was), to: yamlValue(ch.value) };
   if (ch.kind === "module") return { path: "modules", from: ch.on ? "(without it)" : `(with ${ch.name})`, to: ch.on ? `+ ${ch.name}` : `- ${ch.name}` };
   if (ch.kind === "caps") return { path: `overrides.agents.${ch.agent}.caps`, from: yamlValue(was), to: yamlValue(ch.value) };
+  if (ch.kind === "routine") return { path: `overrides.routines.${ch.routine}.${ch.field}`, from: yamlValue(was), to: yamlValue(ch.value) };
   return { path: `overrides.agents.${ch.agent}.${ch.field}`, from: yamlValue(was), to: yamlValue(ch.value) };
 }
 

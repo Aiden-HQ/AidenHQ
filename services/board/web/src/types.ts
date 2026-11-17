@@ -630,7 +630,9 @@ export type SettingChange =
   | { kind: "setting"; key: string; value: unknown }
   | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat"; value: string | number | boolean }
   | { kind: "caps"; agent: string; value: Partial<Record<"run_usd" | "task_usd" | "day_usd", number>> }
-  | { kind: "module"; name: string; on: boolean };
+  | { kind: "module"; name: string; on: boolean }
+  // Lane B: a routine's schedule, status or model (overrides.routines.<key>.<field>).
+  | { kind: "routine"; routine: string; field: "schedules" | "status" | "model"; value: unknown };
 export type ChangeStage = "working" | "waiting" | "applying" | "applied" | "failed" | "rejected" | "closed";
 export interface FiledChange {
   identifier: string;
@@ -673,11 +675,13 @@ export interface AgentSettings {
   models: string[];
   effort: string;
   heartbeatHours: number | null;
-  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; status?: string; webhook?: boolean }[];
+  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; status?: string; webhook?: boolean; /** The module's own value where the instance overrides it. */ defaults?: Record<string, unknown> }[];
   trial: boolean;
   graded: boolean;
   roles: string[];
   caps: Record<string, number>;
+  /** The module's own model, reasoning_effort and heartbeat where the instance overrides them. */
+  defaults?: Record<string, unknown>;
   connections: string[];
   /** A heartbeat may be turned on (not a runner agent, and it has the tools). */
   canHeartbeat: boolean;

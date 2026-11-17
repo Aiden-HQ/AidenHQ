@@ -69,6 +69,8 @@ export interface Compiled {
   mcp_servers?: Record<string, { url?: string; command?: string; setup?: string; tools?: { read?: string[]; write?: string[]; destructive?: string[] } }>;
   agents?: Record<string, CompiledAgent>;
   routines?: Record<string, CompiledRoutine>;
+  /** "agents.<key>.<field>" or "routines.<key>.<field>": the module's own value where the instance overrides it (scripts/modules.mjs). */
+  overridden?: Record<string, unknown>;
 }
 interface GrantsAgent {
   key: string;
@@ -143,11 +145,13 @@ export function settingsView(s: Sources) {
 
   const hours = Number(effective.heartbeat_hours?.value ?? 4);
   const grantsByKey = new Map(Object.values(s.grants?.agents ?? {}).map((g) => [g.key, g]));
+  /** The module's own value for each field of one agent or routine that the instance overrides. */
+  const defaultsOf = (kind: string, key: string, fields: string[]) => Object.fromEntries(fields.filter((f) => c.overridden && `${kind}.${key}.${f}` in c.overridden).map((f) => [f, c.overridden![`${kind}.${key}.${f}`]]));
   const agents = Object.entries(c.agents ?? {}).map(([key, a]) => {
     const g = grantsByKey.get(key);
     const routines = Object.entries(c.routines ?? {})
       .filter(([, r]) => r.agent === key)
-      .map(([rk, r]) => ({ key: rk, title: r.title ?? rk, schedules: (r.schedules ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })), ...(r.model ? { model: r.model } : {}), ...(r.status ? { status: r.status } : {}), ...(r.webhook ? { webhook: true } : {}) }));
+      .map(([rk, r]) => ({ key: rk, title: r.title ?? rk, schedules: (r.schedules ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })), ...(r.model ? { model: r.model } : {}), ...(r.status ? { status: r.status } : {}), ...(r.webhook ? { webhook: true } : {}), defaults: defaultsOf("routines", rk, ["schedules", "status", "model"]) }));
     return {
       key,
       name: a.name ?? key,
@@ -168,6 +172,7 @@ export function settingsView(s: Sources) {
       graded: Boolean(g?.graded),
       roles: a.roles ?? [],
       caps: { ...CAPS, ...(g?.caps ?? {}) },
+      defaults: defaultsOf("agents", key, ["model", "reasoning_effort", "heartbeat"]),
       connections: Object.keys(a.enabled_tools ?? {}),
     };
   });

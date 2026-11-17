@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import type { Logger } from "pino";
 import { z } from "zod";
+import { PauseSchema, setAgentPaused } from "./agent-pause.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { makeRuns } from "./runs.js";
@@ -1195,6 +1196,19 @@ export function createApp(opts: AppOptions): Server {
         if (!agent) throw new HttpError(404, "no such agent");
         const { compiled, catalog } = readSources(settingsFiles());
         return { profile: agentProfile({ agent, agents, routines, effort: compiled?.agents?.[m[1]!]?.reasoning_effort ?? null, catalog }) };
+      },
+    },
+    {
+      method: "POST",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/pause$/,
+      handle: async (m, body) => {
+        const agent = agentByKey(await pc.agents(), m[1]!);
+        if (!agent) throw new HttpError(404, "no such agent");
+        const ask = parse(PauseSchema, body);
+        const done = await setAgentPaused(pc, agent, ask);
+        log.info({ agent: m[1], paused: ask.paused, stop: Boolean(ask.stop), stopped: done.stopped }, ask.paused ? "agent paused" : "agent resumed");
+        store.events.emit("fleet");
+        return done;
       },
     },
     {
