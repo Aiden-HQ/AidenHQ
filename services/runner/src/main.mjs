@@ -991,6 +991,14 @@ async function stopMerges(issue, why) {
  * (`minute`), independent ones every poll.
  */
 async function advanceMerges({ minute = true } = {}) {
+  // Card queues on the product repository go through merge trains (merges.advanceTrains): two or more PRs ready at once are
+  // tested together once on a `merge-train/<n>` branch (ci.yml runs on those), then merged in order.
+  const cards = minute ? activeMerges().map((key) => ({ key, queue: mergeQueue(key) })).filter((e) => e.queue?.state === "running" && !e.queue.held && !e.queue.independent) : [];
+  const trains = JSON.parse(state.get("merges:trains") || "{}");
+  const planned = cards.length
+    ? await merges.advanceTrains(cards, trains, { github: mergeGithub, timeoutMinutes: cfg.merges?.timeout_minutes ?? 90, cardIsReview: ownRepo, train: (repo) => Boolean(cfg.productRepo) && repo.toLowerCase() === cfg.productRepo.toLowerCase() })
+    : new Map();
+  if (cards.length) state.set("merges:trains", JSON.stringify(trains));
   for (const issueId of activeMerges()) {
     const queue = mergeQueue(issueId);
     // An independent queue that finished during the task's run: its status change waits for the run's end.
@@ -1010,7 +1018,9 @@ async function advanceMerges({ minute = true } = {}) {
     if (!queue.independent && !minute) continue;
     let step;
     try {
-      step = await merges.advance(queue, { github: mergeGithub, timeoutMinutes: cfg.merges?.timeout_minutes ?? 90, cardIsReview: ownRepo });
+      const done = planned.get(issueId);
+      if (done?.error) throw done.error;
+      step = done ?? (await merges.advance(queue, { github: mergeGithub, timeoutMinutes: cfg.merges?.timeout_minutes ?? 90, cardIsReview: ownRepo }));
       queue.errors = 0;
     } catch (err) {
       // GitHub or the network: try again next minute, and give up after ten in a row.
@@ -1144,6 +1154,7 @@ const TURNED_WHY = {
   "checks-not-green": "named checks failed on its head",
   "head-moved": "its head isn't the commit that was reviewed, or isn't published",
   queue: "the merge queue turned it away",
+  train: "CI failed with it merged on top of the base branch and the PRs ahead of it (a merge train; the commit is named in the task's \"Not merged\" comment), though its own head is green",
   eval: "it changes the AI reviewer's own code, and the reviewer eval on its head didn't score 100% (the failing cases are in the task's \"Stopped the merges\" comment)",
 };
 async function wakeForTurnedAway(issueId, f) {
@@ -1257,6 +1268,21 @@ const mergeGithub = {
   },
   async deleteBranch(repo, branch) {
     await githubWrite(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE");
+  },
+  /** A merge train's branch, made at `sha` (only a `merge-train/<n>` branch). */
+  async createRef(repo, branch, sha) {
+    if (!merges.TRAIN_BRANCH.test(branch)) throw new Error(`not a merge train branch: ${branch}`);
+    await githubWrite(repo, `repos/${repo}/git/refs`, { ref: `refs/heads/${branch}`, sha }, "POST", mergePermissions(repo, cfg.productRepo));
+  },
+  /** A PR's bound head merged into a merge train's branch: the new tip, or undefined on a conflict (GitHub's 409). */
+  async mergeInto(repo, branch, head, message) {
+    if (!merges.TRAIN_BRANCH.test(branch)) throw new Error(`not a merge train branch: ${branch}`);
+    try {
+      return (await githubWrite(repo, `repos/${repo}/merges`, { base: branch, head, commit_message: message }, "POST", mergePermissions(repo, cfg.productRepo))).sha;
+    } catch (err) {
+      if (/HTTP 409|Merge conflict/i.test(String(err.stderr || err.message || err))) return undefined;
+      throw err;
+    }
   },
   async comment(repo, number, body) {
     await githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST");

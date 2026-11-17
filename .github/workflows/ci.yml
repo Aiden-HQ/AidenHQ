@@ -8,7 +8,8 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    # merge-train/<n>: the merge queue's trains (modules/codehost-github merge-gate.mjs), main plus the PRs it tests together.
+    branches: [main, "merge-train/**"]
 
 permissions:
   contents: read

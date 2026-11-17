@@ -169,7 +169,7 @@ describe("merge queue: deciding", () => {
   });
 
   it("writes only merges, branch updates, closing a PR (comment, then state) and re-running a job", () => {
-    assert.deepEqual(WRITES.map((w) => w.method), ["PUT", "PUT", "POST", "PATCH", "DELETE", "POST", "POST", "POST"]);
+    assert.deepEqual(WRITES.map((w) => w.method), ["PUT", "PUT", "POST", "PATCH", "DELETE", "POST", "POST", "POST", "POST", "POST"]);
     assert.ok(WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/rerun-failed-jobs")));
     assert.ok(WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/rerun")), "a whole run re-runs only for a ghost (ghostRetry), its one call site");
     assert.ok(!WRITES.some((w) => w.path.test("repos/o/r/actions/runs/7/cancel") || w.path.test("repos/o/r/actions/runs/7/rerun/x")), "nothing else of a run");
@@ -194,6 +194,9 @@ describe("merge queue: deciding", () => {
     assert.ok(allowedWrite("POST", "repos/acme/aidenhq/issues/1/comments", "acme-agents", "acme/aidenhq"));
     assert.ok(allowedWrite("PATCH", "repos/Acme/AidenHQ/pulls/1", "acme-agents", "acme/aidenhq"));
     assert.ok(!allowedWrite("DELETE", "repos/acme/aidenhq/git/refs/heads/dependabot/x", "acme-agents", "acme/aidenhq"));
+    // A merge train is the one branch the queue makes and deletes on the product repo.
+    assert.ok(allowedWrite("DELETE", "repos/acme/aidenhq/git/refs/heads/merge-train/4", "acme-agents", "acme/aidenhq"));
+    assert.ok(!allowedWrite("DELETE", "repos/acme/aidenhq/git/refs/heads/merge-train/4/../main", "acme-agents", "acme/aidenhq"));
     assert.ok(!allowedWrite("PATCH", "repos/acme/aidenhq-other/pulls/1", "acme-agents", "acme/aidenhq"));
   });
 });
