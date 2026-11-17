@@ -15,7 +15,7 @@ import { LineageStrip } from "./Lineage";
 import { live as streaming, useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
-import { anyLive, groupChats, groupTasks, laneOf, settleSuggestions, settleableChat, showsChip, taskSummary, type AgentGroup } from "./sidebar";
+import { anyLive, groupChats, groupTasks, laneOf, settleableChat, showsChip, taskSummary, type AgentGroup } from "./sidebar";
 import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conversation";
 import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, ChatState, FileView, Question, SettledItem, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
@@ -158,7 +158,6 @@ function Sidebar({ lane, rows, agents, crew, selected, go, error, retry }: { lan
         <ChatListSkeleton />
       ) : (
         <nav className="side-scroll">
-          {!q && <SettleSuggestion rows={active} reloadList={retry} />}
           {groups.front && <Group g={filter(groups.front)} lane={laneOf(lane, groups.front.agent.key)} crew={crew} selected={selected} go={go} front searching={!!q} />}
           {groups.others.length > 0 && <h3 className="side-h">Agents</h3>}
           {groups.others.map((g) => (
@@ -167,44 +166,6 @@ function Sidebar({ lane, rows, agents, crew, selected, go, error, retry }: { lan
         </nav>
       ))}
     </aside>
-  );
-}
-
-/** "N finished, quiet for 2h+: Settle all", with an untick per chat to keep it. */
-function SettleSuggestion({ rows, reloadList }: { rows: ChatRow[]; reloadList: () => void }) {
-  const offered = settleSuggestions(rows);
-  const [kept, setKept] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState(false);
-  if (!offered.length) return null;
-  const picked = offered.filter((r) => !kept.has(r.identifier));
-  const settleAll = async () => {
-    setBusy(true);
-    await Promise.all(picked.map((r) => api.settle(r.identifier, true).catch(() => undefined)));
-    setBusy(false);
-    reloadList();
-  };
-  return (
-    <div className="settle-suggest">
-      <div className="settle-row">
-        <b>◆ {offered.length} finished</b>
-        <span className="muted">quiet for 2h+</span>
-        <button className="btn settle-all" disabled={busy || !picked.length} onClick={() => void settleAll()}>
-          Settle {picked.length === offered.length ? "all" : picked.length || ""}
-        </button>
-      </div>
-      <ul>
-        {offered.map((r) => (
-          <li key={r.identifier}>
-            <label>
-              <input type="checkbox" checked={!kept.has(r.identifier)} onChange={() => setKept((k) => (k.has(r.identifier) ? new Set([...k].filter((x) => x !== r.identifier)) : new Set([...k, r.identifier])))} />
-              <span className="t" title={r.title}>
-                {r.title}
-              </span>
-            </label>
-          </li>
-        ))}
-      </ul>
-    </div>
   );
 }
 
