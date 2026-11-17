@@ -230,7 +230,7 @@ systemctl restart aidenhq-computer-net aidenhq-ci-net
 # compose.override.yaml publishes on the LAN (a rerun then removes the rule). SSH stays open in every mode, so applying it
 # can't lock the owner out. Decided here, not at boot: the unit runs before the network is up.
 # The mode (settings.exposure): the compiled config/exposure, else AIDENHQ_EXPOSURE (ops/setup.sh's first run, before any
-# compile), else tailscale (local without Tailscale). A rerun after a mode change rewrites the rule. Public opens 443 only
+# compile), else tailscale (local without Tailscale). A rerun after a mode change rewrites the rule. Public opens 443 and 8446 only
 # once a Caddy front door is compiled (a `caddy` service in compose.modules.yaml): until then nothing safe listens there.
 # Generated files are read from the user's checkout (AIDENHQ_CHECKOUT, ops/setup.sh): this script itself may run from root's
 # verified copy of the kernel (/opt/aidenhq/kernel/<sha>), which has none of them. Data only: nothing there runs.
@@ -242,7 +242,7 @@ case "$exposure" in public|tailscale|cloudflare|local) ;; *) die "exposure '$exp
 fw_mode="$exposure"
 if [ "$exposure" = public ] && ! grep -qx '  caddy:' "$checkout/compose.modules.yaml" 2>/dev/null; then
   fw_mode=local
-  echo "exposure public: no HTTPS front door (Caddy) is configured yet, so 443 stays closed; it arrives with unit U2"
+  echo "exposure public: no HTTPS front door (Caddy) is compiled yet, so 443 and 8446 stay closed until setup runs again after an apply"
 fi
 env_setting() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*[\"']\{0,1\}\([A-Za-z0-9_.@-]*\).*/\1/p" "$checkout/.env" 2>/dev/null | tail -1 || true; } # no .env yet on a fresh host
 default_route_if() {
@@ -282,8 +282,8 @@ else
   fi
   echo "WARNING: AIDENHQ_PUBLIC_IF=none: no public firewall installed; only right on a host with no public address" >&2
 fi
-# An active ufw (never installed here) drops 443 by default: public mode with its front door allows it, nothing else.
-if [ "$fw_mode" = public ] && command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then ufw allow 443/tcp; fi
+# An active ufw (never installed here) drops 443 and 8446 by default: public mode with its front door allows them, nothing else.
+if [ "$fw_mode" = public ] && command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then ufw allow 443/tcp; ufw allow 8446/tcp; fi
 
 # SSH: keys only and no root login, from a drop-in that sorts before 50-cloud-init.conf (sshd keeps the first value it
 # reads). Skipped while the user has no authorized key, so a run can't lock the owner out; sudo is left as it is.

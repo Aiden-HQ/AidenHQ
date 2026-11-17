@@ -335,11 +335,11 @@ dups="$(for c in $containers; do docker port "$c" 2>/dev/null | sed -E 's/.*:([0
 [ -z "$dups" ] && pass "no host port is published by two containers" || fail "host ports published twice: $(echo $dups)"
 
 echo "Exposure"
-# The public interface's open ports follow the exposure mode (ops/vm/public-fw.sh). Public opens 443 only once a Caddy
+# The public interface's open ports follow the exposure mode (ops/vm/public-fw.sh). Public opens 443 and 8446 only once a Caddy
 # front door is compiled; until then it is closed like local.
 fw="$mode"; [ "$mode" = public ] && ! grep -qx '  caddy:' compose.modules.yaml 2>/dev/null && fw=local
 label="$mode"; [ "$fw" = "$mode" ] || label="$mode, no Caddy yet"
-case "$fw" in public) want="tcp/22 tcp/443" ;; tailscale) want="tcp/22 udp/41641" ;; *) want="tcp/22" ;; esac
+case "$fw" in public) want="tcp/22 tcp/443 tcp/8446" ;; tailscale) want="tcp/22 udp/41641" ;; *) want="tcp/22" ;; esac
 nftl() { if [ "$(id -u)" = 0 ]; then nft "$@"; else sudo -n nft "$@"; fi; }
 if [ ! -e /etc/default/aidenhq-public-fw ]; then
   echo "  skip  public firewall: not installed here (AIDENHQ_PUBLIC_IF=none, or no default route when setup ran)"

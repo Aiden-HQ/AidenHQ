@@ -12,7 +12,7 @@ const open = (exposure) => {
 };
 
 test("public-fw: each mode opens exactly its ports; unset is tailscale, an unknown mode SSH only", () => {
-  assert.deepEqual(open("public"), ["tcp/22", "tcp/443"]);
+  assert.deepEqual(open("public"), ["tcp/22", "tcp/443", "tcp/8446"]);
   assert.deepEqual(open("tailscale"), ["tcp/22", "udp/41641"]);
   assert.deepEqual(open("cloudflare"), ["tcp/22"]);
   assert.deepEqual(open("local"), ["tcp/22"]);

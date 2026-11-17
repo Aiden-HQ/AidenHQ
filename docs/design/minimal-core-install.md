@@ -138,6 +138,11 @@ Generated Caddyfile (compile writes it, from the detected public IP):
 }
 ```
 
+- **As built (U2, `scripts/front-door.mjs`).** Since lean-core 3a, sign-in lives on the kernel's admin listener (3120),
+  which needs its own origin. So Caddy serves two sites on the one IP, as `tailscale serve` does: `https://<ip>` → the
+  board and `https://<ip>:8446` → the admin listener, which alone gets the two headers. Public mode opens tcp 8446 too.
+  Each site names its ACME issuer (a global `cert_issuer` let Caddy pick its local CA for the IP), and `default_sni`
+  names the IP for clients that send none. No owner email: Let's Encrypt no longer sends expiry mail.
 - **Header order.** No wildcard delete (`-X-AidenHQ-*`). Whether Caddy applies deletes before or after sets is
   unverified, and a delete that runs last would strip the two headers just set. `set` already replaces a client's
   value, and the board drops every other inbound `x-aidenhq-*` (`accounts.ts:507`). U2 tests that a client-sent

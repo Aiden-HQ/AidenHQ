@@ -405,7 +405,7 @@ validate() {
 }
 
 # The generated files: the staged copy must be exactly what the real compile wrote.
-GENERATED=(paperclip.yaml apps.modules.yaml modules.json computers.json gateway.json jobcaps.json kernel/connections.json kernel/writes.json engines.json gate.json cloudflared.yml module-data.json)
+GENERATED=(paperclip.yaml apps.modules.yaml modules.json computers.json gateway.json jobcaps.json kernel/connections.json kernel/writes.json engines.json gate.json cloudflared.yml module-data.json Caddyfile)
 sameAsStaged() {
   local f
   cmp -s compose.modules.next.yaml compose.modules.yaml || { echo "compose.modules.yaml differs from the validated one" >&2; return 1; }
