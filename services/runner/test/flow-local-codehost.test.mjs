@@ -54,6 +54,8 @@ describe("flow-local-codehost", () => {
     step("none\naidenhq merge codehost:local/app/change/1");
     await turn("Merge it.");
     assert.match(toolRuns().at(-1).out, /Dana's approval/);
+    const card = [...t.paperclip.approvals.values()].find((x) => x.action === "merge" && x.state === "pending");
+    assert.match(JSON.stringify(card), /\+chain/, "the merge card carries the change's diff");
     const before = git(t.dir, "--git-dir", bare, "rev-parse", "main");
     t.paperclip.decide("merge", "approved");
     await waitFor("the merge", () => partComments().some((c) => c.startsWith("**Merged** codehost:local/app/change/1")));

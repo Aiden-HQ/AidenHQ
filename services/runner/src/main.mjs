@@ -58,6 +58,7 @@ import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { fastChecks } from "../../../kernel/src/fastcheck.ts";
+import { localCheckRuns } from "./local-checks.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
@@ -242,6 +243,7 @@ async function poll() {
   // Agents-org merge requests (owner, 2026-11-12): Tier 0 starts at once, even during the run; cards wait for its end. Every poll.
   await runAutoMerges().catch((err) => log("auto merges failed", { err: String(err.message ?? err).slice(0, 300) }));
   await runLocalMerges().catch((err) => log("local merges failed", { err: String(err.message ?? err).slice(0, 300) }));
+  await recheckLocal().catch((err) => log("local rechecks failed", { err: String(err.message ?? err).slice(0, 300) }));
   // A stale line a refused post left queued (a one-shot check's report): said now that the board takes it. Every poll.
   await deliverStaleNotices().catch((err) => log("stale notices failed", { err: String(err.message ?? err).slice(0, 300) }));
   // Tier 1 cards for the AI reviewer, while autonomy is on. Every poll.
@@ -1869,7 +1871,8 @@ const kindOf = (action) => (action === "apply" ? "kernel.apply" : `runner.${acti
  * reportOutcome. `carries`: approved records whose commits a rebuild replays (no new card for them).
  */
 async function fileApproval(issue, { action, args, diff, ts, carries }) {
-  const card = action === "apply" ? applyCard(args, diff ?? "") : cardOf(action, args);
+  // A local change's merge card carries its diff (docs/design/codehost-local.md §4), as an apply's does.
+  const card = action === "apply" ? applyCard(args, diff ?? "") : diff ? { ...cardOf(action, args), details: `${cardOf(action, args).details}\n\n${diff}` } : cardOf(action, args);
   const plan = { ...planOf(...ts), card, ...(action === "apply" ? { targets: { diff: createHash("sha256").update(diff ?? "").digest("hex") } } : {}), ...(carries?.length ? { carries } : {}) };
   const a = asApproval(await kernel("POST", "/v1/writes", { kind: kindOf(action), task: issue.id, identifier: issue.identifier, args, plan }));
   log("approval filed", { issue: issue.identifier, approval: a.id, action, state: a.state, tier: a.tier, panel: a.panel });
@@ -4503,7 +4506,6 @@ async function prRequest(full) {
  * card (local-merge: the AI reviewer) merges once its checks are green on the head it names.
  */
 const LOCAL_REQUIRED = ["tests", "secrets"];
-const CHECK_LIMIT_MS = 20 * 60_000;
 const LOCAL_MERGE_WAIT_MS = 3 * 3600_000;
 const GITLEAKS = () => cfg.codehost?.gitleaks ?? "/opt/aidenhq/gitleaks/gitleaks";
 const checking = new Set();
@@ -4537,7 +4539,7 @@ async function localBranchPr(repo, branch) {
 async function localSnapshot(url) {
   const at = parseChangeUrl(url);
   const c = await localHost.readChange(at.slug, at.number);
-  const got = await localHost.checks(at.slug, c.head);
+  const got = await localHost.checks(at.slug, c.head, { change: at.number, base: c.base });
   const checks = { passed: got.filter((x) => x.ok).length, failed: got.filter((x) => !x.ok && !x.pending).length, pending: got.filter((x) => x.pending).length + LOCAL_REQUIRED.filter((n) => !got.some((x) => x.name === n)).length };
   return { state: c.state === "open" && c.draft ? "draft" : c.state, review: "the AI reviewer, on `aidenhq merge`", checks, merge: "" };
 }
@@ -4576,76 +4578,46 @@ async function publishLocal(issue, full, r, command, rows, text, pin) {
   return `${pushed ? `${pushed}, opened` : "Opened"} draft change request ${url}. ${then}`;
 }
 
-/** Runs `argv` in the job jail in `dir` (the only writable path), with a minimal env and no tokens: { ok, tail }. */
-function jailRun(dir, argv, env, ms = CHECK_LIMIT_MS) {
-  const [cmd, ...args] = hiding(evalSandbox, argv, [], { rw: [dir] });
-  return new Promise((done) => {
-    let out = "";
-    const child = spawn(cmd, args, { cwd: dir, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: join(dir, ".aidenhq-home"), npm_config_cache: join(dir, ".aidenhq-home", ".npm"), CI: "1", ...env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-    const keep = (b) => void (out = (out + b.toString("utf8")).slice(-16_000));
-    child.stdout.on("data", keep);
-    child.stderr.on("data", keep);
-    const timer = setTimeout(() => {
-      try { process.kill(-child.pid, "SIGKILL"); } catch {}
-      done({ ok: false, tail: `${out}\n(stopped: over ${Math.round(ms / 60_000)} minutes)`.slice(-4000) });
-    }, ms);
-    child.on("error", (err) => (clearTimeout(timer), done({ ok: false, tail: String(err.message) })));
-    child.on("close", (code) => (clearTimeout(timer), done({ ok: code === 0, tail: out.slice(-4000) })));
-  });
-}
-
 /**
- * The named checks of a local change, the counterparts of the CI template's `tests` and `secrets` jobs. The check scripts
- * are this host's product checkout's (never the change's), and gitleaks's config is the base's, so a change can't loosen its
- * own checks.
+ * Runs a change's checks on its current head against its current base and writes the receipt (keyed by change and base);
+ * a red one wakes the task's Engineer with the log tail. Re-run from the poll when a runner restart left one pending.
  */
-async function localCheckRuns(dir, base, head) {
-  const sc = join(REPO_ROOT, "scripts/supply-chain");
-  const tests = [
-    "status=0",
-    `node ${JSON.stringify(join(sc, "npm-age.mjs"))} "$BASE" "$HEAD" || status=1`,
-    `node ${JSON.stringify(join(sc, "pins.mjs"))} "$BASE" "$HEAD" || status=1`,
-    '[ $status = 0 ] || { echo "supply chain: failed"; exit 1; }',
-    // The evidence rule (the CI template's): .aidenhq/out/ takes screenshots and reports only, and no app code reads it.
-    `bad=$(git diff --name-only --diff-filter=AMR "$BASE...$HEAD" -- .aidenhq/out | grep -viE '\\.(png|jpe?g|webp|gif|json|txt)$' || true)`,
-    '[ -z "$bad" ] || { echo ".aidenhq/out/ takes only screenshots and reports: $bad"; exit 1; }',
-    `refs=$(git grep -l -F '.aidenhq/out' "$HEAD" -- . ':(exclude).aidenhq/**' ':(exclude).github/**' ':(exclude,glob)**/*.md' ':(exclude)e2e/**' ':(exclude,glob)playwright.config.*' ':(exclude).gitignore' ':(exclude).dockerignore' | sed "s/^$HEAD://" || true)`,
-    '[ -z "$refs" ] || { echo "app code may not read an agent\'s evidence in .aidenhq/out/: $refs"; exit 1; }',
-    "npm ci && npm run --if-present lint && npm test && npm run --if-present build",
-  ].join("\n");
-  const glConfig = join(dir, ".aidenhq-home", "gitleaks.toml");
-  mkdirSync(dirname(glConfig), { recursive: true });
-  writeFileSync(glConfig, await git(dir, "show", `${base}:.gitleaks.toml`).catch(() => "[extend]\nuseDefault = true\n"));
-  const env = { BASE: base, HEAD: head };
-  return {
-    tests: await jailRun(dir, ["bash", "-c", tests], env),
-    secrets: await jailRun(dir, [GITLEAKS(), "git", "--redact", "--exit-code", "1", "--config", glConfig, "--log-opts", `${base}..${head}`, "."], env, 10 * 60_000),
-  };
-}
-
-/** Runs a change's checks on its current head and writes the receipt; a red one wakes the task's Engineer with the log tail. */
 async function runLocalChecks(issueId, slug, n) {
   const c = await localHost.readChange(slug, n);
-  const key = `${slug}#${n}@${c.head}`;
+  const key = `${slug}#${n}@${c.head}:${c.base}`;
   if (c.state !== "open" || checking.has(key)) return;
   checking.add(key);
-  const dir = join(cfg.stateDir, "checks", randomBytes(8).toString("hex"));
+  const at = { change: n, base: c.base };
   try {
-    for (const name of LOCAL_REQUIRED) await localHost.writeCheck(slug, c.head, { name, pending: true });
-    // A clone of its own (nothing shared with any agent's), at exactly the change's head.
-    mkdirSync(dirname(dir), { recursive: true });
-    const g = (...a) => execFileP("git", [...SAFE_GIT_ARGS, ...a], { env: ISOLATED_ENV, maxBuffer: 32 * 1024 * 1024 });
-    await g("clone", "--quiet", "--no-checkout", localHost.bare(slug), dir);
-    await g("-C", dir, "fetch", "--quiet", "origin", `+refs/changes/${n}/head:refs/aidenhq/change`);
-    await g("-C", dir, "-c", "advice.detachedHead=false", "checkout", "--quiet", "--detach", c.head);
-    const results = await localCheckRuns(dir, c.base, c.head);
-    for (const [name, r] of Object.entries(results)) await localHost.writeCheck(slug, c.head, { name, ok: r.ok, log_tail: r.tail });
+    for (const name of LOCAL_REQUIRED) await localHost.writeCheck(slug, c.head, { name, pending: true, ...at });
+    const results = await localCheckRuns({ sandbox: evalSandbox, bare: localHost.bare(slug), n, base: c.base, head: c.head, root: join(cfg.stateDir, "checks"), gitleaks: GITLEAKS(), repoRoot: REPO_ROOT });
+    for (const [name, r] of Object.entries(results)) await localHost.writeCheck(slug, c.head, { name, ok: r.ok, log_tail: r.tail, ...at });
     log("local checks", { url: c.url, head: c.head.slice(0, 12), ...Object.fromEntries(Object.entries(results).map(([k, r]) => [k, r.ok])) });
     const red = Object.entries(results).filter(([, r]) => !r.ok);
     if (red.length) await wakeForLocalRed(issueId, c, red);
+  } catch (err) {
+    for (const name of LOCAL_REQUIRED) await localHost.writeCheck(slug, c.head, { name, ok: false, log_tail: `the check couldn't run: ${String(err.message ?? err).slice(0, 300)}`, ...at }).catch(() => {});
+    throw err;
   } finally {
     checking.delete(key);
-    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Every open local change of a task whose required checks have no result on its head and base (a restart cut them off) runs them again. */
+let lastRecheck = 0;
+async function recheckLocal() {
+  if (!localHost || Date.now() - lastRecheck < 60_000) return;
+  lastRecheck = Date.now();
+  for (const b of state.localChanges().filter((x) => parseChangeUrl(x.pr_url))) {
+    {
+      const issueId = b.issue_id;
+      const { slug, number } = parseChangeUrl(b.pr_url);
+      const c = await localHost.readChange(slug, number).catch(() => undefined);
+      if (c?.state !== "open" || checking.has(`${slug}#${number}@${c.head}:${c.base}`)) continue;
+      const got = await localHost.checks(slug, c.head, { change: number, base: c.base });
+      if (LOCAL_REQUIRED.every((name) => got.some((x) => x.name === name && !x.pending))) continue;
+      void runLocalChecks(issueId, slug, number).catch((err) => log("local checks failed", { url: c.url, err: String(err.message ?? err).slice(0, 300) }));
+    }
   }
 }
 
@@ -4667,7 +4639,7 @@ async function localMergeTierState(prs) {
   const { all } = appsRegistry();
   return Promise.all(prs.map(async (p) => {
     const c = await localHost.readChange(p.repo, p.number);
-    const checks = (await localHost.checks(p.repo, c.head)).filter((x) => x.name !== merges.DESIGN_REVIEW.name).map(({ name, ok, pending }) => ({ name, ok, pending }));
+    const checks = (await localHost.checks(p.repo, c.head, { change: p.number, base: c.base })).filter((x) => x.name !== merges.DESIGN_REVIEW.name).map(({ name, ok, pending }) => ({ name, ok, pending }));
     const app = all.find((a) => sameRepo(a.repo, p.repo));
     const traits = app ? sensitiveTraits(normalizeApp(app), all.map(normalizeApp)) : [];
     const sensitive = traits.length > 0 && !(traits.length === 1 && traits[0] === "database" && app.database === "warehouse");
@@ -4691,7 +4663,8 @@ async function agentMergeLocal(ctx, prs, gap) {
   states.forEach((s, i) => s.patch && (bound[i].patch = s.patch));
   const bad = tiers.find((t) => t.reject);
   if (bad) throw new UserError(`Not done: ${bad.reason}.`);
-  const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: bound, ...(gap !== undefined ? { gap } : {}) }, ts: tiers });
+  const diff = (await Promise.all(bound.map(async (p) => `### ${p.url} at ${p.head.slice(0, 12)}\n${await localHost.diff(p.repo, p.number)}`))).join("\n\n");
+  const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: bound, ...(gap !== undefined ? { gap } : {}) }, diff, ts: tiers });
   return `${waitingFor(a, ctx.issue)} Once approved, ${bound.map((p) => p.url).join(", ")} merge one at a time, each only at the commit the card shows and once its checks are green on it.`;
 }
 
@@ -4704,7 +4677,9 @@ async function localRequired(p) {
 /** An approved local merge card: its changes wait in order (runLocalMerges merges each once green at the card's head). */
 async function mergeLocalApproved(issue, a) {
   const box = JSON.parse(state.get("local_merges") || "{}");
-  box[issue.id] = { identifier: issue.identifier, since: Date.now(), prs: a.args.prs.map((p) => ({ repo: p.repo, number: p.number, url: p.url, head: p.head })) };
+  const prs = a.args.prs.map((p) => ({ repo: p.repo, number: p.number, url: p.url, head: p.head }));
+  // A second approved card on the task waits behind the first one's changes.
+  box[issue.id] = { identifier: issue.identifier, since: box[issue.id]?.since ?? Date.now(), prs: [...(box[issue.id]?.prs ?? []), ...prs] };
   state.set("local_merges", JSON.stringify(box));
   lastMergeCheck = 0;
   return { ok: true, text: `Merging ${a.args.prs.map((p) => p.url).join(", ")} one at a time, each once its checks are green on the approved commit. Results are posted on ${issue.identifier}.` };
@@ -4719,7 +4694,8 @@ async function runLocalMerges() {
     let done;
     try {
       const required = await localRequired(p);
-      const got = await localHost.checks(p.repo, p.head);
+      const now = await localHost.readChange(p.repo, p.number);
+      const got = await localHost.checks(p.repo, p.head, { change: p.number, base: now.base });
       // Still running (or not started) and nothing red yet: wait, up to LOCAL_MERGE_WAIT_MS; the merge itself refuses anything not green.
       const red = required.some((n) => got.some((x) => x.name === n && !x.ok && !x.pending));
       const green = required.every((n) => got.some((x) => x.name === n && x.ok));
