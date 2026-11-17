@@ -5,7 +5,7 @@
 // Lines are built from code-chosen words and ids cleaned to [\w.:@/-], never from manifest prose, because they are shown on
 // the owner's card and in the apply log.
 import { ownSecrets } from "./services.ts";
-import { marketplacesOf, OFFICIAL, OFFICIAL_URL } from "./sources.ts";
+import { forksOf, marketplacesOf, OFFICIAL, OFFICIAL_URL } from "./sources.ts";
 
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
@@ -356,4 +356,25 @@ export function marketplaceChanges(base: Dict, head: Dict): ModuleDiff[] {
   }
   for (const n of b!.keys()) if (!h!.has(n)) changes.push({ what: `removes marketplace ${id(n)}`, owner: false });
   return changes.length ? [{ module: "marketplaces", changes, code: false }] : [];
+}
+
+/**
+ * instance.yaml fork changes (spec §6.9b): entering a fork, or moving one to another repository or sha, is new code
+ * provenance, so the owner's (as a new marketplace); leaving one returns to official code, the reviewer's ("fork →
+ * official"); a changed branch or upstream_pr alone is the reviewer's. Read from both instance.yaml sides, so a fork whose
+ * code reads as unchanged still has its line.
+ */
+export function forkChanges(base: Dict, head: Dict): ModuleDiff[] {
+  const [b, h] = [forksOf(base), forksOf(head)];
+  const out: ModuleDiff[] = [];
+  const add = (module: string, what: string, owner: boolean) => out.push({ module, changes: [{ what, owner }], code: false });
+  const at = (k: (typeof h)[number]) => `${id(k.at.url)} at ${k.at.sha.slice(0, 12)}`;
+  for (const k of h) {
+    const was = b.find((x) => x.target === k.target);
+    if (!was) add(k.target, `runs fork ${at(k)} (tier no longer official)`, true);
+    else if (was.at.url !== k.at.url || was.at.sha !== k.at.sha) add(k.target, `fork moves to ${at(k)}`, true);
+    else if (was.branch !== k.branch || was.upstream_pr !== k.upstream_pr) add(k.target, "fork branch or upstream_pr changes", false);
+  }
+  for (const k of b) if (!h.some((x) => x.target === k.target)) add(k.target, "fork → official", false);
+  return out;
 }

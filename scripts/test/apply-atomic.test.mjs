@@ -51,6 +51,7 @@ if (!stage) fs.appendFileSync(process.env.CALLS, "compile\\n");
   "scripts/paperclip-setup.mjs": `import fs from "node:fs"; fs.appendFileSync(process.env.CALLS, "setup\\n");\n`,
   "services/runner/src/apply.ts": `import { readFileSync } from "node:fs";
 if (process.argv[2] === "product-pin") process.stdout.write(/^product:\\s*([0-9a-f]{40})\\s*$/m.exec(readFileSync(process.argv[3], "utf8"))?.[1] ?? "");
+if (process.argv[2] === "product-fork") process.stdout.write(/^product_fork: (\\S+ [0-9a-f]{40})$/m.exec(readFileSync(process.argv[3], "utf8"))?.[1] ?? "");
 `,
 };
 const SCRIPTS = {
@@ -170,6 +171,40 @@ test("a first apply seeds the running pair as the last known good, validates, sw
   assert.ok(r.out.indexOf("apply timing: validate") < r.out.indexOf("apply timing: compose"), r.out);
   assert.match(readFileSync(w.d("state/apply-2.log"), "utf8"), /generation 2 is good/);
   assert.ok(!existsSync(w.d("prod/config.next")), "the staged copy is cleaned up after the switch");
+});
+
+// Lean-core 5e: the kernel the instance runs is its own fork (product_fork:) when that descends from the pin; else refused.
+test("a product_fork on top of the pin is what runs (and is recorded); one off the pin is refused", async () => {
+  const w = world();
+  assert.equal((await w.run()).status, 0);
+  git(w.d(), "clone", "-q", w.d("p.git"), "fw");
+  writeFileSync(w.d("fw", "VERSION"), "1-fork\n");
+  git(w.d("fw"), "commit", "-qam", "patch");
+  const fork = git(w.d("fw"), "rev-parse", "HEAD");
+  // The fork is fetched over https only (a local path is refused); its commit is already here, as a fetch would leave it.
+  git(w.d("prod"), "fetch", "-q", w.d("fw"), "main");
+  const i2 = w.commitInstance(w.p1, `product_fork: https://example.com/acme-bot/fork.git ${fork}\n`);
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /kernel: running the instance's fork \w{12} .* on top of product \w{12}/);
+  assert.equal(w.head("prod"), fork);
+  assert.deepEqual([w.gens().at(-1).product, w.gens().at(-1).instance, w.gens().at(-1).health], [fork, i2, "good"]);
+  git(w.d("fw"), "checkout", "-q", "--orphan", "elsewhere");
+  git(w.d("fw"), "commit", "-qm", "unrelated");
+  git(w.d("prod"), "fetch", "-q", w.d("fw"), "elsewhere");
+  w.commitInstance(w.p1, `product_fork: https://example.com/acme-bot/fork.git ${git(w.d("fw"), "rev-parse", "HEAD")}\n`);
+  const bad = await w.run();
+  assert.equal(bad.status, 1, bad.out);
+  assert.match(bad.out, /refusing: product_fork \w{12} does not descend from product \w{12}/);
+  assert.equal(w.head("prod"), fork, "still the fork that ran");
+  // A fork named by a local path is never fetched (https only).
+  git(w.d("fw"), "checkout", "-q", "main");
+  writeFileSync(w.d("fw", "VERSION"), "1-fork-2\n");
+  git(w.d("fw"), "commit", "-qam", "patch 2");
+  w.commitInstance(w.p1, `product_fork: ${w.d("fw")} ${git(w.d("fw"), "rev-parse", "HEAD")}\n`);
+  const local = await w.run();
+  assert.equal(local.status, 1, local.out);
+  assert.match(local.out, /refusing: couldn't fetch product_fork/);
 });
 
 test("a staged compile failure leaves the running config byte-identical, both checkouts restored and nothing restarted", async () => {

@@ -78,6 +78,8 @@ main() {
   product="$(node services/runner/src/apply.ts product-pin "$inst/instance.yaml")"
   [ -n "$product" ] || { echo "refusing: instance.yaml has no full-sha 'product:' line" >&2; exit 1; }
   git merge-base --is-ancestor "$product" origin/main || { echo "refusing: product $product is not on origin/main" >&2; exit 1; }
+  # The kernel the instance runs: the pin, or its own fork of it (product_fork:) when that descends from the pin.
+  product="$(kernelRun "$inst/instance.yaml" "$product")"
   # `before` is the product this host last applied in full (a failed apply has moved HEAD without restarting anything, so
   # HEAD alone would hide the change from the retry); a re-exec (below) carries it over, since HEAD has already moved by then.
   local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
@@ -253,8 +255,13 @@ applyGeneration() {
   local product instance
   product="$(genGet "$gen" product)"; instance="$(genGet "$gen" instance)"
   [[ "$product" =~ ^[0-9a-f]{40}$ ]] && [[ "$instance" =~ ^[0-9a-f]{40}$ ]] || { echo "refusing: no generation $gen with full shas" >&2; exit 1; }
-  git merge-base --is-ancestor "$product" origin/main || { echo "refusing: generation $gen's product $product is not on origin/main" >&2; exit 1; }
   git -C "$inst" merge-base --is-ancestor "$instance" origin/main || { echo "refusing: generation $gen's instance $instance is not on the instance's origin/main" >&2; exit 1; }
+  # Its product is what its instance commit runs: that commit's pin on origin/main, or the pin's fork (product_fork:).
+  local file pin; file="$(mktemp)"; git -C "$inst" show "$instance:instance.yaml" > "$file"
+  pin="$(node services/runner/src/apply.ts product-pin "$file")"
+  git merge-base --is-ancestor "$pin" origin/main || { rm -f "$file"; echo "refusing: generation $gen's product $pin is not on origin/main" >&2; exit 1; }
+  [ "$(kernelRun "$file" "$pin")" = "$product" ] || { rm -f "$file"; echo "refusing: generation $gen's product $product is not what its instance commit runs" >&2; exit 1; }
+  rm -f "$file"
   # Restarts are keyed on what changed since `before`: the failed generation's product, so its kernel and runner come back.
   local before="${AIDENHQ_APPLY_BEFORE:-$(git rev-parse HEAD)}"
   local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
@@ -297,6 +304,21 @@ refuseGeneration() {
   rm -f "$prev_config"
   echo "refusing: $why; nothing was switched or restarted (generation $n refused)" >&2
   exit 1
+}
+
+# The kernel commit an instance.yaml runs on top of its pin <product>: the pin, or its product_fork sha (spec §6.9b), fetched
+# by sha alone (FETCH_HEAD only, no ref written) over https only and without the host's credentials, and refused unless it
+# descends from the pin.
+kernelRun() {
+  local f url sha
+  f="$(node services/runner/src/apply.ts product-fork "$1")" || { echo "refusing: instance.yaml product_fork: doesn't parse" >&2; exit 1; }
+  [ -n "$f" ] || { echo "$2"; return 0; }
+  read -r url sha <<< "$f"
+  git cat-file -e "$sha^{commit}" 2>/dev/null || git -c credential.helper= -c protocol.allow=never -c protocol.https.allow=always fetch --quiet --no-tags --no-recurse-submodules -- "$url" "$sha" >&2 \
+    || { echo "refusing: couldn't fetch product_fork ${sha:0:12} from $url" >&2; exit 1; }
+  git merge-base --is-ancestor "$2" "$sha" || { echo "refusing: product_fork ${sha:0:12} does not descend from product ${2:0:12}" >&2; exit 1; }
+  echo "kernel: running the instance's fork ${sha:0:12} ($url) on top of product ${2:0:12}" >&2
+  echo "$sha"
 }
 
 # The newest instance commit on main whose instance.yaml pins this product (or nothing).
