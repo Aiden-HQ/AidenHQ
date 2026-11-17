@@ -57,7 +57,7 @@ container is recreated again on the next apply rather than trusted. A container 
 this was added) is recreated once, then recorded, and a record written for a service the step started is what keeps the
 retry after a daemon race from starting it a second time.
 
-Each phase prints one line, `apply timing: <phase> <seconds>s`, and a total; setup prints its own sections on one
+Each phase prints one line, `apply timing: <phase> <seconds>s`, and a total; run by the installer (`AIDENHQ_PROGRESS_BASE` set), setup and the apply also print `AIDENHQ_PROGRESS=<n>/<total> <percent>% <step> ~<minutes left>` as each phase starts (`ops/lib/progress.sh`; the phase tables, with estimated seconds, sit in `ops/setup.sh` and `ops/apply-config-work.sh`); setup prints its own sections on one
 `setup timing:` line. A cached image build costs a few seconds; a changed one is the real build (the board's tsc and vite
 build is about 17s). Setup's Paperclip calls run four at a time.
 

@@ -63,6 +63,15 @@ done
 REPO="${CHECKOUT:-$SRC}"   # the user's checkout: its .env, config and data, and everything that runs as the user
 
 say() { printf '• %s\n' "$*"; }
+# Install progress for the installer (ops/lib/progress.sh): this run's phases in order, estimated seconds (to be replaced by
+# measured ones), and the apply's own lines nested inside the apply phase.
+. "$SRC/ops/lib/progress.sh"
+# shellcheck disable=SC2034  # read through progress.sh's nameref
+SETUP_PHASES=(
+  "packages|180|installing the system packages" "host|10|writing the host config" "secrets|30|preparing the vault and data folders"
+  "apply|530|downloading and starting AidenHQ" "units|15|starting the background services" "link|15|making your setup link"
+)
+phase() { progress_line SETUP_PHASES "$1"; }
 die() { printf 'setup: %s\n' "$*" >&2; exit 1; }
 if [ -n "$CONFIG" ]; then [ -f "$CONFIG" ] || die "no config file $CONFIG"
 elif [ "$UNATTENDED" = 0 ]; then die "--config <file> is required, or --unattended (see the header of this script)"; fi
@@ -243,6 +252,7 @@ if [ -n "$RESET" ]; then
 fi
 
 # ---------------------------------------------------------------- 1. the machine (root)
+phase packages
 say "System packages, Docker, gVisor, Tailscale"
 # The exposure mode this setup builds (settings.exposure, written into a new instance.yaml): the tailnet, or without
 # Tailscale an SSH tunnel to loopback. The machine step opens the host firewall for it (ops/vm/public-fw.sh).
@@ -329,6 +339,7 @@ PRODUCT="$(ugit -C "$REPO" rev-parse HEAD)"
 [ "$DRY" = 1 ] || ugit -C "$REPO" merge-base --is-ancestor "$PRODUCT" origin/main || die "the checkout ($PRODUCT) isn't on the product's main"
 
 # ---------------------------------------------------------------- 3. host config
+phase host
 say "Host config (.env, config/runner.yaml)"
 if [ ! -f "$ENVF" ]; then
   if [ "$DRY" = 1 ]; then echo "  + write $ENVF (from .env.example)"
@@ -389,6 +400,7 @@ runner_set timeout_minutes "$TIMEOUT_MINUTES"
 # user, so Docker doesn't create a root-owned directory in its place.
 as_user sh -c 'mkdir -p -m 700 "$1/.ssh" && { [ -e "$1/.ssh/aidenhq_instance_deploy" ] || install -m 600 /dev/null "$1/.ssh/aidenhq_instance_deploy"; }' _ "$H"
 
+phase secrets
 say "Secrets directory, data directories (scripts/bootstrap.sh)"
 as_user bash "$REPO/scripts/bootstrap.sh"
 # The owner in config/system.yaml (timezone, names, emails), as the user, once (while names is still empty).
@@ -492,9 +504,10 @@ if [ ! -e "$H/.local/share/aidenhq/vault.enc" ]; then
 fi
 
 # ---------------------------------------------------------------- 7. the stack
+phase apply
 say "Apply: compile, start, Paperclip (ops/apply-config.sh)"
 PW="$( [ "$DRY" = 1 ] || read_secret paperclip_owner_password)"
-as_user PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh"
+as_user AIDENHQ_PROGRESS_BASE="$(progress_slice SETUP_PHASES apply)" PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh"
 if [ "$DRY" = 1 ]; then echo "  + .env: WORK_COMPANY_ID=<from config/system.yaml>, PAPERCLIP_DISABLE_SIGN_UP=true; docker compose up -d"
 else
   company="$(sed -n 's/^ *company_id: *"\{0,1\}\([0-9a-f-]\{36\}\)"\{0,1\}.*/\1/p' "$REPO/config/system.yaml" | head -1)"
@@ -512,6 +525,7 @@ if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ] && ! grep -qx 'EXPOSURE=public' /etc/defa
   # Caddy's first ACME attempt met the closed port and backs off for minutes: a fresh start tries again now.
   as_user bash -c "cd '$REPO' && docker compose restart caddy"
 fi
+phase units
 say "Runner, model gateway and run pruning (user units)"
 as_user mkdir -p "$H/.config/systemd/user"
 # Where the units find this checkout (their default is ~/aidenhq).
@@ -580,7 +594,7 @@ if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
 fi
-if [ "$UNATTENDED" = 1 ]; then setup_link   # last: its AIDENHQ_SETUP_URL line ends the output
+if [ "$UNATTENDED" = 1 ]; then phase link; setup_link   # last: its AIDENHQ_SETUP_URL line ends the output
 else
   echo "Done. Send $OWNER_NAME this link ($( [ -n "$BOARD_HOST" ] && echo 'their laptop must be on the tailnet' || { [ "$PUBLIC" = 1 ] && echo 'it opens from anywhere'; } || echo 'through the tunnel' ); one use; a new one: --reset $OWNER_EMAIL):"
   owner_link
