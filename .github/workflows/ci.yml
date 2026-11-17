@@ -1,4 +1,4 @@
-# Job budgets (timeout-minutes): about 2x the slowest hosted run seen on 2026-11-17 (rounded up to whole minutes), so a job that blows its budget fails loudly. A failed job is never retried.
+# Job budgets (timeout-minutes): a floor set from only a few hosted runs on 2026-11-17 (hosted runner-flows already shows timing flakes). They are tightened to 2x the p95 once there are about 20 hosted runs. A failed job is never retried.
 # Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used.
 # Every job runs on a GitHub-hosted runner (this repository is public, so it costs nothing). The self-hosted runners
 # (modules/ci) serve the private agents-org repositories only.
@@ -97,7 +97,7 @@ jobs:
     needs: image-changes
     if: needs.image-changes.outputs.packages == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 4
     strategy:
       fail-fast: false
       matrix:
@@ -176,7 +176,7 @@ jobs:
     needs: image-changes
     if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/runner')
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -210,7 +210,7 @@ jobs:
     needs: image-changes
     if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/runner#flows')
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -262,7 +262,7 @@ jobs:
     needs: image-changes
     if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/board')
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
