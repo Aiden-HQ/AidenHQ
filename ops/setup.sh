@@ -17,6 +17,8 @@
 #                                                      AIDENHQ_EXPOSURE=public: the board on this host's public IPv4
 #                                                      over HTTPS (Caddy, scripts/front-door.mjs; AIDENHQ_PUBLIC_IP, else
 #                                                      the default route's), no tailnet. A rerun keeps the compiled mode.
+#                                                      No certificate within 3 minutes (443 blocked upstream) or no
+#                                                      public IPv4: a loud fallback to local and the SSH tunnel.
 #   sudo ops/setup.sh --config person.env --restore backups/aidenhq-….tar.gz
 #                                                      a new VM from a backup (scripts/backup.sh)
 #   sudo ops/setup.sh --config person.env --link       only the owner's one-time setup link, while no owner account exists
@@ -279,11 +281,29 @@ if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8446"; else ADMIN_U
 say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
 # The machine step installs node; everything after it needs it.
 [ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
+# Public mode that can't work here falls back to local, loudly: the board on loopback through the SSH tunnel (printed at the
+# end), the instance's settings.exposure set to local, never a half-working public address.
+fall_back_local() { # WHY
+  echo; echo "!!! PUBLIC MODE IS NOT WORKING: $1"
+  echo "!!! The board stays on this host's loopback instead, reached through the SSH tunnel printed at the end."
+  echo "!!! To try public again once that is fixed: sudo AIDENHQ_EXPOSURE=public ops/setup.sh (with the same options)"; echo
+  PUBLIC=0 PUBLIC_IP="" EXPOSURE=local
+  BOARD_URL="http://127.0.0.1:3121"; ADMIN_URL="http://127.0.0.1:3120"
+  if [ "$DRY" = 0 ] && grep -qx '  exposure: public' "$INST/instance.yaml" 2>/dev/null; then
+    as_user sed -i 's/^  exposure: public$/  exposure: local/' "$INST/instance.yaml"
+    as_user git -C "$INST" -c user.name=setup -c user.email=setup@aidenhq.invalid commit --quiet -m "exposure: local (public mode got no certificate)" -- instance.yaml
+    as_user git -C "$INST" push --quiet origin main
+  fi
+}
 # Public: both on the host's public IPv4 through Caddy, the admin listener on its own port (compile checks .env agrees).
 if [ "$PUBLIC" = 1 ]; then
   PUBLIC_IP="${AIDENHQ_PUBLIC_IP:-$(sed -n 's/^AIDENHQ_PUBLIC_IP=//p' "$ENVF" 2>/dev/null | tail -1)}"
   if [ -z "$PUBLIC_IP" ] && [ "$DRY" = 1 ]; then PUBLIC_IP="<this host's public IPv4>"
-  elif [ -z "$PUBLIC_IP" ]; then PUBLIC_IP="$(node "$SRC/scripts/front-door.mjs" detect)" || die "exposure public needs this host's public IPv4 (above): set AIDENHQ_PUBLIC_IP"; fi
+  elif [ -z "$PUBLIC_IP" ]; then PUBLIC_IP="$(node "$SRC/scripts/front-door.mjs" detect)" || true; fi
+fi
+if [ "$PUBLIC" = 1 ] && [ -z "$PUBLIC_IP" ]; then
+  fall_back_local "this host has no public IPv4 of its own (above: behind NAT, or only a private address). Set AIDENHQ_PUBLIC_IP if the address that forwards 443 and 8446 here is known."
+elif [ "$PUBLIC" = 1 ]; then
   BOARD_URL="https://$PUBLIC_IP"; ADMIN_URL="https://$PUBLIC_IP:8446"
   say "Public: board $BOARD_URL, sign-in and approvals $ADMIN_URL (Caddy, a Let's Encrypt certificate for the IP)"
 fi
@@ -325,11 +345,14 @@ set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry comm
 set_env VAULT_FOLDERS ""
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
 set_env BOARD_LAN_HOSTS "${BOARD_HOST:-${PUBLIC_IP:+$PUBLIC_IP,}127.0.0.1:3121,localhost:3121}"
+# The kernel reads these at start: a running one restarts below when they change (its jobs keep running).
+kernel_urls="$(grep -E '^(BOARD_LAN_URL|AIDENHQ_ADMIN_URL|AIDENHQ_LINK_TTL_HOURS)=' "$ENVF" 2>/dev/null || true)"
 set_env BOARD_LAN_URL "$BOARD_URL"
 set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
 # Public: Caddy's address (compile writes config/Caddyfile for it), and one-time links last 24 hours (decision D9).
 [ "$PUBLIC" = 0 ] || set_env AIDENHQ_PUBLIC_IP "$PUBLIC_IP"
 set_env AIDENHQ_LINK_TTL_HOURS "$( [ "$PUBLIC" = 0 ] || echo 24)"
+[ "$DRY" = 1 ] || [ "$kernel_urls" = "$(grep -E '^(BOARD_LAN_URL|AIDENHQ_ADMIN_URL|AIDENHQ_LINK_TTL_HOURS)=' "$ENVF" 2>/dev/null || true)" ] || KERNEL_RESTART=1
 # Apps get their own tailnet node and name (compose.yaml apps-edge), never the board's: browsers send a name's cookies
 # to every port of it. Without Tailscale there is no apps node yet.
 if [ -n "$BOARD_HOST" ]; then
@@ -486,6 +509,8 @@ fi
 # Public: the machine step ran before this apply compiled the `caddy` service, so it kept 443 and 8446 closed; open them now.
 if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ] && ! grep -qx 'EXPOSURE=public' /etc/default/aidenhq-public-fw 2>/dev/null; then
   run env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
+  # Caddy's first ACME attempt met the closed port and backs off for minutes: a fresh start tries again now.
+  as_user bash -c "cd '$REPO' && docker compose restart caddy"
 fi
 say "Runner, model gateway and run pruning (user units)"
 as_user mkdir -p "$H/.config/systemd/user"
@@ -500,6 +525,7 @@ runner_up=0; [ "$DRY" = 1 ] || ! as_user systemctl --user is-active --quiet aide
 as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer
 # aidenhq-apply-recover: at boot, finishes an apply that died mid-run (ops/apply-config.sh --recover).
 as_user systemctl --user enable aidenhq-apply-recover
+[ "${KERNEL_RESTART:-0}" = 0 ] || as_user systemctl --user restart aidenhq-kernel
 if [ "$RUNNER_RESIZED" = 1 ] && [ "$runner_up" = 1 ]; then as_user systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner || true; fi
 # CI runners (modules/ci): AIDENHQ_CI_RUNNERS units, once the GitHub App exists and the instance has the ci module (each
 # unit mints its token from the App); until then a rerun of setup starts them.
@@ -512,6 +538,25 @@ if [ "$ci_n" -gt 0 ]; then
     as_user systemctl --user daemon-reload
     for i in $(seq "$ci_n"); do as_user systemctl --user enable --now "aidenhq-ci-runner@$i"; done
   else say "CI runners: $ci_n once the GitHub App (ops/github-app-setup.mjs) and the ci module are set up; then run setup again"; fi
+fi
+
+# Public: the certificate is the proof that 443 is reachable from the Internet (behind NAT, a cloud security group or a
+# provider firewall it never comes). Up to 3 minutes; without it, local: the instance and .env say so, an apply drops
+# Caddy, the kernel restarts on loopback URLs and the firewall closes 443 and 8446 again.
+if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ]; then
+  say "Waiting for the HTTPS certificate for $PUBLIC_IP (Let's Encrypt; up to 3 minutes)"
+  if ! node "$SRC/scripts/front-door.mjs" wait "$PUBLIC_IP" 180; then
+    as_user bash -c "cd '$REPO' && docker compose logs --tail 200 caddy 2>&1" | grep -iE '"level":"(error|warn)"' | tail -5 || true
+    fall_back_local "Let's Encrypt couldn't reach https://$PUBLIC_IP within 3 minutes (above: Caddy's last errors). Usually tcp 443 is blocked before this host (a cloud security group or the provider's firewall), or the address isn't this host's."
+    set_env BOARD_LAN_HOSTS "127.0.0.1:3121,localhost:3121"
+    set_env BOARD_LAN_URL "$BOARD_URL"
+    set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
+    set_env AIDENHQ_LINK_TTL_HOURS ""
+    set_env BOARD_GOOGLE_CONNECT 1
+    as_user PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh"
+    as_user systemctl --user restart aidenhq-kernel
+    run env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
+  else say "Public: $BOARD_URL answers with a trusted certificate"; fi
 fi
 
 # ---------------------------------------------------------------- 8. the first ten minutes

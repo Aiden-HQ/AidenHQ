@@ -41,6 +41,7 @@ import { KERNEL_KINDS, raiseCapCard } from "./kinds.ts";
 import { createJobs, dispatchesFrom } from "./jobs.ts";
 import { jailProblem, overlayProblem } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
+import { createCertWatch } from "./front-door.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
@@ -112,6 +113,13 @@ const channels = createChannels({ db: records.db, records, writes, board: boardA
 const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });
 setInterval(() => void advisories.tick(), 10 * 60_000).unref();
 setTimeout(() => void advisories.tick(), 30_000).unref();
+// The public front door's certificate (exposure public, compiled into config/exposure; the IP is the host's .env): hourly.
+const certWatch = createCertWatch({
+  ip: () => { try { return readFileSync(path.join(configDir, "exposure"), "utf8").trim() === "public" ? env("AIDENHQ_PUBLIC_IP") || undefined : undefined; } catch { return undefined; } },
+  notify: channels.ownerLine,
+});
+setInterval(() => void certWatch.tick(), 3_600_000).unref();
+setTimeout(() => void certWatch.tick(), 10 * 60_000).unref();
 const brake = createBrake({ db: records.db, owner: ownerApi });
 // Jobs: the sandbox as configured here. A known no-jail condition is fatal, with the reason in the journal: a job must never
 // share the host's network (every loopback service). Build caches without overlay support are shared.

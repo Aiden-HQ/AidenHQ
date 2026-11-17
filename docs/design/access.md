@@ -61,6 +61,15 @@ The full design, including the switch from public to Tailscale or Cloudflare, is
 - **Container.** `services/caddy` (the pinned image, built so the image scan sees it), host network, the owner's uid,
   read-only root, `cap_drop: ALL` plus `NET_BIND_SERVICE`, `no-new-privileges`; writable only `data/caddy` (0700). A
   label holding the Caddyfile's hash recreates it when the file changes.
+- **Setup proves it or falls back.** `ops/setup.sh` waits up to 3 minutes for both sites to answer over a trusted
+  certificate (the proof 443 is reachable). Without one, or without a public IPv4 of the host's own, it says so loudly
+  and falls back to `local`: the instance's `exposure: local` (committed), loopback URLs in `.env`, an apply that drops
+  Caddy, a kernel restart, the firewall closed again, and the SSH tunnel printed (`AIDENHQ_SSH_TUNNEL=`). Never a
+  half-working public address.
+- **Leaving public mode.** An apply whose config has no `caddy` service removes a running Caddy (compose-recreate leaves
+  dropped services' running containers alone); the firewall closes 443 and 8446 when `ops/vm/setup.sh` runs again.
+- **Certificate watch.** The kernel checks `https://<ip>` hourly with a verified handshake (`kernel/src/front-door.ts`):
+  under 48 hours left, or a certificate that fails to verify, tells the owner, at most once every 12 hours.
 
 ## Accounts and sign-in
 

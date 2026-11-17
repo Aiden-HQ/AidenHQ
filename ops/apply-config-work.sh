@@ -464,6 +464,13 @@ switchOver() {
   mkdir -p "$(dirname "$AIDENHQ_GENERATIONS_MIRROR")"
   [ -e "$AIDENHQ_GENERATIONS_MIRROR" ] || : > "$AIDENHQ_GENERATIONS_MIRROR"
   ops/compose-recreate.sh # build what moved, recreate only those services, and clean up what this config dropped
+  # The public front door this config dropped (exposure no longer public): compose-recreate leaves a dropped service's running
+  # container alone, but Caddy would keep serving 443 and 8446. The firewall closes them when ops/vm/setup.sh runs again.
+  if ! grep -qx '  caddy:' compose.modules.yaml; then
+    for id in $(docker ps -aq --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-aidenhq}" --filter label=com.docker.compose.service=caddy); do
+      docker rm -f "$id" >/dev/null && echo "caddy: removed (exposure is no longer public)"
+    done
+  fi
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.mjs prune
   lap compose # the gateway check, then compose: builds (cached unless a context changed) and recreates what changed
