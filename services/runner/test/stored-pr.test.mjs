@@ -1,8 +1,8 @@
-// The stored PR number's head check (stored-pr.ts): a number is acted on only when GitHub's read names the head branch the
+// The stored PR number's head check (staleHead, progress.ts): a number is acted on only when GitHub's read names the head branch the
 // task recorded; another branch's PR, or a read that gave none, is stale.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { staleHead } from "../src/stored-pr.ts";
+import { staleHead } from "../src/progress.ts";
 
 describe("a stored PR number's head", () => {
   it("matches the task's branch: the PR is acted on as before", () => {

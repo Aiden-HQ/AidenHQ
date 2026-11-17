@@ -204,7 +204,7 @@ scenario("the finished-PR check", ({ t, setPrs, stored, row, stale, onGithub }) 
 
 // A published PR whose merge follows the card (the product repo's `aidenhq pr` with merge): a GitHub read that fails
 // transiently is retried, never called stale — saying stale would skip a live PR's merge on a lie.
-scenario("a published PR's merge after its card", ({ t, setPrs, stored, stale }) => {
+scenario("a published PR's merge after its card", ({ t, setPrs, stored, stale, merged }) => {
   it("a transient read failure is not reported stale, and the merge is requested", async () => {
     await t.settled();
     stored("fix/remove-legacy", url(23));
@@ -221,6 +221,35 @@ scenario("a published PR's merge after its card", ({ t, setPrs, stored, stale })
     assert.doesNotMatch(outcome.text, /stale/, "a blip is not a stale number");
     assert.equal(stale(23).length, 0);
     assert.equal(JSON.parse(readFileSync(join(t.dir, "pr-read-failures.json"), "utf8")).n, 0, "the blip was hit, then retried");
+  });
+
+  it("a stored number GitHub can't read is said stale, and the merge is not requested", async () => {
+    await t.settled();
+    stored("fix/gone", url(24));
+    setPrs({ 24: { branch: "fix/gone", files: ["x.txt"], checks: "SUCCESS" } });
+    t.step("commit\naidenhq pr acme/app fix/gone");
+    await t.turn("Ship it.");
+    setPrs({}); // the number can't be read any more
+    const card = t.paperclip.decide("pr", "approved");
+    await t.waitFor("the card's outcome", () => Boolean(t.paperclip.approvals.get(card.id)?.outcome));
+    const outcome = t.paperclip.approvals.get(card.id).outcome;
+    assert.ok(!outcome.ok, outcome.text);
+    assert.match(stale(24)[0], /GitHub couldn't read its head branch/);
+    assert.equal(stale(24).length, 1, "one stale line");
+    assert.equal(merged().length, 0);
+  });
+
+  it("a stored number whose head is another branch is said stale, and the merge is not requested", async () => {
+    stored("fix/ours", url(25));
+    setPrs({ 25: { branch: "fix/ours", files: ["x.txt"], checks: "SUCCESS" } });
+    t.step("commit\naidenhq pr acme/app fix/ours");
+    await t.turn("Ship it.");
+    setPrs({ 25: { branch: "fix/theirs", files: ["x.txt"], checks: "SUCCESS" } });
+    const card = t.paperclip.decide("pr", "approved");
+    await t.waitFor("the card's outcome", () => Boolean(t.paperclip.approvals.get(card.id)?.outcome));
+    assert.ok(!t.paperclip.approvals.get(card.id).outcome.ok);
+    assert.match(stale(25)[0], /its head branch is `fix\/theirs`, not the task's `fix\/ours`/);
+    assert.equal(merged().length, 0);
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
