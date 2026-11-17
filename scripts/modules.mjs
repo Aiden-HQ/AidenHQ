@@ -966,8 +966,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
  * the stamp its decisions carry, whether it may close stale cards, and its own settings (a host CLI channel reads them here).
  */
 /**
- * The first-run page's fields (spec §6.10): a module's provided secrets with `setup: { label, pattern, help?, required? }`, which
- * the owner may give on /setup; each is written to the vault under its own name once it matches its anchored pattern, `required`
+ * Modules' setup fields (spec §6.10): a module's provided secrets with `setup: { label, pattern, help?, required? }`, which
+ * the owner gives in the board's setup flows (the model key on the kernel's /setup/model); each is written to the vault under its own name once it matches its anchored pattern, `required`
  * ones while the vault has none. Never a generated secret, and each one asked for by one module.
  */
 export function setupSecrets(defs, generated) {

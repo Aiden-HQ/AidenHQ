@@ -63,6 +63,7 @@ describe("first-run welcome", () => {
 
   it("wizard lists only wizard flows in order", async () => {
     kernel.ops["/v1/accounts/recovery_key_waiting"] = [200, { waiting: true }];
+    kernel.ops["/v1/accounts/model_ready"] = [200, { ready: true }];
     const r = (await owner("GET", "/api/welcome")).json;
     expect(r).toEqual({ finished: false, modelReady: true, recoveryKeyWaiting: true, wizard: ["first", "later"] });
   });
@@ -70,7 +71,7 @@ describe("first-run welcome", () => {
   it("no model key shows only the connect-a-model state", async () => {
     kernel.ops["/v1/accounts/model_ready"] = [200, { ready: false }];
     expect((await owner("GET", "/api/welcome")).json.modelReady).toBe(false);
-    delete kernel.ops["/v1/accounts/model_ready"];
+    kernel.ops["/v1/accounts/model_ready"] = [200, { ready: true }];
   });
 
   it("finish posts one welcome with done and skipped; a second call posts nothing", async () => {
@@ -87,6 +88,7 @@ describe("first-run welcome", () => {
 describe("an existing welcome-sent marker", () => {
   it("skips the wizard", async () => {
     const kernel = await fakeKernel();
+    kernel.ops["/v1/accounts/model_ready"] = [200, { ready: true }];
     const dir = mkdtempSync(join(tmpdir(), "welcome-"));
     const marker = join(dir, "welcome-sent");
     writeFileSync(marker, "");
