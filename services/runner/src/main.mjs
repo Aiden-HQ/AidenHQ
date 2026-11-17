@@ -3837,27 +3837,37 @@ async function createRepoApproved(issue, a) {
     : `Created ${slug} (${where}, with the app starter on main: build on it; your first change holds only the app's own work). It is in the workspace on this task's next run (\`aidenhq repo ${slug}\` clones it now).` };
 }
 
-/** The app starter a new app repository starts from (apps-platform is always installed). */
-const APP_STARTER = fileURLToPath(new URL("../../../modules/apps-platform/starter", import.meta.url));
+/**
+ * The app starter a new app repository starts from: the product's committed copy (scripts/sync-shared.mjs keeps it identical
+ * to modules/apps-platform/starter at the pin), read from the product checkout's HEAD, never its working directory.
+ */
+const PRODUCT_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+const APP_STARTER = "services/computer/images/agent-base/app-starter";
 
 /**
- * Commits the app starter onto a new repository's default branch (its .gitignore keeps node_modules and dist out), through the
- * runner's cache clone and the code host's fast-forward publish. So an app's first change request holds only the app's own work,
+ * Commits the app starter onto a new repository's default branch through the runner's cache clone and the code host's
+ * fast-forward publish. Only the starter's tracked files at the product's HEAD go in (`git archive`): an untracked file in
+ * the folder (an .env, a build, node_modules) never does. So an app's first change request holds only the app's own work,
  * and the reviewer never reads the starter's files (its identity check, its pages, its lock file) as the agent's additions.
  */
 async function seedStarter(slug) {
   const clone = await ensureClone(cfg.workDir, normalizeRepo(slug), await hostOf(slug).source(slug));
   const branch = await defaultBranch(clone);
   const parent = await git(clone, "rev-parse", "--verify", `origin/${branch}^{commit}`);
-  const index = join(cfg.workDir, `seed-${randomBytes(8).toString("hex")}.index`);
-  const env = { ...ISOLATED_ENV, ...identityEnv(isLocal(slug) ? DEFAULT_IDENTITY : await botIdentity()), GIT_INDEX_FILE: index };
-  const g = async (...args) => (await execFileP("git", [...SAFE_GIT_ARGS, "--git-dir", join(clone, ".git"), "--work-tree", APP_STARTER, ...args], { env, maxBuffer: 32 * 1024 * 1024 })).stdout.trim();
+  const tmp = join(cfg.workDir, `seed-${randomBytes(8).toString("hex")}`);
+  const files = join(tmp, "files");
+  mkdirSync(files, { recursive: true });
+  const env = { ...ISOLATED_ENV, ...identityEnv(isLocal(slug) ? DEFAULT_IDENTITY : await botIdentity()), GIT_INDEX_FILE: join(tmp, "index") };
+  const g = async (...args) => (await execFileP("git", [...SAFE_GIT_ARGS, "--git-dir", join(clone, ".git"), "--work-tree", files, ...args], { env, maxBuffer: 32 * 1024 * 1024 })).stdout.trim();
   try {
-    await g("add", "--all", ".");
+    const archive = join(tmp, "starter.tar");
+    await execFileP("git", [...SAFE_GIT_ARGS, "-C", PRODUCT_ROOT, "archive", "--format=tar", "-o", archive, `HEAD:${APP_STARTER}`], { env: ISOLATED_ENV });
+    await execFileP("tar", ["-xf", archive, "-C", files]);
+    await g("add", "--all", "--force", ".");
     const sha = await g("commit-tree", await g("write-tree"), "-p", parent, "-m", "chore: start from the app starter");
     await hostOf(slug).publish({ path: clone, slug, sha, branch });
   } finally {
-    rmSync(index, { force: true });
+    rmSync(tmp, { recursive: true, force: true });
   }
 }
 

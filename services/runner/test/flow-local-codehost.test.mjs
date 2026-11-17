@@ -2,12 +2,16 @@
 // the org `local` is a bare repo under the data dir; `pr` opens a change request, its checks run here at the exact head, a
 // merge is requested once they are green, its card is approved and the change lands as one squash commit. A head that moved after the card is refused; a red
 // check wakes the task's Engineer with its log tail. An approved create_repo starts the Engineer's next run.
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { flow, git } from "./flow-harness.mjs";
+
+const PRODUCT = fileURLToPath(new URL("../../..", import.meta.url));
+const STARTER = "services/computer/images/agent-base/app-starter";
+const STARTER_ENV = join(PRODUCT, STARTER, ".env");
 
 const PKG = (test) => JSON.stringify({ name: "app", version: "1.0.0", private: true, scripts: { test } });
 
@@ -98,6 +102,8 @@ describe("flow-local-codehost", () => {
     const runs = claudeRuns().length;
     // The next run's step is read when it starts: it looks for the new repository in its workspace.
     step("look\nfind . -maxdepth 2 -name hello -type d");
+    // An untracked file in the starter folder (a local .env) is never seeded: only the starter's tracked files go in.
+    writeFileSync(STARTER_ENV, "SECRET=do-not-seed\n");
     t.paperclip.decide("create_repo", "approved");
     await waitFor("the next run", () => claudeRuns().slice(runs).some((r) => /Your create_repo card .* was approved and applied: Created local\/hello/.test(r.prompt)));
     await t.settled();
@@ -108,9 +114,9 @@ describe("flow-local-codehost", () => {
 
   it("a new repository's main holds the app starter, so the first change diffs only the app's own work", () => {
     const hello = join(t.dir, "data", "codehost", "local", "hello.git");
-    const starter = fileURLToPath(new URL("../../../modules/apps-platform/starter", import.meta.url));
-    const tracked = (dir) => git(dir, "ls-files", "--cached", "--others", "--exclude-standard").split("\n").filter(Boolean).sort();
-    assert.deepEqual(git(t.dir, "--git-dir", hello, "ls-tree", "-r", "--name-only", "main").split("\n").sort(), tracked(starter));
+    const seeded = git(t.dir, "--git-dir", hello, "ls-tree", "-r", "--name-only", "main").split("\n").sort();
+    assert.deepEqual(seeded, git(PRODUCT, "ls-tree", "-r", "--name-only", `HEAD:${STARTER}`).split("\n").sort());
+    assert.ok(!seeded.includes(".env") && seeded.includes("server.mjs") && seeded.includes("aidenhq-identity.mjs"), seeded.join(" "));
     const work = join(t.dir, "hello-first-change");
     git(t.dir, "clone", "-q", hello, work);
     writeFileSync(join(work, "README.md"), "# hello\n");
@@ -119,4 +125,5 @@ describe("flow-local-codehost", () => {
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
+  after(() => rmSync(STARTER_ENV, { force: true }));
 });
