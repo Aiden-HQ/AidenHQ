@@ -565,7 +565,7 @@ PR: `feat(ops): public HTTPS front door`.
 ### Task 17: Release candidate
 
 - [ ] Bump the modules pin in the product, then cut a release candidate in the distro (`releases/<version>-rc.json`, with
-  the Task 12 images). Point `get.aidenhq.ai` at it through the installer's existing release-selection flag, so Task 18
+  the Task 12 images). Task 18 installs it with `--release <version>-rc` (the installer's existing flag), so it
   installs this work and not the old release. Commit as PR `chore(release): guided setup release candidate`.
 
 ### Task 18: End-to-end, integration review and docs
