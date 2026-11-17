@@ -1,0 +1,110 @@
+# The official modules' tests, on pull requests and pushes to main. Module suites read kernel, SDK and shared code, so the
+# job checks out the product (Aiden-HQ/AidenHQ main, read with the AIDENHQ_PRODUCT_READ secret: a fine-grained token with
+# read access to that repository only) and this repository at its modules/ path, the layout the product had before 5b.
+# Each package runs as it did in the product's CI. The supply-chain rules (pins, the 7-day age) run from the product's
+# scripts against this repository.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  supply-chain:
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    timeout-minutes: 10
+    env:
+      PR_BASE: ${{ github.event.pull_request.base.sha }}
+      PUSH_BEFORE: ${{ github.event.before }}
+      HEAD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Aiden-HQ/AidenHQ
+          token: ${{ secrets.AIDENHQ_PRODUCT_READ }}
+          path: product
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: modules
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Age check (lockfiles) and pins
+        working-directory: modules
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          base="${PR_BASE:-$PUSH_BEFORE}"
+          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
+          fi
+          status=0
+          node ../product/scripts/supply-chain/npm-age.mjs "$base" "$HEAD_SHA" || status=1
+          node ../product/scripts/supply-chain/pins.mjs "$base" "$HEAD_SHA" || status=1
+          exit $status
+
+  packages:
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "aidenhq"]') }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { dir: apps-platform/starter, run: "npm ci && npm test && npm run build" }
+          - { dir: apps-platform/gate, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: apps-platform/apps-mcp, run: "npm ci --ignore-scripts && npm test && npm run typecheck" }
+          - { dir: clickhouse/connections/clickhouse-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: github/connections/github-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: glean/connections/glean-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: google/connections/google-workspace-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: grafana/connections/grafana-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: jira/connections/jira-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: meetings/connections/ops-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: channel-slack/connections/slack, run: "npm ci --ignore-scripts && npm test && npm run typecheck" }
+          - { dir: channel-telegram/connections/telegram, run: "npm ci --ignore-scripts && npm test && npm run typecheck" }
+          - { dir: chat-lane/connections/lane, run: "npm ci --ignore-scripts && npm test && npm run typecheck" }
+          - { dir: channel-operator, run: "node --test test/*.test.mjs" }
+          - { dir: ai-reviewer, run: "npm test" }
+          - { dir: codehost-github, run: "npm test" }
+          - { dir: platform, run: "npm test" }
+          - { dir: engineering, run: "npm test" }
+          - { dir: grading, run: "npm test" }
+          - { dir: primer/connections/primer-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: slack/connections/slack-mcp, run: "npm ci && npm test && npm run typecheck" }
+          - { dir: tasks/connections/tasks-mcp, run: "npm ci && npm test" }
+          - { dir: security/scanner, run: "npm ci && npm test && npm run typecheck" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Aiden-HQ/AidenHQ
+          token: ${{ secrets.AIDENHQ_PRODUCT_READ }}
+          persist-credentials: false
+      - name: This repository as the product's modules/
+        run: rm -rf modules
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: modules
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Git identity (the tests make commits)
+        run: git config --global user.name ci && git config --global user.email ci@example.com
+      - name: Test
+        working-directory: modules/${{ matrix.dir }}
+        env:
+          RUN: ${{ matrix.run }}
+        run: |
+          (cd "$GITHUB_WORKSPACE/kernel" && npm ci --silent) && (cd "$GITHUB_WORKSPACE/scripts" && npm ci --silent)
+          bash -c "$RUN"
