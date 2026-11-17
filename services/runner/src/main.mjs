@@ -3281,7 +3281,23 @@ async function runClaimed(claimed) {
     const kind = !outcome.ok ? "failed" : (await graded(full.id)) ? "applied" : "done";
     await tellParent(full, kind, appliedNote(claimed.identifier, claimed.id, outcome)).catch(() => {});
   }
+  if (full && outcome.ok && outcome.next) await nextRunAfter(full, claimed, outcome).catch((err) => log("next run after an approval failed", { approval: claimed.id, err: String(err.message ?? err).slice(0, 200) }));
   await flushOutcomes();
+}
+
+/**
+ * A write whose result the task's work goes on from (`next` on its outcome: a new repository is in the workspace on the
+ * next run) starts the Engineer's next run, once per card, as a follow-up would: the Engineer ended its turn when it filed
+ * the card, and nothing else wakes an Engineer's task. Not on a closed or stopped (breaker) task; dispatch queues it behind
+ * a run in progress or the caps.
+ */
+async function nextRunAfter(full, a, outcome) {
+  const key = `applied-dispatched:${a.id}`;
+  if (state.get(key) || CLOSED.includes(full.status) || stopped(full.id)) return;
+  if (!(await pc.engineerAgents()).some((x) => x.id === full.assigneeAgentId)) return;
+  state.set(key, new Date().toISOString());
+  log("approved write: next run", { approval: a.id, issue: full.identifier, action: a.action });
+  await dispatch({ issue: full, instructions: `(From the runner, not ${cfg.selfName}'s words.) Your ${a.action} card ${a.id} was approved and applied: ${String(outcome.text ?? "").trim()}\n\nCarry on with the task from there.` });
 }
 
 /** The runner's cache clone of one repository, from its "org/name". */
@@ -3803,7 +3819,7 @@ const createRepoText = (slug) => isLocal(slug)
   ? `Create a new repository on this server: ${slug}\n- a bare repository in the agents org ${LOCAL_ORG}, with a README on main\n- created by the runner; no code, settings or access change anywhere else`
   : `Create a new GitHub repository: ${slug}\n- private, in the agents org ${slug.split("/")[0]}, with a README on its default branch\n- created by the instance's GitHub App; no code, settings or access change anywhere else`;
 
-/** An approved create_repo card: the repo is created (or already there) and remembered for the task's next run. */
+/** An approved create_repo card: the repo is created (or already there) and remembered for the task's next run, which it starts. */
 async function createRepoApproved(issue, a) {
   const slug = a.args.repo;
   const local = isLocal(slug);
@@ -3811,7 +3827,7 @@ async function createRepoApproved(issue, a) {
   const done = await (local ? localHost.createRepo(slug) : app.createRepo(slug));
   log("repo created", { issue: issue.identifier, repo: slug, approval: a.id, result: done });
   rememberRepos(issue.id, [slug]);
-  return { ok: true, text: done === "created" ? `Created ${slug} (${local ? "on this server" : "private"}, with a README). It is in the workspace on this task's next run (\`aidenhq repo ${slug}\` clones it now).` : `${slug} already exists; nothing was created.` };
+  return { ok: true, next: true, text: done === "created" ? `Created ${slug} (${local ? "on this server" : "private"}, with a README). It is in the workspace on this task's next run (\`aidenhq repo ${slug}\` clones it now).` : `${slug} already exists; nothing was created.` };
 }
 
 /** The user's task an Engineer's part belongs to, or undefined. */
