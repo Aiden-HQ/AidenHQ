@@ -15,6 +15,20 @@ export function startPkce(callback: string, o: { upstream?: string; state?: stri
   return { url: `${site(o.upstream ?? "https://openrouter.ai/api/v1")}/auth?${q}`, verifier };
 }
 
+/**
+ * Whether the model works: a key in the vault AND the last check of exactly that key passed. The model step records each
+ * check's outcome (the key's hash, or "failed") next to the key, so a key saved without credit, or replaced, isn't ready until
+ * a check of it passes. A key with no record at all predates the model step (ops/setup.sh, an older instance): ready.
+ */
+export const CHECKED = "openrouter_key_checked";
+export function readiness(v: { get: (name: string) => string; exists: (name: string) => boolean; save: (name: string, value: string) => void }) {
+  const hash = (k: string) => createHash("sha256").update(k).digest("hex");
+  return {
+    ready: () => { const k = v.get("openrouter_key"); return Boolean(k) && (!v.exists(CHECKED) || v.get(CHECKED) === hash(k)); },
+    checked: (key: string, ok: boolean) => v.save(CHECKED, ok ? hash(key) : "failed"),
+  };
+}
+
 /** The code from the callback and its verifier → the API key. */
 export async function exchange(code: string, verifier: string, fetchImpl: typeof fetch = fetch, upstream = "https://openrouter.ai/api/v1"): Promise<string> {
   const r = await fetchImpl(`${upstream}/auth/keys`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, code_verifier: verifier, code_challenge_method: "S256" }), signal: AbortSignal.timeout(20_000) });

@@ -6,13 +6,15 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { openAccounts } from "../src/accounts.ts";
 import { createAdmin } from "../src/admin.ts";
-import { checkModel, exchange, startPkce } from "../src/openrouter-pkce.ts";
+import { checkModel, exchange, readiness, startPkce } from "../src/openrouter-pkce.ts";
 import { PASSWORD, silent, totp } from "./auth-helpers.mjs";
 import { serve } from "./helpers.mjs";
 
 const HOST = "localhost:3120", BOARD = "http://board.example:3121", KEY = `sk-or-v1-${"a".repeat(64)}`;
 const field = { module: "models-openrouter", secret: "openrouter_key", label: "OpenRouter API key", pattern: "^sk-or-[A-Za-z0-9_-]{16,200}$", required: true };
 const vault = new Map();
+// What the kernel's model_ready op answers (main.ts wires the same readiness to it and to the admin pages).
+const state = readiness({ get: (n) => vault.get(n) ?? "", exists: (n) => vault.has(n), save: (n, v) => vault.set(n, v) });
 let accounts, adminSrv, verdict = "ok", exchanged = [];
 before(async () => {
   accounts = await openAccounts({ dataDir: ":memory:", hosts: [HOST], adminUrl: `http://${HOST}`, edgeSecret: () => "", notify: () => {}, log: silent });
@@ -22,6 +24,7 @@ before(async () => {
     exchange: async (code, verifier) => { exchanged.push([code, verifier]); return KEY; },
     check: async () => verdict,
     saved: () => vault.get("openrouter_key") ?? "",
+    ...state,
   };
   const cards = { ownerCards: async () => ({ live: [], finished: [] }), decideCard: async () => { throw new Error("no"); } };
   adminSrv = await serve(createAdmin({ accounts, firstRun, model, boardUrl: () => BOARD, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [] }));
@@ -65,6 +68,7 @@ test("setup takes account then model", async () => {
   assert.equal(back.location, `${BOARD}/#/welcome`);
   assert.deepEqual(exchanged, [["c0de", "v".repeat(43)]]);
   assert.equal(vault.get("openrouter_key"), KEY);
+  assert.equal(state.ready(), true);
   assert.equal((await page("GET", `/setup/openrouter?code=c0de&state=${stateOf(step.body)}`)).location, `${BOARD}/#/welcome`); // a reload
   assert.equal(exchanged.length, 1);
 });
@@ -93,9 +97,18 @@ test("no credit shows retry", async () => {
   assert.match(pasted.body, /Add credit in OpenRouter/);
   assert.match(pasted.body, /https:\/\/openrouter\.ai\/settings\/credits/);
   assert.match(pasted.body, /name="action" value="retry"/);
+  assert.equal(vault.get("openrouter_key"), KEY); // kept, so Retry needs no new key
+  assert.equal(state.ready(), false); // model_ready: no credit is not ready
+  assert.equal((await page("POST", "/setup/model", { csrf: csrfOf(pasted.body), action: "retry" })).status, 200); // still none
+  assert.equal(state.ready(), false);
   verdict = "ok";
   const retry = await page("POST", "/setup/model", { csrf: csrfOf(pasted.body), action: "retry" });
   assert.equal(retry.location, `${BOARD}/#/welcome`);
+  assert.equal(state.ready(), true);
+  vault.set("openrouter_key", `sk-or-v1-${"b".repeat(64)}`); // a replaced key isn't checked yet
+  assert.equal(state.ready(), false);
+  vault.delete("openrouter_key_checked"); // a key from before the model step (no record): ready
+  assert.equal(state.ready(), true);
 });
 
 test("model step needs the admin session", async () => {
