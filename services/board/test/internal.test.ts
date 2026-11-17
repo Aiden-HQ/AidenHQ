@@ -113,6 +113,20 @@ describe("internal listener", () => {
     }
   });
 
+  it("serves the host's apply generations to a fleet reader, and refuses everyone else", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "generations-")), "generations.jsonl");
+    writeFileSync(file, JSON.stringify({ n: 2, at: "2026-01-02T00:00:00Z", product: "b".repeat(40), health: "good", data_versions: { meetings: 3 } }) + "\n");
+    process.env.AIDENHQ_GENERATIONS_FILE = file;
+    try {
+      const res = await post("/internal/fleet/generations", {});
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ pin: "b".repeat(40), generations: [{ n: 2, product: "b".repeat(40), health: "good", data_versions: { meetings: 3 } }] });
+      expect((await post("/internal/fleet/generations", {}, asAgent("scout"))).status).toBe(403);
+    } finally {
+      delete process.env.AIDENHQ_GENERATIONS_FILE;
+    }
+  });
+
   it("schedules a move on the user's task, and rejects bad dates", async () => {
     const ok = await post("/internal/issues/PEN-1/schedule", { date: "2099-01-01" });
     expect(ok.status).toBe(400);

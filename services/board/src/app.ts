@@ -32,6 +32,7 @@ import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
+import { fleetGenerationStatus } from "./generations.js";
 import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
@@ -825,6 +826,8 @@ export function createApp(opts: AppOptions): Server {
       // recovered keys (the block Fleet Ops acts on) unreadable.
       return boundedFleetStatus({ detector: detectorState(store), ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
+    // The host's apply generations (generations.ts): the current product pin and the last 20 applies, newest first.
+    { method: "POST", path: /^\/internal\/fleet\/generations$/, handle: async (_m, _b, _u, req) => fleetCall(req, async () => fleetGenerationStatus(), ["fleet-admin", "fleet-read"]) },
     // The Agent Coach's reads (coach.ts), for the fleet-audit role: who is due a review (never the caller) and one agent's bounded evidence.
     { method: "POST", path: /^\/internal\/coach\/due$/, handle: async (_m, _b, _u, req) => fleetCall(req, (pc, caller) => coachDue(pc, store, caller), ["fleet-audit"]) },
     { method: "POST", path: /^\/internal\/coach\/evidence$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc, caller) => coachEvidence(pc, store, records, grading, runOf, parse(z.object({ agent_key: z.string().trim().min(1).max(64) }).strict(), body).agent_key, caller), ["fleet-audit"]) },

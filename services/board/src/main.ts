@@ -4,6 +4,7 @@ import { createKernelAuth } from "./kernel-auth.js";
 import { createApp } from "./app.js";
 import { appsApi } from "./fleet.js";
 import { appWatchTick, type AppStatus } from "./app-watch.js";
+import { maintainerIssues, maintainerWake, startMaintainer } from "./maintainer.js";
 import { queueOwnerLine, startDetector } from "./fleet-ops.js";
 import { createGrading } from "./grading.js";
 import { loadConfig } from "./config.js";
@@ -50,6 +51,9 @@ const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/in
 setInterval(appWatch, 2 * 60_000).unref();
 // Event wake-ups for heartbeat agents (wake.ts).
 startWake(paperclip, store, records, grading, log);
+// The Maintainer's issue wake-up (maintainer.ts): off until setup has written the routine's webhook.
+const maintainer = maintainerWake();
+if (maintainer) startMaintainer({ issues: maintainerIssues(), fire: maintainer, store, log });
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
 startRollover(paperclip, store, records, grading, log);
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent

@@ -227,6 +227,8 @@ services:
       # The model gateway (kernel/src/gateway, on the host's backplane address): the board pulls its billed ledger and it files
       # raise_cap here, each with gateway_board_key.
       AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
+      # The host's apply generations (ops/lib/generations.sh): the current product pin and the last 20 applies.
+      AIDENHQ_GENERATIONS_FILE: /generations/generations.jsonl
     volumes:
       - ${AIDENHQ_CONFIG_DIR:-./config}/system.yaml:/config/system.yaml:ro
       - ${AIDENHQ_CONFIG_DIR:-./config}/modules.json:/config/modules.json:ro # Settings: Modules, setting defaults and docs
@@ -236,6 +238,8 @@ services:
       # The board's points (compile): the modules' sign-ins (board.signins).
       - ${AIDENHQ_CONFIG_DIR:-./config}/points/board.json:/config/points/board.json:ro
       - ${AIDENHQ_DATA_DIR:-./data}/board:/data/board
+      # Read-only, and only the apply state's folder: the Maintainer's fleet_generation_status never writes host state.
+      - ${AIDENHQ_STATE_DIR:-./data/state}:/generations:ro
       # No accounts file: admins sign in on the kernel, which hands the board its own session (lean 3g).
     secrets:
       - paperclip_board_key
