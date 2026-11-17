@@ -827,8 +827,10 @@ async function dispatchParked() {
   for (const job of parkedJobs(state)) {
     const { issueId, instructions } = job;
     if (!ready(job)) continue;
+    // A read that fails is no answer: the job stays parked, and is read again next poll.
     const full = await pc.issue(issueId).catch(() => undefined);
-    if (!full || CLOSED.includes(full.status)) {
+    if (!full) continue;
+    if (CLOSED.includes(full.status)) {
       unpark(state, issueId);
       continue;
     }
@@ -842,10 +844,16 @@ async function dispatchParked() {
 /**
  * A task whose blocker is unresolved is asleep: Paperclip refuses its status write with a 422 and the run would be
  * counted as a failure, so its job waits in the runner's state until every blocker is done or cancelled. True when it
- * parked. `issue` need not carry its blockers (a list row): read them when it doesn't.
+ * parked. `issue` need not carry its blockers (a list row): read them when it doesn't. A read that fails parks too, and
+ * is tried again shortly: no blockers shown is not the same as none.
  */
 async function parkIfBlocked(issue, instructions) {
   const full = issue.blockedBy === undefined ? await pc.issue(issue.id).catch(() => undefined) : issue;
+  if (!full) {
+    park(state, { issueId: issue.id, instructions, retryAfter: new Date(Date.now() + 5_000).toISOString() });
+    log("job parked: its task couldn't be read, so its blockers are unknown", { issue: issue.identifier });
+    return true;
+  }
   const blockers = unresolvedBlockers(full);
   if (!blockers.length) return false;
   park(state, { issueId: issue.id, instructions });
