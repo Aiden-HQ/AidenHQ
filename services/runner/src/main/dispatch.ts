@@ -18,7 +18,7 @@ import { runCommand } from "./commands.ts";
 import { startJob } from "./jobs.ts";
 import { handleParentPr } from "./report.ts";
 import { branchRows, findRealGh, logTail, reportError } from "./github.ts";
-import { stopping } from "./unsplit.ts";
+import { stopping } from "./lifecycle.ts";
 
 async function handleIssue(issue: any, engineerIds: any) {
   const known = state.task(issue.id);

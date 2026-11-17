@@ -23,7 +23,7 @@ import { readGrants, showFleetDiff } from "./apply-path.ts";
 import { crewContext, crewParent, runCommand } from "./commands.ts";
 import { publishToPrimer, reportToParent } from "./report.ts";
 import { branchRows, branchTips, leaveFinishedPrs, logTail, missingRepo, prepareWorkspace, rememberRepos, repoHelper, repoInfo, reportError, tidyBranches } from "./github.ts";
-import { RESUME_KEY, retryTurn, stopping } from "./unsplit.ts";
+import { RESUME_KEY, retryTurn, stopping } from "./lifecycle.ts";
 
 /** The card's branch or head moved before review: the card is stale, not rejected, and costs no review slot. */
 class MovedHead extends UserError {}
