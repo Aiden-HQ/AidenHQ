@@ -62,6 +62,11 @@ function fakeGithub(prs, commits = {}, bases = {}) {
     // Re-runs: kept outside any queue, as the runner keeps them in its state. `reviewComments`: the code-review gate's comment by PR.
     reran: {},
     reviewComments: {},
+    // PR comments (the re-run notes), apart from `writes`.
+    comments: [],
+    async comment(repo, number, body) {
+      this.comments.push({ number, body });
+    },
     // A check's job by name: `jobs` answers { steps, annotations }, as GitHub's REST read of a job and its annotations does.
     jobs: {},
     async job(repo, check) {
