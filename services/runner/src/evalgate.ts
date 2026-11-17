@@ -8,7 +8,7 @@
 // - every base case runs at its base version, a case the PR deletes included;
 // - a case the PR adds runs as the PR wrote it;
 // - a case the PR changes runs twice: at its base version, and as the PR's fixture held to the base's expectations
-//   (`expect`, `expect_code`, `expect_second`, `expect_flag`).
+//   (`expect`, `expect_code`, `expect_second`, `expect_flag`, `expect_nit`).
 // So a PR can't pass by deleting or weakening a case. One that changes an expectation can't pass on its own: the owner
 // merges it by hand. The reviewer's code under test (src/, the policy) is the PR's own.
 //
@@ -49,7 +49,7 @@ export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_C
 const MODULE = "modules/ai-reviewer";
 const CASES = `${MODULE}/test/reviewer-cases`;
 const JUDGE = ["modules/ai-reviewer/scripts/reviewer-eval.mjs", "modules/ai-reviewer/test/case-pad.mjs"];
-const EXPECT = ["expect", "expect_code", "expect_second", "expect_flag"] as const;
+const EXPECT = ["expect", "expect_code", "expect_second", "expect_flag", "expect_nit"] as const;
 
 /**
  * The cases the judge runs, file name → text, from the base's and the PR head's case files: every base case at its base

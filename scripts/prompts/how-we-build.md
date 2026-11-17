@@ -13,6 +13,9 @@
   and record why in the commit. A red check is re-run only when its log shows an infrastructure failure (runner lost,
   network), and the PR says so. The one sanctioned exception is the reviewer eval gate's single re-run of its failed cases
   (model variance, measured on its receipt).
+- Show your work: every PR description ends with `## Evidence`.
+  It lists the commands you ran with their results (tests, build, typecheck), before/after screenshots for a change people
+  see, before/after numbers for performance work, and "Not verified: <why>" for anything you did not check.
 - A large build splits into independent parts built side by side (sub-agents, several Engineer tasks), integrated and
   checked once at the end.
 - Work fast, in few big steps.

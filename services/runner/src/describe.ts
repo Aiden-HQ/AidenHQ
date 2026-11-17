@@ -25,6 +25,20 @@ export const leakIn = (text: unknown) => String(text ?? "").match(INTERNAL)?.[0]
 /** Claude Code ends PR descriptions with its own footer out of habit; the reviewers don't need it. */
 export const stripAttribution = (body: unknown) => String(body ?? "").replace(/^[^\S\n]*(?:🤖[^\S\n]*)?Generated with \[?Claude Code\]?(?:\([^)\n]*\))?[^\S\n]*$/gim, "").trim();
 
+// Every Engineer PR shows its work: its description ends with `## Evidence` (commands and results, screenshots, numbers, or
+// "Not verified: <why>"). The runner appends one stub line when a description has none and never blocks on it; the AI
+// reviewer and the grader read the section as the author's own words.
+const EVIDENCE = /^(?:##[^\S\n]+Evidence[^\S\n]*|Evidence: none given)$/im;
+
+/** A PR description as it goes to GitHub: as written when it has an Evidence section, else with the stub line appended. */
+export const withEvidence = (body: unknown) => (EVIDENCE.test(String(body ?? "")) ? String(body).trim() : [String(body ?? "").trim(), "Evidence: none given"].filter(Boolean).join("\n\n"));
+
+/** The Evidence section of a PR description, up to the next heading of its level or above; "none given" without one. */
+export function evidenceOf(body: unknown) {
+  const m = EVIDENCE.exec(String(body ?? ""));
+  return (m ? String(body).slice(m.index + m[0].length) : "").split(/^#{1,2}[^\S\n#]/m)[0]!.trim() || "none given";
+}
+
 /** Commit messages (\x1e-separated, oldest first) without trailers from older runner versions. */
 export function cleanMessages(raw: unknown) {
   return String(raw ?? "")
@@ -46,7 +60,7 @@ export function describePrompt({ repo, base, request, messages, stat, diff, repo
 
 Rules:
 - If the request below specifies the PR title or body (for example "Title: …" and "Body: …"), use them exactly, filled in for this repository.
-- Otherwise: the title is a Conventional Commit subject (\`type(scope): summary\`, type one of feat, fix, docs, chore, test, refactor, perf, ci, build; at most 72 characters), unless the commits clearly follow another style. Body in markdown: why the change is needed and what changed, in a few sentences or bullets, then "Testing" with only checks the report says were actually run. No "Summary of the run", no step-by-step story.
+- Otherwise: the title is a Conventional Commit subject (\`type(scope): summary\`, type one of feat, fix, docs, chore, test, refactor, perf, ci, build; at most 72 characters), unless the commits clearly follow another style. Body in markdown: why the change is needed and what changed, in a few sentences or bullets, then a last section \`## Evidence\` listing only the checks the report says were actually run, each with its result, and "Not verified: <why>" for what the report leaves unchecked. No "Summary of the run", no step-by-step story.
 - The reviewers can't see the request, the report or any tool. Never mention them, or any task tracker, ticket number, agent, AI tool, local file path or machine. Don't link to local files.
 - Only describe what the diff and commits show.
 

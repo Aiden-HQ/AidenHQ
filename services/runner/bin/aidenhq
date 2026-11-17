@@ -28,7 +28,7 @@
 //                                                       a second opinion from the advisor model (a few per run)
 import { readFileSync } from "node:fs";
 
-const usage = `usage: aidenhq status | wait [--minutes <n>] | review [push] [<org/repo> <branch>]... | push [<org/repo> <branch>]... | pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>] | merge <PR link>... [--gap <minutes>] | close <PR link>... --reason "<one line>" | apply | repo <org/name> | create-repo <org/name> | engine <claude|codex|openrouter> [model] | primer [<Primer link>] | pass <name> | reset | cleanup | task <PEN-N> | tasks [<words>] [--agent <name>] | advise "<question with context>" [--file <brief>]`;
+const usage = `usage: aidenhq status | wait [--minutes <n>] | review [push] [<org/repo> <branch>]... [--body-file <file>] | push [<org/repo> <branch>]... | pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>] | merge <PR link>... [--gap <minutes>] | close <PR link>... --reason "<one line>" | apply | repo <org/name> | create-repo <org/name> | engine <claude|codex|openrouter> [model] | primer [<Primer link>] | pass <name> | reset | cleanup | task <PEN-N> | tasks [<words>] [--agent <name>] | advise "<question with context>" [--file <brief>]`;
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -87,6 +87,7 @@ if (command === "repo" || command === "create-repo") {
   const branches = [];
   for (let i = 0; i < words.length; i += 2) branches.push({ repo: words[i], branch: words[i + 1] });
   body = { action, branches };
+  if (action === "pr" && flags["body-file"]) body.body = readFileSync(flags["body-file"], "utf8");
 } else if (command === "push" || command === "pr") {
   if (words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
   const branches = [];
