@@ -28,6 +28,8 @@ case "$codename" in
   *) die "'${codename:-unknown}' is not supported; AidenHQ's host setup supports $supported (a new release: an entry in ops/vm/pins.json and this case)" ;;
 esac
 
+# A fresh cloud VM's first boot runs cloud-init's own apt for a few minutes: wait for its lock instead of failing.
+apt-get() { command apt-get -o DPkg::Lock::Timeout=600 "$@"; }
 apt-get update
 apt-get -y install ca-certificates curl gnupg git openssl jq unattended-upgrades bubblewrap nftables python3-systemd iproute2 file binutils sqlite3 unzip
 # passt (pasta) gives each Engineer job its own network; Ubuntu 22.04 doesn't package it, and without it jobs share the
