@@ -59,8 +59,8 @@ chown -R "$U:$U" "$work/git"   # as a remote it fetches from: git refuses a repo
 runuser -u "$U" -- git clone -q "file://$work/git/kernel.git" "$H/aidenhq"
 runuser -u "$U" -- git -C "$H/aidenhq" -c advice.detachedHead=false checkout -q --detach "$(git --git-dir="$work/git/distro.git" show "$RSHA:releases/2026.11.json" | sed -n 's/.*"kernel": "\([0-9a-f]*\)".*/\1/p')"
 for d in kernel scripts; do cp -a "$src/$d/node_modules" "$H/aidenhq/$d/" && chown -R "$U:$U" "$H/aidenhq/$d/node_modules"; done
-# The official modules: this tree's ./modules (gitignored), marked as materialized at modules-pin.json's sha so setup
-# keeps them rather than fetching the pin; the modules under test stand in for the pinned ones.
+# The official modules: this tree's materialized ./modules (gitignored), marked at modules-pin.json's sha so setup keeps
+# them instead of fetching (the test stays offline; a local modules change can be tried the same way).
 cp -a "$src/modules" "$H/aidenhq/modules" && sed -n 's/.*"sha": *"\([0-9a-f]*\)".*/\1/p' "$src/modules-pin.json" > "$H/aidenhq/modules/.sha"
 chown -R "$U:$U" "$H/aidenhq/modules"
 TOKEN="ghp_$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"   # random: this file is in the checkout too
