@@ -225,6 +225,11 @@ export function applyEvidence(cards: any[]): any {
   const applied = cards.filter((a: any) => a.action === "apply").at(-1);
   if (!applied) return { awaiting: "no apply filed yet", missing: true };
   const facts = [`apply ${applied.id}: ${applied.state}${applied.outcome ? `, ${applied.outcome}` : ""}`];
+  // What the apply carried, from the card's args (code-built): the instance repo, the commit and the files it changed. The
+  // card's details (APPLY_CHANGE) are the committed diff itself; the outcome text (APPLY_OUTCOME) is the apply's own log tail.
+  const a = applied.args ?? {};
+  if (a.repo && a.sha) facts.push(`apply ${applied.id} landed ${String(a.sha).slice(0, 12)} on ${a.repo}${Array.isArray(a.files) && a.files.length ? `, files: ${a.files.slice(0, 20).join(", ")}` : ""}`);
+  facts.push(`apply ${applied.id}: the diff it carried is ${applied.details ? "in APPLY_CHANGE" : "not available"}; its log is ${applied.outcomeText ? "in APPLY_OUTCOME" : "not available"}`);
   return { version: applied.id, facts, data: { APPLY_OUTCOME: applied.outcomeText ?? "", APPLY_CHANGE: applied.details ?? "" } };
 }
 
