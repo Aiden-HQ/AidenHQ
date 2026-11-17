@@ -26,7 +26,7 @@ import { kernelRecords, type Approval, type Records } from "./records.js";
 import { wakeCheck } from "./brake.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
-import { moduleStates } from "./modules.js";
+import { moduleAuthority, moduleStates } from "./modules.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
@@ -1488,6 +1488,32 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     // Read-only module catalog (compiled config/modules.json), for Settings > Modules.
+    // One module's page (web/src/ModulePage.tsx): its row, its agents, their open work, what it may do and who needs it.
+    {
+      method: "GET",
+      path: /^\/api\/modules\/(?!browse$)([a-z0-9-]+)$/,
+      handle: async (m) => {
+        const text = readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8");
+        const module = moduleStates(text).find((r) => r.name === m[1]);
+        if (!module) throw new HttpError(404, "no such module");
+        const ctx = await context();
+        const [routines, open, live, runs, awaiting] = await Promise.all([pc.routines().catch(() => []), pc.openIssues(), pc.liveRuns(), pc.recentRuns(100), records.awaiting().catch(() => new Set<string>())]);
+        const { compiled, catalog } = readSources(settingsFiles());
+        const chat = ctx.labels.find((l) => l.name === "chat");
+        const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);
+        const mine = module.agents.flatMap((key) => { const a = agentByKey(ctx.agents, key); return a ? [{ key, a }] : []; });
+        const tasks = mine.map(({ a }) => splitTasks(open, a.id, chat?.id, (i) => chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents));
+        const ongoing = tasks.flatMap((t) => [...t.needs, ...t.ongoing]).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        return {
+          module,
+          agents: mine.map(({ key, a }) => agentProfile({ agent: a, agents: ctx.agents, routines, effort: compiled?.agents?.[key]?.reasoning_effort ?? null, catalog })),
+          ongoing,
+          authority: moduleAuthority(text, module.name),
+          neededBy: module.neededBy,
+          requires: module.requires,
+        };
+      },
+    },
     { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")), advisories: await records.advisories().catch(() => []) }) },
     // Settings (web/src/Settings.tsx): the compiled config, read-only, with what the board can see live. Edits go through git.
     { method: "GET", path: /^\/api\/settings$/, handle: async () => settingsData() },

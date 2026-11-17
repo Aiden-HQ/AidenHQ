@@ -201,7 +201,7 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
 
 const label = (k: string) => k.replace(/_/g, " ").replace(/\burl\b/g, "URL").replace(/\bmcp\b/g, "MCP").replace(/^./, (c) => c.toUpperCase());
 
-function SettingItem({ s, title }: { s: SettingRow; title?: string }) {
+export function SettingItem({ s, title }: { s: SettingRow; title?: string }) {
   const filed = useFiled((c) => c.kind === "setting" && c.key === s.key);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
   const effective = s.live ?? s.value ?? s.default;

@@ -15,7 +15,7 @@ export const HEARTBEAT_TOOLS = ["task_list", "task_comments", "task_approvals", 
 /** The fleet default spend caps (scripts/modules.mjs CAPS): an agent's own caps in the grants table override them. */
 const CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
 
-interface SettingDef {
+export interface SettingDef {
   default?: unknown;
   values?: unknown[];
   required?: boolean;
