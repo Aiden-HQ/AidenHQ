@@ -5,8 +5,9 @@
 # (recorders in the fixture commit), Docker and systemd (shims on PATH; the systemctl shim starts the real kernel). The
 # kernel's /setup is then completed over HTTP: account, TOTP code, a fake model key. It asserts:
 #   - one AIDENHQ_SETUP_URL line, the last; without a tailnet the SSH-tunnel route and a loopback URL;
-#   - root's steps ran from root-owned /opt/aidenhq/kernel/<sha>, never from the user's checkout (tampered after checkout);
-#   - the kernel token never lands in the checkout or the output; no key in the kernel's log;
+#   - root's steps ran from root-owned /opt/aidenhq/kernel/<sha>, never from the user's checkout (its ops/setup.sh and
+#     ops/vm/setup.sh tampered after the copy);
+#   - the kernel token reaches setup's fetch, and never the checkout or the output; no key in the kernel's log;
 #   - the kernel answers from the checkout at the release's kernel sha, and the instance pins that release;
 #   - /setup takes the account, the TOTP enrolment, the keys and the recovery-key tick; a second /setup is refused.
 #   sudo bash ops/test/unattended-install.sh   (root, git, node 24, kernel/ and scripts/ npm ci'd; it adds a user and
@@ -28,7 +29,7 @@ g() { git -c user.name=t -c user.email=t@example.com -c init.defaultBranch=main 
 # ---------------------------------------------------------------- fixtures: the kernel and distro repos
 # The kernel: this tree's files (uncommitted edits included), with recorders for the three host scripts a container can't run.
 mkdir -p "$work/k" "$work/git"
-(cd "$src" && git ls-files -z --cached --others --exclude-standard | tar --null -T - --ignore-failed-read -cf - 2>/dev/null) | tar -xf - -C "$work/k"
+(cd "$src" && git -c safe.directory="$src" ls-files -z --cached --others --exclude-standard | tar --null -T - --ignore-failed-read -cf - 2>/dev/null) | tar -xf - -C "$work/k"
 recorder() { # path body: logs its own path and user to root-steps.log, then runs body
   { echo '#!/usr/bin/env bash'
     echo 'echo "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}") $(id -un)" >> '"$work"'/root-steps.log'
@@ -58,8 +59,15 @@ runuser -u "$U" -- git -C "$H/aidenhq" -c advice.detachedHead=false checkout -q 
 for d in kernel scripts; do cp -a "$src/$d/node_modules" "$H/aidenhq/$d/" && chown -R "$U:$U" "$H/aidenhq/$d/node_modules"; done
 TOKEN="ghp_$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"   # random: this file is in the checkout too
 (umask 077; printf '%s\n' "$TOKEN" > "$work/ktoken")
-# The user's checkout is writable by the user: what root runs must not come from it.
-echo 'echo TAMPERED >> '"$work"'/root-steps.log' > "$H/aidenhq/ops/vm/setup.sh"
+# Root's copy, as install.sh's root_verify makes it: a --no-local clone of the checkout, the release's sha exported into
+# /opt/aidenhq/kernel/<sha>; setup is started from there.
+K="/opt/aidenhq/kernel/$KSHA"
+GIT_NO_REPLACE_OBJECTS=1 git clone -q --bare --no-local --upload-pack="runuser -u $U -- git upload-pack" "$H/aidenhq" "$work/rv.git"
+install -d -m 0755 /opt/aidenhq /opt/aidenhq/kernel && mkdir -m 0755 "$work/tree"
+git --git-dir="$work/rv.git" archive "$KSHA" | tar -x --no-same-owner --no-same-permissions -C "$work/tree"
+chown -R root:root "$work/tree" && chmod -R u+rwX,go+rX,go-w "$work/tree" && mv "$work/tree" "$K"
+# The user's checkout is writable by the user: what root runs must not come from it, setup itself included.
+for f in ops/setup.sh ops/vm/setup.sh; do echo 'echo TAMPERED >> '"$work"'/root-steps.log; exit 0' > "$H/aidenhq/$f"; done
 
 # ---------------------------------------------------------------- shims: systemd and Docker
 mkdir -p "$work/bin"
@@ -78,13 +86,16 @@ esac
 exit 0
 EOF
 printf '#!/bin/sh\ncase "$1" in info) echo "[]" ;; esac\nexit 0\n' > "$work/bin/docker"
+# git: notes whether a fetch carries the kernel token's header for github.com (that it is set, never its value).
+: > "$work/git-auth.log"; chmod 0666 "$work/git-auth.log"
+printf '#!/bin/sh\ncase " $* " in *" fetch "*) [ -n "${GIT_CONFIG_VALUE_0:-}" ] && echo "fetch $GIT_CONFIG_KEY_0" >> %s/git-auth.log ;; esac\nexec %s "$@"\n' "$work" "$(command -v git)" > "$work/bin/git"
 printf '#!/bin/sh\nexit 0\n' > "$work/bin/codex"; cp "$work/bin/codex" "$work/bin/opencode"
 chmod 0755 "$work/bin"/*
 
 # ---------------------------------------------------------------- ops/setup.sh --unattended
 env PATH="$work/bin:$PATH" AIDENHQ_USER="$U" OWNER_EMAIL=owner@example.com AIDENHQ_KERNEL_BACKPLANE=127.0.0.1:3130 \
   AIDENHQ_RELEASE=2026.11 AIDENHQ_RELEASE_REPO=acme/aidenhq-distro AIDENHQ_RELEASE_SHA="$RSHA" \
-  bash "$H/aidenhq/ops/setup.sh" --unattended --kernel-token-file "$work/ktoken" > "$work/setup.out" 2>&1 < /dev/null || fail "ops/setup.sh --unattended (exit $?)"
+  bash "$K/ops/setup.sh" --checkout "$H/aidenhq" --unattended --kernel-token-file "$work/ktoken" > "$work/setup.out" 2>&1 < /dev/null || fail "ops/setup.sh --unattended (exit $?)"
 ok "ops/setup.sh --unattended ran with no terminal and no tailnet"
 
 [ "$(grep -c '^AIDENHQ_SETUP_URL=' "$work/setup.out")" = 1 ] || fail "not exactly one AIDENHQ_SETUP_URL line"
@@ -93,7 +104,6 @@ URL="$(tail -1 "$work/setup.out" | sed -n 's/^AIDENHQ_SETUP_URL=//p')"
 grep -q '^AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 alice@' "$work/setup.out" || fail "no SSH tunnel line"
 ok "one AIDENHQ_SETUP_URL line, the last: $URL (SSH tunnel printed)"
 
-K="/opt/aidenhq/kernel/$KSHA"
 [ "$(stat -c '%U:%G %a' "$K")" = "root:root 755" ] || fail "$K isn't root:root 0755"
 [ -z "$(find "$K" -perm /022 -print -quit)" ] && [ -z "$(find "$K" ! -user root -print -quit)" ] || fail "$K has a file others may write or root doesn't own"
 grep -q TAMPERED "$work/root-steps.log" && fail "root ran the user's checkout"
@@ -103,7 +113,8 @@ ok "root's steps ran from $K (root:root 0755), never the tampered checkout"
 
 grep -rqF --exclude-dir=node_modules "$TOKEN" "$H/aidenhq" "$work/setup.out" && fail "the kernel token was written to the checkout or printed"
 grep -qF "$TOKEN" "$H/aidenhq/.git/config" && fail "the kernel token is in the checkout's git config"
-ok "the kernel token is in neither the checkout nor the output"
+[ "$(cat "$work/git-auth.log")" = "fetch http.https://github.com/.extraheader" ] || fail "setup's fetch didn't carry the token's header, once: $(cat "$work/git-auth.log")"
+ok "the kernel token rode setup's one fetch, and is in neither the checkout nor the output"
 
 [ "$(runuser -u "$U" -- git -C "$H/aidenhq" rev-parse HEAD)" = "$KSHA" ] || fail "the checkout isn't at the release's kernel sha"
 grep -qx "product: $KSHA" "$H/aidenhq-instance/instance.yaml" && grep -qF "sha: $RSHA }" "$H/aidenhq-instance/instance.yaml" || fail "instance.yaml doesn't pin the release: $(cat "$H/aidenhq-instance/instance.yaml")"

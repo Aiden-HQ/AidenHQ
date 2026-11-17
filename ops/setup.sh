@@ -151,8 +151,8 @@ operator() { # OP [JSON]: the kernel's accounts (its backplane, POST /v1/operato
 }
 
 # ---------------------------------------------------------------- 0. root's verified copy (spec §6.10)
-# Root never runs code from the user-writable checkout: the checkout's commit, cloned --no-local (git rehashes every object it
-# receives; replace refs ignored) and exported at that sha into /opt/aidenhq/kernel/<sha> (root:root, 0755, nothing writable
+# Root never runs code from the user-writable checkout: the checkout's commit, cloned --no-local (the user serves the objects;
+# root's git rehashes every one it receives; replace refs ignored) and exported at that sha into /opt/aidenhq/kernel/<sha> (root:root, 0755, nothing writable
 # by anyone else), then this script runs again from there. Uncommitted changes in the checkout never reach root.
 KROOT=/opt/aidenhq/kernel
 if [ "$DRY" = 0 ] && [[ "$SRC" != "$KROOT/"* ]]; then
@@ -162,13 +162,17 @@ if [ "$DRY" = 0 ] && [[ "$SRC" != "$KROOT/"* ]]; then
     say "Kernel $sha: a root-owned copy for setup's root steps ($KROOT/$sha)"
     install -d -m 0755 -o root -g root /opt/aidenhq "$KROOT"
     tmp="$(mktemp -d "$KROOT/.new.XXXXXX")"
-    GIT_NO_REPLACE_OBJECTS=1 git -c safe.directory='*' clone -q --bare --no-local "$REPO" "$tmp/k.git" || die "can't clone $REPO for root's copy"
+    # The user's repo is read by the user (upload-pack); root only receives and rehashes the objects.
+    GIT_NO_REPLACE_OBJECTS=1 git clone -q --bare --no-local --upload-pack="runuser -u $U -- git upload-pack" "$REPO" "$tmp/k.git" || die "can't clone $REPO for root's copy"
     mkdir -m 0755 "$tmp/tree"
     GIT_NO_REPLACE_OBJECTS=1 git --git-dir="$tmp/k.git" archive "$sha" | tar -x --no-same-owner --no-same-permissions -C "$tmp/tree" || die "can't export $sha"
     chown -R root:root "$tmp/tree" && chmod -R u+rwX,go+rX,go-w "$tmp/tree"
     mv "$tmp/tree" "$KROOT/$sha" && rm -rf "$tmp"
   fi
   exec bash "$KROOT/$sha/ops/setup.sh" --checkout "$REPO" "${ARGS[@]}"
+elif [ "$DRY" = 0 ]; then
+  # Run from a copy (the installer makes it from its own verified clone): the checkout must be at that copy's commit.
+  [ "$(ugit -C "$REPO" rev-parse HEAD)" = "$(basename "$SRC")" ] || die "the checkout ($REPO) isn't at $(basename "$SRC"), the commit this copy is"
 fi
 
 # The board's address on the tailnet: the link, Google's redirect and the apps all hang off it.
