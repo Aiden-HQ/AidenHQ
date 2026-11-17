@@ -38,7 +38,7 @@ const page = (method, p, form, cookies = jar) => new Promise((ok, no) => {
   const headers = { host: HOST, cookie: [...cookies].map(([k, v]) => `${k}=${v}`).join("; "), ...(method === "POST" ? { "content-type": "application/x-www-form-urlencoded", origin: `http://${HOST}` } : {}) };
   const r = request(`${adminSrv.url}${p}`, { method, headers }, (res) => {
     for (const c of res.headers["set-cookie"] ?? []) { const [kv] = c.split(";"); const i = kv.indexOf("="); cookies.set(kv.slice(0, i), kv.slice(i + 1)); }
-    let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => ok({ status: res.statusCode, location: String(res.headers.location ?? ""), body: d }));
+    let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => ok({ status: res.statusCode, location: String(res.headers.location ?? ""), body: d, headers: res.headers }));
   });
   r.on("error", no); r.end(body);
 });
@@ -49,6 +49,8 @@ test("setup takes account then model", async () => {
   const token = new URL(accounts.mintSetup().url).searchParams.get("token");
   const form = await page("GET", `/setup?token=${token}`);
   assert.equal(form.status, 200);
+  // A browser posts these forms with Origin: null under no-referrer, which the origin check refuses.
+  assert.equal(form.headers["referrer-policy"], "same-origin");
   assert.ok(!form.body.includes("secret_"), "no module keys on the account form");
   const made = await page("POST", "/setup", { token, email: "owner@example.com", name: "Owner", password: PASSWORD });
   assert.equal(made.location, "/auth/enrol");

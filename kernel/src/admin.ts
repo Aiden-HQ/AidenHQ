@@ -118,7 +118,8 @@ export function createAdmin(d: Deps) {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
+      // same-origin, not no-referrer: under no-referrer a browser posts these forms with Origin: null, which the check refuses.
+      "referrer-policy": "same-origin",
       ...(frame ? {} : { "x-frame-options": "DENY" }),
       "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors ${frame?.length ? frame.join(" ") : "'none'"}`,
       ...extra,
