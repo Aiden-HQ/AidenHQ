@@ -50,14 +50,15 @@ import { effective } from "../../../kernel/src/loader/release.ts";
  * The AI reviewer's own code (spec §8.2, from 3c): the ai-reviewer module (its service, policy, cases and judge), the
  * contract (the SDK's reviewer.ts), what shapes the request it reads (the changed files, the merged-sibling block, the
  * runner's request side), the
- * tier function (tiers.mjs with the code host's git rules and the platform check) and the authority-diff classifier.
+ * tier function (tiers.mjs and its gate list gate-core.mjs, with the code host's git rules and the platform check) and the
+ * authority-diff classifier.
  */
 export const REVIEWER_CODE = [
   /^modules\/ai-reviewer\//,
   /^kernel\/sdk\/src\/reviewer\.ts$/,
   /^services\/shared\/review-files\.(mjs|ts)$/,
   /^services\/runner\/src\/(review-request|siblings|cards)\.(mjs|ts)$/,
-  /^services\/runner\/src\/tiers\.(mjs|ts)$/,
+  /^services\/runner\/src\/(tiers|gate-core)\.(mjs|ts)$/,
   /^modules\/codehost-github\/src\/plan\.mjs$/,
   /^modules\/platform\/src\/check\.mjs$/,
   /^kernel\/src\/(tier|writes|records|reviews|kinds)\.ts$/,

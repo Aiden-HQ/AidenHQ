@@ -50,7 +50,9 @@ npm test && npm run typecheck
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
 editing `kernel/sdk/src/caller.ts` or `fence.ts`, `services/shared/source-store.ts`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.mjs` (a
-test fails on drift). CI (`.github/workflows/ci.yml`) runs the suites a PR touches (map: `.github/ci/areas.json`, read from
+test fails on drift; copies under `modules/` are checked here only when the change touches `modules-pin.json` or a
+canonical they copy, and in the modules repo against its `product-pin.json`, so they land there with its next pin bump). Each repo tests only against the other's pinned commit (`modules-pin.json` here,
+`product-pin.json` there): a change that needs both lands one side first, then bumps the other's pin. CI (`.github/workflows/ci.yml`) runs the suites a PR touches (map: `.github/ci/areas.json`, read from
 the base; a new top-level path needs a suite there or it runs everything) and all of them on main.
 
 The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
@@ -60,7 +62,7 @@ the reviewer eval's case loader).
 The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks it for each record's review). Its exit test,
 `node modules/ai-reviewer/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and must pass: at least 95%, every miss a false block of a clean case (an attack approved, or an approval lacking its second reviewer or flag, fails at any %). It
 applies to changes to the module (its service, policy `service/security/`, cases `test/reviewer-cases/`, judge),
-`kernel/sdk/src/reviewer.ts`, the tier function and write lifecycle (`services/runner/src/tiers.mjs`, `cards.ts`,
+`kernel/sdk/src/reviewer.ts`, the tier function and write lifecycle (`services/runner/src/tiers.mjs`, its gate list `gate-core.mjs`, `cards.ts`,
 `review-request.mjs`, `kernel/src/{tier,writes,records,reviews,kinds}.ts`, the code host's git rules
 `modules/codehost-github/src/plan.mjs`, the platform check `modules/platform/src/check.mjs`) or the authority-diff classifier (`kernel/src/loader/authority.ts`); the runner's merge queue runs it on the PR's exact head
 (product and official modules repo) and merges only on a passing receipt (95% of the base cases, every miss a false block of a clean case; `services/runner/src/evalgate.ts`); a modules pin bump

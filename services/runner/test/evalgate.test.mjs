@@ -261,9 +261,9 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
 // Every file that shapes what the reviewer reads or decides is gate core and needs the eval's receipt (lean-core 3c).
 describe("the reviewer's own code", () => {
   it("covers the module, the contract, the request side and the files it reads, in the gate core and the receipt gate", async () => {
-    const { GATE_CORE } = await import("../../../modules/platform/src/check.mjs");
+    const { GATE_CORE } = await import("../src/tiers.mjs");
     const { touchesReviewer } = await import("../src/evalgate.ts");
-    for (const f of ["modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "modules/ai-reviewer/service/src/review-files.mjs", "modules/ai-reviewer/test/reviewer-cases/01-x.json", "modules/ai-reviewer/scripts/reviewer-eval.mjs", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/shared/review-files.ts", "services/runner/src/review-request.mjs", "services/runner/src/review-request.ts", "services/runner/src/siblings.ts", "services/runner/src/tiers.mjs", "modules/codehost-github/src/plan.mjs", "modules/platform/src/check.mjs", "kernel/src/tier.ts", "kernel/src/loader/authority.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "services/runner/src/cards.ts"]) {
+    for (const f of ["modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "modules/ai-reviewer/service/src/review-files.mjs", "modules/ai-reviewer/test/reviewer-cases/01-x.json", "modules/ai-reviewer/scripts/reviewer-eval.mjs", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/shared/review-files.ts", "services/runner/src/review-request.mjs", "services/runner/src/review-request.ts", "services/runner/src/siblings.ts", "services/runner/src/tiers.mjs", "services/runner/src/gate-core.mjs", "modules/codehost-github/src/plan.mjs", "modules/platform/src/check.mjs", "kernel/src/tier.ts", "kernel/src/loader/authority.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "services/runner/src/cards.ts"]) {
       assert.ok(touchesReviewer([f]), `receipt gate: ${f}`);
       assert.ok(GATE_CORE.some((g) => g.test(f)), `gate core: ${f}`);
     }

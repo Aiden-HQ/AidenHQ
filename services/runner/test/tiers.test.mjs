@@ -1,6 +1,7 @@
 // The tier table, row by row, from verified state; plus the four real rejects of 2026-11-10/11.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { classify, newGrants } from "../src/tiers.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
@@ -219,7 +220,7 @@ test("product repo: branch push, PR and merge are Tier 1 for the Platform Engine
   assert.equal(tierOf(prod("push", { branch: "main" })), "reject", "the default branch");
   assert.equal(tierOf(prod("push", {}, { requester: { platform: false } })), "reject", "another agent's push stays the owner's");
   assert.equal(tierOf(prod("pr", { files: ["services/board/src/tasks.ts", "package-lock.json", "services/runner/src/prompt.mjs"] })), 1, "general code is not gate code");
-  for (const g of ["services/runner/src/tiers.mjs", "modules/ai-reviewer/service/security/policy.md", "scripts/no-shell.mjs", "services/computer/launcher.mjs", "services/computer/plugin/worker.js", "services/computer/images/engineer/Dockerfile", "services/runner/src/main.mjs", "services/runner/src/engines.mjs", "services/runner/src/state.mjs", "services/runner/src/config.mjs", "modules/codehost-github/src/github-app.ts", "modules/codehost-github/src/merge-gate.mjs", "modules/platform/src/check.mjs", "modules/engineering/src/merge-queue.mjs", "scripts/paperclip-setup.mjs", "scripts/modules.mjs", "kernel/src/gateway/lib.ts", "kernel/src/proxy.ts", "scripts/verify-security.sh", "scripts/supply-chain/npm-age.mjs", ".github/workflows/ci.yml", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/bin/engine", "kernel/sdk/src/engine-io.ts"])
+  for (const g of ["services/runner/src/tiers.mjs", "services/runner/src/gate-core.mjs", "modules/ai-reviewer/service/security/policy.md", "scripts/no-shell.mjs", "services/computer/launcher.mjs", "services/computer/plugin/worker.js", "services/computer/images/engineer/Dockerfile", "services/runner/src/main.mjs", "services/runner/src/engines.mjs", "services/runner/src/state.mjs", "services/runner/src/config.mjs", "modules/codehost-github/src/github-app.ts", "modules/codehost-github/src/merge-gate.mjs", "modules/platform/src/check.mjs", "modules/engineering/src/merge-queue.mjs", "scripts/paperclip-setup.mjs", "scripts/modules.mjs", "kernel/src/gateway/lib.ts", "kernel/src/proxy.ts", "scripts/verify-security.sh", "scripts/supply-chain/npm-age.mjs", ".github/workflows/ci.yml", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/bin/engine", "kernel/sdk/src/engine-io.ts"])
     assert.equal(tierOf(prod("pr", { files: ["package.json", g] })), "panel", g);
   assert.equal(tierOf(prod("pr", { files: ["modules/fleet-ops/agents/fleet-ops/AGENTS.md"] })), 1, "a role holder's handbook");
   assert.equal(tierOf(prod("pr", { files: ["modules/slack/agents/slack-scout/AGENTS.md"] })), 1, "a handbook of an agent without a role");
@@ -621,4 +622,14 @@ test("a grants override no module input folded is the owner's, never unjudged", 
   const folded = withGrantOverrides({ crm, other }, YAML.parse(i(true)));
   assert.deepEqual([folded.crm.agents.scout.connections.crm, folded.other.agents.scout.connections.crm], [["crm_update"], undefined]);
   assert.throws(() => withGrantOverrides({ crm, other }, { ...YAML.parse(i(true)), modules: ["crm", "other"] }), /all define agent scout/);
+});
+
+// The runner's side of create_repo (moved from codehost-github's tests: it reads this repo's main.mjs).
+test("the runner creates a repo only in createRepoApproved; cloning a missing one is an error", () => {
+  const main = readFileSync(new URL("../src/main.mjs", import.meta.url), "utf8");
+  const fn = (name) => main.slice(main.indexOf(`async function ${name}(`)).split("\n}\n")[0];
+  assert.equal(main.split("\n").filter((l) => l.includes("createRepo(")).length, 1);
+  // GitHub's App, or this server's code host for local/* (codehost-local): still only on an approved create_repo card.
+  assert.ok(fn("createRepoApproved").includes("app.createRepo(slug)") && fn("createRepoApproved").includes("localHost.createRepo(slug)"));
+  assert.ok(fn("addRepo").includes("if (await missingRepo(repo.slug)) throw new UserError(missingRepoText(repo.slug));"));
 });
