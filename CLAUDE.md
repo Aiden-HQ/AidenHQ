@@ -35,6 +35,7 @@ never in this file.
 ## Build and test
 
 Everything runs offline; no live instance or paid key is needed. Node 24. Install each package once with `npm ci`.
+Before pushing, run `node scripts/ci-local.mjs`: it runs what CI would run for your diff.
 On macOS the `flock` apply-lock tests (scripts, runner) fail; that's expected, and CI judges them.
 
 ```sh
