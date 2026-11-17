@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import YAML from "yaml";
 import { classify, newGrants } from "../src/tiers.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
-import { afterReview, priorDecisions, rejectedSince, routineCap } from "../../../kernel/src/tier.ts";
+import { afterReview, priorDecisions, rejectedSince, requestTargets, routineCap } from "../../../kernel/src/tier.ts";
 import { moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { origins } from "../src/paperclip.ts";
 
@@ -110,6 +110,20 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   assert.equal(tierOf(at([...renamedOne, ...hereTwo.slice(1)], SHA("d"), { branch: "feat/renamed", patch: pk(SHA("a")) })), 0, "two rejections here are not parked");
   const three = [1, 2, 3].map((i) => rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA(String(i)), i));
   assert.equal(at(three, SHA("f"), { branch: "feat/other" }).rule, "agents-org-branch", "a task-targeted action elsewhere never parks a branch");
+  // The target is read from a record's args and from a request's verified state alike: `only` on a card, `branches` when
+  // tiering a publish (the rejection follow-up counts from the card's args, the rebase watcher from the branch).
+  const card = { only: [{ repo: "Acme/Roadmap", branch: "feat/x" }] };
+  const verified = { branches: [{ repo: "acme/roadmap", branch: "feat/x" }] };
+  assert.deepEqual(requestTargets("pr", card), requestTargets("pr", verified), "the same target from a card and from a request");
+  assert.deepEqual(requestTargets("pr", card)?.keys, ["acme/roadmap|feat/x"], "case-insensitive repo, the branch exactly");
+  assert.deepEqual(requestTargets("merge", { prs: [{ repo: "acme/roadmap", number: 7 }] })?.keys, ["acme/roadmap#7"], "a PR's number");
+  assert.equal(requestTargets("apply", { files: [] }), undefined, "an action that names no branch or PR: the task");
+  // The rejection follow-up counts a card from its own args: a third rejection on `feat/x` parks that branch, and the same
+  // branch's earlier rejections are not what a sibling's card is counted with (main.mjs rejectedFollowUp).
+  const third = { action: "pr", args: { only: [{ repo: "acme/roadmap", branch: "feat/x", sha: SHA("c") }] } };
+  const rejections = [1, 2, 3].map((i) => ({ ...rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA(String(i)), i), args: { only: [{ repo: "acme/roadmap", branch: "feat/x", sha: SHA(String(i)), patch: pk(SHA(String(i))) }] } }));
+  assert.equal(priorDecisions(rejections, "pr", [], undefined, undefined, undefined, requestTargets("pr", third.args)).rejects, 3, "three on this branch: parked");
+  assert.equal(priorDecisions(rejections, "pr", [], undefined, undefined, undefined, requestTargets("pr", { only: [{ repo: "acme/roadmap", branch: "feat/sibling", sha: SHA("d") }] })).rejects, 0, "the sibling's card counts none of them");
   assert.equal(at(three).rule, "retries-exhausted", "parked after three");
   assert.equal(at(three.map((r) => ({ ...r, reviewCode: "refused_by_code" }))).rule, "agents-org-branch", "code's refusals (moved, unreadable) never count");
   // The reproduction: a judged rejection, a card closed for its moved head, then another card: two judged rejections, not parked.
