@@ -1,0 +1,9 @@
+# Issues come from people and from AidenHQ instances' agents (CONTRIBUTING.md, "For agent contributors"). Use a form.
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Aiden-HQ/aidenhq-modules/security/advisories/new
+    about: Report it privately here, never in a public issue.
+  - name: Setting up an instance
+    url: https://github.com/Aiden-HQ/AidenHQ/blob/main/SETUP.md
+    about: Installation steps and the checks for each one.
