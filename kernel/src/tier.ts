@@ -175,17 +175,18 @@ export function recordKey(r: Prior): string | undefined {
 
 /**
  * Where a request is aimed, for MAX_REJECTS: every branch (`repo|branch`) or PR (`repo#number`) it changes, and a label for
- * the agent. A request of an action that names neither (apply, create_repo, a module digest) has the task as its target.
+ * the agent. `s` is either the verified request state (`branches`, `prs`) or an approval record's args (`only`, `prs`). A
+ * request of an action that names neither (apply, create_repo, a module digest) has the task as its target.
  */
 export function requestTargets(action: string, s: any): { keys: string[]; label: string } | undefined {
-  const branches = action === "push" || action === "pr" ? (s?.branches ?? []).filter((b: any) => b?.repo && b?.branch) : [];
+  const branches = action === "push" || action === "pr" ? (s?.branches ?? s?.only ?? []).filter((b: any) => b?.repo && b?.branch) : [];
   if (branches.length) return { keys: branches.map((b: any) => `${String(b.repo).toLowerCase()}|${b.branch}`), label: `branch${branches.length > 1 ? "es" : ""} ${branches.map((b: any) => `\`${b.branch}\``).join(", ")}` };
   const prs = action === "merge" ? (s?.prs ?? []).filter((p: any) => p?.repo && p?.number !== undefined) : [];
   if (prs.length) return { keys: prs.map((p: any) => `${String(p.repo).toLowerCase()}#${p.number}`), label: `PR${prs.length > 1 ? "s" : ""} ${prs.map((p: any) => `#${p.number}`).join(", ")}` };
   return undefined;
 }
 /** The targets a record was raised against (its card's args), for a rejection to be counted on. */
-const recordTargets = (r: Prior): string[] => requestTargets(r.action, { branches: r.args?.only, prs: r.args?.prs })?.keys ?? [];
+const recordTargets = (r: Prior): string[] => requestTargets(r.action, r.args)?.keys ?? [];
 
 /** Reviewer rejections one target's retries are bounded by: past this many (since the owner's last yes), it is parked. */
 export const MAX_REJECTS = 3;
