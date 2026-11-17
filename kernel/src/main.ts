@@ -208,7 +208,7 @@ const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://127
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
 // The first run's model step (/setup/model): OpenRouter's PKCE and a 1-token check on the gateway's upstream, against the first
-// model the modules price (config/gateway.json; models-openrouter lists the default first).
+// model the modules price (config/gateway.json, in the order the modules list them: the default first).
 const upstream = env("AIDENHQ_GATEWAY_UPSTREAM", "https://openrouter.ai/api/v1");
 const gatewaySettings = watched(path.join(configDir, "gateway.json"), (j) => j as { models?: Record<string, unknown> }, {});
 const model = {

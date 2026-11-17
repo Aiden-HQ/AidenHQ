@@ -16,7 +16,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdminSession, Step } from "./accounts.ts";
 import type { Api } from "./channels.ts";
 import { secretFits } from "./module-secrets.ts";
-import { renderSVG } from "uqr";
 
 type Card = Record<string, any>;
 type Deps = {
@@ -162,7 +161,7 @@ export function createAdmin(d: Deps) {
   const afterEnrol = (s: AdminSession) => (d.model && s.account.owner && !d.firstRun?.has(MODEL_KEY) ? "/setup/model" : "/approvals");
   const modelPage = (req: IncomingMessage, s: AdminSession, msg = "", credit = false) => {
     const host = String(req.headers.host ?? "").toLowerCase();
-    const origin = d.origins().find((o) => new URL(o).host === host);
+    const origin = d.origins().find((o) => new URL(o).host === host || new URL(o).hostname === host); // proxies differ in the Host they pass on
     const callable = origin && (origin.startsWith("https://") || new URL(origin).hostname === "localhost");
     let connect = "";
     if (callable) {
@@ -270,7 +269,7 @@ export function createAdmin(d: Deps) {
           if (!r.ok) return ask(err(r.error));
           const uri = String(r.json.totpURI ?? "");
           const key = new URL(uri).searchParams.get("secret") ?? "";
-          return send(res, 200, doc("Set up an authenticator", `<h1>Add AidenHQ to your authenticator</h1><p>An app on your phone, like Google Authenticator, that shows a 6-digit code. In it, add an account and scan this code.</p><div style="width:220px;max-width:100%">${renderSVG(uri)}</div><p>Can't scan it? Enter this key by hand. Key: <code>${esc(key.replace(/(.{4})/g, "$1 ").trim())}</code> (time-based, 6 digits), or <a href="${esc(uri)}">open it in an authenticator app</a> on this device.</p>${form("/auth/enrol", `<label>The code it shows<input name="code" inputmode="numeric" pattern="[0-9]{6}" required></label><button class="b">Finish</button>`, s)}`), undefined, r.cookies.length ? { "set-cookie": r.cookies } : {});
+          return send(res, 200, doc("Set up an authenticator", `<h1>Add AidenHQ to your authenticator</h1><p>An app on your phone, like Google Authenticator, that shows a 6-digit code. In it, add an account and scan this code.</p><div style="width:220px;max-width:100%">${(await import("uqr")).renderSVG(uri)}</div><p>Can't scan it? Enter this key by hand. Key: <code>${esc(key.replace(/(.{4})/g, "$1 ").trim())}</code> (time-based, 6 digits), or <a href="${esc(uri)}">open it in an authenticator app</a> on this device.</p>${form("/auth/enrol", `<label>The code it shows<input name="code" inputmode="numeric" pattern="[0-9]{6}" required></label><button class="b">Finish</button>`, s)}`), undefined, r.cookies.length ? { "set-cookie": r.cookies } : {});
         }
         case "POST /auth/sign-out": {
           const r = await step(req, "/sign-out", {});
