@@ -43,6 +43,8 @@ export const SHARED = {
   "kernel/sdk/src/reviewer.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/reviewer.ts"],
   // The changed files' shaping (the runner imports the canonical copy; the eval and the reviewer's verdicts use this one).
   "services/shared/review-files.mjs": ["modules/ai-reviewer/service/src/review-files.mjs"],
+  // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.
+  "modules/ci/template/.github/review-checklist.mjs": ["modules/ai-reviewer/service/src/review-checklist.mjs"],
   "services/shared/source-store.ts": [
     "modules/channel-slack/connections/slack/src/source-store.ts",
     "modules/github/connections/github-mcp/src/source-store.ts",
