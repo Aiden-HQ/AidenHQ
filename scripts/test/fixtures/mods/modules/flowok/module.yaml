@@ -1,0 +1,10 @@
+name: flowok
+description: declares a setup flow with a secret and a pairing endpoint
+requires: [board]
+secrets:
+  provided:
+    - name: flowok_bot_token
+      setup: { label: Bot token, pattern: '^[0-9]+$' }
+contributes:
+  board.setup_flows:
+    - { order: 10, title: Phone, why: Aiden on your phone., effort: about 2 minutes, steps: "1. Paste the token.", secrets: [flowok_bot_token], pair_url: "http://flowok:8090/pair" }
