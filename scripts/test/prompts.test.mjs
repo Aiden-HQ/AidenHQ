@@ -83,3 +83,17 @@ test("an on-demand section and a module skill: a summary line in the handbook, t
   writeFileSync(join(root, "prompts", "later.md"), "---\nload: on_demand\n---\nNo summary.\n");
   assert.throws(() => promptEntries("acme", def, root), /prompt later: an on-demand section needs a one-line summary/);
 });
+
+test("the owner's standing outcomes, the glossary and the handoff shape are in every crew handbook", () => {
+  const dir = instance();
+  const file = join(dir, "instance.yaml");
+  const y = YAML.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, YAML.stringify({ ...y, outcomes: [{ id: "ship-acme", outcome: "Acme's app ships weekly.", done: "a release every week, linked on the board", owner: "chief-of-staff" }] }));
+  const { paperclip: p } = compile(product, dir);
+  const text = handbookParts(p, "chief-of-staff", p.agents["chief-of-staff"], { repo: product, instanceDir: dir, fleetIssues: "WOR-1" }).map(([, t]) => t).join("");
+  assert.match(text, /## Shared words\n/);
+  assert.match(text, /## Standing outcomes\n\n.*\n- `ship-acme` \([^)]+, `chief-of-staff`\): Acme's app ships weekly\. Done when: a release every week, linked on the board\n/);
+  assert.match(text, /## Handing work on\n/);
+  writeFileSync(file, YAML.stringify({ ...y, outcomes: [{ id: "ship-acme", outcome: "x", done: "y", owner: "nobody" }] }));
+  assert.throws(() => compile(product, dir), /ship-acme's owner nobody is not an agent here/);
+});
