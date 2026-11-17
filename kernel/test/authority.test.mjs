@@ -5,7 +5,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { authorityDiff, authorityLines, classifyModules, diffAll, moduleInputs, renamed } from "../src/loader/authority.ts";
+import { authorityDiff, authorityLines, classifyModules, diffAll, marketplaceChanges, moduleInputs, renamed } from "../src/loader/authority.ts";
+import { OFFICIAL_URL, officialSides } from "../src/loader/sources.ts";
 
 const IMG = `example.com/acme/tool:1.0@sha256:${"a".repeat(64)}`;
 const base = {
@@ -161,4 +162,39 @@ test("the CLI prints one line per change between two commits", () => {
   // A commit it can't read, or anything but a full sha: refused (exit 2), never guessed.
   assert.throws(() => run(a, "f".repeat(40)), (e) => e.status === 2);
   assert.throws(() => run("HEAD", b), (e) => e.status === 2);
+});
+
+test("5b: the tree id at the new sha equals the recorded one → empty diff; the official repository is no owner line", () => {
+  const repo = (files) => {
+    const d = mkdtempSync(join(tmpdir(), "auth-tree-"));
+    const g = (...a) => execFileSync("git", ["-C", d, ...a], { encoding: "utf8" }).trim();
+    g("init", "-q");
+    g("config", "user.email", "t@example.com");
+    g("config", "user.name", "t");
+    const commit = (fs) => {
+      for (const [p, t] of Object.entries(fs)) { mkdirSync(join(d, p, ".."), { recursive: true }); writeFileSync(join(d, p), t); }
+      g("add", "-A");
+      g("commit", "-qm", "c");
+      return g("rev-parse", "HEAD");
+    };
+    return { d, sha: commit(files), commit };
+  };
+  const mod = { "module.yaml": "name: acme-crm\n", "main.ts": "export {};\n" };
+  const product = repo(Object.fromEntries(Object.entries(mod).map(([p, t]) => [`modules/acme-crm/${p}`, t])));
+  // The modules repository: the same folder at its root, under other commits (a history rewrite) and with root files.
+  const mods = repo({ ...Object.fromEntries(Object.entries(mod).map(([p, t]) => [`acme-crm/${p}`, t])), LICENSE: "MIT\n" });
+  const f = { cacheDir: mkdtempSync(join(tmpdir(), "auth-cache-")), parse: (t) => ({ name: /name: (\S+)/.exec(t)[1] }) }; // the kernel has no YAML parser; these manifests are one line
+  const base = { product: product.sha, modules: ["acme-crm"] };
+  const at = (sha) => ({ ...base, marketplaces: [{ name: "aidenhq", source: { source: "url", url: mods.d }, sha }] });
+  const diff = (head) => {
+    const o = officialSides(base, head, product.sha, product.sha, product.d, f);
+    return diffAll(moduleInputs({ baseInstance: base, headInstance: head, ...o }));
+  };
+  assert.deepEqual(diff(at(mods.sha)), []);
+  // A changed folder at the new sha is a change (every file, across two repositories).
+  const changed = mods.commit({ "acme-crm/main.ts": "export const x = 1;\n" });
+  assert.deepEqual(diff(at(changed)).map((d) => d.changes.map((c) => c.what)), [["code changes"]]);
+  // The move itself: to the official repository, no line; anywhere else, the owner's.
+  assert.deepEqual(marketplaceChanges(base, { ...base, marketplaces: [{ name: "aidenhq", source: { source: "url", url: OFFICIAL_URL }, sha: mods.sha }] }), []);
+  assert.deepEqual(marketplaceChanges(base, at(mods.sha))[0].changes.map((c) => c.owner), [true]);
 });

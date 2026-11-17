@@ -255,7 +255,8 @@ function moduleAuthorityParts(s, base, head) {
   let markets;
   try { markets = marketplaceChanges(base, head); } catch (err) { return [REJECT("unparseable", `instance.yaml marketplaces: ${String(err.message ?? err).slice(0, 200)}`)]; }
   const diffs = [...markets, ...diffAll(s.modules)];
-  if (!diffs.length) return [];
+  // The official marketplace moving with every module's folder tree id unchanged (the 5b switch): no authority, the reviewer's.
+  if (!diffs.length) return changedKeys(base, head).includes("marketplaces") ? [T(1, "marketplace-same-trees", "the official marketplace moves; every module's folder tree id is unchanged")] : [];
   const c = classifyModules(diffs);
   return [c.reviewFirst ? OWNER_AFTER_REVIEW(c.rule, c.reason, c.panel) : c.panel ? PANEL(c.rule, c.reason) : T(1, c.rule, c.reason)];
 }

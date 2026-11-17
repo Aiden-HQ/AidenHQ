@@ -8,8 +8,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { authorityLines, diffAll, marketplaceChanges, moduleInputs, type ModuleDef } from "./authority.ts";
-import { hostFetch, withRemote } from "./sources.ts";
+import { authorityLines, diffAll, marketplaceChanges, moduleInputs } from "./authority.ts";
+import { hostFetch, officialSides, withRemote } from "./sources.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 // The kernel has no YAML dependency; the compiler's (scripts/, installed by every apply) reads the manifests.
@@ -21,15 +21,6 @@ const SHA = /^[0-9a-f]{40}$/;
 const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe"] });
 const yaml = (text: string) => (YAML.parse(text) ?? {}) as Record<string, unknown>;
 
-function defsAt(rev: string): Record<string, ModuleDef> {
-  const out: Record<string, ModuleDef> = {};
-  for (const f of git(product, "ls-tree", "-r", "--name-only", rev, "--", "modules").split("\n")) {
-    const m = /^modules\/([a-z0-9][a-z0-9-]*)\/module\.yaml$/.exec(f);
-    if (m) out[m[1]!] = yaml(git(product, "show", `${rev}:${f}`));
-  }
-  return out;
-}
-
 function main(argv: string[]) {
   const [from, to, inst, ib, ih] = argv;
   if (!SHA.test(from ?? "") || !SHA.test(to ?? "") || (inst !== undefined && (!SHA.test(ib ?? "") || !SHA.test(ih ?? "")))) {
@@ -37,17 +28,16 @@ function main(argv: string[]) {
     return 2;
   }
   try {
-    const [baseDefs, headDefs] = [defsAt(from!), defsAt(to!)];
-    let baseInstance: Record<string, unknown>, headInstance: Record<string, unknown>;
-    if (inst !== undefined) [baseInstance, headInstance] = [yaml(git(inst, "show", `${ib}:instance.yaml`)), yaml(git(inst, "show", `${ih}:instance.yaml`))];
-    else {
-      const dir = process.env.AIDENHQ_INSTANCE_DIR;
-      const now = dir && existsSync(join(dir, "instance.yaml")) ? yaml(readFileSync(join(dir, "instance.yaml"), "utf8")) : { modules: [...new Set([...Object.keys(baseDefs), ...Object.keys(headDefs)])] };
-      baseInstance = headInstance = now;
-    }
-    const changed = from === to ? [] : git(product, "diff", "--name-only", "--no-renames", from!, to!, "--", "modules").split("\n").filter(Boolean);
-    // Third-party modules (instance.yaml marketplaces:) are fetched at their pinned shas through the host's credential helper.
-    const sides = withRemote({ baseInstance, headInstance, baseDefs, headDefs, changed }, { ...hostFetch(repo), parse: YAML.parse });
+    const d = process.env.AIDENHQ_INSTANCE_DIR;
+    const current = d && existsSync(join(d, "instance.yaml")) ? yaml(readFileSync(join(d, "instance.yaml"), "utf8")) : undefined;
+    let [baseInstance, headInstance] = inst !== undefined ? [yaml(git(inst, "show", `${ib}:instance.yaml`)), yaml(git(inst, "show", `${ih}:instance.yaml`))] : [current ?? {}, current ?? {}];
+    // The official modules by folder tree id (the product's ./modules, or the `aidenhq` marketplace from 5b); third-party ones
+    // (instance.yaml marketplaces:) are fetched at their pinned shas through the host's credential helper.
+    const fetch = { ...hostFetch(repo), parse: YAML.parse };
+    const official = officialSides(baseInstance, headInstance, from!, to!, product, fetch);
+    // No instance at all: every module, on both sides.
+    if (inst === undefined && !current) baseInstance = headInstance = { modules: [...new Set([...Object.keys(official.baseDefs), ...Object.keys(official.headDefs)])] };
+    const sides = withRemote({ baseInstance, headInstance, ...official }, fetch);
     const lines = authorityLines([...marketplaceChanges(baseInstance, headInstance), ...diffAll(moduleInputs({ ...sides, always: [] }))]);
     for (const l of lines.length ? lines : ["none"]) console.log(`apply authority: ${l}`);
     return 0;

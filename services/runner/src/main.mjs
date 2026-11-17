@@ -12,7 +12,7 @@ import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, owne
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
 import { authorityLines, diffAll, marketplaceChanges, moduleInputs } from "../../../kernel/src/loader/authority.ts";
-import { hostFetch, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
+import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
 import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
 import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
 import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";
@@ -1938,13 +1938,10 @@ async function moduleTierState(baseText, headText) {
     if (["product", "modules", "marketplaces"].every((k) => JSON.stringify(bi[k] ?? null) === JSON.stringify(hi[k] ?? null))) return {};
     const [from, to] = [String(bi.product ?? ""), String(hi.product ?? "")];
     if (![from, to].every((x) => /^[0-9a-f]{40}$/.test(x))) return { modulesError: "the product pin isn't a full commit on both sides" };
-    const defs = async (rev) => {
-      const files = (await git(REPO_ROOT, "ls-tree", "-r", "--name-only", rev, "--", "modules")).split("\n").filter((f) => /^modules\/[a-z0-9][a-z0-9-]*\/module\.yaml$/.test(f));
-      return Object.fromEntries(await Promise.all(files.map(async (f) => [f.split("/")[1], YAML.parse(await git(REPO_ROOT, "show", `${rev}:${f}`)) ?? {}])));
-    };
-    const changed = from === to ? [] : (await git(REPO_ROOT, "diff", "--name-only", "--no-renames", from, to, "--", "modules")).split("\n").filter(Boolean);
-    // Third-party modules (instance.yaml marketplaces:), fetched at their pinned shas; a new marketplace is the owner's.
-    const sides = withRemote({ baseInstance: bi, headInstance: hi, baseDefs: await defs(from), headDefs: await defs(to), changed }, { ...hostFetch(REPO_ROOT), parse: (t) => YAML.parse(t) });
+    // The official modules by folder tree id (the product's ./modules, or the `aidenhq` marketplace from 5b); third-party
+    // modules (instance.yaml marketplaces:), fetched at their pinned shas; a new marketplace is the owner's.
+    const fetch = { ...hostFetch(REPO_ROOT), parse: (t) => YAML.parse(t) };
+    const sides = withRemote({ baseInstance: bi, headInstance: hi, ...officialSides(bi, hi, from, to, REPO_ROOT, fetch) }, fetch);
     return { modules: moduleInputs({ ...sides, always: [] }), marketplaces: marketplaceChanges(bi, hi) };
   } catch (err) {
     return { modulesError: String(err.message ?? err).split("\n")[0].slice(0, 200) };

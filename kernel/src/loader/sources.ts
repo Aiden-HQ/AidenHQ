@@ -87,7 +87,7 @@ export function marketplaceEntries(json: unknown, where: string): { name: string
   });
 }
 
-/** instance.yaml `marketplaces:`, the third-party ones (the `aidenhq` marketplace is the product's ./modules until 5b). */
+/** instance.yaml `marketplaces:`, checked: third-party ones, and the official `aidenhq` one from 5b (officialSides). */
 export function marketplacesOf(instance: Dict): { name: string; at: Where }[] {
   const list = instance.marketplaces == null ? [] : instance.marketplaces;
   if (!Array.isArray(list)) throw new Error("instance.yaml marketplaces: must be a list");
@@ -96,11 +96,40 @@ export function marketplacesOf(instance: Dict): { name: string; at: Where }[] {
     const name = String(isMap(m) ? m.name : "");
     const where = `instance.yaml marketplaces[${i}]`;
     if (!NAME.test(name)) throw new Error(`${where}: name must be kebab-case`);
-    if (name === OFFICIAL) throw new Error(`${where}: ${OFFICIAL} is the official marketplace (the product's ./modules), not a third-party one`);
     if (seen.has(name)) throw new Error(`${where}: ${name} is listed twice`);
     seen.add(name);
     return { name, at: sourceOf((m as Dict).source, where, undefined, (m as Dict).sha, true) };
   });
+}
+
+/** The official modules repository (5b): the `aidenhq` entry pointing anywhere else is the owner's (marketplaceChanges). */
+export const OFFICIAL_URL = "https://github.com/Aiden-HQ/aidenhq-modules.git";
+
+/**
+ * Each official module's module.yaml and folder tree id, on both sides of an apply: the instance's `aidenhq` marketplace entry
+ * (from 5b), else the modules repository commit the product pins (modules-pin.json, from 5b), else the product checkout's own
+ * ./modules at that side's product sha. A module whose folder tree id is the same
+ * on both sides is unchanged, whatever repository or sha it now comes from (git filter-repo keeps tree ids, spec §8.7: the 5b
+ * move is an empty authority diff, nothing rebuilt). Otherwise its changed files: a git diff within one repository, the whole
+ * folder across two.
+ */
+export function officialSides(baseInstance: Dict, headInstance: Dict, from: string, to: string, product: string, f: Fetch & { parse: (s: string) => unknown }) {
+  const local = (args: string[]) => execFileSync("git", ["-C", product, ...args], { maxBuffer: 256 << 20, stdio: ["ignore", "pipe", "pipe"] }).toString();
+  const pinned = (sha: string) => { try { const p = JSON.parse(local(["show", `${sha}:modules-pin.json`])); return sourceOf({ source: "github", repo: p.repo }, "modules-pin.json", undefined, p.sha, true); } catch { return undefined; } };
+  const side = (instance: Dict, sha: string) => {
+    const w = marketplacesOf(instance).find((m) => m.name === OFFICIAL)?.at ?? pinned(sha) ?? { url: product, path: "modules", sha, owned: true };
+    const repo = w.url === product ? "" : repoAt(w, f);
+    const run = (args: string[]) => (repo ? git(f, repo, args, { owned: true }).toString() : local(args));
+    const at = (rel: string) => `${w.sha}:${posix.join(w.path, rel)}`.replace(/:\.$/, ":");
+    const top = (() => { try { return run(["ls-tree", "-z", at(".")]); } catch { return ""; } })(); // no modules/ at that commit: none
+    const trees = Object.fromEntries(top.split("\0").map((e) => /^040000 tree ([0-9a-f]{40})\t([a-z0-9][a-z0-9-]*)$/.exec(e)).filter((m) => m && run(["ls-tree", at(m[2]!), "module.yaml"])).map((m) => [m![2]!, m![1]!]));
+    return { w, run, trees, defs: Object.fromEntries(Object.keys(trees).map((m) => [m, (f.parse(run(["show", at(`${m}/module.yaml`)])) ?? {}) as Dict])) };
+  };
+  const [b, h] = [side(baseInstance, from), side(headInstance, to)];
+  const moved = [...new Set([...Object.keys(b.trees), ...Object.keys(h.trees)])].filter((m) => b.trees[m] !== h.trees[m]);
+  const changed = !moved.length ? [] : b.w.url !== h.w.url || b.w.path !== h.w.path ? moved.map((m) => `modules/${m}/(source moved)`)
+    : h.run(["diff", "--name-only", "--no-renames", b.w.sha, h.w.sha, "--", ...moved.map((m) => posix.join(h.w.path, m))]).split("\n").filter(Boolean).map((p) => `modules/${h.w.path ? p.slice(h.w.path.length + 1) : p}`);
+  return { baseDefs: b.defs, headDefs: h.defs, changed };
 }
 
 /** Git on a cache repo, bounded in time; the credential helper and local paths only for a repository the owner named. */

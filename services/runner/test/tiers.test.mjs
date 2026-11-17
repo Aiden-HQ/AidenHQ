@@ -471,6 +471,10 @@ test("a new marketplace is the owner's after the reviewer; a sha bump without ne
   assert.match(bump.reason, /twin: now from acme at 222222222222 \(tier declared\), code changes/);
   // A marketplace entry that doesn't parse is refused by code, never passed on.
   assert.equal(tierOf(run(side([], []), side([], [{ name: "acme", source: { source: "url", url: "ftp://x" }, sha: "1".repeat(40) }]), [], { base: {}, head: {} })), "reject");
+  // 5b: the official marketplace moving to its repository with every folder tree id equal (no module input): the reviewer's.
+  const official = { name: "aidenhq", source: { source: "github", repo: "Aiden-HQ/aidenhq-modules" }, sha: "3".repeat(40) };
+  const moved = run(side(["twin@acme"], [mkt("1".repeat(40))]), side(["twin@acme"], [mkt("1".repeat(40)), official]), [], { base: { twin: "a" }, head: { twin: "a" } });
+  assert.deepEqual([moved.tier, Boolean(moved.reviewFirst), moved.rule], [1, false, "marketplace-same-trees"]);
 });
 
 test("a reviewer reject on a module change is final: no owner card", () => {
